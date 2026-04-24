@@ -86,6 +86,12 @@ NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006    # ARM 최소 MA5 상승률 (0.06%)
 NEAR_CROSS_EARLY_GAP_MAX = 0.0006      # ARM 이후 조기진입 허용 gap 0.06% 이내
 NEAR_CROSS_EARLY_MA_RISE_MIN = 0.0010  # ARM 이후 조기진입 최소 MA5 상승률 (0.10%)
 NEAR_CROSS_ARM_EXPIRE_BARS = 2         # ARM 유효 기간(3분봉 기준 바 개수)
+# 기본 원칙은 MA5 상향돌파 우선. 예외 경로는 특정 시간창에서만 제한적으로 허용.
+ENABLE_NEAR_CROSS_ARM = True
+ENABLE_EARLY_NEAR_CROSS_ENTRY = True
+EARLY_NEAR_CROSS_ALLOWED_START = dt_time(9, 0)
+EARLY_NEAR_CROSS_ALLOWED_END = dt_time(11, 30)
+EARLY_NEAR_CROSS_ALLOW_NXT = False
 # 조기진입(ARM/EARLY) 유동성 필터: 소량 체결 급등으로 인한 오진입 방지
 EARLY_NEAR_CROSS_MIN_VOLUME = 800
 EARLY_NEAR_CROSS_MIN_VOL_MA = 500
@@ -451,6 +457,15 @@ def get_volume_ratio_threshold(now: datetime, adx_val: float) -> float:
         ratio = max(VOLUME_RATIO_FLOOR, ratio - VOLUME_RATIO_STRONG_RELAX)
 
     return ratio
+
+
+def is_early_near_cross_allowed(now: datetime, nxt_tradeable: bool) -> bool:
+    current_time = now.time()
+    if is_regular_session(now):
+        return EARLY_NEAR_CROSS_ALLOWED_START <= current_time <= EARLY_NEAR_CROSS_ALLOWED_END
+    if EARLY_NEAR_CROSS_ALLOW_NXT and is_nxt_session(now) and nxt_tradeable:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1456,16 +1471,17 @@ def run(target_date: str | None = None) -> None:
                 buy_ok, buy_reason = check_buy_condition(frame, current_dt)
                 near_flags = _near_cross_momentum_flags(cur, prev_bar)
                 early_liq_ok, early_liq_reason = _passes_early_near_cross_liquidity(cur)
+                early_time_ok = is_early_near_cross_allowed(current_dt, nxt_tradeable)
 
                 # 2단계 진입: 1차 ARM 상태에서 확정 크로스 또는 강모멘텀 근접 조기진입 허용
-                if not buy_ok and armed_at is not None:
+                if not buy_ok and ENABLE_EARLY_NEAR_CROSS_ENTRY and early_time_ok and armed_at is not None:
                     if buy_reason.startswith("NO_MA5_BB_CROSS_UP") and bool(near_flags["can_early"]) and early_liq_ok:
                         buy_ok = True
                         buy_reason = "EARLY_NEAR_CROSS_MOMENTUM"
 
                 if not buy_ok:
                     # 1차 ARM: 크로스 직전 근접 + MA5 상승 가속을 감지해 다음 봉 확인 대기
-                    if buy_reason.startswith("NO_MA5_BB_CROSS_UP") and bool(near_flags["can_arm"]) and early_liq_ok:
+                    if ENABLE_NEAR_CROSS_ARM and early_time_ok and buy_reason.startswith("NO_MA5_BB_CROSS_UP") and bool(near_flags["can_arm"]) and early_liq_ok:
                         if code not in near_cross_armed_at:
                             near_cross_armed_at[code] = bar_time
                             log(
@@ -1473,6 +1489,8 @@ def run(target_date: str | None = None) -> None:
                                 f"NEAR_CROSS_ARM gap={float(near_flags['gap_ratio'])*100:.3f}% "
                                 f"ma_rise={float(near_flags['ma_rise_ratio'])*100:.3f}%"
                             )
+                    elif buy_reason.startswith("NO_MA5_BB_CROSS_UP") and (ENABLE_NEAR_CROSS_ARM or ENABLE_EARLY_NEAR_CROSS_ENTRY) and not early_time_ok:
+                        buy_reason = "EARLY_NEAR_CROSS_BLOCKED_TIME_WINDOW"
                     elif buy_reason.startswith("NO_MA5_BB_CROSS_UP") and not early_liq_ok:
                         buy_reason = f"EARLY_NEAR_CROSS_BLOCKED_{early_liq_reason}"
 
