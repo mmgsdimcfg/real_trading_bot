@@ -81,6 +81,11 @@ MA5_BB_DOWN_CROSS_IMMEDIATE_PNL = -0.007     # -0.7% 이하 손실이면 즉시 
 MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE = 2         # 보조 약세 점수 높으면 즉시 매도 허용
 MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE = 1       # 다음 바 확인 매도 최소 보조 점수
 MA5_BB_DOWN_CROSS_MIN_PNL = 0.000             # 데드크로스 계열 매도는 최소 손익(기본 0%=본전) 이상에서만 허용
+# 박스권 구간에서는 기술적 매도 신호를 보류하고, 손절/익절(및 트레일링)만 허용
+ENABLE_BOX_RANGE_HOLD_TECH_SELL = True
+BOX_RANGE_HOLD_LOOKBACK_BARS = 8
+BOX_RANGE_HOLD_MAX_RANGE_PCT = 0.0065         # 최근 N개 봉 고저폭이 현재가 대비 0.65% 이내
+BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT = 0.0080      # 볼린저 밴드 폭이 현재가 대비 0.80% 이내
 # 매수 2단계(근접 ARM -> 확정/강모멘텀 진입) 파라미터
 NEAR_CROSS_ARM_GAP_MAX = 0.0015        # MA5가 BB_MIDDLE 아래에 있더라도 gap 0.15% 이내면 ARM 후보
 NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006    # ARM 최소 MA5 상승률 (0.06%)
@@ -842,6 +847,28 @@ def _passes_early_near_cross_liquidity(cur: pd.Series) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _is_box_range_hold_zone(frame: pd.DataFrame) -> tuple[bool, str]:
+    """Detects narrow-range consolidation zone for technical-sell hold."""
+    if len(frame) < BOX_RANGE_HOLD_LOOKBACK_BARS:
+        return False, "INSUFFICIENT_BOX_BARS"
+
+    recent = frame.tail(BOX_RANGE_HOLD_LOOKBACK_BARS)
+    high_v = pd.to_numeric(recent["high"], errors="coerce").max()
+    low_v = pd.to_numeric(recent["low"], errors="coerce").min()
+    close_v = _num(recent.iloc[-1], "close")
+    bb_up = _num(recent.iloc[-1], "BB_UPPER")
+    bb_low = _num(recent.iloc[-1], "BB_LOWER")
+
+    if any(pd.isna(v) for v in (high_v, low_v, close_v, bb_up, bb_low)) or close_v <= 0:
+        return False, "BOX_DATA_NAN"
+
+    range_pct = (float(high_v) - float(low_v)) / float(close_v)
+    bb_width_pct = (float(bb_up) - float(bb_low)) / float(close_v)
+    is_box = range_pct <= BOX_RANGE_HOLD_MAX_RANGE_PCT and bb_width_pct <= BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT
+
+    return is_box, f"RANGE_{range_pct*100:.2f}%_BBW_{bb_width_pct*100:.2f}%"
+
+
 def check_buy_condition(frame: pd.DataFrame, now: datetime) -> tuple[bool, str]:
     if len(frame) < 3:
         return False, "INSUFFICIENT_BARS"
@@ -914,6 +941,11 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime) -> tuple[bool, str]:
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float) -> tuple[bool, str]:
     if len(frame) < 2:
         return False, "INSUFFICIENT_BARS"
+
+    if ENABLE_BOX_RANGE_HOLD_TECH_SELL and STOP_LOSS_PERCENT < pnl_pct < TAKE_PROFIT_PERCENT:
+        is_box, box_info = _is_box_range_hold_zone(frame)
+        if is_box:
+            return False, f"BOX_RANGE_HOLD_{box_info}"
 
     cur = frame.iloc[-1]
     prev = frame.iloc[-2]
@@ -1459,7 +1491,11 @@ def run(target_date: str | None = None) -> None:
                         )
                         log(f"  [SELL EXECUTED] {code} | {sell_reason} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
-                elif sell_reason.startswith("AUX_BLOCKED") or sell_reason.startswith("MA5_BB_DOWN_CROSS_ARMED"):
+                elif (
+                    sell_reason.startswith("AUX_BLOCKED")
+                    or sell_reason.startswith("MA5_BB_DOWN_CROSS_ARMED")
+                    or sell_reason.startswith("BOX_RANGE_HOLD")
+                ):
                     log(f"  [SELL HOLD] {code} | {sell_reason}")
 
             else:
