@@ -75,6 +75,11 @@ TRAILING_STOP_FROM_PEAK = 0.012
 AUX_SELL_MIN_PNL_SCORE2 = 0.010  # score=2  -> +1.0% 이상
 AUX_SELL_MIN_PNL_SCORE3 = 0.005  # score=3  -> +0.5% 이상
 AUX_SELL_MIN_PNL_SCORE4 = 0.000  # score>=4 -> 손익분기 이상
+# MA5 데드크로스 매도 디바운스: 휩쏘 방지를 위해 일반 구간은 1개 바 확인 후 매도
+# 단, 손실/약세 강도가 크면 즉시 매도해 급락 리스크는 방어
+MA5_BB_DOWN_CROSS_IMMEDIATE_PNL = -0.007     # -0.7% 이하 손실이면 즉시 매도 허용
+MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE = 2         # 보조 약세 점수 높으면 즉시 매도 허용
+MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE = 1       # 다음 바 확인 매도 최소 보조 점수
 # 매수 2단계(근접 ARM -> 확정/강모멘텀 진입) 파라미터
 NEAR_CROSS_ARM_GAP_MAX = 0.0015        # MA5가 BB_MIDDLE 아래에 있더라도 gap 0.15% 이내면 ARM 후보
 NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006    # ARM 최소 MA5 상승률 (0.06%)
@@ -910,9 +915,31 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float) -> tuple[bool, str
 
     if ma5_dead:
         score = _sell_support_score(cur, prev)
-        if score >= 1:
-            return True, f"MA5_BB_DOWN_CROSS_CONFIRMED_{score}"
-        return True, "MA5_BB_DOWN_CROSS"
+        # 급락/약세 강도 충분 시에는 기존처럼 즉시 매도
+        if pnl_pct <= MA5_BB_DOWN_CROSS_IMMEDIATE_PNL or score >= MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE:
+            if score >= 1:
+                return True, f"MA5_BB_DOWN_CROSS_CONFIRMED_{score}"
+            return True, "MA5_BB_DOWN_CROSS"
+
+        # 일반 구간은 즉시 매도하지 않고 다음 바에서 하방 유지 여부를 확인
+        return False, f"MA5_BB_DOWN_CROSS_ARMED_{score}"
+
+    # 직전 바에서 데드크로스가 발생했고, 현재 바에서도 하방(MA5<BB)이 유지되면 확인 매도
+    if len(frame) >= 3:
+        prev2 = frame.iloc[-3]
+        prev2_ma5 = _num(prev2, "MA_5")
+        prev2_bb = _num(prev2, "BB_MIDDLE")
+        prev_cross = (
+            not any(pd.isna(v) for v in (prev2_ma5, prev_ma5, prev2_bb, prev_bb))
+            and prev2_ma5 >= prev2_bb
+            and prev_ma5 < prev_bb
+        )
+        cur_below = not any(pd.isna(v) for v in (cur_ma5, cur_bb)) and cur_ma5 < cur_bb
+        if prev_cross and cur_below:
+            score = _sell_support_score(cur, prev)
+            if score >= MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE:
+                return True, f"MA5_BB_DOWN_CROSS_NEXT_BAR_{score}"
+            return True, "MA5_BB_DOWN_CROSS_NEXT_BAR"
 
     # 보조지표 하락 전환 + 점수별 최소 수익률 게이트
     score = _sell_support_score(cur, prev)
@@ -1404,7 +1431,7 @@ def run(target_date: str | None = None) -> None:
                         )
                         log(f"  [SELL EXECUTED] {code} | {sell_reason} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
-                elif sell_reason.startswith("AUX_BLOCKED"):
+                elif sell_reason.startswith("AUX_BLOCKED") or sell_reason.startswith("MA5_BB_DOWN_CROSS_ARMED"):
                     log(f"  [SELL HOLD] {code} | {sell_reason}")
 
             else:
