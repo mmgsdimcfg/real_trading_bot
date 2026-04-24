@@ -80,6 +80,7 @@ AUX_SELL_MIN_PNL_SCORE4 = 0.000  # score>=4 -> 손익분기 이상
 MA5_BB_DOWN_CROSS_IMMEDIATE_PNL = -0.007     # -0.7% 이하 손실이면 즉시 매도 허용
 MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE = 2         # 보조 약세 점수 높으면 즉시 매도 허용
 MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE = 1       # 다음 바 확인 매도 최소 보조 점수
+MA5_BB_DOWN_CROSS_MIN_PNL = 0.000             # 데드크로스 계열 매도는 최소 손익(기본 0%=본전) 이상에서만 허용
 # 매수 2단계(근접 ARM -> 확정/강모멘텀 진입) 파라미터
 NEAR_CROSS_ARM_GAP_MAX = 0.0015        # MA5가 BB_MIDDLE 아래에 있더라도 gap 0.15% 이내면 ARM 후보
 NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006    # ARM 최소 MA5 상승률 (0.06%)
@@ -929,6 +930,12 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float) -> tuple[bool, str
     )
 
     if ma5_dead:
+        if pnl_pct < MA5_BB_DOWN_CROSS_MIN_PNL:
+            return False, (
+                f"MA5_BB_DOWN_CROSS_BLOCKED_PNL_{pnl_pct*100:.2f}%"
+                f"_LT_{MA5_BB_DOWN_CROSS_MIN_PNL*100:.2f}%"
+            )
+
         score = _sell_support_score(cur, prev)
         # 급락/약세 강도 충분 시에는 기존처럼 즉시 매도
         if pnl_pct <= MA5_BB_DOWN_CROSS_IMMEDIATE_PNL or score >= MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE:
@@ -951,6 +958,12 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float) -> tuple[bool, str
         )
         cur_below = not any(pd.isna(v) for v in (cur_ma5, cur_bb)) and cur_ma5 < cur_bb
         if prev_cross and cur_below:
+            if pnl_pct < MA5_BB_DOWN_CROSS_MIN_PNL:
+                return False, (
+                    f"MA5_BB_DOWN_CROSS_NEXT_BAR_BLOCKED_PNL_{pnl_pct*100:.2f}%"
+                    f"_LT_{MA5_BB_DOWN_CROSS_MIN_PNL*100:.2f}%"
+                )
+
             score = _sell_support_score(cur, prev)
             if score >= MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE:
                 return True, f"MA5_BB_DOWN_CROSS_NEXT_BAR_{score}"
