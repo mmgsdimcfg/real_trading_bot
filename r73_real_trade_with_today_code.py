@@ -83,6 +83,10 @@ MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE = 1       # 다음 바 확인 매도 최소 
 MA5_BB_DOWN_CROSS_MIN_PNL = 0.000             # 데드크로스 계열 매도는 최소 손익(기본 0%=본전) 이상에서만 허용
 # 박스권 구간에서는 기술적 매도 신호를 보류하고, 손절/익절(및 트레일링)만 허용
 ENABLE_BOX_RANGE_HOLD_TECH_SELL = True
+# 익절 기준 도달 후 즉시 매도 대신 고점 트레일링 모드로 전환
+# (강모멘텀 급등 시 추가 수익 구간 확보)
+ENABLE_TP_EXTENSION_TRAILING = True
+TP_EXTENSION_TRAIL_FROM_PEAK = 0.010     # TP 연장 구간에서 고점 대비 1.0% 하락 시 매도
 BOX_RANGE_HOLD_LOOKBACK_BARS = 8
 BOX_RANGE_HOLD_MAX_RANGE_PCT = 0.0065         # 최근 N개 봉 고저폭이 현재가 대비 0.65% 이내
 BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT = 0.0080      # 볼린저 밴드 폭이 현재가 대비 0.80% 이내
@@ -1436,12 +1440,20 @@ def run(target_date: str | None = None) -> None:
                 pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
 
                 if pnl_pct >= TAKE_PROFIT_PERCENT:
-                    reason_tp = f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
-                    log(f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
-                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price):
-                        log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
-                    signal_sell_bar[code] = bar_time
-                    continue
+                    if ENABLE_TP_EXTENSION_TRAILING:
+                        # TP 도달 → 즉시 익절 대신 고점 트레일링 모드로 전환
+                        log(
+                            f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= TP {TAKE_PROFIT_PERCENT*100:.1f}% | "
+                            f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
+                            f"price={price:,.0f} peak={highest_price:,.0f}"
+                        )
+                    else:
+                        reason_tp = f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
+                        log(f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price):
+                            log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
 
                 if pnl_pct <= STOP_LOSS_PERCENT:
                     reason_sl = f"STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}%"
@@ -1457,11 +1469,17 @@ def run(target_date: str | None = None) -> None:
                     # 1) First, peak must move into profit zone.
                     # 2) Then, sell only if profit retraces by trailing width.
                     # 3) Never trigger trailing stop while current pnl is non-positive.
+                    # TP 연장 구간(peak >= TP)에서는 더 타이트한 1% 트레일 적용
                     peak_pnl_pct = (highest_price / entry_price) - 1.0
                     current_pnl_pct = (price / entry_price) - 1.0
                     profit_giveback = peak_pnl_pct - current_pnl_pct
-                    if peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= TRAILING_STOP_FROM_PEAK:
+                    if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
+                        trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
+                        reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
+                    else:
+                        trail_threshold = TRAILING_STOP_FROM_PEAK
                         reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
+                    if peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold:
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_ts} | "
                             f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} | "
