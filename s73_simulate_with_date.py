@@ -137,6 +137,12 @@ SAMPLE_CODE_MAP = {
 log_dir = SCRIPT_DIR / "logs"
 log_dir.mkdir(exist_ok=True)
 DAILY_RESULT_CSV = log_dir / "s73_daily_results.csv"
+COMPARE_RESULT_DIR = log_dir / "compare"
+
+LOG_SUMMARY_MODE = False
+COMPARE_FEE_BUY_RATE = 0.00015
+COMPARE_FEE_SELL_RATE = 0.00015
+COMPARE_SLIPPAGE_RATE = 0.00020
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,6 +157,11 @@ LAST_SIM_STATS: dict[str, float | int | str] = {}
 
 def log(msg: str) -> None:
     logger.info(msg)
+
+
+def log_detail(msg: str) -> None:
+    if not LOG_SUMMARY_MODE:
+        logger.info(msg)
 
 
 def raw(msg: str) -> None:
@@ -756,10 +767,11 @@ class PaperStrategyTracker:
         pos = self.positions.pop(code, None)
         if pos is None:
             return
-        entry = float(pos["entry_price"])
+        entry = float(pos["entry_exec_price"])
         if entry <= 0:
             return
-        pnl = (price / entry) - 1.0
+        exit_exec = float(price) * (1.0 - COMPARE_SLIPPAGE_RATE - COMPARE_FEE_SELL_RATE)
+        pnl = (exit_exec / entry) - 1.0
         self.stats.trades += 1
         self.stats.pnl_sum_pct += pnl
         self.stats.equity *= max(0.0, 1.0 + pnl)
@@ -767,7 +779,10 @@ class PaperStrategyTracker:
             self.stats.wins += 1
         else:
             self.stats.losses += 1
-        log(f"[COMPARE-{self.name}] SELL | {code} | {reason} | pnl={pnl*100:.2f}%")
+        log_detail(
+            f"[COMPARE-{self.name}] SELL | {code} | {reason} | "
+            f"raw_exit={price:,.0f} exec_exit={exit_exec:,.0f} pnl={pnl*100:.2f}%"
+        )
 
     def on_bar(self, code: str, frame: pd.DataFrame, ts: pd.Timestamp, entry_allowed: bool) -> None:
         if frame is None or frame.empty:
@@ -821,13 +836,18 @@ class PaperStrategyTracker:
         if not buy_ok:
             return
 
+        entry_exec = float(price) * (1.0 + COMPARE_SLIPPAGE_RATE + COMPARE_FEE_BUY_RATE)
         self.positions[code] = {
             "entry_price": float(price),
+            "entry_exec_price": float(entry_exec),
             "highest_price": float(price),
             "buy_time": ts,
         }
         self.traded_today.add(code)
-        log(f"[COMPARE-{self.name}] BUY  | {code} | {reason} | price={price:,.0f}")
+        log_detail(
+            f"[COMPARE-{self.name}] BUY  | {code} | {reason} | "
+            f"raw_entry={price:,.0f} exec_entry={entry_exec:,.0f}"
+        )
 
     def force_close_all(self, price_map: dict[str, float], reason: str) -> None:
         for code in list(self.positions.keys()):
@@ -853,6 +873,18 @@ class PaperStrategyTracker:
 
 def append_daily_result_csv(row: dict[str, object], csv_path: Path = DAILY_RESULT_CSV) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(row.keys())
+    write_header = not csv_path.exists()
+    with open(csv_path, "a", newline="", encoding="utf-8") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def append_compare_result_csv(date_str: str, strategy_name: str, row: dict[str, object], result_dir: Path = COMPARE_RESULT_DIR) -> None:
+    result_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = result_dir / f"{date_str}_{strategy_name}.csv"
     fieldnames = list(row.keys())
     write_header = not csv_path.exists()
     with open(csv_path, "a", newline="", encoding="utf-8") as file_obj:
@@ -1128,7 +1160,7 @@ def simulate_date(
             compare_basic.on_bar(code, available, ts, entry_allowed=entry_allowed)
             compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed)
 
-            log(
+            log_detail(
                 f"  [CHECK] {code}({selected_names.get(code, code)}) | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
@@ -1180,7 +1212,7 @@ def simulate_date(
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EVAL] {code} | OK {reason} | pnl={profit_pct*100:.2f}%")
                 elif reason.startswith("AUX_BLOCKED") or reason.startswith("MA5_BB_DOWN_CROSS_ARMED") or reason.startswith("BOX_RANGE_HOLD"):
-                    log(f"  [SELL HOLD] {code} | {reason}")
+                    log_detail(f"  [SELL HOLD] {code} | {reason}")
                 continue
 
             if not is_new_entry_allowed(ts, nxt_tradeable):
@@ -1247,14 +1279,14 @@ def simulate_date(
                     signal_buy_bar[code] = ts
                     log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
                 else:
-                    log(f"  [BUY REJECT] {code} | ORDER_REJECTED")
+                    log_detail(f"  [BUY REJECT] {code} | ORDER_REJECTED")
             else:
-                log(f"  [BUY REJECT] {code} | {reason}")
+                log_detail(f"  [BUY REJECT] {code} | {reason}")
 
             if reason.startswith("NO_MA5_BB_CROSS_UP") and not early_time_ok:
-                log(f"  [BUY HOLD] {code} | EARLY_NEAR_CROSS_BLOCKED_TIME_WINDOW")
+                log_detail(f"  [BUY HOLD] {code} | EARLY_NEAR_CROSS_BLOCKED_TIME_WINDOW")
             elif reason.startswith("NO_MA5_BB_CROSS_UP") and not early_liq_ok:
-                log(f"  [BUY HOLD] {code} | EARLY_NEAR_CROSS_BLOCKED_{early_liq_reason}")
+                log_detail(f"  [BUY HOLD] {code} | EARLY_NEAR_CROSS_BLOCKED_{early_liq_reason}")
 
         if ts.time() >= REGULAR_FORCE_EXIT:
             compare_basic.force_close_all(latest_price_map, "EOD_FLAT_1520_ALL")
@@ -1383,21 +1415,47 @@ def simulate_date(
             "loss_count": int(len(losses)),
             "win_rate": float(win_rate),
             "traded_code_count": int(len(traded_codes)),
-            "compare_basic_trades": int(basic_stats["trades"]),
-            "compare_basic_wins": int(basic_stats["wins"]),
-            "compare_basic_losses": int(basic_stats["losses"]),
-            "compare_basic_win_rate": float(basic_stats["win_rate"]),
-            "compare_basic_avg_pnl_pct": float(basic_stats["avg_pnl_pct"]),
-            "compare_basic_total_pnl_pct": float(basic_stats["total_pnl_pct"]),
-            "compare_basic_equity": float(basic_stats["equity"]),
-            "compare_multi_trades": int(multi_stats["trades"]),
-            "compare_multi_wins": int(multi_stats["wins"]),
-            "compare_multi_losses": int(multi_stats["losses"]),
-            "compare_multi_win_rate": float(multi_stats["win_rate"]),
-            "compare_multi_avg_pnl_pct": float(multi_stats["avg_pnl_pct"]),
-            "compare_multi_total_pnl_pct": float(multi_stats["total_pnl_pct"]),
-            "compare_multi_equity": float(multi_stats["equity"]),
         }
+    )
+
+    run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    append_compare_result_csv(
+        date_str,
+        "BASIC_CROSS",
+        {
+            "run_at": run_at,
+            "date": date_str,
+            "strategy": "BASIC_CROSS",
+            "trades": int(basic_stats["trades"]),
+            "wins": int(basic_stats["wins"]),
+            "losses": int(basic_stats["losses"]),
+            "win_rate": float(basic_stats["win_rate"]),
+            "avg_pnl_pct": float(basic_stats["avg_pnl_pct"]),
+            "total_pnl_pct": float(basic_stats["total_pnl_pct"]),
+            "equity": float(basic_stats["equity"]),
+            "fee_buy_rate": COMPARE_FEE_BUY_RATE,
+            "fee_sell_rate": COMPARE_FEE_SELL_RATE,
+            "slippage_rate": COMPARE_SLIPPAGE_RATE,
+        },
+    )
+    append_compare_result_csv(
+        date_str,
+        "MULTI_FILTER",
+        {
+            "run_at": run_at,
+            "date": date_str,
+            "strategy": "MULTI_FILTER",
+            "trades": int(multi_stats["trades"]),
+            "wins": int(multi_stats["wins"]),
+            "losses": int(multi_stats["losses"]),
+            "win_rate": float(multi_stats["win_rate"]),
+            "avg_pnl_pct": float(multi_stats["avg_pnl_pct"]),
+            "total_pnl_pct": float(multi_stats["total_pnl_pct"]),
+            "equity": float(multi_stats["equity"]),
+            "fee_buy_rate": COMPARE_FEE_BUY_RATE,
+            "fee_sell_rate": COMPARE_FEE_SELL_RATE,
+            "slippage_rate": COMPARE_SLIPPAGE_RATE,
+        },
     )
 
     return 0
@@ -1405,6 +1463,7 @@ def simulate_date(
 
 def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
+    global LOG_SUMMARY_MODE, COMPARE_FEE_BUY_RATE, COMPARE_FEE_SELL_RATE, COMPARE_SLIPPAGE_RATE
 
     parser = argparse.ArgumentParser(description="Simulate R73 MA5-BB cross strategy on historical 3-minute bar data")
     parser.add_argument("--date", required=True, help="Simulation date in YYYYMMDD format")
@@ -1443,6 +1502,29 @@ def main() -> None:
         default=None,
         help="Trailing stop from peak ratio (e.g. 0.012 for 1.2%%)",
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Reduce log volume by suppressing high-frequency per-bar hold/reject/check logs",
+    )
+    parser.add_argument(
+        "--compare-fee-buy",
+        type=float,
+        default=COMPARE_FEE_BUY_RATE,
+        help="Compare strategy buy fee rate (e.g. 0.00015)",
+    )
+    parser.add_argument(
+        "--compare-fee-sell",
+        type=float,
+        default=COMPARE_FEE_SELL_RATE,
+        help="Compare strategy sell fee rate (e.g. 0.00015)",
+    )
+    parser.add_argument(
+        "--compare-slippage",
+        type=float,
+        default=COMPARE_SLIPPAGE_RATE,
+        help="Compare strategy one-way slippage rate (e.g. 0.0002)",
+    )
     args = parser.parse_args()
 
     try:
@@ -1457,6 +1539,18 @@ def main() -> None:
         STOP_LOSS_PERCENT = -abs(float(args.sl))
     if args.trail is not None:
         TRAILING_STOP_FROM_PEAK = abs(float(args.trail))
+
+    LOG_SUMMARY_MODE = bool(args.summary)
+    COMPARE_FEE_BUY_RATE = max(0.0, float(args.compare_fee_buy))
+    COMPARE_FEE_SELL_RATE = max(0.0, float(args.compare_fee_sell))
+    COMPARE_SLIPPAGE_RATE = max(0.0, float(args.compare_slippage))
+
+    if LOG_SUMMARY_MODE:
+        log("Summary log mode enabled: high-frequency check/hold/reject logs are suppressed")
+    log(
+        f"Compare cost model: fee_buy={COMPARE_FEE_BUY_RATE:.6f}, "
+        f"fee_sell={COMPARE_FEE_SELL_RATE:.6f}, slippage={COMPARE_SLIPPAGE_RATE:.6f}"
+    )
 
     names = load_code_name_map(Path(args.today_code_file))
     exit_code = simulate_date(
