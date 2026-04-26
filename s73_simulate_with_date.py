@@ -8,8 +8,10 @@ r73_real_trade_with_today_code.py (MA5/BB middle cross + multi-indicator filter)
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Optional
@@ -134,6 +136,7 @@ SAMPLE_CODE_MAP = {
 
 log_dir = SCRIPT_DIR / "logs"
 log_dir.mkdir(exist_ok=True)
+DAILY_RESULT_CSV = log_dir / "s73_daily_results.csv"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -693,6 +696,172 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, held_seconds: floa
     return False, "NO_SELL_SIGNAL"
 
 
+def check_buy_condition_basic(frame: pd.DataFrame) -> tuple[bool, str]:
+    if len(frame) < 3:
+        return False, "INSUFFICIENT_BARS"
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    prev_ma5 = _num(prev, "MA_5")
+    cur_ma5 = _num(cur, "MA_5")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_bb = _num(cur, "BB_MIDDLE")
+
+    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
+        return False, "MISSING_INDICATOR"
+
+    if prev_ma5 <= prev_bb and cur_ma5 > cur_bb:
+        return True, "BASIC_MA5_BB_UP_CROSS"
+    return False, "NO_BASIC_MA5_BB_CROSS_UP"
+
+
+def check_sell_condition_basic(frame: pd.DataFrame) -> tuple[bool, str]:
+    if len(frame) < 2:
+        return False, "INSUFFICIENT_BARS"
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    prev_ma5 = _num(prev, "MA_5")
+    cur_ma5 = _num(cur, "MA_5")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_bb = _num(cur, "BB_MIDDLE")
+
+    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
+        return False, "MISSING_INDICATOR"
+
+    if prev_ma5 >= prev_bb and cur_ma5 < cur_bb:
+        return True, "BASIC_MA5_BB_DOWN_CROSS"
+    return False, "NO_BASIC_MA5_BB_CROSS_DOWN"
+
+
+@dataclass
+class PaperStats:
+    trades: int = 0
+    wins: int = 0
+    losses: int = 0
+    pnl_sum_pct: float = 0.0
+    equity: float = 1.0
+
+
+class PaperStrategyTracker:
+    def __init__(self, name: str, mode: str):
+        self.name = name
+        self.mode = mode  # basic / multi
+        self.positions: dict[str, dict] = {}
+        self.traded_today: set[str] = set()
+        self.last_bar_seen: dict[str, pd.Timestamp] = {}
+        self.stats = PaperStats()
+
+    def _on_close(self, code: str, price: float, reason: str) -> None:
+        pos = self.positions.pop(code, None)
+        if pos is None:
+            return
+        entry = float(pos["entry_price"])
+        if entry <= 0:
+            return
+        pnl = (price / entry) - 1.0
+        self.stats.trades += 1
+        self.stats.pnl_sum_pct += pnl
+        self.stats.equity *= max(0.0, 1.0 + pnl)
+        if pnl > 0:
+            self.stats.wins += 1
+        else:
+            self.stats.losses += 1
+        log(f"[COMPARE-{self.name}] SELL | {code} | {reason} | pnl={pnl*100:.2f}%")
+
+    def on_bar(self, code: str, frame: pd.DataFrame, ts: pd.Timestamp, entry_allowed: bool) -> None:
+        if frame is None or frame.empty:
+            return
+        bar_time = frame.index[-1]
+        if self.last_bar_seen.get(code) == bar_time:
+            return
+        self.last_bar_seen[code] = bar_time
+        price = float(frame.iloc[-1]["close"])
+
+        if code in self.positions:
+            if self.mode == "basic":
+                sell_ok, reason = check_sell_condition_basic(frame)
+            else:
+                pos = self.positions[code]
+                entry = float(pos["entry_price"])
+                pnl_pct = (price / entry) - 1.0
+                pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
+                highest = float(pos.get("highest_price", price))
+                if pnl_pct <= STOP_LOSS_PERCENT:
+                    sell_ok, reason = True, f"STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}%"
+                else:
+                    peak_pnl = (highest / entry) - 1.0 if entry > 0 else 0.0
+                    giveback = peak_pnl - pnl_pct
+                    if ENABLE_TP_EXTENSION_TRAILING and peak_pnl >= TAKE_PROFIT_PERCENT:
+                        trail = TP_EXTENSION_TRAIL_FROM_PEAK
+                        ts_reason = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
+                    else:
+                        trail = TRAILING_STOP_FROM_PEAK
+                        ts_reason = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
+                    if peak_pnl > 0 and pnl_pct > 0 and giveback >= trail:
+                        sell_ok, reason = True, ts_reason
+                    else:
+                        held_seconds = (ts - pos["buy_time"]).total_seconds() if isinstance(pos.get("buy_time"), pd.Timestamp) else None
+                        sell_ok, reason = check_sell_condition(frame, pnl_pct, held_seconds)
+
+            if sell_ok:
+                self._on_close(code, price, reason)
+            return
+
+        if not entry_allowed:
+            return
+        if (not ALLOW_REBUY_SAME_CODE) and code in self.traded_today:
+            return
+
+        if self.mode == "basic":
+            buy_ok, reason = check_buy_condition_basic(frame)
+        else:
+            buy_ok, reason = check_buy_condition(frame, ts)
+
+        if not buy_ok:
+            return
+
+        self.positions[code] = {
+            "entry_price": float(price),
+            "highest_price": float(price),
+            "buy_time": ts,
+        }
+        self.traded_today.add(code)
+        log(f"[COMPARE-{self.name}] BUY  | {code} | {reason} | price={price:,.0f}")
+
+    def force_close_all(self, price_map: dict[str, float], reason: str) -> None:
+        for code in list(self.positions.keys()):
+            price = float(price_map.get(code) or self.positions[code].get("entry_price") or 0.0)
+            if price > 0:
+                self._on_close(code, price, reason)
+
+    def summary_dict(self) -> dict[str, float | int]:
+        trades = self.stats.trades
+        win_rate = (self.stats.wins / trades * 100.0) if trades else 0.0
+        avg_pnl = (self.stats.pnl_sum_pct / trades * 100.0) if trades else 0.0
+        total_pnl = self.stats.pnl_sum_pct * 100.0
+        return {
+            "trades": trades,
+            "wins": self.stats.wins,
+            "losses": self.stats.losses,
+            "win_rate": win_rate,
+            "avg_pnl_pct": avg_pnl,
+            "total_pnl_pct": total_pnl,
+            "equity": self.stats.equity,
+        }
+
+
+def append_daily_result_csv(row: dict[str, object], csv_path: Path = DAILY_RESULT_CSV) -> None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(row.keys())
+    write_header = not csv_path.exists()
+    with open(csv_path, "a", newline="", encoding="utf-8") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 class TradeRecord:
     def __init__(
         self,
@@ -875,22 +1044,28 @@ def simulate_date(
 
     selected_names = dict(names or {})
     picks = None if codes else load_picks(data_dir / PICKS_FILENAME)
+    watchlist_source = ""
     if codes:
         target_codes = {code.zfill(6) for code in codes}
         csv_files = {code: path for code, path in csv_files.items() if code in target_codes}
+        watchlist_source = "--codes"
         log(f"Filtered by --codes: {sorted(target_codes)}")
     elif picks:
         csv_files = {code: path for code, path in csv_files.items() if code in picks}
         selected_names.update({code: name for code, name in picks.items() if code not in selected_names})
+        watchlist_source = str(data_dir / PICKS_FILENAME)
         log(f"Loaded picks.txt ({len(picks)}): {sorted(picks.keys())}")
     else:
-        sample_codes = set(SAMPLE_CODE_MAP.keys())
-        matched = {code: path for code, path in csv_files.items() if code in sample_codes}
+        # picks.txt가 없으면 define_today_code.txt 교집합 우선, 없으면 날짜 폴더 전체 CSV 사용
+        today_map = selected_names
+        today_codes = set(today_map.keys())
+        matched = {code: path for code, path in csv_files.items() if code in today_codes}
         if matched:
             csv_files = matched
-            selected_names.update({code: name for code, name in SAMPLE_CODE_MAP.items() if code in matched})
-            log(f"picks.txt not found; using sample codes: {sorted(matched.keys())}")
+            watchlist_source = str(TODAY_CODE_FILE)
+            log(f"picks.txt not found; using define_today_code intersection: {sorted(matched.keys())}")
         else:
+            watchlist_source = f"{data_dir}/*.csv"
             log("picks.txt not found; using all CSV files in date folder")
 
     if not csv_files:
@@ -909,6 +1084,10 @@ def simulate_date(
         log("ERROR: No valid chart data loaded")
         return 1
 
+    log(f"Watchlist source: {watchlist_source}")
+    for code in sorted(frames.keys()):
+        log(f"WATCH | {code} | {selected_names.get(code, code)} | NXT={code in NXT_ELIGIBLE_CODES_FALLBACK}")
+
     target_date = datetime.strptime(date_str, "%Y%m%d").date()
     all_times = sorted({ts for df in frames.values() for ts in df.index if ts.date() == target_date})
     if not all_times:
@@ -916,6 +1095,8 @@ def simulate_date(
         return 1
 
     sim = Simulator(initial_capital=initial_capital)
+    compare_basic = PaperStrategyTracker(name="BASIC_CROSS", mode="basic")
+    compare_multi = PaperStrategyTracker(name="MULTI_FILTER", mode="multi")
     liq_state: dict[str, object] = {}
     signal_buy_bar: dict[str, pd.Timestamp] = {}
     signal_sell_bar: dict[str, pd.Timestamp] = {}
@@ -923,6 +1104,7 @@ def simulate_date(
 
     for ts in all_times:
         run_scheduled_liquidations(sim, frames, selected_names, ts, liq_state)
+        latest_price_map: dict[str, float] = {}
 
         for code, frame in frames.items():
             if ts not in frame.index:
@@ -938,8 +1120,25 @@ def simulate_date(
 
             cur = available.iloc[-1]
             price = float(cur["close"])
+            latest_price_map[code] = price
             session = classify_buy_session(ts)
             pos = sim.positions.get(code)
+
+            entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
+            compare_basic.on_bar(code, available, ts, entry_allowed=entry_allowed)
+            compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed)
+
+            log(
+                f"  [CHECK] {code}({selected_names.get(code, code)}) | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
+                f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
+                f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
+                f"K={_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
+                f"WR={_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
+                f"MACD={_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} HIST={_num(cur, 'MACD_HIST'):.2f} | "
+                f"ADX={_num(cur, 'ADX'):.1f} +DI={_num(cur, 'DI_PLUS'):.1f} -DI={_num(cur, 'DI_MINUS'):.1f} | "
+                f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
+                f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
+            )
 
             if pos is not None:
                 profit_pct = price / pos.buy_price - 1.0
@@ -947,10 +1146,12 @@ def simulate_date(
                 if profit_pct >= TAKE_PROFIT_PERCENT and not ENABLE_TP_EXTENSION_TRAILING:
                     sim.sell(code, price, ts, f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%", session)
                     signal_sell_bar[code] = ts
+                    log(f"  [SELL EXECUTED] {code} | TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}% | price={price:,.0f}")
                     continue
                 if profit_pct <= STOP_LOSS_PERCENT:
                     sim.sell(code, price, ts, f"STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}%", session)
                     signal_sell_bar[code] = ts
+                    log(f"  [SELL EXECUTED] {code} | STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}% | price={price:,.0f}")
                     continue
                 highest_price = float(pos.highest_price)
                 if highest_price > 0 and pos.buy_price > 0:
@@ -966,6 +1167,7 @@ def simulate_date(
                     if peak_pnl_pct > 0 and current_pnl_pct > 0 and giveback >= trail_threshold:
                         sim.sell(code, price, ts, reason_ts, session)
                         signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | {reason_ts} | price={price:,.0f}")
                         continue
 
                 if signal_sell_bar.get(code) == ts:
@@ -976,6 +1178,9 @@ def simulate_date(
                 if should_sell:
                     sim.sell(code, price, ts, reason, session)
                     signal_sell_bar[code] = ts
+                    log(f"  [SELL EVAL] {code} | OK {reason} | pnl={profit_pct*100:.2f}%")
+                elif reason.startswith("AUX_BLOCKED") or reason.startswith("MA5_BB_DOWN_CROSS_ARMED") or reason.startswith("BOX_RANGE_HOLD"):
+                    log(f"  [SELL HOLD] {code} | {reason}")
                 continue
 
             if not is_new_entry_allowed(ts, nxt_tradeable):
@@ -1040,11 +1245,24 @@ def simulate_date(
                 if sim.buy(code, selected_names.get(code, code), price, ts, session, reason):
                     near_cross_armed_at.pop(code, None)
                     signal_buy_bar[code] = ts
+                    log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
+                else:
+                    log(f"  [BUY REJECT] {code} | ORDER_REJECTED")
+            else:
+                log(f"  [BUY REJECT] {code} | {reason}")
 
             if reason.startswith("NO_MA5_BB_CROSS_UP") and not early_time_ok:
                 log(f"  [BUY HOLD] {code} | EARLY_NEAR_CROSS_BLOCKED_TIME_WINDOW")
             elif reason.startswith("NO_MA5_BB_CROSS_UP") and not early_liq_ok:
                 log(f"  [BUY HOLD] {code} | EARLY_NEAR_CROSS_BLOCKED_{early_liq_reason}")
+
+        if ts.time() >= REGULAR_FORCE_EXIT:
+            compare_basic.force_close_all(latest_price_map, "EOD_FLAT_1520_ALL")
+            compare_multi.force_close_all(latest_price_map, "EOD_FLAT_1520_ALL")
+
+        if ts.time() >= AFTERNOON_NXT_FORCE_EXIT:
+            compare_basic.force_close_all(latest_price_map, "EOD_FLAT_1959_ALL")
+            compare_multi.force_close_all(latest_price_map, "EOD_FLAT_1959_ALL")
 
     final_close_time = pd.Timestamp(datetime.combine(target_date, AFTERNOON_NXT_END))
     for code in list(sim.positions.keys()):
@@ -1101,6 +1319,10 @@ def simulate_date(
 
     total_sell_count = len(sell_trades)
     win_rate = len(wins) / total_sell_count * 100.0 if total_sell_count else 0.0
+    compare_basic.force_close_all(last_prices, "SESSION_END_FORCE")
+    compare_multi.force_close_all(last_prices, "SESSION_END_FORCE")
+    basic_stats = compare_basic.summary_dict()
+    multi_stats = compare_multi.summary_dict()
 
     raw(f"\n{'=' * 60}")
     raw("전체 결과 (R73 MA5-BB Cross)")
@@ -1115,6 +1337,21 @@ def simulate_date(
     raw(f"  승률         : {win_rate:.1f}%")
     raw(f"{'=' * 60}\n")
 
+    raw(f"{'=' * 60}")
+    raw("전략 비교 결과 (기본전략 vs 멀티필터)")
+    raw(f"{'─' * 60}")
+    raw(
+        f"  BASIC_CROSS  : trades={basic_stats['trades']} wins={basic_stats['wins']} losses={basic_stats['losses']} "
+        f"win_rate={basic_stats['win_rate']:.1f}% avg_pnl={basic_stats['avg_pnl_pct']:.2f}% "
+        f"total_pnl={basic_stats['total_pnl_pct']:.2f}% equity={basic_stats['equity']:.4f}"
+    )
+    raw(
+        f"  MULTI_FILTER : trades={multi_stats['trades']} wins={multi_stats['wins']} losses={multi_stats['losses']} "
+        f"win_rate={multi_stats['win_rate']:.1f}% avg_pnl={multi_stats['avg_pnl_pct']:.2f}% "
+        f"total_pnl={multi_stats['total_pnl_pct']:.2f}% equity={multi_stats['equity']:.4f}"
+    )
+    raw(f"{'=' * 60}\n")
+
     LAST_SIM_STATS = {
         "date": date_str,
         "initial_capital": float(initial_capital),
@@ -1127,7 +1364,41 @@ def simulate_date(
         "loss_count": int(len(losses)),
         "win_rate": float(win_rate),
         "traded_code_count": int(len(traded_codes)),
+        "compare_basic_trades": int(basic_stats["trades"]),
+        "compare_basic_total_pnl_pct": float(basic_stats["total_pnl_pct"]),
+        "compare_multi_trades": int(multi_stats["trades"]),
+        "compare_multi_total_pnl_pct": float(multi_stats["total_pnl_pct"]),
     }
+
+    append_daily_result_csv(
+        {
+            "date": date_str,
+            "initial_capital": float(initial_capital),
+            "final_value": float(final_value),
+            "realized_pnl": float(realized_pnl),
+            "total_pnl": float(total_pnl),
+            "total_pnl_pct": float(total_pnl_pct),
+            "sell_count": int(total_sell_count),
+            "win_count": int(len(wins)),
+            "loss_count": int(len(losses)),
+            "win_rate": float(win_rate),
+            "traded_code_count": int(len(traded_codes)),
+            "compare_basic_trades": int(basic_stats["trades"]),
+            "compare_basic_wins": int(basic_stats["wins"]),
+            "compare_basic_losses": int(basic_stats["losses"]),
+            "compare_basic_win_rate": float(basic_stats["win_rate"]),
+            "compare_basic_avg_pnl_pct": float(basic_stats["avg_pnl_pct"]),
+            "compare_basic_total_pnl_pct": float(basic_stats["total_pnl_pct"]),
+            "compare_basic_equity": float(basic_stats["equity"]),
+            "compare_multi_trades": int(multi_stats["trades"]),
+            "compare_multi_wins": int(multi_stats["wins"]),
+            "compare_multi_losses": int(multi_stats["losses"]),
+            "compare_multi_win_rate": float(multi_stats["win_rate"]),
+            "compare_multi_avg_pnl_pct": float(multi_stats["avg_pnl_pct"]),
+            "compare_multi_total_pnl_pct": float(multi_stats["total_pnl_pct"]),
+            "compare_multi_equity": float(multi_stats["equity"]),
+        }
+    )
 
     return 0
 
