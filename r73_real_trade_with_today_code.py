@@ -17,6 +17,7 @@ import inspect
 import logging
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 from typing import Optional
@@ -113,6 +114,7 @@ ACCOUNT_SYNC_INTERVAL_SECONDS = 90
 MIN_BARS_REQUIRED = 3  # 이전봉·현재봉 비교에 최소 3개 필요 (지표는 min_periods=1로 자체 보완)
 ALLOW_REBUY_SAME_CODE = False
 TRADE_COOLDOWN_MINUTES = 3
+COMPARE_LOG_INTERVAL_SECONDS = 300
 
 # ---------------------------------------------------------------------------
 # 세션 / 시간 상수
@@ -1028,6 +1030,191 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, held_seconds: floa
     return False, "NO_SELL_SIGNAL"
 
 
+def check_buy_condition_basic(frame: pd.DataFrame) -> tuple[bool, str]:
+    """Basic strategy: buy only on MA5 crossing above BB middle."""
+    if len(frame) < 3:
+        return False, "INSUFFICIENT_BARS"
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    prev_ma5 = _num(prev, "MA_5")
+    cur_ma5 = _num(cur, "MA_5")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_bb = _num(cur, "BB_MIDDLE")
+
+    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
+        return False, "MISSING_INDICATOR"
+
+    if prev_ma5 <= prev_bb and cur_ma5 > cur_bb:
+        return True, "BASIC_MA5_BB_UP_CROSS"
+    return False, "NO_BASIC_MA5_BB_CROSS_UP"
+
+
+def check_sell_condition_basic(frame: pd.DataFrame) -> tuple[bool, str]:
+    """Basic strategy: sell only on MA5 crossing below BB middle."""
+    if len(frame) < 2:
+        return False, "INSUFFICIENT_BARS"
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    prev_ma5 = _num(prev, "MA_5")
+    cur_ma5 = _num(cur, "MA_5")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_bb = _num(cur, "BB_MIDDLE")
+
+    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
+        return False, "MISSING_INDICATOR"
+
+    if prev_ma5 >= prev_bb and cur_ma5 < cur_bb:
+        return True, "BASIC_MA5_BB_DOWN_CROSS"
+    return False, "NO_BASIC_MA5_BB_CROSS_DOWN"
+
+
+@dataclass
+class PaperStats:
+    trades: int = 0
+    wins: int = 0
+    losses: int = 0
+    pnl_sum_pct: float = 0.0
+    equity: float = 1.0
+
+
+class PaperStrategyTracker:
+    """Runs paper-trade simulation per bar for strategy comparison logging."""
+
+    def __init__(self, name: str, mode: str):
+        self.name = name
+        self.mode = mode  # "basic" or "multi"
+        self.positions: dict[str, dict] = {}
+        self.traded_today: set[str] = set()
+        self.last_bar_seen: dict[str, pd.Timestamp] = {}
+        self.stats = PaperStats()
+
+    def reset_for_new_day(self) -> None:
+        self.positions.clear()
+        self.traded_today.clear()
+        self.last_bar_seen.clear()
+
+    def _on_close_position(self, code: str, now: datetime, price: float, reason: str) -> None:
+        pos = self.positions.pop(code, None)
+        if pos is None:
+            return
+
+        entry_price = float(pos["entry_price"])
+        if entry_price <= 0:
+            return
+
+        pnl = (price / entry_price) - 1.0
+        self.stats.trades += 1
+        self.stats.pnl_sum_pct += pnl
+        self.stats.equity *= max(0.0, 1.0 + pnl)
+        if pnl > 0:
+            self.stats.wins += 1
+        else:
+            self.stats.losses += 1
+
+        log(
+            f"[PAPER-{self.name}] SELL | {code} | {reason} | "
+            f"entry={entry_price:,.0f} exit={price:,.0f} pnl={pnl*100:.2f}%"
+        )
+
+    def _multi_sell_decision(self, frame: pd.DataFrame, now: datetime, code: str, price: float) -> tuple[bool, str]:
+        pos = self.positions.get(code)
+        if pos is None:
+            return False, "NO_POSITION"
+
+        entry_price = float(pos["entry_price"])
+        pnl_pct = (price / entry_price) - 1.0
+        pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
+        highest_price = float(pos.get("highest_price", price))
+
+        if pnl_pct <= STOP_LOSS_PERCENT:
+            return True, f"STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}%"
+
+        if pnl_pct >= TAKE_PROFIT_PERCENT and not ENABLE_TP_EXTENSION_TRAILING:
+            return True, f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
+
+        if highest_price > 0 and entry_price > 0:
+            peak_pnl_pct = (highest_price / entry_price) - 1.0
+            current_pnl_pct = pnl_pct
+            profit_giveback = peak_pnl_pct - current_pnl_pct
+            if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
+                trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
+                reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
+            else:
+                trail_threshold = TRAILING_STOP_FROM_PEAK
+                reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
+            if peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold:
+                return True, reason_ts
+
+        buy_time = pos.get("buy_time")
+        held_seconds = (now - buy_time).total_seconds() if isinstance(buy_time, datetime) else None
+        return check_sell_condition(frame, pnl_pct, held_seconds=held_seconds)
+
+    def on_bar(self, code: str, frame: pd.DataFrame, now: datetime, entry_allowed: bool) -> None:
+        if frame is None or frame.empty:
+            return
+        bar_time = frame.index[-1]
+        if self.last_bar_seen.get(code) == bar_time:
+            return
+        self.last_bar_seen[code] = bar_time
+
+        cur = frame.iloc[-1]
+        price = float(cur["close"])
+        pos = self.positions.get(code)
+
+        if pos is not None:
+            if self.mode == "basic":
+                sell_ok, sell_reason = check_sell_condition_basic(frame)
+            else:
+                sell_ok, sell_reason = self._multi_sell_decision(frame, now, code, price)
+
+            if sell_ok:
+                self._on_close_position(code, now, price, sell_reason)
+            return
+
+        if not entry_allowed:
+            return
+        if not ALLOW_REBUY_SAME_CODE and code in self.traded_today:
+            return
+
+        if self.mode == "basic":
+            buy_ok, buy_reason = check_buy_condition_basic(frame)
+        else:
+            buy_ok, buy_reason = check_buy_condition(frame, now)
+
+        if not buy_ok:
+            return
+
+        self.positions[code] = {
+            "entry_price": float(price),
+            "buy_time": now,
+            "highest_price": float(price),
+        }
+        self.traded_today.add(code)
+        log(f"[PAPER-{self.name}] BUY  | {code} | {buy_reason} | price={price:,.0f}")
+
+    def force_liquidate_all(self, now: datetime, reason: str, price_map: dict[str, float]) -> None:
+        for code in list(self.positions.keys()):
+            price = price_map.get(code)
+            if price is None:
+                pos = self.positions.get(code, {})
+                price = float(pos.get("highest_price") or pos.get("entry_price") or 0.0)
+            if price <= 0:
+                continue
+            self._on_close_position(code, now, float(price), reason)
+
+    def summary_line(self) -> str:
+        trades = self.stats.trades
+        win_rate = (self.stats.wins / trades * 100.0) if trades > 0 else 0.0
+        avg_pnl = (self.stats.pnl_sum_pct / trades * 100.0) if trades > 0 else 0.0
+        total_pnl = self.stats.pnl_sum_pct * 100.0
+        return (
+            f"{self.name}: trades={trades} wins={self.stats.wins} losses={self.stats.losses} "
+            f"win_rate={win_rate:.1f}% avg_pnl={avg_pnl:.2f}% total_pnl={total_pnl:.2f}% equity={self.stats.equity:.4f}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Trading API
 # ---------------------------------------------------------------------------
@@ -1304,28 +1491,16 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
     if not state["done_1520"] and current_time >= REGULAR_FORCE_EXIT:
         state["done_1520"] = True
         for code, pos in list(api.get_open_positions().items()):
-            if pos.get("buy_time", current_dt).date() != trade_date:
-                continue
-            if pos.get("buy_session") not in ("regular", "morning_nxt"):
-                continue
             price = float(pos.get("current_price") or pos["buy_price"])
-            buy_price = float(pos.get("buy_price") or 0)
-            if buy_price <= 0 or price <= buy_price:
-                log(f"  [CALL_AUCTION HOLD] {code} | NOT_IN_PROFIT | price={price:,.0f} buy={buy_price:,.0f}")
-                continue
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "CALL_AUCTION_TAKE_PROFIT_1520", nxt_map.get(code, False), price=price)
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_FLAT_1520_ALL", nxt_map.get(code, False), price=price)
 
     if not state["done_1959"] and current_time >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_1959"] = True
         for code, pos in list(api.get_open_positions().items()):
-            if pos.get("buy_time", current_dt).date() != trade_date:
-                continue
-            if pos.get("buy_session") != "afternoon_nxt":
-                continue
             price = float(pos.get("current_price") or pos["buy_price"])
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_NXT_1959", nxt_map.get(code, False), price=price)
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_FLAT_1959_ALL", nxt_map.get(code, False), price=price)
 
 
 # ---------------------------------------------------------------------------
@@ -1366,6 +1541,9 @@ def run(target_date: str | None = None) -> None:
     signal_sell_bar: dict[str, object] = {}
     near_cross_armed_at: dict[str, pd.Timestamp] = {}
     liquidation_state: dict = {}
+    paper_basic = PaperStrategyTracker(name="BASIC_CROSS", mode="basic")
+    paper_multi = PaperStrategyTracker(name="MULTI_FILTER", mode="multi")
+    last_compare_log_at: datetime | None = None
     current_trade_date = now.date()
 
     while True:
@@ -1377,6 +1555,8 @@ def run(target_date: str | None = None) -> None:
             signal_buy_bar.clear()
             signal_sell_bar.clear()
             near_cross_armed_at.clear()
+            paper_basic.reset_for_new_day()
+            paper_multi.reset_for_new_day()
 
         if not is_open_trading_day(current_dt):
             log("Market closed day. Stopping.")
@@ -1384,6 +1564,12 @@ def run(target_date: str | None = None) -> None:
 
         if current_dt.time() >= AFTERNOON_NXT_END:
             run_scheduled_liquidations(current_dt, api, nxt_map, liquidation_state)
+            last_price_map = {}
+            for code, pos in api.get_open_positions().items():
+                last_price_map[code] = float(pos.get("current_price") or pos.get("buy_price") or 0.0)
+            paper_basic.force_liquidate_all(current_dt, "SESSION_END_FORCE", last_price_map)
+            paper_multi.force_liquidate_all(current_dt, "SESSION_END_FORCE", last_price_map)
+            log(f"[PAPER-COMPARE] {paper_basic.summary_line()} || {paper_multi.summary_line()}")
             log("20:00 reached. Stopping.")
             break
 
@@ -1397,9 +1583,15 @@ def run(target_date: str | None = None) -> None:
         # 15:20~15:30 정규장 동시호가 구간은 종목별 시그널 체크를 건너뛰고
         # 동시호가 청산 로직(당일 매수 + 수익 구간)만 수행한다.
         if is_regular_call_auction(current_dt):
+            price_map = {}
+            for code, pos in api.get_open_positions().items():
+                price_map[code] = float(pos.get("current_price") or pos.get("buy_price") or 0.0)
+            paper_basic.force_liquidate_all(current_dt, "EOD_FLAT_1520_ALL", price_map)
+            paper_multi.force_liquidate_all(current_dt, "EOD_FLAT_1520_ALL", price_map)
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
 
+        latest_price_map: dict[str, float] = {}
         for code, name in watch_map.items():
             nxt_tradeable = nxt_map.get(code, False)
             if not can_trade_code_now(current_dt, nxt_tradeable):
@@ -1422,7 +1614,12 @@ def run(target_date: str | None = None) -> None:
             bar_time = frame.index[-1]
             cur = frame.iloc[-1]
             price = float(cur["close"])
+            latest_price_map[code] = price
             pos = api.get_open_positions().get(code)
+
+            entry_allowed = is_new_entry_allowed(current_dt, nxt_tradeable)
+            paper_basic.on_bar(code, frame, current_dt, entry_allowed=entry_allowed)
+            paper_multi.on_bar(code, frame, current_dt, entry_allowed=entry_allowed)
 
             log(
                 f"  [CHECK] {code}({name}) | {current_dt:%H:%M:%S} | bars={len(frame)} price={price:,.0f} | "
@@ -1447,6 +1644,7 @@ def run(target_date: str | None = None) -> None:
                 if pnl_pct >= TAKE_PROFIT_PERCENT:
                     if ENABLE_TP_EXTENSION_TRAILING:
                         # TP 도달 → 즉시 익절 대신 고점 트레일링 모드로 전환
+                        highest_price = float(pos.get("highest_price", price))
                         log(
                             f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= TP {TAKE_PROFIT_PERCENT*100:.1f}% | "
                             f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
@@ -1612,6 +1810,17 @@ def run(target_date: str | None = None) -> None:
                     signal_buy_bar[code] = bar_time
 
                 log("=" * 110)
+
+        if current_dt.time() >= AFTERNOON_NXT_FORCE_EXIT:
+            paper_basic.force_liquidate_all(current_dt, "EOD_FLAT_1959_ALL", latest_price_map)
+            paper_multi.force_liquidate_all(current_dt, "EOD_FLAT_1959_ALL", latest_price_map)
+
+        if (
+            last_compare_log_at is None
+            or (current_dt - last_compare_log_at).total_seconds() >= COMPARE_LOG_INTERVAL_SECONDS
+        ):
+            log(f"[PAPER-COMPARE] {paper_basic.summary_line()} || {paper_multi.summary_line()}")
+            last_compare_log_at = current_dt
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
