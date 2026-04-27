@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""R73 real trading script - MA5/BB middle cross strategy with multi indicators.
+"""R73 real trading script - live price / BB middle cross strategy with multi indicators.
 
 Core idea:
-1) Buy near the timing where MA5 crosses above BB middle.
-2) Sell near the timing where MA5 crosses below BB middle.
+1) Buy when live price crosses above BB middle and stays there long enough.
+2) Sell when live price crosses below BB middle and stays there long enough.
 3) Use Stochastic Fast, RSI, Williams %R as confirmation filters.
 4) Use take-profit, stop-loss, and trailing-stop for risk control.
 
@@ -17,7 +17,6 @@ import inspect
 import logging
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 from typing import Optional
@@ -81,8 +80,7 @@ AUX_SELL_MIN_PNL_SCORE4 = 0.000  # score>=4 -> 손익분기 이상
 MA5_BB_DOWN_CROSS_IMMEDIATE_PNL = -0.007     # -0.7% 이하 손실이면 즉시 매도 허용
 MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE = 2         # 보조 약세 점수 높으면 즉시 매도 허용
 MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE = 1       # 다음 바 확인 매도 최소 보조 점수
-MA5_BB_DOWN_CROSS_MIN_PNL = 0.010             # 데드크로스 계열 매도는 최소 +1.0% 이상에서만 허용
-TECH_SELL_MIN_HOLD_SECONDS = 300              # 기술적 매도(데드크로스/보조반전) 최소 보유 시간
+MA5_BB_DOWN_CROSS_MIN_PNL = 0.000             # 데드크로스 계열 매도는 최소 손익(기본 0%=본전) 이상에서만 허용
 # 박스권 구간에서는 기술적 매도 신호를 보류하고, 손절/익절(및 트레일링)만 허용
 ENABLE_BOX_RANGE_HOLD_TECH_SELL = True
 # 익절 기준 도달 후 즉시 매도 대신 고점 트레일링 모드로 전환
@@ -99,7 +97,6 @@ NEAR_CROSS_EARLY_GAP_MAX = 0.0006      # ARM 이후 조기진입 허용 gap 0.06
 NEAR_CROSS_EARLY_MA_RISE_MIN = 0.0010  # ARM 이후 조기진입 최소 MA5 상승률 (0.10%)
 NEAR_CROSS_ARM_EXPIRE_BARS = 2         # ARM 유효 기간(3분봉 기준 바 개수)
 # 기본 원칙은 MA5 상향돌파 우선. 예외 경로는 특정 시간창에서만 제한적으로 허용.
-REQUIRE_STRICT_BUY_GOLDEN_CROSS = True
 ENABLE_NEAR_CROSS_ARM = True
 ENABLE_EARLY_NEAR_CROSS_ENTRY = True
 EARLY_NEAR_CROSS_ALLOWED_START = dt_time(9, 0)
@@ -110,11 +107,13 @@ EARLY_NEAR_CROSS_MIN_VOLUME = 800
 EARLY_NEAR_CROSS_MIN_VOL_MA = 500
 EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
 POLL_INTERVAL_SECONDS = 20
+LIVE_PRICE_BB_BUFFER_PCT = 0.0008      # 현재가가 BB 중간선 대비 0.08% 이상 넘어야 유효 돌파로 인정
+LIVE_PRICE_CROSS_CONFIRM_POLLS = 3      # 20초 폴링 기준 3회 연속 확인
+LIVE_PRICE_CROSS_CONFIRM_SECONDS = 40   # 첫 감지 후 최소 40초 유지
 ACCOUNT_SYNC_INTERVAL_SECONDS = 90
 MIN_BARS_REQUIRED = 3  # 이전봉·현재봉 비교에 최소 3개 필요 (지표는 min_periods=1로 자체 보완)
 ALLOW_REBUY_SAME_CODE = False
 TRADE_COOLDOWN_MINUTES = 3
-COMPARE_LOG_INTERVAL_SECONDS = 300
 
 # ---------------------------------------------------------------------------
 # 세션 / 시간 상수
@@ -549,6 +548,142 @@ def fetch_3min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
     return None
 
 
+def fetch_live_price(code: str, now: datetime, nxt_tradeable: bool) -> float | None:
+    candidates = ["NX", "UN", "J"] if (is_nxt_session(now) and nxt_tradeable) else ["J", "UN"]
+
+    for market_div in candidates:
+        try:
+            quote_df = dsf.inquire_price(
+                env_dv="real",
+                fid_cond_mrkt_div_code=market_div,
+                fid_input_iscd=code,
+            )
+        except Exception as exc:
+            log(f"WARNING: live price fetch failed for {code} ({market_div}): {exc}")
+            continue
+
+        if quote_df is None or quote_df.empty:
+            continue
+
+        row = quote_df.iloc[-1]
+        for key in ("stck_prpr", "prpr"):
+            try:
+                value = float(row.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+
+    return None
+
+
+def update_live_price_cross_state(
+    cross_state: dict[str, dict],
+    code: str,
+    now: datetime,
+    live_price: float,
+    bb_middle: float,
+) -> dict[str, object]:
+    relation = "on"
+    upper_trigger = bb_middle * (1.0 + LIVE_PRICE_BB_BUFFER_PCT)
+    lower_trigger = bb_middle * (1.0 - LIVE_PRICE_BB_BUFFER_PCT)
+
+    if live_price >= upper_trigger:
+        relation = "above"
+    elif live_price <= lower_trigger:
+        relation = "below"
+
+    tracker = cross_state.get(code)
+    if tracker is None:
+        tracker = {
+            "confirmed_relation": relation if relation in {"above", "below"} else None,
+            "pending": None,
+        }
+        cross_state[code] = tracker
+        return {
+            "relation": relation,
+            "confirmed_relation": tracker["confirmed_relation"],
+            "pending_side": None,
+            "pending_count": 0,
+            "pending_seconds": 0.0,
+            "signal": None,
+            "upper_trigger": upper_trigger,
+            "lower_trigger": lower_trigger,
+        }
+
+    confirmed_relation = tracker.get("confirmed_relation")
+    pending = tracker.get("pending")
+
+    if relation not in {"above", "below"}:
+        tracker["pending"] = None
+        return {
+            "relation": relation,
+            "confirmed_relation": confirmed_relation,
+            "pending_side": None,
+            "pending_count": 0,
+            "pending_seconds": 0.0,
+            "signal": None,
+            "upper_trigger": upper_trigger,
+            "lower_trigger": lower_trigger,
+        }
+
+    if relation == confirmed_relation:
+        tracker["pending"] = None
+        return {
+            "relation": relation,
+            "confirmed_relation": confirmed_relation,
+            "pending_side": None,
+            "pending_count": 0,
+            "pending_seconds": 0.0,
+            "signal": None,
+            "upper_trigger": upper_trigger,
+            "lower_trigger": lower_trigger,
+        }
+
+    if pending is None or pending.get("side") != relation:
+        tracker["pending"] = {"side": relation, "started_at": now, "count": 1}
+        return {
+            "relation": relation,
+            "confirmed_relation": confirmed_relation,
+            "pending_side": relation,
+            "pending_count": 1,
+            "pending_seconds": 0.0,
+            "signal": None,
+            "upper_trigger": upper_trigger,
+            "lower_trigger": lower_trigger,
+        }
+
+    pending["count"] = int(pending.get("count", 0)) + 1
+    pending_seconds = max(0.0, (now - pending["started_at"]).total_seconds())
+    signal = None
+
+    if pending["count"] >= LIVE_PRICE_CROSS_CONFIRM_POLLS and pending_seconds >= LIVE_PRICE_CROSS_CONFIRM_SECONDS:
+        tracker["confirmed_relation"] = relation
+        tracker["pending"] = None
+        signal = "cross_up" if relation == "above" else "cross_down"
+        return {
+            "relation": relation,
+            "confirmed_relation": relation,
+            "pending_side": None,
+            "pending_count": 0,
+            "pending_seconds": pending_seconds,
+            "signal": signal,
+            "upper_trigger": upper_trigger,
+            "lower_trigger": lower_trigger,
+        }
+
+    return {
+        "relation": relation,
+        "confirmed_relation": confirmed_relation,
+        "pending_side": relation,
+        "pending_count": int(pending["count"]),
+        "pending_seconds": pending_seconds,
+        "signal": None,
+        "upper_trigger": upper_trigger,
+        "lower_trigger": lower_trigger,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 지표 계산
 # ---------------------------------------------------------------------------
@@ -635,17 +770,27 @@ def _num(candle: pd.Series, key: str) -> float:
     return float(value) if value is not None and not pd.isna(value) else float("nan")
 
 
-def _buy_reject_detail(buy_reason: str, cur: pd.Series, prev: pd.Series) -> str:
+def _buy_reject_detail(buy_reason: str, cur: pd.Series, prev: pd.Series, live_price: float | None = None, cross_info: dict | None = None) -> str:
     """Returns reject reason + indicator context for every reject type."""
     prev_ma5 = _num(prev, "MA_5");  cur_ma5  = _num(cur,  "MA_5")
     prev_bb  = _num(prev, "BB_MIDDLE"); cur_bb = _num(cur, "BB_MIDDLE")
 
-    if buy_reason == "NO_MA5_BB_CROSS_UP":
+    if buy_reason == "NO_LIVE_PRICE_BB_CROSS_UP":
+        live_part = f"live={live_price:,.0f} " if live_price is not None and pd.notna(live_price) else ""
+        if cross_info:
+            pending_side = cross_info.get("pending_side")
+            pending_count = cross_info.get("pending_count", 0)
+            pending_seconds = cross_info.get("pending_seconds", 0.0)
+            return (
+                f"{buy_reason} | {live_part}BB_MID {cur_bb:.1f} upper={float(cross_info.get('upper_trigger', cur_bb)):.1f} | "
+                f"relation={cross_info.get('relation')} pending={pending_side} "
+                f"count={pending_count}/{LIVE_PRICE_CROSS_CONFIRM_POLLS} "
+                f"seconds={pending_seconds:.0f}/{LIVE_PRICE_CROSS_CONFIRM_SECONDS}"
+            )
         return (
             f"{buy_reason} | "
-            f"MA5 {prev_ma5:.1f}→{cur_ma5:.1f} "
-            f"BB_MID {prev_bb:.1f}→{cur_bb:.1f} "
-            f"(need prev_MA5≤prev_BB and cur_MA5>cur_BB)"
+            f"{live_part}BB_MID {prev_bb:.1f}→{cur_bb:.1f} "
+            f"(need live price to stay above BB middle long enough)"
         )
 
     if buy_reason == "BB_MIDDLE_FALLING":
@@ -877,7 +1022,7 @@ def _is_box_range_hold_zone(frame: pd.DataFrame) -> tuple[bool, str]:
     return is_box, f"RANGE_{range_pct*100:.2f}%_BBW_{bb_width_pct*100:.2f}%"
 
 
-def check_buy_condition(frame: pd.DataFrame, now: datetime) -> tuple[bool, str]:
+def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
     if len(frame) < 3:
         return False, "INSUFFICIENT_BARS"
 
@@ -892,9 +1037,11 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime) -> tuple[bool, str]:
     if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
         return False, "MISSING_INDICATOR"
 
-    ma5_cross = prev_ma5 <= prev_bb and cur_ma5 > cur_bb
-    if not ma5_cross:
-        return False, "NO_MA5_BB_CROSS_UP"
+    if cross_info.get("signal") != "cross_up":
+        return False, "NO_LIVE_PRICE_BB_CROSS_UP"
+
+    if live_price <= cur_bb:
+        return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
 
     # 모멘텀 방향 확인
     if cur_bb < prev_bb:
@@ -902,8 +1049,8 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime) -> tuple[bool, str]:
     if cur_ma5 < prev_ma5:
         return False, "MA5_FALLING"
 
-    # 양봉 우선
-    if float(cur["close"]) <= float(cur["open"]):
+    # 현재가 기준으로도 시가 위에 있어야 추격 매수 위험이 낮음
+    if live_price <= float(cur["open"]):
         return False, "NOT_BULLISH"
 
     # 과열 추격 매수 방지 1) Stochastic 과열 구간
@@ -943,15 +1090,12 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime) -> tuple[bool, str]:
     if support_score < 3:
         return False, f"LOW_SCORE_{support_score}"
 
-    return True, f"MA5_BB_UP_CROSS_SCORE_{support_score}"
+    return True, f"LIVE_PRICE_BB_UP_CROSS_SCORE_{support_score}"
 
 
-def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, held_seconds: float | None = None) -> tuple[bool, str]:
+def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
     if len(frame) < 2:
         return False, "INSUFFICIENT_BARS"
-
-    if held_seconds is not None and held_seconds < TECH_SELL_MIN_HOLD_SECONDS:
-        return False, f"TECH_SELL_MIN_HOLD_{held_seconds:.0f}s_LT_{TECH_SELL_MIN_HOLD_SECONDS}s"
 
     if ENABLE_BOX_RANGE_HOLD_TECH_SELL and STOP_LOSS_PERCENT < pnl_pct < TAKE_PROFIT_PERCENT:
         is_box, box_info = _is_box_range_hold_zone(frame)
@@ -966,51 +1110,22 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, held_seconds: floa
     prev_bb = _num(prev, "BB_MIDDLE")
     cur_bb = _num(cur, "BB_MIDDLE")
 
-    ma5_dead = (
-        not any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb))
-        and prev_ma5 >= prev_bb
-        and cur_ma5 < cur_bb
-    )
+    price_cross_down = cross_info.get("signal") == "cross_down" and live_price < cur_bb
 
-    if ma5_dead:
+    if price_cross_down:
         if pnl_pct < MA5_BB_DOWN_CROSS_MIN_PNL:
             return False, (
-                f"MA5_BB_DOWN_CROSS_BLOCKED_PNL_{pnl_pct*100:.2f}%"
+                f"LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_PNL_{pnl_pct*100:.2f}%"
                 f"_LT_{MA5_BB_DOWN_CROSS_MIN_PNL*100:.2f}%"
             )
 
         score = _sell_support_score(cur, prev)
-        # 급락/약세 강도 충분 시에는 기존처럼 즉시 매도
         if pnl_pct <= MA5_BB_DOWN_CROSS_IMMEDIATE_PNL or score >= MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE:
             if score >= 1:
-                return True, f"MA5_BB_DOWN_CROSS_CONFIRMED_{score}"
-            return True, "MA5_BB_DOWN_CROSS"
+                return True, f"LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_{score}"
+            return True, "LIVE_PRICE_BB_DOWN_CROSS"
 
-        # 일반 구간은 즉시 매도하지 않고 다음 바에서 하방 유지 여부를 확인
-        return False, f"MA5_BB_DOWN_CROSS_ARMED_{score}"
-
-    # 직전 바에서 데드크로스가 발생했고, 현재 바에서도 하방(MA5<BB)이 유지되면 확인 매도
-    if len(frame) >= 3:
-        prev2 = frame.iloc[-3]
-        prev2_ma5 = _num(prev2, "MA_5")
-        prev2_bb = _num(prev2, "BB_MIDDLE")
-        prev_cross = (
-            not any(pd.isna(v) for v in (prev2_ma5, prev_ma5, prev2_bb, prev_bb))
-            and prev2_ma5 >= prev2_bb
-            and prev_ma5 < prev_bb
-        )
-        cur_below = not any(pd.isna(v) for v in (cur_ma5, cur_bb)) and cur_ma5 < cur_bb
-        if prev_cross and cur_below:
-            if pnl_pct < MA5_BB_DOWN_CROSS_MIN_PNL:
-                return False, (
-                    f"MA5_BB_DOWN_CROSS_NEXT_BAR_BLOCKED_PNL_{pnl_pct*100:.2f}%"
-                    f"_LT_{MA5_BB_DOWN_CROSS_MIN_PNL*100:.2f}%"
-                )
-
-            score = _sell_support_score(cur, prev)
-            if score >= MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE:
-                return True, f"MA5_BB_DOWN_CROSS_NEXT_BAR_{score}"
-            return True, "MA5_BB_DOWN_CROSS_NEXT_BAR"
+        return False, f"LIVE_PRICE_BB_DOWN_CROSS_WEAK_SCORE_{score}"
 
     # 보조지표 하락 전환 + 점수별 최소 수익률 게이트
     score = _sell_support_score(cur, prev)
@@ -1028,191 +1143,6 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, held_seconds: floa
         return False, f"AUX_BLOCKED_SCORE_{score}_PNL_{pnl_pct*100:.2f}%_LT_{min_pnl_req*100:.2f}%"
 
     return False, "NO_SELL_SIGNAL"
-
-
-def check_buy_condition_basic(frame: pd.DataFrame) -> tuple[bool, str]:
-    """Basic strategy: buy only on MA5 crossing above BB middle."""
-    if len(frame) < 3:
-        return False, "INSUFFICIENT_BARS"
-
-    cur = frame.iloc[-1]
-    prev = frame.iloc[-2]
-    prev_ma5 = _num(prev, "MA_5")
-    cur_ma5 = _num(cur, "MA_5")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_bb = _num(cur, "BB_MIDDLE")
-
-    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
-        return False, "MISSING_INDICATOR"
-
-    if prev_ma5 <= prev_bb and cur_ma5 > cur_bb:
-        return True, "BASIC_MA5_BB_UP_CROSS"
-    return False, "NO_BASIC_MA5_BB_CROSS_UP"
-
-
-def check_sell_condition_basic(frame: pd.DataFrame) -> tuple[bool, str]:
-    """Basic strategy: sell only on MA5 crossing below BB middle."""
-    if len(frame) < 2:
-        return False, "INSUFFICIENT_BARS"
-
-    cur = frame.iloc[-1]
-    prev = frame.iloc[-2]
-    prev_ma5 = _num(prev, "MA_5")
-    cur_ma5 = _num(cur, "MA_5")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_bb = _num(cur, "BB_MIDDLE")
-
-    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
-        return False, "MISSING_INDICATOR"
-
-    if prev_ma5 >= prev_bb and cur_ma5 < cur_bb:
-        return True, "BASIC_MA5_BB_DOWN_CROSS"
-    return False, "NO_BASIC_MA5_BB_CROSS_DOWN"
-
-
-@dataclass
-class PaperStats:
-    trades: int = 0
-    wins: int = 0
-    losses: int = 0
-    pnl_sum_pct: float = 0.0
-    equity: float = 1.0
-
-
-class PaperStrategyTracker:
-    """Runs paper-trade simulation per bar for strategy comparison logging."""
-
-    def __init__(self, name: str, mode: str):
-        self.name = name
-        self.mode = mode  # "basic" or "multi"
-        self.positions: dict[str, dict] = {}
-        self.traded_today: set[str] = set()
-        self.last_bar_seen: dict[str, pd.Timestamp] = {}
-        self.stats = PaperStats()
-
-    def reset_for_new_day(self) -> None:
-        self.positions.clear()
-        self.traded_today.clear()
-        self.last_bar_seen.clear()
-
-    def _on_close_position(self, code: str, now: datetime, price: float, reason: str) -> None:
-        pos = self.positions.pop(code, None)
-        if pos is None:
-            return
-
-        entry_price = float(pos["entry_price"])
-        if entry_price <= 0:
-            return
-
-        pnl = (price / entry_price) - 1.0
-        self.stats.trades += 1
-        self.stats.pnl_sum_pct += pnl
-        self.stats.equity *= max(0.0, 1.0 + pnl)
-        if pnl > 0:
-            self.stats.wins += 1
-        else:
-            self.stats.losses += 1
-
-        log(
-            f"[PAPER-{self.name}] SELL | {code} | {reason} | "
-            f"entry={entry_price:,.0f} exit={price:,.0f} pnl={pnl*100:.2f}%"
-        )
-
-    def _multi_sell_decision(self, frame: pd.DataFrame, now: datetime, code: str, price: float) -> tuple[bool, str]:
-        pos = self.positions.get(code)
-        if pos is None:
-            return False, "NO_POSITION"
-
-        entry_price = float(pos["entry_price"])
-        pnl_pct = (price / entry_price) - 1.0
-        pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
-        highest_price = float(pos.get("highest_price", price))
-
-        if pnl_pct <= STOP_LOSS_PERCENT:
-            return True, f"STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}%"
-
-        if pnl_pct >= TAKE_PROFIT_PERCENT and not ENABLE_TP_EXTENSION_TRAILING:
-            return True, f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
-
-        if highest_price > 0 and entry_price > 0:
-            peak_pnl_pct = (highest_price / entry_price) - 1.0
-            current_pnl_pct = pnl_pct
-            profit_giveback = peak_pnl_pct - current_pnl_pct
-            if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
-                trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
-                reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
-            else:
-                trail_threshold = TRAILING_STOP_FROM_PEAK
-                reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
-            if peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold:
-                return True, reason_ts
-
-        buy_time = pos.get("buy_time")
-        held_seconds = (now - buy_time).total_seconds() if isinstance(buy_time, datetime) else None
-        return check_sell_condition(frame, pnl_pct, held_seconds=held_seconds)
-
-    def on_bar(self, code: str, frame: pd.DataFrame, now: datetime, entry_allowed: bool) -> None:
-        if frame is None or frame.empty:
-            return
-        bar_time = frame.index[-1]
-        if self.last_bar_seen.get(code) == bar_time:
-            return
-        self.last_bar_seen[code] = bar_time
-
-        cur = frame.iloc[-1]
-        price = float(cur["close"])
-        pos = self.positions.get(code)
-
-        if pos is not None:
-            if self.mode == "basic":
-                sell_ok, sell_reason = check_sell_condition_basic(frame)
-            else:
-                sell_ok, sell_reason = self._multi_sell_decision(frame, now, code, price)
-
-            if sell_ok:
-                self._on_close_position(code, now, price, sell_reason)
-            return
-
-        if not entry_allowed:
-            return
-        if not ALLOW_REBUY_SAME_CODE and code in self.traded_today:
-            return
-
-        if self.mode == "basic":
-            buy_ok, buy_reason = check_buy_condition_basic(frame)
-        else:
-            buy_ok, buy_reason = check_buy_condition(frame, now)
-
-        if not buy_ok:
-            return
-
-        self.positions[code] = {
-            "entry_price": float(price),
-            "buy_time": now,
-            "highest_price": float(price),
-        }
-        self.traded_today.add(code)
-        log(f"[PAPER-{self.name}] BUY  | {code} | {buy_reason} | price={price:,.0f}")
-
-    def force_liquidate_all(self, now: datetime, reason: str, price_map: dict[str, float]) -> None:
-        for code in list(self.positions.keys()):
-            price = price_map.get(code)
-            if price is None:
-                pos = self.positions.get(code, {})
-                price = float(pos.get("highest_price") or pos.get("entry_price") or 0.0)
-            if price <= 0:
-                continue
-            self._on_close_position(code, now, float(price), reason)
-
-    def summary_line(self) -> str:
-        trades = self.stats.trades
-        win_rate = (self.stats.wins / trades * 100.0) if trades > 0 else 0.0
-        avg_pnl = (self.stats.pnl_sum_pct / trades * 100.0) if trades > 0 else 0.0
-        total_pnl = self.stats.pnl_sum_pct * 100.0
-        return (
-            f"{self.name}: trades={trades} wins={self.stats.wins} losses={self.stats.losses} "
-            f"win_rate={win_rate:.1f}% avg_pnl={avg_pnl:.2f}% total_pnl={total_pnl:.2f}% equity={self.stats.equity:.4f}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1491,16 +1421,28 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
     if not state["done_1520"] and current_time >= REGULAR_FORCE_EXIT:
         state["done_1520"] = True
         for code, pos in list(api.get_open_positions().items()):
+            if pos.get("buy_time", current_dt).date() != trade_date:
+                continue
+            if pos.get("buy_session") not in ("regular", "morning_nxt"):
+                continue
             price = float(pos.get("current_price") or pos["buy_price"])
+            buy_price = float(pos.get("buy_price") or 0)
+            if buy_price <= 0 or price <= buy_price:
+                log(f"  [CALL_AUCTION HOLD] {code} | NOT_IN_PROFIT | price={price:,.0f} buy={buy_price:,.0f}")
+                continue
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_FLAT_1520_ALL", nxt_map.get(code, False), price=price)
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, "CALL_AUCTION_TAKE_PROFIT_1520", nxt_map.get(code, False), price=price)
 
     if not state["done_1959"] and current_time >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_1959"] = True
         for code, pos in list(api.get_open_positions().items()):
+            if pos.get("buy_time", current_dt).date() != trade_date:
+                continue
+            if pos.get("buy_session") != "afternoon_nxt":
+                continue
             price = float(pos.get("current_price") or pos["buy_price"])
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_FLAT_1959_ALL", nxt_map.get(code, False), price=price)
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_NXT_1959", nxt_map.get(code, False), price=price)
 
 
 # ---------------------------------------------------------------------------
@@ -1532,18 +1474,19 @@ def run(target_date: str | None = None) -> None:
     for code, name in watch_map.items():
         log(f"WATCH | {code} | {name} | NXT={nxt_map[code]}")
 
-    log("Strategy: MA5 cross over BB middle + Stoch/RSI/Williams confirmation")
+    log("Strategy: live price cross over buffered BB middle + Stoch/RSI/Williams confirmation")
+    log(
+        f"Live-cross filter: BB buffer={LIVE_PRICE_BB_BUFFER_PCT*100:.3f}% | "
+        f"confirm polls={LIVE_PRICE_CROSS_CONFIRM_POLLS} | confirm seconds={LIVE_PRICE_CROSS_CONFIRM_SECONDS}"
+    )
     log(f"TP={TAKE_PROFIT_PERCENT*100:.1f}% | SL={STOP_LOSS_PERCENT*100:.1f}% | Trail={TRAILING_STOP_FROM_PEAK*100:.1f}%")
 
     api = TradingAPI()
     traded_today: set[str] = set()
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
-    near_cross_armed_at: dict[str, pd.Timestamp] = {}
+    live_price_cross_state: dict[str, dict] = {}
     liquidation_state: dict = {}
-    paper_basic = PaperStrategyTracker(name="BASIC_CROSS", mode="basic")
-    paper_multi = PaperStrategyTracker(name="MULTI_FILTER", mode="multi")
-    last_compare_log_at: datetime | None = None
     current_trade_date = now.date()
 
     while True:
@@ -1554,9 +1497,7 @@ def run(target_date: str | None = None) -> None:
             traded_today.clear()
             signal_buy_bar.clear()
             signal_sell_bar.clear()
-            near_cross_armed_at.clear()
-            paper_basic.reset_for_new_day()
-            paper_multi.reset_for_new_day()
+            live_price_cross_state.clear()
 
         if not is_open_trading_day(current_dt):
             log("Market closed day. Stopping.")
@@ -1564,12 +1505,6 @@ def run(target_date: str | None = None) -> None:
 
         if current_dt.time() >= AFTERNOON_NXT_END:
             run_scheduled_liquidations(current_dt, api, nxt_map, liquidation_state)
-            last_price_map = {}
-            for code, pos in api.get_open_positions().items():
-                last_price_map[code] = float(pos.get("current_price") or pos.get("buy_price") or 0.0)
-            paper_basic.force_liquidate_all(current_dt, "SESSION_END_FORCE", last_price_map)
-            paper_multi.force_liquidate_all(current_dt, "SESSION_END_FORCE", last_price_map)
-            log(f"[PAPER-COMPARE] {paper_basic.summary_line()} || {paper_multi.summary_line()}")
             log("20:00 reached. Stopping.")
             break
 
@@ -1583,15 +1518,9 @@ def run(target_date: str | None = None) -> None:
         # 15:20~15:30 정규장 동시호가 구간은 종목별 시그널 체크를 건너뛰고
         # 동시호가 청산 로직(당일 매수 + 수익 구간)만 수행한다.
         if is_regular_call_auction(current_dt):
-            price_map = {}
-            for code, pos in api.get_open_positions().items():
-                price_map[code] = float(pos.get("current_price") or pos.get("buy_price") or 0.0)
-            paper_basic.force_liquidate_all(current_dt, "EOD_FLAT_1520_ALL", price_map)
-            paper_multi.force_liquidate_all(current_dt, "EOD_FLAT_1520_ALL", price_map)
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
 
-        latest_price_map: dict[str, float] = {}
         for code, name in watch_map.items():
             nxt_tradeable = nxt_map.get(code, False)
             if not can_trade_code_now(current_dt, nxt_tradeable):
@@ -1613,17 +1542,23 @@ def run(target_date: str | None = None) -> None:
 
             bar_time = frame.index[-1]
             cur = frame.iloc[-1]
-            price = float(cur["close"])
-            latest_price_map[code] = price
+            price = fetch_live_price(code, current_dt, nxt_tradeable)
+            if price is None or price <= 0:
+                price = float(cur["close"])
+
+            cross_info = update_live_price_cross_state(
+                live_price_cross_state,
+                code,
+                current_dt,
+                float(price),
+                _num(cur, "BB_MIDDLE"),
+            )
             pos = api.get_open_positions().get(code)
 
-            entry_allowed = is_new_entry_allowed(current_dt, nxt_tradeable)
-            paper_basic.on_bar(code, frame, current_dt, entry_allowed=entry_allowed)
-            paper_multi.on_bar(code, frame, current_dt, entry_allowed=entry_allowed)
-
             log(
-                f"  [CHECK] {code}({name}) | {current_dt:%H:%M:%S} | bars={len(frame)} price={price:,.0f} | "
+                f"  [CHECK] {code}({name}) | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} bar_close={float(cur['close']):,.0f} | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
+                f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
                 f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                 f"K={_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
                 f"WR={_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
@@ -1634,7 +1569,6 @@ def run(target_date: str | None = None) -> None:
             )
 
             if pos is not None and pos.get("quantity", 0) > 0:
-                near_cross_armed_at.pop(code, None)
                 entry_price = float(pos["buy_price"])
                 pnl_pct = (price / entry_price) - 1.0
 
@@ -1644,7 +1578,6 @@ def run(target_date: str | None = None) -> None:
                 if pnl_pct >= TAKE_PROFIT_PERCENT:
                     if ENABLE_TP_EXTENSION_TRAILING:
                         # TP 도달 → 즉시 익절 대신 고점 트레일링 모드로 전환
-                        highest_price = float(pos.get("highest_price", price))
                         log(
                             f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= TP {TAKE_PROFIT_PERCENT*100:.1f}% | "
                             f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
@@ -1697,15 +1630,12 @@ def run(target_date: str | None = None) -> None:
                     continue
 
                 prev_bar = frame.iloc[-2]
-                buy_time = pos.get("buy_time")
-                held_seconds = (current_dt - buy_time).total_seconds() if isinstance(buy_time, datetime) else None
-                sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, held_seconds=held_seconds)
+                sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, price, cross_info)
                 if sell_ok:
                     if api.place_sell_order(code, int(pos["quantity"]), current_dt, sell_reason, nxt_tradeable, price=price):
                         log(
                             f"  [SELL EVAL] {code} | OK {sell_reason} | {current_dt:%H:%M:%S} | "
-                            f"MA5 {_num(prev_bar, 'MA_5'):.1f}→{_num(cur, 'MA_5'):.1f} "
-                            f"BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
+                            f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
                             f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                             f"K={_num(prev_bar, 'STOCH_K'):.1f}→{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
                             f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}→{_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
@@ -1716,7 +1646,7 @@ def run(target_date: str | None = None) -> None:
                         signal_sell_bar[code] = bar_time
                 elif (
                     sell_reason.startswith("AUX_BLOCKED")
-                    or sell_reason.startswith("MA5_BB_DOWN_CROSS_ARMED")
+                    or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_WEAK_SCORE")
                     or sell_reason.startswith("BOX_RANGE_HOLD")
                 ):
                     log(f"  [SELL HOLD] {code} | {sell_reason}")
@@ -1733,55 +1663,10 @@ def run(target_date: str | None = None) -> None:
 
                 prev_bar = frame.iloc[-2]
 
-                armed_at = near_cross_armed_at.get(code)
-                if armed_at is not None:
-                    arm_expire_at = armed_at + timedelta(minutes=3 * NEAR_CROSS_ARM_EXPIRE_BARS)
-                    if bar_time > arm_expire_at:
-                        near_cross_armed_at.pop(code, None)
-                        armed_at = None
-
-                buy_ok, buy_reason = check_buy_condition(frame, current_dt)
-                near_flags = _near_cross_momentum_flags(cur, prev_bar)
-                early_liq_ok, early_liq_reason = _passes_early_near_cross_liquidity(cur)
-                early_time_ok = is_early_near_cross_allowed(current_dt, nxt_tradeable)
-
-                # 2단계 진입: 1차 ARM 상태에서 확정 크로스 또는 강모멘텀 근접 조기진입 허용
-                if (
-                    not buy_ok
-                    and (not REQUIRE_STRICT_BUY_GOLDEN_CROSS)
-                    and ENABLE_EARLY_NEAR_CROSS_ENTRY
-                    and early_time_ok
-                    and armed_at is not None
-                ):
-                    if buy_reason.startswith("NO_MA5_BB_CROSS_UP") and bool(near_flags["can_early"]) and early_liq_ok:
-                        buy_ok = True
-                        buy_reason = "EARLY_NEAR_CROSS_MOMENTUM"
+                buy_ok, buy_reason = check_buy_condition(frame, current_dt, price, cross_info)
 
                 if not buy_ok:
-                    # 1차 ARM: 크로스 직전 근접 + MA5 상승 가속을 감지해 다음 봉 확인 대기
-                    if (
-                        (not REQUIRE_STRICT_BUY_GOLDEN_CROSS)
-                        and ENABLE_NEAR_CROSS_ARM
-                        and early_time_ok
-                        and buy_reason.startswith("NO_MA5_BB_CROSS_UP")
-                        and bool(near_flags["can_arm"])
-                        and early_liq_ok
-                    ):
-                        if code not in near_cross_armed_at:
-                            near_cross_armed_at[code] = bar_time
-                            log(
-                                f"  [BUY ARM] {code}({name}) | "
-                                f"NEAR_CROSS_ARM gap={float(near_flags['gap_ratio'])*100:.3f}% "
-                                f"ma_rise={float(near_flags['ma_rise_ratio'])*100:.3f}%"
-                            )
-                    elif REQUIRE_STRICT_BUY_GOLDEN_CROSS and buy_reason.startswith("NO_MA5_BB_CROSS_UP"):
-                        buy_reason = "STRICT_GOLDEN_CROSS_REQUIRED"
-                    elif buy_reason.startswith("NO_MA5_BB_CROSS_UP") and (ENABLE_NEAR_CROSS_ARM or ENABLE_EARLY_NEAR_CROSS_ENTRY) and not early_time_ok:
-                        buy_reason = "EARLY_NEAR_CROSS_BLOCKED_TIME_WINDOW"
-                    elif buy_reason.startswith("NO_MA5_BB_CROSS_UP") and not early_liq_ok:
-                        buy_reason = f"EARLY_NEAR_CROSS_BLOCKED_{early_liq_reason}"
-
-                    detail = _buy_reject_detail(buy_reason, cur, prev_bar)
+                    detail = _buy_reject_detail(buy_reason, cur, prev_bar, live_price=price, cross_info=cross_info)
                     log(f"  [BUY REJECT] {code}({name}) | {detail}")
                     continue
 
@@ -1792,11 +1677,9 @@ def run(target_date: str | None = None) -> None:
 
                 session = classify_buy_session(current_dt)
                 if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session):
-                    near_cross_armed_at.pop(code, None)
                     log(
                         f"  [BUY EVAL] {code}({name}) | OK {buy_reason} | {current_dt:%H:%M:%S} | "
-                        f"MA5 {_num(prev_bar, 'MA_5'):.1f}→{_num(cur, 'MA_5'):.1f} "
-                        f"BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
+                        f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
                         f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                         f"K={_num(prev_bar, 'STOCH_K'):.1f}→{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
                         f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}→{_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
@@ -1810,17 +1693,6 @@ def run(target_date: str | None = None) -> None:
                     signal_buy_bar[code] = bar_time
 
                 log("=" * 110)
-
-        if current_dt.time() >= AFTERNOON_NXT_FORCE_EXIT:
-            paper_basic.force_liquidate_all(current_dt, "EOD_FLAT_1959_ALL", latest_price_map)
-            paper_multi.force_liquidate_all(current_dt, "EOD_FLAT_1959_ALL", latest_price_map)
-
-        if (
-            last_compare_log_at is None
-            or (current_dt - last_compare_log_at).total_seconds() >= COMPARE_LOG_INTERVAL_SECONDS
-        ):
-            log(f"[PAPER-COMPARE] {paper_basic.summary_line()} || {paper_multi.summary_line()}")
-            last_compare_log_at = current_dt
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
