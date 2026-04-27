@@ -302,6 +302,71 @@ def _extract_order_price(result):
     return None
 
 
+def _extract_order_error_detail(result) -> str:
+    """Best-effort extraction of broker error code/message from order response."""
+    if result is None:
+        return "NO_RESULT"
+
+    key_candidates = ("rt_cd", "msg_cd", "msg1", "msg", "error_code", "error_message")
+
+    def _pull(mapping) -> dict[str, str]:
+        found: dict[str, str] = {}
+        if not isinstance(mapping, dict):
+            return found
+
+        for key in key_candidates:
+            value = mapping.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                found[key] = text
+
+        for nested in ("output", "output1", "output2", "data"):
+            inner = mapping.get(nested)
+            if isinstance(inner, dict):
+                found.update({k: v for k, v in _pull(inner).items() if k not in found})
+            elif isinstance(inner, list):
+                for item in inner:
+                    if isinstance(item, dict):
+                        found.update({k: v for k, v in _pull(item).items() if k not in found})
+
+        return found
+
+    extracted: dict[str, str] = {}
+    if isinstance(result, dict):
+        extracted = _pull(result)
+    else:
+        try:
+            if hasattr(result, "to_dict"):
+                records = result.to_dict(orient="records")
+                if records:
+                    extracted = _pull(records[0])
+        except Exception:
+            extracted = {}
+
+    if not extracted:
+        return "UNKNOWN_ORDER_ERROR"
+
+    parts = []
+    for key in ("rt_cd", "msg_cd", "msg1", "msg", "error_code", "error_message"):
+        value = extracted.get(key)
+        if value:
+            parts.append(f"{key}={value}")
+    return " | ".join(parts) if parts else "UNKNOWN_ORDER_ERROR"
+
+
+def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detail: str = "") -> None:
+    """Prints a high-visibility trade event block to both console and file logs."""
+    line = "=" * 110
+    title = f"*** {event} | {code} | qty={qty} | price={price:,.0f} ***"
+    log(line)
+    log(title)
+    if detail:
+        log(f"*** DETAIL: {detail}")
+    log(line)
+
+
 # ---------------------------------------------------------------------------
 # NXT 가능 종목 탐지
 # ---------------------------------------------------------------------------
@@ -1337,7 +1402,8 @@ class TradingAPI:
             return False
 
         if not _order_succeeded(order_result):
-            log(f"BUY failed | {code} | qty={qty}")
+            error_detail = _extract_order_error_detail(order_result)
+            log(f"BUY failed | {code} | qty={qty} | {error_detail}")
             return False
 
         fill_price = _extract_order_price(order_result) or price
@@ -1351,6 +1417,13 @@ class TradingAPI:
         }
         self._mark_trade_lock(code, now)
         log(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}")
+        _log_trade_event_banner(
+            event="BUY EXECUTED",
+            code=code,
+            qty=int(qty),
+            price=float(fill_price),
+            detail=f"session={session} exch={order_spec['exchange']}",
+        )
         return True
 
     def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None) -> bool:
@@ -1387,7 +1460,8 @@ class TradingAPI:
             return False
 
         if not _order_succeeded(order_result):
-            log(f"SELL failed | {code} | qty={qty} | reason={reason}")
+            error_detail = _extract_order_error_detail(order_result)
+            log(f"SELL failed | {code} | qty={qty} | reason={reason} | {error_detail}")
             return False
 
         fill_price = _extract_order_price(order_result) or current_price
@@ -1402,6 +1476,13 @@ class TradingAPI:
         self._mark_trade_lock(code, now)
         pnl_pct = ((fill_price / float(pos["buy_price"])) - 1.0) * 100.0
         log(f"SELL success | {code} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
+        _log_trade_event_banner(
+            event="SELL EXECUTED",
+            code=code,
+            qty=int(qty),
+            price=float(fill_price),
+            detail=f"pnl={pnl_pct:.2f}% reason={reason} exch={order_spec['exchange']}",
+        )
         return True
 
 
