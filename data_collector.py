@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 KIS 1-Minute OHLCV Data Collector
-- Fetches same-day 1-minute intraday data from KIS.
+- Fetches 1-minute intraday data for a specific trading date from KIS.
 - Supports handling empty (no-trade) minutes.
 """
 
@@ -18,10 +18,10 @@ import pandas as pd
 # 📁 Set project and internal module paths
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root / "examples_llm"))
-sys.path.insert(0, str(project_root / "examples_llm" / "domestic_stock" / "inquire_time_itemchartprice"))
+sys.path.insert(0, str(project_root / "examples_llm" / "domestic_stock" / "inquire_time_dailychartprice"))
 
 import kis_auth as ka
-from inquire_time_itemchartprice import inquire_time_itemchartprice
+from inquire_time_dailychartprice import inquire_time_dailychartprice
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -45,7 +45,7 @@ def get_args():
 
 
 def fetch_1min_data(stock_code, target_date, env_dv='real', empty_bar_mode='nan'):
-    """Fetch same-day 1-min raw data and optionally fill empty bars."""
+    """Fetch 1-min raw data for a target trading date and optionally fill empty bars."""
 
     all_df = []
     today_yyyymmdd = datetime.now().strftime("%Y%m%d")
@@ -58,7 +58,7 @@ def fetch_1min_data(stock_code, target_date, env_dv='real', empty_bar_mode='nan'
     last_earliest_time = None
 
     page_count = 0
-    max_pages = 20  # API returns up to ~30 rows per call; 20 pages cover full session with overlap.
+    max_pages = 10  # Historical minute API returns up to ~120 rows per call; 10 pages are ample for one session.
     consecutive_errors = 0
     max_api_errors = 5
 
@@ -70,13 +70,13 @@ def fetch_1min_data(stock_code, target_date, env_dv='real', empty_bar_mode='nan'
             break
 
         try:
-            _, df = inquire_time_itemchartprice(
-                env_dv=env_dv,
+            _, df = inquire_time_dailychartprice(
                 fid_cond_mrkt_div_code="J",
                 fid_input_iscd=stock_code,
                 fid_input_hour_1=current_hour,
+                fid_input_date_1=target_date,
                 fid_pw_data_incu_yn="Y",
-                fid_etc_cls_code=""
+                fid_fake_tick_incu_yn=""
             )
         except Exception as e:
             consecutive_errors += 1
@@ -90,6 +90,13 @@ def fetch_1min_data(stock_code, target_date, env_dv='real', empty_bar_mode='nan'
         consecutive_errors = 0
 
         if df is None or df.empty:
+            break
+
+        # Keep only requested trading date rows when the API spills into adjacent sessions.
+        if "stck_bsop_date" in df.columns:
+            df = df[df["stck_bsop_date"].astype(str) == target_date].copy()
+
+        if df.empty:
             break
 
         all_df.append(df)
@@ -126,16 +133,22 @@ def fetch_1min_data(stock_code, target_date, env_dv='real', empty_bar_mode='nan'
         return None
 
     # --- [2] Data Post-Processing (1-minute data) ---
-    final_df = pd.concat(all_df)
+    final_df = pd.concat(all_df, ignore_index=True)
 
     # Normalize time strings before dedup/datetime parsing.
     final_df["stck_cntg_hour"] = final_df["stck_cntg_hour"].astype(str).str.zfill(6)
-    final_df = final_df.drop_duplicates(subset=["stck_cntg_hour"], keep="last")
-    
+
     # Numeric conversion
     cols = {"stck_oprc": "open", "stck_hgpr": "high", "stck_lwpr": "low", "stck_prpr": "close", "cntg_vol": "volume"}
     for old_col in cols.keys():
         final_df[old_col] = pd.to_numeric(final_df[old_col], errors="coerce")
+
+    # When duplicate minutes exist across paged responses, prefer the row with an actual trade.
+    final_df["_has_trade"] = (final_df["cntg_vol"].fillna(0) > 0).astype("int64")
+    final_df = final_df.sort_values(
+        by=["stck_cntg_hour", "_has_trade", "cntg_vol"],
+        ascending=[True, False, False],
+    ).drop_duplicates(subset=["stck_cntg_hour"], keep="first")
 
     # Remove invalid source rows where all price fields are 0 or missing.
     price_cols = ["stck_oprc", "stck_hgpr", "stck_lwpr", "stck_prpr"]
@@ -144,6 +157,17 @@ def fetch_1min_data(stock_code, target_date, env_dv='real', empty_bar_mode='nan'
 
     if final_df.empty:
         return None
+
+    # Safety guard for mixed-session responses.
+    if "stck_bsop_date" in final_df.columns:
+        final_df = final_df[final_df["stck_bsop_date"].astype(str) == target_date].copy()
+
+    if final_df.empty:
+        return None
+
+    # KIS can return placeholder rows for no-trade minutes with repeated prices and zero volume.
+    no_trade_mask = final_df["cntg_vol"].fillna(0) <= 0
+    final_df.loc[no_trade_mask, price_cols] = pd.NA
 
     # Create Datetime Index
     final_df["datetime"] = pd.to_datetime(
@@ -163,6 +187,10 @@ def fetch_1min_data(stock_code, target_date, env_dv='real', empty_bar_mode='nan'
         'stck_prpr': 'close',
         'cntg_vol': 'volume',
     })[["open", "high", "low", "close", "volume"]]
+
+    # Drop helper columns from the source frame before returning any view-derived data.
+    if "_has_trade" in final_df.columns:
+        final_df = final_df.drop(columns=["_has_trade"])
 
     if empty_bar_mode == 'drop':
         # Keep only actual traded 1-minute bars.
