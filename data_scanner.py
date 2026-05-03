@@ -15,6 +15,7 @@ class ScannerConfig:
     volume_ma20_min: int
     amount_ma20_min: int
     require_trend: bool
+    support_score_min: int
     max_picks: int | None
 
 
@@ -26,6 +27,7 @@ CURRENT_STRICT_CONFIG = ScannerConfig(
     volume_ma20_min=5000,
     amount_ma20_min=50_000_000,
     require_trend=True,
+    support_score_min=3,
     max_picks=None,
 )
 
@@ -37,6 +39,7 @@ BALANCED_RANKED_CONFIG = ScannerConfig(
     volume_ma20_min=3000,
     amount_ma20_min=50_000_000,
     require_trend=False,
+    support_score_min=2,
     max_picks=10,
 )
 
@@ -48,7 +51,20 @@ AGGRESSIVE_RANKED_CONFIG = ScannerConfig(
     volume_ma20_min=3000,
     amount_ma20_min=50_000_000,
     require_trend=False,
+    support_score_min=2,
     max_picks=15,
+)
+
+R73_ALIGNED_CONFIG = ScannerConfig(
+    name="r73_aligned",
+    price_min=5000,
+    price_max=200000,
+    atr_ratio_min=0.002,
+    volume_ma20_min=3000,
+    amount_ma20_min=50_000_000,
+    require_trend=False,
+    support_score_min=3,
+    max_picks=10,
 )
 
 COMPARISON_CONFIGS = [
@@ -58,6 +74,20 @@ COMPARISON_CONFIGS = [
 ]
 
 DEFAULT_HISTORY_WINDOW = 20
+
+# r73 매수 로직 정렬용 임계값
+LIVE_PRICE_BB_BUFFER_PCT = 0.0008
+STOCH_OVERBOUGHT = 80.0
+STOCH_BUY_MAX = 72.0
+RSI_BUY_MIN = 45.0
+RSI_BUY_MAX = 72.0
+WILLIAMS_BUY_FLOOR = -70.0
+WILLIAMS_OVERBOUGHT_CEIL = -20.0
+BB_UPPER_PROXIMITY_MAX = 0.85
+ADX_MIN_TREND = 20.0
+VOLUME_RATIO_MIDDAY = 0.60
+VOLUME_RATIO_STRONG_RELAX = 0.10
+VOLUME_RATIO_FLOOR = 0.50
 
 
 def ensure_datetime_index(df):
@@ -120,15 +150,180 @@ def calc_atr(df, length=14):
     return atr
 
 
+def _num(candle, key):
+    value = candle.get(key)
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
+def _buy_support_score(cur, prev):
+    score = 0
+
+    k_c = _num(cur, "STOCH_K")
+    d_c = _num(cur, "STOCH_D")
+    k_p = _num(prev, "STOCH_K")
+    d_p = _num(prev, "STOCH_D")
+    if None not in (k_c, d_c, k_p, d_p):
+        if (k_p <= d_p and k_c > d_c) or (k_c > d_c and k_c <= STOCH_BUY_MAX):
+            score += 1
+
+    rsi_c = _num(cur, "RSI")
+    sig_c = _num(cur, "RSI_SIGNAL")
+    rsi_p = _num(prev, "RSI")
+    sig_p = _num(prev, "RSI_SIGNAL")
+    if None not in (rsi_c, sig_c, rsi_p, sig_p):
+        in_buy_zone = RSI_BUY_MIN <= rsi_c <= RSI_BUY_MAX
+        if (rsi_p <= sig_p and rsi_c > sig_c) or (rsi_c > sig_c and in_buy_zone):
+            score += 1
+
+    wr_c = _num(cur, "WILLIAMS_R")
+    wr_p = _num(prev, "WILLIAMS_R")
+    if None not in (wr_c, wr_p):
+        if wr_c > wr_p and wr_c >= WILLIAMS_BUY_FLOOR:
+            score += 1
+
+    macd_c = _num(cur, "MACD")
+    msig_c = _num(cur, "MACD_SIGNAL")
+    macd_p = _num(prev, "MACD")
+    msig_p = _num(prev, "MACD_SIGNAL")
+    if None not in (macd_c, msig_c, macd_p, msig_p):
+        if (macd_p <= msig_p and macd_c > msig_c) or (macd_c > msig_c and macd_c > 0):
+            score += 1
+
+    vwap = _num(cur, "VWAP")
+    close_v = _num(cur, "close")
+    if None not in (vwap, close_v) and close_v > vwap:
+        score += 1
+
+    obv_c = _num(cur, "OBV")
+    obv_ma_c = _num(cur, "OBV_MA")
+    obv_p = _num(prev, "OBV")
+    if None not in (obv_c, obv_ma_c, obv_p):
+        if obv_c > obv_ma_c or obv_c > obv_p:
+            score += 1
+
+    return score
+
+
+def normalize_ohlcv_for_indicators(df):
+    required = {"open", "high", "low", "close", "volume"}
+    if not required.issubset(df.columns):
+        return None
+
+    normalized = df.copy()
+    for col in ["open", "high", "low", "close", "volume"]:
+        normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
+
+    normalized = normalized.sort_index()
+
+    # Treat non-positive prices as missing and rebuild no-trade minute bars from last close.
+    normalized.loc[normalized["close"] <= 0, "close"] = pd.NA
+    if normalized["close"].notna().sum() == 0:
+        return None
+
+    normalized["close"] = normalized["close"].ffill()
+    for col in ["open", "high", "low"]:
+        normalized[col] = normalized[col].where(normalized[col] > 0)
+        normalized[col] = normalized[col].fillna(normalized["close"])
+
+    normalized["volume"] = normalized["volume"].fillna(0)
+    normalized.loc[normalized["volume"] < 0, "volume"] = 0
+
+    return normalized
+
+
 def build_indicators(df):
     if df is None or df.empty:
         return None
 
-    df = df.copy()
+    df = normalize_ohlcv_for_indicators(df)
+    if df is None or df.empty:
+        return None
 
     df["ATR"] = calc_atr(df, length=14)
-    df["MA5"] = df["close"].rolling(5).mean()
-    df["MA20"] = df["close"].rolling(20).mean()
+
+    # r73와 컬럼명을 맞추기 위해 기본은 MA_5 / MA_20를 계산하고
+    # 하위 호환용으로 MA5 / MA20도 같이 유지합니다.
+    df["MA_5"] = df["close"].rolling(5).mean()
+    df["MA_20"] = df["close"].rolling(20).mean()
+    df["MA5"] = df["MA_5"]
+    df["MA20"] = df["MA_20"]
+
+    bb_period = 20
+    bb_std_mult = 2.0
+    df["BB_MIDDLE"] = df["close"].rolling(window=bb_period, min_periods=1).mean()
+    df["BB_STD"] = df["close"].rolling(window=bb_period, min_periods=1).std()
+    df["BB_UPPER"] = df["BB_MIDDLE"] + df["BB_STD"] * bb_std_mult
+    df["BB_LOWER"] = df["BB_MIDDLE"] - df["BB_STD"] * bb_std_mult
+
+    # RSI / Signal
+    rsi_period = 14
+    rsi_signal_period = 6
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    df["RSI"] = 100 - (100 / (1 + rs))
+    df.loc[loss == 0, "RSI"] = 100.0
+    df["RSI_SIGNAL"] = df["RSI"].rolling(window=rsi_signal_period, min_periods=1).mean()
+
+    # Stochastic
+    stoch_k_period = 10
+    stoch_d_period = 5
+    low_n = df["low"].rolling(window=stoch_k_period, min_periods=1).min()
+    high_n = df["high"].rolling(window=stoch_k_period, min_periods=1).max()
+    denom = (high_n - low_n).replace(0, float("nan"))
+    df["STOCH_K"] = 100.0 * (df["close"] - low_n) / denom
+    df["STOCH_D"] = df["STOCH_K"].rolling(window=stoch_d_period, min_periods=1).mean()
+
+    # Williams %R
+    williams_r_period = 10
+    williams_d_period = 9
+    high_w = df["high"].rolling(window=williams_r_period, min_periods=1).max()
+    low_w = df["low"].rolling(window=williams_r_period, min_periods=1).min()
+    wr_denom = (high_w - low_w).replace(0, float("nan"))
+    df["WILLIAMS_R"] = -100.0 * (high_w - df["close"]) / wr_denom
+    df["WILLIAMS_D"] = df["WILLIAMS_R"].rolling(window=williams_d_period, min_periods=1).mean()
+
+    # MACD
+    macd_fast = 5
+    macd_slow = 12
+    macd_signal_period = 4
+    ema_fast = df["close"].ewm(span=macd_fast, adjust=False).mean()
+    ema_slow = df["close"].ewm(span=macd_slow, adjust=False).mean()
+    df["MACD"] = ema_fast - ema_slow
+    df["MACD_SIGNAL"] = df["MACD"].ewm(span=macd_signal_period, adjust=False).mean()
+    df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
+
+    # ADX / DI
+    adx_period = 7
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - df["close"].shift(1)).abs(),
+        (df["low"] - df["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    high_diff = df["high"] - df["high"].shift(1)
+    low_diff = df["low"].shift(1) - df["low"]
+    plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
+    minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
+    ema_tr = tr.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+    ema_plus = plus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+    ema_minus = minus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+    df["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
+    df["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
+    di_sum = (df["DI_PLUS"] + df["DI_MINUS"]).replace(0, float("nan"))
+    dx = 100.0 * (df["DI_PLUS"] - df["DI_MINUS"]).abs() / di_sum
+    df["ADX"] = dx.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+
+    # VWAP / OBV
+    cum_vol = df["volume"].cumsum()
+    df["VWAP"] = (df["close"] * df["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
+    close_diff = df["close"].diff()
+    obv_vol = df["volume"] * close_diff.gt(0).astype(float) - df["volume"] * close_diff.lt(0).astype(float)
+    df["OBV"] = obv_vol.cumsum()
+    df["OBV_MA"] = df["OBV"].rolling(window=10, min_periods=1).mean()
+
     df["VOL_MA20"] = df["volume"].rolling(20).mean()
     df["AMOUNT"] = df["close"] * df["volume"]
     df["AMOUNT_MA20"] = df["AMOUNT"].rolling(20).mean()
@@ -159,18 +354,31 @@ def calculate_candidate_score(candidate, config):
     price = candidate["price"]
     ma5 = candidate["ma5"]
     ma20 = candidate["ma20"]
+    support_score = candidate.get("support_score") or 0
+    live_cross_ready = bool(candidate.get("live_cross_ready"))
+    adx = candidate.get("adx")
 
     if atr_ratio is None or vol_ma20 is None or amount_ma20 is None or price is None:
         return 0.0
 
     score = 0.0
-    score += min(35.0, (atr_ratio / config.atr_ratio_min) * 17.5)
-    score += min(25.0, (vol_ma20 / config.volume_ma20_min) * 8.0)
-    score += min(25.0, (amount_ma20 / config.amount_ma20_min) * 8.0)
+    score += min(25.0, (atr_ratio / config.atr_ratio_min) * 12.5)
+    score += min(20.0, (vol_ma20 / config.volume_ma20_min) * 7.0)
+    score += min(20.0, (amount_ma20 / config.amount_ma20_min) * 7.0)
+
+    # r73 보조지표 점수(0~6)를 최대 24점으로 반영
+    score += min(24.0, support_score * 4.0)
+
+    # r73 live price > BB middle buffer 근접 조건 가산
+    if live_cross_ready:
+        score += 8.0
 
     if ma5 is not None and ma20 not in (None, 0):
         trend_ratio = (ma5 / ma20) - 1.0
-        score += max(-15.0, min(15.0, trend_ratio * 1500.0))
+        score += max(-12.0, min(12.0, trend_ratio * 1200.0))
+
+    if adx is not None and adx >= ADX_MIN_TREND:
+        score += min(8.0, (adx - ADX_MIN_TREND) * 0.35)
 
     if price <= 100000:
         score += 5.0
@@ -195,6 +403,10 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         "ma20": None,
         "ma_gap": None,
         "trend_state": "unknown",
+        "adx": None,
+        "support_score": 0,
+        "live_cross_ready": False,
+        "bb_position": None,
         "vol_ma20": None,
         "amount_ma20": None,
         "score": 0.0,
@@ -210,15 +422,42 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         candidate["skip_reason"] = "date_missing"
         return candidate
 
-    latest = filtered.iloc[-1]
+    scorable = filtered.dropna(subset=["close", "ATR"])
+    if scorable.empty:
+        candidate["skip_reason"] = "indicator_nan"
+        return candidate
+
+    if len(scorable) < 2:
+        candidate["skip_reason"] = "insufficient_bars"
+        return candidate
+
+    latest = scorable.iloc[-1]
+    prev = scorable.iloc[-2]
     price = safe_float(latest["close"])
     atr = safe_float(latest["ATR"])
-    ma5 = safe_float(latest["MA5"])
-    ma20 = safe_float(latest["MA20"])
+    ma5 = safe_float(latest.get("MA_5", latest.get("MA5")))
+    ma20 = safe_float(latest.get("MA_20", latest.get("MA20")))
+    prev_ma5 = safe_float(prev.get("MA_5", prev.get("MA5")))
     vol_ma20 = safe_float(latest["VOL_MA20"])
     amount_ma20 = safe_float(latest["AMOUNT_MA20"])
+    adx = safe_float(latest.get("ADX"))
+    bb_middle = safe_float(latest.get("BB_MIDDLE"))
+    prev_bb_middle = safe_float(prev.get("BB_MIDDLE"))
+    bb_upper = safe_float(latest.get("BB_UPPER"))
+    bb_lower = safe_float(latest.get("BB_LOWER"))
     atr_ratio = None if price in (None, 0) or atr is None else atr / price
     ma_gap = None if ma5 is None or ma20 is None else ma5 - ma20
+
+    bb_position = None
+    if None not in (bb_upper, bb_lower, price) and bb_upper > bb_lower:
+        bb_position = (price - bb_lower) / (bb_upper - bb_lower)
+
+    live_cross_ready = (
+        None not in (price, bb_middle)
+        and price > (bb_middle * (1.0 + LIVE_PRICE_BB_BUFFER_PCT))
+    )
+
+    support_score = _buy_support_score(latest, prev)
 
     candidate.update(
         {
@@ -229,6 +468,10 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
             "ma20": ma20,
             "ma_gap": ma_gap,
             "trend_state": classify_trend(ma5, ma20),
+            "adx": adx,
+            "support_score": support_score,
+            "live_cross_ready": live_cross_ready,
+            "bb_position": bb_position,
             "vol_ma20": vol_ma20,
             "amount_ma20": amount_ma20,
         }
@@ -248,6 +491,41 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         candidate["fail_reasons"].append("volume_ma20")
     if amount_ma20 is not None and amount_ma20 < config.amount_ma20_min:
         candidate["fail_reasons"].append("amount_ma20")
+
+    # r73 정렬 필터: live price/BB 조건, 과열 회피, 추세 강도, 거래량, 보조점수
+    if not live_cross_ready:
+        candidate["fail_reasons"].append("live_price_bb_not_ready")
+
+    if None not in (bb_middle, prev_bb_middle) and bb_middle < prev_bb_middle:
+        candidate["fail_reasons"].append("bb_middle_falling")
+
+    if None not in (ma5, prev_ma5) and ma5 < prev_ma5:
+        candidate["fail_reasons"].append("ma5_falling")
+
+    stoch_k = safe_float(latest.get("STOCH_K"))
+    if stoch_k is not None and stoch_k >= STOCH_OVERBOUGHT:
+        candidate["fail_reasons"].append("overbought_stoch")
+
+    wr_val = safe_float(latest.get("WILLIAMS_R"))
+    if wr_val is not None and wr_val >= WILLIAMS_OVERBOUGHT_CEIL:
+        candidate["fail_reasons"].append("overbought_wr")
+
+    if bb_position is not None and bb_position >= BB_UPPER_PROXIMITY_MAX:
+        candidate["fail_reasons"].append("near_bb_upper")
+
+    if adx is not None and adx < ADX_MIN_TREND:
+        candidate["fail_reasons"].append("weak_trend_adx")
+
+    if vol_ma20 is not None and vol_ma20 > 0:
+        volume_ratio_threshold = VOLUME_RATIO_MIDDAY
+        if adx is not None and adx >= 40.0:
+            volume_ratio_threshold = max(VOLUME_RATIO_FLOOR, VOLUME_RATIO_MIDDAY - VOLUME_RATIO_STRONG_RELAX)
+        current_vol = safe_float(latest.get("volume"))
+        if current_vol is not None and current_vol < (vol_ma20 * volume_ratio_threshold):
+            candidate["fail_reasons"].append("low_volume_vs_ma20")
+
+    if support_score < config.support_score_min:
+        candidate["fail_reasons"].append("low_support_score")
 
     if ma5 is not None and ma20 is not None and ma5 < ma20:
         if config.require_trend:
@@ -283,6 +561,16 @@ def summarize_candidates(candidates, selected_rows, skipped):
         "fail_counts": dict(sorted(fail_counts.items(), key=lambda item: (-item[1], item[0]))),
         "soft_counts": dict(sorted(soft_counts.items(), key=lambda item: (-item[1], item[0]))),
     }
+
+
+def is_scorable_candidate(row):
+    return (
+        row.get("skip_reason") is None
+        and row.get("price") is not None
+        and row.get("atr_ratio") is not None
+        and row.get("vol_ma20") is not None
+        and row.get("amount_ma20") is not None
+    )
 
 
 def render_ranked_csv(selected_rows):
@@ -377,32 +665,37 @@ def render_report(data_dir, target_date, config, scan_result, comparison_rows):
         f"- volume MA20 min: {config.volume_ma20_min:,}",
         f"- amount MA20 min: {config.amount_ma20_min:,}",
         f"- require trend: {config.require_trend}",
+        f"- support score min: {config.support_score_min}",
         f"- max picks: {config.max_picks}",
         "",
         "## Summary",
         "",
+        f"- selection mode: {scan_result.get('selection_mode', 'strict_eligible')}",
         f"- eligible pool: {summary['eligible_pool_count']}",
         f"- selected picks: {summary['selected_count']}",
         f"- skipped: {summary['skipped']}",
         "",
         "## Ranked Picks",
         "",
-        "| rank | code | name | score | price | ATR/price | vol MA20 | amount MA20 | trend | ma gap |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
+        "| rank | code | name | score | support | live cross | price | ATR/price | vol MA20 | amount MA20 | trend | ADX | ma gap |",
+        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |",
     ]
 
     for rank, row in enumerate(scan_result["selected_rows"], start=1):
         lines.append(
-            "| {rank} | {code} | {name} | {score:.2f} | {price} | {atr_ratio:.4%} | {vol_ma20} | {amount_ma20} | {trend} | {ma_gap} |".format(
+            "| {rank} | {code} | {name} | {score:.2f} | {support} | {live_cross} | {price} | {atr_ratio:.4%} | {vol_ma20} | {amount_ma20} | {trend} | {adx} | {ma_gap} |".format(
                 rank=rank,
                 code=row["code"],
                 name=row["name"],
                 score=row["score"],
+                support=row.get("support_score", 0),
+                live_cross="Y" if row.get("live_cross_ready") else "N",
                 price=format_metric(row["price"], 0),
                 atr_ratio=row["atr_ratio"] or 0.0,
                 vol_ma20=format_metric(row["vol_ma20"], 0),
                 amount_ma20=format_metric(row["amount_ma20"], 0),
                 trend=row["trend_state"],
+                adx=format_metric(row.get("adx"), 1),
                 ma_gap=format_metric(row["ma_gap"], 2),
             )
         )
@@ -526,8 +819,28 @@ def scan(
     )
 
     selected_rows = eligible_rows
+    selection_mode = "strict_eligible"
+
     if config.max_picks is not None:
         selected_rows = eligible_rows[:config.max_picks]
+
+    # If strict filters leave no picks, still select tradable-looking symbols by score.
+    if not selected_rows:
+        fallback_rows = [row for row in candidates if is_scorable_candidate(row)]
+        fallback_rows.sort(
+            key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+            reverse=True,
+        )
+
+        if config.max_picks is not None:
+            fallback_rows = fallback_rows[:config.max_picks]
+
+        if fallback_rows:
+            selected_rows = fallback_rows
+            selection_mode = "score_fallback"
+            for row in selected_rows:
+                if "fallback_selected" not in row["soft_flags"]:
+                    row["soft_flags"].append("fallback_selected")
 
     selected = [f"{row['code']},{row['name']}" for row in selected_rows]
     summary = summarize_candidates(candidates, selected_rows, skipped)
@@ -546,6 +859,7 @@ def scan(
             "eligible_rows": eligible_rows,
             "summary": summary,
             "config": config,
+            "selection_mode": selection_mode,
         }
 
     return selected
@@ -602,7 +916,7 @@ if __name__ == "__main__":
     scan_result = scan(
         data_dir,
         target_date,
-        config=BALANCED_RANKED_CONFIG,
+        config=R73_ALIGNED_CONFIG,
         return_details=True,
         stock_list=stock_list,
     )
@@ -625,7 +939,7 @@ if __name__ == "__main__":
 
     report_file = data_dir / "scanner_report.md"
     report_file.write_text(
-        render_report(data_dir, target_date, BALANCED_RANKED_CONFIG, scan_result, comparison_rows),
+        render_report(data_dir, target_date, R73_ALIGNED_CONFIG, scan_result, comparison_rows),
         encoding="utf-8",
     )
     print(f"✅ 스캐너 리포트가 저장되었습니다: {report_file}")
