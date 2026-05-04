@@ -64,7 +64,7 @@ R73_ALIGNED_CONFIG = ScannerConfig(
     amount_ma20_min=50_000_000,
     require_trend=False,
     support_score_min=3,
-    max_picks=10,
+    max_picks=20,
 )
 
 COMPARISON_CONFIGS = [
@@ -126,11 +126,9 @@ def filter_data_by_date(df, target_date):
         return df
 
     if isinstance(df.index, pd.DatetimeIndex):
-        # 데이터의 연도가 1900년인 경우(collector에서 날짜 결합 오류 등) 필터링을 건너뜁니다.
-        if (df.index.year == 1900).any():
-            return df
-            
-        return df[df.index.date == target_date.date()]
+        # collector 날짜 결합 오류(1900년)가 섞인 경우 해당 레코드만 제거하고 목표 날짜만 사용합니다.
+        clean_df = df[df.index.year != 1900]
+        return clean_df[clean_df.index.date == target_date.date()]
 
     return pd.DataFrame()
 
@@ -487,9 +485,9 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         candidate["fail_reasons"].append("price_ceiling")
     if atr_ratio is None or atr_ratio < config.atr_ratio_min:
         candidate["fail_reasons"].append("atr_ratio")
-    if vol_ma20 is not None and vol_ma20 < config.volume_ma20_min:
+    if vol_ma20 is None or vol_ma20 < config.volume_ma20_min:
         candidate["fail_reasons"].append("volume_ma20")
-    if amount_ma20 is not None and amount_ma20 < config.amount_ma20_min:
+    if amount_ma20 is None or amount_ma20 < config.amount_ma20_min:
         candidate["fail_reasons"].append("amount_ma20")
 
     # r73 정렬 필터: live price/BB 조건, 과열 회피, 추세 강도, 거래량, 보조점수
@@ -571,6 +569,27 @@ def is_scorable_candidate(row):
         and row.get("vol_ma20") is not None
         and row.get("amount_ma20") is not None
     )
+
+
+def is_fallback_eligible_candidate(row):
+    if not is_scorable_candidate(row):
+        return False
+
+    hard_block_reasons = {
+        "atr_or_price_nan",
+        "price_floor",
+        "price_ceiling",
+        "atr_ratio",
+        "volume_ma20",
+        "amount_ma20",
+        "live_price_bb_not_ready",
+        "overbought_stoch",
+        "overbought_wr",
+        "near_bb_upper",
+    }
+
+    fail_reasons = set(row.get("fail_reasons", []))
+    return not (hard_block_reasons & fail_reasons)
 
 
 def render_ranked_csv(selected_rows):
@@ -826,7 +845,7 @@ def scan(
 
     # If strict filters leave no picks, still select tradable-looking symbols by score.
     if not selected_rows:
-        fallback_rows = [row for row in candidates if is_scorable_candidate(row)]
+        fallback_rows = [row for row in candidates if is_fallback_eligible_candidate(row)]
         fallback_rows.sort(
             key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
             reverse=True,

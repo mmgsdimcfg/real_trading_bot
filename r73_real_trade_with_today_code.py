@@ -68,8 +68,8 @@ ADX_STRONG_TREND = 40.0  # 강한 추세 구간에서는 거래량 기준 완화
 # ---------------------------------------------------------------------------
 MAX_ORDER_AMOUNT_KRW = 500_000
 TAKE_PROFIT_PERCENT = 0.035
-STOP_LOSS_PERCENT = -0.015
-TRAILING_STOP_FROM_PEAK = 0.012
+STOP_LOSS_PERCENT = -0.012
+TRAILING_STOP_FROM_PEAK = 0.005
 # 보조지표 기반 매도(AUX_REVERSAL) 최소 수익률 게이트
 # 점수가 낮을수록 더 높은 수익률일 때만 매도 허용
 AUX_SELL_MIN_PNL_SCORE2 = 0.010  # score=2  -> +1.0% 이상
@@ -137,6 +137,7 @@ RSI_BUY_MAX = 72.0
 WILLIAMS_BUY_FLOOR = -70.0
 WILLIAMS_OVERBOUGHT_CEIL = -20.0
 BB_UPPER_PROXIMITY_MAX = 0.85  # (close-bb_lower)/(bb_upper-bb_lower) 값이 크면 상단 추격 구간
+BB_SQUEEZE_MIN_WIDTH_PCT = 0.008  # BB 폭(상단-하단)/현재가 < 0.8%이면 수렴/횡보 스퀴즈 → 매수 제외
 
 # 거래량 필터(시간대/세션 가변)
 VOLUME_RATIO_OPEN = 0.80       # 장초반(09:00~10:00)
@@ -842,13 +843,14 @@ def _buy_reject_detail(buy_reason: str, cur: pd.Series, prev: pd.Series, live_pr
 
     if buy_reason == "NO_LIVE_PRICE_BB_CROSS_UP":
         live_part = f"live={live_price:,.0f} " if live_price is not None and pd.notna(live_price) else ""
+        ma5_golden_cross_now = (not pd.isna(prev_ma5) and not pd.isna(prev_bb) and not pd.isna(cur_ma5) and not pd.isna(cur_bb) and prev_ma5 <= prev_bb and cur_ma5 > cur_bb)
         if cross_info:
             pending_side = cross_info.get("pending_side")
             pending_count = cross_info.get("pending_count", 0)
             pending_seconds = cross_info.get("pending_seconds", 0.0)
             return (
                 f"{buy_reason} | {live_part}BB_MID {cur_bb:.1f} upper={float(cross_info.get('upper_trigger', cur_bb)):.1f} | "
-                f"relation={cross_info.get('relation')} pending={pending_side} "
+                f"relation={cross_info.get('relation')} confirmed={cross_info.get('confirmed_relation')} ma5_gc={ma5_golden_cross_now} pending={pending_side} "
                 f"count={pending_count}/{LIVE_PRICE_CROSS_CONFIRM_POLLS} "
                 f"seconds={pending_seconds:.0f}/{LIVE_PRICE_CROSS_CONFIRM_SECONDS}"
             )
@@ -1102,8 +1104,17 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
         return False, "MISSING_INDICATOR"
 
-    if cross_info.get("signal") != "cross_up":
-        return False, "NO_LIVE_PRICE_BB_CROSS_UP"
+    live_cross_up_signal = cross_info.get("signal") == "cross_up"
+    confirmed_above = cross_info.get("confirmed_relation") == "above"
+    ma5_golden_cross_now = prev_ma5 <= prev_bb and cur_ma5 > cur_bb
+    upper_trigger = float(cross_info.get("upper_trigger", cur_bb))
+
+    # 즉시 신호(cross_up)를 놓쳤더라도, "이미 BB 중단 위 안착 + MA5 골든크로스"이면 진입 허용.
+    # (20초 폴링 간격/네트워크 지연으로 cross_up 순간을 지나친 케이스 보완)
+    if not live_cross_up_signal:
+        fallback_ok = confirmed_above and ma5_golden_cross_now and live_price >= upper_trigger
+        if not fallback_ok:
+            return False, "NO_LIVE_PRICE_BB_CROSS_UP"
 
     if live_price <= cur_bb:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
@@ -1137,6 +1148,12 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
         if bb_pos >= BB_UPPER_PROXIMITY_MAX:
             return False, f"NEAR_BB_UPPER_{bb_pos:.2f}"
 
+    # 과열 추격 매수 방지 4) 볼린저밴드 스퀴즈(수렴) 구간 → 방향성 없음, 오신호 빈발
+    if not any(pd.isna(v) for v in (bb_up, bb_low, close_val)) and close_val > 0:
+        bb_width_pct = (bb_up - bb_low) / close_val
+        if bb_width_pct < BB_SQUEEZE_MIN_WIDTH_PCT:
+            return False, f"BB_SQUEEZE_{bb_width_pct*100:.2f}%_LT_{BB_SQUEEZE_MIN_WIDTH_PCT*100:.2f}%"
+
     adx_val = _num(cur, "ADX")
 
     # 거래량 필터: 급감 구간 진입 회피
@@ -1155,7 +1172,8 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if support_score < 3:
         return False, f"LOW_SCORE_{support_score}"
 
-    return True, f"LIVE_PRICE_BB_UP_CROSS_SCORE_{support_score}"
+    trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
+    return True, f"{trigger}_SCORE_{support_score}"
 
 
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
