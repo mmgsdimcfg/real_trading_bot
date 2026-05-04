@@ -155,7 +155,9 @@ VOLUME_RATIO_FLOOR = 0.50      # 완화 하한
 log_dir = current_dir / "logs"
 log_dir.mkdir(exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_filename = f"{timestamp}_r73_real_trade_with_today_code.log"
+script_stem = Path(__file__).stem
+log_filename = f"{timestamp}_{script_stem}.log"
+trade_log_filename = f"{timestamp}_{script_stem}_buy_sell.log"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -187,6 +189,20 @@ for _handler in logging.getLogger().handlers:
 
 def log(msg: str) -> None:
     logger.info(msg)
+
+
+trade_logger = logging.getLogger("trade_events")
+trade_logger.setLevel(logging.INFO)
+trade_logger.propagate = False
+
+_trade_handler = logging.FileHandler(log_dir / trade_log_filename, encoding="utf-8")
+_trade_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+trade_logger.handlers.clear()
+trade_logger.addHandler(_trade_handler)
+
+
+def log_trade(msg: str) -> None:
+    trade_logger.info(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +381,13 @@ def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detai
     title = f"*** {event} | {code} | qty={qty} | price={price:,.0f} ***"
     log(line)
     log(title)
+    log_trade(line)
+    log_trade(title)
     if detail:
         log(f"*** DETAIL: {detail}")
+        log_trade(f"*** DETAIL: {detail}")
     log(line)
+    log_trade(line)
 
 
 # ---------------------------------------------------------------------------
@@ -1448,6 +1468,7 @@ class TradingAPI:
         }
         self._mark_trade_lock(code, now)
         log(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}")
+        log_trade(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}")
         _log_trade_event_banner(
             event="BUY EXECUTED",
             code=code,
@@ -1507,6 +1528,7 @@ class TradingAPI:
         self._mark_trade_lock(code, now)
         pnl_pct = ((fill_price / float(pos["buy_price"])) - 1.0) * 100.0
         log(f"SELL success | {code} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
+        log_trade(f"SELL success | {code} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
         _log_trade_event_banner(
             event="SELL EXECUTED",
             code=code,
