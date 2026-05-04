@@ -108,8 +108,11 @@ EARLY_NEAR_CROSS_MIN_VOL_MA = 500
 EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
 POLL_INTERVAL_SECONDS = 20
 LIVE_PRICE_BB_BUFFER_PCT = 0.0008      # 현재가가 BB 중간선 대비 0.08% 이상 넘어야 유효 돌파로 인정
-LIVE_PRICE_CROSS_CONFIRM_POLLS = 3      # 20초 폴링 기준 3회 연속 확인
-LIVE_PRICE_CROSS_CONFIRM_SECONDS = 40   # 첫 감지 후 최소 40초 유지
+LIVE_PRICE_CROSS_CONFIRM_POLLS = 3      # 20초 폴링 기준 3회 연속 확인 (상향 크로스 / 매수)
+LIVE_PRICE_CROSS_CONFIRM_SECONDS = 40   # 첫 감지 후 최소 40초 유지 (상향 크로스 / 매수)
+# 하향 크로스(매도)는 즉시 반응 — 대기 시간을 두면 급락 구간에서 매도 기회를 놓침
+LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1     # 하향 크로스: 1회 감지 즉시 신호 발동
+LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS = 0   # 하향 크로스: 지연 없이 즉시 확인
 ACCOUNT_SYNC_INTERVAL_SECONDS = 90
 MIN_BARS_REQUIRED = 3  # 이전봉·현재봉 비교에 최소 3개 필요 (지표는 min_periods=1로 자체 보완)
 ALLOW_REBUY_SAME_CODE = False
@@ -137,7 +140,6 @@ RSI_BUY_MAX = 72.0
 WILLIAMS_BUY_FLOOR = -70.0
 WILLIAMS_OVERBOUGHT_CEIL = -20.0
 BB_UPPER_PROXIMITY_MAX = 0.85  # (close-bb_lower)/(bb_upper-bb_lower) 값이 크면 상단 추격 구간
-BB_SQUEEZE_MIN_WIDTH_PCT = 0.008  # BB 폭(상단-하단)/현재가 < 0.8%이면 수렴/횡보 스퀴즈 → 매수 제외
 
 # 거래량 필터(시간대/세션 가변)
 VOLUME_RATIO_OPEN = 0.80       # 장초반(09:00~10:00)
@@ -723,7 +725,15 @@ def update_live_price_cross_state(
     pending_seconds = max(0.0, (now - pending["started_at"]).total_seconds())
     signal = None
 
-    if pending["count"] >= LIVE_PRICE_CROSS_CONFIRM_POLLS and pending_seconds >= LIVE_PRICE_CROSS_CONFIRM_SECONDS:
+    # 방향별 확인 임계값 선택: 하향(매도)은 즉시, 상향(매수)은 충분히 확인
+    if relation == "below":
+        req_polls = LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS
+        req_seconds = LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS
+    else:
+        req_polls = LIVE_PRICE_CROSS_CONFIRM_POLLS
+        req_seconds = LIVE_PRICE_CROSS_CONFIRM_SECONDS
+
+    if pending["count"] >= req_polls and pending_seconds >= req_seconds:
         tracker["confirmed_relation"] = relation
         tracker["pending"] = None
         signal = "cross_up" if relation == "above" else "cross_down"
@@ -843,14 +853,13 @@ def _buy_reject_detail(buy_reason: str, cur: pd.Series, prev: pd.Series, live_pr
 
     if buy_reason == "NO_LIVE_PRICE_BB_CROSS_UP":
         live_part = f"live={live_price:,.0f} " if live_price is not None and pd.notna(live_price) else ""
-        ma5_golden_cross_now = (not pd.isna(prev_ma5) and not pd.isna(prev_bb) and not pd.isna(cur_ma5) and not pd.isna(cur_bb) and prev_ma5 <= prev_bb and cur_ma5 > cur_bb)
         if cross_info:
             pending_side = cross_info.get("pending_side")
             pending_count = cross_info.get("pending_count", 0)
             pending_seconds = cross_info.get("pending_seconds", 0.0)
             return (
                 f"{buy_reason} | {live_part}BB_MID {cur_bb:.1f} upper={float(cross_info.get('upper_trigger', cur_bb)):.1f} | "
-                f"relation={cross_info.get('relation')} confirmed={cross_info.get('confirmed_relation')} ma5_gc={ma5_golden_cross_now} pending={pending_side} "
+                f"relation={cross_info.get('relation')} pending={pending_side} "
                 f"count={pending_count}/{LIVE_PRICE_CROSS_CONFIRM_POLLS} "
                 f"seconds={pending_seconds:.0f}/{LIVE_PRICE_CROSS_CONFIRM_SECONDS}"
             )
@@ -1104,17 +1113,8 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
         return False, "MISSING_INDICATOR"
 
-    live_cross_up_signal = cross_info.get("signal") == "cross_up"
-    confirmed_above = cross_info.get("confirmed_relation") == "above"
-    ma5_golden_cross_now = prev_ma5 <= prev_bb and cur_ma5 > cur_bb
-    upper_trigger = float(cross_info.get("upper_trigger", cur_bb))
-
-    # 즉시 신호(cross_up)를 놓쳤더라도, "이미 BB 중단 위 안착 + MA5 골든크로스"이면 진입 허용.
-    # (20초 폴링 간격/네트워크 지연으로 cross_up 순간을 지나친 케이스 보완)
-    if not live_cross_up_signal:
-        fallback_ok = confirmed_above and ma5_golden_cross_now and live_price >= upper_trigger
-        if not fallback_ok:
-            return False, "NO_LIVE_PRICE_BB_CROSS_UP"
+    if cross_info.get("signal") != "cross_up":
+        return False, "NO_LIVE_PRICE_BB_CROSS_UP"
 
     if live_price <= cur_bb:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
@@ -1148,12 +1148,6 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
         if bb_pos >= BB_UPPER_PROXIMITY_MAX:
             return False, f"NEAR_BB_UPPER_{bb_pos:.2f}"
 
-    # 과열 추격 매수 방지 4) 볼린저밴드 스퀴즈(수렴) 구간 → 방향성 없음, 오신호 빈발
-    if not any(pd.isna(v) for v in (bb_up, bb_low, close_val)) and close_val > 0:
-        bb_width_pct = (bb_up - bb_low) / close_val
-        if bb_width_pct < BB_SQUEEZE_MIN_WIDTH_PCT:
-            return False, f"BB_SQUEEZE_{bb_width_pct*100:.2f}%_LT_{BB_SQUEEZE_MIN_WIDTH_PCT*100:.2f}%"
-
     adx_val = _num(cur, "ADX")
 
     # 거래량 필터: 급감 구간 진입 회피
@@ -1172,18 +1166,12 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if support_score < 3:
         return False, f"LOW_SCORE_{support_score}"
 
-    trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
-    return True, f"{trigger}_SCORE_{support_score}"
+    return True, f"LIVE_PRICE_BB_UP_CROSS_SCORE_{support_score}"
 
 
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
     if len(frame) < 2:
         return False, "INSUFFICIENT_BARS"
-
-    if ENABLE_BOX_RANGE_HOLD_TECH_SELL and STOP_LOSS_PERCENT < pnl_pct < TAKE_PROFIT_PERCENT:
-        is_box, box_info = _is_box_range_hold_zone(frame)
-        if is_box:
-            return False, f"BOX_RANGE_HOLD_{box_info}"
 
     cur = frame.iloc[-1]
     prev = frame.iloc[-2]
@@ -1192,6 +1180,31 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float,
     cur_ma5 = _num(cur, "MA_5")
     prev_bb = _num(prev, "BB_MIDDLE")
     cur_bb = _num(cur, "BB_MIDDLE")
+
+    # ── Fix 2 & 4: MA5 데드크로스 (bar 레벨 판단) ──────────────────────────────
+    # BOX_RANGE_HOLD 체크보다 먼저 수행 → 박스권에서도 데드크로스는 즉시 매도 판단
+    if not any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
+        ma5_dead_cross = (prev_ma5 >= prev_bb) and (cur_ma5 < cur_bb)
+        if ma5_dead_cross:
+            if pnl_pct < MA5_BB_DOWN_CROSS_MIN_PNL:
+                return False, (
+                    f"MA5_BB_DEAD_CROSS_BLOCKED_PNL_{pnl_pct*100:.2f}%"
+                    f"_LT_{MA5_BB_DOWN_CROSS_MIN_PNL*100:.2f}%"
+                )
+            score = _sell_support_score(cur, prev)
+            # 즉시 매도: 손실 크거나 보조 약세 점수 충분
+            if pnl_pct <= MA5_BB_DOWN_CROSS_IMMEDIATE_PNL or score >= MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE:
+                return True, f"MA5_BB_DEAD_CROSS_SCORE_{score}"
+            # 최소 점수 이상이면 확인 후 매도
+            if score >= MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE:
+                return True, f"MA5_BB_DEAD_CROSS_CONFIRM_SCORE_{score}"
+            return False, f"MA5_BB_DEAD_CROSS_WEAK_SCORE_{score}"
+
+    # ── Fix 4: BOX_RANGE_HOLD — MA5 데드크로스 이외의 기술적 매도만 보류 ──────
+    if ENABLE_BOX_RANGE_HOLD_TECH_SELL and STOP_LOSS_PERCENT < pnl_pct < TAKE_PROFIT_PERCENT:
+        is_box, box_info = _is_box_range_hold_zone(frame)
+        if is_box:
+            return False, f"BOX_RANGE_HOLD_{box_info}"
 
     price_cross_down = cross_info.get("signal") == "cross_down" and live_price < cur_bb
 
@@ -1673,6 +1686,7 @@ def run(target_date: str | None = None) -> None:
 
                 pos["current_price"] = price
                 pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
+                highest_price = float(pos["highest_price"])  # Fix: TP/트레일링 로직보다 먼저 정의
 
                 if pnl_pct >= TAKE_PROFIT_PERCENT:
                     if ENABLE_TP_EXTENSION_TRAILING:
@@ -1698,7 +1712,6 @@ def run(target_date: str | None = None) -> None:
                     signal_sell_bar[code] = bar_time
                     continue
 
-                highest_price = float(pos.get("highest_price", price))
                 if highest_price > 0 and entry_price > 0:
                     # Entry-anchored trailing stop:
                     # 1) First, peak must move into profit zone.
