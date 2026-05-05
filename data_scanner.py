@@ -60,10 +60,10 @@ R73_ALIGNED_CONFIG = ScannerConfig(
     price_min=5000,
     price_max=200000,
     atr_ratio_min=0.002,
-    volume_ma20_min=3000,
-    amount_ma20_min=50_000_000,
+    volume_ma20_min=1500,
+    amount_ma20_min=30_000_000,
     require_trend=False,
-    support_score_min=3,
+    support_score_min=2,
     max_picks=20,
 )
 
@@ -73,16 +73,16 @@ COMPARISON_CONFIGS = [
     AGGRESSIVE_RANKED_CONFIG,
 ]
 
-DEFAULT_HISTORY_WINDOW = 20
+DEFAULT_HISTORY_WINDOW = 0
 
 # r73 매수 로직 정렬용 임계값
-LIVE_PRICE_BB_BUFFER_PCT = 0.0008
-STOCH_OVERBOUGHT = 80.0
+LIVE_PRICE_BB_BUFFER_PCT = 0.0
+STOCH_OVERBOUGHT = 85.0
 STOCH_BUY_MAX = 72.0
 RSI_BUY_MIN = 45.0
 RSI_BUY_MAX = 72.0
 WILLIAMS_BUY_FLOOR = -70.0
-WILLIAMS_OVERBOUGHT_CEIL = -20.0
+WILLIAMS_OVERBOUGHT_CEIL = -15.0
 BB_UPPER_PROXIMITY_MAX = 0.85
 ADX_MIN_TREND = 20.0
 VOLUME_RATIO_MIDDAY = 0.60
@@ -490,15 +490,15 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
     if amount_ma20 is None or amount_ma20 < config.amount_ma20_min:
         candidate["fail_reasons"].append("amount_ma20")
 
-    # r73 정렬 필터: live price/BB 조건, 과열 회피, 추세 강도, 거래량, 보조점수
+    # r73 정렬 필터: 핵심 리스크 항목은 hard fail, 타이밍 민감 항목은 soft flag로 완화
     if not live_cross_ready:
-        candidate["fail_reasons"].append("live_price_bb_not_ready")
+        candidate["soft_flags"].append("live_price_bb_not_ready")
 
     if None not in (bb_middle, prev_bb_middle) and bb_middle < prev_bb_middle:
-        candidate["fail_reasons"].append("bb_middle_falling")
+        candidate["soft_flags"].append("bb_middle_falling")
 
     if None not in (ma5, prev_ma5) and ma5 < prev_ma5:
-        candidate["fail_reasons"].append("ma5_falling")
+        candidate["soft_flags"].append("ma5_falling")
 
     stoch_k = safe_float(latest.get("STOCH_K"))
     if stoch_k is not None and stoch_k >= STOCH_OVERBOUGHT:
@@ -523,7 +523,7 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
             candidate["fail_reasons"].append("low_volume_vs_ma20")
 
     if support_score < config.support_score_min:
-        candidate["fail_reasons"].append("low_support_score")
+        candidate["soft_flags"].append("low_support_score")
 
     if ma5 is not None and ma20 is not None and ma5 < ma20:
         if config.require_trend:
@@ -789,6 +789,25 @@ def load_symbols():
     return [(c, "") for c in df["code"].astype(str).str.zfill(6)]
 
 
+def filter_stock_list_by_existing_csv(stock_list, data_dir, verbose=True):
+    csv_codes = {
+        p.stem.zfill(6)
+        for p in data_dir.glob("*.csv")
+        if p.is_file() and p.stem.isdigit()
+    }
+
+    filtered = [(code, name) for code, name in stock_list if code in csv_codes]
+
+    if verbose:
+        missing = len(stock_list) - len(filtered)
+        print(
+            f"[INFO] {data_dir.name} 폴더 기준 스캔 종목 필터링: "
+            f"{len(stock_list)} -> {len(filtered)} (제외 {missing})"
+        )
+
+    return filtered
+
+
 def scan(
     data_dir,
     target_date=None,
@@ -932,6 +951,11 @@ if __name__ == "__main__":
         data_dir = get_latest_data_dir()
 
     stock_list = load_symbols()
+    if target_date:
+        stock_list = filter_stock_list_by_existing_csv(stock_list, data_dir)
+        if not stock_list:
+            raise SystemExit(f"❌ {data_dir} 폴더에 스캔 가능한 CSV 종목이 없습니다.")
+
     scan_result = scan(
         data_dir,
         target_date,
@@ -952,7 +976,7 @@ if __name__ == "__main__":
             f.write("\n".join(picks))
         print(f"✅ 추천 종목 리스트가 저장되었습니다: {picks_file}")
 
-    ranked_file = data_dir / "picks_ranked.csv"
+    ranked_file = data_dir / "picks_ranked.txt"
     ranked_file.write_text(render_ranked_csv(scan_result["selected_rows"]), encoding="utf-8")
     print(f"✅ 점수 기반 랭킹 파일이 저장되었습니다: {ranked_file}")
 
