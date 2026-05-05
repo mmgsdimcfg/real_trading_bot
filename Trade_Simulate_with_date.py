@@ -64,6 +64,8 @@ ADX_STRONG_TREND = 40.0
 MAX_ORDER_AMOUNT_KRW = 500_000
 TAKE_PROFIT_PERCENT = 0.035
 STOP_LOSS_PERCENT = -0.010
+STOP_LOSS_EARLY_PERCENT = -0.020     # 진입 초기(STOP_LOSS_MIN_HOLD_SECONDS 이내) 노이즈 방지용 넓은 손절
+STOP_LOSS_MIN_HOLD_SECONDS = 600    # 이 시간(초) 미만이면 EARLY 손절 기준 적용 (기본 10분)
 TRAILING_STOP_FROM_PEAK = 0.005
 AUX_SELL_MIN_PNL_SCORE2 = 0.010
 AUX_SELL_MIN_PNL_SCORE3 = 0.005
@@ -1456,10 +1458,13 @@ def simulate_date(
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EXECUTED] {code} | TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}% | price={price:,.0f}")
                     continue
-                if profit_pct <= STOP_LOSS_PERCENT:
-                    sim.sell(code, price, ts, f"STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}%", session)
+                _held_sl = (ts - pos.buy_time).total_seconds()
+                _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
+                if profit_pct <= _sl_threshold:
+                    _sl_label = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
+                    sim.sell(code, price, ts, _sl_label, session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}% | price={price:,.0f}")
+                    log(f"  [SELL EXECUTED] {code} | {_sl_label} | held={_held_sl:.0f}s price={price:,.0f}")
                     continue
                 highest_price = float(pos.highest_price)
                 if highest_price > 0 and pos.buy_price > 0:

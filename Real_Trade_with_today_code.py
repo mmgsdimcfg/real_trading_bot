@@ -69,6 +69,8 @@ ADX_STRONG_TREND = 40.0  # 강한 추세 구간에서는 거래량 기준 완화
 MAX_ORDER_AMOUNT_KRW = 500_000
 TAKE_PROFIT_PERCENT = 0.035
 STOP_LOSS_PERCENT = -0.012
+STOP_LOSS_EARLY_PERCENT = -0.020     # 진입 초기(STOP_LOSS_MIN_HOLD_SECONDS 이내) 노이즈 방지용 넓은 손절
+STOP_LOSS_MIN_HOLD_SECONDS = 600    # 이 시간(초) 미만이면 EARLY 손절 기준 적용 (기본 10분)
 TRAILING_STOP_FROM_PEAK = 0.005
 # 보조지표 기반 매도(AUX_REVERSAL) 최소 수익률 게이트
 # 점수가 낮을수록 더 높은 수익률일 때만 매도 허용
@@ -1726,9 +1728,11 @@ def run(target_date: str | None = None) -> None:
                         signal_sell_bar[code] = bar_time
                         continue
 
-                if pnl_pct <= STOP_LOSS_PERCENT:
-                    reason_sl = f"STOP_LOSS_{STOP_LOSS_PERCENT*100:.1f}%"
-                    log(f"  [SELL TRIGGER] {code} | {reason_sl} | price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
+                _held_sl = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
+                _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
+                if pnl_pct <= _sl_threshold:
+                    reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
+                    log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
                     if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price):
                         log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
                     signal_sell_bar[code] = bar_time
