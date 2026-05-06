@@ -1141,6 +1141,15 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if live_price <= cur_bb:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
 
+    # MA5가 BB_MIDDLE 아래에 있으면 이미 데드크로스 상태 → 매수 차단
+    if cur_ma5 <= cur_bb:
+        return False, "MA5_AT_OR_BELOW_BB_MIDDLE"
+
+    # MA5가 BB_MIDDLE 위에 있어도 gap이 극히 작고 MA5가 하락 중이면 데드크로스 임박 → 매수 차단
+    _ma5_bb_gap_pct = (cur_ma5 - cur_bb) / max(cur_bb, 1.0)
+    if _ma5_bb_gap_pct < NEAR_CROSS_ARM_GAP_MAX and cur_ma5 <= prev_ma5:
+        return False, f"MA5_DEAD_CROSS_IMMINENT_{_ma5_bb_gap_pct*100:.3f}%"
+
     # 모멘텀 방향 확인
     if cur_bb < prev_bb:
         return False, "BB_MIDDLE_FALLING"
@@ -1708,6 +1717,12 @@ def run(target_date: str | None = None) -> None:
                 entry_price = float(pos["buy_price"])
                 pnl_pct = (price / entry_price) - 1.0
 
+                # 봉 내 저가(bar low)와 현재가 중 낮은 값으로 손절 트리거 판단
+                # → 20초 폴링 간격에서 저점을 놓쳐 손절이 지연되는 문제 방지
+                _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else price
+                _sl_price = min(price, _bar_low)
+                _pnl_sl = (_sl_price / entry_price) - 1.0
+
                 pos["current_price"] = price
                 pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
                 highest_price = float(pos["highest_price"])  # Fix: TP/트레일링 로직보다 먼저 정의
@@ -1730,9 +1745,9 @@ def run(target_date: str | None = None) -> None:
 
                 _held_sl = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
                 _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
-                if pnl_pct <= _sl_threshold:
+                if _pnl_sl <= _sl_threshold:
                     reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
-                    log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
+                    log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% sl_pnl={_pnl_sl*100:.2f}%")
                     if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price):
                         log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
                     signal_sell_bar[code] = bar_time
