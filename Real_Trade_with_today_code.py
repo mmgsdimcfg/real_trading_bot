@@ -378,10 +378,14 @@ def _extract_order_error_detail(result) -> str:
     return " | ".join(parts) if parts else "UNKNOWN_ORDER_ERROR"
 
 
-def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detail: str = "") -> None:
+def _format_code_label(code: str, code_name: str = "") -> str:
+    return f"{code}({code_name})" if code_name else code
+
+
+def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detail: str = "", code_name: str = "") -> None:
     """Prints a high-visibility trade event block to both console and file logs."""
     line = "=" * 110
-    title = f"*** {event} | {code} | qty={qty} | price={price:,.0f} ***"
+    title = f"*** {event} | {_format_code_label(code, code_name)} | qty={qty} | price={price:,.0f} ***"
     log(line)
     log(title)
     log_trade(line)
@@ -1459,7 +1463,7 @@ class TradingAPI:
 
         return max(0, min(qty_by_budget, qty_by_psbl))
 
-    def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "") -> bool:
+    def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "") -> bool:
         if qty <= 0 or self._in_cooldown(code, now):
             return False
 
@@ -1507,18 +1511,20 @@ class TradingAPI:
         }
         self._mark_trade_lock(code, now)
         detail_suffix = f" | {buy_detail}" if buy_detail else ""
-        log(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
-        log_trade(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
+        code_label = _format_code_label(code, code_name)
+        log(f"BUY success | {code_label} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
+        log_trade(f"BUY success | {code_label} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
         _log_trade_event_banner(
             event="BUY EXECUTED",
             code=code,
             qty=int(qty),
             price=float(fill_price),
             detail=f"session={session} exch={order_spec['exchange']}" + (f" | {buy_detail}" if buy_detail else ""),
+            code_name=code_name,
         )
         return True
 
-    def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None) -> bool:
+    def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "") -> bool:
         self.sync_positions_from_account(force=True)
         pos = self.positions.get(code)
         if not pos or pos.get("quantity", 0) <= 0:
@@ -1567,14 +1573,16 @@ class TradingAPI:
 
         self._mark_trade_lock(code, now)
         pnl_pct = ((fill_price / float(pos["buy_price"])) - 1.0) * 100.0
-        log(f"SELL success | {code} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
-        log_trade(f"SELL success | {code} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
+        code_label = _format_code_label(code, code_name)
+        log(f"SELL success | {code_label} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
+        log_trade(f"SELL success | {code_label} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
         _log_trade_event_banner(
             event="SELL EXECUTED",
             code=code,
             qty=int(qty),
             price=float(fill_price),
             detail=f"pnl={pnl_pct:.2f}% reason={reason} exch={order_spec['exchange']}",
+            code_name=code_name,
         )
         return True
 
@@ -1583,7 +1591,7 @@ class TradingAPI:
 # 예약 청산
 # ---------------------------------------------------------------------------
 
-def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: dict[str, bool], state: dict) -> None:
+def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: dict[str, bool], watch_map: dict[str, str], state: dict) -> None:
     trade_date = current_dt.date()
     current_time = current_dt.time()
 
@@ -1605,7 +1613,7 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
                 log(f"  [CALL_AUCTION HOLD] {code} | NOT_IN_PROFIT | price={price:,.0f} buy={buy_price:,.0f}")
                 continue
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "CALL_AUCTION_TAKE_PROFIT_1520", nxt_map.get(code, False), price=price)
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, "CALL_AUCTION_TAKE_PROFIT_1520", nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
 
     if not state["done_1959"] and current_time >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_1959"] = True
@@ -1616,7 +1624,7 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
                 continue
             price = float(pos.get("current_price") or pos["buy_price"])
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_NXT_1959", nxt_map.get(code, False), price=price)
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_NXT_1959", nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1680,7 +1688,7 @@ def run(target_date: str | None = None) -> None:
             break
 
         if current_dt.time() >= AFTERNOON_NXT_END:
-            run_scheduled_liquidations(current_dt, api, nxt_map, liquidation_state)
+            run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
             log("20:00 reached. Stopping.")
             break
 
@@ -1689,7 +1697,7 @@ def run(target_date: str | None = None) -> None:
             continue
 
         api.sync_positions_from_account(force=False)
-        run_scheduled_liquidations(current_dt, api, nxt_map, liquidation_state)
+        run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
 
         # 15:20~15:30 정규장 동시호가 구간은 종목별 시그널 체크를 건너뛰고
         # 동시호가 청산 로직(당일 매수 + 수익 구간)만 수행한다.
@@ -1772,7 +1780,7 @@ def run(target_date: str | None = None) -> None:
                     else:
                         reason_tp = f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
                         log(f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price):
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price, code_name=name):
                             log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
                         continue
@@ -1782,7 +1790,7 @@ def run(target_date: str | None = None) -> None:
                 if _pnl_sl <= _sl_threshold:
                     reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
                     log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% sl_pnl={_pnl_sl*100:.2f}%")
-                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price):
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name):
                         log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
                     signal_sell_bar[code] = bar_time
                     continue
@@ -1808,7 +1816,7 @@ def run(target_date: str | None = None) -> None:
                             f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} | "
                             f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                         )
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_ts, nxt_tradeable, price=price):
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_ts, nxt_tradeable, price=price, code_name=name):
                             log(f"  [SELL EXECUTED] {code} | {reason_ts} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
                         continue
@@ -1819,7 +1827,7 @@ def run(target_date: str | None = None) -> None:
                 prev_bar = frame.iloc[-2]
                 sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, price, cross_info)
                 if sell_ok:
-                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, sell_reason, nxt_tradeable, price=price):
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, sell_reason, nxt_tradeable, price=price, code_name=name):
                         log(
                             f"  [SELL EVAL] {code} | OK {sell_reason} | {current_dt:%H:%M:%S} | "
                             f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
@@ -1872,7 +1880,7 @@ def run(target_date: str | None = None) -> None:
                     f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} "
                     f"bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
                 )
-                if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail):
+                if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                     log(
                         f"  [BUY EVAL] {code}({name}) | OK {buy_reason} | {current_dt:%H:%M:%S} | "
                         f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
