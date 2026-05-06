@@ -112,7 +112,7 @@ EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
 POLL_INTERVAL_SECONDS = 20
 LIVE_PRICE_BB_BUFFER_PCT = 0.0008      # 현재가가 BB 중간선 대비 0.08% 이상 넘어야 유효 돌파로 인정
 LIVE_PRICE_CROSS_CONFIRM_POLLS = 3      # 20초 폴링 기준 3회 연속 확인 (상향 크로스 / 매수)
-LIVE_PRICE_CROSS_CONFIRM_SECONDS = 40   # 첫 감지 후 최소 40초 유지 (상향 크로스 / 매수)
+LIVE_PRICE_CROSS_CONFIRM_SECONDS = 60   # 첫 감지 후 최소 60초 유지 (상향 크로스 / 매수)
 # 하향 크로스(매도)는 즉시 반응 — 대기 시간을 두면 급락 구간에서 매도 기회를 놓침
 LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1     # 하향 크로스: 1회 감지 즉시 신호 발동
 LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS = 0   # 하향 크로스: 지연 없이 즉시 확인
@@ -576,7 +576,19 @@ def is_early_near_cross_allowed(now: datetime, nxt_tradeable: bool) -> bool:
 # 데이터 수신
 # ---------------------------------------------------------------------------
 
-def _normalize_intraday_frame(df: pd.DataFrame, target_date: str) -> pd.DataFrame | None:
+def _is_allowed_intraday_time(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
+    t = ts.time()
+    if REGULAR_START <= t <= REGULAR_END:
+        return True
+    if nxt_tradeable and (
+        (MORNING_NXT_START <= t <= MORNING_NXT_END)
+        or (AFTERNOON_NXT_START <= t <= AFTERNOON_NXT_END)
+    ):
+        return True
+    return False
+
+
+def _normalize_intraday_frame(df: pd.DataFrame, target_date: str, nxt_tradeable: bool) -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
 
@@ -596,6 +608,12 @@ def _normalize_intraday_frame(df: pd.DataFrame, target_date: str) -> pd.DataFram
     out["time"] = out["time"].astype(str).str.zfill(6)
     out["datetime"] = pd.to_datetime(target_date + out["time"], format="%Y%m%d%H%M%S", errors="coerce")
     out = out.dropna(subset=["datetime"]).set_index("datetime").sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+
+    allowed_mask = pd.Series([_is_allowed_intraday_time(ts, nxt_tradeable) for ts in out.index], index=out.index)
+    out = out[allowed_mask]
+    if out.empty:
+        return None
 
     for col in ("open", "high", "low", "close", "volume"):
         out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -632,8 +650,13 @@ def fetch_3min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
             log(f"WARNING: chart fetch failed for {code} ({market_div}): {exc}")
             continue
 
-        frame = _normalize_intraday_frame(raw_df, today_str)
+        frame = _normalize_intraday_frame(raw_df, today_str, nxt_tradeable)
         if frame is not None and not frame.empty:
+            # fetch 시점 기준으로 확정 완료된 3분봉까지만 사용
+            last_closed_bar = pd.Timestamp(now).floor("3min")
+            frame = frame[frame.index <= last_closed_bar]
+            if frame.empty:
+                continue
             return calculate_indicators(frame)
 
     return None
@@ -1142,6 +1165,11 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if live_price <= cur_bb:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
 
+    # 실시간가뿐 아니라 봉 종가도 BB_MIDDLE 위여야 신규 매수 허용
+    close_val = _num(cur, "close")
+    if pd.isna(close_val) or close_val <= cur_bb:
+        return False, "BAR_CLOSE_NOT_ABOVE_BB_MIDDLE"
+
     # MA5가 BB_MIDDLE 아래에 있으면 이미 데드크로스 상태 → 매수 차단
     if cur_ma5 <= cur_bb:
         return False, "MA5_AT_OR_BELOW_BB_MIDDLE"
@@ -1174,7 +1202,6 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     # 과열 추격 매수 방지 3) 볼린저 상단 과근접
     bb_up = _num(cur, "BB_UPPER")
     bb_low = _num(cur, "BB_LOWER")
-    close_val = _num(cur, "close")
     if not any(pd.isna(v) for v in (bb_up, bb_low, close_val)) and bb_up > bb_low:
         bb_pos = (close_val - bb_low) / (bb_up - bb_low)
         if bb_pos >= BB_UPPER_PROXIMITY_MAX:
@@ -1432,7 +1459,7 @@ class TradingAPI:
 
         return max(0, min(qty_by_budget, qty_by_psbl))
 
-    def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str) -> bool:
+    def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "") -> bool:
         if qty <= 0 or self._in_cooldown(code, now):
             return False
 
@@ -1479,14 +1506,15 @@ class TradingAPI:
             "highest_price": float(fill_price),
         }
         self._mark_trade_lock(code, now)
-        log(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}")
-        log_trade(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}")
+        detail_suffix = f" | {buy_detail}" if buy_detail else ""
+        log(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
+        log_trade(f"BUY success | {code} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
         _log_trade_event_banner(
             event="BUY EXECUTED",
             code=code,
             qty=int(qty),
             price=float(fill_price),
-            detail=f"session={session} exch={order_spec['exchange']}",
+            detail=f"session={session} exch={order_spec['exchange']}" + (f" | {buy_detail}" if buy_detail else ""),
         )
         return True
 
@@ -1689,6 +1717,8 @@ def run(target_date: str | None = None) -> None:
                 continue
 
             bar_time = frame.index[-1]
+            last_closed_bar = pd.Timestamp(current_dt).floor("3min")
+            bar_age_sec = max(0.0, (pd.Timestamp(current_dt) - bar_time).total_seconds())
             cur = frame.iloc[-1]
             price = fetch_live_price(code, current_dt, nxt_tradeable)
             if price is None or price <= 0:
@@ -1705,6 +1735,7 @@ def run(target_date: str | None = None) -> None:
 
             log(
                 f"  [CHECK] {code}({name}) | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} bar_close={float(cur['close']):,.0f} | "
+                f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
                 f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
@@ -1836,7 +1867,12 @@ def run(target_date: str | None = None) -> None:
                     continue
 
                 session = classify_buy_session(current_dt)
-                if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session):
+                buy_detail = (
+                    f"reason={buy_reason} signal={cross_info.get('signal')} "
+                    f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} "
+                    f"bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
+                )
+                if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail):
                     log(
                         f"  [BUY EVAL] {code}({name}) | OK {buy_reason} | {current_dt:%H:%M:%S} | "
                         f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
