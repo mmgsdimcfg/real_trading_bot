@@ -71,6 +71,7 @@ TAKE_PROFIT_PERCENT = 0.035
 STOP_LOSS_PERCENT = -0.012
 STOP_LOSS_EARLY_PERCENT = -0.020     # 진입 초기(STOP_LOSS_MIN_HOLD_SECONDS 이내) 노이즈 방지용 넓은 손절
 STOP_LOSS_MIN_HOLD_SECONDS = 600    # 이 시간(초) 미만이면 EARLY 손절 기준 적용 (기본 10분)
+STARTUP_WARMUP_SECONDS = 180        # 스크립트 시작 후 이 시간(초) 동안 신규 매수 없음 (지표 안정화 + 모니터링 여유 보장)
 TRAILING_STOP_FROM_PEAK = 0.005
 # 보조지표 기반 매도(AUX_REVERSAL) 최소 수익률 게이트
 # 점수가 낮을수록 더 높은 수익률일 때만 매도 허용
@@ -1633,6 +1634,8 @@ def run(target_date: str | None = None) -> None:
     live_price_cross_state: dict[str, dict] = {}
     liquidation_state: dict = {}
     current_trade_date = now.date()
+    startup_time = datetime.now()
+    log(f"Startup warmup: new entries blocked for {STARTUP_WARMUP_SECONDS}s until {(startup_time + timedelta(seconds=STARTUP_WARMUP_SECONDS)):%H:%M:%S}")
 
     while True:
         current_dt = datetime.now()
@@ -1806,6 +1809,10 @@ def run(target_date: str | None = None) -> None:
 
             else:
                 if not is_new_entry_allowed(current_dt, nxt_tradeable):
+                    continue
+                _warmup_elapsed = (current_dt - startup_time).total_seconds()
+                if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
+                    log(f"  [BUY REJECT] {code}({name}) | STARTUP_WARMUP | elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s")
                     continue
                 if not ALLOW_REBUY_SAME_CODE and code in traded_today:
                     continue
