@@ -621,11 +621,15 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
     if support_score < config.support_score_min:
         candidate["soft_flags"].append("low_support_score")
 
-    if ma5 is not None and ma20 is not None and ma5 < ma20:
+    trend_state = candidate["trend_state"]
+    if trend_state == "down":
+        candidate["fail_reasons"].append("down_trend_excluded")
+    elif trend_state != "up":
+        # 상승 추세를 기본 베이스로 사용: require_trend=True일 때 flat/unknown도 제외
         if config.require_trend:
-            candidate["fail_reasons"].append("ma_trend")
+            candidate["fail_reasons"].append("non_up_trend")
         else:
-            candidate["soft_flags"].append("ma_trend")
+            candidate["soft_flags"].append("non_up_trend")
 
     candidate["score"] = calculate_candidate_score(candidate, config)
     candidate["eligible"] = not candidate["fail_reasons"]
@@ -682,10 +686,20 @@ def is_fallback_eligible_candidate(row):
         "overbought_stoch",
         "overbought_wr",
         "near_bb_upper",
+        "down_trend_excluded",
+        "non_up_trend",
     }
 
     fail_reasons = set(row.get("fail_reasons", []))
     return not (hard_block_reasons & fail_reasons)
+
+
+def is_relaxed_fill_candidate(row):
+    if not is_scorable_candidate(row):
+        return False
+
+    # 최종 보강 단계에서도 하락 추세는 제외
+    return row.get("trend_state") != "down"
 
 
 def render_ranked_csv(selected_rows):
@@ -965,6 +979,50 @@ def scan(
 
     if config.max_picks is not None:
         selected_rows = eligible_rows[:config.max_picks]
+
+    # If strict-eligible rows are fewer than max picks, top up with fallback-scored rows.
+    if config.max_picks is not None and len(selected_rows) < config.max_picks:
+        selected_codes = {row["code"] for row in selected_rows}
+        fallback_rows = [
+            row
+            for row in candidates
+            if is_fallback_eligible_candidate(row) and row["code"] not in selected_codes
+        ]
+        fallback_rows.sort(
+            key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+            reverse=True,
+        )
+
+        needed = config.max_picks - len(selected_rows)
+        supplement_rows = fallback_rows[:needed]
+        if supplement_rows:
+            selected_rows = [*selected_rows, *supplement_rows]
+            selection_mode = "strict_plus_fallback"
+            for row in supplement_rows:
+                if "fallback_selected" not in row["soft_flags"]:
+                    row["soft_flags"].append("fallback_selected")
+
+    # If still short, fill by score with relaxed rules (non-down + scorable only).
+    if config.max_picks is not None and len(selected_rows) < config.max_picks:
+        selected_codes = {row["code"] for row in selected_rows}
+        relaxed_rows = [
+            row
+            for row in candidates
+            if is_relaxed_fill_candidate(row) and row["code"] not in selected_codes
+        ]
+        relaxed_rows.sort(
+            key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+            reverse=True,
+        )
+
+        needed = config.max_picks - len(selected_rows)
+        relaxed_supplement = relaxed_rows[:needed]
+        if relaxed_supplement:
+            selected_rows = [*selected_rows, *relaxed_supplement]
+            selection_mode = "strict_plus_fallback_relaxed"
+            for row in relaxed_supplement:
+                if "relaxed_fill_selected" not in row["soft_flags"]:
+                    row["soft_flags"].append("relaxed_fill_selected")
 
     # If strict filters leave no picks, still select tradable-looking symbols by score.
     if not selected_rows:
