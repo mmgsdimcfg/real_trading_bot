@@ -89,6 +89,12 @@ VOLUME_RATIO_MIDDAY = 0.60
 VOLUME_RATIO_STRONG_RELAX = 0.10
 VOLUME_RATIO_FLOOR = 0.50
 
+# 새로운 지표 임계값
+DI_PLUS_MIN_STRENGTH = 20.0  # DI+ 최소값 (상향 강도)
+DI_DIFFERENCE_MIN = 5.0       # DI+ - DI- 최소값 (추세 확실성)
+MACD_HIST_BUY_SIGNAL = True   # MACD Histogram 양수 여부 확인
+OBV_UPTREND_CHECK = True      # OBV가 OBV_MA보다 큰지 확인
+
 
 def ensure_datetime_index(df):
     if isinstance(df.index, pd.DatetimeIndex):
@@ -201,6 +207,18 @@ def _buy_support_score(cur, prev):
         if obv_c > obv_ma_c or obv_c > obv_p:
             score += 1
 
+    # 새로운 지표 추가: MACD Histogram 양수 확인
+    macd_hist_c = _num(cur, "MACD_HIST")
+    if MACD_HIST_BUY_SIGNAL and macd_hist_c is not None and macd_hist_c > 0:
+        score += 1
+
+    # 새로운 지표 추가: DI+ 강도 확인
+    di_plus_c = _num(cur, "DI_PLUS")
+    di_minus_c = _num(cur, "DI_MINUS")
+    if None not in (di_plus_c, di_minus_c):
+        if di_plus_c >= DI_PLUS_MIN_STRENGTH and (di_plus_c - di_minus_c) >= DI_DIFFERENCE_MIN:
+            score += 1
+
     return score
 
 
@@ -239,92 +257,137 @@ def build_indicators(df):
     if df is None or df.empty:
         return None
 
+    # CSV에서 직접 로드된 항목들은 활용하고, 없는 항목들만 계산
+    # ATR은 항상 계산 (CSV에 없음)
     df["ATR"] = calc_atr(df, length=14)
 
-    # r73와 컬럼명을 맞추기 위해 기본은 MA_5 / MA_20를 계산하고
-    # 하위 호환용으로 MA5 / MA20도 같이 유지합니다.
-    df["MA_5"] = df["close"].rolling(5).mean()
-    df["MA_20"] = df["close"].rolling(20).mean()
-    df["MA5"] = df["MA_5"]
-    df["MA20"] = df["MA_20"]
+    # MA_5는 CSV에 있지만, MA_20과 하위호환용 MA5/MA20 생성/확인
+    if "MA_5" not in df.columns:
+        df["MA_5"] = df["close"].rolling(5).mean()
+    df["MA5"] = df["MA_5"]  # 하위호환
 
-    bb_period = 20
-    bb_std_mult = 2.0
-    df["BB_MIDDLE"] = df["close"].rolling(window=bb_period, min_periods=1).mean()
-    df["BB_STD"] = df["close"].rolling(window=bb_period, min_periods=1).std()
-    df["BB_UPPER"] = df["BB_MIDDLE"] + df["BB_STD"] * bb_std_mult
-    df["BB_LOWER"] = df["BB_MIDDLE"] - df["BB_STD"] * bb_std_mult
+    if "MA_20" not in df.columns:
+        df["MA_20"] = df["close"].rolling(20).mean()
+    df["MA20"] = df["MA_20"]  # 하위호환
 
-    # RSI / Signal
-    rsi_period = 14
-    rsi_signal_period = 6
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
-    rs = gain / loss.replace(0, float("nan"))
-    df["RSI"] = 100 - (100 / (1 + rs))
-    df.loc[loss == 0, "RSI"] = 100.0
-    df["RSI_SIGNAL"] = df["RSI"].rolling(window=rsi_signal_period, min_periods=1).mean()
+    # Bollinger Bands - CSV에 있지만 없으면 계산
+    if "BB_MIDDLE" not in df.columns:
+        bb_period = 20
+        bb_std_mult = 2.0
+        df["BB_MIDDLE"] = df["close"].rolling(window=bb_period, min_periods=1).mean()
+        df["BB_STD"] = df["close"].rolling(window=bb_period, min_periods=1).std()
+        df["BB_UPPER"] = df["BB_MIDDLE"] + df["BB_STD"] * bb_std_mult
+        df["BB_LOWER"] = df["BB_MIDDLE"] - df["BB_STD"] * bb_std_mult
+    elif "BB_UPPER" not in df.columns:
+        bb_std_mult = 2.0
+        if "BB_STD" not in df.columns:
+            df["BB_STD"] = df["close"].rolling(window=20, min_periods=1).std()
+        df["BB_UPPER"] = df["BB_MIDDLE"] + df["BB_STD"] * bb_std_mult
+        df["BB_LOWER"] = df["BB_MIDDLE"] - df["BB_STD"] * bb_std_mult
 
-    # Stochastic
-    stoch_k_period = 10
-    stoch_d_period = 5
-    low_n = df["low"].rolling(window=stoch_k_period, min_periods=1).min()
-    high_n = df["high"].rolling(window=stoch_k_period, min_periods=1).max()
-    denom = (high_n - low_n).replace(0, float("nan"))
-    df["STOCH_K"] = 100.0 * (df["close"] - low_n) / denom
-    df["STOCH_D"] = df["STOCH_K"].rolling(window=stoch_d_period, min_periods=1).mean()
+    # RSI / Signal - CSV에 있지만 없으면 계산
+    if "RSI" not in df.columns:
+        rsi_period = 14
+        rsi_signal_period = 6
+        delta = df["close"].diff()
+        gain = delta.clip(lower=0).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
+        rs = gain / loss.replace(0, float("nan"))
+        df["RSI"] = 100 - (100 / (1 + rs))
+        df.loc[loss == 0, "RSI"] = 100.0
+        df["RSI_SIGNAL"] = df["RSI"].rolling(window=rsi_signal_period, min_periods=1).mean()
+    elif "RSI_SIGNAL" not in df.columns:
+        rsi_signal_period = 6
+        df["RSI_SIGNAL"] = df["RSI"].rolling(window=rsi_signal_period, min_periods=1).mean()
 
-    # Williams %R
-    williams_r_period = 10
-    williams_d_period = 9
-    high_w = df["high"].rolling(window=williams_r_period, min_periods=1).max()
-    low_w = df["low"].rolling(window=williams_r_period, min_periods=1).min()
-    wr_denom = (high_w - low_w).replace(0, float("nan"))
-    df["WILLIAMS_R"] = -100.0 * (high_w - df["close"]) / wr_denom
-    df["WILLIAMS_D"] = df["WILLIAMS_R"].rolling(window=williams_d_period, min_periods=1).mean()
+    # Stochastic - CSV에 있지만 없으면 계산
+    if "STOCH_K" not in df.columns:
+        stoch_k_period = 10
+        stoch_d_period = 5
+        low_n = df["low"].rolling(window=stoch_k_period, min_periods=1).min()
+        high_n = df["high"].rolling(window=stoch_k_period, min_periods=1).max()
+        denom = (high_n - low_n).replace(0, float("nan"))
+        df["STOCH_K"] = 100.0 * (df["close"] - low_n) / denom
+        df["STOCH_D"] = df["STOCH_K"].rolling(window=stoch_d_period, min_periods=1).mean()
+    elif "STOCH_D" not in df.columns:
+        stoch_d_period = 5
+        df["STOCH_D"] = df["STOCH_K"].rolling(window=stoch_d_period, min_periods=1).mean()
 
-    # MACD
-    macd_fast = 5
-    macd_slow = 12
-    macd_signal_period = 4
-    ema_fast = df["close"].ewm(span=macd_fast, adjust=False).mean()
-    ema_slow = df["close"].ewm(span=macd_slow, adjust=False).mean()
-    df["MACD"] = ema_fast - ema_slow
-    df["MACD_SIGNAL"] = df["MACD"].ewm(span=macd_signal_period, adjust=False).mean()
-    df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
+    # Williams %R - CSV에 있지만 없으면 계산
+    if "WILLIAMS_R" not in df.columns:
+        williams_r_period = 10
+        williams_d_period = 9
+        high_w = df["high"].rolling(window=williams_r_period, min_periods=1).max()
+        low_w = df["low"].rolling(window=williams_r_period, min_periods=1).min()
+        wr_denom = (high_w - low_w).replace(0, float("nan"))
+        df["WILLIAMS_R"] = -100.0 * (high_w - df["close"]) / wr_denom
+        df["WILLIAMS_D"] = df["WILLIAMS_R"].rolling(window=williams_d_period, min_periods=1).mean()
+    elif "WILLIAMS_D" not in df.columns:
+        williams_d_period = 9
+        df["WILLIAMS_D"] = df["WILLIAMS_R"].rolling(window=williams_d_period, min_periods=1).mean()
 
-    # ADX / DI
-    adx_period = 7
-    tr = pd.concat([
-        df["high"] - df["low"],
-        (df["high"] - df["close"].shift(1)).abs(),
-        (df["low"] - df["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    high_diff = df["high"] - df["high"].shift(1)
-    low_diff = df["low"].shift(1) - df["low"]
-    plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
-    minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
-    ema_tr = tr.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
-    ema_plus = plus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
-    ema_minus = minus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
-    df["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
-    df["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
-    di_sum = (df["DI_PLUS"] + df["DI_MINUS"]).replace(0, float("nan"))
-    dx = 100.0 * (df["DI_PLUS"] - df["DI_MINUS"]).abs() / di_sum
-    df["ADX"] = dx.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+    # MACD - CSV에 있지만 없으면 계산
+    if "MACD" not in df.columns:
+        macd_fast = 5
+        macd_slow = 12
+        macd_signal_period = 4
+        ema_fast = df["close"].ewm(span=macd_fast, adjust=False).mean()
+        ema_slow = df["close"].ewm(span=macd_slow, adjust=False).mean()
+        df["MACD"] = ema_fast - ema_slow
+        df["MACD_SIGNAL"] = df["MACD"].ewm(span=macd_signal_period, adjust=False).mean()
+        df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
+    elif "MACD_SIGNAL" not in df.columns:
+        macd_signal_period = 4
+        df["MACD_SIGNAL"] = df["MACD"].ewm(span=macd_signal_period, adjust=False).mean()
+    if "MACD_HIST" not in df.columns:
+        df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
 
-    # VWAP / OBV
-    cum_vol = df["volume"].cumsum()
-    df["VWAP"] = (df["close"] * df["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
-    close_diff = df["close"].diff()
-    obv_vol = df["volume"] * close_diff.gt(0).astype(float) - df["volume"] * close_diff.lt(0).astype(float)
-    df["OBV"] = obv_vol.cumsum()
-    df["OBV_MA"] = df["OBV"].rolling(window=10, min_periods=1).mean()
+    # ADX / DI - CSV에 있지만 없으면 계산
+    if "ADX" not in df.columns:
+        adx_period = 7
+        tr = pd.concat([
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift(1)).abs(),
+            (df["low"] - df["close"].shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        high_diff = df["high"] - df["high"].shift(1)
+        low_diff = df["low"].shift(1) - df["low"]
+        plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
+        minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
+        ema_tr = tr.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+        ema_plus = plus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+        ema_minus = minus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+        df["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
+        df["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
+        di_sum = (df["DI_PLUS"] + df["DI_MINUS"]).replace(0, float("nan"))
+        dx = 100.0 * (df["DI_PLUS"] - df["DI_MINUS"]).abs() / di_sum
+        df["ADX"] = dx.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
+    elif ("DI_PLUS" not in df.columns or "DI_MINUS" not in df.columns):
+        # DI 값들이 없으면 계산 (간단히 하기 위해 스킵하고 나중에 사용 시 처리)
+        pass
 
-    df["VOL_MA20"] = df["volume"].rolling(20).mean()
-    df["AMOUNT"] = df["close"] * df["volume"]
-    df["AMOUNT_MA20"] = df["AMOUNT"].rolling(20).mean()
+    # VWAP / OBV - CSV에 있지만 없으면 계산
+    if "VWAP" not in df.columns:
+        cum_vol = df["volume"].cumsum()
+        df["VWAP"] = (df["close"] * df["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
+    
+    if "OBV" not in df.columns:
+        close_diff = df["close"].diff()
+        obv_vol = df["volume"] * close_diff.gt(0).astype(float) - df["volume"] * close_diff.lt(0).astype(float)
+        df["OBV"] = obv_vol.cumsum()
+    
+    if "OBV_MA" not in df.columns and "OBV" in df.columns:
+        df["OBV_MA"] = df["OBV"].rolling(window=10, min_periods=1).mean()
+
+    # Volume & Amount - CSV에 VOL_MA20은 있지만 없으면 계산
+    if "VOL_MA20" not in df.columns:
+        df["VOL_MA20"] = df["volume"].rolling(20).mean()
+    
+    if "AMOUNT" not in df.columns:
+        df["AMOUNT"] = df["close"] * df["volume"]
+    
+    if "AMOUNT_MA20" not in df.columns:
+        df["AMOUNT_MA20"] = df["AMOUNT"].rolling(20).mean()
 
     return df
 
@@ -355,6 +418,9 @@ def calculate_candidate_score(candidate, config):
     support_score = candidate.get("support_score") or 0
     live_cross_ready = bool(candidate.get("live_cross_ready"))
     adx = candidate.get("adx")
+    di_plus = candidate.get("di_plus")
+    di_minus = candidate.get("di_minus")
+    macd_hist = candidate.get("macd_hist")
 
     if atr_ratio is None or vol_ma20 is None or amount_ma20 is None or price is None:
         return 0.0
@@ -364,8 +430,8 @@ def calculate_candidate_score(candidate, config):
     score += min(20.0, (vol_ma20 / config.volume_ma20_min) * 7.0)
     score += min(20.0, (amount_ma20 / config.amount_ma20_min) * 7.0)
 
-    # r73 보조지표 점수(0~6)를 최대 24점으로 반영
-    score += min(24.0, support_score * 4.0)
+    # r73 보조지표 점수(0~8)를 최대 32점으로 반영 (새로운 지표 추가로 최대 점수 증가)
+    score += min(32.0, support_score * 4.0)
 
     # r73 live price > BB middle buffer 근접 조건 가산
     if live_cross_ready:
@@ -377,6 +443,16 @@ def calculate_candidate_score(candidate, config):
 
     if adx is not None and adx >= ADX_MIN_TREND:
         score += min(8.0, (adx - ADX_MIN_TREND) * 0.35)
+
+    # 새로운 지표: DI+ 강도 반영 (최대 4점)
+    if di_plus is not None and di_minus is not None:
+        di_strength = di_plus - di_minus
+        if di_strength >= DI_DIFFERENCE_MIN:
+            score += min(4.0, (di_strength / 30.0) * 4.0)
+
+    # 새로운 지표: MACD Histogram 양수 (최대 3점)
+    if macd_hist is not None and macd_hist > 0:
+        score += min(3.0, macd_hist / 10.0)
 
     if price <= 100000:
         score += 5.0
@@ -402,6 +478,9 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         "ma_gap": None,
         "trend_state": "unknown",
         "adx": None,
+        "di_plus": None,
+        "di_minus": None,
+        "macd_hist": None,
         "support_score": 0,
         "live_cross_ready": False,
         "bb_position": None,
@@ -439,6 +518,9 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
     vol_ma20 = safe_float(latest["VOL_MA20"])
     amount_ma20 = safe_float(latest["AMOUNT_MA20"])
     adx = safe_float(latest.get("ADX"))
+    di_plus = safe_float(latest.get("DI_PLUS"))
+    di_minus = safe_float(latest.get("DI_MINUS"))
+    macd_hist = safe_float(latest.get("MACD_HIST"))
     bb_middle = safe_float(latest.get("BB_MIDDLE"))
     prev_bb_middle = safe_float(prev.get("BB_MIDDLE"))
     bb_upper = safe_float(latest.get("BB_UPPER"))
@@ -467,6 +549,9 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
             "ma_gap": ma_gap,
             "trend_state": classify_trend(ma5, ma20),
             "adx": adx,
+            "di_plus": di_plus,
+            "di_minus": di_minus,
+            "macd_hist": macd_hist,
             "support_score": support_score,
             "live_cross_ready": live_cross_ready,
             "bb_position": bb_position,
@@ -513,6 +598,17 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
 
     if adx is not None and adx < ADX_MIN_TREND:
         candidate["fail_reasons"].append("weak_trend_adx")
+
+    # 새로운 필터: DI+ 강도 확인 (상향 추세 여부)
+    if di_plus is not None and di_minus is not None:
+        if di_plus < DI_PLUS_MIN_STRENGTH:
+            candidate["soft_flags"].append("weak_di_plus")
+        if (di_plus - di_minus) < DI_DIFFERENCE_MIN:
+            candidate["soft_flags"].append("weak_di_difference")
+
+    # 새로운 필터: MACD Histogram 음수 (매도신호)
+    if macd_hist is not None and macd_hist < 0:
+        candidate["soft_flags"].append("negative_macd_hist")
 
     if vol_ma20 is not None and vol_ma20 > 0:
         volume_ratio_threshold = VOLUME_RATIO_MIDDAY
@@ -593,7 +689,7 @@ def is_fallback_eligible_candidate(row):
 
 
 def render_ranked_csv(selected_rows):
-    lines = ["rank,code,name,score,price,atr_ratio,vol_ma20,amount_ma20,trend_state,ma_gap"]
+    lines = ["rank,code,name,score,price,atr_ratio,vol_ma20,amount_ma20,trend_state,ma_gap,support_score,di_plus,di_minus,macd_hist,adx"]
     for rank, row in enumerate(selected_rows, start=1):
         lines.append(
             ",".join(
@@ -608,6 +704,11 @@ def render_ranked_csv(selected_rows):
                     format_metric(row["amount_ma20"], 0).replace(",", ""),
                     row["trend_state"],
                     f"{row['ma_gap']:.2f}" if row["ma_gap"] is not None else "",
+                    str(row.get("support_score", 0)),
+                    f"{row.get('di_plus', 0):.2f}" if row.get("di_plus") is not None else "",
+                    f"{row.get('di_minus', 0):.2f}" if row.get("di_minus") is not None else "",
+                    f"{row.get('macd_hist', 0):.4f}" if row.get("macd_hist") is not None else "",
+                    f"{row.get('adx', 0):.2f}" if row.get("adx") is not None else "",
                 ]
             )
         )
@@ -696,13 +797,13 @@ def render_report(data_dir, target_date, config, scan_result, comparison_rows):
         "",
         "## Ranked Picks",
         "",
-        "| rank | code | name | score | support | live cross | price | ATR/price | vol MA20 | amount MA20 | trend | ADX | ma gap |",
-        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |",
+        "| rank | code | name | score | support | live cross | price | ATR/price | vol MA20 | amount MA20 | trend | ADX | ma gap | DI+ | DI- | MACD |",
+        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, row in enumerate(scan_result["selected_rows"], start=1):
         lines.append(
-            "| {rank} | {code} | {name} | {score:.2f} | {support} | {live_cross} | {price} | {atr_ratio:.4%} | {vol_ma20} | {amount_ma20} | {trend} | {adx} | {ma_gap} |".format(
+            "| {rank} | {code} | {name} | {score:.2f} | {support} | {live_cross} | {price} | {atr_ratio:.4%} | {vol_ma20} | {amount_ma20} | {trend} | {adx} | {ma_gap} | {di_plus} | {di_minus} | {macd_hist} |".format(
                 rank=rank,
                 code=row["code"],
                 name=row["name"],
@@ -716,6 +817,9 @@ def render_report(data_dir, target_date, config, scan_result, comparison_rows):
                 trend=row["trend_state"],
                 adx=format_metric(row.get("adx"), 1),
                 ma_gap=format_metric(row["ma_gap"], 2),
+                di_plus=format_metric(row.get("di_plus"), 1),
+                di_minus=format_metric(row.get("di_minus"), 1),
+                macd_hist=format_metric(row.get("macd_hist"), 4),
             )
         )
 
