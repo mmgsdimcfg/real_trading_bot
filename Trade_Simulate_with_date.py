@@ -117,13 +117,15 @@ AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59)
 
 # 보조지표 임계값
 STOCH_OVERBOUGHT = 80.0
-STOCH_BUY_MAX = 72.0
-RSI_BUY_MIN = 45.0
-RSI_BUY_MAX = 72.0
+STOCH_BUY_MIN = 20.0
+STOCH_BUY_MAX = 50.0
+RSI_BUY_MIN = 50.0
+RSI_BUY_MAX = 70.0
 WILLIAMS_BUY_FLOOR = -70.0
 WILLIAMS_OVERBOUGHT_CEIL = -20.0
 BB_UPPER_PROXIMITY_MAX = 0.85
 BB_SQUEEZE_MIN_WIDTH_PCT = 0.008  # BB 폭(상단-하단)/현재가 < 0.8%이면 수렴/횡보 스퀴즈 → 매수 제외
+OBV_BREAKOUT_LOOKBACK_BARS = 5
 
 VOLUME_RATIO_OPEN = 0.80
 VOLUME_RATIO_MIDDAY = 0.60
@@ -487,23 +489,22 @@ def _num(candle: pd.Series, key: str) -> float:
     return float(value) if value is not None and not pd.isna(value) else float("nan")
 
 
-def _buy_support_score(cur: pd.Series, prev: pd.Series) -> int:
+def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | None = None) -> int:
     """매수 보조지표 스코어 (0~6)."""
     score = 0
 
-    # ① Stochastic K(10)/D(5): 상향 돌파 또는 과열 아닌 구간에서 K>D
+    # ① Stoch: K 상향 돌파 + 20~50 구간 + 상승 중
     k_c = _num(cur, "STOCH_K"); d_c = _num(cur, "STOCH_D")
     k_p = _num(prev, "STOCH_K"); d_p = _num(prev, "STOCH_D")
     if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if (k_p <= d_p and k_c > d_c) or (k_c > d_c and k_c <= STOCH_BUY_MAX):
+        if (k_p <= d_p and k_c > d_c) and (STOCH_BUY_MIN <= k_c <= STOCH_BUY_MAX) and (k_c > k_p):
             score += 1
 
-    # ② RSI(14)/Signal(6): RSI가 Signal 상향 돌파 또는 매수 구간 유지
-    rsi_c = _num(cur, "RSI"); sig_c = _num(cur, "RSI_SIGNAL")
-    rsi_p = _num(prev, "RSI"); sig_p = _num(prev, "RSI_SIGNAL")
-    if not any(pd.isna(v) for v in (rsi_c, sig_c, rsi_p, sig_p)):
-        in_buy_zone = RSI_BUY_MIN <= rsi_c <= RSI_BUY_MAX
-        if (rsi_p <= sig_p and rsi_c > sig_c) or (rsi_c > sig_c and in_buy_zone):
+    # ② RSI: 50 이상 70 미만 + 상승 중
+    rsi_c = _num(cur, "RSI")
+    rsi_p = _num(prev, "RSI")
+    if not any(pd.isna(v) for v in (rsi_c, rsi_p)):
+        if RSI_BUY_MIN <= rsi_c < RSI_BUY_MAX and rsi_c > rsi_p:
             score += 1
 
     # ③ Williams %R(10): 상승 중이며 과매도 회복
@@ -512,13 +513,14 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series) -> int:
         if wr_c > wr_p and wr_c >= WILLIAMS_BUY_FLOOR:
             score += 1
 
-    # ④ MACD
+    # ④ MACD: MACD > Signal + 히스토그램 가속(양수 또는 음수 축소)
     macd_c = _num(cur, "MACD")
     msig_c = _num(cur, "MACD_SIGNAL")
-    macd_p = _num(prev, "MACD")
-    msig_p = _num(prev, "MACD_SIGNAL")
-    if not any(pd.isna(v) for v in (macd_c, msig_c, macd_p, msig_p)):
-        if (macd_p <= msig_p and macd_c > msig_c) or (macd_c > msig_c and macd_c > 0):
+    hist_c = _num(cur, "MACD_HIST")
+    hist_p = _num(prev, "MACD_HIST")
+    if not any(pd.isna(v) for v in (macd_c, msig_c, hist_c)):
+        hist_accel = (hist_c > 0) or (not pd.isna(hist_p) and hist_c < 0 and hist_c > hist_p)
+        if macd_c > msig_c and hist_accel:
             score += 1
 
     # ⑤ VWAP
@@ -527,13 +529,19 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series) -> int:
     if not pd.isna(vwap) and not pd.isna(close_v) and close_v > vwap:
         score += 1
 
-    # ⑥ OBV
+    # ⑥ OBV: 최근 5봉 고점 돌파 또는 시그널 위 우상향
     obv_c = _num(cur, "OBV")
     obv_ma_c = _num(cur, "OBV_MA")
     obv_p = _num(prev, "OBV")
-    if not any(pd.isna(v) for v in (obv_c, obv_ma_c, obv_p)):
-        if obv_c > obv_ma_c or obv_c > obv_p:
-            score += 1
+    obv_breakout = False
+    if frame is not None and "OBV" in frame.columns and len(frame) >= OBV_BREAKOUT_LOOKBACK_BARS + 1:
+        obv_series = pd.to_numeric(frame["OBV"], errors="coerce")
+        recent_obv_high = obv_series.iloc[-(OBV_BREAKOUT_LOOKBACK_BARS + 1):-1].max()
+        if not pd.isna(obv_c) and not pd.isna(recent_obv_high):
+            obv_breakout = obv_c > float(recent_obv_high)
+    obv_uptrend = not any(pd.isna(v) for v in (obv_c, obv_ma_c, obv_p)) and (obv_c > obv_ma_c and obv_c > obv_p)
+    if obv_breakout or obv_uptrend:
+        score += 1
 
     return score
 
@@ -702,7 +710,7 @@ def check_buy_condition(frame: pd.DataFrame, now: pd.Timestamp) -> tuple[bool, s
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
 
     # ⑤ 보조지표 스코어 ≥ 3
-    support_score = _buy_support_score(cur, prev)
+    support_score = _buy_support_score(cur, prev, frame=frame)
     if support_score < 3:
         return False, f"LOW_SCORE_{support_score}"
 
@@ -1034,6 +1042,8 @@ def check_buy_condition_r73_sim(
         fallback_ok = confirmed_above and ma5_golden_cross_now and live_price >= upper_trigger
         if not fallback_ok:
             return False, "NO_LIVE_PRICE_BB_CROSS_UP"
+    if REQUIRE_STRICT_BUY_GOLDEN_CROSS and not ma5_golden_cross_now:
+        return False, "NO_MA5_BB_GOLDEN_CROSS"
     if live_price <= cur_bb:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
     if cur_bb < prev_bb:
@@ -1077,7 +1087,7 @@ def check_buy_condition_r73_sim(
     if not pd.isna(adx_val) and adx_val < ADX_MIN_TREND:
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
 
-    score = _buy_support_score(cur, prev)
+    score = _buy_support_score(cur, prev, frame=frame)
     if score < 3:
         return False, f"LOW_SCORE_{score}"
     trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
