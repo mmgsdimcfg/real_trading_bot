@@ -9,6 +9,14 @@ Key behavior:
 - Collects by date from KIS minute API (`inquire_time_dailychartprice`).
 - Uses market priority NX > J > UN for overlapping timestamps.
 - Supports NXT pre/after sessions (08:00~19:59) when symbol is NXT-tradeable.
+
+Usage examples:
+- Single code on specific date:
+    python xgraph/auto_trading/data_collector.py --date 20260508 --code 067310
+- Multiple codes on specific date:
+    python xgraph/auto_trading/data_collector.py --date 20260508 --code 067310,005930
+- Full list from symbols file:
+    python xgraph/auto_trading/data_collector.py --date 20260508 --symbols-file xgraph/auto_trading/symbols.csv
 """
 
 from __future__ import annotations
@@ -64,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Date-based KIS minute collector (20260401-compatible schema)")
     parser.add_argument("--env", type=str, default="real", choices=["real", "demo"], help="API environment")
     parser.add_argument("--date", type=str, default=datetime.now().strftime("%Y%m%d"), help="Target date YYYYMMDD")
+    parser.add_argument("--code", type=str, default="", help="Collect only this code (6-digit). Comma-separated supported")
     parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "symbols.csv"), help="Path to symbols.csv")
     parser.add_argument("--data-root", type=str, default=str(SCRIPT_DIR / "data"), help="Output data root")
     parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
@@ -351,6 +360,13 @@ def load_symbols(symbols_file: Path) -> list[tuple[str, str]]:
     return deduped
 
 
+def _parse_code_filter(raw: str) -> set[str]:
+    if not raw:
+        return set()
+    tokens = [part.strip() for part in raw.split(",")]
+    return {token.zfill(6) for token in tokens if token}
+
+
 def main() -> None:
     args = parse_args()
 
@@ -369,6 +385,12 @@ def main() -> None:
     ka.auth(svr="prod" if args.env == "real" else "vps")
 
     symbols = load_symbols(symbols_file)
+    selected_codes = _parse_code_filter(args.code)
+    if selected_codes:
+        symbols = [(code, name) for code, name in symbols if code in selected_codes]
+        if not symbols:
+            raise SystemExit(f"No matching symbols from --code: {','.join(sorted(selected_codes))}")
+
     logger.info("collect start: date=%s, symbols=%d", args.date, len(symbols))
 
     saved_count = 0
