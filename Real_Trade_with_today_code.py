@@ -94,14 +94,18 @@ BOX_RANGE_HOLD_LOOKBACK_BARS = 8
 BOX_RANGE_HOLD_MAX_RANGE_PCT = 0.0065         # 최근 N개 봉 고저폭이 현재가 대비 0.65% 이내
 BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT = 0.0080      # 볼린저 밴드 폭이 현재가 대비 0.80% 이내
 # 매수 2단계(근접 ARM -> 확정/강모멘텀 진입) 파라미터
-NEAR_CROSS_ARM_GAP_MAX = 0.0015        # MA5가 BB_MIDDLE 아래에 있더라도 gap 0.15% 이내면 ARM 후보
+NEAR_CROSS_ARM_GAP_MAX = 0.0045        # MA5가 BB_MIDDLE 아래에 있더라도 gap 0.45% 이내면 ARM 후보
 NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006    # ARM 최소 MA5 상승률 (0.06%)
-NEAR_CROSS_EARLY_GAP_MAX = 0.0006      # ARM 이후 조기진입 허용 gap 0.06% 이내
+NEAR_CROSS_EARLY_GAP_MAX = 0.0045      # ARM 이후 조기진입 허용 gap 0.45% 이내
 NEAR_CROSS_EARLY_MA_RISE_MIN = 0.0010  # ARM 이후 조기진입 최소 MA5 상승률 (0.10%)
 NEAR_CROSS_ARM_EXPIRE_BARS = 2         # ARM 유효 기간(3분봉 기준 바 개수)
 # 기본 원칙은 MA5 상향돌파 우선. 예외 경로는 특정 시간창에서만 제한적으로 허용.
 ENABLE_NEAR_CROSS_ARM = True
 ENABLE_EARLY_NEAR_CROSS_ENTRY = True
+ENABLE_PRICE_LEAD_BB_BREAKOUT = True
+PRICE_LEAD_BREAKOUT_MIN_SCORE = 3
+PRICE_LEAD_BREAKOUT_MIN_ADX = 25.0
+PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT = True
 EARLY_NEAR_CROSS_ALLOWED_START = dt_time(9, 0)
 EARLY_NEAR_CROSS_ALLOWED_END = dt_time(11, 30)
 EARLY_NEAR_CROSS_ALLOW_NXT = False
@@ -910,6 +914,7 @@ def _buy_reject_detail(
     """Returns reject reason + indicator context for every reject type."""
     prev_ma5 = _num(prev, "MA_5");  cur_ma5  = _num(cur,  "MA_5")
     prev_bb  = _num(prev, "BB_MIDDLE"); cur_bb = _num(cur, "BB_MIDDLE")
+    snapshot = _buy_condition_snapshot(cur, prev, live_price=live_price, cross_info=cross_info, frame=frame)
 
     if buy_reason == "NO_LIVE_PRICE_BB_CROSS_UP":
         live_part = f"live={live_price:,.0f} " if live_price is not None and pd.notna(live_price) else ""
@@ -921,23 +926,30 @@ def _buy_reject_detail(
                 f"{buy_reason} | {live_part}BB_MID {cur_bb:.1f} upper={float(cross_info.get('upper_trigger', cur_bb)):.1f} | "
                 f"relation={cross_info.get('relation')} pending={pending_side} "
                 f"count={pending_count}/{LIVE_PRICE_CROSS_CONFIRM_POLLS} "
-                f"seconds={pending_seconds:.0f}/{LIVE_PRICE_CROSS_CONFIRM_SECONDS}"
+                f"seconds={pending_seconds:.0f}/{LIVE_PRICE_CROSS_CONFIRM_SECONDS} | {snapshot}"
             )
         return (
             f"{buy_reason} | "
             f"{live_part}BB_MID {prev_bb:.1f}→{cur_bb:.1f} "
-            f"(need live price to stay above BB middle long enough)"
+            f"(need live price to stay above BB middle long enough) | {snapshot}"
         )
 
+    if buy_reason == "NO_MA5_BB_GOLDEN_CROSS":
+        return f"{buy_reason} | MA5 {prev_ma5:.1f}→{cur_ma5:.1f} | BB_MID {prev_bb:.1f}→{cur_bb:.1f} | {snapshot}"
+
+    if buy_reason == "MA5_AT_OR_BELOW_BB_MIDDLE":
+        gap_pct = ((cur_bb - cur_ma5) / max(cur_bb, 1.0)) * 100
+        return f"{buy_reason} | MA5={cur_ma5:.1f} BB_MID={cur_bb:.1f} gap={gap_pct:.3f}% | {snapshot}"
+
     if buy_reason == "BB_MIDDLE_FALLING":
-        return f"{buy_reason} | BB_MID {prev_bb:.1f}→{cur_bb:.1f}"
+        return f"{buy_reason} | BB_MID {prev_bb:.1f}→{cur_bb:.1f} | {snapshot}"
 
     if buy_reason == "MA5_FALLING":
-        return f"{buy_reason} | MA5 {prev_ma5:.1f}→{cur_ma5:.1f}"
+        return f"{buy_reason} | MA5 {prev_ma5:.1f}→{cur_ma5:.1f} | {snapshot}"
 
     if buy_reason == "NOT_BULLISH":
         close_v = _num(cur, "close"); open_v = _num(cur, "open")
-        return f"{buy_reason} | close={close_v:.0f} open={open_v:.0f}"
+        return f"{buy_reason} | close={close_v:.0f} open={open_v:.0f} | {snapshot}"
 
     if buy_reason == "MISSING_INDICATOR":
         missing = [k for k in ("MA_5", "BB_MIDDLE") if pd.isna(_num(cur, k)) or pd.isna(_num(prev, k))]
@@ -946,7 +958,7 @@ def _buy_reject_detail(
     if not buy_reason.startswith("LOW_SCORE"):
         # OVERBOUGHT_*, NEAR_BB_UPPER_*, LOW_VOLUME_*, WEAK_TREND_ADX_* —
         # reason string already contains the offending value; no extra context needed
-        return buy_reason
+        return f"{buy_reason} | {snapshot}"
 
     # LOW_SCORE: show which of the 6 sub-indicators failed
     failed = []
@@ -995,7 +1007,7 @@ def _buy_reject_detail(
         failed.append("OBV")
 
     suffix = f" | FAILED={','.join(failed)}" if failed else ""
-    return f"{buy_reason}{suffix}"
+    return f"{buy_reason}{suffix} | {snapshot}"
 
 
 def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | None = None) -> int:
@@ -1150,6 +1162,103 @@ def _passes_early_near_cross_liquidity(cur: pd.Series) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _price_lead_breakout_context(
+    frame: pd.DataFrame,
+    now: datetime,
+    live_price: float,
+    cross_info: dict[str, object],
+) -> dict[str, object]:
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+
+    prev_close = _num(prev, "close")
+    close_val = _num(cur, "close")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_bb = _num(cur, "BB_MIDDLE")
+    adx_val = _num(cur, "ADX")
+    macd_val = _num(cur, "MACD")
+    macd_sig = _num(cur, "MACD_SIGNAL")
+    hist_val = _num(cur, "MACD_HIST")
+    support_score = _buy_support_score(cur, prev, frame=frame)
+    near_flags = _near_cross_momentum_flags(cur, prev)
+    liquidity_ok, liquidity_reason = _passes_early_near_cross_liquidity(cur)
+
+    current_time = now.time()
+    time_window_ok = (
+        (is_regular_session(now) and EARLY_NEAR_CROSS_ALLOWED_START <= current_time <= EARLY_NEAR_CROSS_ALLOWED_END)
+        or (EARLY_NEAR_CROSS_ALLOW_NXT and is_nxt_session(now))
+    )
+    price_breakout = not any(pd.isna(v) for v in (prev_close, close_val, prev_bb, cur_bb)) and (prev_close <= prev_bb) and (close_val > cur_bb)
+    live_cross_up = cross_info.get("signal") == "cross_up"
+    macd_momentum_ok = not any(pd.isna(v) for v in (macd_val, macd_sig, hist_val)) and macd_val > macd_sig and hist_val > 0
+
+    near_entry_mode = None
+    if time_window_ok and ENABLE_EARLY_NEAR_CROSS_ENTRY and bool(near_flags["can_early"]):
+        near_entry_mode = "EARLY_NEAR_CROSS"
+    elif time_window_ok and ENABLE_NEAR_CROSS_ARM and bool(near_flags["can_arm"]):
+        near_entry_mode = "ARMED_NEAR_CROSS"
+
+    can_enter = (
+        ENABLE_PRICE_LEAD_BB_BREAKOUT
+        and price_breakout
+        and live_cross_up
+        and near_entry_mode is not None
+        and liquidity_ok
+        and support_score >= PRICE_LEAD_BREAKOUT_MIN_SCORE
+        and not pd.isna(adx_val)
+        and adx_val >= PRICE_LEAD_BREAKOUT_MIN_ADX
+        and macd_momentum_ok
+        and live_price > cur_bb
+    )
+
+    return {
+        "can_enter": can_enter,
+        "entry_mode": f"PRICE_LEAD_{near_entry_mode}" if can_enter and near_entry_mode is not None else near_entry_mode,
+        "support_score": support_score,
+        "liquidity_ok": liquidity_ok,
+        "liquidity_reason": liquidity_reason,
+        "price_breakout": price_breakout,
+        "live_cross_up": live_cross_up,
+        "time_window_ok": time_window_ok,
+        "allow_overbought": can_enter and PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
+        "near_flags": near_flags,
+        "adx": adx_val,
+    }
+
+
+def _buy_condition_snapshot(
+    cur: pd.Series,
+    prev: pd.Series,
+    live_price: float | None = None,
+    cross_info: dict | None = None,
+    frame: pd.DataFrame | None = None,
+) -> str:
+    prev_ma5 = _num(prev, "MA_5")
+    cur_ma5 = _num(cur, "MA_5")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_bb = _num(cur, "BB_MIDDLE")
+    prev_close = _num(prev, "close")
+    close_val = _num(cur, "close")
+    support_score = _buy_support_score(cur, prev, frame=frame) if frame is not None else -1
+    near_flags = _near_cross_momentum_flags(cur, prev)
+    liquidity_ok, liquidity_reason = _passes_early_near_cross_liquidity(cur)
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    vol_ratio = vol / vol_ma if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0 else float("nan")
+    ma_cross = not any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)) and (prev_ma5 <= prev_bb) and (cur_ma5 > cur_bb)
+    close_cross = not any(pd.isna(v) for v in (prev_close, close_val, prev_bb, cur_bb)) and (prev_close <= prev_bb) and (close_val > cur_bb)
+    gap_ratio = float(near_flags["gap_ratio"]) * 100 if not pd.isna(float(near_flags["gap_ratio"])) else float("nan")
+    ma_rise_ratio = float(near_flags["ma_rise_ratio"]) * 100 if not pd.isna(float(near_flags["ma_rise_ratio"])) else float("nan")
+    live_signal = cross_info.get("signal") if cross_info else None
+    live_part = f"live={live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "live=nan"
+    return (
+        f"GATES ma_cross={ma_cross} close_cross={close_cross} signal={live_signal} {live_part} "
+        f"arm={bool(near_flags['can_arm'])} early={bool(near_flags['can_early'])} "
+        f"gap={gap_ratio:.3f}% rise={ma_rise_ratio:.3f}% liq={liquidity_ok}:{liquidity_reason} "
+        f"score={support_score} vol_ratio={vol_ratio:.2f}"
+    )
+
+
 def _is_box_range_hold_zone(frame: pd.DataFrame) -> tuple[bool, str]:
     """Detects narrow-range consolidation zone for technical-sell hold."""
     if len(frame) < BOX_RANGE_HOLD_LOOKBACK_BARS:
@@ -1183,6 +1292,9 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     cur_ma5 = _num(cur, "MA_5")
     prev_bb = _num(prev, "BB_MIDDLE")
     cur_bb = _num(cur, "BB_MIDDLE")
+    close_val = _num(cur, "close")
+    breakout_ctx = _price_lead_breakout_context(frame, now, live_price, cross_info)
+    entry_mode = "MA5_BB_GOLDEN_CROSS"
 
     if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
         return False, "MISSING_INDICATOR"
@@ -1190,7 +1302,9 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if ENABLE_STRICT_MA5_BB_GOLDEN_CROSS:
         ma5_cross = (prev_ma5 <= prev_bb) and (cur_ma5 > cur_bb)
         if not ma5_cross:
-            return False, "NO_MA5_BB_GOLDEN_CROSS"
+            if not bool(breakout_ctx["can_enter"]):
+                return False, "NO_MA5_BB_GOLDEN_CROSS"
+            entry_mode = str(breakout_ctx["entry_mode"])
 
     if cross_info.get("signal") != "cross_up":
         return False, "NO_LIVE_PRICE_BB_CROSS_UP"
@@ -1199,17 +1313,16 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
 
     # 실시간가뿐 아니라 봉 종가도 BB_MIDDLE 위여야 신규 매수 허용
-    close_val = _num(cur, "close")
     if pd.isna(close_val) or close_val <= cur_bb:
         return False, "BAR_CLOSE_NOT_ABOVE_BB_MIDDLE"
 
     # MA5가 BB_MIDDLE 아래에 있으면 이미 데드크로스 상태 → 매수 차단
-    if cur_ma5 <= cur_bb:
+    if cur_ma5 <= cur_bb and entry_mode == "MA5_BB_GOLDEN_CROSS":
         return False, "MA5_AT_OR_BELOW_BB_MIDDLE"
 
     # MA5가 BB_MIDDLE 위에 있어도 gap이 극히 작고 MA5가 하락 중이면 데드크로스 임박 → 매수 차단
     _ma5_bb_gap_pct = (cur_ma5 - cur_bb) / max(cur_bb, 1.0)
-    if _ma5_bb_gap_pct < NEAR_CROSS_ARM_GAP_MAX and cur_ma5 <= prev_ma5:
+    if entry_mode == "MA5_BB_GOLDEN_CROSS" and _ma5_bb_gap_pct < NEAR_CROSS_ARM_GAP_MAX and cur_ma5 <= prev_ma5:
         return False, f"MA5_DEAD_CROSS_IMMINENT_{_ma5_bb_gap_pct*100:.3f}%"
 
     # 모멘텀 방향 확인
@@ -1222,14 +1335,16 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if live_price <= float(cur["open"]):
         return False, "NOT_BULLISH"
 
+    allow_overbought = bool(breakout_ctx["allow_overbought"])
+
     # 과열 추격 매수 방지 1) Stochastic 과열 구간
     stoch_k = _num(cur, "STOCH_K")
-    if not pd.isna(stoch_k) and stoch_k >= STOCH_OVERBOUGHT:
+    if not pd.isna(stoch_k) and stoch_k >= STOCH_OVERBOUGHT and not allow_overbought:
         return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
 
     # 과열 추격 매수 방지 2) Williams %R 과열(0에 가까울수록 과열)
     wr_val = _num(cur, "WILLIAMS_R")
-    if not pd.isna(wr_val) and wr_val >= WILLIAMS_OVERBOUGHT_CEIL:
+    if not pd.isna(wr_val) and wr_val >= WILLIAMS_OVERBOUGHT_CEIL and not allow_overbought:
         return False, f"OVERBOUGHT_WR_{wr_val:.1f}"
 
     # 과열 추격 매수 방지 3) 볼린저 상단 과근접
@@ -1254,11 +1369,11 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if not pd.isna(adx_val) and adx_val < ADX_MIN_TREND:
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
 
-    support_score = _buy_support_score(cur, prev, frame=frame)
+    support_score = int(breakout_ctx["support_score"])
     if support_score < 3:
         return False, f"LOW_SCORE_{support_score}"
 
-    return True, f"LIVE_PRICE_BB_UP_CROSS_SCORE_{support_score}"
+    return True, f"{entry_mode}_SCORE_{support_score}"
 
 
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
