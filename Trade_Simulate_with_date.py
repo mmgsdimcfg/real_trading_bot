@@ -157,13 +157,14 @@ COMPARE_SLIPPAGE_RATE = 0.00020
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="[%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
     force=True,
 )
 logger = logging.getLogger(__name__)
 
 LAST_SIM_STATS: dict[str, float | int | str] = {}
+CURRENT_SIM_TS: pd.Timestamp | None = None
 INDICATOR_COLUMNS = {
     "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
     "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
@@ -173,12 +174,18 @@ INDICATOR_COLUMNS = {
 
 
 def log(msg: str) -> None:
-    logger.info(msg)
+    if CURRENT_SIM_TS is not None:
+        logger.info(f"{CURRENT_SIM_TS:%Y-%m-%d %H:%M:%S} | {msg}")
+    else:
+        logger.info(msg)
 
 
 def log_detail(msg: str) -> None:
     if not LOG_SUMMARY_MODE:
-        logger.info(msg)
+        if CURRENT_SIM_TS is not None:
+            logger.info(f"{CURRENT_SIM_TS:%Y-%m-%d %H:%M:%S} | {msg}")
+        else:
+            logger.info(msg)
 
 
 def raw(msg: str) -> None:
@@ -1360,7 +1367,7 @@ def simulate_date(
     names: dict[str, str] | None = None,
     initial_capital: float = INITIAL_CAPITAL,
 ) -> int:
-    global LAST_SIM_STATS
+    global LAST_SIM_STATS, CURRENT_SIM_TS
     data_dir = data_root / date_str
     log(f"\n{'=' * 60}")
     log(f"Simulation date : {date_str} [R73 Live Price/BB Cross Simulation]")
@@ -1449,6 +1456,7 @@ def simulate_date(
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
 
     for ts in all_times:
+        CURRENT_SIM_TS = ts
         run_scheduled_liquidations(sim, frames, selected_names, ts, liq_state)
         latest_price_map: dict[str, float] = {}
 
@@ -1581,12 +1589,15 @@ def simulate_date(
             compare_multi.force_close_all(latest_price_map, "EOD_FLAT_1959_ALL")
 
     final_close_time = pd.Timestamp(datetime.combine(target_date, AFTERNOON_NXT_END))
+    CURRENT_SIM_TS = final_close_time
     for code in list(sim.positions.keys()):
         price = get_latest_price_up_to(frames[code], final_close_time)
         if price is None:
             continue
         session = sim.positions[code].buy_session
         sim.sell(code, price, final_close_time, "EOD_CLOSE", session)
+
+    CURRENT_SIM_TS = None
 
     last_prices = {
         code: float(frame[frame.index.date == target_date].iloc[-1]["close"])
