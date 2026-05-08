@@ -17,6 +17,7 @@ import inspect
 import logging
 import sys
 import time
+import unicodedata
 from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 from typing import Optional
@@ -150,6 +151,10 @@ WILLIAMS_OVERBOUGHT_CEIL = -20.0
 BB_UPPER_PROXIMITY_MAX = 0.85  # (close-bb_lower)/(bb_upper-bb_lower) 값이 크면 상단 추격 구간
 OBV_BREAKOUT_LOOKBACK_BARS = 5  # OBV가 최근 N개 봉 고점을 돌파했는지 확인
 ENABLE_STRICT_MA5_BB_GOLDEN_CROSS = True  # 봉 기준 MA5 상향 돌파를 신규 매수 필수 조건으로 사용
+ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS = True
+STRONG_TREND_OVERBOUGHT_MIN_SCORE = 5
+STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO = 1.50
+STRONG_TREND_OVERBOUGHT_MIN_ADX = 30.0
 
 # 거래량 필터(시간대/세션 가변)
 VOLUME_RATIO_OPEN = 0.80       # 장초반(09:00~10:00)
@@ -903,6 +908,22 @@ def _num(candle: pd.Series, key: str) -> float:
     return float(value) if value is not None and not pd.isna(value) else float("nan")
 
 
+SYMBOL_LOG_WIDTH = 25
+
+
+def _display_width(text: str) -> int:
+    width = 0
+    for char in text:
+        width += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+    return width
+
+
+def _symbol_log_label(code: str, name: str, width: int = SYMBOL_LOG_WIDTH) -> str:
+    label = f"{code}({name})"
+    pad = max(0, width - _display_width(label))
+    return label + " " * pad
+
+
 def _buy_reject_detail(
     buy_reason: str,
     cur: pd.Series,
@@ -1335,16 +1356,32 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if live_price <= float(cur["open"]):
         return False, "NOT_BULLISH"
 
-    allow_overbought = bool(breakout_ctx["allow_overbought"])
+    adx_val = _num(cur, "ADX")
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    vol_ratio = vol / vol_ma if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0 else float("nan")
+    support_score = int(breakout_ctx["support_score"])
+    strong_trend_overbought_bypass = (
+        ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS
+        and entry_mode == "MA5_BB_GOLDEN_CROSS"
+        and support_score >= STRONG_TREND_OVERBOUGHT_MIN_SCORE
+        and not pd.isna(vol_ratio)
+        and vol_ratio >= STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO
+        and not pd.isna(adx_val)
+        and adx_val >= STRONG_TREND_OVERBOUGHT_MIN_ADX
+    )
+    allow_overbought = bool(breakout_ctx["allow_overbought"]) or strong_trend_overbought_bypass
 
     # 과열 추격 매수 방지 1) Stochastic 과열 구간
     stoch_k = _num(cur, "STOCH_K")
-    if not pd.isna(stoch_k) and stoch_k >= STOCH_OVERBOUGHT and not allow_overbought:
+    stoch_overbought = not pd.isna(stoch_k) and stoch_k >= STOCH_OVERBOUGHT
+    if stoch_overbought and not allow_overbought:
         return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
 
     # 과열 추격 매수 방지 2) Williams %R 과열(0에 가까울수록 과열)
     wr_val = _num(cur, "WILLIAMS_R")
-    if not pd.isna(wr_val) and wr_val >= WILLIAMS_OVERBOUGHT_CEIL and not allow_overbought:
+    wr_overbought = not pd.isna(wr_val) and wr_val >= WILLIAMS_OVERBOUGHT_CEIL
+    if wr_overbought and not allow_overbought:
         return False, f"OVERBOUGHT_WR_{wr_val:.1f}"
 
     # 과열 추격 매수 방지 3) 볼린저 상단 과근접
@@ -1355,11 +1392,7 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
         if bb_pos >= BB_UPPER_PROXIMITY_MAX:
             return False, f"NEAR_BB_UPPER_{bb_pos:.2f}"
 
-    adx_val = _num(cur, "ADX")
-
     # 거래량 필터: 급감 구간 진입 회피
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
     if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
         ratio = get_volume_ratio_threshold(now, adx_val)
         if vol < (vol_ma * ratio):
@@ -1369,11 +1402,14 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
     if not pd.isna(adx_val) and adx_val < ADX_MIN_TREND:
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
 
-    support_score = int(breakout_ctx["support_score"])
     if support_score < 3:
         return False, f"LOW_SCORE_{support_score}"
 
-    return True, f"{entry_mode}_SCORE_{support_score}"
+    bypass_tag = ""
+    if strong_trend_overbought_bypass and (stoch_overbought or wr_overbought):
+        bypass_tag = "STRONG_TREND_OVERBOUGHT_BYPASS_"
+
+    return True, f"{entry_mode}_{bypass_tag}SCORE_{support_score}"
 
 
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
@@ -1851,8 +1887,9 @@ def run(target_date: str | None = None) -> None:
 
         for code, name in watch_map.items():
             nxt_tradeable = nxt_map.get(code, False)
+            symbol_label = _symbol_log_label(code, name)
             if not can_trade_code_now(current_dt, nxt_tradeable):
-                log(f"  [SKIP] {code}({name}) | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
+                log(f"  [SKIP] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
                 continue
 
             try:
@@ -1862,10 +1899,10 @@ def run(target_date: str | None = None) -> None:
                 continue
 
             if frame is None:
-                log(f"  [SKIP] {code}({name}) | frame=None (fetch failed)")
+                log(f"  [SKIP] {symbol_label} | frame=None (fetch failed)")
                 continue
             if len(frame) < MIN_BARS_REQUIRED:
-                log(f"  [SKIP] {code}({name}) | bars={len(frame)} < MIN_BARS_REQUIRED={MIN_BARS_REQUIRED}")
+                log(f"  [SKIP] {symbol_label} | bars={len(frame)} < MIN_BARS_REQUIRED={MIN_BARS_REQUIRED}")
                 continue
 
             bar_time = frame.index[-1]
@@ -1886,7 +1923,7 @@ def run(target_date: str | None = None) -> None:
             pos = api.get_open_positions().get(code)
 
             log(
-                f"  [CHECK] {code}({name}) | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} bar_close={float(cur['close']):,.0f} | "
+                f"  [CHECK] {symbol_label} | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} bar_close={float(cur['close']):,.0f} | "
                 f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
@@ -1995,7 +2032,7 @@ def run(target_date: str | None = None) -> None:
                     continue
                 _warmup_elapsed = (current_dt - startup_time).total_seconds()
                 if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
-                    log(f"  [BUY REJECT] {code}({name}) | STARTUP_WARMUP | elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s")
+                    log(f"  [BUY REJECT] {symbol_label} | STARTUP_WARMUP | elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s")
                     continue
                 if not ALLOW_REBUY_SAME_CODE and code in traded_today:
                     continue
@@ -2017,12 +2054,12 @@ def run(target_date: str | None = None) -> None:
                         cross_info=cross_info,
                         frame=frame,
                     )
-                    log(f"  [BUY REJECT] {code}({name}) | {detail}")
+                    log(f"  [BUY REJECT] {symbol_label} | {detail}")
                     continue
 
                 qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
                 if qty <= 0:
-                    log(f"  [BUY REJECT] {code}({name}) | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
+                    log(f"  [BUY REJECT] {symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
                     continue
 
                 session = classify_buy_session(current_dt)
@@ -2033,7 +2070,7 @@ def run(target_date: str | None = None) -> None:
                 )
                 if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                     log(
-                        f"  [BUY EVAL] {code}({name}) | OK {buy_reason} | {current_dt:%H:%M:%S} | "
+                        f"  [BUY EVAL] {symbol_label} | OK {buy_reason} | {current_dt:%H:%M:%S} | "
                         f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}→{_num(cur, 'BB_MIDDLE'):.1f} | "
                         f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                         f"K={_num(prev_bar, 'STOCH_K'):.1f}→{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
@@ -2043,7 +2080,7 @@ def run(target_date: str | None = None) -> None:
                         f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
                         f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
                     )
-                    log(f"  [BUY EXECUTED] {code}({name}) | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
+                    log(f"  [BUY EXECUTED] {symbol_label} | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
                     traded_today.add(code)
                     signal_buy_bar[code] = bar_time
 
