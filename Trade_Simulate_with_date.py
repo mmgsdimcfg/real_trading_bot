@@ -1769,6 +1769,11 @@ def main() -> None:
         help="Path to define_today_code.txt for code names",
     )
     parser.add_argument(
+        "--use-today-code-watchlist",
+        action="store_true",
+        help="Use define_today_code.txt as watchlist when --codes and picks.txt are not provided",
+    )
+    parser.add_argument(
         "--symbols-file",
         default=str(SCRIPT_DIR / "symbols.csv"),
         help="Path to symbols.csv used by get_simulation_data.py",
@@ -1845,11 +1850,21 @@ def main() -> None:
     names_from_today = load_code_name_map(Path(args.today_code_file))
     for code, name in names_from_today.items():
         names.setdefault(code, name)
+    if args.use_today_code_watchlist and names_from_today:
+        today_watch_codes: set[str] | None = set(names_from_today.keys())
+        log(
+            f"Today-code watchlist enabled by option: {Path(args.today_code_file)} "
+            f"({len(today_watch_codes)} codes)"
+        )
+    else:
+        today_watch_codes = None
+        if args.use_today_code_watchlist:
+            log(f"WARNING: today-code watchlist enabled but file is empty or missing: {Path(args.today_code_file)}")
     exit_code = simulate_date(
         date_str=args.date,
         data_root=Path(args.data_root),
         codes=args.codes,
-        today_watch_codes=set(names_from_today.keys()) if names_from_today else None,
+        today_watch_codes=today_watch_codes,
         names=names,
         initial_capital=args.capital,
     )
