@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import sys
 from dataclasses import dataclass
@@ -1332,6 +1333,25 @@ def run_scheduled_liquidations(
             sim.sell(code, price, ts, "EOD_NXT_1959", "afternoon_nxt")
 
 
+def _load_nxt_flags(data_dir: Path) -> dict[str, bool]:
+    """data_collector.py가 저장한 nxt_flags.json을 로드합니다.
+
+    파일이 없으면 빈 dict 를 릏려 호출자가 NXT_ELIGIBLE_CODES_FALLBACK로
+    폴백하도록 합니다.
+    """
+    path = data_dir / "nxt_flags.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        return {str(code).zfill(6): bool(flag) for code, flag in raw.items()}
+    except Exception as exc:
+        log(f"WARNING: failed to load nxt_flags.json: {exc}")
+        return {}
+
+
+
 def simulate_date(
     date_str: str,
     data_root: Path,
@@ -1398,8 +1418,21 @@ def simulate_date(
         return 1
 
     log(f"Watchlist source: {watchlist_source}")
+
+    # nxt_flags.json (data_collector 저장)이 있으면 우선 사용, 없으면 fallback
+    nxt_flags_from_file = _load_nxt_flags(data_dir)
+    if nxt_flags_from_file:
+        log(f"Loaded nxt_flags.json ({len(nxt_flags_from_file)} codes) from {data_dir}")
+    else:
+        log(f"WARNING: nxt_flags.json not found in {data_dir}, falling back to NXT_ELIGIBLE_CODES_FALLBACK")
+
+    def _is_nxt_tradeable(code: str) -> bool:
+        if code in nxt_flags_from_file:
+            return nxt_flags_from_file[code]
+        return code in NXT_ELIGIBLE_CODES_FALLBACK
+
     for code in sorted(frames.keys()):
-        log(f"WATCH | {code} | {selected_names.get(code, code)} | NXT={code in NXT_ELIGIBLE_CODES_FALLBACK}")
+        log(f"WATCH | {code} | {selected_names.get(code, code)} | NXT={_is_nxt_tradeable(code)}")
 
     target_date = datetime.strptime(date_str, "%Y%m%d").date()
     all_times = sorted({ts for df in frames.values() for ts in df.index if ts.date() == target_date})
@@ -1423,7 +1456,7 @@ def simulate_date(
             if ts not in frame.index:
                 continue
 
-            nxt_tradeable = code in NXT_ELIGIBLE_CODES_FALLBACK
+            nxt_tradeable = _is_nxt_tradeable(code)
             if not can_trade_code_now(ts, nxt_tradeable):
                 continue
 
