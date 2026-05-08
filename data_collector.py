@@ -22,6 +22,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -395,13 +396,16 @@ def main() -> None:
 
     saved_count = 0
     empty_count = 0
+    nxt_flags: dict[str, bool] = {}
 
     for idx, (code, name) in enumerate(symbols, start=1):
         try:
             nxt_tradeable = probe_nxt_tradeable(code)
+            nxt_flags[code] = nxt_tradeable
             df = fetch_symbol_data(code=code, target_date=args.date, include_nxt=nxt_tradeable)
         except Exception as exc:
             logger.error("[%d/%d] %s(%s) | fetch error: %s", idx, len(symbols), code, name, exc)
+            nxt_flags[code] = False
             continue
 
         if df is None or df.empty:
@@ -425,6 +429,14 @@ def main() -> None:
 
         if args.sleep > 0:
             time.sleep(args.sleep)
+
+    # NXT 가능 여부 저장 — Real_Trade_with_today_code.py의 search_stock_info(NXT 캐시)에 대응
+    # 시뮬레이션(Trade_Simulate_with_date.py)이 하드코딩 fallback 대신 이 파일을 사용할 수 있음
+    if nxt_flags:
+        nxt_flags_path = output_dir / "nxt_flags.json"
+        with open(nxt_flags_path, "w", encoding="utf-8") as _f:
+            json.dump(nxt_flags, _f, ensure_ascii=False, indent=2)
+        logger.info("saved NXT flags (%d codes): %s", len(nxt_flags), nxt_flags_path)
 
     logger.info("done: saved=%d, empty=%d, out=%s", saved_count, empty_count, output_dir)
 
