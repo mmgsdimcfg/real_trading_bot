@@ -60,7 +60,7 @@ from inquire_time_dailychartprice import inquire_time_dailychartprice
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="[%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
     force=True,
 )
@@ -324,25 +324,25 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     
-    # datetime???�덱?�로 ?�정
+    # datetime을 인덱스로 지정
     df_indexed = df.set_index("datetime")
     
-    # 20�?간격???�간???�성
+    # 20초 간격의 시간 생성
     time_range_20sec = pd.date_range(
         start=df_indexed.index.min(),
         end=df_indexed.index.max(),
         freq="20s"
     )
     
-    # ?�로???�덱?�로 리인?�싱
+    # datetime 인덱스로 리인덱싱
     df_reindexed = df_indexed.reindex(time_range_20sec.union(df_indexed.index)).sort_index()
     
-    # 가�??�이???�형 보간
+    # 가격 데이터 선형 보간
     price_cols = ["open", "high", "low", "close"]
     for col in price_cols:
         df_reindexed[col] = df_reindexed[col].interpolate(method="linear", limit_direction="both")
     
-    # 거래?��? ??값으�?채우�?(0???�닌 경우�?
+    # 거래량은 이전 값으로 채움(0이 아닌 경우만)
     df_reindexed["volume"] = df_reindexed["volume"].ffill()
     df_reindexed["volume"] = df_reindexed["volume"].fillna(0)
     
@@ -350,7 +350,7 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     if "market" in df_reindexed.columns:
         df_reindexed["market"] = df_reindexed["market"].ffill()
     
-    # 지??컬럼????값으�?채우�?(1�??�이??그�?�?복사)
+    # 지표 컬럼은 이전 값으로 채움(1봉 이상이면 그대로 복사)
     indicator_cols = [
         "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
         "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
