@@ -43,12 +43,93 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from r003_define_config import (
+    ADX_MIN_TREND,
+    ADX_PERIOD,
+    ADX_STRONG_TREND,
+    AFTERNOON_NXT_END,
+    AFTERNOON_NXT_FORCE_EXIT,
+    AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
+    AFTERNOON_NXT_START,
+    ALLOW_REBUY_SAME_CODE,
+    AUX_SELL_MIN_PNL_SCORE2,
+    AUX_SELL_MIN_PNL_SCORE3,
+    AUX_SELL_MIN_PNL_SCORE4,
+    BB_PERIOD,
+    BB_SQUEEZE_MIN_WIDTH_PCT,
+    BB_STD_MULTIPLIER,
+    BB_UPPER_PROXIMITY_MAX,
+    BOX_RANGE_HOLD_LOOKBACK_BARS,
+    BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT,
+    BOX_RANGE_HOLD_MAX_RANGE_PCT,
     DATA_DIR_NAME,
-    INITIAL_CAPITAL,
-    NXT_ELIGIBLE_CODES_FALLBACK,
-    PICKS_FILENAME,
-    SIM_WARMUP_PRIOR_MAX_DAYS,
-    SIM_WARMUP_TAIL_BARS,
+    DEFINE_TODAY_CODE_PATH,
+    EARLY_NEAR_CROSS_ALLOWED_END,
+    EARLY_NEAR_CROSS_ALLOWED_START,
+    EARLY_NEAR_CROSS_ALLOW_NXT,
+    EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
+    EARLY_NEAR_CROSS_MIN_VOL_MA,
+    EARLY_NEAR_CROSS_MIN_VOLUME,
+    ENABLE_BOX_RANGE_HOLD_TECH_SELL,
+    ENABLE_EARLY_NEAR_CROSS_ENTRY,
+    ENABLE_NEAR_CROSS_ARM,
+    ENABLE_STRICT_MA5_BB_GOLDEN_CROSS as REQUIRE_STRICT_BUY_GOLDEN_CROSS,
+    ENABLE_TP_EXTENSION_TRAILING,
+    LIVE_PRICE_BB_BUFFER_PCT as SIM_LIVE_PRICE_BB_BUFFER_PCT,
+    LIVE_PRICE_CROSS_CONFIRM_POLLS,
+    LIVE_PRICE_CROSS_CONFIRM_SECONDS,
+    LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS,
+    LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS,
+    MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE,
+    MA5_BB_DOWN_CROSS_IMMEDIATE_PNL,
+    MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE,
+    MA5_BB_DOWN_CROSS_MIN_PNL,
+    MA_PERIOD,
+    MACD_FAST,
+    MACD_SIGNAL_PERIOD,
+    MACD_SLOW,
+    MAX_ORDER_AMOUNT_KRW,
+    MIN_BARS_REQUIRED,
+    MORNING_NXT_END,
+    MORNING_NXT_START,
+    NEAR_CROSS_ARM_EXPIRE_BARS,
+    NEAR_CROSS_ARM_GAP_MAX,
+    NEAR_CROSS_ARM_MA_RISE_MIN,
+    NEAR_CROSS_EARLY_GAP_MAX,
+    NEAR_CROSS_EARLY_MA_RISE_MIN,
+    OBV_BREAKOUT_LOOKBACK_BARS,
+    OBV_MA_PERIOD,
+    POLL_INTERVAL_SECONDS,
+    REGULAR_END,
+    REGULAR_FORCE_EXIT,
+    REGULAR_NEW_ENTRY_CUTOFF,
+    REGULAR_START,
+    RSI_BUY_MAX,
+    RSI_BUY_MIN,
+    RSI_PERIOD,
+    RSI_SIGNAL_PERIOD,
+    STOP_LOSS_EARLY_PERCENT,
+    STOP_LOSS_MIN_HOLD_SECONDS,
+    STOP_LOSS_PERCENT,
+    STOCH_BUY_MAX,
+    STOCH_BUY_MIN,
+    STOCH_D_PERIOD,
+    STOCH_K_PERIOD,
+    STOCH_OVERBOUGHT,
+    TAKE_PROFIT_PERCENT,
+    TP_EXTENSION_TRAIL_FROM_PEAK,
+    TRADE_COOLDOWN_MINUTES,
+    TRAILING_STOP_FROM_PEAK,
+    VOLUME_MA_PERIOD,
+    VOLUME_RATIO_CLOSE,
+    VOLUME_RATIO_FLOOR,
+    VOLUME_RATIO_MIDDAY,
+    VOLUME_RATIO_NXT,
+    VOLUME_RATIO_OPEN,
+    VOLUME_RATIO_STRONG_RELAX,
+    WILLIAMS_BUY_FLOOR,
+    WILLIAMS_D_PERIOD,
+    WILLIAMS_OVERBOUGHT_CEIL,
+    WILLIAMS_R_PERIOD,
 )
 from r005_strategy_core_shared import (
     R76StrategyConfig,
@@ -58,112 +139,23 @@ from r005_strategy_core_shared import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-TODAY_CODE_FILE = SCRIPT_DIR / "r008_trade_watchlist_today.txt"
+TODAY_CODE_FILE = SCRIPT_DIR / DEFINE_TODAY_CODE_PATH
 
 # ---------------------------------------------------------------------------
-# 지표 파라미터 (r76 최신 기준)
+# Simulation-only parameters (not used by live trading)
 # ---------------------------------------------------------------------------
-BB_PERIOD = 20
-BB_STD_MULTIPLIER = 2.0
-MA_PERIOD = 5
-RSI_PERIOD = 14
-RSI_SIGNAL_PERIOD = 6
-STOCH_K_PERIOD = 10
-STOCH_D_PERIOD = 5
-WILLIAMS_R_PERIOD = 10
-WILLIAMS_D_PERIOD = 9
-VOLUME_MA_PERIOD = 20
-OBV_MA_PERIOD = 10
-MACD_FAST = 5
-MACD_SLOW = 12
-MACD_SIGNAL_PERIOD = 4
-ADX_PERIOD = 7
-ADX_MIN_TREND = 20.0
-ADX_STRONG_TREND = 40.0
+SIM_INITIAL_CAPITAL = 1_000_000
+PICKS_FILENAME = "picks.txt"
+SIM_WARMUP_TAIL_BARS = 160
+SIM_WARMUP_PRIOR_MAX_DAYS = 20
+NXT_ELIGIBLE_CODES_FALLBACK = frozenset(
+    {"005930", "000660", "035420", "068270", "018880", "103590", "003490"}
+)
 
-# ---------------------------------------------------------------------------
-# 매매 파라미터 (r73 최신 기준)
-# ---------------------------------------------------------------------------
-MAX_ORDER_AMOUNT_KRW = 1_000_000
-TAKE_PROFIT_PERCENT = 0.035
-STOP_LOSS_PERCENT = -0.010
-STOP_LOSS_EARLY_PERCENT = -0.020     # 진입 초기(STOP_LOSS_MIN_HOLD_SECONDS 이내) 손실 발생시 조기 손절
-STOP_LOSS_MIN_HOLD_SECONDS = 600    # 보유시간(10분 미만이면 EARLY 손절 기준 적용, 기본 10분)
-TRAILING_STOP_FROM_PEAK = 0.005
-AUX_SELL_MIN_PNL_SCORE2 = 0.010
-AUX_SELL_MIN_PNL_SCORE3 = 0.005
-AUX_SELL_MIN_PNL_SCORE4 = 0.000
-MA5_BB_DOWN_CROSS_IMMEDIATE_PNL = -0.007
-MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE = 2
-MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE = 1
-MA5_BB_DOWN_CROSS_MIN_PNL = 0.000   # r73 기준: 본전 이상이면 크로스다운 매도 허용
+# Legacy compare mode parameter (kept for compare strategy behavior)
 TECH_SELL_MIN_HOLD_SECONDS = 300
-ENABLE_BOX_RANGE_HOLD_TECH_SELL = True
-ENABLE_TP_EXTENSION_TRAILING = True
-TP_EXTENSION_TRAIL_FROM_PEAK = 0.010
-BOX_RANGE_HOLD_LOOKBACK_BARS = 8
-BOX_RANGE_HOLD_MAX_RANGE_PCT = 0.0065
-BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT = 0.0080
-NEAR_CROSS_ARM_GAP_MAX = 0.0015
-NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006
-NEAR_CROSS_EARLY_GAP_MAX = 0.0006
-NEAR_CROSS_EARLY_MA_RISE_MIN = 0.0010
-NEAR_CROSS_ARM_EXPIRE_BARS = 2
-REQUIRE_STRICT_BUY_GOLDEN_CROSS = True
-ENABLE_NEAR_CROSS_ARM = True
-ENABLE_EARLY_NEAR_CROSS_ENTRY = True
-EARLY_NEAR_CROSS_ALLOWED_START = dt_time(9, 0)
-EARLY_NEAR_CROSS_ALLOWED_END = dt_time(11, 30)
-EARLY_NEAR_CROSS_ALLOW_NXT = False
-EARLY_NEAR_CROSS_MIN_VOLUME = 800
-EARLY_NEAR_CROSS_MIN_VOL_MA = 500
-EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
 
-MIN_BARS_REQUIRED = 3
 SAME_DAY_MIN_BARS = 10
-ALLOW_REBUY_SAME_CODE = False
-TRADE_COOLDOWN_MINUTES = 3
-
-# ---------------------------------------------------------------------------
-# 세션 / 시간 상수
-# ---------------------------------------------------------------------------
-MORNING_NXT_START = dt_time(8, 0)
-MORNING_NXT_END = dt_time(8, 50)
-REGULAR_START = dt_time(9, 0)
-REGULAR_END = dt_time(15, 30)
-REGULAR_NEW_ENTRY_CUTOFF = dt_time(15, 20)
-REGULAR_FORCE_EXIT = dt_time(15, 20)
-AFTERNOON_NXT_START = dt_time(15, 30)
-AFTERNOON_NXT_END = dt_time(20, 0)
-AFTERNOON_NXT_NEW_ENTRY_CUTOFF = dt_time(19, 59)
-AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59)
-
-# 보조지표 계수
-STOCH_OVERBOUGHT = 80.0
-STOCH_BUY_MIN = 20.0
-STOCH_BUY_MAX = 50.0
-RSI_BUY_MIN = 50.0
-RSI_BUY_MAX = 70.0
-WILLIAMS_BUY_FLOOR = -70.0
-WILLIAMS_OVERBOUGHT_CEIL = -20.0
-BB_UPPER_PROXIMITY_MAX = 0.85
-BB_SQUEEZE_MIN_WIDTH_PCT = 0.008  # BB (상단-하단)/현재가 < 0.8%면 수렴/약보 구간, 스퀴즈 시 매수 제외
-OBV_BREAKOUT_LOOKBACK_BARS = 5
-
-VOLUME_RATIO_OPEN = 0.80
-VOLUME_RATIO_MIDDAY = 0.60
-VOLUME_RATIO_CLOSE = 0.70
-VOLUME_RATIO_NXT = 0.55
-VOLUME_RATIO_STRONG_RELAX = 0.10
-VOLUME_RATIO_FLOOR = 0.50
-
-# Live price cross simulation (mirrors r76_trade_live_execute.py behavior)
-POLL_INTERVAL_SECONDS = 20
-SIM_LIVE_PRICE_BB_BUFFER_PCT = 0.0008
-LIVE_PRICE_CROSS_CONFIRM_POLLS = 3
-LIVE_PRICE_CROSS_CONFIRM_SECONDS = 60
-LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1
-LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS = 0
 
 SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_bb_buffer_pct=SIM_LIVE_PRICE_BB_BUFFER_PCT,
@@ -1286,7 +1278,7 @@ def simulate_date(
     codes: list[str] | None = None,
     today_watch_codes: set[str] | None = None,
     names: dict[str, str] | None = None,
-    initial_capital: float = INITIAL_CAPITAL,
+    initial_capital: float = SIM_INITIAL_CAPITAL,
 ) -> int:
     global LAST_SIM_STATS, CURRENT_SIM_TS
     data_dir = data_root / date_str
@@ -1547,7 +1539,7 @@ def simulate_date(
     log(f"{'=' * 60}")
 
     for code in traded_codes:
-        name = selected_names.get(code, code)
+        name = selected_names.get(code) or SAMPLE_CODE_MAP.get(code) or code
         buys = [record for record in sim.trade_log if record.code == code and record.action == "BUY"]
         sells = [record for record in sim.trade_log if record.code == code and record.action == "SELL"]
         code_pnl = sum(record.pnl_krw or 0.0 for record in sells)
@@ -1694,7 +1686,7 @@ def main() -> None:
     parser.add_argument(
         "--capital",
         type=float,
-        default=INITIAL_CAPITAL,
+        default=SIM_INITIAL_CAPITAL,
         help="Initial capital in KRW",
     )
     parser.add_argument(
