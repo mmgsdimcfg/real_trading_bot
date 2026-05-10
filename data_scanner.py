@@ -110,7 +110,7 @@ def ensure_datetime_index(df):
 
 
 def load_data(code, data_dir, warn=True):
-    file_path = data_dir / f"{code}.csv"
+    file_path = data_dir / f"{code}.txt"
 
     if not file_path.exists():
         if warn:
@@ -907,14 +907,14 @@ def load_symbols():
     return [(c, "") for c in df["code"].astype(str).str.zfill(6)]
 
 
-def filter_stock_list_by_existing_csv(stock_list, data_dir, verbose=True):
-    csv_codes = {
+def filter_stock_list_by_existing_txt(stock_list, data_dir, verbose=True):
+    txt_codes = {
         p.stem.zfill(6)
-        for p in data_dir.glob("*.csv")
+        for p in data_dir.glob("*.txt")
         if p.is_file() and p.stem.isdigit()
     }
 
-    filtered = [(code, name) for code, name in stock_list if code in csv_codes]
+    filtered = [(code, name) for code, name in stock_list if code in txt_codes]
 
     if verbose:
         missing = len(stock_list) - len(filtered)
@@ -1114,9 +1114,9 @@ if __name__ == "__main__":
 
     stock_list = load_symbols()
     if target_date:
-        stock_list = filter_stock_list_by_existing_csv(stock_list, data_dir)
+        stock_list = filter_stock_list_by_existing_txt(stock_list, data_dir)
         if not stock_list:
-            raise SystemExit(f"❌ {data_dir} 폴더에 스캔 가능한 CSV 종목이 없습니다.")
+            raise SystemExit(f"❌ {data_dir} 폴더에 스캔 가능한 TXT 종목이 없습니다.")
 
     scan_result = scan(
         data_dir,
