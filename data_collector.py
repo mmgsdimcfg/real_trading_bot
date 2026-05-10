@@ -299,6 +299,59 @@ def calculate_r73_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
+    """1분 데이터를 20초 간격으로 선형 보간하여 저장."""
+    df = minute_df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+    df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+    
+    if df.empty:
+        return df
+    
+    # datetime을 인덱스로 설정
+    df_indexed = df.set_index("datetime")
+    
+    # 20초 간격의 시간점 생성
+    time_range_20sec = pd.date_range(
+        start=df_indexed.index.min(),
+        end=df_indexed.index.max(),
+        freq="20S"
+    )
+    
+    # 새로운 인덱스로 리인덱싱
+    df_reindexed = df_indexed.reindex(time_range_20sec.union(df_indexed.index)).sort_index()
+    
+    # 가격 데이터 선형 보간
+    price_cols = ["open", "high", "low", "close"]
+    for col in price_cols:
+        df_reindexed[col] = df_reindexed[col].interpolate(method="linear", limit_direction="both")
+    
+    # 거래량은 앞 값으로 채우기 (0이 아닌 경우만)
+    df_reindexed["volume"] = df_reindexed["volume"].ffill()
+    df_reindexed["volume"] = df_reindexed["volume"].fillna(0)
+    
+    # market 컬럼도 앞 값으로 채우기
+    if "market" in df_reindexed.columns:
+        df_reindexed["market"] = df_reindexed["market"].ffill()
+    
+    # 지표 컬럼들 앞 값으로 채우기 (1분 데이터 그대로 복사)
+    indicator_cols = [
+        "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
+        "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
+        "MACD", "MACD_SIGNAL", "MACD_HIST", "DI_PLUS", "DI_MINUS", "ADX",
+        "VWAP", "OBV", "OBV_MA",
+    ]
+    for col in indicator_cols:
+        if col in df_reindexed.columns:
+            df_reindexed[col] = df_reindexed[col].ffill()
+    
+    # 20초 간격 데이터만 필터링
+    df_20sec = df_reindexed.loc[time_range_20sec].reset_index()
+    df_20sec.rename(columns={"index": "datetime"}, inplace=True)
+    
+    return df_20sec
+
+
 def enrich_with_strategy_indicators(minute_df: pd.DataFrame) -> pd.DataFrame:
     base = minute_df.copy()
     base["datetime"] = pd.to_datetime(base["datetime"], errors="coerce")
@@ -412,18 +465,23 @@ def main() -> None:
             empty_count += 1
             logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
         else:
-            df = enrich_with_strategy_indicators(df)
-            file_path = output_dir / f"{code}.csv"
-            df.to_csv(file_path, index=False, encoding="utf-8-sig")
+            # 1분 데이터에 지표 추가
+            df_1m = enrich_with_strategy_indicators(df)
+            
+            # 20초 간격 데이터 생성 및 저장
+            df_20s = interpolate_to_20sec(df_1m)
+            file_path = output_dir / f"{code}.txt"
+            df_20s.to_csv(file_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+            
             saved_count += 1
             logger.info(
-                "[%d/%d] %s(%s) | NXT=%s | saved=%d rows -> %s",
+                "[%d/%d] %s(%s) | NXT=%s | saved 20s=%d rows -> %s",
                 idx,
                 len(symbols),
                 code,
                 name,
                 nxt_tradeable,
-                len(df),
+                len(df_20s),
                 file_path,
             )
 
