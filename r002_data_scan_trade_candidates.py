@@ -44,8 +44,8 @@ class ScannerConfig:
 
 CURRENT_STRICT_CONFIG = ScannerConfig(
     name="current_strict",
-    price_min=5000,
-    price_max=100000,
+    price_min=2000,
+    price_max=1_000_000,
     atr_ratio_min=0.003,
     volume_ma20_min=5000,
     amount_ma20_min=50_000_000,
@@ -56,8 +56,8 @@ CURRENT_STRICT_CONFIG = ScannerConfig(
 
 BALANCED_RANKED_CONFIG = ScannerConfig(
     name="balanced_ranked",
-    price_min=5000,
-    price_max=200000,
+    price_min=2000,
+    price_max=1_000_000,
     atr_ratio_min=0.002,
     volume_ma20_min=3000,
     amount_ma20_min=50_000_000,
@@ -68,8 +68,8 @@ BALANCED_RANKED_CONFIG = ScannerConfig(
 
 AGGRESSIVE_RANKED_CONFIG = ScannerConfig(
     name="aggressive_ranked",
-    price_min=5000,
-    price_max=600000,
+    price_min=2000,
+    price_max=1_000_000,
     atr_ratio_min=0.002,
     volume_ma20_min=3000,
     amount_ma20_min=50_000_000,
@@ -80,8 +80,8 @@ AGGRESSIVE_RANKED_CONFIG = ScannerConfig(
 
 R76_ALIGNED_CONFIG = ScannerConfig(
     name="r76_aligned",
-    price_min=5000,
-    price_max=200000,
+    price_min=2000,
+    price_max=1_000_000,
     atr_ratio_min=0.002,
     volume_ma20_min=1500,
     amount_ma20_min=30_000_000,

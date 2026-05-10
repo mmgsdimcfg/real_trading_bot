@@ -39,6 +39,105 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+from r003_define_config import (
+    ACCOUNT_SYNC_INTERVAL_SECONDS,
+    ADX_MIN_TREND,
+    ADX_PERIOD,
+    ADX_STRONG_TREND,
+    AFTERNOON_NXT_END,
+    AFTERNOON_NXT_FORCE_EXIT,
+    AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
+    AFTERNOON_NXT_START,
+    ALLOW_REBUY_SAME_CODE,
+    AUX_SELL_MIN_PNL_SCORE2,
+    AUX_SELL_MIN_PNL_SCORE3,
+    AUX_SELL_MIN_PNL_SCORE4,
+    BB_PERIOD,
+    BB_SQUEEZE_MIN_WIDTH_PCT,
+    BB_STD_MULTIPLIER,
+    BB_UPPER_PROXIMITY_MAX,
+    BOX_RANGE_HOLD_LOOKBACK_BARS,
+    BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT,
+    BOX_RANGE_HOLD_MAX_RANGE_PCT,
+    DATA_DIR_NAME,
+    DEFINE_TODAY_CODE_PATH,
+    EARLY_NEAR_CROSS_ALLOWED_END,
+    EARLY_NEAR_CROSS_ALLOWED_START,
+    EARLY_NEAR_CROSS_ALLOW_NXT,
+    EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
+    EARLY_NEAR_CROSS_MIN_VOL_MA,
+    EARLY_NEAR_CROSS_MIN_VOLUME,
+    ENABLE_BOX_RANGE_HOLD_TECH_SELL,
+    ENABLE_EARLY_NEAR_CROSS_ENTRY,
+    ENABLE_NEAR_CROSS_ARM,
+    ENABLE_PRICE_LEAD_BB_BREAKOUT,
+    ENABLE_STRICT_MA5_BB_GOLDEN_CROSS,
+    ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
+    ENABLE_TP_EXTENSION_TRAILING,
+    LIVE_PRICE_BB_BUFFER_PCT,
+    LIVE_PRICE_CROSS_CONFIRM_POLLS,
+    LIVE_PRICE_CROSS_CONFIRM_SECONDS,
+    LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS,
+    LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS,
+    MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE,
+    MA5_BB_DOWN_CROSS_IMMEDIATE_PNL,
+    MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE,
+    MA5_BB_DOWN_CROSS_MIN_PNL,
+    MA_PERIOD,
+    MACD_FAST,
+    MACD_SIGNAL_PERIOD,
+    MACD_SLOW,
+    MAX_ORDER_AMOUNT_KRW,
+    MIN_BARS_REQUIRED,
+    MORNING_NXT_END,
+    MORNING_NXT_START,
+    NEAR_CROSS_ARM_EXPIRE_BARS,
+    NEAR_CROSS_ARM_GAP_MAX,
+    NEAR_CROSS_ARM_MA_RISE_MIN,
+    NEAR_CROSS_EARLY_GAP_MAX,
+    NEAR_CROSS_EARLY_MA_RISE_MIN,
+    OBV_BREAKOUT_LOOKBACK_BARS,
+    OBV_MA_PERIOD,
+    POLL_INTERVAL_SECONDS,
+    PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
+    PRICE_LEAD_BREAKOUT_MIN_ADX,
+    PRICE_LEAD_BREAKOUT_MIN_SCORE,
+    REGULAR_END,
+    REGULAR_FORCE_EXIT,
+    REGULAR_NEW_ENTRY_CUTOFF,
+    REGULAR_START,
+    RSI_BUY_MAX,
+    RSI_BUY_MIN,
+    RSI_PERIOD,
+    RSI_SIGNAL_PERIOD,
+    STARTUP_WARMUP_SECONDS,
+    STOP_LOSS_EARLY_PERCENT,
+    STOP_LOSS_MIN_HOLD_SECONDS,
+    STOP_LOSS_PERCENT,
+    STOCH_BUY_MAX,
+    STOCH_BUY_MIN,
+    STOCH_D_PERIOD,
+    STOCH_K_PERIOD,
+    STOCH_OVERBOUGHT,
+    STRONG_TREND_OVERBOUGHT_MIN_ADX,
+    STRONG_TREND_OVERBOUGHT_MIN_SCORE,
+    STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
+    TAKE_PROFIT_PERCENT,
+    TP_EXTENSION_TRAIL_FROM_PEAK,
+    TRADE_COOLDOWN_MINUTES,
+    TRAILING_STOP_FROM_PEAK,
+    VOLUME_MA_PERIOD,
+    VOLUME_RATIO_CLOSE,
+    VOLUME_RATIO_FLOOR,
+    VOLUME_RATIO_MIDDAY,
+    VOLUME_RATIO_NXT,
+    VOLUME_RATIO_OPEN,
+    VOLUME_RATIO_STRONG_RELAX,
+    WILLIAMS_BUY_FLOOR,
+    WILLIAMS_D_PERIOD,
+    WILLIAMS_OVERBOUGHT_CEIL,
+    WILLIAMS_R_PERIOD,
+)
 from r005_strategy_core_shared import (
     R76StrategyConfig,
     check_buy_condition as shared_check_buy_condition,
@@ -62,129 +161,8 @@ except Exception:
     inquire_time_itemchartprice = None
 
 
-TODAY_CODE_FILE = current_dir / "r008_trade_watchlist_today.txt"
-DATA_DIR = current_dir / "data"
-
-# ---------------------------------------------------------------------------
-# 지표 파라미터
-# ---------------------------------------------------------------------------
-BB_PERIOD = 20
-BB_STD_MULTIPLIER = 2.0
-MA_PERIOD = 5
-STOCH_K_PERIOD = 10
-STOCH_D_PERIOD = 5
-RSI_PERIOD = 14
-RSI_SIGNAL_PERIOD = 6
-WILLIAMS_R_PERIOD = 10
-WILLIAMS_D_PERIOD = 9
-VOLUME_MA_PERIOD = 20
-OBV_MA_PERIOD = 10      # OBV 이동평균 기간 (방향성 보조)
-MACD_FAST = 5           # 빠른 EMA 기간 (API 30�??�약 고려)
-MACD_SLOW = 12          # ?�린 EMA 기간
-MACD_SIGNAL_PERIOD = 4  # MACD ?�그??기간
-ADX_PERIOD = 7          # ADX/DI 계산 기간 (?�기 추세 강도)
-ADX_MIN_TREND = 20.0    # ADX 20 미만 = 약보 구간, 신규 매수 보류
-ADX_STRONG_TREND = 40.0  # 강한 추세 구간?�서??거래??기�? ?�화
-
-# ---------------------------------------------------------------------------
-# 매매 ?�라미터
-# ---------------------------------------------------------------------------
-MAX_ORDER_AMOUNT_KRW = 500_000
-TAKE_PROFIT_PERCENT = 0.035
-STOP_LOSS_PERCENT = -0.012
-STOP_LOSS_EARLY_PERCENT = -0.020     # 진입 초기(STOP_LOSS_MIN_HOLD_SECONDS 이내) 손실 발생시 조기 손절
-STOP_LOSS_MIN_HOLD_SECONDS = 600    # 보유시간(10분 미만이면 EARLY 손절 기준 적용, 기본 10분)
-STARTUP_WARMUP_SECONDS = 180        # 스크립트 시작 후 초기 시간(3분 이내 신규 매수 차단, 지표 안정+모니터링 여유 보장)
-TRAILING_STOP_FROM_PEAK = 0.005
-# 보조지??기반 매도(AUX_REVERSAL) 최소 ?�익�?게이??
-# 보조지표 조건 만족 시 이익률일 때만 매도 허용
-AUX_SELL_MIN_PNL_SCORE2 = 0.010  # score=2  -> +1.0% ?�상
-AUX_SELL_MIN_PNL_SCORE3 = 0.005  # score=3  -> +0.5% ?�상
-AUX_SELL_MIN_PNL_SCORE4 = 0.000  # score>=4 -> ?�익분기 ?�상
-# MA5 ?�드?�로??매도 ?�바?�스: ?�쏘 방�?�??�해 ?�반 구간?� 1�?�??�인 ??매도
-# ?? ?�실/?�세 강도가 ?�면 즉시 매도??급락 리스?�는 방어
-MA5_BB_DOWN_CROSS_IMMEDIATE_PNL = -0.007     # -0.7% ?�하 ?�실?�면 즉시 매도 ?�용
-MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE = 2         # 보조 ?�세 ?�수 ?�으�?즉시 매도 ?�용
-MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE = 1       # ?�음 �??�인 매도 최소 보조 ?�수
-MA5_BB_DOWN_CROSS_MIN_PNL = 0.000             # ?�드?�로??계열 매도??최소 ?�익(기본 0%=본전) ?�상?�서�??�용
-# 박스�?구간?�서??기술??매도 ?�호�?보류?�고, ?�절/?�절(�??�레?�링)�??�용
-ENABLE_BOX_RANGE_HOLD_TECH_SELL = True
-# ?�절 기�? ?�달 ??즉시 매도 ?�??고점 ?�레?�링 모드�??�환
-# (강모멘�? 급등 ??추�? ?�익 구간 ?�보)
-ENABLE_TP_EXTENSION_TRAILING = True
-TP_EXTENSION_TRAIL_FROM_PEAK = 0.010     # TP ?�장 구간?�서 고점 ?��?1.0% ?�락 ??매도
-BOX_RANGE_HOLD_LOOKBACK_BARS = 8
-BOX_RANGE_HOLD_MAX_RANGE_PCT = 0.0065         # 최근 N봉 고저폭이 현재가의 0.65% 이내
-BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT = 0.0080      # 볼린?� 밴드 ??�� ?�재가 ?��?0.80% ?�내
-# 매수 2?�계(근접 ARM -> ?�정/강모멘�? 진입) ?�라미터
-NEAR_CROSS_ARM_GAP_MAX = 0.0045        # MA5가 BB_MIDDLE 아래여도 gap 0.45% 이내면 ARM 후보
-NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006    # ARM 최소 MA5 ?�승�?(0.06%)
-NEAR_CROSS_EARLY_GAP_MAX = 0.0045      # ARM ?�후 조기진입 ?�용 gap 0.45% ?�내
-NEAR_CROSS_EARLY_MA_RISE_MIN = 0.0010  # ARM ?�후 조기진입 최소 MA5 ?�승�?(0.10%)
-NEAR_CROSS_ARM_EXPIRE_BARS = 2         # ARM ?�효 기간(3분봉 기�? �?개수)
-# 기본 원칙은 MA5 상향 돌파 우선. 예외 경로는 지정 시간창에서만 제한적으로 허용.
-ENABLE_NEAR_CROSS_ARM = True
-ENABLE_EARLY_NEAR_CROSS_ENTRY = True
-ENABLE_PRICE_LEAD_BB_BREAKOUT = True
-PRICE_LEAD_BREAKOUT_MIN_SCORE = 3
-PRICE_LEAD_BREAKOUT_MIN_ADX = 25.0
-PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT = True
-EARLY_NEAR_CROSS_ALLOWED_START = dt_time(9, 0)
-EARLY_NEAR_CROSS_ALLOWED_END = dt_time(11, 30)
-EARLY_NEAR_CROSS_ALLOW_NXT = False
-# 조기진입(ARM/EARLY) 유동성 필터: 거래량 체결 급등으로 인한 허위 진입 방지
-EARLY_NEAR_CROSS_MIN_VOLUME = 800
-EARLY_NEAR_CROSS_MIN_VOL_MA = 500
-EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
-POLL_INTERVAL_SECONDS = 20
-LIVE_PRICE_BB_BUFFER_PCT = 0.0008      # 현재가가 BB 중간선 위로 0.08% 이상 넘어야 유효 돌파로 인정
-LIVE_PRICE_CROSS_CONFIRM_POLLS = 3      # 20초 폴링 기준 3회 연속 확인 (상향 돌파/매수)
-LIVE_PRICE_CROSS_CONFIRM_SECONDS = 60   # �?감�? ??최소 60�??��? (?�향 ?�로??/ 매수)
-# 하향 돌파(매도)는 즉시 반응, 지연되면 급락 구간에서 매도 기회 놓침
-LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1     # ?�향 ?�로?? 1??감�? 즉시 ?�호 발동
-LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS = 0   # 하향 돌파는 지표가 즉시 확인
-ACCOUNT_SYNC_INTERVAL_SECONDS = 90
-MIN_BARS_REQUIRED = 3  # ?�전봉·현?�봉 비교??최소 3�??�요 (지?�는 min_periods=1�??�체 보완)
-ALLOW_REBUY_SAME_CODE = False
-TRADE_COOLDOWN_MINUTES = 3
-
-# ---------------------------------------------------------------------------
-# ?�션 / ?�간 ?�수
-# ---------------------------------------------------------------------------
-MORNING_NXT_START = dt_time(8, 0)
-MORNING_NXT_END = dt_time(8, 50)
-REGULAR_START = dt_time(9, 0)
-REGULAR_END = dt_time(15, 30)
-REGULAR_NEW_ENTRY_CUTOFF = dt_time(15, 20)
-REGULAR_FORCE_EXIT = dt_time(15, 20)
-AFTERNOON_NXT_START = dt_time(15, 30)
-AFTERNOON_NXT_END = dt_time(20, 0)
-AFTERNOON_NXT_NEW_ENTRY_CUTOFF = dt_time(19, 59)
-AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59)
-
-# 보조지표 계수
-STOCH_OVERBOUGHT = 80.0
-STOCH_BUY_MIN = 20.0
-STOCH_BUY_MAX = 50.0
-RSI_BUY_MIN = 50.0
-RSI_BUY_MAX = 70.0
-WILLIAMS_BUY_FLOOR = -70.0
-WILLIAMS_OVERBOUGHT_CEIL = -20.0
-BB_UPPER_PROXIMITY_MAX = 0.85  # (close-bb_lower)/(bb_upper-bb_lower) 값이 ?�면 ?�단 추격 구간
-OBV_BREAKOUT_LOOKBACK_BARS = 5  # OBV가 최근 N봉 고점 돌파하는지 확인
-ENABLE_STRICT_MA5_BB_GOLDEN_CROSS = True  # �?기�? MA5 ?�향 ?�파�??�규 매수 ?�수 조건?�로 ?�용
-ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS = True
-STRONG_TREND_OVERBOUGHT_MIN_SCORE = 5
-STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO = 1.50
-STRONG_TREND_OVERBOUGHT_MIN_ADX = 30.0
-
-# 거래량 필터(시간대/세션 가변)
-VOLUME_RATIO_OPEN = 0.80       # ?�초�?09:00~10:00)
-VOLUME_RATIO_MIDDAY = 0.60     # ?�중(10:00~14:30)
-VOLUME_RATIO_CLOSE = 0.70      # ?�후�?14:30~15:30)
-VOLUME_RATIO_NXT = 0.55        # NXT ?�션
-VOLUME_RATIO_STRONG_RELAX = 0.10  # ADX 강추세 시 완화 비율
-VOLUME_RATIO_FLOOR = 0.50      # ?�화 ?�한
+TODAY_CODE_FILE = current_dir / DEFINE_TODAY_CODE_PATH
+DATA_DIR = current_dir / DATA_DIR_NAME
 
 SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_bb_buffer_pct=LIVE_PRICE_BB_BUFFER_PCT,
@@ -196,7 +174,7 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     stoch_overbought=STOCH_OVERBOUGHT,
     williams_overbought_ceil=WILLIAMS_OVERBOUGHT_CEIL,
     bb_upper_proximity_max=BB_UPPER_PROXIMITY_MAX,
-    bb_squeeze_min_width_pct=0.0,
+    bb_squeeze_min_width_pct=BB_SQUEEZE_MIN_WIDTH_PCT,
     adx_min_trend=ADX_MIN_TREND,
     stop_loss_percent=STOP_LOSS_PERCENT,
     take_profit_percent=TAKE_PROFIT_PERCENT,
