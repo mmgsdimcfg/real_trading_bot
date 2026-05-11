@@ -111,6 +111,7 @@ ADX_MIN_TREND = 20.0
 VOLUME_RATIO_MIDDAY = 0.60
 VOLUME_RATIO_STRONG_RELAX = 0.10
 VOLUME_RATIO_FLOOR = 0.50
+DAILY_MA5_LOOKBACK_DAYS = 30
 
 # Trend indicator thresholds.
 DI_PLUS_MIN_STRENGTH = 20.0  # minimum DI+ strength
@@ -431,6 +432,35 @@ def classify_trend(ma5, ma20):
     return "flat"
 
 
+def is_daily_ma5_uptrend(df, lookback_days=DAILY_MA5_LOOKBACK_DAYS):
+    if df is None or df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return False
+
+    close = pd.to_numeric(df.get("close"), errors="coerce")
+    if close is None:
+        return False
+
+    close = close.dropna().sort_index()
+    if close.empty:
+        return False
+
+    daily_close = close.resample("D").last().dropna()
+    if daily_close.empty:
+        return False
+
+    ma5 = daily_close.rolling(window=5, min_periods=5).mean()
+    end_date = daily_close.index.max()
+    start_date = end_date - pd.Timedelta(days=lookback_days - 1)
+    ma5_window = ma5[ma5.index >= start_date].dropna()
+
+    if len(ma5_window) < 5:
+        return False
+
+    # Require month-level improvement and recent rising momentum.
+    rising_steps = int((ma5_window.tail(5).diff().dropna() > 0).sum())
+    return ma5_window.iloc[-1] > ma5_window.iloc[0] and rising_steps >= 3
+
+
 def calculate_candidate_score(candidate, config):
     atr_ratio = candidate["atr_ratio"]
     vol_ma20 = candidate["vol_ma20"]
@@ -510,6 +540,7 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         "vol_ma20": None,
         "amount_ma20": None,
         "score": 0.0,
+        "daily_ma5_uptrend": False,
     }
 
     prepared = build_indicators(df)
@@ -561,6 +592,7 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
     )
 
     support_score = _buy_support_score(latest, prev)
+    daily_ma5_uptrend = is_daily_ma5_uptrend(prepared)
 
     candidate.update(
         {
@@ -580,6 +612,7 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
             "bb_position": bb_position,
             "vol_ma20": vol_ma20,
             "amount_ma20": amount_ma20,
+            "daily_ma5_uptrend": daily_ma5_uptrend,
         }
     )
 
@@ -597,6 +630,8 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         candidate["fail_reasons"].append("volume_ma20")
     if amount_ma20 is None or amount_ma20 < config.amount_ma20_min:
         candidate["fail_reasons"].append("amount_ma20")
+    if not daily_ma5_uptrend:
+        candidate["fail_reasons"].append("daily_ma5_not_uptrend")
 
     # r73-aligned filters: core risk factors are hard fails, timing-sensitive ones are soft flags.
     if not live_cross_ready:
@@ -705,6 +740,7 @@ def is_fallback_eligible_candidate(row):
         "atr_ratio",
         "volume_ma20",
         "amount_ma20",
+        "daily_ma5_not_uptrend",
         "live_price_bb_not_ready",
         "overbought_stoch",
         "overbought_wr",
