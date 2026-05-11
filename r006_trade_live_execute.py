@@ -196,6 +196,21 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     obv_breakout_lookback_bars=OBV_BREAKOUT_LOOKBACK_BARS,
 )
 
+# 3-minute frame refresh controls:
+# - Keep polling live price every loop.
+# - Refresh OHLCV frame only when a new 3-minute bar can be finalized,
+#   and occasionally force a backfill sync for safety.
+FRAME_REFRESH_SETTLE_DELAY_SECONDS = 3
+FRAME_BACKFILL_SYNC_SECONDS = 600
+
+# Live-price polling / order trigger controls.
+LIVE_PRICE_POLL_INTERVAL_SECONDS = 10
+BUY_CONSECUTIVE_CONFIRM_COUNT = 2
+
+# Live-price fetch backoff controls.
+LIVE_PRICE_BACKOFF_BASE_SECONDS = 5
+LIVE_PRICE_BACKOFF_MAX_SECONDS = 60
+
 # ---------------------------------------------------------------------------
 # 로깅
 # ---------------------------------------------------------------------------
@@ -217,9 +232,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# domestic_stock_functions / inquire_time_itemchartprice 관련 라이브러리에 있음
-# 출력?�는 "Data fetch complete.", "Call Next page...", "Max recursive depth reached."
-# 로그�??�제 (루트 로거??INFO지�??��? 모듈?� WARNING ?�상�??�시)
+# domestic_stock_functions / inquire_time_itemchartprice 관련 라이브러리 로그 억제
+# 출력되는 "Data fetch complete.", "Call Next page...", "Max recursive depth reached." 메시지를 필터링한다.
+# 루트 로거의 INFO 노이즈를 줄이고, 모듈 로그는 WARNING 이상만 남긴다.
 logging.getLogger("domestic_stock_functions").setLevel(logging.WARNING)
 logging.getLogger("inquire_time_itemchartprice").setLevel(logging.WARNING)
 # 일부 모듈이 module-level logging.info/warning 으로 루트 로거를 직접 사용하는 경우
@@ -253,7 +268,7 @@ def log_trade(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ?�일 ?�틸
+# 파일 유틸
 # ---------------------------------------------------------------------------
 
 def _load_text_lines(path: Path) -> list[str]:
@@ -303,7 +318,7 @@ def _resolve_watchlist_file(target_date: str | None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# 주문 결과 ?�싱
+# 주문 결과 파싱
 # ---------------------------------------------------------------------------
 
 def _order_succeeded(result) -> bool:
@@ -442,7 +457,7 @@ def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detai
 
 
 # ---------------------------------------------------------------------------
-# NXT 가??종목 ?��?
+# NXT 거래 가능 종목 판단
 # ---------------------------------------------------------------------------
 
 def _is_truthy_flag(value) -> bool | None:
@@ -506,7 +521,7 @@ def is_nxt_tradeable(code: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# ?�션 ?�퍼
+# 세션 헬퍼
 # ---------------------------------------------------------------------------
 
 def is_weekday_market_day(now: datetime) -> bool:
@@ -700,7 +715,7 @@ def fetch_3min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
 
         frame = _normalize_intraday_frame(raw_df, today_str, nxt_tradeable)
         if frame is not None and not frame.empty:
-            # fetch ?�점 기�??�로 ?�정 ?�료??3분봉까�?�??�용
+            # fetch 시점 기준으로 확정 완료된 3분봉까지만 사용
             last_closed_bar = pd.Timestamp(now).floor("3min")
             frame = frame[frame.index <= last_closed_bar]
             if frame.empty:
@@ -739,6 +754,37 @@ def fetch_live_price(code: str, now: datetime, nxt_tradeable: bool) -> float | N
     return None
 
 
+def should_refresh_3min_frame(
+    now: datetime,
+    cached_frame: pd.DataFrame | None,
+    last_refresh_at: datetime | None,
+) -> bool:
+    if cached_frame is None or cached_frame.empty:
+        return True
+
+    now_ts = pd.Timestamp(now)
+    current_closed_bar = now_ts.floor("3min")
+    cached_last_bar = pd.Timestamp(cached_frame.index[-1])
+
+    # Refresh when a new closed 3-minute bar should be available.
+    if cached_last_bar < current_closed_bar and now.second >= FRAME_REFRESH_SETTLE_DELAY_SECONDS:
+        return True
+
+    # Periodic backfill refresh to recover from missed updates or API glitches.
+    if last_refresh_at is None:
+        return True
+    if (now - last_refresh_at).total_seconds() >= FRAME_BACKFILL_SYNC_SECONDS:
+        return True
+
+    return False
+
+
+def _live_price_backoff_seconds(fail_count: int) -> int:
+    # Exponential backoff: 5s, 10s, 20s, 40s, 60s cap.
+    seconds = LIVE_PRICE_BACKOFF_BASE_SECONDS * (2 ** max(0, fail_count - 1))
+    return int(min(LIVE_PRICE_BACKOFF_MAX_SECONDS, seconds))
+
+
 def update_live_price_cross_state(
     cross_state: dict[str, dict],
     code: str,
@@ -757,7 +803,7 @@ def update_live_price_cross_state(
 
 
 # ---------------------------------------------------------------------------
-# 지??계산
+# 지표 계산
 # ---------------------------------------------------------------------------
 
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -773,7 +819,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["BB_UPPER"] = out["BB_MIDDLE"] + out["BB_STD"] * BB_STD_MULTIPLIER
     out["BB_LOWER"] = out["BB_MIDDLE"] - out["BB_STD"] * BB_STD_MULTIPLIER
 
-    # RSI - Wilder's smoothing (EWM alpha=1/period, ?�순?�동?�균보다 ?�확)
+    # RSI - Wilder's smoothing (EWM alpha=1/period, 단순이동평균보다 정확)
     delta = out["close"].diff()
     avg_gain = delta.clip(lower=0).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
     avg_loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
@@ -820,7 +866,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     dx = 100.0 * (out["DI_PLUS"] - out["DI_MINUS"]).abs() / di_sum
     out["ADX"] = dx.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
 
-    # VWAP - ?�일 ?�적 거래??가�??�균가 (기�? ?�균매수가 ?��?지?? ?�트?�데??리셋)
+    # VWAP - 당일 누적 거래량 가중 평균가 (세션 시작 시 누적값 리셋)
     cum_vol = out["volume"].cumsum()
     out["VWAP"] = (out["close"] * out["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
 
@@ -834,7 +880,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# ?�략 로직
+# 전략 로직
 # ---------------------------------------------------------------------------
 
 def _num(candle: pd.Series, key: str) -> float:
@@ -911,7 +957,7 @@ def _buy_reject_detail(
         return f"{buy_reason} | NaN={','.join(missing)}"
 
     if not buy_reason.startswith("LOW_SCORE"):
-        # OVERBOUGHT_*, NEAR_BB_UPPER_*, LOW_VOLUME_*, WEAK_TREND_ADX_* ??
+        # OVERBOUGHT_*, NEAR_BB_UPPER_*, LOW_VOLUME_*, WEAK_TREND_ADX_*
         # reason string already contains the offending value; no extra context needed
         return f"{buy_reason} | {snapshot}"
 
@@ -968,7 +1014,7 @@ def _buy_reject_detail(
 def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | None = None) -> int:
     score = 0
 
-    # 1) Stoch: K가 D�??�향 ?�파 + 20~50 구간 + ?�승 �?
+    # 1) Stoch: K가 D 상향 돌파 + 20~50 구간 + 상승 중
     k_c = _num(cur, "STOCH_K")
     d_c = _num(cur, "STOCH_D")
     k_p = _num(prev, "STOCH_K")
@@ -977,7 +1023,7 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
         if (k_p <= d_p and k_c > d_c) and (STOCH_BUY_MIN <= k_c <= STOCH_BUY_MAX) and (k_c > k_p):
             score += 1
 
-    # 2) RSI: 50 ?�상 70 미만 + ?�승 �?
+    # 2) RSI: 50 이상 70 미만 + 상승 중
     rsi_c = _num(cur, "RSI")
     rsi_p = _num(prev, "RSI")
     if not any(pd.isna(v) for v in (rsi_c, rsi_p)):
@@ -1001,7 +1047,7 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
         if macd_c > msig_c and hist_accel:
             score += 1
 
-    # 5) VWAP: ?�재가 > VWAP (?�일 ?�급 ?�위, 기�? ?�균매수가 ??
+    # 5) VWAP: 현재가 > VWAP (당일 수급 우위, 평균매수가 상회)
     vwap = _num(cur, "VWAP")
     close_v = _num(cur, "close")
     if not pd.isna(vwap) and not pd.isna(close_v) and close_v > vwap:
@@ -1051,7 +1097,7 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
         if wr_p >= wd_p and wr_c < wd_c:
             score += 1
 
-    # 4) MACD: ?�드?�로??(?�향 ?�환)
+    # 4) MACD: 데드크로스(하향 전환)
     macd_c = _num(cur, "MACD")
     msig_c = _num(cur, "MACD_SIGNAL")
     macd_p = _num(prev, "MACD")
@@ -1060,7 +1106,7 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
         if macd_p >= msig_p and macd_c < msig_c:
             score += 1
 
-    # 5) OBV: OBV < OBV_MA �??�락 �?(거래??방향??매도 ?�위)
+    # 5) OBV: OBV < OBV_MA 이고 하락 중 (거래량 방향 매도 우위)
     obv_c = _num(cur, "OBV")
     obv_ma_c = _num(cur, "OBV_MA")
     obv_p = _num(prev, "OBV")
@@ -1386,7 +1432,7 @@ class TradingAPI:
         for key in qty_candidates:
             qty_by_psbl = max(qty_by_psbl, self._to_int(row.get(key), 0))
 
-        # ?�답 ?�맷 차이�??�비해 ?�사 컬럼명도 ?�용
+        # 응답 포맷 차이를 대비해 유사 컬럼명도 허용
         if qty_by_psbl <= 0:
             for key, value in row.items():
                 key_text = str(key).lower()
@@ -1420,7 +1466,7 @@ class TradingAPI:
         if qty <= 0 or self._in_cooldown(code, now):
             return False
 
-        # 주문 직전 ?�점??주문가?�수?�으�??�보??(50만원 ?�도?� ?�시 ?�용)
+        # 주문 직전 시점에 주문가능수량을 다시 확인(50만원 한도 즉시 반영)
         affordable_qty = self.get_affordable_buy_qty(code, price, now, nxt_tradeable)
         qty = min(int(qty), int(affordable_qty))
         if qty <= 0:
@@ -1541,7 +1587,7 @@ class TradingAPI:
 
 
 # ---------------------------------------------------------------------------
-# ?�약 �?��
+# 예약 청산
 # ---------------------------------------------------------------------------
 
 def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: dict[str, bool], watch_map: dict[str, str], state: dict) -> None:
@@ -1614,13 +1660,24 @@ def run(target_date: str | None = None) -> None:
         f"Live-cross filter: BB buffer={LIVE_PRICE_BB_BUFFER_PCT*100:.3f}% | "
         f"confirm polls={LIVE_PRICE_CROSS_CONFIRM_POLLS} | confirm seconds={LIVE_PRICE_CROSS_CONFIRM_SECONDS}"
     )
+    log(
+        f"Polling: live={LIVE_PRICE_POLL_INTERVAL_SECONDS}s | "
+        f"frame refresh=3min boundary + backfill {FRAME_BACKFILL_SYNC_SECONDS}s | "
+        f"buy consecutive confirms={BUY_CONSECUTIVE_CONFIRM_COUNT}"
+    )
     log(f"TP={TAKE_PROFIT_PERCENT*100:.1f}% | SL={STOP_LOSS_PERCENT*100:.1f}% | Trail={TRAILING_STOP_FROM_PEAK*100:.1f}%")
 
     api = TradingAPI()
     traded_today: set[str] = set()
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
+    buy_confirm_state: dict[str, dict[str, object]] = {}
     live_price_cross_state: dict[str, dict] = {}
+    live_price_cache: dict[str, float] = {}
+    live_price_fail_count: dict[str, int] = {}
+    live_price_backoff_until: dict[str, datetime] = {}
+    frame_cache: dict[str, pd.DataFrame] = {}
+    frame_last_refresh_at: dict[str, datetime] = {}
     liquidation_state: dict = {}
     current_trade_date = now.date()
     startup_time = datetime.now()
@@ -1634,7 +1691,13 @@ def run(target_date: str | None = None) -> None:
             traded_today.clear()
             signal_buy_bar.clear()
             signal_sell_bar.clear()
+            buy_confirm_state.clear()
             live_price_cross_state.clear()
+            live_price_cache.clear()
+            live_price_fail_count.clear()
+            live_price_backoff_until.clear()
+            frame_cache.clear()
+            frame_last_refresh_at.clear()
 
         if not is_open_trading_day(current_dt):
             log("Market closed day. Stopping.")
@@ -1646,16 +1709,16 @@ def run(target_date: str | None = None) -> None:
             break
 
         if not is_regular_session(current_dt) and not is_nxt_session(current_dt):
-            time.sleep(POLL_INTERVAL_SECONDS)
+            time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
             continue
 
         api.sync_positions_from_account(force=False)
         run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
 
         # 15:20~15:30 정규장 마감 구간은 종목별 매도 체크 건너뛰고
-        # ?�시?��? �?�� 로직(?�일 매수 + ?�익 구간)�??�행?�다.
+        # 동시호가 예약 청산 로직(당일 매수 + 수익 구간)만 실행한다.
         if is_regular_call_auction(current_dt):
-            time.sleep(POLL_INTERVAL_SECONDS)
+            time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
             continue
 
         for code, name in watch_map.items():
@@ -1665,11 +1728,21 @@ def run(target_date: str | None = None) -> None:
                 log(f"  [SKIP] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
                 continue
 
-            try:
-                frame = fetch_3min_frame(code, current_dt, nxt_tradeable)
-            except Exception as exc:
-                log(f"{code} frame error: {exc}")
-                continue
+            cached_frame = frame_cache.get(code)
+            last_frame_refresh = frame_last_refresh_at.get(code)
+            frame: pd.DataFrame | None = cached_frame
+
+            if should_refresh_3min_frame(current_dt, cached_frame, last_frame_refresh):
+                try:
+                    refreshed_frame = fetch_3min_frame(code, current_dt, nxt_tradeable)
+                except Exception as exc:
+                    log(f"{code} frame error: {exc}")
+                    refreshed_frame = None
+
+                if refreshed_frame is not None and not refreshed_frame.empty:
+                    frame_cache[code] = refreshed_frame
+                    frame_last_refresh_at[code] = current_dt
+                    frame = refreshed_frame
 
             if frame is None:
                 log(f"  [SKIP] {symbol_label} | frame=None (fetch failed)")
@@ -1682,9 +1755,35 @@ def run(target_date: str | None = None) -> None:
             last_closed_bar = pd.Timestamp(current_dt).floor("3min")
             bar_age_sec = max(0.0, (pd.Timestamp(current_dt) - bar_time).total_seconds())
             cur = frame.iloc[-1]
-            price = fetch_live_price(code, current_dt, nxt_tradeable)
+            live_backoff_until = live_price_backoff_until.get(code)
+            can_fetch_live = live_backoff_until is None or current_dt >= live_backoff_until
+            price_source = "live"
+            price = None
+
+            if can_fetch_live:
+                price = fetch_live_price(code, current_dt, nxt_tradeable)
+                if price is None or price <= 0:
+                    fail_count = int(live_price_fail_count.get(code, 0)) + 1
+                    live_price_fail_count[code] = fail_count
+                    backoff_seconds = _live_price_backoff_seconds(fail_count)
+                    live_price_backoff_until[code] = current_dt + timedelta(seconds=backoff_seconds)
+                    price_source = f"fallback_backoff_{backoff_seconds}s"
+                else:
+                    live_price_cache[code] = float(price)
+                    live_price_fail_count[code] = 0
+                    live_price_backoff_until.pop(code, None)
+            else:
+                price_source = "cached_live(backoff_active)"
+
             if price is None or price <= 0:
-                price = float(cur["close"])
+                cached_live = live_price_cache.get(code)
+                if cached_live is not None and cached_live > 0:
+                    price = float(cached_live)
+                    if price_source == "live":
+                        price_source = "cached_live"
+                else:
+                    price = float(cur["close"])
+                    price_source = "bar_close"
 
             cross_info = update_live_price_cross_state(
                 live_price_cross_state,
@@ -1696,7 +1795,7 @@ def run(target_date: str | None = None) -> None:
             pos = api.get_open_positions().get(code)
 
             log(
-                f"  [CHECK] {symbol_label} | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} bar_close={float(cur['close']):,.0f} | "
+                f"  [CHECK] {symbol_label} | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} ({price_source}) bar_close={float(cur['close']):,.0f} | "
                 f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
@@ -1710,25 +1809,26 @@ def run(target_date: str | None = None) -> None:
             )
 
             if pos is not None and pos.get("quantity", 0) > 0:
+                buy_confirm_state.pop(code, None)
                 entry_price = float(pos["buy_price"])
                 pnl_pct = (price / entry_price) - 1.0
 
-                # 저가(bar low)가 현재가 보다 낮은 값이면 손절 처리 우선
-                # ??20�??�링 간격?�서 ?�?�을 ?�쳐 ?�절??지?�되??문제 방�?
+                # 저가(bar low)가 현재가보다 낮으면 손절 판정에 우선 반영
+                # 폴링 간격 사이 급락으로 손절이 지연되는 문제를 완화
                 _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else price
                 _sl_price = min(price, _bar_low)
                 _pnl_sl = (_sl_price / entry_price) - 1.0
 
                 pos["current_price"] = price
                 pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
-                highest_price = float(pos["highest_price"])  # Fix: TP/?�레?�링 로직보다 먼�? ?�의
+                highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
 
                 if pnl_pct >= TAKE_PROFIT_PERCENT:
                     if ENABLE_TP_EXTENSION_TRAILING:
-                        # TP ?�달 ??즉시 ?�절 ?�??고점 ?�레?�링 모드�??�환
+                        # TP 도달 시 즉시 익절 대신 고점 트레일링 모드로 전환
                         log(
                             f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= TP {TAKE_PROFIT_PERCENT*100:.1f}% | "
-                            f"고점 ?�레?�링 모드 ?�환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
+                            f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
                             f"price={price:,.0f} peak={highest_price:,.0f}"
                         )
                     else:
@@ -1819,6 +1919,7 @@ def run(target_date: str | None = None) -> None:
                 buy_ok, buy_reason = check_buy_condition(frame, current_dt, price, cross_info)
 
                 if not buy_ok:
+                    buy_confirm_state.pop(code, None)
                     detail = _buy_reject_detail(
                         buy_reason,
                         cur,
@@ -1828,6 +1929,24 @@ def run(target_date: str | None = None) -> None:
                         frame=frame,
                     )
                     log(f"  [BUY REJECT] {symbol_label} | {detail}")
+                    continue
+
+                confirm_state = buy_confirm_state.get(code)
+                if (
+                    confirm_state is None
+                    or confirm_state.get("bar_time") != bar_time
+                ):
+                    confirm_count = 1
+                else:
+                    confirm_count = int(confirm_state.get("count", 0)) + 1
+
+                buy_confirm_state[code] = {"bar_time": bar_time, "count": confirm_count}
+                if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
+                    log(
+                        f"  [BUY HOLD] {symbol_label} | reason=WAIT_CONSECUTIVE_CONFIRM | "
+                        f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
+                        f"bar={bar_time:%H:%M:%S}"
+                    )
                     continue
 
                 qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
@@ -1856,10 +1975,11 @@ def run(target_date: str | None = None) -> None:
                     log(f"  [BUY EXECUTED] {symbol_label} | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
                     traded_today.add(code)
                     signal_buy_bar[code] = bar_time
+                    buy_confirm_state.pop(code, None)
 
                 log("=" * 110)
 
-        time.sleep(POLL_INTERVAL_SECONDS)
+        time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
