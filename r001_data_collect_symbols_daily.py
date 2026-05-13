@@ -114,10 +114,20 @@ def probe_nxt_tradeable(code: str) -> bool:
     if not callable(stock_info_fn):
         return False
 
-    try:
-        result = stock_info_fn(prdt_type_cd="300", pdno=code)
-    except Exception as exc:
-        logger.warning("NXT probe failed for %s: %s", code, exc)
+    last_exc = None
+    for attempt in range(2):
+        try:
+            result = stock_info_fn(prdt_type_cd="300", pdno=code)
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                logger.debug("NXT probe attempt 1 failed for %s, retrying: %s", code, exc)
+                time.sleep(0.3)
+
+    if last_exc is not None:
+        logger.warning("NXT probe failed for %s (both attempts): %s", code, last_exc)
         return False
 
     if result is None or getattr(result, "empty", True):
