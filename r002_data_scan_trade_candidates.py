@@ -1,12 +1,13 @@
 """R76 trade-candidate scanner.
 
 Purpose:
-- Read collected intraday data and rank symbols for trading watchlists.
+- Read multi-day intraday data, aggregate to daily bars, and rank symbols
+  for trading watchlists based on liquidity and stock health.
 - Export picks used by live trading and simulation.
 
 Run examples:
 - python xgraph/auto_trading/r002_data_scan_trade_candidates.py --date 20260508
-- python xgraph/auto_trading/r002_data_scan_trade_candidates.py --date 20260508 --max-codes 20
+- python xgraph/auto_trading/r002_data_scan_trade_candidates.py --date 20260508 --max-picks 20 --config balanced
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -19,10 +20,16 @@ Update log:
     summary: added standardized file header and expandable update-log format.
     impact: scanner
     compatibility: backward-compatible
+- [2026-05-13] type=refactor owner=copilot
+    summary: removed intraday real-time signal conditions; replaced with daily-bar
+             health/liquidity screening (listing age, consecutive up days, volume
+             trend, 52-week high position, gap risk).
+    impact: scanner
+    compatibility: breaking (ScannerConfig fields changed, scan() takes data_root)
 """
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime
 from pathlib import Path
 
@@ -32,93 +39,83 @@ import pandas as pd
 @dataclass(frozen=True)
 class ScannerConfig:
     name: str
+    # Price range
     price_min: int
     price_max: int
+    # Volatility: daily ATR / close (e.g. 0.010 = 1% daily range minimum)
     atr_ratio_min: float
-    volume_ma20_min: int
-    amount_ma20_min: int
-    require_trend: bool
-    support_score_min: int
+    # Liquidity
+    volume_ma20_min: int            # daily volume MA20 (shares/day)
+    amount_ma20_min: int            # daily trading amount MA20 (KRW/day)
+    # Stock health
+    min_listing_days: int           # minimum trading days on record
+    min_up_days_in_5: int           # minimum bullish candles (close > open) in last 5 days
+    max_52w_high_ratio: float       # exclude if price >= ratio * 52-week high
+    max_prev_day_change: float      # exclude if previous day abs return >= this
+    volume_trend_min_ratio: float   # recent 5d avg vol / prior 5d avg vol minimum
+    # Output
     max_picks: int | None
 
 
-CURRENT_STRICT_CONFIG = ScannerConfig(
-    name="current_strict",
-    price_min=2000,
+STRICT_CONFIG = ScannerConfig(
+    name="strict",
+    price_min=2_000,
     price_max=1_000_000,
-    atr_ratio_min=0.003,
-    volume_ma20_min=5000,
-    amount_ma20_min=50_000_000,
-    require_trend=True,
-    support_score_min=3,
+    atr_ratio_min=0.015,            # 1.5% daily ATR minimum
+    volume_ma20_min=200_000,        # 20만주/일
+    amount_ma20_min=1_000_000_000,  # 10억원/일
+    min_listing_days=120,
+    min_up_days_in_5=3,
+    max_52w_high_ratio=0.90,        # 52주 고가 90% 이상이면 제외
+    max_prev_day_change=0.07,       # 전일 7% 이상 급등락 제외
+    volume_trend_min_ratio=1.0,     # 거래량 감소 종목 제외
     max_picks=None,
 )
 
-BALANCED_RANKED_CONFIG = ScannerConfig(
-    name="balanced_ranked",
-    price_min=2000,
+BALANCED_CONFIG = ScannerConfig(
+    name="balanced",
+    price_min=2_000,
     price_max=1_000_000,
-    atr_ratio_min=0.002,
-    volume_ma20_min=3000,
-    amount_ma20_min=50_000_000,
-    require_trend=False,
-    support_score_min=2,
+    atr_ratio_min=0.010,
+    volume_ma20_min=50_000,
+    amount_ma20_min=300_000_000,    # 3억원/일
+    min_listing_days=60,
+    min_up_days_in_5=2,
+    max_52w_high_ratio=0.95,
+    max_prev_day_change=0.08,
+    volume_trend_min_ratio=0.9,
     max_picks=10,
 )
 
-AGGRESSIVE_RANKED_CONFIG = ScannerConfig(
-    name="aggressive_ranked",
-    price_min=2000,
+RELAXED_CONFIG = ScannerConfig(
+    name="relaxed",
+    price_min=2_000,
     price_max=1_000_000,
-    atr_ratio_min=0.002,
-    volume_ma20_min=3000,
-    amount_ma20_min=50_000_000,
-    require_trend=False,
-    support_score_min=2,
-    max_picks=15,
-)
-
-R76_ALIGNED_CONFIG = ScannerConfig(
-    name="r76_aligned",
-    price_min=2000,
-    price_max=1_000_000,
-    atr_ratio_min=0.002,
-    volume_ma20_min=1500,
-    amount_ma20_min=30_000_000,
-    require_trend=False,
-    support_score_min=2,
+    atr_ratio_min=0.007,
+    volume_ma20_min=20_000,
+    amount_ma20_min=100_000_000,    # 1억원/일
+    min_listing_days=30,
+    min_up_days_in_5=1,
+    max_52w_high_ratio=0.97,
+    max_prev_day_change=0.10,
+    volume_trend_min_ratio=0.8,
     max_picks=20,
 )
 
-COMPARISON_CONFIGS = [
-    CURRENT_STRICT_CONFIG,
-    BALANCED_RANKED_CONFIG,
-    AGGRESSIVE_RANKED_CONFIG,
-]
+CONFIG_MAP = {
+    "strict": STRICT_CONFIG,
+    "balanced": BALANCED_CONFIG,
+    "relaxed": RELAXED_CONFIG,
+}
 
+DEFAULT_CONFIG = BALANCED_CONFIG
 DEFAULT_HISTORY_WINDOW = 0
+DAILY_LOOKBACK = 260  # trading days of history to load per stock
 
-# r73 buy logic alignment constants.
-LIVE_PRICE_BB_BUFFER_PCT = 0.0
-STOCH_OVERBOUGHT = 85.0
-STOCH_BUY_MAX = 72.0
-RSI_BUY_MIN = 45.0
-RSI_BUY_MAX = 72.0
-WILLIAMS_BUY_FLOOR = -70.0
-WILLIAMS_OVERBOUGHT_CEIL = -15.0
-BB_UPPER_PROXIMITY_MAX = 0.85
-ADX_MIN_TREND = 20.0
-VOLUME_RATIO_MIDDAY = 0.60
-VOLUME_RATIO_STRONG_RELAX = 0.10
-VOLUME_RATIO_FLOOR = 0.50
-DAILY_MA5_LOOKBACK_DAYS = 30
 
-# Trend indicator thresholds.
-DI_PLUS_MIN_STRENGTH = 20.0  # minimum DI+ strength
-DI_DIFFERENCE_MIN = 5.0       # minimum DI+ minus DI- difference
-MACD_HIST_BUY_SIGNAL = True   # require positive MACD histogram
-OBV_UPTREND_CHECK = True      # require OBV above OBV_MA or previous OBV
-
+# ---------------------------------------------------------------------------
+# Data loading helpers
+# ---------------------------------------------------------------------------
 
 def ensure_datetime_index(df):
     if isinstance(df.index, pd.DatetimeIndex):
@@ -151,269 +148,70 @@ def load_data(code, data_dir, warn=True):
         return None
 
 
-def filter_data_by_date(df, target_date):
-    if target_date is None:
-        return df
+def build_daily_bars(data_root, code, target_date_str=None, lookback=DAILY_LOOKBACK):
+    """Aggregate per-date intraday files into a daily OHLCV DataFrame.
 
-    if isinstance(df.index, pd.DatetimeIndex):
-        # Drop malformed combined-date rows (year 1900) and filter by target date.
-        clean_df = df[df.index.year != 1900]
-        return clean_df[clean_df.index.date == target_date.date()]
+    Each date directory under data_root is expected to contain intraday
+    minute-bar CSV files named {code}.txt.  This function reads each file,
+    aggregates to a single daily bar (open=first, high=max, low=min,
+    close=last, volume=sum), and returns a sorted daily DataFrame.
+    """
+    date_dirs = sorted(
+        d for d in data_root.iterdir()
+        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+    )
+    if target_date_str:
+        date_dirs = [d for d in date_dirs if d.name <= target_date_str]
+    date_dirs = date_dirs[-lookback:]
 
-    return pd.DataFrame()
+    rows = []
+    for date_dir in date_dirs:
+        df = load_data(code, date_dir, warn=False)
+        if df is None or df.empty:
+            continue
+        df = ensure_datetime_index(df)
+        if isinstance(df.index, pd.DatetimeIndex):
+            df = df[df.index.year != 1900]
+        if df.empty:
+            continue
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["close"])
+        df = df[df["close"] > 0]
+        if df.empty:
+            continue
+        rows.append({
+            "date": pd.to_datetime(date_dir.name, format="%Y%m%d"),
+            "open": df["open"].iloc[0] if "open" in df.columns else df["close"].iloc[0],
+            "high": df["high"].max() if "high" in df.columns else df["close"].max(),
+            "low": df["low"].min() if "low" in df.columns else df["close"].min(),
+            "close": df["close"].iloc[-1],
+            "volume": df["volume"].sum() if "volume" in df.columns else 0.0,
+        })
 
+    if not rows:
+        return None
+
+    daily = pd.DataFrame(rows).set_index("date").sort_index()
+    daily["amount"] = daily["close"] * daily["volume"]
+    return daily
+
+
+# ---------------------------------------------------------------------------
+# Indicator helpers
+# ---------------------------------------------------------------------------
 
 def calc_atr(df, length=14):
     high = df["high"]
     low = df["low"]
     close = df["close"]
     prev_close = close.shift(1)
-
     tr1 = high - low
     tr2 = (high - prev_close).abs()
     tr3 = (low - prev_close).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    atr = tr.rolling(window=length).mean()
-    return atr
-
-
-def _num(candle, key):
-    value = candle.get(key)
-    if value is None or pd.isna(value):
-        return None
-    return float(value)
-
-
-def _buy_support_score(cur, prev):
-    score = 0
-
-    k_c = _num(cur, "STOCH_K")
-    d_c = _num(cur, "STOCH_D")
-    k_p = _num(prev, "STOCH_K")
-    d_p = _num(prev, "STOCH_D")
-    if None not in (k_c, d_c, k_p, d_p):
-        if (k_p <= d_p and k_c > d_c) or (k_c > d_c and k_c <= STOCH_BUY_MAX):
-            score += 1
-
-    rsi_c = _num(cur, "RSI")
-    sig_c = _num(cur, "RSI_SIGNAL")
-    rsi_p = _num(prev, "RSI")
-    sig_p = _num(prev, "RSI_SIGNAL")
-    if None not in (rsi_c, sig_c, rsi_p, sig_p):
-        in_buy_zone = RSI_BUY_MIN <= rsi_c <= RSI_BUY_MAX
-        if (rsi_p <= sig_p and rsi_c > sig_c) or (rsi_c > sig_c and in_buy_zone):
-            score += 1
-
-    wr_c = _num(cur, "WILLIAMS_R")
-    wr_p = _num(prev, "WILLIAMS_R")
-    if None not in (wr_c, wr_p):
-        if wr_c > wr_p and wr_c >= WILLIAMS_BUY_FLOOR:
-            score += 1
-
-    macd_c = _num(cur, "MACD")
-    msig_c = _num(cur, "MACD_SIGNAL")
-    macd_p = _num(prev, "MACD")
-    msig_p = _num(prev, "MACD_SIGNAL")
-    if None not in (macd_c, msig_c, macd_p, msig_p):
-        if (macd_p <= msig_p and macd_c > msig_c) or (macd_c > msig_c and macd_c > 0):
-            score += 1
-
-    vwap = _num(cur, "VWAP")
-    close_v = _num(cur, "close")
-    if None not in (vwap, close_v) and close_v > vwap:
-        score += 1
-
-    obv_c = _num(cur, "OBV")
-    obv_ma_c = _num(cur, "OBV_MA")
-    obv_p = _num(prev, "OBV")
-    if None not in (obv_c, obv_ma_c, obv_p):
-        if obv_c > obv_ma_c or obv_c > obv_p:
-            score += 1
-
-    # Extra support point: MACD histogram should be positive.
-    macd_hist_c = _num(cur, "MACD_HIST")
-    if MACD_HIST_BUY_SIGNAL and macd_hist_c is not None and macd_hist_c > 0:
-        score += 1
-
-    # Extra support point: DI+ strength should dominate DI-.
-    di_plus_c = _num(cur, "DI_PLUS")
-    di_minus_c = _num(cur, "DI_MINUS")
-    if None not in (di_plus_c, di_minus_c):
-        if di_plus_c >= DI_PLUS_MIN_STRENGTH and (di_plus_c - di_minus_c) >= DI_DIFFERENCE_MIN:
-            score += 1
-
-    return score
-
-
-def normalize_ohlcv_for_indicators(df):
-    required = {"open", "high", "low", "close", "volume"}
-    if not required.issubset(df.columns):
-        return None
-
-    normalized = df.copy()
-    for col in ["open", "high", "low", "close", "volume"]:
-        normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
-
-    normalized = normalized.sort_index()
-
-    # Treat non-positive prices as missing and rebuild no-trade minute bars from last close.
-    normalized.loc[normalized["close"] <= 0, "close"] = pd.NA
-    if normalized["close"].notna().sum() == 0:
-        return None
-
-    normalized["close"] = normalized["close"].ffill()
-    for col in ["open", "high", "low"]:
-        normalized[col] = normalized[col].where(normalized[col] > 0)
-        normalized[col] = normalized[col].fillna(normalized["close"])
-
-    normalized["volume"] = normalized["volume"].fillna(0)
-    normalized.loc[normalized["volume"] < 0, "volume"] = 0
-
-    return normalized
-
-
-def build_indicators(df):
-    if df is None or df.empty:
-        return None
-
-    df = normalize_ohlcv_for_indicators(df)
-    if df is None or df.empty:
-        return None
-
-    # Reuse indicator columns from CSV when available; compute only missing ones.
-    # ATR fallback calculation when ATR is missing.
-    df["ATR"] = calc_atr(df, length=14)
-
-    # Normalize MA_5/MA_20 into MA5/MA20 keys.
-    if "MA_5" not in df.columns:
-        df["MA_5"] = df["close"].rolling(5).mean()
-    df["MA5"] = df["MA_5"]  # alias
-
-    if "MA_20" not in df.columns:
-        df["MA_20"] = df["close"].rolling(20).mean()
-    df["MA20"] = df["MA_20"]  # alias
-
-    # Bollinger Bands fallback calculation.
-    if "BB_MIDDLE" not in df.columns:
-        bb_period = 20
-        bb_std_mult = 2.0
-        df["BB_MIDDLE"] = df["close"].rolling(window=bb_period, min_periods=1).mean()
-        df["BB_STD"] = df["close"].rolling(window=bb_period, min_periods=1).std()
-        df["BB_UPPER"] = df["BB_MIDDLE"] + df["BB_STD"] * bb_std_mult
-        df["BB_LOWER"] = df["BB_MIDDLE"] - df["BB_STD"] * bb_std_mult
-    elif "BB_UPPER" not in df.columns:
-        bb_std_mult = 2.0
-        if "BB_STD" not in df.columns:
-            df["BB_STD"] = df["close"].rolling(window=20, min_periods=1).std()
-        df["BB_UPPER"] = df["BB_MIDDLE"] + df["BB_STD"] * bb_std_mult
-        df["BB_LOWER"] = df["BB_MIDDLE"] - df["BB_STD"] * bb_std_mult
-
-    # RSI and signal fallback calculation.
-    if "RSI" not in df.columns:
-        rsi_period = 14
-        rsi_signal_period = 6
-        delta = df["close"].diff()
-        gain = delta.clip(lower=0).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
-        loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / rsi_period, min_periods=1, adjust=False).mean()
-        rs = gain / loss.replace(0, float("nan"))
-        df["RSI"] = 100 - (100 / (1 + rs))
-        df.loc[loss == 0, "RSI"] = 100.0
-        df["RSI_SIGNAL"] = df["RSI"].rolling(window=rsi_signal_period, min_periods=1).mean()
-    elif "RSI_SIGNAL" not in df.columns:
-        rsi_signal_period = 6
-        df["RSI_SIGNAL"] = df["RSI"].rolling(window=rsi_signal_period, min_periods=1).mean()
-
-    # Stochastic fallback calculation.
-    if "STOCH_K" not in df.columns:
-        stoch_k_period = 10
-        stoch_d_period = 5
-        low_n = df["low"].rolling(window=stoch_k_period, min_periods=1).min()
-        high_n = df["high"].rolling(window=stoch_k_period, min_periods=1).max()
-        denom = (high_n - low_n).replace(0, float("nan"))
-        df["STOCH_K"] = 100.0 * (df["close"] - low_n) / denom
-        df["STOCH_D"] = df["STOCH_K"].rolling(window=stoch_d_period, min_periods=1).mean()
-    elif "STOCH_D" not in df.columns:
-        stoch_d_period = 5
-        df["STOCH_D"] = df["STOCH_K"].rolling(window=stoch_d_period, min_periods=1).mean()
-
-    # Williams %R fallback calculation.
-    if "WILLIAMS_R" not in df.columns:
-        williams_r_period = 10
-        williams_d_period = 9
-        high_w = df["high"].rolling(window=williams_r_period, min_periods=1).max()
-        low_w = df["low"].rolling(window=williams_r_period, min_periods=1).min()
-        wr_denom = (high_w - low_w).replace(0, float("nan"))
-        df["WILLIAMS_R"] = -100.0 * (high_w - df["close"]) / wr_denom
-        df["WILLIAMS_D"] = df["WILLIAMS_R"].rolling(window=williams_d_period, min_periods=1).mean()
-    elif "WILLIAMS_D" not in df.columns:
-        williams_d_period = 9
-        df["WILLIAMS_D"] = df["WILLIAMS_R"].rolling(window=williams_d_period, min_periods=1).mean()
-
-    # MACD fallback calculation.
-    if "MACD" not in df.columns:
-        macd_fast = 5
-        macd_slow = 12
-        macd_signal_period = 4
-        ema_fast = df["close"].ewm(span=macd_fast, adjust=False).mean()
-        ema_slow = df["close"].ewm(span=macd_slow, adjust=False).mean()
-        df["MACD"] = ema_fast - ema_slow
-        df["MACD_SIGNAL"] = df["MACD"].ewm(span=macd_signal_period, adjust=False).mean()
-        df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
-    elif "MACD_SIGNAL" not in df.columns:
-        macd_signal_period = 4
-        df["MACD_SIGNAL"] = df["MACD"].ewm(span=macd_signal_period, adjust=False).mean()
-    if "MACD_HIST" not in df.columns:
-        df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
-
-    # ADX and DI fallback calculation.
-    if "ADX" not in df.columns:
-        adx_period = 7
-        tr = pd.concat([
-            df["high"] - df["low"],
-            (df["high"] - df["close"].shift(1)).abs(),
-            (df["low"] - df["close"].shift(1)).abs(),
-        ], axis=1).max(axis=1)
-        high_diff = df["high"] - df["high"].shift(1)
-        low_diff = df["low"].shift(1) - df["low"]
-        plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
-        minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
-        ema_tr = tr.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
-        ema_plus = plus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
-        ema_minus = minus_dm.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
-        df["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
-        df["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
-        di_sum = (df["DI_PLUS"] + df["DI_MINUS"]).replace(0, float("nan"))
-        dx = 100.0 * (df["DI_PLUS"] - df["DI_MINUS"]).abs() / di_sum
-        df["ADX"] = dx.ewm(alpha=1.0 / adx_period, min_periods=1, adjust=False).mean()
-    elif ("DI_PLUS" not in df.columns or "DI_MINUS" not in df.columns):
-        # If only one DI column is missing, keep as-is and handle later in scoring.
-        pass
-
-    # VWAP and OBV fallback calculation.
-    if "VWAP" not in df.columns:
-        cum_vol = df["volume"].cumsum()
-        df["VWAP"] = (df["close"] * df["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
-    
-    if "OBV" not in df.columns:
-        close_diff = df["close"].diff()
-        obv_vol = df["volume"] * close_diff.gt(0).astype(float) - df["volume"] * close_diff.lt(0).astype(float)
-        df["OBV"] = obv_vol.cumsum()
-    
-    if "OBV_MA" not in df.columns and "OBV" in df.columns:
-        df["OBV_MA"] = df["OBV"].rolling(window=10, min_periods=1).mean()
-
-    # Volume/amount fallback columns.
-    if "VOL_MA20" not in df.columns:
-        df["VOL_MA20"] = df["volume"].rolling(20).mean()
-    
-    if "AMOUNT" not in df.columns:
-        df["AMOUNT"] = df["close"] * df["volume"]
-    
-    if "AMOUNT_MA20" not in df.columns:
-        df["AMOUNT_MA20"] = df["AMOUNT"].rolling(20).mean()
-
-    return df
+    return tr.rolling(window=length).mean()
 
 
 def safe_float(value):
@@ -432,90 +230,28 @@ def classify_trend(ma5, ma20):
     return "flat"
 
 
-def is_daily_ma5_uptrend(df, lookback_days=DAILY_MA5_LOOKBACK_DAYS):
-    if df is None or df.empty or not isinstance(df.index, pd.DatetimeIndex):
-        return False
+def calc_volume_trend_ratio(daily_df, window=10):
+    """Ratio of recent half-window avg volume vs prior half-window avg volume.
 
-    close = pd.to_numeric(df.get("close"), errors="coerce")
-    if close is None:
-        return False
-
-    close = close.dropna().sort_index()
-    if close.empty:
-        return False
-
-    daily_close = close.resample("D").last().dropna()
-    if daily_close.empty:
-        return False
-
-    ma5 = daily_close.rolling(window=5, min_periods=5).mean()
-    end_date = daily_close.index.max()
-    start_date = end_date - pd.Timedelta(days=lookback_days - 1)
-    ma5_window = ma5[ma5.index >= start_date].dropna()
-
-    if len(ma5_window) < 5:
-        return False
-
-    # Require month-level improvement and recent rising momentum.
-    rising_steps = int((ma5_window.tail(5).diff().dropna() > 0).sum())
-    return ma5_window.iloc[-1] > ma5_window.iloc[0] and rising_steps >= 3
+    > 1.0  volume is increasing (bullish signal).
+    < 1.0  volume is declining.
+    """
+    vols = daily_df["volume"].tail(window)
+    if len(vols) < window:
+        return None
+    half = window // 2
+    recent_avg = float(vols.tail(half).mean())
+    prior_avg = float(vols.head(half).mean())
+    if prior_avg == 0:
+        return None
+    return recent_avg / prior_avg
 
 
-def calculate_candidate_score(candidate, config):
-    atr_ratio = candidate["atr_ratio"]
-    vol_ma20 = candidate["vol_ma20"]
-    amount_ma20 = candidate["amount_ma20"]
-    price = candidate["price"]
-    ma5 = candidate["ma5"]
-    ma20 = candidate["ma20"]
-    support_score = candidate.get("support_score") or 0
-    live_cross_ready = bool(candidate.get("live_cross_ready"))
-    adx = candidate.get("adx")
-    di_plus = candidate.get("di_plus")
-    di_minus = candidate.get("di_minus")
-    macd_hist = candidate.get("macd_hist")
+# ---------------------------------------------------------------------------
+# Candidate evaluation
+# ---------------------------------------------------------------------------
 
-    if atr_ratio is None or vol_ma20 is None or amount_ma20 is None or price is None:
-        return 0.0
-
-    score = 0.0
-    score += min(25.0, (atr_ratio / config.atr_ratio_min) * 12.5)
-    score += min(20.0, (vol_ma20 / config.volume_ma20_min) * 7.0)
-    score += min(20.0, (amount_ma20 / config.amount_ma20_min) * 7.0)
-
-    # Support indicator score (0~8), reflected up to 32 points.
-    score += min(32.0, support_score * 4.0)
-
-    # Bonus when live price is near/above BB middle buffer.
-    if live_cross_ready:
-        score += 8.0
-
-    if ma5 is not None and ma20 not in (None, 0):
-        trend_ratio = (ma5 / ma20) - 1.0
-        score += max(-12.0, min(12.0, trend_ratio * 1200.0))
-
-    if adx is not None and adx >= ADX_MIN_TREND:
-        score += min(8.0, (adx - ADX_MIN_TREND) * 0.35)
-
-    # DI+ strength score (max 4).
-    if di_plus is not None and di_minus is not None:
-        di_strength = di_plus - di_minus
-        if di_strength >= DI_DIFFERENCE_MIN:
-            score += min(4.0, (di_strength / 30.0) * 4.0)
-
-    # MACD histogram bonus (max 3).
-    if macd_hist is not None and macd_hist > 0:
-        score += min(3.0, macd_hist / 10.0)
-
-    if price <= 100000:
-        score += 5.0
-    elif price <= config.price_max:
-        score += 2.0
-
-    return round(score, 2)
-
-
-def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_CONFIG):
+def evaluate_candidate(code, name, daily_df, config):
     candidate = {
         "code": code,
         "name": name,
@@ -530,96 +266,81 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         "ma20": None,
         "ma_gap": None,
         "trend_state": "unknown",
-        "adx": None,
-        "di_plus": None,
-        "di_minus": None,
-        "macd_hist": None,
-        "support_score": 0,
-        "live_cross_ready": False,
-        "bb_position": None,
         "vol_ma20": None,
         "amount_ma20": None,
+        "listing_days": None,
+        "up_days_in_5": None,
+        "vol_trend_ratio": None,
+        "high_52w_ratio": None,
+        "prev_day_change": None,
         "score": 0.0,
-        "daily_ma5_uptrend": False,
     }
 
-    prepared = build_indicators(df)
-    if prepared is None:
-        candidate["skip_reason"] = "no_data"
+    if daily_df is None or len(daily_df) < 5:
+        candidate["skip_reason"] = "insufficient_daily_bars"
         return candidate
 
-    filtered = filter_data_by_date(prepared, target_date)
-    if filtered.empty:
-        candidate["skip_reason"] = "date_missing"
+    price = safe_float(daily_df["close"].iloc[-1])
+    if price is None or price <= 0:
+        candidate["skip_reason"] = "invalid_price"
         return candidate
 
-    scorable = filtered.dropna(subset=["close", "ATR"])
-    if scorable.empty:
-        candidate["skip_reason"] = "indicator_nan"
-        return candidate
+    # Daily ATR (14-day)
+    atr_series = calc_atr(daily_df)
+    atr = safe_float(atr_series.iloc[-1]) if not atr_series.empty else None
+    atr_ratio = (atr / price) if (atr is not None and price > 0) else None
 
-    if len(scorable) < 2:
-        candidate["skip_reason"] = "insufficient_bars"
-        return candidate
+    # Daily moving averages
+    ma5 = safe_float(daily_df["close"].rolling(5, min_periods=1).mean().iloc[-1])
+    ma20 = safe_float(daily_df["close"].rolling(20, min_periods=1).mean().iloc[-1])
+    ma_gap = (ma5 - ma20) if (ma5 is not None and ma20 is not None) else None
 
-    latest = scorable.iloc[-1]
-    prev = scorable.iloc[-2]
-    price = safe_float(latest["close"])
-    atr = safe_float(latest["ATR"])
-    ma5 = safe_float(latest.get("MA_5", latest.get("MA5")))
-    ma20 = safe_float(latest.get("MA_20", latest.get("MA20")))
-    prev_ma5 = safe_float(prev.get("MA_5", prev.get("MA5")))
-    vol_ma20 = safe_float(latest["VOL_MA20"])
-    amount_ma20 = safe_float(latest["AMOUNT_MA20"])
-    adx = safe_float(latest.get("ADX"))
-    di_plus = safe_float(latest.get("DI_PLUS"))
-    di_minus = safe_float(latest.get("DI_MINUS"))
-    macd_hist = safe_float(latest.get("MACD_HIST"))
-    bb_middle = safe_float(latest.get("BB_MIDDLE"))
-    prev_bb_middle = safe_float(prev.get("BB_MIDDLE"))
-    bb_upper = safe_float(latest.get("BB_UPPER"))
-    bb_lower = safe_float(latest.get("BB_LOWER"))
-    atr_ratio = None if price in (None, 0) or atr is None else atr / price
-    ma_gap = None if ma5 is None or ma20 is None else ma5 - ma20
+    # Liquidity
+    vol_ma20 = safe_float(daily_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
+    amount_ma20 = safe_float(daily_df["amount"].rolling(20, min_periods=1).mean().iloc[-1])
 
-    bb_position = None
-    if None not in (bb_upper, bb_lower, price) and bb_upper > bb_lower:
-        bb_position = (price - bb_lower) / (bb_upper - bb_lower)
+    # Listing age (number of trading days with data)
+    listing_days = len(daily_df)
 
-    live_cross_ready = (
-        None not in (price, bb_middle)
-        and price > (bb_middle * (1.0 + LIVE_PRICE_BB_BUFFER_PCT))
-    )
+    # Consecutive up days: close > open in last 5 trading days
+    last5 = daily_df.tail(5)
+    up_days_in_5 = int((last5["close"] > last5["open"]).sum())
 
-    support_score = _buy_support_score(latest, prev)
-    daily_ma5_uptrend = is_daily_ma5_uptrend(prepared)
+    # Volume trend ratio (recent 5d vs prior 5d)
+    vol_trend_ratio = calc_volume_trend_ratio(daily_df, window=10)
 
-    candidate.update(
-        {
-            "price": price,
-            "atr": atr,
-            "atr_ratio": atr_ratio,
-            "ma5": ma5,
-            "ma20": ma20,
-            "ma_gap": ma_gap,
-            "trend_state": classify_trend(ma5, ma20),
-            "adx": adx,
-            "di_plus": di_plus,
-            "di_minus": di_minus,
-            "macd_hist": macd_hist,
-            "support_score": support_score,
-            "live_cross_ready": live_cross_ready,
-            "bb_position": bb_position,
-            "vol_ma20": vol_ma20,
-            "amount_ma20": amount_ma20,
-            "daily_ma5_uptrend": daily_ma5_uptrend,
-        }
-    )
+    # 52-week high position
+    lookback_52w = min(252, len(daily_df))
+    week52_high = safe_float(daily_df["high"].tail(lookback_52w).max())
+    high_52w_ratio = (price / week52_high) if (week52_high is not None and week52_high > 0) else None
 
-    if atr is None or price is None:
-        candidate["fail_reasons"].append("atr_or_price_nan")
-        return candidate
+    # Previous day absolute return (gap / surge risk)
+    prev_day_change = None
+    if len(daily_df) >= 2:
+        prev_close = safe_float(daily_df["close"].iloc[-2])
+        if prev_close is not None and prev_close > 0:
+            prev_day_change = abs(price - prev_close) / prev_close
 
+    trend_state = classify_trend(ma5, ma20)
+
+    candidate.update({
+        "price": price,
+        "atr": atr,
+        "atr_ratio": atr_ratio,
+        "ma5": ma5,
+        "ma20": ma20,
+        "ma_gap": ma_gap,
+        "trend_state": trend_state,
+        "vol_ma20": vol_ma20,
+        "amount_ma20": amount_ma20,
+        "listing_days": listing_days,
+        "up_days_in_5": up_days_in_5,
+        "vol_trend_ratio": vol_trend_ratio,
+        "high_52w_ratio": high_52w_ratio,
+        "prev_day_change": prev_day_change,
+    })
+
+    # --- Hard filters (fail = disqualified) ---
     if price < config.price_min:
         candidate["fail_reasons"].append("price_floor")
     if price > config.price_max:
@@ -630,70 +351,93 @@ def evaluate_candidate(code, name, df, target_date=None, config=BALANCED_RANKED_
         candidate["fail_reasons"].append("volume_ma20")
     if amount_ma20 is None or amount_ma20 < config.amount_ma20_min:
         candidate["fail_reasons"].append("amount_ma20")
-    if not daily_ma5_uptrend:
-        candidate["fail_reasons"].append("daily_ma5_not_uptrend")
-
-    # r73-aligned filters: core risk factors are hard fails, timing-sensitive ones are soft flags.
-    if not live_cross_ready:
-        candidate["soft_flags"].append("live_price_bb_not_ready")
-
-    if None not in (bb_middle, prev_bb_middle) and bb_middle < prev_bb_middle:
-        candidate["soft_flags"].append("bb_middle_falling")
-
-    if None not in (ma5, prev_ma5) and ma5 < prev_ma5:
-        candidate["soft_flags"].append("ma5_falling")
-
-    stoch_k = safe_float(latest.get("STOCH_K"))
-    if stoch_k is not None and stoch_k >= STOCH_OVERBOUGHT:
-        candidate["fail_reasons"].append("overbought_stoch")
-
-    wr_val = safe_float(latest.get("WILLIAMS_R"))
-    if wr_val is not None and wr_val >= WILLIAMS_OVERBOUGHT_CEIL:
-        candidate["fail_reasons"].append("overbought_wr")
-
-    if bb_position is not None and bb_position >= BB_UPPER_PROXIMITY_MAX:
-        candidate["fail_reasons"].append("near_bb_upper")
-
-    if adx is not None and adx < ADX_MIN_TREND:
-        candidate["fail_reasons"].append("weak_trend_adx")
-
-    # Trend filter: DI+ strength confirmation for bullish trend.
-    if di_plus is not None and di_minus is not None:
-        if di_plus < DI_PLUS_MIN_STRENGTH:
-            candidate["soft_flags"].append("weak_di_plus")
-        if (di_plus - di_minus) < DI_DIFFERENCE_MIN:
-            candidate["soft_flags"].append("weak_di_difference")
-
-    # Trend filter: negative MACD histogram is treated as a soft warning.
-    if macd_hist is not None and macd_hist < 0:
-        candidate["soft_flags"].append("negative_macd_hist")
-
-    if vol_ma20 is not None and vol_ma20 > 0:
-        volume_ratio_threshold = VOLUME_RATIO_MIDDAY
-        if adx is not None and adx >= 40.0:
-            volume_ratio_threshold = max(VOLUME_RATIO_FLOOR, VOLUME_RATIO_MIDDAY - VOLUME_RATIO_STRONG_RELAX)
-        current_vol = safe_float(latest.get("volume"))
-        if current_vol is not None and current_vol < (vol_ma20 * volume_ratio_threshold):
-            candidate["fail_reasons"].append("low_volume_vs_ma20")
-
-    if support_score < config.support_score_min:
-        candidate["soft_flags"].append("low_support_score")
-
-    trend_state = candidate["trend_state"]
+    if listing_days < config.min_listing_days:
+        candidate["fail_reasons"].append("new_listing")
+    if up_days_in_5 < config.min_up_days_in_5:
+        candidate["fail_reasons"].append("low_up_days")
+    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
+        candidate["fail_reasons"].append("near_52w_high")
+    if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
+        candidate["fail_reasons"].append("prev_day_gap_risk")
     if trend_state == "down":
-        candidate["fail_reasons"].append("down_trend_excluded")
-    elif trend_state != "up":
-        # Default bias is bullish. If require_trend=True, flat/unknown are excluded.
-        if config.require_trend:
-            candidate["fail_reasons"].append("non_up_trend")
-        else:
-            candidate["soft_flags"].append("non_up_trend")
+        candidate["fail_reasons"].append("down_trend")
+
+    # --- Soft flags (warning only, not disqualified) ---
+    if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
+        candidate["soft_flags"].append("volume_declining")
+    if trend_state == "flat":
+        candidate["soft_flags"].append("flat_trend")
+    if high_52w_ratio is not None and high_52w_ratio < 0.4:
+        candidate["soft_flags"].append("far_from_52w_high")
 
     candidate["score"] = calculate_candidate_score(candidate, config)
     candidate["eligible"] = not candidate["fail_reasons"]
-
     return candidate
 
+
+def calculate_candidate_score(candidate, config):
+    price = candidate.get("price")
+    atr_ratio = candidate.get("atr_ratio")
+    vol_ma20 = candidate.get("vol_ma20")
+    amount_ma20 = candidate.get("amount_ma20")
+    ma5 = candidate.get("ma5")
+    ma20 = candidate.get("ma20")
+    up_days = candidate.get("up_days_in_5") or 0
+    vol_trend = candidate.get("vol_trend_ratio")
+    high_52w_ratio = candidate.get("high_52w_ratio")
+    listing_days = candidate.get("listing_days") or 0
+
+    if None in (price, atr_ratio, vol_ma20, amount_ma20):
+        return 0.0
+
+    score = 0.0
+
+    # Volatility (max 25)
+    score += min(25.0, (atr_ratio / config.atr_ratio_min) * 12.5)
+
+    # Liquidity: volume MA20 (max 20)
+    score += min(20.0, (vol_ma20 / config.volume_ma20_min) * 7.0)
+
+    # Liquidity: amount MA20 (max 20)
+    score += min(20.0, (amount_ma20 / config.amount_ma20_min) * 7.0)
+
+    # Momentum: consecutive up days in last 5 (max 15)
+    score += up_days * 3.0
+
+    # Momentum: volume trend ratio (max 10)
+    if vol_trend is not None and vol_trend > 1.0:
+        score += min(10.0, (vol_trend - 1.0) * 20.0)
+
+    # Trend alignment: MA5 / MA20 ratio (±10)
+    if ma5 is not None and ma20 not in (None, 0):
+        trend_ratio = (ma5 / ma20) - 1.0
+        score += max(-10.0, min(10.0, trend_ratio * 500.0))
+
+    # 52-week high position: optimal zone 40~85% of 52-week high (max 10)
+    if high_52w_ratio is not None:
+        if 0.40 <= high_52w_ratio < 0.85:
+            score += 10.0
+        elif 0.85 <= high_52w_ratio < config.max_52w_high_ratio:
+            score += 5.0
+
+    # Listing stability bonus (max 5)
+    if listing_days >= 250:
+        score += 5.0
+    elif listing_days >= 120:
+        score += 3.0
+
+    # Price range preference (max 5)
+    if price <= 100_000:
+        score += 5.0
+    elif price <= config.price_max:
+        score += 2.0
+
+    return round(score, 2)
+
+
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
 
 def format_metric(value, digits=0):
     if value is None:
@@ -709,7 +453,6 @@ def summarize_candidates(candidates, selected_rows, skipped):
             fail_counts[reason] = fail_counts.get(reason, 0) + 1
         for reason in candidate["soft_flags"]:
             soft_counts[reason] = soft_counts.get(reason, 0) + 1
-
     return {
         "selected_count": len(selected_rows),
         "eligible_pool_count": sum(1 for row in candidates if row["eligible"]),
@@ -729,123 +472,67 @@ def is_scorable_candidate(row):
     )
 
 
-def is_fallback_eligible_candidate(row):
-    if not is_scorable_candidate(row):
-        return False
-
-    hard_block_reasons = {
-        "atr_or_price_nan",
-        "price_floor",
-        "price_ceiling",
-        "atr_ratio",
-        "volume_ma20",
-        "amount_ma20",
-        "daily_ma5_not_uptrend",
-        "live_price_bb_not_ready",
-        "overbought_stoch",
-        "overbought_wr",
-        "near_bb_upper",
-        "down_trend_excluded",
-        "non_up_trend",
-    }
-
-    fail_reasons = set(row.get("fail_reasons", []))
-    return not (hard_block_reasons & fail_reasons)
-
-
-def is_relaxed_fill_candidate(row):
-    if not is_scorable_candidate(row):
-        return False
-
-    # Final relaxed fill still excludes down trend.
-    return row.get("trend_state") != "down"
-
 
 def render_ranked_csv(selected_rows):
-    lines = ["rank,code,name,score,price,atr_ratio,vol_ma20,amount_ma20,trend_state,ma_gap,support_score,di_plus,di_minus,macd_hist,adx"]
+    header = (
+        "rank,code,name,score,price,atr_ratio,vol_ma20,amount_ma20,"
+        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,"
+        "listing_days,prev_day_change"
+    )
+    lines = [header]
     for rank, row in enumerate(selected_rows, start=1):
-        lines.append(
-            ",".join(
-                [
-                    str(rank),
-                    row["code"],
-                    row["name"].replace(",", " "),
-                    f"{row['score']:.2f}",
-                    format_metric(row["price"], 0).replace(",", ""),
-                    f"{row['atr_ratio']:.6f}" if row["atr_ratio"] is not None else "",
-                    format_metric(row["vol_ma20"], 0).replace(",", ""),
-                    format_metric(row["amount_ma20"], 0).replace(",", ""),
-                    row["trend_state"],
-                    f"{row['ma_gap']:.2f}" if row["ma_gap"] is not None else "",
-                    str(row.get("support_score", 0)),
-                    f"{row.get('di_plus', 0):.2f}" if row.get("di_plus") is not None else "",
-                    f"{row.get('di_minus', 0):.2f}" if row.get("di_minus") is not None else "",
-                    f"{row.get('macd_hist', 0):.4f}" if row.get("macd_hist") is not None else "",
-                    f"{row.get('adx', 0):.2f}" if row.get("adx") is not None else "",
-                ]
-            )
-        )
+        lines.append(",".join([
+            str(rank),
+            row["code"],
+            row["name"].replace(",", " "),
+            f"{row['score']:.2f}",
+            format_metric(row["price"], 0).replace(",", ""),
+            f"{row['atr_ratio']:.6f}" if row["atr_ratio"] is not None else "",
+            format_metric(row["vol_ma20"], 0).replace(",", ""),
+            format_metric(row["amount_ma20"], 0).replace(",", ""),
+            row["trend_state"],
+            f"{row['ma_gap']:.2f}" if row["ma_gap"] is not None else "",
+            str(row.get("up_days_in_5", 0)),
+            f"{row['vol_trend_ratio']:.3f}" if row.get("vol_trend_ratio") is not None else "",
+            f"{row['high_52w_ratio']:.3f}" if row.get("high_52w_ratio") is not None else "",
+            str(row.get("listing_days", 0)),
+            f"{row['prev_day_change']:.4f}" if row.get("prev_day_change") is not None else "",
+        ]))
     return "\n".join(lines)
 
 
 def build_history_comparison(data_root, stock_list, history_window=DEFAULT_HISTORY_WINDOW):
-    date_dirs = [d for d in data_root.iterdir() if d.is_dir() and d.name.isdigit()]
-    date_dirs = sorted(date_dirs)[-history_window:]
+    date_dirs = sorted(
+        d for d in data_root.iterdir()
+        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+    )
+    compare_dirs = date_dirs[-history_window:]
     comparison_rows = []
+    total = len(compare_dirs)
+    print(f"\n[INFO] 히스토리 비교 리포트 생성 중 ({total}일치)...")
 
-    total_dates = len(date_dirs)
-    print(f"\n[INFO] 히스토리 비교 리포트 생성 중 ({total_dates}일치)...")
-
-    for i, date_dir in enumerate(date_dirs, start=1):
+    for i, date_dir in enumerate(compare_dirs, start=1):
         try:
             target_date = datetime.strptime(date_dir.name, "%Y%m%d")
         except ValueError:
             continue
-
-        print(f"  [{i}/{total_dates}] {date_dir.name} 스캔 중...", end="\r", flush=True)
-
-        strict = scan(
-            date_dir,
-            target_date=target_date,
-            config=CURRENT_STRICT_CONFIG,
-            return_details=True,
-            verbose=False,
-            stock_list=stock_list,
+        print(f"  [{i}/{total}] {date_dir.name} 스캔 중...", end="\r", flush=True)
+        result = scan(
+            data_root, target_date=target_date, config=DEFAULT_CONFIG,
+            return_details=True, verbose=False, stock_list=stock_list,
         )
-        balanced = scan(
-            date_dir,
-            target_date=target_date,
-            config=BALANCED_RANKED_CONFIG,
-            return_details=True,
-            verbose=False,
-            stock_list=stock_list,
-        )
-        aggressive = scan(
-            date_dir,
-            target_date=target_date,
-            config=AGGRESSIVE_RANKED_CONFIG,
-            return_details=True,
-            verbose=False,
-            stock_list=stock_list,
-        )
+        comparison_rows.append({
+            "date": date_dir.name,
+            "eligible": result["summary"]["eligible_pool_count"],
+            "selected": result["summary"]["selected_count"],
+        })
 
-        comparison_rows.append(
-            {
-                "date": date_dir.name,
-                "strict": strict["summary"]["selected_count"],
-                "balanced_pool": strict["summary"]["selected_count"] if BALANCED_RANKED_CONFIG.max_picks is None else balanced["summary"]["eligible_pool_count"],
-                "balanced_top": balanced["summary"]["selected_count"],
-                "aggressive_pool": aggressive["summary"]["eligible_pool_count"],
-                "aggressive_top": aggressive["summary"]["selected_count"],
-            }
-        )
-
-    print(f"  히스토리 비교 완료 ({total_dates}일치)          ")
+    print(f"  히스토리 비교 완료 ({total}일치)          ")
     return comparison_rows
 
 
-def render_report(data_dir, target_date, config, scan_result, comparison_rows):
-    target_label = target_date.strftime("%Y%m%d") if target_date else data_dir.name
+def render_report(data_root, target_date, config, scan_result, comparison_rows):
+    target_label = target_date.strftime("%Y%m%d") if target_date else str(data_root)
     summary = scan_result["summary"]
     lines = [
         f"# Scanner Report - {target_label}",
@@ -854,11 +541,14 @@ def render_report(data_dir, target_date, config, scan_result, comparison_rows):
         "",
         f"- config: {config.name}",
         f"- price range: {config.price_min:,} ~ {config.price_max:,}",
-        f"- ATR/price min: {config.atr_ratio_min:.4f}",
+        f"- ATR/price min (daily): {config.atr_ratio_min:.4f}",
         f"- volume MA20 min: {config.volume_ma20_min:,}",
         f"- amount MA20 min: {config.amount_ma20_min:,}",
-        f"- require trend: {config.require_trend}",
-        f"- support score min: {config.support_score_min}",
+        f"- min listing days: {config.min_listing_days}",
+        f"- min up days in 5: {config.min_up_days_in_5}",
+        f"- max 52w high ratio: {config.max_52w_high_ratio}",
+        f"- max prev day change: {config.max_prev_day_change:.1%}",
+        f"- volume trend min ratio: {config.volume_trend_min_ratio}",
         f"- max picks: {config.max_picks}",
         "",
         "## Summary",
@@ -870,29 +560,26 @@ def render_report(data_dir, target_date, config, scan_result, comparison_rows):
         "",
         "## Ranked Picks",
         "",
-        "| rank | code | name | score | support | live cross | price | ATR/price | vol MA20 | amount MA20 | trend | ADX | ma gap | DI+ | DI- | MACD |",
-        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| rank | code | name | score | price | ATR/price | vol MA20 | amount MA20 | trend | up/5 | vol trend | 52w pos | listing |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, row in enumerate(scan_result["selected_rows"], start=1):
         lines.append(
-            "| {rank} | {code} | {name} | {score:.2f} | {support} | {live_cross} | {price} | {atr_ratio:.4%} | {vol_ma20} | {amount_ma20} | {trend} | {adx} | {ma_gap} | {di_plus} | {di_minus} | {macd_hist} |".format(
+            "| {rank} | {code} | {name} | {score:.2f} | {price} | {atr} | {vol} | {amt} | {trend} | {up} | {vtd} | {h52w} | {listing} |".format(
                 rank=rank,
                 code=row["code"],
                 name=row["name"],
                 score=row["score"],
-                support=row.get("support_score", 0),
-                live_cross="Y" if row.get("live_cross_ready") else "N",
                 price=format_metric(row["price"], 0),
-                atr_ratio=row["atr_ratio"] or 0.0,
-                vol_ma20=format_metric(row["vol_ma20"], 0),
-                amount_ma20=format_metric(row["amount_ma20"], 0),
+                atr=f"{row['atr_ratio']:.2%}" if row["atr_ratio"] is not None else "-",
+                vol=format_metric(row["vol_ma20"], 0),
+                amt=format_metric(row["amount_ma20"], 0),
                 trend=row["trend_state"],
-                adx=format_metric(row.get("adx"), 1),
-                ma_gap=format_metric(row["ma_gap"], 2),
-                di_plus=format_metric(row.get("di_plus"), 1),
-                di_minus=format_metric(row.get("di_minus"), 1),
-                macd_hist=format_metric(row.get("macd_hist"), 4),
+                up=row.get("up_days_in_5", "-"),
+                vtd=f"{row['vol_trend_ratio']:.2f}" if row.get("vol_trend_ratio") is not None else "-",
+                h52w=f"{row['high_52w_ratio']:.1%}" if row.get("high_52w_ratio") is not None else "-",
+                listing=row.get("listing_days", "-"),
             )
         )
 
@@ -922,29 +609,13 @@ def render_report(data_dir, target_date, config, scan_result, comparison_rows):
             "",
             f"## Recent {len(comparison_rows)}-Day Comparison",
             "",
-            "| date | strict | balanced pool | balanced top | aggressive pool | aggressive top |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| date | eligible | selected |",
+            "| --- | ---: | ---: |",
         ])
         for row in comparison_rows:
-            lines.append(
-                "| {date} | {strict} | {balanced_pool} | {balanced_top} | {aggressive_pool} | {aggressive_top} |".format(**row)
-            )
+            lines.append("| {date} | {eligible} | {selected} |".format(**row))
 
     return "\n".join(lines) + "\n"
-
-
-def get_latest_data_dir(base_path="data"):
-    base = Path(base_path)
-
-    if not base.exists():
-        raise SystemExit("data 폴더가 없습니다. collector를 먼저 실행하세요.")
-
-    dirs = [d for d in base.iterdir() if d.is_dir()]
-    if not dirs:
-        raise SystemExit("데이터 폴더가 비어 있습니다.")
-
-    latest_dir = sorted(dirs)[-1]
-    return latest_dir
 
 
 def load_symbols():
@@ -958,74 +629,69 @@ def load_symbols():
     if "code" not in df.columns:
         raise SystemExit("r009_universe_symbols_master.csv에 'code' 컬럼이 필요합니다.")
 
-    # Return code and name together. If name is missing, use empty string.
-    name_col = "name" if "name" in df.columns else df.columns[1] if len(df.columns) > 1 else None
-    
+    name_col = "name" if "name" in df.columns else (df.columns[1] if len(df.columns) > 1 else None)
     if name_col:
         return list(zip(df["code"].astype(str).str.zfill(6), df[name_col].astype(str)))
     return [(c, "") for c in df["code"].astype(str).str.zfill(6)]
 
 
-def filter_stock_list_by_existing_txt(stock_list, data_dir, verbose=True):
-    txt_codes = {
-        p.stem.zfill(6)
-        for p in data_dir.glob("*.txt")
-        if p.is_file() and p.stem.isdigit()
-    }
+def filter_stock_list_by_existing_data(stock_list, data_root, verbose=True):
+    """Pre-filter to codes that have at least one data file anywhere under data_root."""
+    all_codes: set[str] = set()
+    for date_dir in data_root.iterdir():
+        if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
+            for p in date_dir.glob("*.txt"):
+                if p.stem.isdigit():
+                    all_codes.add(p.stem.zfill(6))
 
-    filtered = [(code, name) for code, name in stock_list if code in txt_codes]
-
+    filtered = [(code, name) for code, name in stock_list if code in all_codes]
     if verbose:
         missing = len(stock_list) - len(filtered)
-        print(
-            f"[INFO] {data_dir.name} 폴더 기준 스캔 종목 필터링: "
-            f"{len(stock_list)} -> {len(filtered)} (제외 {missing})"
-        )
-
+        print(f"[INFO] 데이터 존재 종목 필터링: {len(stock_list)} -> {len(filtered)} (제외 {missing})")
     return filtered
 
 
+# ---------------------------------------------------------------------------
+# Scan orchestration
+# ---------------------------------------------------------------------------
+
 def scan(
-    data_dir,
+    data_root,
     target_date=None,
-    config=BALANCED_RANKED_CONFIG,
+    config=DEFAULT_CONFIG,
     return_details=False,
     verbose=True,
     stock_list=None,
 ):
+    target_date_str = target_date.strftime("%Y%m%d") if target_date else None
     stock_list = stock_list or load_symbols()
-
     total = len(stock_list)
+
     if verbose:
-        print(f"\n[INFO] 총 {total} 종목 스캔 시작 (폴더: {data_dir}, config: {config.name})\n")
+        label = target_date_str or "latest"
+        print(f"\n[INFO] 총 {total} 종목 스캔 시작 (기준일: {label}, config: {config.name})\n")
 
     candidates = []
     skipped = 0
 
     for idx, (code, name) in enumerate(stock_list, start=1):
         if verbose:
-            print(f"[{idx}/{total}] {code} 검증중...")
+            print(f"[{idx}/{total}] {code} 검증중...", end="\r")
 
-        df = load_data(code, data_dir, warn=verbose)
-
-        if df is None:
+        daily_df = build_daily_bars(data_root, code, target_date_str)
+        if daily_df is None or len(daily_df) < 5:
             skipped += 1
             continue
-        if len(df) < 50:
-            skipped += 1
-            if verbose:
-                print(f"[{idx}/{total}] {code} 스킵 (데이터 부족)")
-            continue
 
-        candidate = evaluate_candidate(code, name, df, target_date=target_date, config=config)
+        candidate = evaluate_candidate(code, name, daily_df, config)
         candidates.append(candidate)
 
         if verbose:
             if candidate["eligible"]:
-                print(f"[{idx}/{total}] {code} 후보(score={candidate['score']:.2f})")
+                print(f"[{idx}/{total}] {code} 후보 (score={candidate['score']:.2f})          ")
             else:
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
-                print(f"[{idx}/{total}] {code} 탈락 ({', '.join(reasons)})")
+                print(f"[{idx}/{total}] {code} 탈락 ({', '.join(reasons)})          ")
 
     eligible_rows = [row for row in candidates if row["eligible"]]
     eligible_rows.sort(
@@ -1039,65 +705,25 @@ def scan(
     if config.max_picks is not None:
         selected_rows = eligible_rows[:config.max_picks]
 
-    # If strict-eligible rows are fewer than max picks, top up with fallback-scored rows.
+    # Fallback: fill up to max_picks with scorable non-down-trend candidates.
     if config.max_picks is not None and len(selected_rows) < config.max_picks:
         selected_codes = {row["code"] for row in selected_rows}
         fallback_rows = [
-            row
-            for row in candidates
-            if is_fallback_eligible_candidate(row) and row["code"] not in selected_codes
+            row for row in candidates
+            if is_scorable_candidate(row)
+            and row.get("trend_state") != "down"
+            and row["code"] not in selected_codes
         ]
         fallback_rows.sort(
-            key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+            key=lambda row: (row["score"], row["amount_ma20"] or 0.0),
             reverse=True,
         )
-
         needed = config.max_picks - len(selected_rows)
-        supplement_rows = fallback_rows[:needed]
-        if supplement_rows:
-            selected_rows = [*selected_rows, *supplement_rows]
+        supplement = fallback_rows[:needed]
+        if supplement:
+            selected_rows = [*selected_rows, *supplement]
             selection_mode = "strict_plus_fallback"
-            for row in supplement_rows:
-                if "fallback_selected" not in row["soft_flags"]:
-                    row["soft_flags"].append("fallback_selected")
-
-    # If still short, fill by score with relaxed rules (non-down + scorable only).
-    if config.max_picks is not None and len(selected_rows) < config.max_picks:
-        selected_codes = {row["code"] for row in selected_rows}
-        relaxed_rows = [
-            row
-            for row in candidates
-            if is_relaxed_fill_candidate(row) and row["code"] not in selected_codes
-        ]
-        relaxed_rows.sort(
-            key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
-            reverse=True,
-        )
-
-        needed = config.max_picks - len(selected_rows)
-        relaxed_supplement = relaxed_rows[:needed]
-        if relaxed_supplement:
-            selected_rows = [*selected_rows, *relaxed_supplement]
-            selection_mode = "strict_plus_fallback_relaxed"
-            for row in relaxed_supplement:
-                if "relaxed_fill_selected" not in row["soft_flags"]:
-                    row["soft_flags"].append("relaxed_fill_selected")
-
-    # If strict filters leave no picks, still select tradable-looking symbols by score.
-    if not selected_rows:
-        fallback_rows = [row for row in candidates if is_fallback_eligible_candidate(row)]
-        fallback_rows.sort(
-            key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
-            reverse=True,
-        )
-
-        if config.max_picks is not None:
-            fallback_rows = fallback_rows[:config.max_picks]
-
-        if fallback_rows:
-            selected_rows = fallback_rows
-            selection_mode = "score_fallback"
-            for row in selected_rows:
+            for row in supplement:
                 if "fallback_selected" not in row["soft_flags"]:
                     row["soft_flags"].append("fallback_selected")
 
@@ -1120,29 +746,22 @@ def scan(
             "config": config,
             "selection_mode": selection_mode,
         }
-
     return selected
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Scanner (collector sync mode)")
+    parser = argparse.ArgumentParser(description="Trade candidate scanner (daily-bar mode)")
+    parser.add_argument("--date", type=str, default=None, help="Base date (YYYYMMDD)")
+    parser.add_argument("--data-dir", type=str, default=None, help="Root data folder (default: data/)")
     parser.add_argument(
-        "--date",
-        type=str,
-        default=None,
-        help="Base date (YYYYMMDD)"
+        "--config", type=str, default="balanced",
+        choices=list(CONFIG_MAP.keys()),
+        help="Scanner config preset",
     )
+    parser.add_argument("--max-picks", type=int, default=None, help="Override config max_picks")
     parser.add_argument(
-        "--data_dir",
-        type=str,
-        default=None,
-        help="Data folder path (e.g. data/20260328)"
-    )
-    parser.add_argument(
-        "--history-window",
-        type=int,
-        default=DEFAULT_HISTORY_WINDOW,
-        help="Number of recent trading days to include in comparison report"
+        "--history-window", type=int, default=DEFAULT_HISTORY_WINDOW,
+        help="Number of recent trading days to include in comparison report",
     )
     return parser.parse_args()
 
@@ -1150,7 +769,6 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    # Parse target date.
     target_date = None
     if args.date:
         try:
@@ -1158,54 +776,56 @@ if __name__ == "__main__":
         except ValueError:
             raise SystemExit("날짜 형식은 YYYYMMDD 여야 합니다.")
 
-    # Resolve data directory.
-    data_dir = None
-    if args.data_dir:
-        data_dir = Path(args.data_dir)
-    elif target_date:
-        # Use date-based folder name like YYYYMMDD.
-        folder_name = target_date.strftime("%Y%m%d")
-        data_dir = Path("data") / folder_name
+    data_root = Path(args.data_dir) if args.data_dir else Path("data")
+    if not data_root.exists():
+        raise SystemExit(f"데이터 폴더가 없습니다: {data_root}")
 
-    if data_dir is None or not data_dir.exists():
-        print("[INFO] 지정한 날짜 폴더가 없어 최신 폴더를 사용합니다.")
-        data_dir = get_latest_data_dir()
+    config = CONFIG_MAP[args.config]
+    if args.max_picks is not None:
+        config = dc_replace(config, max_picks=args.max_picks)
 
     stock_list = load_symbols()
-    if target_date:
-        stock_list = filter_stock_list_by_existing_txt(stock_list, data_dir)
-        if not stock_list:
-            raise SystemExit(f"{data_dir} 폴더에 스캔 가능한 TXT 종목이 없습니다.")
+    stock_list = filter_stock_list_by_existing_data(stock_list, data_root)
+    if not stock_list:
+        raise SystemExit(f"{data_root} 에 스캔 가능한 데이터가 없습니다.")
 
-    scan_result = scan(
-        data_dir,
-        target_date,
-        config=R76_ALIGNED_CONFIG,
-        return_details=True,
-        stock_list=stock_list,
-    )
+    scan_result = scan(data_root, target_date, config=config, return_details=True, stock_list=stock_list)
     picks = scan_result["selected"]
 
     comparison_rows = []
     if args.history_window > 0:
-        comparison_rows = build_history_comparison(Path("data"), stock_list, history_window=args.history_window)
+        comparison_rows = build_history_comparison(data_root, stock_list, history_window=args.history_window)
 
-    # Write outputs used by downstream trader flow.
+    # Determine output directory
+    if target_date:
+        out_dir = data_root / target_date.strftime("%Y%m%d")
+        out_dir.mkdir(exist_ok=True)
+    else:
+        date_dirs = sorted(
+            d for d in data_root.iterdir()
+            if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+        )
+        out_dir = date_dirs[-1] if date_dirs else data_root
+
     if picks:
-        picks_file = data_dir / "picks.txt"
-        with open(picks_file, "w") as f:
-            f.write("\n".join(picks))
+        picks_file = out_dir / "picks.txt"
+        picks_file.write_text("\n".join(picks), encoding="utf-8")
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
 
-    ranked_file = data_dir / "picks_ranked.txt"
+    ranked_file = out_dir / "picks_ranked.txt"
     ranked_file.write_text(render_ranked_csv(scan_result["selected_rows"]), encoding="utf-8")
     print(f"점수 기반 랭킹 파일을 저장했습니다: {ranked_file}")
 
-    report_file = data_dir / "scanner_report.md"
+    report_file = out_dir / "scanner_report.md"
     report_file.write_text(
-        render_report(data_dir, target_date, R76_ALIGNED_CONFIG, scan_result, comparison_rows),
+        render_report(data_root, target_date, config, scan_result, comparison_rows),
         encoding="utf-8",
     )
+    print(f"스캐너 리포트를 저장했습니다: {report_file}")
+
+    label = target_date.strftime("%Y%m%d") if target_date else "최신 데이터"
+    print(f"\n[{label}] 기준 추천 종목:", picks)
+
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
 
     if target_date:
