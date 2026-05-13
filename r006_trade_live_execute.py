@@ -1671,6 +1671,7 @@ def run(target_date: str | None = None) -> None:
     traded_today: set[str] = set()
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
+    trailing_sell_confirm_state: dict[str, dict[str, object]] = {}
     buy_confirm_state: dict[str, dict[str, object]] = {}
     live_price_cross_state: dict[str, dict] = {}
     live_price_cache: dict[str, float] = {}
@@ -1691,6 +1692,7 @@ def run(target_date: str | None = None) -> None:
             traded_today.clear()
             signal_buy_bar.clear()
             signal_sell_bar.clear()
+            trailing_sell_confirm_state.clear()
             buy_confirm_state.clear()
             live_price_cross_state.clear()
             live_price_cache.clear()
@@ -1844,6 +1846,7 @@ def run(target_date: str | None = None) -> None:
                 if _pnl_sl <= _sl_threshold:
                     reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
                     log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% sl_pnl={_pnl_sl*100:.2f}%")
+                    trailing_sell_confirm_state.pop(code, None)
                     if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name):
                         log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
                     signal_sell_bar[code] = bar_time
@@ -1864,12 +1867,43 @@ def run(target_date: str | None = None) -> None:
                     else:
                         trail_threshold = TRAILING_STOP_FROM_PEAK
                         reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
-                    if peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold:
+                    trailing_condition = peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold
+
+                    pending_state = trailing_sell_confirm_state.get(code)
+                    if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
+                        # Clear pending if retrace condition has recovered.
+                        if not trailing_condition and pending_state is not None:
+                            trailing_sell_confirm_state.pop(code, None)
+                            log(
+                                f"  [SELL HOLD CANCEL] {code} | trailing recovered before confirm | "
+                                f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                            )
+
+                    if trailing_condition:
+                        if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
+                            # First hit: defer to next 3-minute bar confirmation.
+                            if pending_state is None:
+                                trailing_sell_confirm_state[code] = {
+                                    "trigger_bar_time": bar_time,
+                                    "triggered_at": current_dt,
+                                    "reason": reason_ts,
+                                }
+                                log(
+                                    f"  [SELL HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
+                                    f"bar={bar_time:%H:%M:%S} pnl={current_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                                )
+                                continue
+
+                            # Still same bar: keep waiting.
+                            if pending_state.get("trigger_bar_time") == bar_time:
+                                continue
+
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_ts} | "
                             f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} | "
                             f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                         )
+                        trailing_sell_confirm_state.pop(code, None)
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_ts, nxt_tradeable, price=price, code_name=name):
                             log(f"  [SELL EXECUTED] {code} | {reason_ts} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
@@ -1901,6 +1935,7 @@ def run(target_date: str | None = None) -> None:
                     log(f"  [SELL HOLD] {code} | {sell_reason}")
 
             else:
+                trailing_sell_confirm_state.pop(code, None)
                 if not is_new_entry_allowed(current_dt, nxt_tradeable):
                     continue
                 _warmup_elapsed = (current_dt - startup_time).total_seconds()
