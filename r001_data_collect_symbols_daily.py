@@ -506,13 +506,31 @@ def main() -> None:
         nxt_flags: dict[str, bool] = {}
 
         for idx, (code, name) in enumerate(symbols, start=1):
-            try:
-                nxt_tradeable = probe_nxt_tradeable(code)
-                nxt_flags[code] = nxt_tradeable
-                df = fetch_symbol_data(code=code, target_date=target_date, include_nxt=nxt_tradeable)
-            except Exception as exc:
-                logger.error("[%d/%d] %s(%s) | fetch error: %s", idx, len(symbols), code, name, exc)
+            nxt_tradeable = False
+            df = None
+            last_error = None
+
+            # 최대 2회 시도
+            for attempt in range(2):
+                try:
+                    nxt_tradeable = probe_nxt_tradeable(code)
+                    nxt_flags[code] = nxt_tradeable
+                    df = fetch_symbol_data(code=code, target_date=target_date, include_nxt=nxt_tradeable)
+                    last_error = None
+                    break  # 성공하면 루프 탈출
+                except Exception as exc:
+                    last_error = exc
+                    if attempt == 0:
+                        logger.warning("[%d/%d] %s(%s) | fetch error (retry): %s", idx, len(symbols), code, name, exc)
+                        time.sleep(0.5)  # 재시도 전 잠깐 대기
+
+            # 2회 시도 모두 실패한 경우
+            if last_error is not None:
+                logger.error("[%d/%d] %s(%s) | fetch error (final): %s", idx, len(symbols), code, name, last_error)
                 nxt_flags[code] = False
+                empty_count += 1
+                if args.sleep > 0:
+                    time.sleep(args.sleep)
                 continue
 
             if df is None or df.empty:
