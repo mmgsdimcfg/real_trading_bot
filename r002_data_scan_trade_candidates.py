@@ -296,7 +296,7 @@ def evaluate_candidate(code, name, daily_df, config):
         "score": 0.0,
     }
 
-    if daily_df is None or daily_df.empty:
+    if daily_df is None or len(daily_df) < 5:
         candidate["skip_reason"] = "insufficient_daily_bars"
         return candidate
 
@@ -383,7 +383,7 @@ def evaluate_candidate(code, name, daily_df, config):
     # low_up_days: meaningful only when we have at least 5 bars
     if len(daily_df) >= 5 and up_days_in_5 < config.min_up_days_in_5:
         candidate["fail_reasons"].append("low_up_days")
-    if len(daily_df) >= 20 and high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
+    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
         candidate["fail_reasons"].append("near_52w_high")
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         candidate["fail_reasons"].append("prev_day_gap_risk")
@@ -834,7 +834,7 @@ def scan(
             print(f"[{idx}/{total}] {code} 검증중...", end="\r", flush=True)
 
         daily_df = build_daily_bars(data_root, code, target_date_str, single_date_only=single_date_only)
-        if daily_df is None or daily_df.empty:
+        if daily_df is None or len(daily_df) < 5:
             skipped += 1
             if daily_df is None:
                 insufficient_bars_count += 1
@@ -893,7 +893,7 @@ def scan(
         print("\n========== 스캔 완료 ==========")
         print(f"총종목: {total}")
         print(f"데이터 불가(None): {insufficient_bars_count}")
-        print(f"데이터 부족/비어있음: {skipped - insufficient_bars_count}")
+        print(f"데이터 부족(<5일): {skipped - insufficient_bars_count}")
         print(f"총 스킵: {skipped}")
         print(f"평가된 종목: {len(candidates)}")
         print(f"적격 수: {summary['eligible_pool_count']}")
@@ -949,7 +949,7 @@ if __name__ == "__main__":
         config = dc_replace(config, max_picks=min(config.max_picks, MAX_PICKS_LIMIT))
 
     effective_target_date = target_date
-    single_date_only = target_date is not None
+    single_date_only = False
     if target_date:
         target_date_str = target_date.strftime("%Y%m%d")
         adjusted = find_nearest_trading_date(data_root, target_date_str)
@@ -963,7 +963,7 @@ if __name__ == "__main__":
         stock_list,
         data_root,
         target_date_str=effective_target_date.strftime("%Y%m%d") if effective_target_date else None,
-        min_bars=1 if single_date_only else 5,
+        min_bars=5,
         single_date_only=single_date_only,
     )
     if not stock_list:
