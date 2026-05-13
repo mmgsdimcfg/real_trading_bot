@@ -629,15 +629,15 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
 
 
 def load_symbols():
-    symbols_path = Path("r009_universe_symbols_master.csv")
+    symbols_path = Path("r009_universe_symbols_master.txt")
 
     if not symbols_path.exists():
-        raise SystemExit("r009_universe_symbols_master.csv 파일이 없습니다.")
+        raise SystemExit("r009_universe_symbols_master.txt 파일이 없습니다.")
 
     df = pd.read_csv(symbols_path)
 
     if "code" not in df.columns:
-        raise SystemExit("r009_universe_symbols_master.csv에 'code' 컬럼이 필요합니다.")
+        raise SystemExit("r009_universe_symbols_master.txt에 'code' 컬럼이 필요합니다.")
 
     name_col = "name" if "name" in df.columns else (df.columns[1] if len(df.columns) > 1 else None)
     if name_col:
