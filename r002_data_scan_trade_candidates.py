@@ -29,6 +29,8 @@ Update log:
 """
 
 import argparse
+import math
+import random
 from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime
 from pathlib import Path
@@ -84,7 +86,7 @@ BALANCED_CONFIG = ScannerConfig(
     max_52w_high_ratio=0.95,
     max_prev_day_change=0.08,
     volume_trend_min_ratio=0.9,
-    max_picks=10,
+    max_picks=30,
 )
 
 RELAXED_CONFIG = ScannerConfig(
@@ -111,6 +113,7 @@ CONFIG_MAP = {
 DEFAULT_CONFIG = BALANCED_CONFIG
 DEFAULT_HISTORY_WINDOW = 0
 DAILY_LOOKBACK = 260  # trading days of history to load per stock
+MAX_PICKS_LIMIT = 30
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +133,25 @@ def ensure_datetime_index(df):
     return df
 
 
-def load_data(code, data_dir, warn=True):
-    file_path = data_dir / f"{code}.txt"
+def resolve_symbol_file(data_dir, code):
+    """Return the first existing symbol file path among supported extensions."""
+    txt_path = data_dir / f"{code}.txt"
+    if txt_path.exists():
+        return txt_path
 
-    if not file_path.exists():
+    csv_path = data_dir / f"{code}.csv"
+    if csv_path.exists():
+        return csv_path
+
+    return None
+
+
+def load_data(code, data_dir, warn=True):
+    file_path = resolve_symbol_file(data_dir, code)
+
+    if file_path is None:
         if warn:
-            print(f"[WARN] {code} 파일 없음")
+            print(f"[WARN] {code} 파일 없음 (.txt/.csv)")
         return None
 
     try:
@@ -148,7 +164,7 @@ def load_data(code, data_dir, warn=True):
         return None
 
 
-def build_daily_bars(data_root, code, target_date_str=None, lookback=DAILY_LOOKBACK):
+def build_daily_bars(data_root, code, target_date_str=None, lookback=DAILY_LOOKBACK, single_date_only=False):
     """Aggregate per-date intraday files into a daily OHLCV DataFrame.
 
     Each date directory under data_root is expected to contain intraday
@@ -156,12 +172,16 @@ def build_daily_bars(data_root, code, target_date_str=None, lookback=DAILY_LOOKB
     aggregates to a single daily bar (open=first, high=max, low=min,
     close=last, volume=sum), and returns a sorted daily DataFrame.
     """
-    date_dirs = sorted(
-        d for d in data_root.iterdir()
-        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
-    )
-    if target_date_str:
-        date_dirs = [d for d in date_dirs if d.name <= target_date_str]
+    if single_date_only and target_date_str:
+        target_dir = data_root / target_date_str
+        date_dirs = [target_dir] if target_dir.is_dir() else []
+    else:
+        date_dirs = sorted(
+            d for d in data_root.iterdir()
+            if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+        )
+        if target_date_str:
+            date_dirs = [d for d in date_dirs if d.name <= target_date_str]
     date_dirs = date_dirs[-lookback:]
 
     rows = []
@@ -276,7 +296,7 @@ def evaluate_candidate(code, name, daily_df, config):
         "score": 0.0,
     }
 
-    if daily_df is None or len(daily_df) < 5:
+    if daily_df is None or daily_df.empty:
         candidate["skip_reason"] = "insufficient_daily_bars"
         return candidate
 
@@ -363,7 +383,7 @@ def evaluate_candidate(code, name, daily_df, config):
     # low_up_days: meaningful only when we have at least 5 bars
     if len(daily_df) >= 5 and up_days_in_5 < config.min_up_days_in_5:
         candidate["fail_reasons"].append("low_up_days")
-    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
+    if len(daily_df) >= 20 and high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
         candidate["fail_reasons"].append("near_52w_high")
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         candidate["fail_reasons"].append("prev_day_gap_risk")
@@ -402,45 +422,47 @@ def calculate_candidate_score(candidate, config):
 
     score = 0.0
 
-    # Volatility (max 25)
-    score += min(25.0, (atr_ratio / config.atr_ratio_min) * 12.5)
+    # Volatility (max 22): reward above threshold with diminishing returns.
+    atr_ratio_norm = max(0.0, atr_ratio / config.atr_ratio_min)
+    score += min(22.0, 10.0 * math.log1p(atr_ratio_norm * 1.8))
 
-    # Liquidity: volume MA20 (max 20)
-    score += min(20.0, (vol_ma20 / config.volume_ma20_min) * 7.0)
+    # Liquidity volume (max 18): smooth by log scale to reduce score clustering.
+    vol_ratio = max(0.0, vol_ma20 / config.volume_ma20_min)
+    score += min(18.0, 9.0 * math.log1p(vol_ratio * 1.6))
 
-    # Liquidity: amount MA20 (max 20)
-    score += min(20.0, (amount_ma20 / config.amount_ma20_min) * 7.0)
+    # Liquidity amount (max 18): smooth by log scale to reduce score clustering.
+    amt_ratio = max(0.0, amount_ma20 / config.amount_ma20_min)
+    score += min(18.0, 9.0 * math.log1p(amt_ratio * 1.6))
 
-    # Momentum: consecutive up days in last 5 (max 15)
-    score += up_days * 3.0
+    # Momentum: consecutive up days in last 5 (max 14)
+    score += min(14.0, up_days * 2.8)
 
-    # Momentum: volume trend ratio (max 10)
-    if vol_trend is not None and vol_trend > 1.0:
-        score += min(10.0, (vol_trend - 1.0) * 20.0)
+    # Momentum: volume trend ratio (max 8)
+    if vol_trend is not None:
+        score += max(0.0, min(8.0, (vol_trend - 0.9) * 10.0))
 
     # Trend alignment: MA5 / MA20 ratio (±10)
     if ma5 is not None and ma20 not in (None, 0):
         trend_ratio = (ma5 / ma20) - 1.0
-        score += max(-10.0, min(10.0, trend_ratio * 500.0))
+        score += max(-10.0, min(10.0, trend_ratio * 420.0))
 
-    # 52-week high position: optimal zone 40~85% of 52-week high (max 10)
-    if high_52w_ratio is not None:
-        if 0.40 <= high_52w_ratio < 0.85:
-            score += 10.0
-        elif 0.85 <= high_52w_ratio < config.max_52w_high_ratio:
-            score += 5.0
+    # 52-week positioning (max 10): continuous preference around 65% zone.
+    if high_52w_ratio is not None and 0.20 <= high_52w_ratio <= config.max_52w_high_ratio:
+        center = 0.65
+        width = 0.35
+        proximity = max(0.0, 1.0 - (abs(high_52w_ratio - center) / width))
+        score += 10.0 * proximity
 
-    # Listing stability bonus (max 5)
-    if listing_days >= 250:
-        score += 5.0
-    elif listing_days >= 120:
-        score += 3.0
+    # Listing stability bonus (max 5): continuous.
+    score += min(5.0, (listing_days / 250.0) * 5.0)
 
-    # Price range preference (max 5)
-    if price <= 100_000:
-        score += 5.0
-    elif price <= config.price_max:
-        score += 2.0
+    # Price range preference (max 5): soft bias to tradable middle range.
+    if price <= config.price_max:
+        pref = 1.0 - min(1.0, max(0.0, (price - config.price_min) / max(1.0, (200_000 - config.price_min))))
+        score += 2.0 + (3.0 * pref)
+
+    # Soft-flag penalty to separate near-identical candidates.
+    score -= 0.7 * len(candidate.get("soft_flags", []))
 
     return round(score, 2)
 
@@ -480,6 +502,60 @@ def is_scorable_candidate(row):
         and row.get("vol_ma20") is not None
         and row.get("amount_ma20") is not None
     )
+
+
+def selection_weight(row):
+    """Weight for tie randomization based on liquidity and volatility quality."""
+    amt = max(1.0, float(row.get("amount_ma20") or 0.0))
+    vol = max(1.0, float(row.get("vol_ma20") or 0.0))
+    atr = max(1e-6, float(row.get("atr_ratio") or 0.0))
+    trend_bonus = 1.05 if row.get("trend_state") == "up" else 1.0
+    return (amt ** 0.22) * (vol ** 0.18) * (atr ** 0.35) * trend_bonus
+
+
+def weighted_sample_without_replacement(rows, k, rng):
+    if k <= 0 or not rows:
+        return []
+
+    pool = list(rows)
+    selected = []
+    while pool and len(selected) < k:
+        weights = [selection_weight(row) for row in pool]
+        chosen = rng.choices(pool, weights=weights, k=1)[0]
+        selected.append(chosen)
+        pool.remove(chosen)
+    return selected
+
+
+def pick_with_tie_randomization(sorted_rows, max_picks, rng):
+    """Pick by score rank, but randomize inside same-score buckets."""
+    if max_picks is None:
+        return list(sorted_rows)
+
+    picked = []
+    idx = 0
+    n = len(sorted_rows)
+
+    while idx < n and len(picked) < max_picks:
+        score = sorted_rows[idx]["score"]
+        bucket = []
+        while idx < n and sorted_rows[idx]["score"] == score:
+            bucket.append(sorted_rows[idx])
+            idx += 1
+
+        remaining = max_picks - len(picked)
+        if len(bucket) <= remaining:
+            picked.extend(bucket)
+            continue
+
+        picked.extend(weighted_sample_without_replacement(bucket, remaining, rng))
+        break
+
+    picked.sort(
+        key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+        reverse=True,
+    )
+    return picked
 
 
 
@@ -650,7 +726,7 @@ def filter_stock_list_by_existing_data(stock_list, data_root, verbose=True):
     all_codes: set[str] = set()
     for date_dir in data_root.iterdir():
         if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
-            for p in date_dir.glob("*.txt"):
+            for p in list(date_dir.glob("*.txt")) + list(date_dir.glob("*.csv")):
                 if p.stem.isdigit():
                     all_codes.add(p.stem.zfill(6))
 
@@ -659,6 +735,59 @@ def filter_stock_list_by_existing_data(stock_list, data_root, verbose=True):
         missing = len(stock_list) - len(filtered)
         print(f"[INFO] 데이터 존재 종목 필터링: {len(stock_list)} -> {len(filtered)} (제외 {missing})")
     return filtered
+
+
+def find_nearest_trading_date(data_root, target_date_str):
+    """
+    If target_date_str has no data (holiday), find the most recent trading date <= target_date_str.
+    Returns target_date_str if it exists, or the nearest earlier trading date.
+    """
+    date_dirs = sorted(
+        d.name for d in data_root.iterdir()
+        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+    )
+    
+    # Filter to dates <= target_date_str
+    available_dates = [d for d in date_dirs if d <= target_date_str]
+    
+    if not available_dates:
+        # No data before target_date; use the earliest available date
+        return date_dirs[0] if date_dirs else target_date_str
+    
+    # Return the most recent available date
+    return available_dates[-1]
+
+
+def filter_stock_list_by_min_bars(stock_list, data_root, target_date_str=None, min_bars=5, verbose=True, single_date_only=False):
+    """Pre-filter to codes that have at least min_bars daily files up to target_date."""
+    date_dirs = sorted(
+        d for d in data_root.iterdir()
+        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+    )
+    if target_date_str:
+        if single_date_only:
+            date_dirs = [d for d in date_dirs if d.name == target_date_str]
+        else:
+            date_dirs = [d for d in date_dirs if d.name <= target_date_str]
+
+    qualified = []
+    for code, name in stock_list:
+        bars = 0
+        for date_dir in date_dirs:
+            if resolve_symbol_file(date_dir, code) is not None:
+                bars += 1
+                if bars >= min_bars:
+                    qualified.append((code, name))
+                    break
+
+    if verbose:
+        excluded = len(stock_list) - len(qualified)
+        label = target_date_str or "latest"
+        print(
+            f"[INFO] 최소 {min_bars}일 데이터 필터링({label} 기준): "
+            f"{len(stock_list)} -> {len(qualified)} (제외 {excluded})"
+        )
+    return qualified
 
 
 # ---------------------------------------------------------------------------
@@ -672,8 +801,19 @@ def scan(
     return_details=False,
     verbose=True,
     stock_list=None,
+    single_date_only=False,
 ):
     target_date_str = target_date.strftime("%Y%m%d") if target_date else None
+    rng = random.Random(int(target_date_str) if target_date_str and target_date_str.isdigit() else 42)
+    
+    # Auto-adjust target_date if it's a holiday (no data directory exists)
+    if target_date_str:
+        adjusted_target_date_str = find_nearest_trading_date(data_root, target_date_str)
+        if adjusted_target_date_str != target_date_str:
+            if verbose:
+                print(f"[INFO] {target_date_str}은(는) 거래 없는 날(공휴일)입니다. {adjusted_target_date_str}로 조정합니다.")
+            target_date_str = adjusted_target_date_str
+    
     stock_list = stock_list or load_symbols()
     total = len(stock_list)
 
@@ -681,16 +821,25 @@ def scan(
         label = target_date_str or "latest"
         print(f"\n[INFO] 총 {total} 종목 스캔 시작 (기준일: {label}, config: {config.name})\n")
 
+    if total == 0:
+        print("[ERROR] stock_list is empty! check load_symbols() or filter_stock_list_by_existing_data()")
+        return {"selected": [], "selected_rows": [], "eligible_rows": [], "summary": {"selected_count": 0, "eligible_pool_count": 0, "skipped": 0, "fail_counts": {}, "soft_counts": {}}, "config": config, "selection_mode": "error_empty_list"} if return_details else []
+
     candidates = []
     skipped = 0
+    insufficient_bars_count = 0
 
     for idx, (code, name) in enumerate(stock_list, start=1):
         if verbose:
-            print(f"[{idx}/{total}] {code} 검증중...", end="\r")
+            print(f"[{idx}/{total}] {code} 검증중...", end="\r", flush=True)
 
-        daily_df = build_daily_bars(data_root, code, target_date_str)
-        if daily_df is None or len(daily_df) < 5:
+        daily_df = build_daily_bars(data_root, code, target_date_str, single_date_only=single_date_only)
+        if daily_df is None or daily_df.empty:
             skipped += 1
+            if daily_df is None:
+                insufficient_bars_count += 1
+            if verbose and idx % 50 == 0:
+                print(f"[{idx}/{total}] 진행중 - 현재 스킵 {skipped}종목")
             continue
 
         candidate = evaluate_candidate(code, name, daily_df, config)
@@ -713,7 +862,7 @@ def scan(
     selection_mode = "strict_eligible"
 
     if config.max_picks is not None:
-        selected_rows = eligible_rows[:config.max_picks]
+        selected_rows = pick_with_tie_randomization(eligible_rows, config.max_picks, rng)
 
     # Fallback: fill up to max_picks with scorable non-down-trend candidates.
     if config.max_picks is not None and len(selected_rows) < config.max_picks:
@@ -729,7 +878,7 @@ def scan(
             reverse=True,
         )
         needed = config.max_picks - len(selected_rows)
-        supplement = fallback_rows[:needed]
+        supplement = pick_with_tie_randomization(fallback_rows, needed, rng)
         if supplement:
             selected_rows = [*selected_rows, *supplement]
             selection_mode = "strict_plus_fallback"
@@ -743,9 +892,12 @@ def scan(
     if verbose:
         print("\n========== 스캔 완료 ==========")
         print(f"총종목: {total}")
+        print(f"데이터 불가(None): {insufficient_bars_count}")
+        print(f"데이터 부족/비어있음: {skipped - insufficient_bars_count}")
+        print(f"총 스킵: {skipped}")
+        print(f"평가된 종목: {len(candidates)}")
         print(f"적격 수: {summary['eligible_pool_count']}")
         print(f"최종 선정: {summary['selected_count']}")
-        print(f"스킵: {skipped}")
 
     if return_details:
         return {
@@ -792,14 +944,39 @@ if __name__ == "__main__":
 
     config = CONFIG_MAP[args.config]
     if args.max_picks is not None:
-        config = dc_replace(config, max_picks=args.max_picks)
+        config = dc_replace(config, max_picks=min(args.max_picks, MAX_PICKS_LIMIT))
+    elif config.max_picks is not None:
+        config = dc_replace(config, max_picks=min(config.max_picks, MAX_PICKS_LIMIT))
+
+    effective_target_date = target_date
+    single_date_only = target_date is not None
+    if target_date:
+        target_date_str = target_date.strftime("%Y%m%d")
+        adjusted = find_nearest_trading_date(data_root, target_date_str)
+        if adjusted != target_date_str:
+            print(f"[INFO] {target_date_str}은(는) 거래 없는 날(공휴일)입니다. {adjusted}로 조정합니다.")
+            effective_target_date = datetime.strptime(adjusted, "%Y%m%d")
 
     stock_list = load_symbols()
     stock_list = filter_stock_list_by_existing_data(stock_list, data_root)
+    stock_list = filter_stock_list_by_min_bars(
+        stock_list,
+        data_root,
+        target_date_str=effective_target_date.strftime("%Y%m%d") if effective_target_date else None,
+        min_bars=1 if single_date_only else 5,
+        single_date_only=single_date_only,
+    )
     if not stock_list:
         raise SystemExit(f"{data_root} 에 스캔 가능한 데이터가 없습니다.")
 
-    scan_result = scan(data_root, target_date, config=config, return_details=True, stock_list=stock_list)
+    scan_result = scan(
+        data_root,
+        effective_target_date,
+        config=config,
+        return_details=True,
+        stock_list=stock_list,
+        single_date_only=single_date_only,
+    )
     picks = scan_result["selected"]
 
     comparison_rows = []
@@ -807,8 +984,8 @@ if __name__ == "__main__":
         comparison_rows = build_history_comparison(data_root, stock_list, history_window=args.history_window)
 
     # Determine output directory
-    if target_date:
-        out_dir = data_root / target_date.strftime("%Y%m%d")
+    if effective_target_date:
+        out_dir = data_root / effective_target_date.strftime("%Y%m%d")
         out_dir.mkdir(exist_ok=True)
     else:
         date_dirs = sorted(
@@ -828,18 +1005,18 @@ if __name__ == "__main__":
 
     report_file = out_dir / "scanner_report.md"
     report_file.write_text(
-        render_report(data_root, target_date, config, scan_result, comparison_rows),
+        render_report(data_root, effective_target_date, config, scan_result, comparison_rows),
         encoding="utf-8",
     )
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
 
-    label = target_date.strftime("%Y%m%d") if target_date else "최신 데이터"
+    label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
     print(f"\n[{label}] 기준 추천 종목:", picks)
 
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
 
-    if target_date:
-        print(f"\n[{target_date.strftime('%Y%m%d')}] 기준 추천 종목:", picks)
+    if effective_target_date:
+        print(f"\n[{effective_target_date.strftime('%Y%m%d')}] 기준 추천 종목:", picks)
     else:
         print("\n[최신 데이터] 기준 추천 종목:", picks)
 
