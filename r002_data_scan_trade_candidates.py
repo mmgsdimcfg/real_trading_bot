@@ -285,9 +285,15 @@ def evaluate_candidate(code, name, daily_df, config):
         candidate["skip_reason"] = "invalid_price"
         return candidate
 
-    # Daily ATR (14-day)
+    # Daily ATR (14-day); fall back to single-bar range when history is short
     atr_series = calc_atr(daily_df)
     atr = safe_float(atr_series.iloc[-1]) if not atr_series.empty else None
+    if atr is None:
+        # Use intraday range of the most recent bar as a volatility proxy
+        last_high = safe_float(daily_df["high"].iloc[-1])
+        last_low = safe_float(daily_df["low"].iloc[-1])
+        if last_high is not None and last_low is not None and last_high > last_low:
+            atr = last_high - last_low
     atr_ratio = (atr / price) if (atr is not None and price > 0) else None
 
     # Daily moving averages
@@ -351,9 +357,11 @@ def evaluate_candidate(code, name, daily_df, config):
         candidate["fail_reasons"].append("volume_ma20")
     if amount_ma20 is None or amount_ma20 < config.amount_ma20_min:
         candidate["fail_reasons"].append("amount_ma20")
-    if listing_days < config.min_listing_days:
-        candidate["fail_reasons"].append("new_listing")
-    if up_days_in_5 < config.min_up_days_in_5:
+    # new_listing: listing_days reflects local data count, not actual IPO age.
+    # Universe stocks are already established; skip this as a hard filter.
+    # (Noted as soft flag below when data is scarce.)
+    # low_up_days: meaningful only when we have at least 5 bars
+    if len(daily_df) >= 5 and up_days_in_5 < config.min_up_days_in_5:
         candidate["fail_reasons"].append("low_up_days")
     if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
         candidate["fail_reasons"].append("near_52w_high")
@@ -363,6 +371,8 @@ def evaluate_candidate(code, name, daily_df, config):
         candidate["fail_reasons"].append("down_trend")
 
     # --- Soft flags (warning only, not disqualified) ---
+    if listing_days < config.min_listing_days:
+        candidate["soft_flags"].append("limited_history")
     if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
         candidate["soft_flags"].append("volume_declining")
     if trend_state == "flat":

@@ -19,8 +19,10 @@ Usage examples:
     python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310
 - Multiple codes on specific date:
     python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930
+- Multiple dates (comma-separated):
+    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508,20260509,20260510
 - Full list from symbols file:
-    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --symbols-file xgraph/auto_trading/r009_universe_symbols_master.csv
+    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --symbols-file xgraph/auto_trading/r009_universe_symbols_master.txt
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -88,9 +90,9 @@ ADX_PERIOD = 7
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Date-based KIS minute collector (20260401-compatible schema)")
     parser.add_argument("--env", type=str, default="real", choices=["real", "demo"], help="API environment")
-    parser.add_argument("--date", type=str, default=None, help="Target date YYYYMMDD (omit to auto-pick latest trading date)")
+    parser.add_argument("--date", type=str, default=None, help="Target date YYYYMMDD, or comma-separated list (e.g. 20260508,20260509,20260510)")
     parser.add_argument("--code", type=str, default="", help="Collect only this code (6-digit). Comma-separated supported")
-    parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "r009_universe_symbols_master.csv"), help="Path to r009_universe_symbols_master.csv")
+    parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "r009_universe_symbols_master.txt"), help="Path to r009_universe_symbols_master.txt")
     parser.add_argument("--data-root", type=str, default=str(SCRIPT_DIR / "data"), help="Output data root")
     parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
     return parser.parse_args()
@@ -470,13 +472,21 @@ def main() -> None:
         raise SystemExit(f"symbols file not found: {symbols_file}")
 
     symbols = load_symbols(symbols_file)
-    try:
-        target_date = resolve_target_date(args.date, symbols)
-    except ValueError:
-        raise SystemExit(f"Invalid --date '{args.date}'. expected YYYYMMDD")
 
-    output_dir = Path(args.data_root) / target_date
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Parse --date: single value or comma-separated list (e.g. 20260508,20260509,20260510)
+    raw_dates = [d.strip() for d in (args.date or "").split(",") if d.strip()]
+    if raw_dates:
+        for d in raw_dates:
+            try:
+                datetime.strptime(d, "%Y%m%d")
+            except ValueError:
+                raise SystemExit(f"Invalid --date '{d}'. expected YYYYMMDD")
+        target_dates = raw_dates
+    else:
+        try:
+            target_dates = [resolve_target_date(None, symbols)]
+        except ValueError:
+            raise SystemExit("Could not resolve a target date automatically.")
 
     ka.auth(svr="prod" if args.env == "real" else "vps")
     selected_codes = _parse_code_filter(args.code)
@@ -485,57 +495,58 @@ def main() -> None:
         if not symbols:
             raise SystemExit(f"No matching symbols from --code: {','.join(sorted(selected_codes))}")
 
-    logger.info("collect start: date=%s, symbols=%d", target_date, len(symbols))
+    for target_date in target_dates:
+        output_dir = Path(args.data_root) / target_date
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    saved_count = 0
-    empty_count = 0
-    nxt_flags: dict[str, bool] = {}
+        logger.info("collect start: date=%s, symbols=%d", target_date, len(symbols))
 
-    for idx, (code, name) in enumerate(symbols, start=1):
-        try:
-            nxt_tradeable = probe_nxt_tradeable(code)
-            nxt_flags[code] = nxt_tradeable
-            df = fetch_symbol_data(code=code, target_date=target_date, include_nxt=nxt_tradeable)
-        except Exception as exc:
-            logger.error("[%d/%d] %s(%s) | fetch error: %s", idx, len(symbols), code, name, exc)
-            nxt_flags[code] = False
-            continue
+        saved_count = 0
+        empty_count = 0
+        nxt_flags: dict[str, bool] = {}
 
-        if df is None or df.empty:
-            empty_count += 1
-            logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
-        else:
-            # 1�??�이?�에 지??추�?
-            df_1m = enrich_with_strategy_indicators(df)
-            
-            # Create 20-second bars from enriched 1-minute bars.
-            df_20s = interpolate_to_20sec(df_1m)
-            file_path = output_dir / f"{code}.txt"
-            df_20s.to_csv(file_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
-            
-            saved_count += 1
-            logger.info(
-                "[%d/%d] %s(%s) | NXT=%s | saved 20s=%d rows -> %s",
-                idx,
-                len(symbols),
-                code,
-                name,
-                nxt_tradeable,
-                len(df_20s),
-                file_path,
-            )
+        for idx, (code, name) in enumerate(symbols, start=1):
+            try:
+                nxt_tradeable = probe_nxt_tradeable(code)
+                nxt_flags[code] = nxt_tradeable
+                df = fetch_symbol_data(code=code, target_date=target_date, include_nxt=nxt_tradeable)
+            except Exception as exc:
+                logger.error("[%d/%d] %s(%s) | fetch error: %s", idx, len(symbols), code, name, exc)
+                nxt_flags[code] = False
+                continue
 
-        if args.sleep > 0:
-            time.sleep(args.sleep)
+            if df is None or df.empty:
+                empty_count += 1
+                logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
+            else:
+                df_1m = enrich_with_strategy_indicators(df)
+                df_20s = interpolate_to_20sec(df_1m)
+                file_path = output_dir / f"{code}.txt"
+                df_20s.to_csv(file_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
 
-    # Save NXT tradeable flags for live/sim scripts.
-    if nxt_flags:
-        nxt_flags_path = output_dir / "nxt_flags.json"
-        with open(nxt_flags_path, "w", encoding="utf-8") as _f:
-            json.dump(nxt_flags, _f, ensure_ascii=False, indent=2)
-        logger.info("saved NXT flags (%d codes): %s", len(nxt_flags), nxt_flags_path)
+                saved_count += 1
+                logger.info(
+                    "[%d/%d] %s(%s) | NXT=%s | saved 20s=%d rows -> %s",
+                    idx,
+                    len(symbols),
+                    code,
+                    name,
+                    nxt_tradeable,
+                    len(df_20s),
+                    file_path,
+                )
 
-    logger.info("done: saved=%d, empty=%d, out=%s", saved_count, empty_count, output_dir)
+            if args.sleep > 0:
+                time.sleep(args.sleep)
+
+        # Save NXT tradeable flags for live/sim scripts.
+        if nxt_flags:
+            nxt_flags_path = output_dir / "nxt_flags.json"
+            with open(nxt_flags_path, "w", encoding="utf-8") as _f:
+                json.dump(nxt_flags, _f, ensure_ascii=False, indent=2)
+            logger.info("saved NXT flags (%d codes): %s", len(nxt_flags), nxt_flags_path)
+
+        logger.info("done: date=%s saved=%d, empty=%d, out=%s", target_date, saved_count, empty_count, output_dir)
 
 
 if __name__ == "__main__":
