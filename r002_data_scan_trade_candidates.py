@@ -240,12 +240,13 @@ def safe_float(value):
     return float(value)
 
 
-def classify_trend(ma5, ma20):
+def classify_trend(ma5, ma20, ma5_slope_3d=None):
     if ma5 is None or ma20 is None:
         return "unknown"
-    if ma5 > ma20:
+    # Require both MA alignment and short-term MA5 slope direction.
+    if ma5 > ma20 and (ma5_slope_3d is None or ma5_slope_3d > 0):
         return "up"
-    if ma5 < ma20:
+    if ma5 < ma20 and (ma5_slope_3d is None or ma5_slope_3d < 0):
         return "down"
     return "flat"
 
@@ -267,35 +268,30 @@ def calc_volume_trend_ratio(daily_df, window=10):
     return recent_avg / prior_avg
 
 
+def calc_volume_relative_strength(daily_df, recent_window=5, base_window=20):
+    """Recent volume strength vs prior base window.
+
+    ratio = mean(volume, recent_window) / mean(volume, prior_base_window)
+    where prior_base_window excludes recent_window bars.
+    """
+    need = recent_window + base_window
+    vols = daily_df["volume"].tail(need)
+    if len(vols) < need:
+        return None
+    recent_avg = float(vols.tail(recent_window).mean())
+    prior_avg = float(vols.head(base_window).mean())
+    if prior_avg == 0:
+        return None
+    return recent_avg / prior_avg
+
+
 # ---------------------------------------------------------------------------
 # Candidate evaluation
 # ---------------------------------------------------------------------------
 
 def evaluate_candidate(code, name, daily_df, config):
-    candidate = {
-        "code": code,
-        "name": name,
-        "eligible": False,
-        "skip_reason": None,
-        "fail_reasons": [],
-        "soft_flags": [],
-        "price": None,
-        "atr": None,
-        "atr_ratio": None,
-        "ma5": None,
-        "ma20": None,
-        "ma_gap": None,
-        "trend_state": "unknown",
-        "vol_ma20": None,
-        "amount_ma20": None,
-        "listing_days": None,
-        "up_days_in_5": None,
-        "vol_trend_ratio": None,
-        "high_52w_ratio": None,
-        "prev_day_change": None,
-        "score": 0.0,
-    }
 
+    # --- Basic metrics (must be defined before use) ---
     if daily_df is None or len(daily_df) < 5:
         candidate["skip_reason"] = "insufficient_daily_bars"
         return candidate
@@ -328,12 +324,69 @@ def evaluate_candidate(code, name, daily_df, config):
     # Listing age (number of trading days with data)
     listing_days = len(daily_df)
 
+
+    candidate = {
+        "code": code,
+        "name": name,
+        "eligible": False,
+        "skip_reason": None,
+        "fail_reasons": [],
+        "soft_flags": [],
+        "price": None,
+        "atr": None,
+        "atr_ratio": None,
+        "ma5": None,
+        "ma20": None,
+        "ma_gap": None,
+        "trend_state": "unknown",
+        "vol_ma20": None,
+        "amount_ma20": None,
+        "listing_days": None,
+        "up_days_in_5": None,
+        "vol_trend_ratio": None,
+        "vol_rel_strength": None,
+        "high_52w_ratio": None,
+        "prev_day_change": None,
+        "is_last_bearish": None,
+        "close_3d_return": None,
+        "score": 0.0,
+    }
+
+    # --- Additional hard filters for strong bearish candle and consecutive down closes ---
+    # 1. Exclude if latest bar is a long bearish candle with no lower shadow
+    if len(daily_df) >= 1:
+        last = daily_df.iloc[-1]
+        open_, high, low, close = last["open"], last["high"], last["low"], last["close"]
+        body = abs(close - open_)
+        candle_range = high - low
+        lower_shadow = min(open_, close) - low
+        # Criteria: long red candle, almost no lower shadow, close << open
+        if (
+            close < open_ and
+            body > 0.018 * open_ and  # body > 1.8% of open price (tunable)
+            lower_shadow < 0.002 * open_ and  # lower shadow < 0.2% of open price
+            body > 0.6 * candle_range  # body is most of the candle
+        ):
+            candidate["fail_reasons"].append("long_bearish_candle_no_lower_shadow")
+
+    # 2. Exclude if last 3 closes indicate sustained down pressure (strong downtrend)
+    if len(daily_df) >= 3:
+        closes = daily_df["close"].iloc[-3:]
+        desc_steps = sum(closes.iloc[i] > closes.iloc[i + 1] for i in range(2))
+        close_3d_return = (closes.iloc[-1] / closes.iloc[0]) - 1.0 if closes.iloc[0] else None
+        if desc_steps == 2 or (desc_steps >= 1 and close_3d_return is not None and close_3d_return <= -0.02):
+            candidate["fail_reasons"].append("3d_downtrend")
+
+
+
     # Consecutive up days: close > open in last 5 trading days
     last5 = daily_df.tail(5)
     up_days_in_5 = int((last5["close"] > last5["open"]).sum())
 
     # Volume trend ratio (recent 5d vs prior 5d)
     vol_trend_ratio = calc_volume_trend_ratio(daily_df, window=10)
+    # Relative strength: recent 5d avg volume vs prior 20d avg volume
+    vol_rel_strength = calc_volume_relative_strength(daily_df, recent_window=5, base_window=20)
 
     # 52-week high position
     lookback_52w = min(252, len(daily_df))
@@ -347,7 +400,24 @@ def evaluate_candidate(code, name, daily_df, config):
         if prev_close is not None and prev_close > 0:
             prev_day_change = abs(price - prev_close) / prev_close
 
-    trend_state = classify_trend(ma5, ma20)
+    ma5_series = daily_df["close"].rolling(5, min_periods=1).mean()
+    ma5_slope_3d = None
+    if len(ma5_series) >= 4:
+        ma5_slope_3d = safe_float(ma5_series.iloc[-1] - ma5_series.iloc[-4])
+
+    trend_state = classify_trend(ma5, ma20, ma5_slope_3d)
+
+    is_last_bearish = False
+    if len(daily_df) >= 1:
+        last = daily_df.iloc[-1]
+        is_last_bearish = bool(last["close"] < last["open"])
+
+    close_3d_return = None
+    if len(daily_df) >= 3:
+        c0 = safe_float(daily_df["close"].iloc[-3])
+        c2 = safe_float(daily_df["close"].iloc[-1])
+        if c0 is not None and c0 > 0 and c2 is not None:
+            close_3d_return = (c2 / c0) - 1.0
 
     candidate.update({
         "price": price,
@@ -362,8 +432,11 @@ def evaluate_candidate(code, name, daily_df, config):
         "listing_days": listing_days,
         "up_days_in_5": up_days_in_5,
         "vol_trend_ratio": vol_trend_ratio,
+        "vol_rel_strength": vol_rel_strength,
         "high_52w_ratio": high_52w_ratio,
         "prev_day_change": prev_day_change,
+        "is_last_bearish": is_last_bearish,
+        "close_3d_return": close_3d_return,
     })
 
     # --- Hard filters (fail = disqualified) ---
@@ -414,8 +487,10 @@ def calculate_candidate_score(candidate, config):
     ma20 = candidate.get("ma20")
     up_days = candidate.get("up_days_in_5") or 0
     vol_trend = candidate.get("vol_trend_ratio")
+    vol_rel_strength = candidate.get("vol_rel_strength")
     high_52w_ratio = candidate.get("high_52w_ratio")
     listing_days = candidate.get("listing_days") or 0
+    is_last_bearish = bool(candidate.get("is_last_bearish"))
 
     if None in (price, atr_ratio, vol_ma20, amount_ma20):
         return 0.0
@@ -426,9 +501,10 @@ def calculate_candidate_score(candidate, config):
     atr_ratio_norm = max(0.0, atr_ratio / config.atr_ratio_min)
     score += min(22.0, 10.0 * math.log1p(atr_ratio_norm * 1.8))
 
-    # Liquidity volume (max 18): smooth by log scale to reduce score clustering.
-    vol_ratio = max(0.0, vol_ma20 / config.volume_ma20_min)
-    score += min(18.0, 9.0 * math.log1p(vol_ratio * 1.6))
+    # Liquidity volume (max 18): use relative strength vs prior 20-day baseline.
+    # 1.0 means neutral; below 0.8 gives little/no contribution, >=1.6 saturates.
+    if vol_rel_strength is not None:
+        score += max(0.0, min(18.0, (vol_rel_strength - 0.8) * 22.5))
 
     # Liquidity amount (max 18): smooth by log scale to reduce score clustering.
     amt_ratio = max(0.0, amount_ma20 / config.amount_ma20_min)
@@ -440,6 +516,10 @@ def calculate_candidate_score(candidate, config):
     # Momentum: volume trend ratio (max 8)
     if vol_trend is not None:
         score += max(0.0, min(8.0, (vol_trend - 0.9) * 10.0))
+
+    # Penalize latest bearish close to avoid over-rating short-term weakness.
+    if is_last_bearish:
+        score -= 8.0
 
     # Trend alignment: MA5 / MA20 ratio (±10)
     if ma5 is not None and ma20 not in (None, 0):
@@ -847,10 +927,10 @@ def scan(
 
         if verbose:
             if candidate["eligible"]:
-                print(f"[{idx}/{total}] {code} 후보 (score={candidate['score']:.2f})          ")
+                print(f"[{idx}/{total}] {code} ({name}) 후보 (score={candidate['score']:.2f})          ")
             else:
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
-                print(f"[{idx}/{total}] {code} 탈락 ({', '.join(reasons)})          ")
+                print(f"[{idx}/{total}] {code} ({name}) 탈락 ({', '.join(reasons)})          ")
 
     eligible_rows = [row for row in candidates if row["eligible"]]
     eligible_rows.sort(
@@ -1011,7 +1091,7 @@ if __name__ == "__main__":
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
 
     label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
-    print(f"\n[{label}] 기준 추천 종목:", picks)
+        # print(f"\n[{label}] 기준 추천 종목:", picks)  # 중복 출력 제거
 
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
 

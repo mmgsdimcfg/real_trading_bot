@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import logging
+import re
 import sys
 import time
 import unicodedata
@@ -216,6 +217,9 @@ LIVE_PRICE_BACKOFF_MAX_SECONDS = 60
 # ---------------------------------------------------------------------------
 log_dir = current_dir / "logs"
 log_dir.mkdir(exist_ok=True)
+log_date_str = datetime.now().strftime("%Y%m%d")
+log_date_dir = log_dir / log_date_str
+log_date_dir.mkdir(parents=True, exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 script_stem = Path(__file__).stem
 log_filename = f"{timestamp}_{script_stem}.log"
@@ -249,6 +253,58 @@ for _handler in logging.getLogger().handlers:
     _handler.addFilter(_suppress_filter)
 
 
+_SYMBOL_CODE_PATTERN = re.compile(r"\b(\d{6})\b")
+_INVALID_FILENAME_CHARS = re.compile(r"[<>:\"/\\|?*\x00-\x1F]")
+
+
+def _sanitize_log_filename(name: str) -> str:
+    cleaned = _INVALID_FILENAME_CHARS.sub("_", str(name).strip())
+    cleaned = cleaned.rstrip(" .")
+    return cleaned or "UNKNOWN"
+
+
+class _PerSymbolFileHandler(logging.Handler):
+    """Write log lines to per-symbol files based on 6-digit code in message."""
+
+    def __init__(self, base_dir: Path, buy_sell: bool = False):
+        super().__init__(level=logging.INFO)
+        self.base_dir = base_dir
+        self.buy_sell = buy_sell
+        self._streams: dict[Path, object] = {}
+
+    def _resolve_path(self, code: str) -> Path:
+        stem = _sanitize_log_filename(f"{log_date_str}_{code}")
+        suffix = "_buy_sell.txt" if self.buy_sell else ".txt"
+        return self.base_dir / f"{stem}{suffix}"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+            match = _SYMBOL_CODE_PATTERN.search(msg)
+            if not match:
+                return
+            code = match.group(1)
+            path = self._resolve_path(code)
+            stream = self._streams.get(path)
+            if stream is None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                stream = open(path, "a", encoding="utf-8")
+                self._streams[path] = stream
+            stream.write(self.format(record) + "\n")
+            stream.flush()
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        for stream in self._streams.values():
+            try:
+                stream.close()
+            except Exception:
+                pass
+        self._streams.clear()
+        super().close()
+
+
 def log(msg: str) -> None:
     logger.info(msg)
 
@@ -261,6 +317,14 @@ _trade_handler = logging.FileHandler(log_dir / trade_log_filename, encoding="utf
 _trade_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 trade_logger.handlers.clear()
 trade_logger.addHandler(_trade_handler)
+
+_symbol_general_handler = _PerSymbolFileHandler(log_date_dir, buy_sell=False)
+_symbol_general_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logger.addHandler(_symbol_general_handler)
+
+_symbol_trade_handler = _PerSymbolFileHandler(log_date_dir, buy_sell=True)
+_symbol_trade_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+trade_logger.addHandler(_symbol_trade_handler)
 
 
 def log_trade(msg: str) -> None:
