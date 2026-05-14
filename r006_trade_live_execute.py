@@ -255,12 +255,21 @@ for _handler in logging.getLogger().handlers:
 
 _SYMBOL_CODE_PATTERN = re.compile(r"\b(\d{6})\b")
 _INVALID_FILENAME_CHARS = re.compile(r"[<>:\"/\\|?*\x00-\x1F]")
+_SYMBOL_NAME_MAP: dict[str, str] = {}
 
 
 def _sanitize_log_filename(name: str) -> str:
     cleaned = _INVALID_FILENAME_CHARS.sub("_", str(name).strip())
     cleaned = cleaned.rstrip(" .")
     return cleaned or "UNKNOWN"
+
+
+def register_symbol_names(symbol_name_map: dict[str, str]) -> None:
+    _SYMBOL_NAME_MAP.clear()
+    for code, name in symbol_name_map.items():
+        normalized_code = str(code).zfill(6)
+        normalized_name = str(name).strip() if name else ""
+        _SYMBOL_NAME_MAP[normalized_code] = normalized_name
 
 
 class _PerSymbolFileHandler(logging.Handler):
@@ -273,7 +282,9 @@ class _PerSymbolFileHandler(logging.Handler):
         self._streams: dict[Path, object] = {}
 
     def _resolve_path(self, code: str) -> Path:
-        stem = _sanitize_log_filename(f"{log_date_str}_{code}")
+        symbol_name = _SYMBOL_NAME_MAP.get(code, "")
+        label = f"{log_date_str}_{code}({symbol_name})" if symbol_name else f"{log_date_str}_{code}"
+        stem = _sanitize_log_filename(label)
         suffix = "_buy_sell.txt" if self.buy_sell else ".txt"
         return self.base_dir / f"{stem}{suffix}"
 
@@ -1712,6 +1723,8 @@ def run(target_date: str | None = None) -> None:
     if not watch_map:
         log("No codes loaded")
         return
+
+    register_symbol_names(watch_map)
 
     log(f"Watchlist source: {watch_file}")
 

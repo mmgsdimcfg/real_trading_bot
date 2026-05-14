@@ -516,6 +516,7 @@ def main() -> None:
         nxt_flags: dict[str, bool] = {}
 
         for idx, (code, name) in enumerate(symbols, start=1):
+
             nxt_tradeable = False
             df = None
             last_error = None
@@ -541,15 +542,19 @@ def main() -> None:
                 empty_count += 1
                 if args.sleep > 0:
                     time.sleep(args.sleep)
+
                 continue
 
             if df is None or df.empty:
+
                 empty_count += 1
                 logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
             else:
                 df_1m = enrich_with_strategy_indicators(df)
                 df_20s = interpolate_to_20sec(df_1m)
-                file_path = output_dir / f"{code}.txt"
+                # 파일명을 종목코드(종목명).txt로 저장
+                safe_name = str(name).replace("/", "_").replace("\\", "_")
+                file_path = output_dir / f"{code}({safe_name}).txt"
                 df_20s.to_csv(file_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
 
                 saved_count += 1

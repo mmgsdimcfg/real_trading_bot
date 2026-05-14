@@ -389,7 +389,7 @@ def check_buy_condition(
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
 
     score = _buy_support_score(cur, prev, frame, config)
-    if score < 3:
+    if score < 2:  # 3 → 2로 완화
         return False, f"LOW_SCORE_{score}"
 
     trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
