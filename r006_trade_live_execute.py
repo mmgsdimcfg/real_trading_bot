@@ -506,23 +506,6 @@ def _session_exit_plan(reason_prefix: str, pnl_pct: float) -> tuple[str, str]:
     return "sell", _format_pending_pnl(f"{reason_prefix}_STOP_LOSS_BREACH", pnl_pct)
 
 
-def _ensure_position_watchlist(api, watch_map: dict[str, str], nxt_map: dict[str, bool]) -> None:
-    added_codes: list[str] = []
-    for code in api.get_open_positions():
-        if code in watch_map:
-            continue
-        watch_map[code] = code
-        nxt_map[code] = is_nxt_tradeable(code)
-        added_codes.append(code)
-
-    if not added_codes:
-        return
-
-    register_symbol_names(watch_map)
-    for code in added_codes:
-        log(f"WATCH ADDED | {code} | source=open_position | NXT={nxt_map.get(code, False)}")
-
-
 def _extract_order_error_detail(result) -> str:
     """Best-effort extraction of broker error code/message from order response."""
     if result is None:
@@ -2020,6 +2003,8 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
     if not state["done_1520"] and current_time >= REGULAR_FORCE_EXIT:
         state["done_1520"] = True
         for code, pos in list(api.get_open_positions().items()):
+            if code not in watch_map:
+                continue
             if api.has_pending_order(code):
                 log(f"  [REGULAR CLOSE SKIP] {code} | pending_order_active")
                 continue
@@ -2041,6 +2026,8 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
     if not state["done_1959"] and current_time >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_1959"] = True
         for code, pos in list(api.get_open_positions().items()):
+            if code not in watch_map:
+                continue
             if api.has_pending_order(code):
                 log(f"  [NXT CLOSE SKIP] {code} | pending_order_active")
                 continue
@@ -2111,7 +2098,6 @@ def run(target_date: str | None = None) -> None:
         log("NOTICE: near-cross / price-lead breakout flags are currently diagnostic-only in live executor; shared core buy logic remains the source of truth.")
 
     api = TradingAPI()
-    _ensure_position_watchlist(api, watch_map, nxt_map)
     traded_today: set[str] = set()
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
@@ -2159,7 +2145,6 @@ def run(target_date: str | None = None) -> None:
             continue
 
         api.sync_positions_from_account(force=False)
-        _ensure_position_watchlist(api, watch_map, nxt_map)
         api.refresh_pending_orders(current_dt)
         run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
 
