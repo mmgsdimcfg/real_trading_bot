@@ -207,6 +207,22 @@ FRAME_BACKFILL_SYNC_SECONDS = 600
 # Live-price polling / order trigger controls.
 LIVE_PRICE_POLL_INTERVAL_SECONDS = 10
 BUY_CONSECUTIVE_CONFIRM_COUNT = 2
+ORDER_STATUS_POLL_INTERVAL_SECONDS = 15
+
+# Indicator warmup:
+# Require enough closed 3-minute bars so major indicators are past the
+# initial under-warmed phase before live entries are allowed.
+INDICATOR_WARMUP_BARS = max(
+    MIN_BARS_REQUIRED,
+    BB_PERIOD,
+    VOLUME_MA_PERIOD,
+    STOCH_K_PERIOD + STOCH_D_PERIOD - 1,
+    RSI_PERIOD + RSI_SIGNAL_PERIOD - 1,
+    WILLIAMS_R_PERIOD + WILLIAMS_D_PERIOD - 1,
+    OBV_MA_PERIOD + 1,
+    MACD_SLOW + MACD_SIGNAL_PERIOD,
+    ADX_PERIOD * 2,
+)
 
 # Live-price fetch backoff controls.
 LIVE_PRICE_BACKOFF_BASE_SECONDS = 5
@@ -413,24 +429,21 @@ def _order_succeeded(result) -> bool:
     return True
 
 
-def _extract_order_price(result):
+def _extract_order_value(result, candidates: tuple[str, ...]):
     if result is None:
         return None
-
-    candidates = ("avg_pric", "avg_price", "stck_prpr", "ord_unpr", "fill_pric", "ccld_pric", "prpr")
 
     def _pick(mapping):
         if not isinstance(mapping, dict):
             return None
+
+        lowered = {str(key).lower(): value for key, value in mapping.items()}
         for key in candidates:
-            value = mapping.get(key)
-            if value in (None, ""):
-                continue
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                continue
-        for nested in ("output", "output1", "data"):
+            value = lowered.get(str(key).lower())
+            if value not in (None, ""):
+                return value
+
+        for nested in ("output", "output1", "output2", "data"):
             inner = mapping.get(nested)
             if isinstance(inner, dict):
                 picked = _pick(inner)
@@ -456,6 +469,58 @@ def _extract_order_price(result):
         pass
 
     return None
+
+
+def _extract_order_price(result):
+    value = _extract_order_value(
+        result,
+        ("avg_pric", "avg_price", "avg_prvs", "stck_prpr", "ord_unpr", "fill_pric", "ccld_pric", "prpr"),
+    )
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_order_number(result) -> str:
+    value = _extract_order_value(result, ("odno", "ord_no", "order_no"))
+    text = str(value).strip() if value is not None else ""
+    return text
+
+
+def _extract_order_time(result) -> str:
+    value = _extract_order_value(result, ("ord_tmd", "ord_time", "order_time"))
+    text = str(value).strip() if value is not None else ""
+    return text
+
+
+def _format_pending_pnl(reason_prefix: str, pnl_pct: float) -> str:
+    return f"{reason_prefix}_{pnl_pct * 100:.2f}%"
+
+
+def _session_exit_plan(reason_prefix: str, pnl_pct: float) -> tuple[str, str]:
+    if pnl_pct > 0:
+        return "sell", _format_pending_pnl(f"{reason_prefix}_PROFIT_CLOSE", pnl_pct)
+    if pnl_pct >= STOP_LOSS_PERCENT:
+        return "hold", _format_pending_pnl(f"{reason_prefix}_OVERNIGHT_HOLD_WITHIN_STOP", pnl_pct)
+    return "sell", _format_pending_pnl(f"{reason_prefix}_STOP_LOSS_BREACH", pnl_pct)
+
+
+def _ensure_position_watchlist(api, watch_map: dict[str, str], nxt_map: dict[str, bool]) -> None:
+    added_codes: list[str] = []
+    for code in api.get_open_positions():
+        if code in watch_map:
+            continue
+        watch_map[code] = code
+        nxt_map[code] = is_nxt_tradeable(code)
+        added_codes.append(code)
+
+    if not added_codes:
+        return
+
+    register_symbol_names(watch_map)
+    for code in added_codes:
+        log(f"WATCH ADDED | {code} | source=open_position | NXT={nxt_map.get(code, False)}")
 
 
 def _extract_order_error_detail(result) -> str:
@@ -1193,7 +1258,10 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
 
 
 def _near_cross_momentum_flags(cur: pd.Series, prev: pd.Series) -> dict[str, float | bool]:
-    """Builds 2-stage near-cross flags: ARM candidate and early-entry candidate."""
+    """Builds near-cross diagnostics for reject logging.
+
+    Live entry decisions are owned by the shared core strategy.
+    """
     prev_ma5 = _num(prev, "MA_5")
     cur_ma5 = _num(cur, "MA_5")
     prev_bb = _num(prev, "BB_MIDDLE")
@@ -1389,8 +1457,10 @@ class TradingAPI:
         self.cano = trenv.my_acct
         self.acnt_prdt_cd = trenv.my_prod
         self.positions: dict[str, dict] = {}
+        self.pending_orders: dict[str, dict] = {}
         self.trade_lock_until: dict[str, datetime] = {}
         self._last_sync_at: datetime | None = None
+        self._last_pending_poll_at: datetime | None = None
         self.sync_positions_from_account(force=True)
         log("TradingAPI (r76 MA5-BB multi-indicator) initialized")
 
@@ -1423,6 +1493,7 @@ class TradingAPI:
 
         if df_holdings is None or df_holdings.empty:
             self.positions.clear()
+            self._reconcile_pending_positions()
             return
 
         updated: dict[str, dict] = {}
@@ -1439,18 +1510,25 @@ class TradingAPI:
 
             prev = self.positions.get(code, {})
             updated[code] = {
-                "buy_price": float(prev.get("buy_price", avg_price)),
+                "buy_price": avg_price,
                 "quantity": qty,
                 "buy_time": prev.get("buy_time", datetime.now()),
                 "buy_session": prev.get("buy_session", "synced"),
                 "current_price": current_price,
-                "highest_price": float(prev.get("highest_price", current_price)),
+                "highest_price": max(float(prev.get("highest_price", current_price)), current_price),
             }
 
         self.positions = updated
+        self._reconcile_pending_positions()
 
     def get_open_positions(self) -> dict[str, dict]:
         return self.positions
+
+    def has_pending_order(self, code: str) -> bool:
+        return code in self.pending_orders
+
+    def get_pending_order(self, code: str) -> dict | None:
+        return self.pending_orders.get(code)
 
     def _in_cooldown(self, code: str, now: datetime) -> bool:
         until = self.trade_lock_until.get(code)
@@ -1468,6 +1546,245 @@ class TradingAPI:
             return int(float(text))
         except Exception:
             return default
+
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        try:
+            text = str(value).replace(",", "").strip()
+            if text == "":
+                return default
+            return float(text)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _pending_side_to_ccld_code(side: str) -> str:
+        return "02" if side == "buy" else "01"
+
+    def _reconcile_pending_positions(self) -> None:
+        for code, pending in self.pending_orders.items():
+            if pending.get("side") != "buy":
+                continue
+            pos = self.positions.get(code)
+            if pos is None:
+                continue
+            pos["buy_time"] = pending.get("submitted_at", pos.get("buy_time", datetime.now()))
+            pos["buy_session"] = pending.get("session", pos.get("buy_session", "synced"))
+            pos["highest_price"] = max(
+                float(pos.get("highest_price", 0.0)),
+                float(pos.get("current_price", 0.0)),
+                float(pos.get("buy_price", 0.0)),
+            )
+
+    def _fetch_today_order_status(self, code: str, side: str, now: datetime, order_no: str = "") -> dict[str, object] | None:
+        ccld_fn = getattr(dsf, "inquire_daily_ccld", None)
+        if not callable(ccld_fn):
+            return None
+
+        date_str = now.strftime("%Y%m%d")
+        try:
+            df_orders, _ = ccld_fn(
+                env_dv="real",
+                pd_dv="inner",
+                cano=self.cano,
+                acnt_prdt_cd=self.acnt_prdt_cd,
+                inqr_strt_dt=date_str,
+                inqr_end_dt=date_str,
+                sll_buy_dvsn_cd=self._pending_side_to_ccld_code(side),
+                ccld_dvsn="00",
+                inqr_dvsn="00",
+                inqr_dvsn_3="00",
+                pdno=code,
+                odno=order_no,
+                excg_id_dvsn_cd="ALL",
+            )
+        except Exception as exc:
+            log(f"WARNING: order status query failed for {code}({side}): {exc}")
+            return None
+
+        if df_orders is None or df_orders.empty:
+            return None
+
+        orders = df_orders.copy()
+        if "pdno" in orders.columns:
+            orders = orders[orders["pdno"].astype(str).str.zfill(6) == code]
+        if order_no and "odno" in orders.columns:
+            matched = orders[orders["odno"].astype(str).str.strip() == order_no]
+            if not matched.empty:
+                orders = matched
+        if orders.empty:
+            return None
+
+        sort_columns = [col for col in ("ord_dt", "ord_tmd", "odno") if col in orders.columns]
+        if sort_columns:
+            orders = orders.sort_values(sort_columns)
+
+        row = orders.iloc[-1].to_dict()
+        order_qty = self._to_int(row.get("ord_qty"), 0)
+        filled_qty = self._to_int(row.get("tot_ccld_qty"), 0)
+        remaining_qty = self._to_int(row.get("rmn_qty"), max(0, order_qty - filled_qty))
+        rejected_qty = self._to_int(row.get("rjct_qty"), 0)
+        avg_price = self._to_float(row.get("avg_prvs"), 0.0)
+        cancel_yn = str(row.get("cncl_yn", "")).strip().upper()
+
+        return {
+            "order_no": str(row.get("odno", "")).strip(),
+            "order_time": str(row.get("ord_tmd", "")).strip(),
+            "order_qty": order_qty,
+            "filled_qty": filled_qty,
+            "remaining_qty": remaining_qty,
+            "rejected_qty": rejected_qty,
+            "avg_price": avg_price,
+            "cancel_yn": cancel_yn,
+        }
+
+    def _maybe_log_pending_progress(self, pending: dict, message: str, signature: str) -> None:
+        if pending.get("last_status_signature") == signature:
+            return
+        pending["last_status_signature"] = signature
+        log(message)
+
+    def _confirm_pending_buy(self, code: str, pending: dict, pos: dict, status: dict | None) -> None:
+        requested_qty = int(pending.get("quantity", 0))
+        filled_qty = int(status.get("filled_qty", 0)) if status else int(pos.get("quantity", 0))
+        avg_price = float(status.get("avg_price", 0.0)) if status else 0.0
+        fill_price = avg_price if avg_price > 0 else float(pos.get("buy_price") or pos.get("current_price") or pending.get("requested_price", 0.0))
+
+        pos["buy_time"] = pending.get("submitted_at", pos.get("buy_time", datetime.now()))
+        pos["buy_session"] = pending.get("session", pos.get("buy_session", "synced"))
+        if fill_price > 0:
+            pos["buy_price"] = fill_price
+            pos["current_price"] = float(pos.get("current_price") or fill_price)
+            pos["highest_price"] = max(float(pos.get("highest_price", fill_price)), float(pos["current_price"]), fill_price)
+
+        code_name = str(pending.get("code_name", ""))
+        detail_suffix = f" | {pending['buy_detail']}" if pending.get("buy_detail") else ""
+        code_label = _format_code_label(code, code_name)
+        log(
+            f"BUY executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"price={fill_price:,.0f} | session={pending.get('session', 'unknown')} | exch={pending.get('exchange', 'UNKNOWN')}{detail_suffix}"
+        )
+        log_trade(
+            f"BUY executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"price={fill_price:,.0f} | session={pending.get('session', 'unknown')} | exch={pending.get('exchange', 'UNKNOWN')}{detail_suffix}"
+        )
+        _log_trade_event_banner(
+            event="BUY EXECUTED",
+            code=code,
+            qty=filled_qty,
+            price=fill_price,
+            detail=f"session={pending.get('session', 'unknown')} exch={pending.get('exchange', 'UNKNOWN')}" + detail_suffix,
+            code_name=code_name,
+        )
+        self.pending_orders.pop(code, None)
+
+    def _confirm_pending_sell(self, code: str, pending: dict, status: dict | None, remaining_qty: int) -> None:
+        requested_qty = int(pending.get("quantity", 0))
+        filled_qty = int(status.get("filled_qty", requested_qty)) if status else requested_qty
+        avg_price = float(status.get("avg_price", 0.0)) if status else 0.0
+        fill_price = avg_price if avg_price > 0 else float(pending.get("requested_price", 0.0))
+        buy_price = float(pending.get("buy_price", 0.0))
+        pnl_pct = ((fill_price / buy_price) - 1.0) * 100.0 if buy_price > 0 and fill_price > 0 else float("nan")
+        code_name = str(pending.get("code_name", ""))
+        code_label = _format_code_label(code, code_name)
+        log(
+            f"SELL executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
+            f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
+        )
+        log_trade(
+            f"SELL executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
+            f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
+        )
+        _log_trade_event_banner(
+            event="SELL EXECUTED",
+            code=code,
+            qty=filled_qty,
+            price=fill_price,
+            detail=f"pnl={pnl_pct:.2f}% reason={pending.get('reason', 'UNKNOWN')} exch={pending.get('exchange', 'UNKNOWN')}",
+            code_name=code_name,
+        )
+        self.pending_orders.pop(code, None)
+
+    def refresh_pending_orders(self, now: datetime) -> None:
+        if not self.pending_orders:
+            return
+        if self._last_pending_poll_at is not None:
+            elapsed = (now - self._last_pending_poll_at).total_seconds()
+            if elapsed < ORDER_STATUS_POLL_INTERVAL_SECONDS:
+                return
+
+        self._last_pending_poll_at = now
+        self.sync_positions_from_account(force=True)
+
+        for code, pending in list(self.pending_orders.items()):
+            side = str(pending.get("side", ""))
+            pos = self.positions.get(code)
+            status = self._fetch_today_order_status(code, side, now, str(pending.get("order_no", "")))
+
+            if side == "buy":
+                if pos is not None and pos.get("quantity", 0) > 0:
+                    if status and int(status.get("remaining_qty", 0)) > 0:
+                        self._maybe_log_pending_progress(
+                            pending,
+                            f"BUY partial | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                            f"| remaining={int(status.get('remaining_qty', 0))} | avg={float(status.get('avg_price', 0.0)):,.0f}",
+                            f"buy_partial:{int(status.get('filled_qty', 0))}:{int(status.get('remaining_qty', 0))}:{float(status.get('avg_price', 0.0))}",
+                        )
+                        continue
+                    self._confirm_pending_buy(code, pending, pos, status)
+                    continue
+
+                if status is not None:
+                    if int(status.get("filled_qty", 0)) <= 0 and (
+                        int(status.get("remaining_qty", 0)) <= 0
+                        or str(status.get("cancel_yn", "")) == "Y"
+                        or int(status.get("rejected_qty", 0)) >= int(status.get("order_qty", pending.get("quantity", 0)))
+                    ):
+                        self._maybe_log_pending_progress(
+                            pending,
+                            f"BUY closed without fill | {code} | order_no={pending.get('order_no', '')} | exch={pending.get('exchange', 'UNKNOWN')}",
+                            "buy_closed_without_fill",
+                        )
+                        self.pending_orders.pop(code, None)
+                        continue
+
+                    self._maybe_log_pending_progress(
+                        pending,
+                        f"BUY pending | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                        f"| remaining={int(status.get('remaining_qty', 0))} | order_no={status.get('order_no', '')}",
+                        f"buy_pending:{int(status.get('filled_qty', 0))}:{int(status.get('remaining_qty', 0))}",
+                    )
+                continue
+
+            pre_submit_qty = int(pending.get("pre_submit_qty", pending.get("quantity", 0)))
+            current_qty = int(pos.get("quantity", 0)) if pos is not None else 0
+            expected_remaining_qty = max(0, pre_submit_qty - int(pending.get("quantity", 0)))
+            if current_qty <= expected_remaining_qty:
+                self._confirm_pending_sell(code, pending, status, current_qty)
+                continue
+
+            if status is not None:
+                if int(status.get("filled_qty", 0)) <= 0 and (
+                    int(status.get("remaining_qty", 0)) <= 0
+                    or str(status.get("cancel_yn", "")) == "Y"
+                    or int(status.get("rejected_qty", 0)) >= int(status.get("order_qty", pending.get("quantity", 0)))
+                ):
+                    self._maybe_log_pending_progress(
+                        pending,
+                        f"SELL closed without fill | {code} | reason={pending.get('reason', 'UNKNOWN')} | order_no={pending.get('order_no', '')}",
+                        "sell_closed_without_fill",
+                    )
+                    self.pending_orders.pop(code, None)
+                    continue
+
+                self._maybe_log_pending_progress(
+                    pending,
+                    f"SELL pending | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                    f"| remaining={int(status.get('remaining_qty', 0))} | current_qty={current_qty} | reason={pending.get('reason', 'UNKNOWN')}",
+                    f"sell_pending:{int(status.get('filled_qty', 0))}:{int(status.get('remaining_qty', 0))}:{current_qty}",
+                )
 
     def get_affordable_buy_qty(self, code: str, price: float, now: datetime, nxt_tradeable: bool) -> int:
         price_krw = max(1, int(round(price)))
@@ -1538,7 +1855,7 @@ class TradingAPI:
         return max(0, min(qty_by_budget, qty_by_psbl))
 
     def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "") -> bool:
-        if qty <= 0 or self._in_cooldown(code, now):
+        if qty <= 0 or self._in_cooldown(code, now) or self.has_pending_order(code):
             return False
 
         # 주문 직전 시점에 주문가능수량을 다시 확인(50만원 한도 즉시 반영)
@@ -1574,28 +1891,41 @@ class TradingAPI:
             log(f"BUY failed | {code} | qty={qty} | {error_detail}")
             return False
 
-        fill_price = _extract_order_price(order_result) or price
-        self.positions[code] = {
-            "buy_price": float(fill_price),
+        requested_price = _extract_order_price(order_result) or price
+        order_no = _extract_order_number(order_result)
+        order_time = _extract_order_time(order_result)
+        self.pending_orders[code] = {
+            "side": "buy",
             "quantity": int(qty),
-            "buy_time": now,
-            "buy_session": session,
-            "current_price": float(fill_price),
-            "highest_price": float(fill_price),
+            "submitted_at": now,
+            "session": session,
+            "requested_price": float(requested_price),
+            "exchange": order_spec["exchange"],
+            "order_no": order_no,
+            "order_time": order_time,
+            "buy_detail": buy_detail,
+            "code_name": code_name,
         }
         self._mark_trade_lock(code, now)
         detail_suffix = f" | {buy_detail}" if buy_detail else ""
         code_label = _format_code_label(code, code_name)
-        log(f"BUY success | {code_label} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
-        log_trade(f"BUY success | {code_label} | qty={qty} | price={fill_price:,.0f} | session={session} | exch={order_spec['exchange']}{detail_suffix}")
+        log(
+            f"BUY submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
+            f"session={session} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}{detail_suffix}"
+        )
+        log_trade(
+            f"BUY submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
+            f"session={session} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}{detail_suffix}"
+        )
         _log_trade_event_banner(
-            event="BUY EXECUTED",
+            event="BUY SUBMITTED",
             code=code,
             qty=int(qty),
-            price=float(fill_price),
-            detail=f"session={session} exch={order_spec['exchange']}" + (f" | {buy_detail}" if buy_detail else ""),
+            price=float(requested_price),
+            detail=f"session={session} exch={order_spec['exchange']} order_no={order_no or 'UNKNOWN'}" + (f" | {buy_detail}" if buy_detail else ""),
             code_name=code_name,
         )
+        self.refresh_pending_orders(now)
         return True
 
     def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "") -> bool:
@@ -1605,7 +1935,7 @@ class TradingAPI:
             return False
 
         qty = min(int(qty), int(pos["quantity"]))
-        if qty <= 0 or self._in_cooldown(code, now):
+        if qty <= 0 or self._in_cooldown(code, now) or self.has_pending_order(code):
             return False
 
         order_spec = get_order_spec(now, nxt_tradeable)
@@ -1636,28 +1966,41 @@ class TradingAPI:
             log(f"SELL failed | {code} | qty={qty} | reason={reason} | {error_detail}")
             return False
 
-        fill_price = _extract_order_price(order_result) or current_price
-        remaining = int(pos["quantity"]) - qty
-        if remaining <= 0:
-            self.positions.pop(code, None)
-        else:
-            pos["quantity"] = remaining
-            pos["current_price"] = fill_price
-            pos["highest_price"] = max(float(pos.get("highest_price", fill_price)), float(fill_price))
-
+        requested_price = _extract_order_price(order_result) or current_price
+        order_no = _extract_order_number(order_result)
+        order_time = _extract_order_time(order_result)
+        self.pending_orders[code] = {
+            "side": "sell",
+            "quantity": int(qty),
+            "submitted_at": now,
+            "requested_price": float(requested_price),
+            "exchange": order_spec["exchange"],
+            "order_no": order_no,
+            "order_time": order_time,
+            "reason": reason,
+            "code_name": code_name,
+            "buy_price": float(pos.get("buy_price", 0.0)),
+            "pre_submit_qty": int(pos.get("quantity", qty)),
+        }
         self._mark_trade_lock(code, now)
-        pnl_pct = ((fill_price / float(pos["buy_price"])) - 1.0) * 100.0
         code_label = _format_code_label(code, code_name)
-        log(f"SELL success | {code_label} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
-        log_trade(f"SELL success | {code_label} | qty={qty} | price={fill_price:,.0f} | pnl={pnl_pct:.2f}% | reason={reason} | exch={order_spec['exchange']}")
+        log(
+            f"SELL submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
+            f"reason={reason} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}"
+        )
+        log_trade(
+            f"SELL submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
+            f"reason={reason} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}"
+        )
         _log_trade_event_banner(
-            event="SELL EXECUTED",
+            event="SELL SUBMITTED",
             code=code,
             qty=int(qty),
-            price=float(fill_price),
-            detail=f"pnl={pnl_pct:.2f}% reason={reason} exch={order_spec['exchange']}",
+            price=float(requested_price),
+            detail=f"reason={reason} exch={order_spec['exchange']} order_no={order_no or 'UNKNOWN'}",
             code_name=code_name,
         )
+        self.refresh_pending_orders(now)
         return True
 
 
@@ -1677,28 +2020,48 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
     if not state["done_1520"] and current_time >= REGULAR_FORCE_EXIT:
         state["done_1520"] = True
         for code, pos in list(api.get_open_positions().items()):
-            if pos.get("buy_time", current_dt).date() != trade_date:
-                continue
-            if pos.get("buy_session") not in ("regular", "morning_nxt"):
+            if api.has_pending_order(code):
+                log(f"  [REGULAR CLOSE SKIP] {code} | pending_order_active")
                 continue
             price = float(pos.get("current_price") or pos["buy_price"])
             buy_price = float(pos.get("buy_price") or 0)
-            if buy_price <= 0 or price <= buy_price:
-                log(f"  [CALL_AUCTION HOLD] {code} | NOT_IN_PROFIT | price={price:,.0f} buy={buy_price:,.0f}")
+            if buy_price <= 0 or price <= 0:
+                log(f"  [REGULAR CLOSE HOLD] {code} | INVALID_PRICE | price={price:,.0f} buy={buy_price:,.0f}")
                 continue
+
+            pnl_pct = (price / buy_price) - 1.0
+            action, reason = _session_exit_plan("REGULAR_CLOSE", pnl_pct)
+            if action == "hold":
+                log(f"  [REGULAR CLOSE HOLD] {code} | {reason} | price={price:,.0f} buy={buy_price:,.0f}")
+                continue
+
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "CALL_AUCTION_TAKE_PROFIT_1520", nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
 
     if not state["done_1959"] and current_time >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_1959"] = True
         for code, pos in list(api.get_open_positions().items()):
-            if pos.get("buy_time", current_dt).date() != trade_date:
+            if api.has_pending_order(code):
+                log(f"  [NXT CLOSE SKIP] {code} | pending_order_active")
                 continue
-            if pos.get("buy_session") != "afternoon_nxt":
+            if not nxt_map.get(code, False):
+                log(f"  [NXT CLOSE HOLD] {code} | NXT_NOT_TRADABLE")
                 continue
+
             price = float(pos.get("current_price") or pos["buy_price"])
+            buy_price = float(pos.get("buy_price") or 0)
+            if buy_price <= 0 or price <= 0:
+                log(f"  [NXT CLOSE HOLD] {code} | INVALID_PRICE | price={price:,.0f} buy={buy_price:,.0f}")
+                continue
+
+            pnl_pct = (price / buy_price) - 1.0
+            action, reason = _session_exit_plan("NXT_CLOSE", pnl_pct)
+            if action == "hold":
+                log(f"  [NXT CLOSE HOLD] {code} | {reason} | price={price:,.0f} buy={buy_price:,.0f}")
+                continue
+
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, "EOD_NXT_1959", nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
+            api.place_sell_order(code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1743,8 +2106,12 @@ def run(target_date: str | None = None) -> None:
         f"buy consecutive confirms={BUY_CONSECUTIVE_CONFIRM_COUNT}"
     )
     log(f"TP={TAKE_PROFIT_PERCENT*100:.1f}% | SL={STOP_LOSS_PERCENT*100:.1f}% | Trail={TRAILING_STOP_FROM_PEAK*100:.1f}%")
+    log(f"Indicator warmup: require bars >= {INDICATOR_WARMUP_BARS} before new entries")
+    if ENABLE_NEAR_CROSS_ARM or ENABLE_EARLY_NEAR_CROSS_ENTRY or ENABLE_PRICE_LEAD_BB_BREAKOUT:
+        log("NOTICE: near-cross / price-lead breakout flags are currently diagnostic-only in live executor; shared core buy logic remains the source of truth.")
 
     api = TradingAPI()
+    _ensure_position_watchlist(api, watch_map, nxt_map)
     traded_today: set[str] = set()
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
@@ -1792,6 +2159,8 @@ def run(target_date: str | None = None) -> None:
             continue
 
         api.sync_positions_from_account(force=False)
+        _ensure_position_watchlist(api, watch_map, nxt_map)
+        api.refresh_pending_orders(current_dt)
         run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
 
         # 15:20~15:30 정규장 마감 구간은 종목별 매도 체크 건너뛰고
@@ -1826,8 +2195,8 @@ def run(target_date: str | None = None) -> None:
             if frame is None:
                 log(f"  [SKIP] {symbol_label} | frame=None (fetch failed)")
                 continue
-            if len(frame) < MIN_BARS_REQUIRED:
-                log(f"  [SKIP] {symbol_label} | bars={len(frame)} < MIN_BARS_REQUIRED={MIN_BARS_REQUIRED}")
+            if len(frame) < INDICATOR_WARMUP_BARS:
+                log(f"  [SKIP] {symbol_label} | bars={len(frame)} < INDICATOR_WARMUP_BARS={INDICATOR_WARMUP_BARS}")
                 continue
 
             bar_time = frame.index[-1]
@@ -1872,6 +2241,17 @@ def run(target_date: str | None = None) -> None:
                 _num(cur, "BB_MIDDLE"),
             )
             pos = api.get_open_positions().get(code)
+            pending = api.get_pending_order(code)
+
+            if pending is not None:
+                pending_side = str(pending.get("side", "")).upper() or "UNKNOWN"
+                pending_qty = int(pending.get("quantity", 0))
+                pending_time = pending.get("submitted_at", current_dt)
+                log(
+                    f"  [PENDING] {symbol_label} | side={pending_side} qty={pending_qty} "
+                    f"submitted={pending_time:%H:%M:%S} | order_no={pending.get('order_no', '') or 'UNKNOWN'}"
+                )
+                continue
 
             log(
                 f"  [CHECK] {symbol_label} | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} ({price_source}) bar_close={float(cur['close']):,.0f} | "
