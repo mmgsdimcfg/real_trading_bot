@@ -217,6 +217,13 @@ INDICATOR_WARMUP_BARS = MIN_BARS_REQUIRED
 # Live-price fetch backoff controls.
 LIVE_PRICE_BACKOFF_BASE_SECONDS = 5
 LIVE_PRICE_BACKOFF_MAX_SECONDS = 60
+LIVE_PRICE_STALE_TTL_SECONDS = 20
+
+# Pending-order status query backoff controls.
+PENDING_STATUS_BACKOFF_MAX_SECONDS = 120
+
+# Market-day status cache (holiday API call reduction).
+_MARKET_DAY_STATUS_CACHE: dict[str, tuple[bool, str]] = {}
 
 # ---------------------------------------------------------------------------
 # 로깅
@@ -642,21 +649,34 @@ def is_weekday_market_day(now: datetime) -> bool:
 
 
 def get_market_day_status(now: datetime) -> tuple[bool, str]:
+    cache_key = now.strftime("%Y%m%d")
+    cached = _MARKET_DAY_STATUS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     date_label = now.strftime("%Y-%m-%d")
     if not is_weekday_market_day(now):
-        return False, f"MARKET DAY CHECK | {date_label} | CLOSED | source=weekday | reason=weekend"
+        result = (False, f"MARKET DAY CHECK | {date_label} | CLOSED | source=weekday | reason=weekend")
+        _MARKET_DAY_STATUS_CACHE[cache_key] = result
+        return result
 
     holiday_fn = getattr(dsf, "chk_holiday", None)
     if not callable(holiday_fn):
-        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday | reason=chk_holiday_unavailable"
+        result = (True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday | reason=chk_holiday_unavailable")
+        _MARKET_DAY_STATUS_CACHE[cache_key] = result
+        return result
 
     try:
         df = holiday_fn(bass_dt=now.strftime("%Y%m%d"))
     except Exception as exc:
-        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=chk_holiday_failed:{exc}"
+        result = (True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=chk_holiday_failed:{exc}")
+        _MARKET_DAY_STATUS_CACHE[cache_key] = result
+        return result
 
     if df is None or df.empty:
-        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=empty_holiday_response"
+        result = (True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=empty_holiday_response")
+        _MARKET_DAY_STATUS_CACHE[cache_key] = result
+        return result
 
     date_str = now.strftime("%Y%m%d")
     if "bass_dt" in df.columns:
@@ -668,12 +688,16 @@ def get_market_day_status(now: datetime) -> tuple[bool, str]:
 
     flag = _is_truthy_flag(row.iloc[-1].get("opnd_yn"))
     if flag is None:
-        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=unknown_opnd_yn"
+        result = (True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=unknown_opnd_yn")
+        _MARKET_DAY_STATUS_CACHE[cache_key] = result
+        return result
 
     status_text = "OPEN" if flag else "CLOSED"
     bass_dt = str(row.iloc[-1].get("bass_dt", date_str)).strip() or date_str
     opnd_yn = str(row.iloc[-1].get("opnd_yn", "")).strip() or "UNKNOWN"
-    return flag, f"MARKET DAY CHECK | {date_label} | {status_text} | source=chk_holiday | bass_dt={bass_dt} | opnd_yn={opnd_yn}"
+    result = (flag, f"MARKET DAY CHECK | {date_label} | {status_text} | source=chk_holiday | bass_dt={bass_dt} | opnd_yn={opnd_yn}")
+    _MARKET_DAY_STATUS_CACHE[cache_key] = result
+    return result
 
 
 def is_open_trading_day(now: datetime) -> bool:
@@ -918,6 +942,12 @@ def _live_price_backoff_seconds(fail_count: int) -> int:
     # Exponential backoff: 5s, 10s, 20s, 40s, 60s cap.
     seconds = LIVE_PRICE_BACKOFF_BASE_SECONDS * (2 ** max(0, fail_count - 1))
     return int(min(LIVE_PRICE_BACKOFF_MAX_SECONDS, seconds))
+
+
+def _pending_status_backoff_seconds(fail_count: int) -> int:
+    # Exponential backoff with wider cap for repeated status-query failures.
+    seconds = ORDER_STATUS_POLL_INTERVAL_SECONDS * (2 ** max(0, fail_count - 1))
+    return int(min(PENDING_STATUS_BACKOFF_MAX_SECONDS, seconds))
 
 
 def update_live_price_cross_state(
@@ -1711,12 +1741,24 @@ class TradingAPI:
                 return
 
         self._last_pending_poll_at = now
-        self.sync_positions_from_account(force=True)
+        self.sync_positions_from_account(force=False)
 
         for code, pending in list(self.pending_orders.items()):
+            next_poll_at = pending.get("next_status_poll_at")
+            if isinstance(next_poll_at, datetime) and now < next_poll_at:
+                continue
+
             side = str(pending.get("side", ""))
             pos = self.positions.get(code)
             status = self._fetch_today_order_status(code, side, now, str(pending.get("order_no", "")))
+
+            if status is None:
+                fail_count = int(pending.get("status_fail_count", 0)) + 1
+                pending["status_fail_count"] = fail_count
+                pending["next_status_poll_at"] = now + timedelta(seconds=_pending_status_backoff_seconds(fail_count))
+            else:
+                pending["status_fail_count"] = 0
+                pending.pop("next_status_poll_at", None)
 
             if side == "buy":
                 if pos is not None and pos.get("quantity", 0) > 0:
@@ -1756,6 +1798,18 @@ class TradingAPI:
             pre_submit_qty = int(pending.get("pre_submit_qty", pending.get("quantity", 0)))
             current_qty = int(pos.get("quantity", 0)) if pos is not None else 0
             expected_remaining_qty = max(0, pre_submit_qty - int(pending.get("quantity", 0)))
+
+            if status is not None:
+                filled_qty = int(status.get("filled_qty", 0))
+                remaining_qty = int(status.get("remaining_qty", 0))
+                rejected_qty = int(status.get("rejected_qty", 0))
+                order_qty = int(status.get("order_qty", pending.get("quantity", 0)))
+                cancel_yn = str(status.get("cancel_yn", ""))
+                terminal = remaining_qty <= 0 or cancel_yn == "Y" or rejected_qty >= order_qty
+                if filled_qty > 0 and terminal:
+                    self._confirm_pending_sell(code, pending, status, current_qty)
+                    continue
+
             if current_qty <= expected_remaining_qty:
                 self._confirm_pending_sell(code, pending, status, current_qty)
                 continue
@@ -1924,7 +1978,7 @@ class TradingAPI:
         return True
 
     def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "") -> bool:
-        self.sync_positions_from_account(force=True)
+        self.sync_positions_from_account(force=False)
         pos = self.positions.get(code)
         if not pos or pos.get("quantity", 0) <= 0:
             return False
@@ -2118,6 +2172,7 @@ def run(target_date: str | None = None) -> None:
     buy_confirm_state: dict[str, dict[str, object]] = {}
     live_price_cross_state: dict[str, dict] = {}
     live_price_cache: dict[str, float] = {}
+    live_price_cache_at: dict[str, datetime] = {}
     live_price_fail_count: dict[str, int] = {}
     live_price_backoff_until: dict[str, datetime] = {}
     frame_cache: dict[str, pd.DataFrame] = {}
@@ -2141,6 +2196,7 @@ def run(target_date: str | None = None) -> None:
             buy_confirm_state.clear()
             live_price_cross_state.clear()
             live_price_cache.clear()
+            live_price_cache_at.clear()
             live_price_fail_count.clear()
             live_price_backoff_until.clear()
             frame_cache.clear()
@@ -2220,6 +2276,7 @@ def run(target_date: str | None = None) -> None:
                     price_source = f"fallback_backoff_{backoff_seconds}s"
                 else:
                     live_price_cache[code] = float(price)
+                    live_price_cache_at[code] = current_dt
                     live_price_fail_count[code] = 0
                     live_price_backoff_until.pop(code, None)
             else:
@@ -2227,13 +2284,18 @@ def run(target_date: str | None = None) -> None:
 
             if price is None or price <= 0:
                 cached_live = live_price_cache.get(code)
-                if cached_live is not None and cached_live > 0:
+                cached_at = live_price_cache_at.get(code)
+                cache_age_sec = (current_dt - cached_at).total_seconds() if isinstance(cached_at, datetime) else None
+                cache_fresh = cache_age_sec is not None and cache_age_sec <= LIVE_PRICE_STALE_TTL_SECONDS
+
+                if cached_live is not None and cached_live > 0 and cache_fresh:
                     price = float(cached_live)
                     if price_source == "live":
                         price_source = "cached_live"
                 else:
                     price = float(cur["close"])
-                    price_source = "bar_close"
+                    age_text = f"{cache_age_sec:.0f}s" if cache_age_sec is not None else "unknown"
+                    price_source = f"bar_close(stale_live={age_text})"
 
             cross_info = update_live_price_cross_state(
                 live_price_cross_state,
@@ -2275,9 +2337,10 @@ def run(target_date: str | None = None) -> None:
                 pnl_pct = (price / entry_price) - 1.0
 
                 # 저가(bar low)가 현재가보다 낮으면 손절 판정에 우선 반영
-                # 폴링 간격 사이 급락으로 손절이 지연되는 문제를 완화
-                _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else price
-                _sl_price = min(price, _bar_low)
+                # 확정봉 low를 직접 섞으면 현재가가 회복된 상태에서도 오손절이 날 수 있어
+                # 실시간 손절은 현재가 기준으로 판정한다.
+                _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else float("nan")
+                _sl_price = price
                 _pnl_sl = (_sl_price / entry_price) - 1.0
 
                 pos["current_price"] = price
@@ -2452,6 +2515,13 @@ def run(target_date: str | None = None) -> None:
                 qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
                 if qty <= 0:
                     log(f"  [BUY REJECT] {symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
+                    continue
+
+                if "bar_close(stale_live=" in price_source:
+                    log(
+                        f"  [BUY REJECT] {symbol_label} | STALE_LIVE_PRICE | "
+                        f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
+                    )
                     continue
 
                 session = classify_buy_session(current_dt)
