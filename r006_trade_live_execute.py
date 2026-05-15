@@ -209,20 +209,10 @@ LIVE_PRICE_POLL_INTERVAL_SECONDS = 10
 BUY_CONSECUTIVE_CONFIRM_COUNT = 2
 ORDER_STATUS_POLL_INTERVAL_SECONDS = 15
 
-# Indicator warmup:
-# Require enough closed 3-minute bars so major indicators are past the
-# initial under-warmed phase before live entries are allowed.
-INDICATOR_WARMUP_BARS = max(
-    MIN_BARS_REQUIRED,
-    BB_PERIOD,
-    VOLUME_MA_PERIOD,
-    STOCH_K_PERIOD + STOCH_D_PERIOD - 1,
-    RSI_PERIOD + RSI_SIGNAL_PERIOD - 1,
-    WILLIAMS_R_PERIOD + WILLIAMS_D_PERIOD - 1,
-    OBV_MA_PERIOD + 1,
-    MACD_SLOW + MACD_SIGNAL_PERIOD,
-    ADX_PERIOD * 2,
-)
+# Live warmup:
+# Use only a minimal closed-bar requirement and let the 10-second live-price
+# checks drive actual entries/exits.
+INDICATOR_WARMUP_BARS = MIN_BARS_REQUIRED
 
 # Live-price fetch backoff controls.
 LIVE_PRICE_BACKOFF_BASE_SECONDS = 5
@@ -651,22 +641,22 @@ def is_weekday_market_day(now: datetime) -> bool:
     return now.weekday() < 5
 
 
-def is_open_trading_day(now: datetime) -> bool:
+def get_market_day_status(now: datetime) -> tuple[bool, str]:
+    date_label = now.strftime("%Y-%m-%d")
     if not is_weekday_market_day(now):
-        return False
+        return False, f"MARKET DAY CHECK | {date_label} | CLOSED | source=weekday | reason=weekend"
 
     holiday_fn = getattr(dsf, "chk_holiday", None)
     if not callable(holiday_fn):
-        return True
+        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday | reason=chk_holiday_unavailable"
 
     try:
         df = holiday_fn(bass_dt=now.strftime("%Y%m%d"))
     except Exception as exc:
-        log(f"WARNING: chk_holiday failed, fallback to weekday: {exc}")
-        return True
+        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=chk_holiday_failed:{exc}"
 
     if df is None or df.empty:
-        return True
+        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=empty_holiday_response"
 
     date_str = now.strftime("%Y%m%d")
     if "bass_dt" in df.columns:
@@ -677,7 +667,18 @@ def is_open_trading_day(now: datetime) -> bool:
         row = df.iloc[[0]]
 
     flag = _is_truthy_flag(row.iloc[-1].get("opnd_yn"))
-    return True if flag is None else flag
+    if flag is None:
+        return True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=unknown_opnd_yn"
+
+    status_text = "OPEN" if flag else "CLOSED"
+    bass_dt = str(row.iloc[-1].get("bass_dt", date_str)).strip() or date_str
+    opnd_yn = str(row.iloc[-1].get("opnd_yn", "")).strip() or "UNKNOWN"
+    return flag, f"MARKET DAY CHECK | {date_label} | {status_text} | source=chk_holiday | bass_dt={bass_dt} | opnd_yn={opnd_yn}"
+
+
+def is_open_trading_day(now: datetime) -> bool:
+    is_open, _ = get_market_day_status(now)
+    return is_open
 
 
 def is_regular_session(now: datetime) -> bool:
@@ -727,6 +728,17 @@ def get_order_spec(now: datetime, nxt_tradeable: bool) -> dict | None:
         return {"exchange": "KRX", "ord_dvsn": "01", "ord_unpr": "0"}
     if is_nxt_session(now) and nxt_tradeable:
         return {"exchange": "NXT", "ord_dvsn": "00", "ord_unpr": None}
+    return None
+
+
+def get_session_open_datetime(now: datetime, nxt_tradeable: bool) -> datetime | None:
+    current_time = now.time()
+    if REGULAR_START <= current_time <= REGULAR_END:
+        return datetime.combine(now.date(), REGULAR_START)
+    if nxt_tradeable and MORNING_NXT_START <= current_time <= MORNING_NXT_END:
+        return datetime.combine(now.date(), MORNING_NXT_START)
+    if nxt_tradeable and AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END:
+        return datetime.combine(now.date(), AFTERNOON_NXT_START)
     return None
 
 
@@ -2058,9 +2070,10 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
 def run(target_date: str | None = None) -> None:
     ka.auth()
     now = datetime.now()
+    is_open_day, market_day_log = get_market_day_status(now)
+    log(market_day_log)
 
-    if not is_open_trading_day(now):
-        log(f"Today is not an open trading day: {now:%Y-%m-%d %A}")
+    if not is_open_day:
         return
 
     watch_file = _resolve_watchlist_file(target_date)
@@ -2111,8 +2124,10 @@ def run(target_date: str | None = None) -> None:
     frame_last_refresh_at: dict[str, datetime] = {}
     liquidation_state: dict = {}
     current_trade_date = now.date()
-    startup_time = datetime.now()
-    log(f"Startup warmup: new entries blocked for {STARTUP_WARMUP_SECONDS}s until {(startup_time + timedelta(seconds=STARTUP_WARMUP_SECONDS)):%H:%M:%S}")
+    log(
+        f"Session-open warmup: new entries blocked for {STARTUP_WARMUP_SECONDS}s "
+        f"after each session start ({MORNING_NXT_START:%H:%M}, {REGULAR_START:%H:%M}, {AFTERNOON_NXT_START:%H:%M})"
+    )
 
     while True:
         current_dt = datetime.now()
@@ -2131,8 +2146,10 @@ def run(target_date: str | None = None) -> None:
             frame_cache.clear()
             frame_last_refresh_at.clear()
 
-        if not is_open_trading_day(current_dt):
-            log("Market closed day. Stopping.")
+        is_open_day, market_day_log = get_market_day_status(current_dt)
+        if not is_open_day:
+            log(market_day_log)
+            log("MARKET LOOP STOP | reason=market_closed_day")
             break
 
         if current_dt.time() >= AFTERNOON_NXT_END:
@@ -2380,10 +2397,16 @@ def run(target_date: str | None = None) -> None:
                 trailing_sell_confirm_state.pop(code, None)
                 if not is_new_entry_allowed(current_dt, nxt_tradeable):
                     continue
-                _warmup_elapsed = (current_dt - startup_time).total_seconds()
-                if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
-                    log(f"  [BUY REJECT] {symbol_label} | STARTUP_WARMUP | elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s")
-                    continue
+                session_open_dt = get_session_open_datetime(current_dt, nxt_tradeable)
+                if session_open_dt is not None:
+                    _warmup_elapsed = (current_dt - session_open_dt).total_seconds()
+                    if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
+                        log(
+                            f"  [BUY REJECT] {symbol_label} | SESSION_OPEN_WARMUP | "
+                            f"elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
+                            f"session_open={session_open_dt:%H:%M:%S}"
+                        )
+                        continue
                 if not ALLOW_REBUY_SAME_CODE and code in traded_today:
                     continue
                 if api._in_cooldown(code, current_dt):
