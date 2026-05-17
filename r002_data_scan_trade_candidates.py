@@ -31,6 +31,7 @@ Update log:
 import argparse
 import math
 import random
+import re
 from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime
 from pathlib import Path
@@ -86,7 +87,7 @@ BALANCED_CONFIG = ScannerConfig(
     max_52w_high_ratio=0.95,
     max_prev_day_change=0.08,
     volume_trend_min_ratio=0.9,
-    max_picks=30,
+    max_picks=50,
 )
 
 RELAXED_CONFIG = ScannerConfig(
@@ -113,7 +114,8 @@ CONFIG_MAP = {
 DEFAULT_CONFIG = BALANCED_CONFIG
 DEFAULT_HISTORY_WINDOW = 0
 DAILY_LOOKBACK = 260  # trading days of history to load per stock
-MAX_PICKS_LIMIT = 30
+MIN_REQUIRED_BARS = 1
+MAX_PICKS_LIMIT = 50
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +135,32 @@ def ensure_datetime_index(df):
     return df
 
 
+def _extract_code_from_stem(stem):
+    """Extract 6-digit symbol code from file stem.
+
+    Supported examples:
+    - 005930
+    - 005930_삼성전자
+    - 005930_삼성전자_1m
+    - 005930(삼성전자)
+    """
+    match = re.match(r"^(\d{6})(?:[_(].*)?$", str(stem))
+    return match.group(1) if match else None
+
+
+def _symbol_file_priority(path):
+    """Prefer 1m files over others, and avoid legacy 20s when possible."""
+    stem = path.stem.lower()
+    if stem.endswith("_1m"):
+        return 0
+    if stem.endswith("_20s"):
+        return 2
+    return 1
+
+
 def resolve_symbol_file(data_dir, code):
-    """Return the first existing symbol file path among supported extensions."""
+    """Return best matching symbol file path among supported naming formats."""
+    # 1) Legacy exact names first
     txt_path = data_dir / f"{code}.txt"
     if txt_path.exists():
         return txt_path
@@ -143,7 +169,15 @@ def resolve_symbol_file(data_dir, code):
     if csv_path.exists():
         return csv_path
 
-    return None
+    # 2) New names: {code}_{name}.txt, {code}_{name}_1m.txt, etc.
+    candidates = []
+    candidates.extend(data_dir.glob(f"{code}*.txt"))
+    candidates.extend(data_dir.glob(f"{code}*.csv"))
+    candidates = [p for p in candidates if _extract_code_from_stem(p.stem) == code]
+    if not candidates:
+        return None
+
+    return sorted(candidates, key=_symbol_file_priority)[0]
 
 
 def load_data(code, data_dir, warn=True):
@@ -291,8 +325,35 @@ def calc_volume_relative_strength(daily_df, recent_window=5, base_window=20):
 
 def evaluate_candidate(code, name, daily_df, config):
 
+    candidate = {
+        "code": code,
+        "name": name,
+        "eligible": False,
+        "skip_reason": None,
+        "fail_reasons": [],
+        "soft_flags": [],
+        "price": None,
+        "atr": None,
+        "atr_ratio": None,
+        "ma5": None,
+        "ma20": None,
+        "ma_gap": None,
+        "trend_state": "unknown",
+        "vol_ma20": None,
+        "amount_ma20": None,
+        "listing_days": None,
+        "up_days_in_5": None,
+        "vol_trend_ratio": None,
+        "vol_rel_strength": None,
+        "high_52w_ratio": None,
+        "prev_day_change": None,
+        "is_last_bearish": None,
+        "close_3d_return": None,
+        "score": 0.0,
+    }
+
     # --- Basic metrics (must be defined before use) ---
-    if daily_df is None or len(daily_df) < 5:
+    if daily_df is None or len(daily_df) < MIN_REQUIRED_BARS:
         candidate["skip_reason"] = "insufficient_daily_bars"
         return candidate
 
@@ -324,33 +385,6 @@ def evaluate_candidate(code, name, daily_df, config):
     # Listing age (number of trading days with data)
     listing_days = len(daily_df)
 
-
-    candidate = {
-        "code": code,
-        "name": name,
-        "eligible": False,
-        "skip_reason": None,
-        "fail_reasons": [],
-        "soft_flags": [],
-        "price": None,
-        "atr": None,
-        "atr_ratio": None,
-        "ma5": None,
-        "ma20": None,
-        "ma_gap": None,
-        "trend_state": "unknown",
-        "vol_ma20": None,
-        "amount_ma20": None,
-        "listing_days": None,
-        "up_days_in_5": None,
-        "vol_trend_ratio": None,
-        "vol_rel_strength": None,
-        "high_52w_ratio": None,
-        "prev_day_change": None,
-        "is_last_bearish": None,
-        "close_3d_return": None,
-        "score": 0.0,
-    }
 
     # --- Additional hard filters for strong bearish candle and consecutive down closes ---
     # 1. Exclude if latest bar is a long bearish candle with no lower shadow
@@ -807,8 +841,9 @@ def filter_stock_list_by_existing_data(stock_list, data_root, verbose=True):
     for date_dir in data_root.iterdir():
         if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
             for p in list(date_dir.glob("*.txt")) + list(date_dir.glob("*.csv")):
-                if p.stem.isdigit():
-                    all_codes.add(p.stem.zfill(6))
+                code = _extract_code_from_stem(p.stem)
+                if code is not None:
+                    all_codes.add(code)
 
     filtered = [(code, name) for code, name in stock_list if code in all_codes]
     if verbose:
@@ -914,9 +949,9 @@ def scan(
             print(f"[{idx}/{total}] {code} 검증중...", end="\r", flush=True)
 
         daily_df = build_daily_bars(data_root, code, target_date_str, single_date_only=single_date_only)
-        if daily_df is None or len(daily_df) < 5:
+        if daily_df is None or len(daily_df) < MIN_REQUIRED_BARS:
             skipped += 1
-            if daily_df is None:
+            if daily_df is None or len(daily_df) == 0:
                 insufficient_bars_count += 1
             if verbose and idx % 50 == 0:
                 print(f"[{idx}/{total}] 진행중 - 현재 스킵 {skipped}종목")
@@ -972,8 +1007,8 @@ def scan(
     if verbose:
         print("\n========== 스캔 완료 ==========")
         print(f"총종목: {total}")
-        print(f"데이터 불가(None): {insufficient_bars_count}")
-        print(f"데이터 부족(<5일): {skipped - insufficient_bars_count}")
+        print(f"데이터 불가(None/empty): {insufficient_bars_count}")
+        print(f"데이터 부족(<{MIN_REQUIRED_BARS}일): {skipped - insufficient_bars_count}")
         print(f"총 스킵: {skipped}")
         print(f"평가된 종목: {len(candidates)}")
         print(f"적격 수: {summary['eligible_pool_count']}")
@@ -1043,7 +1078,7 @@ if __name__ == "__main__":
         stock_list,
         data_root,
         target_date_str=effective_target_date.strftime("%Y%m%d") if effective_target_date else None,
-        min_bars=5,
+        min_bars=MIN_REQUIRED_BARS,
         single_date_only=single_date_only,
     )
     if not stock_list:
@@ -1079,7 +1114,7 @@ if __name__ == "__main__":
         picks_file.write_text("\n".join(picks), encoding="utf-8")
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
 
-    ranked_file = out_dir / "picks_ranked.txt"
+    ranked_file = out_dir / "ranked.txt"
     ranked_file.write_text(render_ranked_csv(scan_result["selected_rows"]), encoding="utf-8")
     print(f"점수 기반 랭킹 파일을 저장했습니다: {ranked_file}")
 
@@ -1092,8 +1127,6 @@ if __name__ == "__main__":
 
     label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
         # print(f"\n[{label}] 기준 추천 종목:", picks)  # 중복 출력 제거
-
-    print(f"스캐너 리포트를 저장했습니다: {report_file}")
 
     if effective_target_date:
         print(f"\n[{effective_target_date.strftime('%Y%m%d')}] 기준 추천 종목:", picks)

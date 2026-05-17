@@ -58,6 +58,23 @@ sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inqui
 import kis_auth as ka
 import domestic_stock_functions as dsf
 from inquire_time_dailychartprice import inquire_time_dailychartprice
+from r003_define_config import (
+    ADX_PERIOD,
+    BB_PERIOD,
+    BB_STD_MULTIPLIER,
+    MA_PERIOD,
+    MACD_FAST,
+    MACD_SIGNAL_PERIOD,
+    MACD_SLOW,
+    OBV_MA_PERIOD,
+    RSI_PERIOD,
+    RSI_SIGNAL_PERIOD,
+    STOCH_D_PERIOD,
+    STOCH_K_PERIOD,
+    VOLUME_MA_PERIOD,
+    WILLIAMS_D_PERIOD,
+    WILLIAMS_R_PERIOD,
+)
 
 
 logging.basicConfig(
@@ -69,22 +86,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# R76 indicator parameters
-BB_PERIOD = 20
-BB_STD_MULTIPLIER = 2.0
-MA_PERIOD = 5
-STOCH_K_PERIOD = 10
-STOCH_D_PERIOD = 5
-RSI_PERIOD = 14
-RSI_SIGNAL_PERIOD = 6
-WILLIAMS_R_PERIOD = 10
-WILLIAMS_D_PERIOD = 9
-VOLUME_MA_PERIOD = 20
-OBV_MA_PERIOD = 10
-MACD_FAST = 5
-MACD_SLOW = 12
-MACD_SIGNAL_PERIOD = 4
-ADX_PERIOD = 7
+# Indicator parameters are imported from r003_define_config so collector, live,
+# and simulation stay in sync when strategy settings change.
 
 
 def parse_args() -> argparse.Namespace:
@@ -354,8 +357,19 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     for col in price_cols:
         df_reindexed[col] = df_reindexed[col].interpolate(method="linear", limit_direction="both")
     
-    # 거래량은 이전 값으로 채움(0이 아닌 경우만)
+    # 거래량은 20초 봉 합계가 원본 분봉 합계와 최대한 일치하도록 분할한다.
+    step_seconds = 20.0
+    if len(df.index) >= 2:
+        src_seconds = df["datetime"].diff().dropna().dt.total_seconds().median()
+        if pd.notna(src_seconds) and src_seconds > 0:
+            expansion = max(1.0, round(float(src_seconds) / step_seconds))
+        else:
+            expansion = 3.0
+    else:
+        expansion = 3.0
+
     df_reindexed["volume"] = df_reindexed["volume"].ffill()
+    df_reindexed["volume"] = pd.to_numeric(df_reindexed["volume"], errors="coerce") / expansion
     df_reindexed["volume"] = df_reindexed["volume"].fillna(0)
     
     # Forward-fill market column if present.
@@ -552,21 +566,26 @@ def main() -> None:
             else:
                 df_1m = enrich_with_strategy_indicators(df)
                 df_20s = interpolate_to_20sec(df_1m)
-                # 파일명을 종목코드(종목명).txt로 저장
+                # Save both 1-minute and legacy 20-second files.
                 safe_name = str(name).replace("/", "_").replace("\\", "_")
-                file_path = output_dir / f"{code}({safe_name}).txt"
-                df_20s.to_csv(file_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                file_1m_path = output_dir / f"{code}_{safe_name}_1m.txt"
+                legacy_20s_path = output_dir / f"{code}_{safe_name}.txt"
+
+                df_1m.to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                df_20s.to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
 
                 saved_count += 1
                 logger.info(
-                    "[%d/%d] %s(%s) | NXT=%s | saved 20s=%d rows -> %s",
+                    "[%d/%d] %s(%s) | NXT=%s | saved 1m=%d rows -> %s | 20s=%d rows -> %s",
                     idx,
                     len(symbols),
                     code,
                     name,
                     nxt_tradeable,
+                    len(df_1m),
+                    file_1m_path,
                     len(df_20s),
-                    file_path,
+                    legacy_20s_path,
                 )
 
             if args.sleep > 0:

@@ -74,6 +74,7 @@ from r003_define_config import (
     ENABLE_PRICE_LEAD_BB_BREAKOUT,
     ENABLE_STRICT_MA5_BB_GOLDEN_CROSS,
     ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
+    ENABLE_NXT_SESSION,
     ENABLE_TP_EXTENSION_TRAILING,
     LIVE_PRICE_BB_BUFFER_PCT,
     LIVE_PRICE_CROSS_CONFIRM_POLLS,
@@ -715,11 +716,15 @@ def is_regular_call_auction(now: datetime) -> bool:
 
 
 def is_nxt_session(now: datetime) -> bool:
+    if not ENABLE_NXT_SESSION:
+        return False
     current_time = now.time()
     return (MORNING_NXT_START <= current_time <= MORNING_NXT_END) or (AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END)
 
 
 def classify_buy_session(now: datetime) -> str:
+    if not ENABLE_NXT_SESSION:
+        return "regular"
     current_time = now.time()
     if MORNING_NXT_START <= current_time <= MORNING_NXT_END:
         return "morning_nxt"
@@ -732,6 +737,8 @@ def can_trade_code_now(now: datetime, nxt_tradeable: bool) -> bool:
     current_time = now.time()
     if REGULAR_START <= current_time <= REGULAR_END:
         return True
+    if not ENABLE_NXT_SESSION:
+        return False
     if MORNING_NXT_START <= current_time <= MORNING_NXT_END:
         return nxt_tradeable
     if AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END:
@@ -742,6 +749,8 @@ def can_trade_code_now(now: datetime, nxt_tradeable: bool) -> bool:
 def is_new_entry_allowed(now: datetime, nxt_tradeable: bool) -> bool:
     if is_regular_session(now):
         return now.time() < REGULAR_NEW_ENTRY_CUTOFF
+    if not ENABLE_NXT_SESSION:
+        return False
     if is_nxt_session(now) and nxt_tradeable:
         return now.time() < AFTERNOON_NXT_NEW_ENTRY_CUTOFF or now.time() <= MORNING_NXT_END
     return False
@@ -750,6 +759,8 @@ def is_new_entry_allowed(now: datetime, nxt_tradeable: bool) -> bool:
 def get_order_spec(now: datetime, nxt_tradeable: bool) -> dict | None:
     if is_regular_session(now):
         return {"exchange": "KRX", "ord_dvsn": "01", "ord_unpr": "0"}
+    if not ENABLE_NXT_SESSION:
+        return None
     if is_nxt_session(now) and nxt_tradeable:
         return {"exchange": "NXT", "ord_dvsn": "00", "ord_unpr": None}
     return None
@@ -759,6 +770,8 @@ def get_session_open_datetime(now: datetime, nxt_tradeable: bool) -> datetime | 
     current_time = now.time()
     if REGULAR_START <= current_time <= REGULAR_END:
         return datetime.combine(now.date(), REGULAR_START)
+    if not ENABLE_NXT_SESSION:
+        return None
     if nxt_tradeable and MORNING_NXT_START <= current_time <= MORNING_NXT_END:
         return datetime.combine(now.date(), MORNING_NXT_START)
     if nxt_tradeable and AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END:
@@ -802,6 +815,8 @@ def _is_allowed_intraday_time(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     t = ts.time()
     if REGULAR_START <= t <= REGULAR_END:
         return True
+    if not ENABLE_NXT_SESSION:
+        return False
     if nxt_tradeable and (
         (MORNING_NXT_START <= t <= MORNING_NXT_END)
         or (AFTERNOON_NXT_START <= t <= AFTERNOON_NXT_END)
@@ -2089,7 +2104,7 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
             api.trade_lock_until.pop(code, None)
             api.place_sell_order(code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
 
-    if not state["done_1959"] and current_time >= AFTERNOON_NXT_FORCE_EXIT:
+    if ENABLE_NXT_SESSION and (not state["done_1959"]) and current_time >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_1959"] = True
         for code, pos in list(api.get_open_positions().items()):
             if code not in watch_map:
@@ -2145,6 +2160,11 @@ def run(target_date: str | None = None) -> None:
 
     log(f"Watchlist source: {watch_file}")
 
+    if ENABLE_NXT_SESSION:
+        log("MODE BANNER: REGULAR+NXT_MODE")
+    else:
+        log("MODE BANNER: REGULAR_ONLY_MODE")
+
     nxt_map = {code: is_nxt_tradeable(code) for code in watch_map}
     for code, name in watch_map.items():
         log(f"WATCH | {code} | {name} | NXT={nxt_map[code]}")
@@ -2179,10 +2199,16 @@ def run(target_date: str | None = None) -> None:
     frame_last_refresh_at: dict[str, datetime] = {}
     liquidation_state: dict = {}
     current_trade_date = now.date()
-    log(
-        f"Session-open warmup: new entries blocked for {STARTUP_WARMUP_SECONDS}s "
-        f"after each session start ({MORNING_NXT_START:%H:%M}, {REGULAR_START:%H:%M}, {AFTERNOON_NXT_START:%H:%M})"
-    )
+    if ENABLE_NXT_SESSION:
+        log(
+            f"Session-open warmup: new entries blocked for {STARTUP_WARMUP_SECONDS}s "
+            f"after each session start ({MORNING_NXT_START:%H:%M}, {REGULAR_START:%H:%M}, {AFTERNOON_NXT_START:%H:%M})"
+        )
+    else:
+        log(
+            f"Session-open warmup: new entries blocked for {STARTUP_WARMUP_SECONDS}s "
+            f"after regular session start ({REGULAR_START:%H:%M})"
+        )
 
     while True:
         current_dt = datetime.now()
@@ -2208,9 +2234,10 @@ def run(target_date: str | None = None) -> None:
             log("MARKET LOOP STOP | reason=market_closed_day")
             break
 
-        if current_dt.time() >= AFTERNOON_NXT_END:
+        market_end_time = AFTERNOON_NXT_END if ENABLE_NXT_SESSION else REGULAR_END
+        if current_dt.time() >= market_end_time:
             run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
-            log("20:00 reached. Stopping.")
+            log(f"{market_end_time:%H:%M} reached. Stopping.")
             break
 
         if not is_regular_session(current_dt) and not is_nxt_session(current_dt):
