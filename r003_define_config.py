@@ -97,6 +97,8 @@ TRADE_COOLDOWN_MINUTES = 3
 # ---------------------------------------------------------------------------
 # Session / time constants
 # ---------------------------------------------------------------------------
+# NXT 세션 활성화 여부 및 시간 설정
+ENABLE_NXT_SESSION = False
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)

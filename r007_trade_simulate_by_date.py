@@ -28,6 +28,7 @@ import argparse
 import csv
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta
@@ -72,6 +73,7 @@ from r003_define_config import (
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_EARLY_NEAR_CROSS_ENTRY,
     ENABLE_NEAR_CROSS_ARM,
+    ENABLE_NXT_SESSION,
     ENABLE_STRICT_MA5_BB_GOLDEN_CROSS as REQUIRE_STRICT_BUY_GOLDEN_CROSS,
     ENABLE_TP_EXTENSION_TRAILING,
     LIVE_PRICE_BB_BUFFER_PCT as SIM_LIVE_PRICE_BB_BUFFER_PCT,
@@ -107,6 +109,7 @@ from r003_define_config import (
     RSI_BUY_MIN,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
+    STARTUP_WARMUP_SECONDS,
     STOP_LOSS_EARLY_PERCENT,
     STOP_LOSS_MIN_HOLD_SECONDS,
     STOP_LOSS_PERCENT,
@@ -330,11 +333,46 @@ def read_ohlc_csv(csv_path: Path) -> pd.DataFrame | None:
     return df if not df.empty else None
 
 
+def _extract_code_from_stem(stem: str) -> str | None:
+    match = re.search(r"(\d{6})", stem)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _find_code_txt_path(day_dir: Path, code: str) -> Path | None:
+    target = str(code).zfill(6)
+    candidates: list[Path] = []
+    for path in sorted(day_dir.glob("*.txt")):
+        parsed = _extract_code_from_stem(path.stem)
+        if parsed == target:
+            candidates.append(path)
+
+    if not candidates:
+        return None
+
+    def _priority(path: Path) -> tuple[int, int, str]:
+        stem = path.stem.lower()
+        if stem.endswith("_1m"):
+            tier = 0
+        elif stem.endswith("_20s"):
+            tier = 2
+        else:
+            tier = 1
+        return (tier, len(path.name), path.name)
+
+    candidates.sort(key=_priority)
+    for candidate in candidates:
+        return candidate
+    return None
+
+
 def find_prior_trading_day_csv(data_root: Path, as_of: date, code: str) -> Path | None:
     cursor = as_of - timedelta(days=1)
     for _ in range(SIM_WARMUP_PRIOR_MAX_DAYS):
-        candidate = data_root / cursor.strftime("%Y%m%d") / f"{code}.txt"
-        if candidate.is_file():
+        day_dir = data_root / cursor.strftime("%Y%m%d")
+        candidate = _find_code_txt_path(day_dir, code)
+        if candidate is not None and candidate.is_file():
             return candidate
         cursor -= timedelta(days=1)
     return None
@@ -370,9 +408,9 @@ def normalize_to_strategy_bars(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_simulation_frame(data_root: Path, simulation_date_str: str, code: str) -> pd.DataFrame | None:
-    target_date = datetime.strptime(simulation_date_str, "%Y%m%d").date()
-    today_path = data_root / simulation_date_str / f"{code}.txt"
-    if not today_path.is_file():
+    day_dir = data_root / simulation_date_str
+    today_path = _find_code_txt_path(day_dir, code)
+    if today_path is None or not today_path.is_file():
         return None
 
     today = read_ohlc_csv(today_path)
@@ -380,25 +418,10 @@ def build_simulation_frame(data_root: Path, simulation_date_str: str, code: str)
         return None
 
     merged = today
-    prior_path = find_prior_trading_day_csv(data_root, target_date, code)
-    if prior_path is not None:
-        prior = read_ohlc_csv(prior_path)
-        if prior is not None and not prior.empty:
-            merged = pd.concat([prior.tail(SIM_WARMUP_TAIL_BARS), today])
-            merged = merged[~merged.index.duplicated(keep="last")].sort_index()
 
     merged = normalize_to_strategy_bars(merged)
     if merged.empty:
         return None
-
-    # If precomputed indicator columns exist in stored CSV, prefer using them.
-    present_indicators = [col for col in INDICATOR_COLUMNS if col in merged.columns]
-    if present_indicators:
-        for col in present_indicators:
-            merged[col] = pd.to_numeric(merged[col], errors="coerce")
-        required_core = ["MA_5", "BB_MIDDLE", "RSI", "STOCH_K", "WILLIAMS_R", "MACD", "ADX"]
-        if all(col in merged.columns for col in required_core):
-            return merged
 
     return calculate_indicators(merged)
 
@@ -408,11 +431,20 @@ def is_regular_session(ts: pd.Timestamp) -> bool:
 
 
 def is_nxt_session(ts: pd.Timestamp) -> bool:
+    if not ENABLE_NXT_SESSION:
+        return False
     current_time = ts.time()
     return (MORNING_NXT_START <= current_time <= MORNING_NXT_END) or (AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END)
 
 
+def is_regular_call_auction(ts: pd.Timestamp) -> bool:
+    current_time = ts.time()
+    return REGULAR_NEW_ENTRY_CUTOFF <= current_time < REGULAR_END
+
+
 def classify_buy_session(ts: pd.Timestamp) -> str:
+    if not ENABLE_NXT_SESSION:
+        return "regular"
     current_time = ts.time()
     if MORNING_NXT_START <= current_time <= MORNING_NXT_END:
         return "morning_nxt"
@@ -425,6 +457,8 @@ def can_trade_code_now(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     current_time = ts.time()
     if REGULAR_START <= current_time <= REGULAR_END:
         return True
+    if not ENABLE_NXT_SESSION:
+        return False
     if MORNING_NXT_START <= current_time <= MORNING_NXT_END:
         return nxt_tradeable
     if AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END:
@@ -439,9 +473,37 @@ def is_new_entry_allowed(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     """
     if is_regular_session(ts):
         return ts.time() < REGULAR_NEW_ENTRY_CUTOFF
+    if not ENABLE_NXT_SESSION:
+        return False
     if is_nxt_session(ts) and nxt_tradeable:
         return ts.time() < AFTERNOON_NXT_NEW_ENTRY_CUTOFF or ts.time() <= MORNING_NXT_END
     return False
+
+
+def get_session_open_timestamp(ts: pd.Timestamp, nxt_tradeable: bool) -> pd.Timestamp | None:
+    current_time = ts.time()
+    day = ts.date()
+    if not ENABLE_NXT_SESSION:
+        if REGULAR_START <= current_time <= REGULAR_END:
+            return pd.Timestamp(datetime.combine(day, REGULAR_START))
+        return None
+    if MORNING_NXT_START <= current_time <= MORNING_NXT_END and nxt_tradeable:
+        return pd.Timestamp(datetime.combine(day, MORNING_NXT_START))
+    if REGULAR_START <= current_time <= REGULAR_END:
+        return pd.Timestamp(datetime.combine(day, REGULAR_START))
+    if AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END and nxt_tradeable:
+        return pd.Timestamp(datetime.combine(day, AFTERNOON_NXT_START))
+    return None
+
+
+def is_startup_warmup_active(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
+    if STARTUP_WARMUP_SECONDS <= 0:
+        return False
+    session_open = get_session_open_timestamp(ts, nxt_tradeable)
+    if session_open is None:
+        return False
+    elapsed = (ts - session_open).total_seconds()
+    return 0 <= elapsed < STARTUP_WARMUP_SECONDS
 
 
 def get_volume_ratio_threshold(ts: pd.Timestamp, adx_val: float) -> float:
@@ -1205,12 +1267,25 @@ def get_latest_price_up_to(frame: pd.DataFrame, ts: pd.Timestamp) -> float | Non
     return float(available.iloc[-1]["close"])
 
 
+def _format_pending_pnl(reason_prefix: str, pnl_pct: float) -> str:
+    return f"{reason_prefix}_{pnl_pct * 100:.2f}%"
+
+
+def _session_exit_plan(reason_prefix: str, pnl_pct: float) -> tuple[str, str]:
+    if pnl_pct > 0:
+        return "sell", _format_pending_pnl(f"{reason_prefix}_PROFIT_CLOSE", pnl_pct)
+    if pnl_pct >= STOP_LOSS_PERCENT:
+        return "hold", _format_pending_pnl(f"{reason_prefix}_OVERNIGHT_HOLD_WITHIN_STOP", pnl_pct)
+    return "sell", _format_pending_pnl(f"{reason_prefix}_STOP_LOSS_BREACH", pnl_pct)
+
+
 def run_scheduled_liquidations(
     sim: Simulator,
     frames: dict[str, pd.DataFrame],
     names: dict[str, str],
     ts: pd.Timestamp,
     state: dict,
+    nxt_tradeable_fn,
 ) -> None:
     current_date = ts.date()
     if state.get("date") != current_date:
@@ -1218,40 +1293,35 @@ def run_scheduled_liquidations(
         state["done_regular"] = False
         state["done_nxt"] = False
 
-    # 정규장 15:20 즉시청산 룰 (r73 기준):
-    # 당일 매수분은 regular/morning_nxt 만, 그 외는 이익 구간에서만 청산
     if not state["done_regular"] and ts.time() >= REGULAR_FORCE_EXIT:
         state["done_regular"] = True
         for code in list(sim.positions.keys()):
             pos = sim.positions.get(code)
             if pos is None:
                 continue
-            if pos.buy_time.date() != current_date:
-                continue
-            if pos.buy_session not in ("regular", "morning_nxt"):
-                continue
             price = get_latest_price_up_to(frames[code], ts)
             if price is None:
                 continue
-            if price <= pos.buy_price:
-                continue
-            sim.sell(code, price, ts, "CALL_AUCTION_TAKE_PROFIT_1520", "regular")
+            pnl_pct = (price / pos.buy_price) - 1.0 if pos.buy_price > 0 else 0.0
+            action, reason = _session_exit_plan("REGULAR_CLOSE", pnl_pct)
+            if action == "sell":
+                sim.sell(code, price, ts, reason, "regular")
 
-    # NXT 19:59 강제청산 (r73 기준): afternoon_nxt 당일 매수분만 청산
-    if not state["done_nxt"] and ts.time() >= AFTERNOON_NXT_FORCE_EXIT:
+    if ENABLE_NXT_SESSION and (not state["done_nxt"]) and ts.time() >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_nxt"] = True
         for code in list(sim.positions.keys()):
             pos = sim.positions.get(code)
             if pos is None:
                 continue
-            if pos.buy_time.date() != current_date:
-                continue
-            if pos.buy_session != "afternoon_nxt":
+            if not bool(nxt_tradeable_fn(code)):
                 continue
             price = get_latest_price_up_to(frames[code], ts)
             if price is None:
                 continue
-            sim.sell(code, price, ts, "EOD_NXT_1959", "afternoon_nxt")
+            pnl_pct = (price / pos.buy_price) - 1.0 if pos.buy_price > 0 else 0.0
+            action, reason = _session_exit_plan("NXT_CLOSE", pnl_pct)
+            if action == "sell":
+                sim.sell(code, price, ts, reason, "afternoon_nxt")
 
 
 def _load_nxt_flags(data_dir: Path) -> dict[str, bool]:
@@ -1286,8 +1356,14 @@ def simulate_date(
     log(f"Simulation date : {date_str} [R76 Live Price/BB Cross Simulation]")
     log(f"Data directory  : {data_dir}")
     log(f"Initial capital : {initial_capital:,.0f} KRW")
-    log("Entry window    : 09:00-15:20 (정규) / NXT 세션 가능")
-    log("Force exit      : 15:20 / 19:59 (당일 물량청산)")
+    if ENABLE_NXT_SESSION:
+        log("MODE BANNER: REGULAR+NXT_MODE")
+        log("Entry window    : 09:00-15:20 (정규) / NXT 세션 가능")
+        log("Force exit      : 15:20 / 19:59 (당일 물량청산)")
+    else:
+        log("MODE BANNER: REGULAR_ONLY_MODE")
+        log("Entry window    : 09:00-15:20 (정규장 전용)")
+        log("Force exit      : 15:20 (당일 물량청산)")
     log(f"TP / SL / Trail : +{TAKE_PROFIT_PERCENT*100:.1f}% / {STOP_LOSS_PERCENT*100:.1f}% / -{TRAILING_STOP_FROM_PEAK*100:.1f}%(from peak)")
     log(f"{'=' * 60}\n")
 
@@ -1295,7 +1371,25 @@ def simulate_date(
         log(f"ERROR: Data directory not found: {data_dir}")
         return 1
 
-    csv_files = {path.stem.zfill(6): path for path in data_dir.glob("*.txt")}
+    csv_files: dict[str, Path] = {}
+    for path in sorted(data_dir.glob("*.txt")):
+        code = _extract_code_from_stem(path.stem)
+        if code is None:
+            continue
+        existing = csv_files.get(code)
+        if existing is None:
+            csv_files[code] = path
+            continue
+
+        def _is_preferred(candidate: Path, current: Path) -> bool:
+            c_stem = candidate.stem.lower()
+            cur_stem = current.stem.lower()
+            c_rank = 0 if c_stem.endswith("_1m") else (2 if c_stem.endswith("_20s") else 1)
+            cur_rank = 0 if cur_stem.endswith("_1m") else (2 if cur_stem.endswith("_20s") else 1)
+            return c_rank < cur_rank
+
+        if _is_preferred(path, existing):
+            csv_files[code] = path
     if not csv_files:
         log(f"ERROR: No CSV files found in {data_dir}")
         return 1
@@ -1370,8 +1464,11 @@ def simulate_date(
 
     for ts in all_times:
         CURRENT_SIM_TS = ts
-        run_scheduled_liquidations(sim, frames, selected_names, ts, liq_state)
+        run_scheduled_liquidations(sim, frames, selected_names, ts, liq_state, _is_nxt_tradeable)
         latest_price_map: dict[str, float] = {}
+
+        if is_regular_call_auction(ts):
+            continue
 
         for code, frame in frames.items():
             if ts not in frame.index:
@@ -1399,6 +1496,8 @@ def simulate_date(
             pos = sim.positions.get(code)
 
             entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
+            if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
+                entry_allowed = False
             compare_basic.on_bar(code, available, ts, entry_allowed=entry_allowed)
             compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed)
 
@@ -1466,6 +1565,8 @@ def simulate_date(
 
             if not is_new_entry_allowed(ts, nxt_tradeable):
                 continue
+            if is_startup_warmup_active(ts, nxt_tradeable):
+                continue
             if sim.in_cooldown(code, ts):
                 continue
             if (not ALLOW_REBUY_SAME_CODE) and code in sim.completed_codes:
@@ -1497,11 +1598,12 @@ def simulate_date(
             compare_basic.force_close_all(latest_price_map, "EOD_FLAT_1520_ALL")
             compare_multi.force_close_all(latest_price_map, "EOD_FLAT_1520_ALL")
 
-        if ts.time() >= AFTERNOON_NXT_FORCE_EXIT:
+        if ENABLE_NXT_SESSION and ts.time() >= AFTERNOON_NXT_FORCE_EXIT:
             compare_basic.force_close_all(latest_price_map, "EOD_FLAT_1959_ALL")
             compare_multi.force_close_all(latest_price_map, "EOD_FLAT_1959_ALL")
 
-    final_close_time = pd.Timestamp(datetime.combine(target_date, AFTERNOON_NXT_END))
+    final_end_time = AFTERNOON_NXT_END if ENABLE_NXT_SESSION else REGULAR_END
+    final_close_time = pd.Timestamp(datetime.combine(target_date, final_end_time))
     CURRENT_SIM_TS = final_close_time
     for code in list(sim.positions.keys()):
         price = get_latest_price_up_to(frames[code], final_close_time)
