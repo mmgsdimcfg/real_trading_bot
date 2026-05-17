@@ -159,6 +159,7 @@ NXT_ELIGIBLE_CODES_FALLBACK = frozenset(
 TECH_SELL_MIN_HOLD_SECONDS = 300
 
 SAME_DAY_MIN_BARS = 10
+SIM_CHECK_INTERVAL_SECONDS = 10
 
 SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_bb_buffer_pct=SIM_LIVE_PRICE_BB_BUFFER_PCT,
@@ -341,6 +342,7 @@ def _extract_code_from_stem(stem: str) -> str | None:
 
 
 def _find_code_txt_path(day_dir: Path, code: str) -> Path | None:
+    """Return best file for strategy/indicator use: prefers _1m > plain > _20s."""
     target = str(code).zfill(6)
     candidates: list[Path] = []
     for path in sorted(day_dir.glob("*.txt")):
@@ -365,6 +367,32 @@ def _find_code_txt_path(day_dir: Path, code: str) -> Path | None:
     for candidate in candidates:
         return candidate
     return None
+
+
+def _find_code_txt_path_finest(day_dir: Path, code: str) -> Path | None:
+    """Return finest-granularity file for live-price simulation: prefers _20s > plain > _1m."""
+    target = str(code).zfill(6)
+    candidates: list[Path] = []
+    for path in sorted(day_dir.glob("*.txt")):
+        parsed = _extract_code_from_stem(path.stem)
+        if parsed == target:
+            candidates.append(path)
+
+    if not candidates:
+        return None
+
+    def _fineness(path: Path) -> tuple[int, int, str]:
+        stem = path.stem.lower()
+        if stem.endswith("_20s"):
+            tier = 0  # finest granularity
+        elif stem.endswith("_1m"):
+            tier = 2  # coarsest
+        else:
+            tier = 1
+        return (tier, len(path.name), path.name)
+
+    candidates.sort(key=_fineness)
+    return candidates[0]
 
 
 def find_prior_trading_day_csv(data_root: Path, as_of: date, code: str) -> Path | None:
@@ -1281,7 +1309,7 @@ def _session_exit_plan(reason_prefix: str, pnl_pct: float) -> tuple[str, str]:
 
 def run_scheduled_liquidations(
     sim: Simulator,
-    frames: dict[str, pd.DataFrame],
+    price_frames: dict[str, pd.DataFrame],
     names: dict[str, str],
     ts: pd.Timestamp,
     state: dict,
@@ -1299,7 +1327,7 @@ def run_scheduled_liquidations(
             pos = sim.positions.get(code)
             if pos is None:
                 continue
-            price = get_latest_price_up_to(frames[code], ts)
+            price = get_latest_price_up_to(price_frames[code], ts)
             if price is None:
                 continue
             pnl_pct = (price / pos.buy_price) - 1.0 if pos.buy_price > 0 else 0.0
@@ -1315,7 +1343,7 @@ def run_scheduled_liquidations(
                 continue
             if not bool(nxt_tradeable_fn(code)):
                 continue
-            price = get_latest_price_up_to(frames[code], ts)
+            price = get_latest_price_up_to(price_frames[code], ts)
             if price is None:
                 continue
             pnl_pct = (price / pos.buy_price) - 1.0 if pos.buy_price > 0 else 0.0
@@ -1420,12 +1448,32 @@ def simulate_date(
         return 1
 
     frames: dict[str, pd.DataFrame] = {}
+    price_frames: dict[str, pd.DataFrame] = {}
+    target_date = datetime.strptime(date_str, "%Y%m%d").date()
     for code in sorted(csv_files):
-        frame = build_simulation_frame(data_root, date_str, code)
+        # price_frames: _20s 파일 우선 사용 (r006 실시간 가격 폴링과 동일한 세밀도)
+        price_file = _find_code_txt_path_finest(data_dir, code) or csv_files[code]
+        raw_df = read_ohlc_csv(price_file)
+        if raw_df is None or raw_df.empty:
+            log(f"Skipped {code}: failed to read intraday data")
+            continue
+
+        raw_df = raw_df[raw_df.index.date == target_date]
+        if raw_df.empty:
+            log(f"Skipped {code}: no bars on target date")
+            continue
+
+        strategy_df = normalize_to_strategy_bars(raw_df)
+        if strategy_df is None or strategy_df.empty:
+            log(f"Skipped {code}: failed to build strategy bars")
+            continue
+
+        frame = calculate_indicators(strategy_df)
         if frame is None or frame.empty:
             log(f"Skipped {code}: failed to build simulation frame")
             continue
         frames[code] = frame
+        price_frames[code] = raw_df
 
     if not frames:
         log("ERROR: No valid chart data loaded")
@@ -1448,11 +1496,22 @@ def simulate_date(
     for code in sorted(frames.keys()):
         log(f"WATCH | {code} | {selected_names.get(code, code)} | NXT={_is_nxt_tradeable(code)}")
 
-    target_date = datetime.strptime(date_str, "%Y%m%d").date()
-    all_times = sorted({ts for df in frames.values() for ts in df.index if ts.date() == target_date})
+    # 원시 데이터 타임스탬프를 이벤트 루프로 사용한다.
+    # r006은 10초마다 실시간 API에서 새 가격을 가져오지만,
+    # r007 시뮬 데이터는 20초(또는 1분) 간격 저장본이므로
+    # 실제 새 가격이 존재하는 타임스탬프에서만 체크하는 것이 올바르다.
+    # 합성 10초 그리드를 쓰면 동일 가격이 두 번 평가되어 cross_state 확인이
+    # 실전보다 빠르게 발화하는 문제가 생긴다.
+    all_times = sorted({ts for df in price_frames.values() for ts in df.index if ts.date() == target_date})
     if not all_times:
-        log("ERROR: No bars found for target date")
+        log("ERROR: No intraday ticks found for target date")
         return 1
+
+    data_interval_seconds = None
+    if len(all_times) >= 2:
+        diffs = pd.Series(all_times).diff().dropna().dt.total_seconds()
+        data_interval_seconds = int(diffs.median())
+    log(f"Sim tick interval: {data_interval_seconds}s (raw data cadence) — matches r006 {SIM_CHECK_INTERVAL_SECONDS}s live poll semantics")
 
     sim = Simulator(initial_capital=initial_capital)
     compare_basic = PaperStrategyTracker(name="BASIC_CROSS", mode="basic")
@@ -1464,27 +1523,33 @@ def simulate_date(
 
     for ts in all_times:
         CURRENT_SIM_TS = ts
-        run_scheduled_liquidations(sim, frames, selected_names, ts, liq_state, _is_nxt_tradeable)
+        run_scheduled_liquidations(sim, price_frames, selected_names, ts, liq_state, _is_nxt_tradeable)
         latest_price_map: dict[str, float] = {}
 
         if is_regular_call_auction(ts):
             continue
 
         for code, frame in frames.items():
-            if ts not in frame.index:
-                continue
-
             nxt_tradeable = _is_nxt_tradeable(code)
             if not can_trade_code_now(ts, nxt_tradeable):
                 continue
+
+            raw_frame = price_frames.get(code)
+            if raw_frame is None or raw_frame.empty:
+                continue
+
+            live_price = get_latest_price_up_to(raw_frame, ts)
+            if live_price is None:
+                continue
+
+            latest_price_map[code] = live_price
 
             available = frame[frame.index <= ts]
             if len(available) < MIN_BARS_REQUIRED:
                 continue
 
             cur = available.iloc[-1]
-            price = float(cur["close"])
-            latest_price_map[code] = price
+            price = float(live_price)
             session = classify_buy_session(ts)
             # 실전 매매와 동일한 cross signal tracker/confirm logic 적용
             _cur_bb_mid = _num(cur, "BB_MIDDLE")
@@ -1606,7 +1671,7 @@ def simulate_date(
     final_close_time = pd.Timestamp(datetime.combine(target_date, final_end_time))
     CURRENT_SIM_TS = final_close_time
     for code in list(sim.positions.keys()):
-        price = get_latest_price_up_to(frames[code], final_close_time)
+        price = get_latest_price_up_to(price_frames[code], final_close_time)
         if price is None:
             continue
         session = sim.positions[code].buy_session
@@ -1616,7 +1681,7 @@ def simulate_date(
 
     last_prices = {
         code: float(frame[frame.index.date == target_date].iloc[-1]["close"])
-        for code, frame in frames.items()
+        for code, frame in price_frames.items()
         if not frame[frame.index.date == target_date].empty
     }
     final_value = sim.portfolio_value(last_prices)
