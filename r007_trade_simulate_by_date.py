@@ -111,7 +111,15 @@ from r003_define_config import (
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
     STARTUP_WARMUP_SECONDS,
+    BREAKEVEN_FAIL_ARM_PNL,
+    BREAKEVEN_FAIL_CONFIRM_SECONDS,
+    BREAKEVEN_FAIL_GIVEBACK_PCT,
+    NO_TREND_EXIT_ARM_SECONDS,
+    NO_TREND_EXIT_CONFIRM_SECONDS,
+    NO_TREND_EXIT_MAX_PEAK_PNL,
+    NO_TREND_EXIT_MIN_PNL,
     POST_BUY_BB_DROP_ARMED_SECONDS,
+    POST_BUY_DROP_CONFIRM_SECONDS,
     POST_BUY_BB_DROP_PCT,
     POST_BUY_BB_DROP_POLLS,
     STOP_LOSS_EARLY_PERCENT,
@@ -142,6 +150,7 @@ from r005_strategy_core_shared import (
     R76StrategyConfig,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
+    update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
 )
 
@@ -1539,6 +1548,8 @@ def simulate_date(
     signal_buy_bar: dict[str, pd.Timestamp] = {}
     signal_sell_bar: dict[str, pd.Timestamp] = {}
     post_buy_bb_drop_state: dict[str, dict] = {}
+    breakeven_fail_state: dict[str, dict] = {}
+    no_trend_exit_state: dict[str, dict] = {}
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
 
     for ts in all_times:
@@ -1580,6 +1591,11 @@ def simulate_date(
             )
             pos = sim.positions.get(code)
 
+            if pos is None:
+                post_buy_bb_drop_state.pop(code, None)
+                breakeven_fail_state.pop(code, None)
+                no_trend_exit_state.pop(code, None)
+
             entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
                 entry_allowed = False
@@ -1601,37 +1617,105 @@ def simulate_date(
             if pos is not None:
                 profit_pct = price / pos.buy_price - 1.0
                 pos.highest_price = max(pos.highest_price, price)
+                peak_pnl_pct = (pos.highest_price / pos.buy_price) - 1.0 if pos.highest_price > 0 and pos.buy_price > 0 else 0.0
+                giveback = peak_pnl_pct - profit_pct
                 if profit_pct >= TAKE_PROFIT_PERCENT and not ENABLE_TP_EXTENSION_TRAILING:
                     sim.sell(code, price, ts, f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%", session)
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EXECUTED] {code} | TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}% | price={price:,.0f}")
                     continue
-                # ── POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────────
-                _bb_mid_guard = _num(cur, "BB_MIDDLE")
-                if _bb_mid_guard > 0:
-                    _held_for_guard = (ts - pos.buy_time).total_seconds()
-                    if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
-                        _guard = post_buy_bb_drop_state.get(code)
-                        if _guard is None or _guard["buy_time"] != pos.buy_time:
-                            _guard = {"buy_time": pos.buy_time, "buf": collections.deque(maxlen=POST_BUY_BB_DROP_POLLS)}
-                            post_buy_bb_drop_state[code] = _guard
-                        _guard["buf"].append(price < _bb_mid_guard * (1.0 - POST_BUY_BB_DROP_PCT))
-                        if len(_guard["buf"]) >= POST_BUY_BB_DROP_POLLS and all(_guard["buf"]):
-                            _gap_pct_guard = (price / _bb_mid_guard - 1.0) * 100.0
-                            reason_bbdrop = f"POST_BUY_BB_DROP_{POST_BUY_BB_DROP_PCT*100:.0f}pct_{POST_BUY_BB_DROP_POLLS}polls"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
-                                f"held={_held_for_guard:.0f}s price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} "
-                                f"gap={_gap_pct_guard:.2f}% pnl={profit_pct*100:.2f}%"
-                            )
-                            post_buy_bb_drop_state.pop(code, None)
-                            sim.sell(code, price, ts, reason_bbdrop, session)
-                            signal_sell_bar[code] = ts
-                            log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | price={price:,.0f}")
-                            continue
-                    else:
+                # ── POST-BUY ENTRY DROP GUARD ─────────────────────────────────────
+                _held_for_guard = (ts - pos.buy_time).total_seconds()
+                if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
+                    _drop_hold_seconds = update_timed_condition_state(
+                        post_buy_bb_drop_state,
+                        code,
+                        pos.buy_time,
+                        ts,
+                        price < pos.buy_price * (1.0 - POST_BUY_BB_DROP_PCT),
+                    )
+                    if _drop_hold_seconds >= POST_BUY_DROP_CONFIRM_SECONDS:
+                        _drop_pct_guard = (price / pos.buy_price - 1.0) * 100.0
+                        reason_bbdrop = f"POST_BUY_ENTRY_DROP_{POST_BUY_BB_DROP_PCT*100:.1f}pct_{POST_BUY_DROP_CONFIRM_SECONDS:.0f}s"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
+                            f"held={_held_for_guard:.0f}s price={price:,.0f} entry={pos.buy_price:,.0f} "
+                            f"drop={_drop_pct_guard:.2f}% hold={_drop_hold_seconds:.0f}s pnl={profit_pct*100:.2f}%"
+                        )
                         post_buy_bb_drop_state.pop(code, None)
-                # ── END POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────
+                        breakeven_fail_state.pop(code, None)
+                        no_trend_exit_state.pop(code, None)
+                        sim.sell(code, price, ts, reason_bbdrop, session)
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | price={price:,.0f}")
+                        continue
+                else:
+                    post_buy_bb_drop_state.pop(code, None)
+                # ── END POST-BUY ENTRY DROP GUARD ─────────────────────────────────
+
+                # ── BREAKEVEN FAILURE GUARD ────────────────────────────────────────
+                _breakeven_hold_seconds = update_timed_condition_state(
+                    breakeven_fail_state,
+                    code,
+                    pos.buy_time,
+                    ts,
+                    peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
+                    and profit_pct < 0
+                    and giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT,
+                )
+                if _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:
+                    reason_breakeven = (
+                        f"BREAKEVEN_FAIL_peak{BREAKEVEN_FAIL_ARM_PNL*100:.1f}_"
+                        f"giveback{BREAKEVEN_FAIL_GIVEBACK_PCT*100:.2f}_{BREAKEVEN_FAIL_CONFIRM_SECONDS:.0f}s"
+                    )
+                    log(
+                        f"  [SELL TRIGGER] {code} | {reason_breakeven} | held={_held_for_guard:.0f}s "
+                        f"price={price:,.0f} entry={pos.buy_price:,.0f} peak={pos.highest_price:,.0f} "
+                        f"peak_pnl={peak_pnl_pct*100:.2f}% giveback={giveback*100:.2f}%"
+                    )
+                    post_buy_bb_drop_state.pop(code, None)
+                    breakeven_fail_state.pop(code, None)
+                    no_trend_exit_state.pop(code, None)
+                    sim.sell(code, price, ts, reason_breakeven, session)
+                    signal_sell_bar[code] = ts
+                    log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | price={price:,.0f}")
+                    continue
+                # ── END BREAKEVEN FAILURE GUARD ───────────────────────────────────
+
+                # ── NO-TREND TIME EXIT ────────────────────────────────────────────
+                _bb_mid_guard = _num(cur, "BB_MIDDLE")
+                _no_trend_condition = (
+                    _held_for_guard >= NO_TREND_EXIT_ARM_SECONDS
+                    and peak_pnl_pct <= NO_TREND_EXIT_MAX_PEAK_PNL
+                    and profit_pct <= NO_TREND_EXIT_MIN_PNL
+                    and _bb_mid_guard > 0
+                    and price < _bb_mid_guard
+                )
+                _no_trend_hold_seconds = update_timed_condition_state(
+                    no_trend_exit_state,
+                    code,
+                    pos.buy_time,
+                    ts,
+                    _no_trend_condition,
+                )
+                if _no_trend_hold_seconds >= NO_TREND_EXIT_CONFIRM_SECONDS:
+                    reason_no_trend = (
+                        f"NO_TREND_EXIT_{NO_TREND_EXIT_ARM_SECONDS/60:.0f}m_"
+                        f"peakLT{NO_TREND_EXIT_MAX_PEAK_PNL*100:.1f}_{NO_TREND_EXIT_CONFIRM_SECONDS:.0f}s"
+                    )
+                    log(
+                        f"  [SELL TRIGGER] {code} | {reason_no_trend} | held={_held_for_guard:.0f}s "
+                        f"price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} pnl={profit_pct*100:.2f}% "
+                        f"peak_pnl={peak_pnl_pct*100:.2f}% hold={_no_trend_hold_seconds:.0f}s"
+                    )
+                    post_buy_bb_drop_state.pop(code, None)
+                    breakeven_fail_state.pop(code, None)
+                    no_trend_exit_state.pop(code, None)
+                    sim.sell(code, price, ts, reason_no_trend, session)
+                    signal_sell_bar[code] = ts
+                    log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | price={price:,.0f}")
+                    continue
+                # ── END NO-TREND TIME EXIT ────────────────────────────────────────
 
                 _held_sl = (ts - pos.buy_time).total_seconds()
                 _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
@@ -1643,7 +1727,6 @@ def simulate_date(
                     continue
                 highest_price = float(pos.highest_price)
                 if highest_price > 0 and pos.buy_price > 0:
-                    peak_pnl_pct = (highest_price / pos.buy_price) - 1.0
                     current_pnl_pct = profit_pct
                     giveback = peak_pnl_pct - current_pnl_pct
                     if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:

@@ -74,6 +74,35 @@ def _num(candle: pd.Series, key: str) -> float:
     return float(value) if value is not None and not pd.isna(value) else float("nan")
 
 
+def update_timed_condition_state(
+    state_by_code: dict[str, dict[str, object]],
+    code: str,
+    position_token: object,
+    ts: object,
+    condition: bool,
+) -> float:
+    state = state_by_code.get(code)
+    if not condition:
+        if state is not None and state.get("position_token") == position_token:
+            state_by_code.pop(code, None)
+        return 0.0
+
+    if state is None or state.get("position_token") != position_token:
+        state_by_code[code] = {"position_token": position_token, "start": ts}
+        return 0.0
+
+    start = state.get("start")
+    if start is None:
+        state["start"] = ts
+        return 0.0
+
+    try:
+        return max((ts - start).total_seconds(), 0.0)
+    except Exception:
+        state["start"] = ts
+        return 0.0
+
+
 def _buy_support_score(
     cur: pd.Series,
     prev: pd.Series,

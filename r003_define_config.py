@@ -40,13 +40,25 @@ TAKE_PROFIT_PERCENT = 0.035
 STOP_LOSS_PERCENT = -0.025    # -2.5%
 STOP_LOSS_EARLY_PERCENT = -0.020
 STOP_LOSS_MIN_HOLD_SECONDS = 600
-# Post-buy BB-middle drop early-exit guard
-# 매수 직후 급락 방지: 매수 후 일정 시간 동안 현재가가 BB 중간값보다
-# POST_BUY_BB_DROP_PCT 이상 낮은 상태가 POST_BUY_BB_DROP_POLLS 번 연속 확인되면
-# 손절 이전에 조기 매도한다.
-POST_BUY_BB_DROP_POLLS = 6          # 연속 확인 횟수 (6 × ~10s = ~60s)
-POST_BUY_BB_DROP_PCT = 0.01         # BB 중간값 대비 이탈 임계치 (-1%)
+# Post-buy drop early-exit guard (entry-price anchored)
+# 매수 직후 급락 방지: 매수 후 일정 시간 동안 현재가가
+# 매수가 대비 POST_BUY_BB_DROP_PCT 이상 낮은 상태가
+# POST_BUY_DROP_CONFIRM_SECONDS 동안 유지되면 손절 이전에 조기 매도한다.
+POST_BUY_BB_DROP_POLLS = 6          # 레거시 로그/호환용 값
+POST_BUY_BB_DROP_PCT = 0.007        # 매수가 대비 이탈 임계치 (-0.7%)
 POST_BUY_BB_DROP_ARMED_SECONDS = 300.0  # 매수 후 가드 활성 구간 (초, 기본 5분)
+POST_BUY_DROP_CONFIRM_SECONDS = 40.0    # 급락 지속 확인 시간 (초)
+
+# 초기 수익 반납 실패 보호
+BREAKEVEN_FAIL_ARM_PNL = 0.008          # 한 번이라도 +0.8% 이익 도달 시 활성화
+BREAKEVEN_FAIL_GIVEBACK_PCT = 0.0075    # 고점 대비 0.75% 이상 반납
+BREAKEVEN_FAIL_CONFIRM_SECONDS = 30.0   # 실패 지속 확인 시간 (초)
+
+# 무추세 시간 손절
+NO_TREND_EXIT_ARM_SECONDS = 900.0       # 15분 동안 추세 미발생 시 점검 시작
+NO_TREND_EXIT_MAX_PEAK_PNL = 0.005      # 최고 수익이 +0.5% 미만이면 무추세로 간주
+NO_TREND_EXIT_MIN_PNL = -0.003          # 현재 손익이 -0.3% 이하일 때만 적용
+NO_TREND_EXIT_CONFIRM_SECONDS = 60.0    # BB 하단 약세 지속 확인 시간 (초)
 STARTUP_WARMUP_SECONDS = 90
 # 1. 트레일링 임계값 상향
 TRAILING_STOP_FROM_PEAK = 0.02   # 2%

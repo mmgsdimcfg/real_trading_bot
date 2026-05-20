@@ -100,11 +100,19 @@ from r003_define_config import (
     NEAR_CROSS_EARLY_GAP_MAX,
     NEAR_CROSS_EARLY_MA_RISE_MIN,
     OBV_BREAKOUT_LOOKBACK_BARS,
+    BREAKEVEN_FAIL_ARM_PNL,
+    BREAKEVEN_FAIL_CONFIRM_SECONDS,
+    BREAKEVEN_FAIL_GIVEBACK_PCT,
+    NO_TREND_EXIT_ARM_SECONDS,
+    NO_TREND_EXIT_CONFIRM_SECONDS,
+    NO_TREND_EXIT_MAX_PEAK_PNL,
+    NO_TREND_EXIT_MIN_PNL,
     OBV_MA_PERIOD,
     POLL_INTERVAL_SECONDS,
     PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
     PRICE_LEAD_BREAKOUT_MIN_ADX,
     PRICE_LEAD_BREAKOUT_MIN_SCORE,
+    POST_BUY_DROP_CONFIRM_SECONDS,
     REGULAR_END,
     REGULAR_FORCE_EXIT,
     REGULAR_NEW_ENTRY_CUTOFF,
@@ -148,6 +156,7 @@ from r005_strategy_core_shared import (
     R76StrategyConfig,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
+    update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
 )
 
@@ -2195,6 +2204,8 @@ def run(target_date: str | None = None) -> None:
     trailing_sell_confirm_state: dict[str, dict[str, object]] = {}
     buy_confirm_state: dict[str, dict[str, object]] = {}
     post_buy_bb_drop_state: dict[str, dict] = {}
+    breakeven_fail_state: dict[str, dict] = {}
+    no_trend_exit_state: dict[str, dict] = {}
     live_price_cross_state: dict[str, dict] = {}
     live_price_cache: dict[str, float] = {}
     live_price_cache_at: dict[str, datetime] = {}
@@ -2363,6 +2374,11 @@ def run(target_date: str | None = None) -> None:
                 f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
             )
 
+            if pos is None or pos.get("quantity", 0) <= 0:
+                post_buy_bb_drop_state.pop(code, None)
+                breakeven_fail_state.pop(code, None)
+                no_trend_exit_state.pop(code, None)
+
             if pos is not None and pos.get("quantity", 0) > 0:
                 buy_confirm_state.pop(code, None)
                 entry_price = float(pos["buy_price"])
@@ -2378,6 +2394,8 @@ def run(target_date: str | None = None) -> None:
                 pos["current_price"] = price
                 pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
                 highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
+                peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
+                profit_giveback = peak_pnl_pct - pnl_pct
 
                 if pnl_pct >= TAKE_PROFIT_PERCENT:
                     if ENABLE_TP_EXTENSION_TRAILING:
@@ -2395,34 +2413,101 @@ def run(target_date: str | None = None) -> None:
                         signal_sell_bar[code] = bar_time
                         continue
 
-                # ── POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────────
-                _bb_mid_guard = _num(cur, "BB_MIDDLE")
-                if _bb_mid_guard > 0:
-                    _held_for_guard = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
-                    if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
-                        _guard = post_buy_bb_drop_state.get(code)
-                        _pos_buy_time = pos.get("buy_time")
-                        if _guard is None or _guard["buy_time"] != _pos_buy_time:
-                            _guard = {"buy_time": _pos_buy_time, "buf": collections.deque(maxlen=POST_BUY_BB_DROP_POLLS)}
-                            post_buy_bb_drop_state[code] = _guard
-                        _guard["buf"].append(price < _bb_mid_guard * (1.0 - POST_BUY_BB_DROP_PCT))
-                        if len(_guard["buf"]) >= POST_BUY_BB_DROP_POLLS and all(_guard["buf"]):
-                            _gap_pct_guard = (price / _bb_mid_guard - 1.0) * 100.0
-                            reason_bbdrop = f"POST_BUY_BB_DROP_{POST_BUY_BB_DROP_PCT*100:.0f}pct_{POST_BUY_BB_DROP_POLLS}polls"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
-                                f"held={_held_for_guard:.0f}s price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} "
-                                f"gap={_gap_pct_guard:.2f}% pnl={pnl_pct*100:.2f}%"
-                            )
-                            post_buy_bb_drop_state.pop(code, None)
-                            trailing_sell_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_bbdrop, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-                    else:
+                # ── POST-BUY ENTRY DROP GUARD ─────────────────────────────────────
+                _held_for_guard = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
+                if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
+                    _drop_hold_seconds = update_timed_condition_state(
+                        post_buy_bb_drop_state,
+                        code,
+                        pos.get("buy_time"),
+                        current_dt,
+                        price < entry_price * (1.0 - POST_BUY_BB_DROP_PCT),
+                    )
+                    if _drop_hold_seconds >= POST_BUY_DROP_CONFIRM_SECONDS:
+                        _drop_pct_guard = (price / entry_price - 1.0) * 100.0
+                        reason_bbdrop = f"POST_BUY_ENTRY_DROP_{POST_BUY_BB_DROP_PCT*100:.1f}pct_{POST_BUY_DROP_CONFIRM_SECONDS:.0f}s"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
+                            f"held={_held_for_guard:.0f}s price={price:,.0f} entry={entry_price:,.0f} "
+                            f"drop={_drop_pct_guard:.2f}% hold={_drop_hold_seconds:.0f}s pnl={pnl_pct*100:.2f}%"
+                        )
                         post_buy_bb_drop_state.pop(code, None)
-                # ── END POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────
+                        breakeven_fail_state.pop(code, None)
+                        no_trend_exit_state.pop(code, None)
+                        trailing_sell_confirm_state.pop(code, None)
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_bbdrop, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
+                else:
+                    post_buy_bb_drop_state.pop(code, None)
+                # ── END POST-BUY ENTRY DROP GUARD ─────────────────────────────────
+
+                # ── BREAKEVEN FAILURE GUARD ────────────────────────────────────────
+                _breakeven_hold_seconds = update_timed_condition_state(
+                    breakeven_fail_state,
+                    code,
+                    pos.get("buy_time"),
+                    current_dt,
+                    peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
+                    and pnl_pct < 0
+                    and profit_giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT,
+                )
+                if _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:
+                    reason_breakeven = (
+                        f"BREAKEVEN_FAIL_peak{BREAKEVEN_FAIL_ARM_PNL*100:.1f}_"
+                        f"giveback{BREAKEVEN_FAIL_GIVEBACK_PCT*100:.2f}_{BREAKEVEN_FAIL_CONFIRM_SECONDS:.0f}s"
+                    )
+                    log(
+                        f"  [SELL TRIGGER] {code} | {reason_breakeven} | held={_held_for_guard:.0f}s "
+                        f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} "
+                        f"peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                    )
+                    post_buy_bb_drop_state.pop(code, None)
+                    breakeven_fail_state.pop(code, None)
+                    no_trend_exit_state.pop(code, None)
+                    trailing_sell_confirm_state.pop(code, None)
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_breakeven, nxt_tradeable, price=price, code_name=name):
+                        log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | qty={pos['quantity']} price={price:,.0f}")
+                    signal_sell_bar[code] = bar_time
+                    continue
+                # ── END BREAKEVEN FAILURE GUARD ───────────────────────────────────
+
+                # ── NO-TREND TIME EXIT ────────────────────────────────────────────
+                _bb_mid_guard = _num(cur, "BB_MIDDLE")
+                _no_trend_condition = (
+                    _held_for_guard >= NO_TREND_EXIT_ARM_SECONDS
+                    and peak_pnl_pct <= NO_TREND_EXIT_MAX_PEAK_PNL
+                    and pnl_pct <= NO_TREND_EXIT_MIN_PNL
+                    and _bb_mid_guard > 0
+                    and price < _bb_mid_guard
+                )
+                _no_trend_hold_seconds = update_timed_condition_state(
+                    no_trend_exit_state,
+                    code,
+                    pos.get("buy_time"),
+                    current_dt,
+                    _no_trend_condition,
+                )
+                if _no_trend_hold_seconds >= NO_TREND_EXIT_CONFIRM_SECONDS:
+                    reason_no_trend = (
+                        f"NO_TREND_EXIT_{NO_TREND_EXIT_ARM_SECONDS/60:.0f}m_"
+                        f"peakLT{NO_TREND_EXIT_MAX_PEAK_PNL*100:.1f}_{NO_TREND_EXIT_CONFIRM_SECONDS:.0f}s"
+                    )
+                    log(
+                        f"  [SELL TRIGGER] {code} | {reason_no_trend} | held={_held_for_guard:.0f}s "
+                        f"price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} pnl={pnl_pct*100:.2f}% "
+                        f"peak_pnl={peak_pnl_pct*100:.2f}% hold={_no_trend_hold_seconds:.0f}s"
+                    )
+                    post_buy_bb_drop_state.pop(code, None)
+                    breakeven_fail_state.pop(code, None)
+                    no_trend_exit_state.pop(code, None)
+                    trailing_sell_confirm_state.pop(code, None)
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_no_trend, nxt_tradeable, price=price, code_name=name):
+                        log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | qty={pos['quantity']} price={price:,.0f}")
+                    signal_sell_bar[code] = bar_time
+                    continue
+                # ── END NO-TREND TIME EXIT ────────────────────────────────────────
 
                 _held_sl = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
                 _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
@@ -2441,7 +2526,6 @@ def run(target_date: str | None = None) -> None:
                     # 2) Then, sell only if profit retraces by trailing width.
                     # 3) Never trigger trailing stop while current pnl is non-positive.
                     # TP 도달 구간(peak >= TP)에서 이익이 1% 이내로 줄면 트레일링 적용
-                    peak_pnl_pct = (highest_price / entry_price) - 1.0
                     current_pnl_pct = (price / entry_price) - 1.0
                     profit_giveback = peak_pnl_pct - current_pnl_pct
                     if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
