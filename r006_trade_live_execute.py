@@ -29,6 +29,7 @@ Note: This script cannot guarantee profit. Always paper-test before live trading
 from __future__ import annotations
 
 import argparse
+import collections
 import inspect
 import logging
 import re
@@ -113,6 +114,9 @@ from r003_define_config import (
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
     STARTUP_WARMUP_SECONDS,
+    POST_BUY_BB_DROP_ARMED_SECONDS,
+    POST_BUY_BB_DROP_PCT,
+    POST_BUY_BB_DROP_POLLS,
     STOP_LOSS_EARLY_PERCENT,
     STOP_LOSS_MIN_HOLD_SECONDS,
     STOP_LOSS_PERCENT,
@@ -1701,11 +1705,11 @@ class TradingAPI:
         detail_suffix = f" | {pending['buy_detail']}" if pending.get("buy_detail") else ""
         code_label = _format_code_label(code, code_name)
         log(
-            f"BUY executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"BUY executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | session={pending.get('session', 'unknown')} | exch={pending.get('exchange', 'UNKNOWN')}{detail_suffix}"
         )
         log_trade(
-            f"BUY executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"BUY executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | session={pending.get('session', 'unknown')} | exch={pending.get('exchange', 'UNKNOWN')}{detail_suffix}"
         )
         _log_trade_event_banner(
@@ -1728,12 +1732,12 @@ class TradingAPI:
         code_name = str(pending.get("code_name", ""))
         code_label = _format_code_label(code, code_name)
         log(
-            f"SELL executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"SELL executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
             f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
         )
         log_trade(
-            f"SELL executed | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"SELL executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
             f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
         )
@@ -2190,6 +2194,7 @@ def run(target_date: str | None = None) -> None:
     signal_sell_bar: dict[str, object] = {}
     trailing_sell_confirm_state: dict[str, dict[str, object]] = {}
     buy_confirm_state: dict[str, dict[str, object]] = {}
+    post_buy_bb_drop_state: dict[str, dict] = {}
     live_price_cross_state: dict[str, dict] = {}
     live_price_cache: dict[str, float] = {}
     live_price_cache_at: dict[str, datetime] = {}
@@ -2389,6 +2394,35 @@ def run(target_date: str | None = None) -> None:
                             log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
                         continue
+
+                # ── POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────────
+                _bb_mid_guard = _num(cur, "BB_MIDDLE")
+                if _bb_mid_guard > 0:
+                    _held_for_guard = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
+                    if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
+                        _guard = post_buy_bb_drop_state.get(code)
+                        _pos_buy_time = pos.get("buy_time")
+                        if _guard is None or _guard["buy_time"] != _pos_buy_time:
+                            _guard = {"buy_time": _pos_buy_time, "buf": collections.deque(maxlen=POST_BUY_BB_DROP_POLLS)}
+                            post_buy_bb_drop_state[code] = _guard
+                        _guard["buf"].append(price < _bb_mid_guard * (1.0 - POST_BUY_BB_DROP_PCT))
+                        if len(_guard["buf"]) >= POST_BUY_BB_DROP_POLLS and all(_guard["buf"]):
+                            _gap_pct_guard = (price / _bb_mid_guard - 1.0) * 100.0
+                            reason_bbdrop = f"POST_BUY_BB_DROP_{POST_BUY_BB_DROP_PCT*100:.0f}pct_{POST_BUY_BB_DROP_POLLS}polls"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
+                                f"held={_held_for_guard:.0f}s price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} "
+                                f"gap={_gap_pct_guard:.2f}% pnl={pnl_pct*100:.2f}%"
+                            )
+                            post_buy_bb_drop_state.pop(code, None)
+                            trailing_sell_confirm_state.pop(code, None)
+                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_bbdrop, nxt_tradeable, price=price, code_name=name):
+                                log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
+                            signal_sell_bar[code] = bar_time
+                            continue
+                    else:
+                        post_buy_bb_drop_state.pop(code, None)
+                # ── END POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────
 
                 _held_sl = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
                 _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
