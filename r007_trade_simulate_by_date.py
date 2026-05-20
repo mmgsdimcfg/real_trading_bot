@@ -25,6 +25,7 @@ Update log:
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import json
 import logging
@@ -110,6 +111,9 @@ from r003_define_config import (
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
     STARTUP_WARMUP_SECONDS,
+    POST_BUY_BB_DROP_ARMED_SECONDS,
+    POST_BUY_BB_DROP_PCT,
+    POST_BUY_BB_DROP_POLLS,
     STOP_LOSS_EARLY_PERCENT,
     STOP_LOSS_MIN_HOLD_SECONDS,
     STOP_LOSS_PERCENT,
@@ -147,7 +151,7 @@ TODAY_CODE_FILE = SCRIPT_DIR / DEFINE_TODAY_CODE_PATH
 # ---------------------------------------------------------------------------
 # Simulation-only parameters (not used by live trading)
 # ---------------------------------------------------------------------------
-SIM_INITIAL_CAPITAL = 1_000_000
+SIM_INITIAL_CAPITAL = 5_000_000
 PICKS_FILENAME = "picks.txt"
 SIM_WARMUP_TAIL_BARS = 160
 SIM_WARMUP_PRIOR_MAX_DAYS = 20
@@ -1000,6 +1004,8 @@ class PaperStrategyTracker:
         self.traded_today: set[str] = set()
         self.last_bar_seen: dict[str, pd.Timestamp] = {}
         self.stats = PaperStats()
+        # mode="multi" tracks per-code live-price/BB cross state (same as main Simulator)
+        self.cross_state: dict[str, dict] = {}
 
     def _on_close(self, code: str, price: float, reason: str) -> None:
         pos = self.positions.pop(code, None)
@@ -1022,14 +1028,26 @@ class PaperStrategyTracker:
             f"raw_exit={price:,.0f} exec_exit={exit_exec:,.0f} pnl={pnl*100:.2f}%"
         )
 
-    def on_bar(self, code: str, frame: pd.DataFrame, ts: pd.Timestamp, entry_allowed: bool) -> None:
+    def on_bar(self, code: str, frame: pd.DataFrame, ts: pd.Timestamp, entry_allowed: bool, live_price: float | None = None) -> None:
         if frame is None or frame.empty:
             return
+
+        price = float(frame.iloc[-1]["close"])
+        _lp = live_price if live_price is not None else price
+
+        # mode="multi": update cross_state on EVERY tick (not gated by bar dedup)
+        # Matches main Simulator which updates sim_live_cross_state each 20s tick.
+        _multi_cross_info: dict[str, object] = {"signal": None, "relation": "on", "upper_trigger": 0.0, "lower_trigger": 0.0}
+        if self.mode == "multi":
+            _cur_bar_for_cross = frame.iloc[-1]
+            _bb_mid = _num(_cur_bar_for_cross, "BB_MIDDLE")
+            if not pd.isna(_bb_mid):
+                _multi_cross_info = _update_sim_cross_state(self.cross_state, code, ts, _lp, _bb_mid)
+
         bar_time = frame.index[-1]
         if self.last_bar_seen.get(code) == bar_time:
             return
         self.last_bar_seen[code] = bar_time
-        price = float(frame.iloc[-1]["close"])
 
         if code in self.positions:
             if self.mode == "basic":
@@ -1069,7 +1087,8 @@ class PaperStrategyTracker:
         if self.mode == "basic":
             buy_ok, reason = check_buy_condition_basic(frame)
         else:
-            buy_ok, reason = check_buy_condition(frame, ts)
+            # Use shared live-price/BB cross logic (same as r006 live trading)
+            buy_ok, reason = check_buy_condition_r76_sim(frame, ts, _lp, _multi_cross_info)
 
         if not buy_ok:
             return
@@ -1519,6 +1538,7 @@ def simulate_date(
     liq_state: dict[str, object] = {}
     signal_buy_bar: dict[str, pd.Timestamp] = {}
     signal_sell_bar: dict[str, pd.Timestamp] = {}
+    post_buy_bb_drop_state: dict[str, dict] = {}
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
 
     for ts in all_times:
@@ -1564,7 +1584,7 @@ def simulate_date(
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
                 entry_allowed = False
             compare_basic.on_bar(code, available, ts, entry_allowed=entry_allowed)
-            compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed)
+            compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed, live_price=price)
 
             log_detail(
                 f"  [CHECK] {code}({selected_names.get(code, code)}) | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
@@ -1586,6 +1606,33 @@ def simulate_date(
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EXECUTED] {code} | TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}% | price={price:,.0f}")
                     continue
+                # ── POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────────
+                _bb_mid_guard = _num(cur, "BB_MIDDLE")
+                if _bb_mid_guard > 0:
+                    _held_for_guard = (ts - pos.buy_time).total_seconds()
+                    if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
+                        _guard = post_buy_bb_drop_state.get(code)
+                        if _guard is None or _guard["buy_time"] != pos.buy_time:
+                            _guard = {"buy_time": pos.buy_time, "buf": collections.deque(maxlen=POST_BUY_BB_DROP_POLLS)}
+                            post_buy_bb_drop_state[code] = _guard
+                        _guard["buf"].append(price < _bb_mid_guard * (1.0 - POST_BUY_BB_DROP_PCT))
+                        if len(_guard["buf"]) >= POST_BUY_BB_DROP_POLLS and all(_guard["buf"]):
+                            _gap_pct_guard = (price / _bb_mid_guard - 1.0) * 100.0
+                            reason_bbdrop = f"POST_BUY_BB_DROP_{POST_BUY_BB_DROP_PCT*100:.0f}pct_{POST_BUY_BB_DROP_POLLS}polls"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
+                                f"held={_held_for_guard:.0f}s price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} "
+                                f"gap={_gap_pct_guard:.2f}% pnl={profit_pct*100:.2f}%"
+                            )
+                            post_buy_bb_drop_state.pop(code, None)
+                            sim.sell(code, price, ts, reason_bbdrop, session)
+                            signal_sell_bar[code] = ts
+                            log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | price={price:,.0f}")
+                            continue
+                    else:
+                        post_buy_bb_drop_state.pop(code, None)
+                # ── END POST-BUY BB-MIDDLE DROP GUARD ─────────────────────────────
+
                 _held_sl = (ts - pos.buy_time).total_seconds()
                 _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
                 if profit_pct <= _sl_threshold:
