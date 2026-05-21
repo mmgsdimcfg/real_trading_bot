@@ -322,6 +322,8 @@ class _PerSymbolFileHandler(logging.Handler):
             if not match:
                 return
             code = match.group(1)
+            if code not in _SYMBOL_NAME_MAP:
+                return
             path = self._resolve_path(code)
             stream = self._streams.get(path)
             if stream is None:
@@ -394,8 +396,15 @@ def load_today_codes(code_file: Path | None = None) -> dict[str, str]:
         if line.startswith("#"):
             continue
         parts = [item.strip() for item in line.split(",")]
-        code = parts[0].zfill(6)
-        name = parts[1] if len(parts) >= 2 and parts[1] else code
+        # Backward compatible formats:
+        # - code,name
+        # - YYYYMMDD,code,name
+        if len(parts) >= 3 and parts[0].isdigit() and len(parts[0]) == 8:
+            code = parts[1].zfill(6)
+            name = parts[2] if parts[2] else code
+        else:
+            code = parts[0].zfill(6)
+            name = parts[1] if len(parts) >= 2 and parts[1] else code
         result[code] = name
 
     return result

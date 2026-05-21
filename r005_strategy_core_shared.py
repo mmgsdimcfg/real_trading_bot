@@ -383,7 +383,7 @@ def check_buy_condition(
         return False, "MA5_FALLING"
 
     cur_open = _num(cur, "open")
-    if not pd.isna(cur_open) and live_price <= cur_open:
+    if not pd.isna(cur_open) and cur_open > 0 and live_price < (cur_open * 0.995):
         return False, "NOT_BULLISH"
 
     stoch_k = _num(cur, "STOCH_K")
