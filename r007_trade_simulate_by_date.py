@@ -255,8 +255,12 @@ def log_detail(msg: str) -> None:
             logger.info(msg)
 
 
+
+# --- 로그 버퍼 및 파일 저장용 코드 추가 ---
+_RAW_LOG_BUFFER: list[str] = []
 def raw(msg: str) -> None:
     print(msg)
+    _RAW_LOG_BUFFER.append(str(msg))
 
 
 def _load_text_lines(path: Path) -> list[str]:
@@ -654,11 +658,11 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
     """매수 보조지표(0~6)."""
     score = 0
 
-    # Stoch: K 상향 돌파 + 20~50 구간 + 상승 확인
+    # Stoch: K > D (3분봉 민감성 감소)
     k_c = _num(cur, "STOCH_K"); d_c = _num(cur, "STOCH_D")
     k_p = _num(prev, "STOCH_K"); d_p = _num(prev, "STOCH_D")
     if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if (k_p <= d_p and k_c > d_c) and (STOCH_BUY_MIN <= k_c <= STOCH_BUY_MAX) and (k_c > k_p):
+        if k_c > d_c:
             score += 1
 
     # RSI: 50 이상 70 미만 + 상승 확인
@@ -714,7 +718,7 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
     k_c = _num(cur, "STOCH_K"); d_c = _num(cur, "STOCH_D")
     k_p = _num(prev, "STOCH_K"); d_p = _num(prev, "STOCH_D")
     if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if k_p >= d_p and k_c < d_c and k_p >= STOCH_OVERBOUGHT:
+        if k_c < d_c:
             score += 1
 
     rsi_c = _num(cur, "RSI"); sig_c = _num(cur, "RSI_SIGNAL")
@@ -872,6 +876,33 @@ def check_buy_condition(frame: pd.DataFrame, now: pd.Timestamp) -> tuple[bool, s
 
     # 매도 보조지표 3
     support_score = _buy_support_score(cur, prev, frame=frame)
+    # --- 추가 필수 조건 ---
+    vwap = _num(cur, "VWAP")
+    close_v = _num(cur, "close")
+    if pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap):
+        return False, "NO_VWAP_BREAK"
+
+    # 거래량 > 평균 거래량 1.5배
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        if vol < (vol_ma * 1.5):
+            return False, f"LOW_VOLUME_1.5X_{(vol / vol_ma):.2f}"
+
+    # RSI > 55
+    rsi_c = _num(cur, "RSI")
+    if pd.isna(rsi_c) or rsi_c <= 55:
+        return False, f"RSI_TOO_LOW_{rsi_c:.2f}"
+
+    # MACD Histogram 증가
+    hist_c = _num(cur, "MACD_HIST")
+    hist_p = _num(prev, "MACD_HIST")
+    if pd.isna(hist_c) or pd.isna(hist_p) or not (hist_c > hist_p):
+        return False, f"MACD_HIST_NOT_INCREASING_{hist_p:.2f}_TO_{hist_c:.2f}"
+
+    # 체결강도 > 120 (값이 있으면 체크)
+    exec_strength = _num(cur, "EXECUTION_STRENGTH") if "EXECUTION_STRENGTH" in cur else float('nan')
+    if not pd.isna(exec_strength) and exec_strength <= 120:
+        return False, f"EXEC_STRENGTH_TOO_LOW_{exec_strength:.2f}"
+
     if support_score < 3:
         return False, f"LOW_SCORE_{support_score}"
 
@@ -1845,12 +1876,14 @@ def simulate_date(
         raw(f"\n  [{code}] {name}")
         raw(f"  {'-' * 50}")
         for record in buys:
-            raw(f"    {record.bar_time:%H:%M}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
+            bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
+            raw(f"    {bar_dt}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
         for record in sells:
             pnl_pct = record.pnl_pct if record.pnl_pct is not None else 0.0
             pnl_krw = record.pnl_krw if record.pnl_krw is not None else 0.0
+            bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
             raw(
-                f"    {record.bar_time:%H:%M}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
+                f"    {bar_dt}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
                 f"  {pnl_pct:+.2f}%  {pnl_krw:+,.0f} KRW  [{record.reason}]"
             )
         raw(f"    {'-' * 46}")
@@ -1965,8 +1998,45 @@ def simulate_date(
         },
     )
 
+    # --- 시뮬레이션 결과 로그 파일 저장 ---
+    try:
+        # 로그 파일명: simulate_result_001.txt, 002, ...
+        out_dir = data_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(1, 1000):
+            out_path = out_dir / f"simulate_result_{idx:03d}.txt"
+            if not out_path.exists():
+                with open(out_path, "w", encoding="utf-8-sig") as f:
+                    f.write("\n".join(_RAW_LOG_BUFFER))
+                print(f"[INFO] Simulation log saved: {out_path}")
+                break
+    except Exception as exc:
+        print(f"[WARN] Failed to save simulation log: {exc}")
     return 0
 
+
+import sys
+import threading
+
+# --- stdout/stderr tee 래퍼 ---
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+        self.lock = threading.Lock()
+    def write(self, data):
+        with self.lock:
+            for f in self.files:
+                try:
+                    f.write(data)
+                except Exception:
+                    pass
+    def flush(self):
+        with self.lock:
+            for f in self.files:
+                try:
+                    f.flush()
+                except Exception:
+                    pass
 
 def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
@@ -2044,11 +2114,31 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+
     try:
         datetime.strptime(args.date, "%Y%m%d")
     except ValueError:
         print(f"ERROR: Invalid date format: {args.date} (expected YYYYMMDD)")
         sys.exit(1)
+
+    # --- 전체 실행 로그 파일 핸들러 및 tee 설정 ---
+    # 로그 파일명: simulate_full_log_001.txt, 002, ...
+    log_dir = Path(args.data_root) / args.date
+    log_dir.mkdir(parents=True, exist_ok=True)
+    for idx in range(1, 1000):
+        log_path = log_dir / f"simulate_full_log_{idx:03d}.txt"
+        if not log_path.exists():
+            break
+    # logging 파일 핸들러 추가
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+    # stdout/stderr tee
+    orig_stdout, orig_stderr = sys.stdout, sys.stderr
+    log_file = open(log_path, "a", encoding="utf-8")
+    sys.stdout = Tee(orig_stdout, log_file)
+    sys.stderr = Tee(orig_stderr, log_file)
+    print(f"[INFO] Full simulation log will be saved to: {log_path}")
 
     if args.tp is not None:
         TAKE_PROFIT_PERCENT = float(args.tp)
@@ -2091,6 +2181,15 @@ def main() -> None:
         names=names,
         initial_capital=args.capital,
     )
+    # 핸들러/tee 정리
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        log_file.flush()
+        log_file.close()
+        logging.getLogger().removeHandler(file_handler)
+    except Exception:
+        pass
     raise SystemExit(exit_code)
 
 
