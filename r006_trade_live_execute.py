@@ -310,7 +310,7 @@ class _PerSymbolFileHandler(logging.Handler):
 
     def _resolve_path(self, code: str) -> Path:
         symbol_name = _SYMBOL_NAME_MAP.get(code, "")
-        label = f"{log_date_str}_{code}({symbol_name})" if symbol_name else f"{log_date_str}_{code}"
+        label = f"{log_date_str}_{code}_{symbol_name}" if symbol_name else f"{log_date_str}_{code}"
         stem = _sanitize_log_filename(label)
         suffix = "_buy_sell.txt" if self.buy_sell else ".txt"
         return self.base_dir / f"{stem}{suffix}"
@@ -1092,7 +1092,7 @@ def _display_width(text: str) -> int:
 
 
 def _symbol_log_label(code: str, name: str, width: int = SYMBOL_LOG_WIDTH) -> str:
-    label = f"{code}({name})"
+    label = f"{code}_{name}" if name else code
     pad = max(0, width - _display_width(label))
     return label + " " * pad
 
@@ -1714,11 +1714,11 @@ class TradingAPI:
         detail_suffix = f" | {pending['buy_detail']}" if pending.get("buy_detail") else ""
         code_label = _format_code_label(code, code_name)
         log(
-            f"BUY executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"{code_label} BUY executed  | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | session={pending.get('session', 'unknown')} | exch={pending.get('exchange', 'UNKNOWN')}{detail_suffix}"
         )
         log_trade(
-            f"BUY executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"{code_label} BUY executed  | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | session={pending.get('session', 'unknown')} | exch={pending.get('exchange', 'UNKNOWN')}{detail_suffix}"
         )
         _log_trade_event_banner(
@@ -1741,12 +1741,12 @@ class TradingAPI:
         code_name = str(pending.get("code_name", ""))
         code_label = _format_code_label(code, code_name)
         log(
-            f"SELL executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"{code_label} SELL executed  | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
             f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
         )
         log_trade(
-            f"SELL executed  | {code_label} | filled_qty={filled_qty}/{requested_qty} | "
+            f"{code_label} SELL executed  | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
             f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
         )
@@ -2361,7 +2361,7 @@ def run(target_date: str | None = None) -> None:
                 continue
 
             log(
-                f"  [CHECK] {symbol_label} | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} ({price_source}) bar_close={float(cur['close']):,.0f} | "
+                f"  {symbol_label} [CHECK] | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} ({price_source}) bar_close={float(cur['close']):,.0f} | "
                 f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
@@ -2610,7 +2610,7 @@ def run(target_date: str | None = None) -> None:
                     _warmup_elapsed = (current_dt - session_open_dt).total_seconds()
                     if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
                         log(
-                            f"  [BUY REJECT] {symbol_label} | SESSION_OPEN_WARMUP | "
+                            f"  {symbol_label} [BUY REJECT] | SESSION_OPEN_WARMUP | "
                             f"elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
                             f"session_open={session_open_dt:%H:%M:%S}"
                         )
@@ -2636,7 +2636,7 @@ def run(target_date: str | None = None) -> None:
                         cross_info=cross_info,
                         frame=frame,
                     )
-                    log(f"  [BUY REJECT] {symbol_label} | {detail}")
+                    log(f"  {symbol_label} [BUY REJECT] | {detail}")
                     continue
 
                 confirm_state = buy_confirm_state.get(code)
@@ -2651,7 +2651,7 @@ def run(target_date: str | None = None) -> None:
                 buy_confirm_state[code] = {"bar_time": bar_time, "count": confirm_count}
                 if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
                     log(
-                        f"  [BUY HOLD] {symbol_label} | reason=WAIT_CONSECUTIVE_CONFIRM | "
+                        f"  {symbol_label} [BUY HOLD] | reason=WAIT_CONSECUTIVE_CONFIRM | "
                         f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
                         f"bar={bar_time:%H:%M:%S}"
                     )
@@ -2659,12 +2659,12 @@ def run(target_date: str | None = None) -> None:
 
                 qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
                 if qty <= 0:
-                    log(f"  [BUY REJECT] {symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
+                    log(f"  {symbol_label} [BUY REJECT] | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
                     continue
 
                 if "bar_close(stale_live=" in price_source:
                     log(
-                        f"  [BUY REJECT] {symbol_label} | STALE_LIVE_PRICE | "
+                        f"  {symbol_label} [BUY REJECT] | STALE_LIVE_PRICE | "
                         f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
                     )
                     continue
@@ -2677,7 +2677,7 @@ def run(target_date: str | None = None) -> None:
                 )
                 if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                     log(
-                        f"  [BUY EVAL] {symbol_label} | OK {buy_reason} | {current_dt:%H:%M:%S} | "
+                        f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
                         f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
                         f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                         f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
@@ -2687,7 +2687,7 @@ def run(target_date: str | None = None) -> None:
                         f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
                         f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
                     )
-                    log(f"  [BUY EXECUTED] {symbol_label} | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
+                    log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
                     traded_today.add(code)
                     signal_buy_bar[code] = bar_time
                     buy_confirm_state.pop(code, None)

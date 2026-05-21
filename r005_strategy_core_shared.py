@@ -116,7 +116,7 @@ def _buy_support_score(
     k_p = _num(prev, "STOCH_K")
     d_p = _num(prev, "STOCH_D")
     if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if (k_p <= d_p and k_c > d_c) and (config.stoch_buy_min <= k_c <= config.stoch_buy_max) and (k_c > k_p):
+        if k_c > d_c:
             score += 1
 
     rsi_c = _num(cur, "RSI")
@@ -169,7 +169,7 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series, config: R76StrategyConf
     k_p = _num(prev, "STOCH_K")
     d_p = _num(prev, "STOCH_D")
     if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if k_p >= d_p and k_c < d_c and k_p >= config.stoch_overbought:
+        if k_c < d_c:
             score += 1
 
     rsi_c = _num(cur, "RSI")
@@ -364,10 +364,11 @@ def check_buy_condition(
     live_cross_up_signal = cross_info.get("signal") == "cross_up"
     confirmed_above = cross_info.get("confirmed_relation") == "above"
     ma5_golden_cross_now = prev_ma5 <= prev_bb and cur_ma5 > cur_bb
+    ma5_bias_ok = cur_ma5 >= cur_bb and cur_ma5 >= prev_ma5
     upper_trigger = float(cross_info.get("upper_trigger", cur_bb))
 
     if not live_cross_up_signal:
-        fallback_ok = confirmed_above and ma5_golden_cross_now and live_price >= upper_trigger
+        fallback_ok = confirmed_above and ma5_bias_ok and live_price >= upper_trigger
         if not fallback_ok:
             return False, "NO_LIVE_PRICE_BB_CROSS_UP"
 
@@ -416,6 +417,33 @@ def check_buy_condition(
 
     if not pd.isna(adx_val) and adx_val < config.adx_min_trend:
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
+
+    # --- 추가 필수 조건 ---
+    vwap = _num(cur, "VWAP")
+    close_v = _num(cur, "close")
+    if pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap):
+        return False, "NO_VWAP_BREAK"
+
+    # 거래량 > 평균 거래량 1.5배
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        if vol < (vol_ma * 1.5):
+            return False, f"LOW_VOLUME_1.5X_{(vol / vol_ma):.2f}"
+
+    # RSI > 55
+    rsi_c = _num(cur, "RSI")
+    if pd.isna(rsi_c) or rsi_c <= 55:
+        return False, f"RSI_TOO_LOW_{rsi_c:.2f}"
+
+    # MACD Histogram 증가
+    hist_c = _num(cur, "MACD_HIST")
+    hist_p = _num(prev, "MACD_HIST")
+    if pd.isna(hist_c) or pd.isna(hist_p) or not (hist_c > hist_p):
+        return False, f"MACD_HIST_NOT_INCREASING_{hist_p:.2f}_TO_{hist_c:.2f}"
+
+    # 체결강도 > 120 (값이 있으면 체크)
+    exec_strength = _num(cur, "EXECUTION_STRENGTH") if "EXECUTION_STRENGTH" in cur else float('nan')
+    if not pd.isna(exec_strength) and exec_strength <= 120:
+        return False, f"EXEC_STRENGTH_TOO_LOW_{exec_strength:.2f}"
 
     score = _buy_support_score(cur, prev, frame, config)
     if score < 2:  # 3 → 2로 완화
