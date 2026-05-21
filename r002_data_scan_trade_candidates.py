@@ -403,12 +403,18 @@ def evaluate_candidate(code, name, daily_df, config):
         ):
             candidate["fail_reasons"].append("long_bearish_candle_no_lower_shadow")
 
-    # 2. Exclude if last 3 closes indicate sustained down pressure (strong downtrend)
-    if len(daily_df) >= 3:
-        closes = daily_df["close"].iloc[-3:]
-        desc_steps = sum(closes.iloc[i] > closes.iloc[i + 1] for i in range(2))
-        close_3d_return = (closes.iloc[-1] / closes.iloc[0]) - 1.0 if closes.iloc[0] else None
-        if desc_steps == 2 or (desc_steps >= 1 and close_3d_return is not None and close_3d_return <= -0.02):
+    # 2. Exclude if prior 3 trading days are continuously down (strict rule).
+    #    Requires at least 4 bars to evaluate 3 consecutive down steps.
+    if len(daily_df) < 4:
+        candidate["fail_reasons"].append("insufficient_3d_trend_history")
+    else:
+        closes4 = daily_df["close"].iloc[-4:]
+        highs4 = daily_df["high"].iloc[-4:]
+        lows4 = daily_df["low"].iloc[-4:]
+        close_down_3 = all(closes4.iloc[i] > closes4.iloc[i + 1] for i in range(3))
+        high_down_3 = all(highs4.iloc[i] > highs4.iloc[i + 1] for i in range(3))
+        low_down_3 = all(lows4.iloc[i] > lows4.iloc[i + 1] for i in range(3))
+        if close_down_3 or (high_down_3 and low_down_3):
             candidate["fail_reasons"].append("3d_downtrend")
 
 
@@ -508,6 +514,8 @@ def evaluate_candidate(code, name, daily_df, config):
         candidate["soft_flags"].append("far_from_52w_high")
 
     candidate["score"] = calculate_candidate_score(candidate, config)
+    if candidate["score"] < 50.0:
+        candidate["fail_reasons"].append("low_score")
     candidate["eligible"] = not candidate["fail_reasons"]
     return candidate
 
@@ -985,7 +993,13 @@ def scan(
         fallback_rows = [
             row for row in candidates
             if is_scorable_candidate(row)
-            and row.get("trend_state") != "down"
+            # Keep fallback defensive: only clear up-trend names with enough history.
+            and row.get("trend_state") == "up"
+            and "limited_history" not in row.get("soft_flags", [])
+            and not bool(row.get("is_last_bearish"))
+            and row.get("score", 0.0) >= 50.0
+            and "3d_downtrend" not in row.get("fail_reasons", [])
+            and "low_score" not in row.get("fail_reasons", [])
             and row["code"] not in selected_codes
         ]
         fallback_rows.sort(
@@ -1000,6 +1014,12 @@ def scan(
             for row in supplement:
                 if "fallback_selected" not in row["soft_flags"]:
                     row["soft_flags"].append("fallback_selected")
+
+    # Final output order: always keep selected rows sorted by score desc.
+    selected_rows.sort(
+        key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+        reverse=True,
+    )
 
     selected = [f"{row['code']},{row['name']}" for row in selected_rows]
     summary = summarize_candidates(candidates, selected_rows, skipped)
@@ -1109,16 +1129,26 @@ if __name__ == "__main__":
         )
         out_dir = date_dirs[-1] if date_dirs else data_root
 
+    output_prefix = ""
+    if effective_target_date:
+        output_prefix = effective_target_date.strftime("%Y%m%d")
+    elif out_dir.name.isdigit() and len(out_dir.name) == 8:
+        output_prefix = out_dir.name
+
+    picks_filename = f"{output_prefix}_picks.txt" if output_prefix else "picks.txt"
+    ranked_filename = f"{output_prefix}_ranked.txt" if output_prefix else "ranked.txt"
+    report_filename = f"{output_prefix}_scanner_report.md" if output_prefix else "scanner_report.md"
+
     if picks:
-        picks_file = out_dir / "picks.txt"
+        picks_file = out_dir / picks_filename
         picks_file.write_text("\n".join(picks), encoding="utf-8")
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
 
-    ranked_file = out_dir / "ranked.txt"
+    ranked_file = out_dir / ranked_filename
     ranked_file.write_text(render_ranked_csv(scan_result["selected_rows"]), encoding="utf-8")
     print(f"점수 기반 랭킹 파일을 저장했습니다: {ranked_file}")
 
-    report_file = out_dir / "scanner_report.md"
+    report_file = out_dir / report_filename
     report_file.write_text(
         render_report(data_root, effective_target_date, config, scan_result, comparison_rows),
         encoding="utf-8",

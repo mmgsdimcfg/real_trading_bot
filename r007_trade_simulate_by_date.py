@@ -282,8 +282,15 @@ def load_code_name_map(path: Path) -> dict[str, str]:
         if line.startswith("#"):
             continue
         parts = [part.strip() for part in line.split(",")]
-        code = parts[0].zfill(6)
-        name = parts[1] if len(parts) >= 2 and parts[1] else code
+        # Backward compatible formats:
+        # - code,name
+        # - YYYYMMDD,code,name
+        if len(parts) >= 3 and parts[0].isdigit() and len(parts[0]) == 8:
+            code = parts[1].zfill(6)
+            name = parts[2] if parts[2] else code
+        else:
+            code = parts[0].zfill(6)
+            name = parts[1] if len(parts) >= 2 and parts[1] else code
         result[code] = name
     return result
 
@@ -1436,6 +1443,7 @@ def simulate_date(
     today_watch_codes: set[str] | None = None,
     names: dict[str, str] | None = None,
     initial_capital: float = SIM_INITIAL_CAPITAL,
+    run_index: int | None = None,
 ) -> int:
     global LAST_SIM_STATS, CURRENT_SIM_TS
     data_dir = data_root / date_str
@@ -2000,16 +2008,14 @@ def simulate_date(
 
     # --- 시뮬레이션 결과 로그 파일 저장 ---
     try:
-        # 로그 파일명: simulate_result_001.txt, 002, ...
+        # 로그 파일명: YYYYMMDD_simulate_001_result.txt, 002, ...
         out_dir = data_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-        for idx in range(1, 1000):
-            out_path = out_dir / f"simulate_result_{idx:03d}.txt"
-            if not out_path.exists():
-                with open(out_path, "w", encoding="utf-8-sig") as f:
-                    f.write("\n".join(_RAW_LOG_BUFFER))
-                print(f"[INFO] Simulation log saved: {out_path}")
-                break
+        idx = run_index if run_index is not None else _next_simulation_run_index(out_dir)
+        out_path = out_dir / f"{date_str}_simulate_{idx:03d}_result.txt"
+        with open(out_path, "w", encoding="utf-8-sig") as f:
+            f.write("\n".join(_RAW_LOG_BUFFER))
+        print(f"[INFO] Simulation log saved: {out_path}")
     except Exception as exc:
         print(f"[WARN] Failed to save simulation log: {exc}")
     return 0
@@ -2037,6 +2043,16 @@ class Tee:
                     f.flush()
                 except Exception:
                     pass
+
+
+def _next_simulation_run_index(day_dir: Path) -> int:
+    """Find next shared run index for both result and full log outputs."""
+    for idx in range(1, 1000):
+        result_path = day_dir / f"{day_dir.name}_simulate_{idx:03d}_result.txt"
+        full_log_path = day_dir / f"{day_dir.name}_simulate_{idx:03d}_full_log.txt"
+        if not result_path.exists() and not full_log_path.exists():
+            return idx
+    return 999
 
 def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
@@ -2122,13 +2138,11 @@ def main() -> None:
         sys.exit(1)
 
     # --- 전체 실행 로그 파일 핸들러 및 tee 설정 ---
-    # 로그 파일명: simulate_full_log_001.txt, 002, ...
+    # 로그 파일명: YYYYMMDD_simulate_001_full_log.txt, 002, ...
     log_dir = Path(args.data_root) / args.date
     log_dir.mkdir(parents=True, exist_ok=True)
-    for idx in range(1, 1000):
-        log_path = log_dir / f"simulate_full_log_{idx:03d}.txt"
-        if not log_path.exists():
-            break
+    run_index = _next_simulation_run_index(log_dir)
+    log_path = log_dir / f"{args.date}_simulate_{run_index:03d}_full_log.txt"
     # logging 파일 핸들러 추가
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
@@ -2180,6 +2194,7 @@ def main() -> None:
         today_watch_codes=today_watch_codes,
         names=names,
         initial_capital=args.capital,
+        run_index=run_index,
     )
     # 핸들러/tee 정리
     try:
