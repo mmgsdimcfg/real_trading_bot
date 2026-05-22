@@ -18,10 +18,6 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
-- [2026-05-22] type=fix owner=copilot
-    summary: live-trading safety fixes (fail-closed market day, strict orders, live state, dry-run, session force close).
-    impact: live
-    compatibility: backward-compatible
 - [2026-05-10] type=docs owner=copilot
     summary: added standardized file header and expandable update-log format.
     impact: live
@@ -324,10 +320,10 @@ def _rotate_logging_for_date(date_str: str) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_filename, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-        force=True,
-    )
+        logging.StreamHandler(sys.stdout),
+    ],
+    force=True,
+)
     global logger, trade_logger, _trade_handler, _symbol_general_handler, _symbol_trade_handler
     logger = logging.getLogger(__name__)
     logging.getLogger("domestic_stock_functions").setLevel(logging.WARNING)
@@ -504,8 +500,6 @@ def load_today_codes(code_file: Path | None = None) -> dict[str, str]:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="R76 real trading runner")
     parser.add_argument("--date", type=str, help="Watchlist date (YYYYMMDD). Use data/YYYYMMDD/picks.txt first")
-    parser.add_argument("--dry-run", action="store_true", help="Log orders without sending to broker")
-    parser.add_argument("--env-dv", type=str, default=None, help="KIS env_dv override (default: env KIS_ENV_DV or real)")
     return parser.parse_args()
 
 
@@ -613,7 +607,7 @@ def _session_exit_plan(reason_prefix: str, pnl_pct: float) -> tuple[str, str]:
         return "sell", _format_pending_pnl(f"{reason_prefix}_SESSION_FORCE_CLOSE_ALL", pnl_pct)
     if pnl_pct > 0:
         return "sell", _format_pending_pnl(f"{reason_prefix}_PROFIT_CLOSE", pnl_pct)
-    if ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP and pnl_pct >= STOP_LOSS_PERCENT:
+    if pnl_pct >= STOP_LOSS_PERCENT:
         return "hold", _format_pending_pnl(f"{reason_prefix}_OVERNIGHT_HOLD_WITHIN_STOP", pnl_pct)
     return "sell", _format_pending_pnl(f"{reason_prefix}_STOP_LOSS_BREACH", pnl_pct)
 
@@ -820,7 +814,7 @@ def get_market_day_status(now: datetime) -> tuple[bool, str]:
     flag = _is_truthy_flag(row.iloc[-1].get("opnd_yn"))
     if flag is None:
         if MARKET_DAY_FAIL_CLOSED:
-            result = _market_day__market_day_fail_closed_result(date_label, "unknown_opnd_yn")
+            result = _market_day_fail_closed_result(date_label, "unknown_opnd_yn")
         else:
             result = (True, f"MARKET DAY CHECK | {date_label} | OPEN | source=weekday_fallback | reason=unknown_opnd_yn")
         _MARKET_DAY_STATUS_CACHE[cache_key] = result
@@ -2335,17 +2329,17 @@ class TradingAPI:
                 order_result = dsf.order_cash(
                     env_dv=self.env_dv,
                     ord_dv="sell",
-                    cano=self.cano,
-                    acnt_prdt_cd=self.acnt_prdt_cd,
-                    pdno=code,
-                    ord_dvsn=order_spec["ord_dvsn"],
-                    ord_qty=str(qty),
-                    ord_unpr=ord_unpr,
-                    excg_id_dvsn_cd=order_spec["exchange"],
+                cano=self.cano,
+                acnt_prdt_cd=self.acnt_prdt_cd,
+                pdno=code,
+                ord_dvsn=order_spec["ord_dvsn"],
+                ord_qty=str(qty),
+                ord_unpr=ord_unpr,
+                excg_id_dvsn_cd=order_spec["exchange"],
             )
-            except Exception as exc:
-                log(f"SELL error | {code} | {exc}")
-                return False
+        except Exception as exc:
+            log(f"SELL error | {code} | {exc}")
+            return False
 
         if not _order_succeeded(order_result):
             error_detail = _extract_order_error_detail(order_result)
@@ -2454,74 +2448,12 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
             api.place_sell_order(code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
 
 
-
-_SHUTDOWN_API: TradingAPI | None = None
-
-
-def _ensure_log_date_for(now: datetime | None = None) -> None:
-    dt = now or datetime.now()
-    date_str = dt.strftime("%Y%m%d")
-    if str(_LOG_CTX.get("date_str")) != date_str:
-        _rotate_logging_for_date(date_str)
-
-
-def _log_pending_orders_on_shutdown(api: TradingAPI | None) -> None:
-    if api is None or not getattr(api, "pending_orders", None):
-        log("SHUTDOWN | no pending orders")
-        return
-    if not api.pending_orders:
-        log("SHUTDOWN | no pending orders")
-        return
-    log(f"SHUTDOWN | pending_orders={len(api.pending_orders)}")
-    for code, pending in api.pending_orders.items():
-        log(
-            f"  PENDING | {code} | side={pending.get('side')} qty={pending.get('quantity')} "
-            f"order_no={pending.get('order_no', '')} submitted={pending.get('submitted_at')}"
-        )
-
-
-def _install_shutdown_handlers(api: TradingAPI) -> None:
-    global _SHUTDOWN_API
-    _SHUTDOWN_API = api
-
-    def _atexit_shutdown() -> None:
-        _log_pending_orders_on_shutdown(_SHUTDOWN_API)
-        _shutdown_save_live_state(_SHUTDOWN_API)
-
-    atexit.register(_atexit_shutdown)
-
-    def _handler(signum, frame):  # noqa: ARG001
-        _log_pending_orders_on_shutdown(api)
-        _shutdown_save_live_state(api)
-        raise KeyboardInterrupt
-
-    for sig_name in ("SIGINT", "SIGTERM"):
-        sig = getattr(signal, sig_name, None)
-        if sig is None:
-            continue
-        try:
-            signal.signal(sig, _handler)
-        except Exception:
-            pass
-
-
 # ---------------------------------------------------------------------------
 # 메인
 # ---------------------------------------------------------------------------
 
-def _shutdown_save_live_state(api: TradingAPI | None) -> None:
-    if api is None:
-        return
-    try:
-        api.persist_live_state()
-    except Exception as exc:
-        log(f"WARNING: live state save on shutdown failed: {exc}")
-
-
-def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool | None = None) -> None:
-    ka.auth()
+def run(target_date: str | None = None) -> None:
     now = datetime.now()
-    _ensure_log_date_for(now)
     is_open_day, market_day_log = get_market_day_status(now)
     log(market_day_log)
 
@@ -2564,22 +2496,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     )
     log(f"TP={TAKE_PROFIT_PERCENT*100:.1f}% | SL={STOP_LOSS_PERCENT*100:.1f}% | Trail={TRAILING_STOP_FROM_PEAK*100:.1f}%")
     log(f"Indicator warmup: require bars >= {INDICATOR_WARMUP_BARS} before new entries")
-    date_str = now.strftime("%Y%m%d")
-    live_state = load_live_state(date_str)
-    traded_today: set[str] = set(live_state.get("traded_today") or [])
-    effective_env = (env_dv or KIS_ENV_DV).strip() or "real"
-    effective_dry = LIVE_DRY_RUN if dry_run is None else bool(dry_run)
-    if ENABLE_LIVE_DRY_RUN:
-        effective_dry = True
-    log(f"CONFIG BANNER | env_dv={effective_env} | dry_run={effective_dry}")
-    log(f"CONFIG BANNER | MARKET_DAY_FAIL_CLOSED={MARKET_DAY_FAIL_CLOSED} | SESSION_FORCE_CLOSE_ALL_AT_CUTOFF={SESSION_FORCE_CLOSE_ALL_AT_CUTOFF}")
-    log(
-        "CONFIG BANNER | price-lead integrated | "
-        f"ENABLE_PRICE_LEAD_BB_BREAKOUT={ENABLE_PRICE_LEAD_BB_BREAKOUT}"
-    )
-    api = TradingAPI(env_dv=effective_env, dry_run=effective_dry, live_state=live_state)
-    _install_shutdown_handlers(api)
-    api.live_state["traded_today"] = traded_today
+    api = TradingAPI()
+    traded_today: set[str] = set()
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
     trailing_sell_confirm_state: dict[str, dict[str, object]] = {}
@@ -2611,21 +2529,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     while True:
         current_dt = datetime.now()
-        _ensure_log_date_for(current_dt)
 
         if current_dt.date() != current_trade_date:
             current_trade_date = current_dt.date()
-            date_str = current_dt.strftime("%Y%m%d")
-            live_state = load_live_state(date_str)
-            _rotate_logging_for_date(date_str)
-            live_state = load_live_state(date_str)
-            traded_today = set(live_state.get("traded_today") or [])
-            api.live_state = live_state
-            api.live_state["traded_today"] = traded_today
-            api._apply_persisted_position_meta()
-            post_buy_bb_drop_state.clear()
-            breakeven_fail_state.clear()
-            no_trend_exit_state.clear()
+            traded_today.clear()
             signal_buy_bar.clear()
             signal_sell_bar.clear()
             trailing_sell_confirm_state.clear()
@@ -2663,471 +2570,470 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 _log_account_watchlist_mismatch(api, watch_map)
                 last_watchlist_mismatch_log_at = current_dt
             api.sync_positions_from_account(force=False)
-            api.refresh_pending_orders(current_dt)
-            run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
+        api.refresh_pending_orders(current_dt)
+        run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
 
-            # 15:20~15:30 정규장 마감 구간은 종목별 매도 체크 건너뛰고
-            # 동시호가 예약 청산 로직(당일 매수 + 수익 구간)만 실행한다.
-            if is_regular_call_auction(current_dt):
-                time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
+        # 15:20~15:30 정규장 마감 구간은 종목별 매도 체크 건너뛰고
+        # 동시호가 예약 청산 로직(당일 매수 + 수익 구간)만 실행한다.
+        if is_regular_call_auction(current_dt):
+            time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
+            continue
+
+        for code, name in watch_map.items():
+            nxt_tradeable = nxt_map.get(code, False)
+            symbol_label = _symbol_log_label(code, name)
+            if not can_trade_code_now(current_dt, nxt_tradeable):
+                log(f"  [SKIP] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
                 continue
 
-            for code, name in watch_map.items():
-                nxt_tradeable = nxt_map.get(code, False)
-                symbol_label = _symbol_log_label(code, name)
-                if not can_trade_code_now(current_dt, nxt_tradeable):
-                    log(f"  [SKIP] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
-                    continue
+            cached_frame = frame_cache.get(code)
+            last_frame_refresh = frame_last_refresh_at.get(code)
+            frame: pd.DataFrame | None = cached_frame
 
-                cached_frame = frame_cache.get(code)
-                last_frame_refresh = frame_last_refresh_at.get(code)
-                frame: pd.DataFrame | None = cached_frame
+            if should_refresh_3min_frame(current_dt, cached_frame, last_frame_refresh):
+                try:
+                    refreshed_frame = fetch_3min_frame(code, current_dt, nxt_tradeable)
+                except Exception as exc:
+                    log(f"{code} frame error: {exc}")
+                    refreshed_frame = None
 
-                if should_refresh_3min_frame(current_dt, cached_frame, last_frame_refresh):
-                    try:
-                        refreshed_frame = fetch_3min_frame(code, current_dt, nxt_tradeable)
-                    except Exception as exc:
-                        log(f"{code} frame error: {exc}")
-                        refreshed_frame = None
+                if refreshed_frame is not None and not refreshed_frame.empty:
+                    frame_cache[code] = refreshed_frame
+                    frame_last_refresh_at[code] = current_dt
+                    frame = refreshed_frame
 
-                    if refreshed_frame is not None and not refreshed_frame.empty:
-                        frame_cache[code] = refreshed_frame
-                        frame_last_refresh_at[code] = current_dt
-                        frame = refreshed_frame
+            if frame is None:
+                log(f"  [SKIP] {symbol_label} | frame=None (fetch failed)")
+                continue
+            if len(frame) < INDICATOR_WARMUP_BARS:
+                log(f"  [SKIP] {symbol_label} | bars={len(frame)} < INDICATOR_WARMUP_BARS={INDICATOR_WARMUP_BARS}")
+                continue
 
-                if frame is None:
-                    log(f"  [SKIP] {symbol_label} | frame=None (fetch failed)")
-                    continue
-                if len(frame) < INDICATOR_WARMUP_BARS:
-                    log(f"  [SKIP] {symbol_label} | bars={len(frame)} < INDICATOR_WARMUP_BARS={INDICATOR_WARMUP_BARS}")
-                    continue
+            bar_time = frame.index[-1]
+            last_closed_bar = pd.Timestamp(current_dt).floor("3min")
+            bar_age_sec = max(0.0, (pd.Timestamp(current_dt) - bar_time).total_seconds())
+            cur = frame.iloc[-1]
+            live_backoff_until = live_price_backoff_until.get(code)
+            can_fetch_live = live_backoff_until is None or current_dt >= live_backoff_until
+            price_source = "live"
+            price = None
 
-                bar_time = frame.index[-1]
-                last_closed_bar = pd.Timestamp(current_dt).floor("3min")
-                bar_age_sec = max(0.0, (pd.Timestamp(current_dt) - bar_time).total_seconds())
-                cur = frame.iloc[-1]
-                live_backoff_until = live_price_backoff_until.get(code)
-                can_fetch_live = live_backoff_until is None or current_dt >= live_backoff_until
-                price_source = "live"
-                price = None
-
-                if can_fetch_live:
-                    price = fetch_live_price(code, current_dt, nxt_tradeable)
-                    if price is None or price <= 0:
-                        fail_count = int(live_price_fail_count.get(code, 0)) + 1
-                        live_price_fail_count[code] = fail_count
-                        backoff_seconds = _live_price_backoff_seconds(fail_count)
-                        live_price_backoff_until[code] = current_dt + timedelta(seconds=backoff_seconds)
-                        price_source = f"fallback_backoff_{backoff_seconds}s"
-                    else:
-                        live_price_cache[code] = float(price)
-                        live_price_cache_at[code] = current_dt
-                        live_price_fail_count[code] = 0
-                        live_price_backoff_until.pop(code, None)
-                else:
-                    price_source = "cached_live(backoff_active)"
-
+            if can_fetch_live:
+                price = fetch_live_price(code, current_dt, nxt_tradeable)
                 if price is None or price <= 0:
-                    cached_live = live_price_cache.get(code)
-                    cached_at = live_price_cache_at.get(code)
-                    cache_age_sec = (current_dt - cached_at).total_seconds() if isinstance(cached_at, datetime) else None
-                    cache_fresh = cache_age_sec is not None and cache_age_sec <= LIVE_PRICE_STALE_TTL_SECONDS
+                    fail_count = int(live_price_fail_count.get(code, 0)) + 1
+                    live_price_fail_count[code] = fail_count
+                    backoff_seconds = _live_price_backoff_seconds(fail_count)
+                    live_price_backoff_until[code] = current_dt + timedelta(seconds=backoff_seconds)
+                    price_source = f"fallback_backoff_{backoff_seconds}s"
+                else:
+                    live_price_cache[code] = float(price)
+                    live_price_cache_at[code] = current_dt
+                    live_price_fail_count[code] = 0
+                    live_price_backoff_until.pop(code, None)
+            else:
+                price_source = "cached_live(backoff_active)"
 
-                    if cached_live is not None and cached_live > 0 and cache_fresh:
-                        price = float(cached_live)
-                        if price_source == "live":
-                            price_source = "cached_live"
-                    else:
-                        price = float(cur["close"])
-                        age_text = f"{cache_age_sec:.0f}s" if cache_age_sec is not None else "unknown"
-                        price_source = f"bar_close(stale_live={age_text})"
+            if price is None or price <= 0:
+                cached_live = live_price_cache.get(code)
+                cached_at = live_price_cache_at.get(code)
+                cache_age_sec = (current_dt - cached_at).total_seconds() if isinstance(cached_at, datetime) else None
+                cache_fresh = cache_age_sec is not None and cache_age_sec <= LIVE_PRICE_STALE_TTL_SECONDS
 
-                cross_info = update_live_price_cross_state(
-                    live_price_cross_state,
-                    code,
-                    current_dt,
-                    float(price),
-                    _num(cur, "BB_MIDDLE"),
-                )
-                pos = api.get_open_positions().get(code)
-                pending = api.get_pending_order(code)
+                if cached_live is not None and cached_live > 0 and cache_fresh:
+                    price = float(cached_live)
+                    if price_source == "live":
+                        price_source = "cached_live"
+                else:
+                    price = float(cur["close"])
+                    age_text = f"{cache_age_sec:.0f}s" if cache_age_sec is not None else "unknown"
+                    price_source = f"bar_close(stale_live={age_text})"
 
-                if pending is not None:
-                    pending_side = str(pending.get("side", "")).upper() or "UNKNOWN"
-                    pending_qty = int(pending.get("quantity", 0))
-                    pending_time = pending.get("submitted_at", current_dt)
-                    log(
-                        f"  [PENDING] {symbol_label} | side={pending_side} qty={pending_qty} "
-                        f"submitted={pending_time:%H:%M:%S} | order_no={pending.get('order_no', '') or 'UNKNOWN'}"
-                    )
-                    continue
+            cross_info = update_live_price_cross_state(
+                live_price_cross_state,
+                code,
+                current_dt,
+                float(price),
+                _num(cur, "BB_MIDDLE"),
+            )
+            pos = api.get_open_positions().get(code)
+            pending = api.get_pending_order(code)
 
+            if pending is not None:
+                pending_side = str(pending.get("side", "")).upper() or "UNKNOWN"
+                pending_qty = int(pending.get("quantity", 0))
+                pending_time = pending.get("submitted_at", current_dt)
                 log(
-                    f"  {symbol_label} [CHECK] | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} ({price_source}) bar_close={float(cur['close']):,.0f} | "
-                    f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
-                    f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
-                    f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
-                    f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
-                    f"K={_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
-                    f"WR={_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
-                    f"MACD={_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} HIST={_num(cur, 'MACD_HIST'):.2f} | "
-                    f"ADX={_num(cur, 'ADX'):.1f} +DI={_num(cur, 'DI_PLUS'):.1f} -DI={_num(cur, 'DI_MINUS'):.1f} | "
-                    f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
-                    f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
+                    f"  [PENDING] {symbol_label} | side={pending_side} qty={pending_qty} "
+                    f"submitted={pending_time:%H:%M:%S} | order_no={pending.get('order_no', '') or 'UNKNOWN'}"
                 )
+                continue
 
-                if pos is None or pos.get("quantity", 0) <= 0:
+            log(
+                f"  {symbol_label} [CHECK] | {current_dt:%H:%M:%S} | bars={len(frame)} live={price:,.0f} ({price_source}) bar_close={float(cur['close']):,.0f} | "
+                f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
+                f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
+                f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
+                f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
+                f"K={_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
+                f"WR={_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
+                f"MACD={_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} HIST={_num(cur, 'MACD_HIST'):.2f} | "
+                f"ADX={_num(cur, 'ADX'):.1f} +DI={_num(cur, 'DI_PLUS'):.1f} -DI={_num(cur, 'DI_MINUS'):.1f} | "
+                f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
+                f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
+            )
+
+            if pos is None or pos.get("quantity", 0) <= 0:
+                post_buy_bb_drop_state.pop(code, None)
+                breakeven_fail_state.pop(code, None)
+                no_trend_exit_state.pop(code, None)
+
+            if pos is not None and pos.get("quantity", 0) > 0:
+                buy_confirm_state.pop(code, None)
+                entry_price = float(pos["buy_price"])
+                pnl_pct = (price / entry_price) - 1.0
+
+                # 저가(bar low)가 현재가보다 낮으면 손절 판정에 우선 반영
+                # 확정봉 low를 직접 섞으면 현재가가 회복된 상태에서도 오손절이 날 수 있어
+                # 실시간 손절은 현재가 기준으로 판정한다.
+                _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else float("nan")
+                _sl_price = price
+                _pnl_sl = (_sl_price / entry_price) - 1.0
+
+                pos["current_price"] = price
+                pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
+                highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
+                peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
+                profit_giveback = peak_pnl_pct - pnl_pct
+
+                if pnl_pct >= TAKE_PROFIT_PERCENT:
+                    if ENABLE_TP_EXTENSION_TRAILING:
+                        # TP 도달 시 즉시 익절 대신 고점 트레일링 모드로 전환
+                        log(
+                            f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= TP {TAKE_PROFIT_PERCENT*100:.1f}% | "
+                            f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
+                            f"price={price:,.0f} peak={highest_price:,.0f}"
+                        )
+                    else:
+                        reason_tp = f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
+                        log(f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
+
+                # ── POST-BUY ENTRY DROP GUARD ─────────────────────────────────────
+                _held_for_guard = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
+                if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
+                    _drop_hold_seconds = update_timed_condition_state(
+                        post_buy_bb_drop_state,
+                        code,
+                        pos.get("buy_time"),
+                        current_dt,
+                        price < entry_price * (1.0 - POST_BUY_BB_DROP_PCT),
+                    )
+                    if _drop_hold_seconds >= POST_BUY_DROP_CONFIRM_SECONDS:
+                        _drop_pct_guard = (price / entry_price - 1.0) * 100.0
+                        reason_bbdrop = f"POST_BUY_ENTRY_DROP_{POST_BUY_BB_DROP_PCT*100:.1f}pct_{POST_BUY_DROP_CONFIRM_SECONDS:.0f}s"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
+                            f"held={_held_for_guard:.0f}s price={price:,.0f} entry={entry_price:,.0f} "
+                            f"drop={_drop_pct_guard:.2f}% hold={_drop_hold_seconds:.0f}s pnl={pnl_pct*100:.2f}%"
+                        )
+                        post_buy_bb_drop_state.pop(code, None)
+                        breakeven_fail_state.pop(code, None)
+                        no_trend_exit_state.pop(code, None)
+                        trailing_sell_confirm_state.pop(code, None)
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_bbdrop, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
+                else:
+                    post_buy_bb_drop_state.pop(code, None)
+                # ── END POST-BUY ENTRY DROP GUARD ─────────────────────────────────
+
+                # ── BREAKEVEN FAILURE GUARD ────────────────────────────────────────
+                _breakeven_hold_seconds = update_timed_condition_state(
+                    breakeven_fail_state,
+                    code,
+                    pos.get("buy_time"),
+                    current_dt,
+                    peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
+                    and pnl_pct < 0
+                    and profit_giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT,
+                )
+                if _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:
+                    reason_breakeven = (
+                        f"BREAKEVEN_FAIL_peak{BREAKEVEN_FAIL_ARM_PNL*100:.1f}_"
+                        f"giveback{BREAKEVEN_FAIL_GIVEBACK_PCT*100:.2f}_{BREAKEVEN_FAIL_CONFIRM_SECONDS:.0f}s"
+                    )
+                    log(
+                        f"  [SELL TRIGGER] {code} | {reason_breakeven} | held={_held_for_guard:.0f}s "
+                        f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} "
+                        f"peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                    )
                     post_buy_bb_drop_state.pop(code, None)
                     breakeven_fail_state.pop(code, None)
                     no_trend_exit_state.pop(code, None)
+                    trailing_sell_confirm_state.pop(code, None)
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_breakeven, nxt_tradeable, price=price, code_name=name):
+                        log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | qty={pos['quantity']} price={price:,.0f}")
+                    signal_sell_bar[code] = bar_time
+                    continue
+                # ── END BREAKEVEN FAILURE GUARD ───────────────────────────────────
 
-                if pos is not None and pos.get("quantity", 0) > 0:
-                    buy_confirm_state.pop(code, None)
-                    entry_price = float(pos["buy_price"])
-                    pnl_pct = (price / entry_price) - 1.0
-                    if _is_stale_live_price_source(price_source):
-                        log(
-                            f"  {symbol_label} [SELL REJECT] | STALE_LIVE_PRICE | "
-                            f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
-                        )
-                        continue
+                # ── NO-TREND TIME EXIT ────────────────────────────────────────────
+                _bb_mid_guard = _num(cur, "BB_MIDDLE")
+                _no_trend_condition = (
+                    _held_for_guard >= NO_TREND_EXIT_ARM_SECONDS
+                    and peak_pnl_pct <= NO_TREND_EXIT_MAX_PEAK_PNL
+                    and pnl_pct <= NO_TREND_EXIT_MIN_PNL
+                    and _bb_mid_guard > 0
+                    and price < _bb_mid_guard
+                )
+                _no_trend_hold_seconds = update_timed_condition_state(
+                    no_trend_exit_state,
+                    code,
+                    pos.get("buy_time"),
+                    current_dt,
+                    _no_trend_condition,
+                )
+                if _no_trend_hold_seconds >= NO_TREND_EXIT_CONFIRM_SECONDS:
+                    reason_no_trend = (
+                        f"NO_TREND_EXIT_{NO_TREND_EXIT_ARM_SECONDS/60:.0f}m_"
+                        f"peakLT{NO_TREND_EXIT_MAX_PEAK_PNL*100:.1f}_{NO_TREND_EXIT_CONFIRM_SECONDS:.0f}s"
+                    )
+                    log(
+                        f"  [SELL TRIGGER] {code} | {reason_no_trend} | held={_held_for_guard:.0f}s "
+                        f"price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} pnl={pnl_pct*100:.2f}% "
+                        f"peak_pnl={peak_pnl_pct*100:.2f}% hold={_no_trend_hold_seconds:.0f}s"
+                    )
+                    post_buy_bb_drop_state.pop(code, None)
+                    breakeven_fail_state.pop(code, None)
+                    no_trend_exit_state.pop(code, None)
+                    trailing_sell_confirm_state.pop(code, None)
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_no_trend, nxt_tradeable, price=price, code_name=name):
+                        log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | qty={pos['quantity']} price={price:,.0f}")
+                    signal_sell_bar[code] = bar_time
+                    continue
+                # ── END NO-TREND TIME EXIT ────────────────────────────────────────
 
-                    # 저가(bar low)가 현재가보다 낮으면 손절 판정에 우선 반영
-                    # 확정봉 low를 직접 섞으면 현재가가 회복된 상태에서도 오손절이 날 수 있어
-                    # 실시간 손절은 현재가 기준으로 판정한다.
-                    _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else float("nan")
-                    _sl_price = price
-                    _pnl_sl = (_sl_price / entry_price) - 1.0
+                _held_sl = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
+                _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
+                if _pnl_sl <= _sl_threshold:
+                    reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
+                    log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% sl_pnl={_pnl_sl*100:.2f}%")
+                    trailing_sell_confirm_state.pop(code, None)
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name):
+                        log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
+                    signal_sell_bar[code] = bar_time
+                    continue
 
-                    pos["current_price"] = price
-                    pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
-                    highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
-                    peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
-                    profit_giveback = peak_pnl_pct - pnl_pct
-
-                    if pnl_pct >= TAKE_PROFIT_PERCENT:
-                        if ENABLE_TP_EXTENSION_TRAILING:
-                            # TP 도달 시 즉시 익절 대신 고점 트레일링 모드로 전환
-                            log(
-                                f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= TP {TAKE_PROFIT_PERCENT*100:.1f}% | "
-                                f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
-                                f"price={price:,.0f} peak={highest_price:,.0f}"
-                            )
-                        else:
-                            reason_tp = f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
-                            log(f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-
-                    # ── POST-BUY ENTRY DROP GUARD ─────────────────────────────────────
-                    _held_for_guard = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
-                    if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
-                        _drop_hold_seconds = update_timed_condition_state(
-                            post_buy_bb_drop_state,
-                            code,
-                            pos.get("buy_time"),
-                            current_dt,
-                            price < entry_price * (1.0 - POST_BUY_BB_DROP_PCT),
-                        )
-                        if _drop_hold_seconds >= POST_BUY_DROP_CONFIRM_SECONDS:
-                            _drop_pct_guard = (price / entry_price - 1.0) * 100.0
-                            reason_bbdrop = f"POST_BUY_ENTRY_DROP_{POST_BUY_BB_DROP_PCT*100:.1f}pct_{POST_BUY_DROP_CONFIRM_SECONDS:.0f}s"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
-                                f"held={_held_for_guard:.0f}s price={price:,.0f} entry={entry_price:,.0f} "
-                                f"drop={_drop_pct_guard:.2f}% hold={_drop_hold_seconds:.0f}s pnl={pnl_pct*100:.2f}%"
-                            )
-                            post_buy_bb_drop_state.pop(code, None)
-                            breakeven_fail_state.pop(code, None)
-                            no_trend_exit_state.pop(code, None)
-                            trailing_sell_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_bbdrop, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
+                if highest_price > 0 and entry_price > 0:
+                    # Entry-anchored trailing stop:
+                    # 1) First, peak must move into profit zone.
+                    # 2) Then, sell only if profit retraces by trailing width.
+                    # 3) Never trigger trailing stop while current pnl is non-positive.
+                    # TP 도달 구간(peak >= TP)에서 이익이 1% 이내로 줄면 트레일링 적용
+                    current_pnl_pct = (price / entry_price) - 1.0
+                    profit_giveback = peak_pnl_pct - current_pnl_pct
+                    if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
+                        trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
+                        reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
                     else:
-                        post_buy_bb_drop_state.pop(code, None)
-                    # ── END POST-BUY ENTRY DROP GUARD ─────────────────────────────────
+                        trail_threshold = TRAILING_STOP_FROM_PEAK
+                        reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
+                    trailing_condition = peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold
 
-                    # ── BREAKEVEN FAILURE GUARD ────────────────────────────────────────
-                    _breakeven_hold_seconds = update_timed_condition_state(
-                        breakeven_fail_state,
-                        code,
-                        pos.get("buy_time"),
-                        current_dt,
-                        peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
-                        and pnl_pct < 0
-                        and profit_giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT,
-                    )
-                    if _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:
-                        reason_breakeven = (
-                            f"BREAKEVEN_FAIL_peak{BREAKEVEN_FAIL_ARM_PNL*100:.1f}_"
-                            f"giveback{BREAKEVEN_FAIL_GIVEBACK_PCT*100:.2f}_{BREAKEVEN_FAIL_CONFIRM_SECONDS:.0f}s"
-                        )
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_breakeven} | held={_held_for_guard:.0f}s "
-                            f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} "
-                            f"peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
-                        )
-                        post_buy_bb_drop_state.pop(code, None)
-                        breakeven_fail_state.pop(code, None)
-                        no_trend_exit_state.pop(code, None)
-                        trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_breakeven, nxt_tradeable, price=price, code_name=name):
-                            log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | qty={pos['quantity']} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-                    # ── END BREAKEVEN FAILURE GUARD ───────────────────────────────────
-
-                    # ── NO-TREND TIME EXIT ────────────────────────────────────────────
-                    _bb_mid_guard = _num(cur, "BB_MIDDLE")
-                    _no_trend_condition = (
-                        _held_for_guard >= NO_TREND_EXIT_ARM_SECONDS
-                        and peak_pnl_pct <= NO_TREND_EXIT_MAX_PEAK_PNL
-                        and pnl_pct <= NO_TREND_EXIT_MIN_PNL
-                        and _bb_mid_guard > 0
-                        and price < _bb_mid_guard
-                    )
-                    _no_trend_hold_seconds = update_timed_condition_state(
-                        no_trend_exit_state,
-                        code,
-                        pos.get("buy_time"),
-                        current_dt,
-                        _no_trend_condition,
-                    )
-                    if _no_trend_hold_seconds >= NO_TREND_EXIT_CONFIRM_SECONDS:
-                        reason_no_trend = (
-                            f"NO_TREND_EXIT_{NO_TREND_EXIT_ARM_SECONDS/60:.0f}m_"
-                            f"peakLT{NO_TREND_EXIT_MAX_PEAK_PNL*100:.1f}_{NO_TREND_EXIT_CONFIRM_SECONDS:.0f}s"
-                        )
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_no_trend} | held={_held_for_guard:.0f}s "
-                            f"price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} pnl={pnl_pct*100:.2f}% "
-                            f"peak_pnl={peak_pnl_pct*100:.2f}% hold={_no_trend_hold_seconds:.0f}s"
-                        )
-                        post_buy_bb_drop_state.pop(code, None)
-                        breakeven_fail_state.pop(code, None)
-                        no_trend_exit_state.pop(code, None)
-                        trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_no_trend, nxt_tradeable, price=price, code_name=name):
-                            log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | qty={pos['quantity']} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-                    # ── END NO-TREND TIME EXIT ────────────────────────────────────────
-
-                    _held_sl = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
-                    _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
-                    if _pnl_sl <= _sl_threshold:
-                        reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
-                        log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% sl_pnl={_pnl_sl*100:.2f}%")
-                        trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name):
-                            log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-
-                    if highest_price > 0 and entry_price > 0:
-                        # Entry-anchored trailing stop:
-                        # 1) First, peak must move into profit zone.
-                        # 2) Then, sell only if profit retraces by trailing width.
-                        # 3) Never trigger trailing stop while current pnl is non-positive.
-                        # TP 도달 구간(peak >= TP)에서 이익이 1% 이내로 줄면 트레일링 적용
-                        current_pnl_pct = (price / entry_price) - 1.0
-                        profit_giveback = peak_pnl_pct - current_pnl_pct
-                        if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
-                            trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
-                            reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
-                        else:
-                            trail_threshold = TRAILING_STOP_FROM_PEAK
-                            reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
-                        trailing_condition = peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold
-
-                        pending_state = trailing_sell_confirm_state.get(code)
-                        if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
-                            # Clear pending if retrace condition has recovered.
-                            if not trailing_condition and pending_state is not None:
-                                trailing_sell_confirm_state.pop(code, None)
-                                log(
-                                    f"  [SELL HOLD CANCEL] {code} | trailing recovered before confirm | "
-                                    f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
-                                )
-
-                        if trailing_condition:
-                            if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
-                                # First hit: defer to next 3-minute bar confirmation.
-                                if pending_state is None:
-                                    trailing_sell_confirm_state[code] = {
-                                        "trigger_bar_time": bar_time,
-                                        "triggered_at": current_dt,
-                                        "reason": reason_ts,
-                                    }
-                                    log(
-                                        f"  [SELL HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
-                                        f"bar={bar_time:%H:%M:%S} pnl={current_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
-                                    )
-                                    continue
-
-                                # Still same bar: keep waiting.
-                                if pending_state.get("trigger_bar_time") == bar_time:
-                                    continue
-
+                    pending_state = trailing_sell_confirm_state.get(code)
+                    if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
+                        # Clear pending if retrace condition has recovered.
+                        if not trailing_condition and pending_state is not None:
+                            trailing_sell_confirm_state.pop(code, None)
                             log(
-                                f"  [SELL TRIGGER] {code} | {reason_ts} | "
-                                f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} | "
+                                f"  [SELL HOLD CANCEL] {code} | trailing recovered before confirm | "
                                 f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                             )
-                            trailing_sell_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_ts, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_ts} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
 
-                    if signal_sell_bar.get(code) == bar_time:
-                        continue
+                    if trailing_condition:
+                        if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
+                            # First hit: defer to next 3-minute bar confirmation.
+                            if pending_state is None:
+                                trailing_sell_confirm_state[code] = {
+                                    "trigger_bar_time": bar_time,
+                                    "triggered_at": current_dt,
+                                    "reason": reason_ts,
+                                }
+                                log(
+                                    f"  [SELL HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
+                                    f"bar={bar_time:%H:%M:%S} pnl={current_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                                )
+                                continue
 
-                    prev_bar = frame.iloc[-2]
-                    sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, price, cross_info)
-                    if sell_ok:
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, sell_reason, nxt_tradeable, price=price, code_name=name):
-                            log(
-                                f"  [SELL EVAL] {code} | OK {sell_reason} | {current_dt:%H:%M:%S} | "
-                                f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
-                                f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
-                                f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
-                                f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
-                                f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} | "
-                                f"ADX={_num(cur, 'ADX'):.1f} | pnl={pnl_pct*100:.2f}% peak={highest_price:,.0f}"
-                            )
-                            log(f"  [SELL EXECUTED] {code} | {sell_reason} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                    elif (
-                        sell_reason.startswith("AUX_BLOCKED")
-                        or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_WEAK_SCORE")
-                        or sell_reason.startswith("BOX_RANGE_HOLD")
-                    ):
-                        log(f"  [SELL HOLD] {code} | {sell_reason}")
+                            # Still same bar: keep waiting.
+                            if pending_state.get("trigger_bar_time") == bar_time:
+                                continue
 
-                else:
-                    trailing_sell_confirm_state.pop(code, None)
-                    if not is_new_entry_allowed(current_dt, nxt_tradeable):
-                        continue
-                    session_open_dt = get_session_open_datetime(current_dt, nxt_tradeable)
-                    if session_open_dt is not None:
-                        _warmup_elapsed = (current_dt - session_open_dt).total_seconds()
-                        if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
-                            log(
-                                f"  {symbol_label} [BUY REJECT] | SESSION_OPEN_WARMUP | "
-                                f"elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
-                                f"session_open={session_open_dt:%H:%M:%S}"
-                            )
-                            continue
-                    if not ALLOW_REBUY_SAME_CODE and code in traded_today:
-                        continue
-                    if api._in_cooldown(code, current_dt):
-                        continue
-                    if signal_buy_bar.get(code) == bar_time:
-                        continue
-
-                    prev_bar = frame.iloc[-2]
-
-                    buy_ok, buy_reason = check_buy_condition(frame, current_dt, price, cross_info)
-
-                    if not buy_ok:
-                        buy_confirm_state.pop(code, None)
-                        detail = _buy_reject_detail(
-                            buy_reason,
-                            cur,
-                            prev_bar,
-                            live_price=price,
-                            cross_info=cross_info,
-                            frame=frame,
-                        )
-                        log(f"  {symbol_label} [BUY REJECT] | {detail}")
-                        continue
-
-                    confirm_state = buy_confirm_state.get(code)
-                    if (
-                        confirm_state is None
-                        or confirm_state.get("bar_time") != bar_time
-                    ):
-                        confirm_count = 1
-                    else:
-                        confirm_count = int(confirm_state.get("count", 0)) + 1
-
-                    buy_confirm_state[code] = {"bar_time": bar_time, "count": confirm_count}
-                    if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
                         log(
-                            f"  {symbol_label} [BUY HOLD] | reason=WAIT_CONSECUTIVE_CONFIRM | "
-                            f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
-                            f"bar={bar_time:%H:%M:%S}"
+                            f"  [SELL TRIGGER] {code} | {reason_ts} | "
+                            f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} | "
+                            f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                         )
+                        trailing_sell_confirm_state.pop(code, None)
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_ts, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_ts} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
                         continue
 
-                    qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
-                    if qty <= 0:
-                        log(f"  {symbol_label} [BUY REJECT] | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
-                        continue
+                if signal_sell_bar.get(code) == bar_time:
+                    continue
 
-                    if _is_stale_live_price_source(price_source):
+                prev_bar = frame.iloc[-2]
+                sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, price, cross_info)
+                if sell_ok:
+                    if api.place_sell_order(code, int(pos["quantity"]), current_dt, sell_reason, nxt_tradeable, price=price, code_name=name):
                         log(
-                            f"  {symbol_label} [BUY REJECT] | STALE_LIVE_PRICE | "
-                            f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
-                        )
-                        continue
-
-                    session = classify_buy_session(current_dt)
-                    buy_detail = (
-                        f"reason={buy_reason} signal={cross_info.get('signal')} "
-                        f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} "
-                        f"bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
-                    )
-                    if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
-                        log(
-                            f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
+                            f"  [SELL EVAL] {code} | OK {sell_reason} | {current_dt:%H:%M:%S} | "
                             f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
                             f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                             f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
                             f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
                             f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} | "
-                            f"ADX={_num(cur, 'ADX'):.1f} +DI={_num(cur, 'DI_PLUS'):.1f} -DI={_num(cur, 'DI_MINUS'):.1f} | "
-                            f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
-                            f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
+                            f"ADX={_num(cur, 'ADX'):.1f} | pnl={pnl_pct*100:.2f}% peak={highest_price:,.0f}"
                         )
-                        log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
-                        traded_today.add(code)
-                        api.live_state["traded_today"] = traded_today
-                        api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
-                        signal_buy_bar[code] = bar_time
-                        buy_confirm_state.pop(code, None)
-                        log("=" * 110)
+                        log(f"  [SELL EXECUTED] {code} | {sell_reason} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                elif (
+                    sell_reason.startswith("AUX_BLOCKED")
+                    or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_WEAK_SCORE")
+                    or sell_reason.startswith("BOX_RANGE_HOLD")
+                ):
+                    log(f"  [SELL HOLD] {code} | {sell_reason}")
 
-            api.maybe_persist_live_state_interval(current_dt, current_dt.strftime("%Y%m%d"))
+            else:
+                trailing_sell_confirm_state.pop(code, None)
+                if not is_new_entry_allowed(current_dt, nxt_tradeable):
+                    continue
+                session_open_dt = get_session_open_datetime(current_dt, nxt_tradeable)
+                if session_open_dt is not None:
+                    _warmup_elapsed = (current_dt - session_open_dt).total_seconds()
+                    if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
+                        log(
+                            f"  {symbol_label} [BUY REJECT] | SESSION_OPEN_WARMUP | "
+                            f"elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
+                            f"session_open={session_open_dt:%H:%M:%S}"
+                        )
+                        continue
+                if not ALLOW_REBUY_SAME_CODE and code in traded_today:
+                    continue
+                if api._in_cooldown(code, current_dt):
+                    continue
+                if signal_buy_bar.get(code) == bar_time:
+                    continue
+
+                prev_bar = frame.iloc[-2]
+
+                buy_ok, buy_reason = check_buy_condition(frame, current_dt, price, cross_info)
+
+                if not buy_ok:
+                    buy_confirm_state.pop(code, None)
+                    detail = _buy_reject_detail(
+                        buy_reason,
+                        cur,
+                        prev_bar,
+                        live_price=price,
+                        cross_info=cross_info,
+                        frame=frame,
+                    )
+                    log(f"  {symbol_label} [BUY REJECT] | {detail}")
+                    continue
+
+                confirm_state = buy_confirm_state.get(code)
+                if (
+                    confirm_state is None
+                    or confirm_state.get("bar_time") != bar_time
+                ):
+                    confirm_count = 1
+                else:
+                    confirm_count = int(confirm_state.get("count", 0)) + 1
+
+                buy_confirm_state[code] = {"bar_time": bar_time, "count": confirm_count}
+                if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
+                    log(
+                        f"  {symbol_label} [BUY HOLD] | reason=WAIT_CONSECUTIVE_CONFIRM | "
+                        f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
+                        f"bar={bar_time:%H:%M:%S}"
+                    )
+                    continue
+
+                qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
+                if qty <= 0:
+                    log(f"  {symbol_label} [BUY REJECT] | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
+                    continue
+
+                if "bar_close(stale_live=" in price_source:
+                    log(
+                        f"  {symbol_label} [BUY REJECT] | STALE_LIVE_PRICE | "
+                        f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
+                    )
+                    continue
+
+                session = classify_buy_session(current_dt)
+                buy_detail = (
+                    f"reason={buy_reason} signal={cross_info.get('signal')} "
+                    f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} "
+                    f"bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
+                )
+                if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
+                    log(
+                        f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
+                        f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
+                        f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
+                        f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
+                        f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
+                        f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} | "
+                        f"ADX={_num(cur, 'ADX'):.1f} +DI={_num(cur, 'DI_PLUS'):.1f} -DI={_num(cur, 'DI_MINUS'):.1f} | "
+                        f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
+                        f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
+                    )
+                    log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
+                    traded_today.add(code)
+                    api.live_state["traded_today"] = traded_today
+                    api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
+                    signal_buy_bar'@
+
+# 13) separator inside buy success
+$content = $content -replace 'buy_confirm_state\.pop\(code, None\)\r?\n\r?\n                log\("=" \* 110\)', 'buy_confirm_state.pop(code, None)`n                    log("=" * 110)'
+
+# 14) sell stale guard before first place_sell in position block - add after pnl calc when pos
+# Simpler: in each sell trigger add check - too many. Add at start of `if pos is not None` block after pnl
+$staleGuard = @'
+                if _is_stale_live_price_source(price_source):
+                    log(
+                        f"  {symbol_label} [SELL REJECT] | STALE_LIVE_PRICE | "
+                        f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
+                    )
+                    continue
+[code] = bar_time
+                    buy_confirm_state.pop(code, None)
+
+                log("=" * 110)
+
+
             loop_consecutive_errors = 0
         except KeyboardInterrupt:
-            _log_pending_orders_on_shutdown(api)
-            try:
-                api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
-            except Exception:
-                pass
-            log("MAIN LOOP STOP | reason=keyboard_interrupt")
-            break
+            _log_pending_orders_on_shutdown()
+            raise
         except Exception as exc:
             loop_consecutive_errors += 1
             log(f"MAIN LOOP ERROR ({loop_consecutive_errors}/{MAIN_LOOP_MAX_CONSECUTIVE_ERRORS}): {exc}")
             if loop_consecutive_errors >= MAIN_LOOP_MAX_CONSECUTIVE_ERRORS:
-                _log_pending_orders_on_shutdown(api)
-                try:
-                    api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
-                except Exception:
-                    pass
+                _log_pending_orders_on_shutdown()
                 log("MAIN LOOP STOP | reason=max_consecutive_errors")
-                break
-
-        time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
+                break        time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
     args = _parse_args()
     run(target_date=args.date)
+
