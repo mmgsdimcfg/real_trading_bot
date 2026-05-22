@@ -66,7 +66,7 @@ STRICT_CONFIG = ScannerConfig(
     price_max=1_000_000,
     atr_ratio_min=0.015,            # 1.5% daily ATR minimum
     volume_ma20_min=200_000,        # 20만주/일
-    amount_ma20_min=1_000_000_000,  # 10억원/일
+    amount_ma20_min=10_000_000_000,  # 10억원/일
     min_listing_days=120,
     min_up_days_in_5=3,
     max_52w_high_ratio=0.90,        # 52주 고가 90% 이상이면 제외
@@ -81,7 +81,7 @@ BALANCED_CONFIG = ScannerConfig(
     price_max=1_000_000,
     atr_ratio_min=0.010,
     volume_ma20_min=50_000,
-    amount_ma20_min=300_000_000,    # 3억원/일
+    amount_ma20_min=3_000_000_000,    # 30억원/일
     min_listing_days=60,
     min_up_days_in_5=2,
     max_52w_high_ratio=0.95,
@@ -96,7 +96,7 @@ RELAXED_CONFIG = ScannerConfig(
     price_max=1_000_000,
     atr_ratio_min=0.007,
     volume_ma20_min=20_000,
-    amount_ma20_min=100_000_000,    # 1억원/일
+    amount_ma20_min=300_000_000,    # 3억원/일
     min_listing_days=30,
     min_up_days_in_5=1,
     max_52w_high_ratio=0.97,
@@ -709,6 +709,39 @@ def render_ranked_csv(selected_rows):
     return "\n".join(lines)
 
 
+def render_all_scan_csv(all_rows):
+    header = (
+        "rank,code,name,eligible,skip_reason,fail_reasons,soft_flags,score,price,atr_ratio,vol_ma20,amount_ma20,"
+        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,listing_days,prev_day_change"
+    )
+    lines = [header]
+    for rank, row in enumerate(all_rows, start=1):
+        fail_reasons = "|".join(row.get("fail_reasons", []))
+        soft_flags = "|".join(row.get("soft_flags", []))
+        lines.append(",".join([
+            str(rank),
+            row.get("code", ""),
+            str(row.get("name", "")).replace(",", " "),
+            "Y" if row.get("eligible") else "N",
+            str(row.get("skip_reason") or ""),
+            fail_reasons,
+            soft_flags,
+            f"{float(row.get('score') or 0.0):.2f}",
+            format_metric(row.get("price"), 0).replace(",", "") if row.get("price") is not None else "",
+            f"{row.get('atr_ratio'):.6f}" if row.get("atr_ratio") is not None else "",
+            format_metric(row.get("vol_ma20"), 0).replace(",", "") if row.get("vol_ma20") is not None else "",
+            format_metric(row.get("amount_ma20"), 0).replace(",", "") if row.get("amount_ma20") is not None else "",
+            str(row.get("trend_state") or ""),
+            f"{row.get('ma_gap'):.2f}" if row.get("ma_gap") is not None else "",
+            str(row.get("up_days_in_5") if row.get("up_days_in_5") is not None else ""),
+            f"{row.get('vol_trend_ratio'):.3f}" if row.get("vol_trend_ratio") is not None else "",
+            f"{row.get('high_52w_ratio'):.3f}" if row.get("high_52w_ratio") is not None else "",
+            str(row.get("listing_days") if row.get("listing_days") is not None else ""),
+            f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
+        ]))
+    return "\n".join(lines)
+
+
 def build_history_comparison(data_root, stock_list, history_window=DEFAULT_HISTORY_WINDOW):
     date_dirs = sorted(
         d for d in data_root.iterdir()
@@ -970,10 +1003,10 @@ def scan(
 
         if verbose:
             if candidate["eligible"]:
-                print(f"[{idx}/{total}] {code} ({name}) 후보 (score={candidate['score']:.2f})          ")
+                print(f"[{idx}/{total}] {code}_{name} **후보** (score={candidate['score']:.2f})          ")
             else:
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
-                print(f"[{idx}/{total}] {code} ({name}) 탈락 ({', '.join(reasons)})          ")
+                print(f"[{idx}/{total}] {code}_{name} //탈락// ({', '.join(reasons)})          ")
 
     eligible_rows = [row for row in candidates if row["eligible"]]
     eligible_rows.sort(
@@ -1035,10 +1068,16 @@ def scan(
         print(f"최종 선정: {summary['selected_count']}")
 
     if return_details:
+        all_rows = sorted(
+            candidates,
+            key=lambda row: (row.get("score", 0.0), row.get("amount_ma20") or 0.0, row.get("atr_ratio") or 0.0),
+            reverse=True,
+        )
         return {
             "selected": selected,
             "selected_rows": selected_rows,
             "eligible_rows": eligible_rows,
+            "all_rows": all_rows,
             "summary": summary,
             "config": config,
             "selection_mode": selection_mode,
@@ -1138,6 +1177,7 @@ if __name__ == "__main__":
     picks_filename = f"{output_prefix}_picks.txt" if output_prefix else "picks.txt"
     ranked_filename = f"{output_prefix}_ranked.txt" if output_prefix else "ranked.txt"
     report_filename = f"{output_prefix}_scanner_report.md" if output_prefix else "scanner_report.md"
+    all_scan_filename = f"{output_prefix}_scan_all.txt" if output_prefix else "scan_all.txt"
 
     if picks:
         picks_file = out_dir / picks_filename
@@ -1154,6 +1194,10 @@ if __name__ == "__main__":
         encoding="utf-8",
     )
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
+
+    all_scan_file = out_dir / all_scan_filename
+    all_scan_file.write_text(render_all_scan_csv(scan_result["all_rows"]), encoding="utf-8")
+    print(f"전체 스캔 결과를 저장했습니다: {all_scan_file}")
 
     label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
         # print(f"\n[{label}] 기준 추천 종목:", picks)  # 중복 출력 제거
