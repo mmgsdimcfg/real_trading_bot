@@ -15,12 +15,12 @@ Key behavior:
 - Supports NXT pre/after sessions (08:00~19:59) when symbol is NXT-tradeable.
 
 Usage examples:
-- Single code on specific date:
+- Single code on specific date (regular market only):
     python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310
+- Single code on specific date (include NXT market):
+    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310 --nxt
 - Multiple codes on specific date:
-    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930
-- Multiple dates (comma-separated):
-    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508,20260509,20260510
+    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930 --nxt
 - Full list from symbols file:
     python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --symbols-file xgraph/auto_trading/r009_universe_symbols_master.txt
 
@@ -98,6 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "r009_universe_symbols_master.txt"), help="Path to r009_universe_symbols_master.txt")
     parser.add_argument("--data-root", type=str, default=str(SCRIPT_DIR / "data"), help="Output data root")
     parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
+    parser.add_argument("--nxt", action="store_true", help="Include NXT market data (08:00~20:00)")
     return parser.parse_args()
 
 
@@ -249,6 +250,10 @@ def fetch_symbol_data(code: str, target_date: str, include_nxt: bool) -> pd.Data
         return None
 
     merged = pd.concat(collected, ignore_index=True)
+
+    # Filter data based on market hours
+    if not include_nxt:
+        merged = merged[merged["datetime"].dt.time >= datetime.strptime("09:00:00", "%H:%M:%S").time()]
 
     # One row per minute. Priority: NX > J > UN.
     priority = {"NX": 0, "J": 1, "UN": 2}
@@ -491,6 +496,8 @@ def resolve_target_date(date_arg: str | None, symbols: list[tuple[str, str]]) ->
 def main() -> None:
     args = parse_args()
 
+    include_nxt = args.nxt
+
     symbols_file = Path(args.symbols_file)
     if not symbols_file.is_file():
         raise SystemExit(f"symbols file not found: {symbols_file}")
@@ -523,7 +530,7 @@ def main() -> None:
         output_dir = Path(args.data_root) / target_date
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info("collect start: date=%s, symbols=%d", target_date, len(symbols))
+        logger.info("collect start: date=%s, symbols=%d, include_nxt=%s", target_date, len(symbols), include_nxt)
 
         saved_count = 0
         empty_count = 0
@@ -538,7 +545,7 @@ def main() -> None:
             # 최대 2회 시도
             for attempt in range(2):
                 try:
-                    nxt_tradeable = probe_nxt_tradeable(code)
+                    nxt_tradeable = probe_nxt_tradeable(code) if include_nxt else False
                     nxt_flags[code] = nxt_tradeable
                     df = fetch_symbol_data(code=code, target_date=target_date, include_nxt=nxt_tradeable)
                     last_error = None

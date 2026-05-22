@@ -301,6 +301,13 @@ def load_picks(picks_file: Path) -> dict[str, str] | None:
     return load_code_name_map(picks_file)
 
 
+def resolve_picks_file(data_dir: Path, date_str: str) -> Path:
+    dated_picks = data_dir / f"{date_str}_picks.txt"
+    if dated_picks.exists():
+        return dated_picks
+    return data_dir / PICKS_FILENAME
+
+
 def load_symbols_name_map(symbols_file: Path) -> dict[str, str]:
     if not symbols_file.exists():
         return {}
@@ -1490,7 +1497,8 @@ def simulate_date(
         return 1
 
     selected_names = dict(names or {})
-    picks = None if codes else load_picks(data_dir / PICKS_FILENAME)
+    picks_file = resolve_picks_file(data_dir, date_str)
+    picks = None if codes else load_picks(picks_file)
     watchlist_source = ""
     if codes:
         target_codes = {code.zfill(6) for code in codes}
@@ -1500,15 +1508,15 @@ def simulate_date(
     elif picks:
         csv_files = {code: path for code, path in csv_files.items() if code in picks}
         selected_names.update({code: name for code, name in picks.items() if code not in selected_names})
-        watchlist_source = str(data_dir / PICKS_FILENAME)
-        log(f"Loaded picks.txt ({len(picks)}): {sorted(picks.keys())}")
+        watchlist_source = str(picks_file)
+        log(f"Loaded {picks_file.name} ({len(picks)}): {sorted(picks.keys())}")
     elif today_watch_codes:
         csv_files = {code: path for code, path in csv_files.items() if code in today_watch_codes}
         watchlist_source = TODAY_CODE_FILE.name
         log(f"Loaded r76_trade_watchlist_today.txt ({len(today_watch_codes)}): {sorted(today_watch_codes)}")
     else:
         watchlist_source = f"{data_dir}/*.txt"
-        log("picks.txt not found; using all TXT files in date folder")
+        log(f"{date_str}_picks.txt / picks.txt not found; using all TXT files in date folder")
 
     if not csv_files:
         log("ERROR: No matching TXT files after filtering")
