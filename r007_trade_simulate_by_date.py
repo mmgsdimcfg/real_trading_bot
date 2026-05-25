@@ -1766,7 +1766,6 @@ def simulate_date(
             nxt_tradeable = _is_nxt_tradeable(code)
             if not can_trade_code_now(ts, nxt_tradeable):
                 continue
-            symbol_label = f"{code}_{selected_names.get(code, code)}"
 
             raw_frame = price_frames.get(code)
             if raw_frame is None or raw_frame.empty:
@@ -1806,7 +1805,7 @@ def simulate_date(
             compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed, live_price=price)
 
             log_detail(
-                f"  {symbol_label} | [CHECK] | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
+                f"  [CHECK] {code}({selected_names.get(code, code)}) | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                 f"K={_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
@@ -1967,7 +1966,7 @@ def simulate_date(
                 continue
             if sim.in_cooldown(code, ts):
                 continue
-            if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in sim.completed_codes:
+            if (not ALLOW_REBUY_SAME_CODE) and code in sim.completed_codes:
                 continue
             if signal_buy_bar.get(code) == ts:
                 continue
@@ -1986,10 +1985,9 @@ def simulate_date(
                     signal_buy_bar[code] = ts
                     log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
                 else:
-                    log_detail(f"  {symbol_label} | [BUY REJECT] | ORDER_REJECTED")
+                    log_detail(f"  [BUY REJECT] {code} | ORDER_REJECTED")
             else:
-                reject_reasons = collect_buy_reject_reasons_r76_sim(available, ts, price, cross_info, reason)
-                log_detail(f"  {symbol_label} | [BUY REJECT] | {' ; '.join(reject_reasons)}")
+                log_detail(f"  [BUY REJECT] {code} | {reason}")
 
 
 
@@ -2043,26 +2041,22 @@ def simulate_date(
         name = selected_names.get(code) or SAMPLE_CODE_MAP.get(code) or code
         buys = [record for record in sim.trade_log if record.code == code and record.action == "BUY"]
         sells = [record for record in sim.trade_log if record.code == code and record.action == "SELL"]
-        code_trades = sorted(
-            [record for record in sim.trade_log if record.code == code],
-            key=lambda rec: rec.bar_time,
-        )
         code_pnl = sum(record.pnl_krw or 0.0 for record in sells)
 
         # Show both code and name in the header line, e.g. [009830] 한화솔루션
         raw(f"\n  [{code}] {name}")
         raw(f"  {'-' * 50}")
-        for record in code_trades:
+        for record in buys:
             bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
-            if record.action == "BUY":
-                raw(f"    {bar_dt}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
-            else:
-                pnl_pct = record.pnl_pct if record.pnl_pct is not None else 0.0
-                pnl_krw = record.pnl_krw if record.pnl_krw is not None else 0.0
-                raw(
-                    f"    {bar_dt}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
-                    f"  {pnl_pct:+.2f}%  {pnl_krw:+,.0f} KRW  [{record.reason}]"
-                )
+            raw(f"    {bar_dt}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
+        for record in sells:
+            pnl_pct = record.pnl_pct if record.pnl_pct is not None else 0.0
+            pnl_krw = record.pnl_krw if record.pnl_krw is not None else 0.0
+            bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
+            raw(
+                f"    {bar_dt}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
+                f"  {pnl_pct:+.2f}%  {pnl_krw:+,.0f} KRW  [{record.reason}]"
+            )
         raw(f"    {'-' * 46}")
         raw(f"    종목 손익: {code_pnl:+,.0f} KRW  (매수 {len(buys)}건 / 매도 {len(sells)}건)")
 
@@ -2252,11 +2246,6 @@ def main() -> None:
         help="Use r76_trade_watchlist_today.txt as watchlist when --codes and picks.txt are not provided",
     )
     parser.add_argument(
-        "--allow-all-txt-fallback",
-        action="store_true",
-        help="Allow fallback to all TXT files in date folder when date_picks file is missing",
-    )
-    parser.add_argument(
         "--symbols-file",
         default=str(SCRIPT_DIR / "r76_universe_symbols_master.csv"),
         help="Path to r76_universe_symbols_master.csv used by get_simulation_data.py",
@@ -2369,7 +2358,6 @@ def main() -> None:
         names=names,
         initial_capital=args.capital,
         run_index=run_index,
-        allow_all_txt_fallback=args.allow_all_txt_fallback,
     )
     # 핸들러/tee 정리
     try:
@@ -2385,4 +2373,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
