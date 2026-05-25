@@ -13,6 +13,8 @@ Key behavior:
 - Collects by date from KIS minute API (`inquire_time_dailychartprice`).
 - Uses market priority NX > J > UN for overlapping timestamps.
 - Supports NXT pre/after sessions (08:00~19:59) when symbol is NXT-tradeable.
+- Exports 3-minute indicator bars used by live decision logic.
+- Keeps a legacy 20-second file via interpolation from minute bars (not a 20-second server fetch).
 
 Usage examples:
 - Single code on specific date (regular market only):
@@ -336,7 +338,12 @@ def calculate_r76_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
-    """1�??�이?��? 20�?간격?�로 ?�형 보간?�여 ?�??"""
+    """1분봉 데이터를 20초 간격으로 선형 보간해 확장한다.
+
+    Note:
+    - 이 데이터는 레거시 호환 목적의 보간 결과이며,
+      서버에서 20초 주기로 직접 수집한 체결/호가 데이터가 아니다.
+    """
     df = minute_df.copy()
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
     df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
@@ -399,12 +406,12 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     return df_20sec
 
 
-def enrich_with_strategy_indicators(minute_df: pd.DataFrame) -> pd.DataFrame:
+def build_3min_indicator_frame(minute_df: pd.DataFrame) -> pd.DataFrame:
     base = minute_df.copy()
     base["datetime"] = pd.to_datetime(base["datetime"], errors="coerce")
     base = base.dropna(subset=["datetime"]).sort_values("datetime")
     if base.empty:
-        return base
+        return pd.DataFrame(columns=base.columns)
 
     idx = base.set_index("datetime")
     bars_3m = idx.resample("3min", label="right", closed="right").agg(
@@ -418,16 +425,30 @@ def enrich_with_strategy_indicators(minute_df: pd.DataFrame) -> pd.DataFrame:
     )
     bars_3m = bars_3m.dropna(subset=["open", "high", "low", "close"])
     if bars_3m.empty:
-        return base
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
     bars_3m = calculate_r76_indicators(bars_3m)
+    return bars_3m.reset_index().rename(columns={"index": "datetime"})
+
+
+def enrich_with_strategy_indicators(minute_df: pd.DataFrame) -> pd.DataFrame:
+    base = minute_df.copy()
+    base["datetime"] = pd.to_datetime(base["datetime"], errors="coerce")
+    base = base.dropna(subset=["datetime"]).sort_values("datetime")
+    if base.empty:
+        return base
+
+    bars_3m = build_3min_indicator_frame(base)
+    if bars_3m.empty:
+        return base
+
     indicator_cols = [
         "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
         "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
         "MACD", "MACD_SIGNAL", "MACD_HIST", "DI_PLUS", "DI_MINUS", "ADX",
         "VWAP", "OBV", "OBV_MA",
     ]
-    bars_for_merge = bars_3m[indicator_cols].reset_index().rename(columns={"index": "datetime"})
+    bars_for_merge = bars_3m[["datetime", *indicator_cols]].copy()
 
     enriched = pd.merge_asof(
         base.sort_values("datetime"),
@@ -535,6 +556,7 @@ def main() -> None:
         saved_count = 0
         empty_count = 0
         nxt_flags: dict[str, bool] = {}
+        saved_symbols: list[tuple[str, str]] = []
 
         for idx, (code, name) in enumerate(symbols, start=1):
 
@@ -572,18 +594,22 @@ def main() -> None:
                 logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
             else:
                 df_1m = enrich_with_strategy_indicators(df)
+                df_3m = build_3min_indicator_frame(df)
                 df_20s = interpolate_to_20sec(df_1m)
-                # Save both 1-minute and legacy 20-second files.
+                # Save 1-minute, live-aligned 3-minute, and legacy 20-second files.
                 safe_name = str(name).replace("/", "_").replace("\\", "_")
                 file_1m_path = output_dir / f"{code}_{safe_name}_1m.txt"
+                file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
                 legacy_20s_path = output_dir / f"{code}_{safe_name}.txt"
 
                 df_1m.to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
                 df_20s.to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
 
                 saved_count += 1
+                saved_symbols.append((code, name))
                 logger.info(
-                    "[%d/%d] %s(%s) | NXT=%s | saved 1m=%d rows -> %s | 20s=%d rows -> %s",
+                    "[%d/%d] %s(%s) | NXT=%s | saved 1m=%d -> %s | 3m=%d -> %s | 20s(interpolated)=%d -> %s",
                     idx,
                     len(symbols),
                     code,
@@ -591,6 +617,8 @@ def main() -> None:
                     nxt_tradeable,
                     len(df_1m),
                     file_1m_path,
+                    len(df_3m),
+                    file_3m_path,
                     len(df_20s),
                     legacy_20s_path,
                 )
@@ -604,6 +632,20 @@ def main() -> None:
             with open(nxt_flags_path, "w", encoding="utf-8") as _f:
                 json.dump(nxt_flags, _f, ensure_ascii=False, indent=2)
             logger.info("saved NXT flags (%d codes): %s", len(nxt_flags), nxt_flags_path)
+
+        # Save date-scoped picks file for r007 simulation input.
+        if saved_symbols:
+            picks_lines = [f"{code},{name}" for code, name in saved_symbols]
+            picks_payload = "\n".join(picks_lines) + "\n"
+
+            underscored_dated_picks = output_dir / f"_{target_date}_picks.txt"
+
+            underscored_dated_picks.write_text(picks_payload, encoding="utf-8-sig")
+            logger.info(
+                "saved picks file (%d codes): %s",
+                len(saved_symbols),
+                underscored_dated_picks,
+            )
 
         logger.info("done: date=%s saved=%d, empty=%d, out=%s", target_date, saved_count, empty_count, output_dir)
 

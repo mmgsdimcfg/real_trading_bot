@@ -67,6 +67,14 @@ class R76StrategyConfig:
     rsi_buy_max: float
     williams_buy_floor: float
     obv_breakout_lookback_bars: int
+    enable_price_lead_bb_breakout: bool
+    price_lead_breakout_min_score: int
+    price_lead_breakout_min_adx: float
+    price_lead_breakout_allow_overbought: bool
+    enable_strong_trend_overbought_bypass: bool = False
+    strong_trend_overbought_min_score: int = 5
+    strong_trend_overbought_min_vol_ratio: float = 1.5
+    strong_trend_overbought_min_adx: float = 30.0
 
 
 def _num(candle: pd.Series, key: str) -> float:
@@ -366,9 +374,18 @@ def check_buy_condition(
     ma5_golden_cross_now = prev_ma5 <= prev_bb and cur_ma5 > cur_bb
     ma5_bias_ok = cur_ma5 >= cur_bb and cur_ma5 >= prev_ma5
     upper_trigger = float(cross_info.get("upper_trigger", cur_bb))
+    support_score = _buy_support_score(cur, prev, frame, config)
 
     if not live_cross_up_signal:
-        fallback_ok = confirmed_above and ma5_bias_ok and live_price >= upper_trigger
+        # Allow early entry when broad support signals are already strong
+        # even if explicit live-price cross confirmation has not fired yet.
+        strong_signal_fallback = (
+            support_score >= config.strong_trend_overbought_min_score
+            and live_price > cur_bb
+            and cur_bb >= prev_bb
+            and ma5_bias_ok
+        )
+        fallback_ok = (confirmed_above and ma5_bias_ok and live_price >= upper_trigger) or strong_signal_fallback
         if not fallback_ok:
             return False, "NO_LIVE_PRICE_BB_CROSS_UP"
 
@@ -387,11 +404,23 @@ def check_buy_condition(
         return False, "NOT_BULLISH"
 
     stoch_k = _num(cur, "STOCH_K")
-    if not pd.isna(stoch_k) and stoch_k >= config.stoch_overbought:
-        return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
+    is_stoch_overbought = not pd.isna(stoch_k) and stoch_k >= config.stoch_overbought
+
+    adx_val = _num(cur, "ADX")
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    score = _buy_support_score(cur, prev, frame, config)
+    strong_entry_ok = (
+        config.enable_strong_trend_overbought_bypass
+        and score >= config.strong_trend_overbought_min_score
+        and live_price > cur_bb
+        and cur_bb >= prev_bb
+        and cur_ma5 >= prev_ma5
+        and (pd.isna(adx_val) or adx_val >= config.strong_trend_overbought_min_adx)
+    )
 
     wr_val = _num(cur, "WILLIAMS_R")
-    if not pd.isna(wr_val) and wr_val >= config.williams_overbought_ceil:
+    if not strong_entry_ok and not pd.isna(wr_val) and wr_val >= config.williams_overbought_ceil:
         return False, f"OVERBOUGHT_WR_{wr_val:.1f}"
 
     bb_up = _num(cur, "BB_UPPER")
@@ -407,26 +436,32 @@ def check_buy_condition(
         if bb_width_pct < config.bb_squeeze_min_width_pct:
             return False, f"BB_SQUEEZE_{bb_width_pct*100:.2f}%_LT_{config.bb_squeeze_min_width_pct*100:.2f}%"
 
-    adx_val = _num(cur, "ADX")
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
     if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
         ratio = volume_ratio_threshold_fn(now, adx_val)
-        if vol < (vol_ma * ratio):
+        if (not strong_entry_ok) and vol < (vol_ma * ratio):
             return False, f"LOW_VOLUME_{(vol / vol_ma):.2f}_LT_{ratio:.2f}"
 
     if not pd.isna(adx_val) and adx_val < config.adx_min_trend:
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
 
+    if is_stoch_overbought:
+        bypass_overbought = (
+            config.enable_strong_trend_overbought_bypass
+            and score >= config.strong_trend_overbought_min_score
+        )
+        if bypass_overbought:
+            trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
+            return True, f"{trigger}_OVERBOUGHT_BYPASS_SCORE_{score}"
+
     # --- 추가 필수 조건 ---
     vwap = _num(cur, "VWAP")
     close_v = _num(cur, "close")
-    if pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap):
+    if (not strong_entry_ok) and (pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap)):
         return False, "NO_VWAP_BREAK"
 
     # 거래량 > 평균 거래량 1.5배
     if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        if vol < (vol_ma * 1.5):
+        if (not strong_entry_ok) and vol < (vol_ma * 1.5):
             return False, f"LOW_VOLUME_1.5X_{(vol / vol_ma):.2f}"
 
     # RSI > 55
@@ -445,7 +480,38 @@ def check_buy_condition(
     if not pd.isna(exec_strength) and exec_strength <= 120:
         return False, f"EXEC_STRENGTH_TOO_LOW_{exec_strength:.2f}"
 
-    score = _buy_support_score(cur, prev, frame, config)
+    score = support_score
+
+    if is_stoch_overbought:
+        bypass_overbought = (
+            config.enable_strong_trend_overbought_bypass
+            and score >= config.strong_trend_overbought_min_score
+        )
+        if not bypass_overbought:
+            return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
+
+    if config.enable_price_lead_bb_breakout:
+        breakout_window = frame.iloc[:-1].tail(3)
+        if breakout_window.empty:
+            return False, "INSUFFICIENT_BREAKOUT_HISTORY"
+
+        recent_high = pd.to_numeric(breakout_window["high"], errors="coerce").max()
+        if pd.isna(recent_high) or recent_high <= 0:
+            return False, "MISSING_BREAKOUT_HIGH"
+
+        breakout_buffer = 1.0 + max(config.live_price_bb_buffer_pct, 0.0005)
+        if live_price <= float(recent_high) * breakout_buffer:
+            return False, f"NO_PRICE_LEAD_BREAKOUT_{live_price:.0f}_LE_{float(recent_high):.0f}"
+
+        if score < config.price_lead_breakout_min_score:
+            return False, f"LOW_BREAKOUT_SCORE_{score}"
+
+        if not pd.isna(adx_val) and adx_val < config.price_lead_breakout_min_adx:
+            return False, f"WEAK_BREAKOUT_ADX_{adx_val:.1f}"
+
+        if not config.price_lead_breakout_allow_overbought and is_stoch_overbought:
+            return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
+
     if score < 2:  # 3 → 2로 완화
         return False, f"LOW_SCORE_{score}"
 

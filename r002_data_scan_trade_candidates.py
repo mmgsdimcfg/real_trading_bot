@@ -16,6 +16,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-05-25] type=refactor owner=copilot
+    summary: removed listing_days scoring/flags; changed near_52w_high and prev_day_gap_risk from hard-fail to score penalties; aligned fallback eligibility.
+    impact: scanner
+    compatibility: breaking (ranking behavior updated)
 - [2026-05-10] type=docs owner=copilot
     summary: added standardized file header and expandable update-log format.
     impact: scanner
@@ -496,22 +500,20 @@ def evaluate_candidate(code, name, daily_df, config):
     # low_up_days: meaningful only when we have at least 5 bars
     if len(daily_df) >= 5 and up_days_in_5 < config.min_up_days_in_5:
         candidate["fail_reasons"].append("low_up_days")
-    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
-        candidate["fail_reasons"].append("near_52w_high")
-    if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
-        candidate["fail_reasons"].append("prev_day_gap_risk")
     if trend_state == "down":
         candidate["fail_reasons"].append("down_trend")
 
     # --- Soft flags (warning only, not disqualified) ---
-    if listing_days < config.min_listing_days:
-        candidate["soft_flags"].append("limited_history")
     if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
         candidate["soft_flags"].append("volume_declining")
     if trend_state == "flat":
         candidate["soft_flags"].append("flat_trend")
     if high_52w_ratio is not None and high_52w_ratio < 0.4:
         candidate["soft_flags"].append("far_from_52w_high")
+    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
+        candidate["soft_flags"].append("near_52w_high")
+    if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
+        candidate["soft_flags"].append("prev_day_gap_risk")
 
     candidate["score"] = calculate_candidate_score(candidate, config)
     if candidate["score"] < 50.0:
@@ -531,7 +533,7 @@ def calculate_candidate_score(candidate, config):
     vol_trend = candidate.get("vol_trend_ratio")
     vol_rel_strength = candidate.get("vol_rel_strength")
     high_52w_ratio = candidate.get("high_52w_ratio")
-    listing_days = candidate.get("listing_days") or 0
+    prev_day_change = candidate.get("prev_day_change")
     is_last_bearish = bool(candidate.get("is_last_bearish"))
 
     if None in (price, atr_ratio, vol_ma20, amount_ma20):
@@ -575,8 +577,15 @@ def calculate_candidate_score(candidate, config):
         proximity = max(0.0, 1.0 - (abs(high_52w_ratio - center) / width))
         score += 10.0 * proximity
 
-    # Listing stability bonus (max 5): continuous.
-    score += min(5.0, (listing_days / 250.0) * 5.0)
+    # Overextended near 52w high: keep candidate but apply risk penalty.
+    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
+        overflow = min(0.20, high_52w_ratio - config.max_52w_high_ratio)
+        score -= min(12.0, 6.0 + (overflow / 0.20) * 6.0)
+
+    # Previous-day surge/gap risk: keep candidate but apply risk penalty.
+    if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
+        overflow = min(0.15, prev_day_change - config.max_prev_day_change)
+        score -= min(10.0, 4.0 + (overflow / 0.15) * 6.0)
 
     # Price range preference (max 5): soft bias to tradable middle range.
     if price <= config.price_max:
@@ -1026,9 +1035,8 @@ def scan(
         fallback_rows = [
             row for row in candidates
             if is_scorable_candidate(row)
-            # Keep fallback defensive: only clear up-trend names with enough history.
+            # Keep fallback defensive: only clear up-trend names.
             and row.get("trend_state") == "up"
-            and "limited_history" not in row.get("soft_flags", [])
             and not bool(row.get("is_last_bearish"))
             and row.get("score", 0.0) >= 50.0
             and "3d_downtrend" not in row.get("fail_reasons", [])
@@ -1174,10 +1182,10 @@ if __name__ == "__main__":
     elif out_dir.name.isdigit() and len(out_dir.name) == 8:
         output_prefix = out_dir.name
 
-    picks_filename = f"{output_prefix}_picks.txt" if output_prefix else "picks.txt"
-    ranked_filename = f"{output_prefix}_ranked.txt" if output_prefix else "ranked.txt"
-    report_filename = f"{output_prefix}_scanner_report.md" if output_prefix else "scanner_report.md"
-    all_scan_filename = f"{output_prefix}_scan_all.txt" if output_prefix else "scan_all.txt"
+    picks_filename = f"_{output_prefix}_picks.txt" if output_prefix else "_picks.txt"
+    ranked_filename = f"_{output_prefix}_ranked.txt" if output_prefix else "_ranked.txt"
+    report_filename = f"_{output_prefix}_scanner_report.md" if output_prefix else "_scanner_report.md"
+    all_scan_filename = f"_{output_prefix}_scan_all.txt" if output_prefix else "_scan_all.txt"
 
     if picks:
         picks_file = out_dir / picks_filename
@@ -1200,11 +1208,11 @@ if __name__ == "__main__":
     print(f"전체 스캔 결과를 저장했습니다: {all_scan_file}")
 
     label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
-        # print(f"\n[{label}] 기준 추천 종목:", picks)  # 중복 출력 제거
-
-    if effective_target_date:
-        print(f"\n[{effective_target_date.strftime('%Y%m%d')}] 기준 추천 종목:", picks)
+    print(f"\n[{label}] 기준 추천 종목:")
+    if picks:
+        for pick in picks:
+            print(pick)
     else:
-        print("\n[최신 데이터] 기준 추천 종목:", picks)
+        print("(없음)")
 
 

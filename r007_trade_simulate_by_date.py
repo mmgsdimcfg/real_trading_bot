@@ -16,6 +16,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-05-25] type=fix owner=copilot
+    summary: r007 allows same-day re-entry after completed sell via simulation-only override flag.
+    impact: sim
+    compatibility: backward-compatible
 - [2026-05-10] type=docs owner=copilot
     summary: added standardized file header and expandable update-log format.
     impact: sim
@@ -74,6 +78,8 @@ from r003_define_config import (
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_EARLY_NEAR_CROSS_ENTRY,
     ENABLE_NEAR_CROSS_ARM,
+    ENABLE_PRICE_LEAD_BB_BREAKOUT,
+    ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
     ENABLE_NXT_SESSION,
     ENABLE_STRICT_MA5_BB_GOLDEN_CROSS as REQUIRE_STRICT_BUY_GOLDEN_CROSS,
     ENABLE_TP_EXTENSION_TRAILING,
@@ -102,6 +108,9 @@ from r003_define_config import (
     OBV_BREAKOUT_LOOKBACK_BARS,
     OBV_MA_PERIOD,
     POLL_INTERVAL_SECONDS,
+    PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
+    PRICE_LEAD_BREAKOUT_MIN_ADX,
+    PRICE_LEAD_BREAKOUT_MIN_SCORE,
     REGULAR_END,
     REGULAR_FORCE_EXIT,
     REGULAR_NEW_ENTRY_CUTOFF,
@@ -130,6 +139,9 @@ from r003_define_config import (
     STOCH_D_PERIOD,
     STOCH_K_PERIOD,
     STOCH_OVERBOUGHT,
+    STRONG_TREND_OVERBOUGHT_MIN_ADX,
+    STRONG_TREND_OVERBOUGHT_MIN_SCORE,
+    STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
     TAKE_PROFIT_PERCENT,
     TP_EXTENSION_TRAIL_FROM_PEAK,
     TRADE_COOLDOWN_MINUTES,
@@ -161,6 +173,7 @@ TODAY_CODE_FILE = SCRIPT_DIR / DEFINE_TODAY_CODE_PATH
 # Simulation-only parameters (not used by live trading)
 # ---------------------------------------------------------------------------
 SIM_INITIAL_CAPITAL = 5_000_000
+SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL = True
 PICKS_FILENAME = "picks.txt"
 SIM_WARMUP_TAIL_BARS = 160
 SIM_WARMUP_PRIOR_MAX_DAYS = 20
@@ -204,6 +217,14 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     rsi_buy_max=RSI_BUY_MAX,
     williams_buy_floor=WILLIAMS_BUY_FLOOR,
     obv_breakout_lookback_bars=OBV_BREAKOUT_LOOKBACK_BARS,
+    enable_price_lead_bb_breakout=ENABLE_PRICE_LEAD_BB_BREAKOUT,
+    price_lead_breakout_min_score=PRICE_LEAD_BREAKOUT_MIN_SCORE,
+    price_lead_breakout_min_adx=PRICE_LEAD_BREAKOUT_MIN_ADX,
+    price_lead_breakout_allow_overbought=PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
+    enable_strong_trend_overbought_bypass=ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
+    strong_trend_overbought_min_score=STRONG_TREND_OVERBOUGHT_MIN_SCORE,
+    strong_trend_overbought_min_vol_ratio=STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
+    strong_trend_overbought_min_adx=STRONG_TREND_OVERBOUGHT_MIN_ADX,
 )
 
 SAMPLE_CODE_MAP = {
@@ -302,9 +323,11 @@ def load_picks(picks_file: Path) -> dict[str, str] | None:
 
 
 def resolve_picks_file(data_dir: Path, date_str: str) -> Path:
-    dated_picks = data_dir / f"{date_str}_picks.txt"
-    if dated_picks.exists():
-        return dated_picks
+    # Preferred naming: _YYYYMMDD_picks.txt (date-scoped watchlist)
+    for name in (f"_{date_str}_picks.txt", f"{date_str}_picks.txt"):
+        dated_picks = data_dir / name
+        if dated_picks.exists():
+            return dated_picks
     return data_dir / PICKS_FILENAME
 
 
@@ -1135,7 +1158,7 @@ class PaperStrategyTracker:
 
         if not entry_allowed:
             return
-        if (not ALLOW_REBUY_SAME_CODE) and code in self.traded_today:
+        if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in self.traded_today:
             return
 
         if self.mode == "basic":
@@ -1213,6 +1236,128 @@ def check_buy_condition_r76_sim(
         config=SHARED_R76_CONFIG,
         volume_ratio_threshold_fn=get_volume_ratio_threshold,
     )
+
+
+def collect_buy_reject_reasons_r76_sim(
+    frame: pd.DataFrame,
+    ts: pd.Timestamp,
+    live_price: float,
+    cross_info: dict[str, object],
+    primary_reason: str,
+) -> list[str]:
+    reasons: list[str] = []
+    if primary_reason:
+        reasons.append(primary_reason)
+
+    if len(frame) < 2:
+        return list(dict.fromkeys(reasons))
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    cur_bb = _num(cur, "BB_MIDDLE")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_ma5 = _num(cur, "MA_5")
+    prev_ma5 = _num(prev, "MA_5")
+    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_ma5, prev_ma5)):
+        if "MISSING_INDICATOR" not in reasons:
+            reasons.append("MISSING_INDICATOR")
+        return list(dict.fromkeys(reasons))
+
+    score = _buy_support_score(cur, prev, frame=frame)
+    live_cross_up_signal = cross_info.get("signal") == "cross_up"
+    confirmed_above = cross_info.get("confirmed_relation") == "above"
+    ma5_bias_ok = cur_ma5 >= cur_bb and cur_ma5 >= prev_ma5
+    upper_trigger = float(cross_info.get("upper_trigger", cur_bb))
+    strong_signal_fallback = (
+        score >= SHARED_R76_CONFIG.strong_trend_overbought_min_score
+        and live_price > cur_bb
+        and cur_bb >= prev_bb
+        and ma5_bias_ok
+    )
+    fallback_ok = (confirmed_above and ma5_bias_ok and live_price >= upper_trigger) or strong_signal_fallback
+    if (not live_cross_up_signal) and (not fallback_ok):
+        reasons.append("NO_LIVE_PRICE_BB_CROSS_UP")
+
+    if SHARED_R76_CONFIG.require_strict_buy_golden_cross:
+        ma5_golden_cross_now = prev_ma5 <= prev_bb and cur_ma5 > cur_bb
+        if not ma5_golden_cross_now:
+            reasons.append("NO_MA5_BB_GOLDEN_CROSS")
+
+    if live_price <= cur_bb:
+        reasons.append("LIVE_PRICE_NOT_ABOVE_BB_MIDDLE")
+    if cur_bb < prev_bb:
+        reasons.append("BB_MIDDLE_FALLING")
+    if cur_ma5 < prev_ma5:
+        reasons.append("MA5_FALLING")
+
+    cur_open = _num(cur, "open")
+    if not pd.isna(cur_open) and cur_open > 0 and live_price < (cur_open * 0.995):
+        reasons.append("NOT_BULLISH")
+
+    stoch_k = _num(cur, "STOCH_K")
+    is_stoch_overbought = not pd.isna(stoch_k) and stoch_k >= SHARED_R76_CONFIG.stoch_overbought
+    bypass_overbought = (
+        SHARED_R76_CONFIG.enable_strong_trend_overbought_bypass
+        and score >= SHARED_R76_CONFIG.strong_trend_overbought_min_score
+    )
+    if is_stoch_overbought and not bypass_overbought:
+        reasons.append(f"OVERBOUGHT_STOCH_{stoch_k:.1f}")
+
+    wr_val = _num(cur, "WILLIAMS_R")
+    if not pd.isna(wr_val) and wr_val >= SHARED_R76_CONFIG.williams_overbought_ceil:
+        reasons.append(f"OVERBOUGHT_WR_{wr_val:.1f}")
+
+    bb_up = _num(cur, "BB_UPPER")
+    bb_low = _num(cur, "BB_LOWER")
+    if not any(pd.isna(v) for v in (bb_up, bb_low)) and bb_up > bb_low:
+        bb_pos = (live_price - bb_low) / (bb_up - bb_low)
+        if bb_pos >= SHARED_R76_CONFIG.bb_upper_proximity_max:
+            reasons.append(f"NEAR_BB_UPPER_{bb_pos:.2f}")
+
+    cur_close = _num(cur, "close")
+    if not any(pd.isna(v) for v in (bb_up, bb_low, cur_close)) and cur_close > 0:
+        bb_width_pct = (bb_up - bb_low) / cur_close
+        if bb_width_pct < SHARED_R76_CONFIG.bb_squeeze_min_width_pct:
+            reasons.append(
+                f"BB_SQUEEZE_{bb_width_pct*100:.2f}%_LT_{SHARED_R76_CONFIG.bb_squeeze_min_width_pct*100:.2f}%"
+            )
+
+    adx_val = _num(cur, "ADX")
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        ratio = get_volume_ratio_threshold(ts, adx_val)
+        if vol < (vol_ma * ratio):
+            reasons.append(f"LOW_VOLUME_{(vol / vol_ma):.2f}_LT_{ratio:.2f}")
+
+    if not pd.isna(adx_val) and adx_val < SHARED_R76_CONFIG.adx_min_trend:
+        reasons.append(f"WEAK_TREND_ADX_{adx_val:.1f}")
+
+    vwap = _num(cur, "VWAP")
+    close_v = _num(cur, "close")
+    if pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap):
+        reasons.append("NO_VWAP_BREAK")
+
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0 and vol < (vol_ma * 1.5):
+        reasons.append(f"LOW_VOLUME_1.5X_{(vol / vol_ma):.2f}")
+
+    rsi_c = _num(cur, "RSI")
+    if pd.isna(rsi_c) or rsi_c <= 55:
+        reasons.append(f"RSI_TOO_LOW_{rsi_c:.2f}")
+
+    hist_c = _num(cur, "MACD_HIST")
+    hist_p = _num(prev, "MACD_HIST")
+    if pd.isna(hist_c) or pd.isna(hist_p) or not (hist_c > hist_p):
+        reasons.append(f"MACD_HIST_NOT_INCREASING_{hist_p:.2f}_TO_{hist_c:.2f}")
+
+    exec_strength = _num(cur, "EXECUTION_STRENGTH") if "EXECUTION_STRENGTH" in cur else float("nan")
+    if not pd.isna(exec_strength) and exec_strength <= 120:
+        reasons.append(f"EXEC_STRENGTH_TOO_LOW_{exec_strength:.2f}")
+
+    if score < 2:
+        reasons.append(f"LOW_SCORE_{score}")
+
+    return list(dict.fromkeys(reasons))
 
 
 def check_sell_condition_r76_sim(
@@ -1314,7 +1459,7 @@ class Simulator:
     def buy(self, code: str, name: str, price: float, now: pd.Timestamp, session: str, reason: str) -> bool:
         if self.in_cooldown(code, now) or price <= 0 or code in self.positions:
             return False
-        if (not ALLOW_REBUY_SAME_CODE) and code in self.completed_codes:
+        if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in self.completed_codes:
             return False
 
         qty = int(MAX_ORDER_AMOUNT_KRW / price)
@@ -1451,6 +1596,7 @@ def simulate_date(
     names: dict[str, str] | None = None,
     initial_capital: float = SIM_INITIAL_CAPITAL,
     run_index: int | None = None,
+    allow_all_txt_fallback: bool = False,
 ) -> int:
     global LAST_SIM_STATS, CURRENT_SIM_TS
     data_dir = data_root / date_str
@@ -1515,8 +1661,17 @@ def simulate_date(
         watchlist_source = TODAY_CODE_FILE.name
         log(f"Loaded r76_trade_watchlist_today.txt ({len(today_watch_codes)}): {sorted(today_watch_codes)}")
     else:
+        if not allow_all_txt_fallback:
+            log(
+                f"ERROR: watchlist file not found. expected one of: "
+                f"{data_dir / ('_' + date_str + '_picks.txt')}, "
+                f"{data_dir / (date_str + '_picks.txt')}, "
+                f"{data_dir / PICKS_FILENAME}"
+            )
+            log("Hint: run r001 collector first to generate date-scoped picks files from r009 universe list.")
+            return 1
         watchlist_source = f"{data_dir}/*.txt"
-        log(f"{date_str}_picks.txt / picks.txt not found; using all TXT files in date folder")
+        log("WARNING: picks not found; --allow-all-txt-fallback enabled, using all TXT files in date folder")
 
     if not csv_files:
         log("ERROR: No matching TXT files after filtering")
@@ -1611,6 +1766,7 @@ def simulate_date(
             nxt_tradeable = _is_nxt_tradeable(code)
             if not can_trade_code_now(ts, nxt_tradeable):
                 continue
+            symbol_label = f"{code}_{selected_names.get(code, code)}"
 
             raw_frame = price_frames.get(code)
             if raw_frame is None or raw_frame.empty:
@@ -1650,7 +1806,7 @@ def simulate_date(
             compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed, live_price=price)
 
             log_detail(
-                f"  [CHECK] {code}({selected_names.get(code, code)}) | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
+                f"  {symbol_label} | [CHECK] | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                 f"K={_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
@@ -1811,7 +1967,7 @@ def simulate_date(
                 continue
             if sim.in_cooldown(code, ts):
                 continue
-            if (not ALLOW_REBUY_SAME_CODE) and code in sim.completed_codes:
+            if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in sim.completed_codes:
                 continue
             if signal_buy_bar.get(code) == ts:
                 continue
@@ -1830,9 +1986,10 @@ def simulate_date(
                     signal_buy_bar[code] = ts
                     log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
                 else:
-                    log_detail(f"  [BUY REJECT] {code} | ORDER_REJECTED")
+                    log_detail(f"  {symbol_label} | [BUY REJECT] | ORDER_REJECTED")
             else:
-                log_detail(f"  [BUY REJECT] {code} | {reason}")
+                reject_reasons = collect_buy_reject_reasons_r76_sim(available, ts, price, cross_info, reason)
+                log_detail(f"  {symbol_label} | [BUY REJECT] | {' ; '.join(reject_reasons)}")
 
 
 
@@ -1886,22 +2043,26 @@ def simulate_date(
         name = selected_names.get(code) or SAMPLE_CODE_MAP.get(code) or code
         buys = [record for record in sim.trade_log if record.code == code and record.action == "BUY"]
         sells = [record for record in sim.trade_log if record.code == code and record.action == "SELL"]
+        code_trades = sorted(
+            [record for record in sim.trade_log if record.code == code],
+            key=lambda rec: rec.bar_time,
+        )
         code_pnl = sum(record.pnl_krw or 0.0 for record in sells)
 
         # Show both code and name in the header line, e.g. [009830] 한화솔루션
         raw(f"\n  [{code}] {name}")
         raw(f"  {'-' * 50}")
-        for record in buys:
+        for record in code_trades:
             bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
-            raw(f"    {bar_dt}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
-        for record in sells:
-            pnl_pct = record.pnl_pct if record.pnl_pct is not None else 0.0
-            pnl_krw = record.pnl_krw if record.pnl_krw is not None else 0.0
-            bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
-            raw(
-                f"    {bar_dt}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
-                f"  {pnl_pct:+.2f}%  {pnl_krw:+,.0f} KRW  [{record.reason}]"
-            )
+            if record.action == "BUY":
+                raw(f"    {bar_dt}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
+            else:
+                pnl_pct = record.pnl_pct if record.pnl_pct is not None else 0.0
+                pnl_krw = record.pnl_krw if record.pnl_krw is not None else 0.0
+                raw(
+                    f"    {bar_dt}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
+                    f"  {pnl_pct:+.2f}%  {pnl_krw:+,.0f} KRW  [{record.reason}]"
+                )
         raw(f"    {'-' * 46}")
         raw(f"    종목 손익: {code_pnl:+,.0f} KRW  (매수 {len(buys)}건 / 매도 {len(sells)}건)")
 
@@ -2091,6 +2252,11 @@ def main() -> None:
         help="Use r76_trade_watchlist_today.txt as watchlist when --codes and picks.txt are not provided",
     )
     parser.add_argument(
+        "--allow-all-txt-fallback",
+        action="store_true",
+        help="Allow fallback to all TXT files in date folder when date_picks file is missing",
+    )
+    parser.add_argument(
         "--symbols-file",
         default=str(SCRIPT_DIR / "r76_universe_symbols_master.csv"),
         help="Path to r76_universe_symbols_master.csv used by get_simulation_data.py",
@@ -2203,6 +2369,7 @@ def main() -> None:
         names=names,
         initial_capital=args.capital,
         run_index=run_index,
+        allow_all_txt_fallback=args.allow_all_txt_fallback,
     )
     # 핸들러/tee 정리
     try:
