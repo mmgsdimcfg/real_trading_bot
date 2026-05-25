@@ -1189,7 +1189,11 @@ if __name__ == "__main__":
 
     if picks:
         picks_file = out_dir / picks_filename
-        picks_file.write_text("\n".join(picks), encoding="utf-8")
+        picks_sorted_by_code = sorted(
+            picks,
+            key=lambda row: row.split(",", 1)[0],
+        )
+        picks_file.write_text("\n".join(picks_sorted_by_code), encoding="utf-8")
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
 
     ranked_file = out_dir / ranked_filename
@@ -1210,7 +1214,11 @@ if __name__ == "__main__":
     label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
     print(f"\n[{label}] 기준 추천 종목:")
     if picks:
-        for pick in picks:
+        picks_sorted_by_code = sorted(
+            picks,
+            key=lambda row: row.split(",", 1)[0],
+        )
+        for pick in picks_sorted_by_code:
             print(pick)
     else:
         print("(없음)")
