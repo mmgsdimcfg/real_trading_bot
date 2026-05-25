@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """R76 live trading executor - BB middle cross strategy with multi indicators.
 
 Core idea:
@@ -10,6 +11,7 @@ Core idea:
 Run examples:
 - python xgraph/auto_trading/r006_trade_live_execute.py
 - python xgraph/auto_trading/r006_trade_live_execute.py --date 20260508
+- python xgraph/auto_trading/r006_trade_live_execute.py --fake
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -18,6 +20,18 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-05-24] type=feat owner=copilot
+    summary: exclude pre-held watchlist positions; trade only same-day buys with data/YYYYMMDD/today_buys.txt persistence.
+    impact: live
+    compatibility: backward-compatible
+- [2026-05-22] type=fix owner=copilot
+    summary: traded_today reserve-before-submit; cooldown keys zfill(6); persist traded_today on buy submit; discard on buy fail.
+    impact: live
+    compatibility: backward-compatible
+- [2026-05-22] type=fix owner=copilot
+    summary: buy_inflight exposure guard + stable trade_events append log (flush trade_logger, main-loop BUY EXECUTED log_trade).
+    impact: live
+    compatibility: backward-compatible
 - [2026-05-22] type=fix owner=copilot
     summary: live-trading safety fixes (fail-closed market day, strict orders, live state, dry-run, session force close).
     impact: live
@@ -183,9 +197,9 @@ try:
 except Exception:
     inquire_time_itemchartprice = None
 
-
 TODAY_CODE_FILE = current_dir / DEFINE_TODAY_CODE_PATH
 DATA_DIR = current_dir / DATA_DIR_NAME
+TODAY_BUYS_FILENAME = "today_buys.txt"
 
 LIVE_RUNTIME_DIR = DATA_DIR / "live_runtime"
 LIVE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -258,13 +272,20 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     rsi_buy_max=RSI_BUY_MAX,
     williams_buy_floor=WILLIAMS_BUY_FLOOR,
     obv_breakout_lookback_bars=OBV_BREAKOUT_LOOKBACK_BARS,
+    enable_price_lead_bb_breakout=ENABLE_PRICE_LEAD_BB_BREAKOUT,
+    price_lead_breakout_min_score=PRICE_LEAD_BREAKOUT_MIN_SCORE,
+    price_lead_breakout_min_adx=PRICE_LEAD_BREAKOUT_MIN_ADX,
+    price_lead_breakout_allow_overbought=PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
+    enable_strong_trend_overbought_bypass=ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
+    strong_trend_overbought_min_score=STRONG_TREND_OVERBOUGHT_MIN_SCORE,
+    strong_trend_overbought_min_vol_ratio=STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
+    strong_trend_overbought_min_adx=STRONG_TREND_OVERBOUGHT_MIN_ADX,
 )
 
 # 3-minute frame refresh controls:
-# - Keep polling live price every loop.
-# - Refresh OHLCV frame only when a new 3-minute bar can be finalized,
-#   and occasionally force a backfill sync for safety.
-FRAME_REFRESH_SETTLE_DELAY_SECONDS = 3
+# - Keep polling live price every loop (10s).
+# - Poll server frame every 20s and rebuild indicators on 3-minute bars.
+FRAME_POLL_INTERVAL_SECONDS = 20
 FRAME_BACKFILL_SYNC_SECONDS = 600
 
 # Live-price polling / order trigger controls.
@@ -300,90 +321,10 @@ _suppress_filter = _SuppressLibLogs()
 
 _LOG_CTX: dict[str, object] = {"date_str": datetime.now().strftime("%Y%m%d")}
 
+import threading
 
-def _rotate_logging_for_date(date_str: str) -> None:
-    _LOG_CTX["date_str"] = date_str
-    log_dir = current_dir / "logs"
-    log_date_dir = log_dir / date_str
-    log_date_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    script_stem = Path(__file__).stem
-    log_filename = log_date_dir / f"{timestamp}_{script_stem}.log"
-    trade_log_filename = log_date_dir / f"{timestamp}_{script_stem}_buy_sell.log"
-
-    root = logging.getLogger()
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-        try:
-            handler.close()
-        except Exception:
-            pass
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_filename, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-        force=True,
-    )
-    global logger, trade_logger, _trade_handler, _symbol_general_handler, _symbol_trade_handler
-    logger = logging.getLogger(__name__)
-    logging.getLogger("domestic_stock_functions").setLevel(logging.WARNING)
-    logging.getLogger("inquire_time_itemchartprice").setLevel(logging.WARNING)
-    for _handler in logging.getLogger().handlers:
-        if not any(isinstance(f, _SuppressLibLogs) for f in getattr(_handler, "filters", [])):
-            _handler.addFilter(_suppress_filter)
-
-    trade_logger = logging.getLogger("trade_events")
-    trade_logger.setLevel(logging.INFO)
-    trade_logger.propagate = False
-    for h in list(trade_logger.handlers):
-        trade_logger.removeHandler(h)
-        try:
-            h.close()
-        except Exception:
-            pass
-    _trade_handler = logging.FileHandler(trade_log_filename, encoding="utf-8")
-    _trade_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    trade_logger.addHandler(_trade_handler)
-
-    for h in list(logger.handlers):
-        if isinstance(h, _PerSymbolFileHandler):
-            logger.removeHandler(h)
-            try:
-                h.close()
-            except Exception:
-                pass
-    _symbol_general_handler = _PerSymbolFileHandler(log_date_dir, buy_sell=False)
-    _symbol_general_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    logger.addHandler(_symbol_general_handler)
-
-    for h in list(trade_logger.handlers):
-        if isinstance(h, _PerSymbolFileHandler):
-            trade_logger.removeHandler(h)
-            try:
-                h.close()
-            except Exception:
-                pass
-    _symbol_trade_handler = _PerSymbolFileHandler(log_date_dir, buy_sell=True)
-    _symbol_trade_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    trade_logger.addHandler(_symbol_trade_handler)
-
-
-_rotate_logging_for_date(str(_LOG_CTX["date_str"]))
-logger = logging.getLogger(__name__)
-
-# domestic_stock_functions
-
-# domestic_stock_functions / inquire_time_itemchartprice 관련 라이브러리 로그 억제
-# 출력되는 "Data fetch complete.", "Call Next page...", "Max recursive depth reached." 메시지를 필터링한다.
-# 루트 로거의 INFO 노이즈를 줄이고, 모듈 로그는 WARNING 이상만 남긴다.
-logging.getLogger("domestic_stock_functions").setLevel(logging.WARNING)
-logging.getLogger("inquire_time_itemchartprice").setLevel(logging.WARNING)
-# 일부 모듈이 module-level logging.info/warning 으로 루트 로거를 직접 사용하는 경우
-# 루트 로거 자체에서 메시지들을 레벨로 필터링할 필요가 있으므로 아래 필터 추가
+_TRADE_LOG_WRITE_LOCK = threading.Lock()
+PENDING_BUY_GRACE_SECONDS = 90
 
 _SYMBOL_CODE_PATTERN = re.compile(r"\b(\d{6})\b")
 _INVALID_FILENAME_CHARS = re.compile(r"[<>:\"/\\|?*\x00-\x1F]")
@@ -450,6 +391,93 @@ class _PerSymbolFileHandler(logging.Handler):
         self._streams.clear()
         super().close()
 
+def _rotate_logging_for_date(date_str: str) -> None:
+    _LOG_CTX["date_str"] = date_str
+    log_dir = current_dir / "logs"
+    log_date_dir = log_dir / date_str
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_date_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_stem = Path(__file__).stem
+    flat_log_filename = log_dir / f"{timestamp}_{script_stem}.log"
+    flat_trade_log_filename = log_dir / f"{timestamp}_{script_stem}_buy_sell.log"
+    log_filename = log_date_dir / f"{timestamp}_{script_stem}.log"
+    trade_log_filename = log_date_dir / f"{timestamp}_{script_stem}_buy_sell.log"
+
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(flat_log_filename, encoding="utf-8"),
+            logging.FileHandler(log_filename, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+    global logger, trade_logger, _trade_handler, _symbol_general_handler, _symbol_trade_handler
+    logger = logging.getLogger(__name__)
+    logging.getLogger("domestic_stock_functions").setLevel(logging.WARNING)
+    logging.getLogger("inquire_time_itemchartprice").setLevel(logging.WARNING)
+    for _handler in logging.getLogger().handlers:
+        if not any(isinstance(f, _SuppressLibLogs) for f in getattr(_handler, "filters", [])):
+            _handler.addFilter(_suppress_filter)
+
+    trade_logger = logging.getLogger("trade_events")
+    trade_logger.setLevel(logging.INFO)
+    trade_logger.propagate = False
+    for h in list(trade_logger.handlers):
+        trade_logger.removeHandler(h)
+        try:
+            h.close()
+        except Exception:
+            pass
+    _trade_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    _trade_handler = logging.FileHandler(flat_trade_log_filename, encoding="utf-8")
+    _trade_handler.setFormatter(_trade_formatter)
+    trade_logger.addHandler(_trade_handler)
+    _trade_date_handler = logging.FileHandler(trade_log_filename, encoding="utf-8")
+    _trade_date_handler.setFormatter(_trade_formatter)
+    trade_logger.addHandler(_trade_date_handler)
+
+    for h in list(logger.handlers):
+        if isinstance(h, _PerSymbolFileHandler):
+            logger.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass
+    _symbol_general_handler = _PerSymbolFileHandler(log_date_dir, buy_sell=False)
+    _symbol_general_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(_symbol_general_handler)
+
+    for h in list(trade_logger.handlers):
+        if isinstance(h, _PerSymbolFileHandler):
+            trade_logger.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass
+    _symbol_trade_handler = _PerSymbolFileHandler(log_date_dir, buy_sell=True)
+    _symbol_trade_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    trade_logger.addHandler(_symbol_trade_handler)
+
+    for handler in trade_logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+    _LOG_CTX["flat_trade_log"] = flat_trade_log_filename
+    _LOG_CTX["trade_log"] = trade_log_filename
+
+_rotate_logging_for_date(str(_LOG_CTX["date_str"]))
 
 def log(msg: str) -> None:
     logger.info(msg)
@@ -458,8 +486,53 @@ def log(msg: str) -> None:
 
 
 
+def _trade_log_target_paths() -> list[Path]:
+    date_str = str(_LOG_CTX.get("date_str") or datetime.now().strftime("%Y%m%d"))
+    candidates: list[Path] = [
+        current_dir / "logs" / f"buy_sell_{date_str}.log",
+        current_dir / "logs" / f"trade_events_{date_str}.log",
+    ]
+    for key in ("flat_trade_log", "trade_log", "session_buy_sell_log"):
+        value = _LOG_CTX.get(key)
+        if value:
+            candidates.append(Path(value))
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _bind_session_trade_log() -> None:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_path = current_dir / "logs" / f"{timestamp}_r006_trade_live_execute_buy_sell.log"
+    _LOG_CTX["session_buy_sell_log"] = session_path
+    log_trade(f"SESSION trade log | path={session_path}")
+
+
 def log_trade(msg: str) -> None:
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} [INFO] {msg}\n"
+    with _TRADE_LOG_WRITE_LOCK:
+        for target_path in _trade_log_target_paths():
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(target_path, "a", encoding="utf-8") as trade_f:
+                    trade_f.write(line)
+                    trade_f.flush()
+                    os.fsync(trade_f.fileno())
+            except Exception as exc:
+                logger.warning(f"trade log append failed ({target_path}): {exc}")
     trade_logger.info(msg)
+    for handler in trade_logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+    log(f"[TRADE] {msg}")
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +577,7 @@ def load_today_codes(code_file: Path | None = None) -> dict[str, str]:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="R76 real trading runner")
     parser.add_argument("--date", type=str, help="Watchlist date (YYYYMMDD). Use data/YYYYMMDD/picks.txt first")
-    parser.add_argument("--dry-run", action="store_true", help="Log orders without sending to broker")
+    parser.add_argument("--dry-run", "--fake", dest="dry_run", action="store_true", help="Log orders without sending to broker")
     parser.add_argument("--env-dv", type=str, default=None, help="KIS env_dv override (default: env KIS_ENV_DV or real)")
     return parser.parse_args()
 
@@ -521,6 +594,58 @@ def _resolve_watchlist_file(target_date: str | None) -> Path:
     return TODAY_CODE_FILE
 
 
+def _today_buys_file_path(date_str: str) -> Path:
+    return DATA_DIR / date_str / TODAY_BUYS_FILENAME
+
+
+def load_today_buy_codes(date_str: str) -> set[str]:
+    path = _today_buys_file_path(date_str)
+    if not path.exists():
+        return set()
+
+    codes: set[str] = set()
+    try:
+        for line in _load_text_lines(path):
+            if line.startswith("#"):
+                continue
+            code = line.split(",", 1)[0].strip()
+            if code:
+                codes.add(str(code).zfill(6))
+    except Exception as exc:
+        log(f"WARNING: today-buy file load failed ({path}): {exc}")
+        return set()
+    return codes
+
+
+def save_today_buy_codes(date_str: str, codes: set[str]) -> None:
+    path = _today_buys_file_path(date_str)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "\n".join(sorted({str(code).zfill(6) for code in (codes or set())}))
+    if payload:
+        payload += "\n"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _is_today_buy_position(code: str, pos: dict, date_str: str, today_buy_codes: set[str]) -> bool:
+    norm = str(code).zfill(6)
+    if norm in today_buy_codes:
+        return True
+
+    buy_time = pos.get("buy_time")
+    if isinstance(buy_time, datetime):
+        return buy_time.strftime("%Y%m%d") == date_str
+
+    if isinstance(buy_time, str) and buy_time.strip():
+        try:
+            return datetime.fromisoformat(buy_time.strip()).strftime("%Y%m%d") == date_str
+        except ValueError:
+            return False
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # 주문 결과 파싱
 # ---------------------------------------------------------------------------
@@ -530,10 +655,22 @@ def _order_succeeded(result) -> bool:
         return False
     if isinstance(result, dict):
         rt_cd = result.get("rt_cd")
-        return str(rt_cd).strip() == "0"
+        if rt_cd is not None:
+            return str(rt_cd).strip() == "0"
+        # Some wrappers return output-only dict without rt_cd on success.
+        return bool(result)
     try:
-        if hasattr(result, "columns") and "rt_cd" in result.columns:
-            return str(result.iloc[0]["rt_cd"]).strip() == "0"
+        if hasattr(result, "empty") and bool(result.empty):
+            return False
+        if hasattr(result, "columns"):
+            lowered = {str(col).lower() for col in result.columns}
+            if "rt_cd" in lowered:
+                col_name = next(col for col in result.columns if str(col).lower() == "rt_cd")
+                return str(result.iloc[0][col_name]).strip() == "0"
+            # domestic_stock_functions.order_cash() returns a non-empty DataFrame
+            # containing output fields (for example odno/ord_tmd) when successful,
+            # and an empty DataFrame when failed.
+            return len(result) > 0
     except Exception:
         pass
     return False
@@ -1072,18 +1209,17 @@ def should_refresh_3min_frame(
     if cached_frame is None or cached_frame.empty:
         return True
 
-    now_ts = pd.Timestamp(now)
-    current_closed_bar = now_ts.floor("3min")
-    cached_last_bar = pd.Timestamp(cached_frame.index[-1])
-
-    # Refresh when a new closed 3-minute bar should be available.
-    if cached_last_bar < current_closed_bar and now.second >= FRAME_REFRESH_SETTLE_DELAY_SECONDS:
-        return True
-
-    # Periodic backfill refresh to recover from missed updates or API glitches.
     if last_refresh_at is None:
         return True
-    if (now - last_refresh_at).total_seconds() >= FRAME_BACKFILL_SYNC_SECONDS:
+
+    # Poll frame data every 20 seconds even if no new 3-minute bar closed yet.
+    # This keeps server-side data updates in sync with live checks.
+    elapsed_seconds = (now - last_refresh_at).total_seconds()
+    if elapsed_seconds >= FRAME_POLL_INTERVAL_SECONDS:
+        return True
+
+    # Extra safety backfill in case refresh timestamps drift unexpectedly.
+    if elapsed_seconds >= FRAME_BACKFILL_SYNC_SECONDS:
         return True
 
     return False
@@ -1655,14 +1791,15 @@ def _serialize_live_state(live_state: dict) -> dict:
 
 
 def load_live_state(date_str: str) -> dict:
+    today_buy_codes = load_today_buy_codes(date_str)
     path = _live_state_path(date_str)
     if not path.exists():
-        return {"date": date_str, "positions_meta": {}, "traded_today": set()}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(today_buy_codes)}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         log(f"WARNING: live state load failed ({path}): {exc}")
-        return {"date": date_str, "positions_meta": {}, "traded_today": set()}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(today_buy_codes)}
 
     positions_meta: dict[str, dict] = {}
     for code, meta in (raw.get("positions_meta") or {}).items():
@@ -1680,6 +1817,7 @@ def load_live_state(date_str: str) -> dict:
             "highest_price": (meta or {}).get("highest_price"),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
+    traded |= set(today_buy_codes)
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded}
 
 
@@ -1692,6 +1830,7 @@ def save_live_state(live_state: dict, date_str: str | None = None) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+    save_today_buy_codes(date_key, {str(c).zfill(6) for c in (payload.get("traded_today") or [])})
 
 
 def _parse_buy_time_from_holding_fields(row_or_meta: dict) -> datetime | None:
@@ -1741,12 +1880,16 @@ class TradingAPI:
         self.acnt_prdt_cd = trenv.my_prod
         self.positions: dict[str, dict] = {}
         self.pending_orders: dict[str, dict] = {}
+        self.buy_inflight_codes: set[str] = set()
         self.trade_lock_until: dict[str, datetime] = {}
         self._last_sync_at: datetime | None = None
         self._last_pending_poll_at: datetime | None = None
         self._last_live_state_save_at: datetime | None = None
         self.sync_positions_from_account(force=True)
         self._apply_persisted_position_meta()
+        for code, pos in self.positions.items():
+            if int(pos.get("quantity", 0) or 0) > 0:
+                self.buy_inflight_codes.add(str(code).zfill(6))
         log(
             f"TradingAPI (r76 MA5-BB multi-indicator) initialized | env_dv={self.env_dv} | dry_run={self.dry_run}"
         )
@@ -1846,8 +1989,6 @@ class TradingAPI:
             buy_time = prev.get("buy_time") or persisted.get("buy_time")
             if buy_time is None:
                 buy_time = _parse_buy_time_from_holding_fields(row.to_dict() if hasattr(row, "to_dict") else dict(row))
-            if buy_time is None:
-                buy_time = datetime.now()
             buy_session = prev.get("buy_session") or persisted.get("buy_session") or "synced"
             highest = max(
                 float(prev.get("highest_price", current_price)),
@@ -1872,17 +2013,30 @@ class TradingAPI:
         return self.positions
 
     def has_pending_order(self, code: str) -> bool:
-        return code in self.pending_orders
+        return str(code).zfill(6) in self.pending_orders
+
+    def has_buy_exposure(self, code: str) -> bool:
+        norm = str(code).zfill(6)
+        if norm in self.buy_inflight_codes:
+            return True
+        if self.has_pending_order(norm):
+            return True
+        pos = self.positions.get(norm)
+        if pos is not None and int(pos.get("quantity", 0) or 0) > 0:
+            return True
+        return False
 
     def get_pending_order(self, code: str) -> dict | None:
-        return self.pending_orders.get(code)
+        return self.pending_orders.get(str(code).zfill(6))
 
     def _in_cooldown(self, code: str, now: datetime) -> bool:
-        until = self.trade_lock_until.get(code)
+        key = str(code).zfill(6)
+        until = self.trade_lock_until.get(key)
         return until is not None and now < until
 
     def _mark_trade_lock(self, code: str, now: datetime) -> None:
-        self.trade_lock_until[code] = now + timedelta(minutes=TRADE_COOLDOWN_MINUTES)
+        key = str(code).zfill(6)
+        self.trade_lock_until[key] = now + timedelta(minutes=TRADE_COOLDOWN_MINUTES)
 
     @staticmethod
     def _to_int(value, default: int = 0) -> int:
@@ -2024,10 +2178,8 @@ class TradingAPI:
             code_name=code_name,
         )
         self._record_position_meta(code, pos)
-        traded = self.live_state.setdefault("traded_today", set())
-        traded.add(str(code).zfill(6))
         self.persist_live_state()
-        self.pending_orders.pop(code, None)
+        self.pending_orders.pop(str(code).zfill(6), None)
 
     def _confirm_pending_sell(self, code: str, pending: dict, status: dict | None, remaining_qty: int) -> None:
         requested_qty = int(pending.get("quantity", 0))
@@ -2057,10 +2209,13 @@ class TradingAPI:
             code_name=code_name,
         )
         if remaining_qty <= 0:
+            self.buy_inflight_codes.discard(str(code).zfill(6))
             self.positions.pop(code, None)
             (self.live_state.get("positions_meta") or {}).pop(str(code).zfill(6), None)
+            traded = self.live_state.setdefault("traded_today", set())
+            traded.discard(str(code).zfill(6))
         self.persist_live_state()
-        self.pending_orders.pop(code, None)
+        self.pending_orders.pop(str(code).zfill(6), None)
 
     def refresh_pending_orders(self, now: datetime) -> None:
         if not self.pending_orders:
@@ -2109,12 +2264,17 @@ class TradingAPI:
                         or str(status.get("cancel_yn", "")) == "Y"
                         or int(status.get("rejected_qty", 0)) >= int(status.get("order_qty", pending.get("quantity", 0)))
                     ):
+                        submitted_at = pending.get("submitted_at")
+                        if isinstance(submitted_at, datetime):
+                            if (now - submitted_at).total_seconds() < PENDING_BUY_GRACE_SECONDS:
+                                continue
                         self._maybe_log_pending_progress(
                             pending,
                             f"BUY closed without fill | {code} | order_no={pending.get('order_no', '')} | exch={pending.get('exchange', 'UNKNOWN')}",
                             "buy_closed_without_fill",
                         )
-                        self.pending_orders.pop(code, None)
+                        self.buy_inflight_codes.discard(str(code).zfill(6))
+                        self.pending_orders.pop(str(code).zfill(6), None)
                         continue
 
                     self._maybe_log_pending_progress(
@@ -2234,10 +2394,13 @@ class TradingAPI:
         return max(0, min(qty_by_budget, qty_by_psbl))
 
     def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "") -> bool:
-        if qty <= 0 or self._in_cooldown(code, now) or self.has_pending_order(code):
+        norm_code = str(code).zfill(6)
+        if self.has_buy_exposure(norm_code):
+            log(f"BUY skipped | {code} | reason=BUY_EXPOSURE_ACTIVE")
+            return False
+        if qty <= 0 or self._in_cooldown(norm_code, now) or self.has_pending_order(norm_code):
             return False
 
-        # 주문 직전 시점에 주문가능수량을 다시 확인(50만원 한도 즉시 반영)
         affordable_qty = self.get_affordable_buy_qty(code, price, now, nxt_tradeable)
         qty = min(int(qty), int(affordable_qty))
         if qty <= 0:
@@ -2249,6 +2412,7 @@ class TradingAPI:
             return False
 
         ord_unpr = order_spec["ord_unpr"] if order_spec["ord_unpr"] is not None else str(int(round(price)))
+        self.buy_inflight_codes.add(norm_code)
         if self.dry_run:
             log(f"DRY_RUN BUY | {code} | qty={qty} | price={price:,.0f} | session={session} | exch={order_spec['exchange']}")
             order_result = {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": str(int(round(price)))}
@@ -2266,9 +2430,11 @@ class TradingAPI:
                     excg_id_dvsn_cd=order_spec["exchange"],
                 )
             except Exception as exc:
+                self.buy_inflight_codes.discard(norm_code)
                 log(f"BUY error | {code} | {exc}")
                 return False
         if not _order_succeeded(order_result):
+            self.buy_inflight_codes.discard(norm_code)
             error_detail = _extract_order_error_detail(order_result)
             log(f"BUY failed | {code} | qty={qty} | {error_detail}")
             return False
@@ -2276,7 +2442,7 @@ class TradingAPI:
         requested_price = _extract_order_price(order_result) or price
         order_no = _extract_order_number(order_result)
         order_time = _extract_order_time(order_result)
-        self.pending_orders[code] = {
+        self.pending_orders[norm_code] = {
             "side": "buy",
             "quantity": int(qty),
             "submitted_at": now,
@@ -2288,7 +2454,7 @@ class TradingAPI:
             "buy_detail": buy_detail,
             "code_name": code_name,
         }
-        self._mark_trade_lock(code, now)
+        self._mark_trade_lock(norm_code, now)
         detail_suffix = f" | {buy_detail}" if buy_detail else ""
         code_label = _format_code_label(code, code_name)
         log(
@@ -2307,7 +2473,9 @@ class TradingAPI:
             detail=f"session={session} exch={order_spec['exchange']} order_no={order_no or 'UNKNOWN'}" + (f" | {buy_detail}" if buy_detail else ""),
             code_name=code_name,
         )
-        self.refresh_pending_orders(now)
+        traded = self.live_state.setdefault("traded_today", set())
+        traded.add(norm_code)
+        self.persist_live_state()
         return True
 
     def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "") -> bool:
@@ -2316,8 +2484,9 @@ class TradingAPI:
         if not pos or pos.get("quantity", 0) <= 0:
             return False
 
+        norm_code = str(code).zfill(6)
         qty = min(int(qty), int(pos["quantity"]))
-        if qty <= 0 or self._in_cooldown(code, now) or self.has_pending_order(code):
+        if qty <= 0 or self._in_cooldown(norm_code, now) or self.has_pending_order(norm_code):
             return False
 
         order_spec = get_order_spec(now, nxt_tradeable)
@@ -2342,7 +2511,7 @@ class TradingAPI:
                     ord_qty=str(qty),
                     ord_unpr=ord_unpr,
                     excg_id_dvsn_cd=order_spec["exchange"],
-            )
+                )
             except Exception as exc:
                 log(f"SELL error | {code} | {exc}")
                 return False
@@ -2355,7 +2524,7 @@ class TradingAPI:
         requested_price = _extract_order_price(order_result) or current_price
         order_no = _extract_order_number(order_result)
         order_time = _extract_order_time(order_result)
-        self.pending_orders[code] = {
+        self.pending_orders[norm_code] = {
             "side": "sell",
             "quantity": int(qty),
             "submitted_at": now,
@@ -2394,7 +2563,15 @@ class TradingAPI:
 # 예약 청산
 # ---------------------------------------------------------------------------
 
-def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: dict[str, bool], watch_map: dict[str, str], state: dict) -> None:
+def run_scheduled_liquidations(
+    current_dt: datetime,
+    api: TradingAPI,
+    nxt_map: dict[str, bool],
+    watch_map: dict[str, str],
+    state: dict,
+    date_str: str,
+    today_buy_codes: set[str],
+) -> None:
     trade_date = current_dt.date()
     current_time = current_dt.time()
 
@@ -2407,6 +2584,9 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
         state["done_1520"] = True
         for code, pos in list(api.get_open_positions().items()):
             if code not in watch_map:
+                continue
+            if not _is_today_buy_position(code, pos, date_str, today_buy_codes):
+                log(f"  [REGULAR CLOSE SKIP] {code} | NOT_TODAY_BUY_POSITION")
                 continue
             if api.has_pending_order(code):
                 log(f"  [REGULAR CLOSE SKIP] {code} | pending_order_active")
@@ -2430,6 +2610,9 @@ def run_scheduled_liquidations(current_dt: datetime, api: TradingAPI, nxt_map: d
         state["done_1959"] = True
         for code, pos in list(api.get_open_positions().items()):
             if code not in watch_map:
+                continue
+            if not _is_today_buy_position(code, pos, date_str, today_buy_codes):
+                log(f"  [NXT CLOSE SKIP] {code} | NOT_TODAY_BUY_POSITION")
                 continue
             if api.has_pending_order(code):
                 log(f"  [NXT CLOSE SKIP] {code} | pending_order_active")
@@ -2522,6 +2705,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     ka.auth()
     now = datetime.now()
     _ensure_log_date_for(now)
+    _bind_session_trade_log()
     is_open_day, market_day_log = get_market_day_status(now)
     log(market_day_log)
 
@@ -2559,7 +2743,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     )
     log(
         f"Polling: live={LIVE_PRICE_POLL_INTERVAL_SECONDS}s | "
-        f"frame refresh=3min boundary + backfill {FRAME_BACKFILL_SYNC_SECONDS}s | "
+        f"frame refresh every {FRAME_POLL_INTERVAL_SECONDS}s (3min bars) + backfill {FRAME_BACKFILL_SYNC_SECONDS}s | "
         f"buy consecutive confirms={BUY_CONSECUTIVE_CONFIRM_COUNT}"
     )
     log(f"TP={TAKE_PROFIT_PERCENT*100:.1f}% | SL={STOP_LOSS_PERCENT*100:.1f}% | Trail={TRAILING_STOP_FROM_PEAK*100:.1f}%")
@@ -2646,7 +2830,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
         market_end_time = AFTERNOON_NXT_END if ENABLE_NXT_SESSION else REGULAR_END
         if current_dt.time() >= market_end_time:
-            run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
+            run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
             log(f"{market_end_time:%H:%M} reached. Stopping.")
             break
 
@@ -2664,7 +2848,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 last_watchlist_mismatch_log_at = current_dt
             api.sync_positions_from_account(force=False)
             api.refresh_pending_orders(current_dt)
-            run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state)
+            traded_today = {str(c).zfill(6) for c in (api.live_state.get("traded_today") or [])}
+            api.live_state["traded_today"] = traded_today
+            run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
 
             # 15:20~15:30 정규장 마감 구간은 종목별 매도 체크 건너뛰고
             # 동시호가 예약 청산 로직(당일 매수 + 수익 구간)만 실행한다.
@@ -2782,6 +2968,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     no_trend_exit_state.pop(code, None)
 
                 if pos is not None and pos.get("quantity", 0) > 0:
+                    if not _is_today_buy_position(code, pos, date_str, traded_today):
+                        log(f"  {symbol_label} [HOLD SKIP] | NOT_TODAY_BUY_POSITION")
+                        continue
                     buy_confirm_state.pop(code, None)
                     entry_price = float(pos["buy_price"])
                     pnl_pct = (price / entry_price) - 1.0
@@ -3023,14 +3212,20 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                 f"session_open={session_open_dt:%H:%M:%S}"
                             )
                             continue
-                    if not ALLOW_REBUY_SAME_CODE and code in traded_today:
-                        continue
                     if api._in_cooldown(code, current_dt):
                         continue
                     if signal_buy_bar.get(code) == bar_time:
                         continue
 
                     prev_bar = frame.iloc[-2]
+                    norm_code = str(code).zfill(6)
+                    daily_traded = set(traded_today) | {str(c).zfill(6) for c in (api.live_state.get("traded_today") or [])}
+                    if norm_code in daily_traded:
+                        log(f"  {symbol_label} [BUY SKIP] | ALREADY_TRADED_TODAY_UNTIL_SELL")
+                        continue
+                    if api.has_buy_exposure(norm_code):
+                        log(f"  {symbol_label} [BUY SKIP] | BUY_EXPOSURE_ACTIVE")
+                        continue
 
                     buy_ok, buy_reason = check_buy_condition(frame, current_dt, price, cross_info)
 
@@ -3083,6 +3278,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} "
                         f"bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
                     )
+                    traded_today.add(norm_code)
+                    api.live_state["traded_today"] = traded_today
+                    signal_buy_bar[code] = bar_time
                     if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                         log(
                             f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
@@ -3096,12 +3294,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
                         )
                         log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
-                        traded_today.add(code)
-                        api.live_state["traded_today"] = traded_today
-                        api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
-                        signal_buy_bar[code] = bar_time
+                        log_trade(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
                         buy_confirm_state.pop(code, None)
                         log("=" * 110)
+                    else:
+                        traded_today.discard(norm_code)
+                        api.live_state["traded_today"] = traded_today
+                        signal_buy_bar.pop(code, None)
 
             api.maybe_persist_live_state_interval(current_dt, current_dt.strftime("%Y%m%d"))
             loop_consecutive_errors = 0
@@ -3130,4 +3329,4 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
 if __name__ == "__main__":
     args = _parse_args()
-    run(target_date=args.date)
+    run(target_date=args.date, env_dv=args.env_dv, dry_run=args.dry_run)
