@@ -108,6 +108,7 @@ from r003_define_config import (
     MA5_BB_DOWN_CROSS_IMMEDIATE_PNL,
     MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE,
     MA5_BB_DOWN_CROSS_MIN_PNL,
+    MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
     MA_PERIOD,
     MACD_FAST,
     MACD_SIGNAL_PERIOD,
@@ -280,6 +281,7 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     strong_trend_overbought_min_score=STRONG_TREND_OVERBOUGHT_MIN_SCORE,
     strong_trend_overbought_min_vol_ratio=STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
     strong_trend_overbought_min_adx=STRONG_TREND_OVERBOUGHT_MIN_ADX,
+    ma5_bb_follow_chase_max_gap_pct=MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
 )
 
 # 3-minute frame refresh controls:
@@ -533,6 +535,27 @@ def log_trade(msg: str) -> None:
         except Exception:
             pass
     log(f"[TRADE] {msg}")
+
+
+def _log_trade_block(lines: list[str], event_time: datetime | None = None, mirror_main_log: bool = False) -> None:
+    ts = event_time or datetime.now()
+    stamp = ts.strftime("%Y-%m-%d %H:%M:%S")
+    payload = [f"{stamp} [INFO] {line}\n" for line in lines]
+
+    with _TRADE_LOG_WRITE_LOCK:
+        for target_path in _trade_log_target_paths():
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(target_path, "a", encoding="utf-8") as trade_f:
+                    trade_f.writelines(payload)
+                    trade_f.flush()
+                    os.fsync(trade_f.fileno())
+            except Exception as exc:
+                logger.warning(f"trade log append failed ({target_path}): {exc}")
+
+    if mirror_main_log:
+        for line in lines:
+            log(line)
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +834,23 @@ def _extract_order_error_detail(result) -> str:
 
 def _format_code_label(code: str, code_name: str = "") -> str:
     return f"{code}({code_name})" if code_name else code
+
+
+def _format_trade_time_label(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return "N/A"
+        # Broker order time may arrive as HHMMSS.
+        if text.isdigit() and len(text) == 6:
+            return f"{text[0:2]}:{text[2:4]}:{text[4:6]}"
+        try:
+            return datetime.fromisoformat(text).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return text
+    return "N/A"
 
 
 def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detail: str = "", code_name: str = "") -> None:
@@ -2188,25 +2228,37 @@ class TradingAPI:
         fill_price = avg_price if avg_price > 0 else float(pending.get("requested_price", 0.0))
         buy_price = float(pending.get("buy_price", 0.0))
         pnl_pct = ((fill_price / buy_price) - 1.0) * 100.0 if buy_price > 0 and fill_price > 0 else float("nan")
+        profit_amount = (fill_price - buy_price) * filled_qty if buy_price > 0 and fill_price > 0 and filled_qty > 0 else float("nan")
+        event_time = datetime.now()
+        buy_time_label = _format_trade_time_label(pending.get("buy_time"))
+        sell_time_label = _format_trade_time_label(event_time)
+        buy_price_label = f"{buy_price:,.0f}" if buy_price > 0 else "N/A"
+        fill_price_label = f"{fill_price:,.0f}" if fill_price > 0 else "N/A"
+        profit_amount_label = f"{profit_amount:,.0f}원" if pd.notna(profit_amount) else "N/A"
+        pnl_pct_label = f"{pnl_pct:.2f}%" if pd.notna(pnl_pct) else "N/A"
         code_name = str(pending.get("code_name", ""))
         code_label = _format_code_label(code, code_name)
+        compact_code_label = f"{code}_{code_name}" if code_name else code
+        buy_qty = int(pending.get("pre_submit_qty", filled_qty))
+        reason_text = str(pending.get("reason", "UNKNOWN"))
+        exch_text = str(pending.get("exchange", "UNKNOWN"))
         log(
             f"{code_label} SELL executed  | filled_qty={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
-            f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
+            f"reason={reason_text} | exch={exch_text}"
         )
-        log_trade(
-            f"{code_label} SELL executed  | filled_qty={filled_qty}/{requested_qty} | "
-            f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
-            f"reason={pending.get('reason', 'UNKNOWN')} | exch={pending.get('exchange', 'UNKNOWN')}"
-        )
-        _log_trade_event_banner(
-            event="SELL EXECUTED",
-            code=code,
-            qty=filled_qty,
-            price=fill_price,
-            detail=f"pnl={pnl_pct:.2f}% reason={pending.get('reason', 'UNKNOWN')} exch={pending.get('exchange', 'UNKNOWN')}",
-            code_name=code_name,
+        _log_trade_block(
+            [
+                "=" * 110,
+                f">>> {compact_code_label} SELL EXECUTED",
+                ">>> SELL SUMMARY",
+                f"*** DETAIL: pnl={pnl_pct_label} reason={reason_text} exch={exch_text}",
+                f"*** 매수시각={buy_time_label} | 매수가격={buy_price_label} | 매수수량={buy_qty}",
+                f"*** 매도시각={sell_time_label} | 매도가격={fill_price_label} | 매도수량={filled_qty}",
+                f"*** 수익금액={profit_amount_label} | 수익율={pnl_pct_label}",
+            ],
+            event_time=event_time,
+            mirror_main_log=False,
         )
         if remaining_qty <= 0:
             self.buy_inflight_codes.discard(str(code).zfill(6))
@@ -2535,6 +2587,7 @@ class TradingAPI:
             "reason": reason,
             "code_name": code_name,
             "buy_price": float(pos.get("buy_price", 0.0)),
+            "buy_time": pos.get("buy_time"),
             "pre_submit_qty": int(pos.get("quantity", qty)),
         }
         self._mark_trade_lock(code, now)
@@ -2542,18 +2595,6 @@ class TradingAPI:
         log(
             f"SELL submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
             f"reason={reason} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}"
-        )
-        log_trade(
-            f"SELL submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
-            f"reason={reason} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}"
-        )
-        _log_trade_event_banner(
-            event="SELL SUBMITTED",
-            code=code,
-            qty=int(qty),
-            price=float(requested_price),
-            detail=f"reason={reason} exch={order_spec['exchange']} order_no={order_no or 'UNKNOWN'}",
-            code_name=code_name,
         )
         self.refresh_pending_orders(now)
         return True
@@ -3011,12 +3052,17 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             continue
 
                     # ── POST-BUY ENTRY DROP GUARD ─────────────────────────────────────
-                    _held_for_guard = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
+                    _buy_time_raw = pos.get("buy_time")
+                    _buy_time = _buy_time_raw if isinstance(_buy_time_raw, datetime) else current_dt
+                    _buy_token = _buy_time_raw if isinstance(_buy_time_raw, datetime) else (
+                        f"unknown_buy_time:{code}:{pos.get('entry_price', 0)}:{int(pos.get('quantity', 0))}"
+                    )
+                    _held_for_guard = (current_dt - _buy_time).total_seconds()
                     if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
                         _drop_hold_seconds = update_timed_condition_state(
                             post_buy_bb_drop_state,
                             code,
-                            pos.get("buy_time"),
+                            _buy_token,
                             current_dt,
                             price < entry_price * (1.0 - POST_BUY_BB_DROP_PCT),
                         )
@@ -3044,7 +3090,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     _breakeven_hold_seconds = update_timed_condition_state(
                         breakeven_fail_state,
                         code,
-                        pos.get("buy_time"),
+                        _buy_token,
                         current_dt,
                         peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
                         and pnl_pct < 0
@@ -3082,7 +3128,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     _no_trend_hold_seconds = update_timed_condition_state(
                         no_trend_exit_state,
                         code,
-                        pos.get("buy_time"),
+                        _buy_token,
                         current_dt,
                         _no_trend_condition,
                     )
@@ -3106,7 +3152,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         continue
                     # ── END NO-TREND TIME EXIT ────────────────────────────────────────
 
-                    _held_sl = (current_dt - pos.get("buy_time", current_dt)).total_seconds()
+                    _held_sl = (current_dt - _buy_time).total_seconds()
                     _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
                     if _pnl_sl <= _sl_threshold:
                         reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"

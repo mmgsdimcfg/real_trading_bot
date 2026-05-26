@@ -37,10 +37,10 @@ ADX_STRONG_TREND = 40.0
 # Trading parameters
 # ---------------------------------------------------------------------------
 MAX_ORDER_AMOUNT_KRW = 500_000
-TAKE_PROFIT_PERCENT = 0.035
+TAKE_PROFIT_PERCENT = 0.025 # +2.5%
 
 # STOP LOSS
-STOP_LOSS_PERCENT = -0.025  # -2.5%
+STOP_LOSS_PERCENT = -0.021  # -2.1%
 STOP_LOSS_EARLY_PERCENT = -0.020
 STOP_LOSS_MIN_HOLD_SECONDS = 600
 
@@ -59,10 +59,10 @@ BREAKEVEN_FAIL_GIVEBACK_PCT = 0.0075  # 고점 대비 0.75% 이상 반납
 BREAKEVEN_FAIL_CONFIRM_SECONDS = 30.0  # 실패 지속 확인 시간 (초)
 
 # 무추세 시간 손절
-NO_TREND_EXIT_ARM_SECONDS = 900.0  # 15분 동안 추세 미발생 시 점검 시작
-NO_TREND_EXIT_MAX_PEAK_PNL = 0.005  # 최고 수익이 +0.5% 미만이면 무추세로 간주
-NO_TREND_EXIT_MIN_PNL = -0.003  # 현재 손익이 -0.3% 이하일 때만 적용
-NO_TREND_EXIT_CONFIRM_SECONDS = 60.0  # BB 하단 약세 지속 확인 시간 (초)
+NO_TREND_EXIT_ARM_SECONDS = 1200.0  # 20분 동안 추세 미발생 시 점검 시작
+NO_TREND_EXIT_MAX_PEAK_PNL = 0.003  # 최고 수익이 +0.3% 미만이면 무추세로 간주
+NO_TREND_EXIT_MIN_PNL = -0.005  # 현재 손익이 -0.5% 이하일 때만 적용
+NO_TREND_EXIT_CONFIRM_SECONDS = 90.0  # BB 하단 약세 지속 확인 시간 (초)
 
 STARTUP_WARMUP_SECONDS = 90
 
@@ -80,7 +80,7 @@ MA5_BB_DOWN_CROSS_MIN_PNL = 0.000
 
 ENABLE_BOX_RANGE_HOLD_TECH_SELL = True
 ENABLE_TP_EXTENSION_TRAILING = True
-TP_EXTENSION_TRAIL_FROM_PEAK = 0.01  # 1%
+TP_EXTENSION_TRAIL_FROM_PEAK = 0.004  # 0.4%
 BOX_RANGE_HOLD_LOOKBACK_BARS = 8
 BOX_RANGE_HOLD_MAX_RANGE_PCT = 0.0065
 BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT = 0.0080
@@ -123,7 +123,7 @@ TRADE_COOLDOWN_MINUTES = 3
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = True  # False
+ENABLE_NXT_SESSION = False # True
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)
@@ -157,6 +157,9 @@ ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS = True
 STRONG_TREND_OVERBOUGHT_MIN_SCORE = 2
 STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO = 1.00
 STRONG_TREND_OVERBOUGHT_MIN_ADX = 15.0
+# 추격매수 방지: 실시간 BB 상향 크로스 없이(신호 없음) MA5/BB 후행 진입 시
+# 현재가가 BB 중심선 대비 과도하게 이격되면 매수 차단
+MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.010  # 1.00%
 
 # 3. 거래량 완화
 VOLUME_RATIO_OPEN = 0.40  # 0.60 -> 0.40 (아침 변동성 높은 시간 더 완화)

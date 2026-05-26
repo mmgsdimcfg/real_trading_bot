@@ -75,6 +75,7 @@ class R76StrategyConfig:
     strong_trend_overbought_min_score: int = 5
     strong_trend_overbought_min_vol_ratio: float = 1.5
     strong_trend_overbought_min_adx: float = 30.0
+    ma5_bb_follow_chase_max_gap_pct: float = 0.01
 
 
 def _num(candle: pd.Series, key: str) -> float:
@@ -402,6 +403,15 @@ def check_buy_condition(
     cur_open = _num(cur, "open")
     if not pd.isna(cur_open) and cur_open > 0 and live_price < (cur_open * 0.995):
         return False, "NOT_BULLISH"
+
+    # Prevent late chase entries after MA5/BB cross when no fresh live-price cross-up signal exists.
+    if (not live_cross_up_signal) and (not ma5_golden_cross_now) and cur_bb > 0:
+        bb_gap_pct = (live_price - cur_bb) / cur_bb
+        if bb_gap_pct > config.ma5_bb_follow_chase_max_gap_pct:
+            return False, (
+                f"CHASE_BUY_BLOCK_BB_GAP_{bb_gap_pct*100:.2f}%"
+                f"_GT_{config.ma5_bb_follow_chase_max_gap_pct*100:.2f}%"
+            )
 
     stoch_k = _num(cur, "STOCH_K")
     is_stoch_overbought = not pd.isna(stoch_k) and stoch_k >= config.stoch_overbought
