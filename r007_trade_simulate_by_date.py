@@ -92,6 +92,7 @@ from r003_define_config import (
     MA5_BB_DOWN_CROSS_IMMEDIATE_PNL,
     MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE,
     MA5_BB_DOWN_CROSS_MIN_PNL,
+    MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
     MA_PERIOD,
     MACD_FAST,
     MACD_SIGNAL_PERIOD,
@@ -225,6 +226,7 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     strong_trend_overbought_min_score=STRONG_TREND_OVERBOUGHT_MIN_SCORE,
     strong_trend_overbought_min_vol_ratio=STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
     strong_trend_overbought_min_adx=STRONG_TREND_OVERBOUGHT_MIN_ADX,
+    ma5_bb_follow_chase_max_gap_pct=MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
 )
 
 SAMPLE_CODE_MAP = {
