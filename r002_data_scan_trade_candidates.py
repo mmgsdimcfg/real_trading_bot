@@ -16,6 +16,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-05-27] type=feat owner=copilot
+    summary: tuned balanced preset for bullish regime; added recent-pick penalty and diversified top-pool sampling to reduce repeated symbols.
+    impact: scanner
+    compatibility: breaking (ranking/selection behavior updated)
 - [2026-05-25] type=refactor owner=copilot
     summary: removed listing_days scoring/flags; changed near_52w_high and prev_day_gap_risk from hard-fail to score penalties; aligned fallback eligibility.
     impact: scanner
@@ -60,6 +64,9 @@ class ScannerConfig:
     max_52w_high_ratio: float       # risk-zone threshold if price >= ratio * 52-week high
     max_prev_day_change: float      # exclude if previous day abs return >= this
     volume_trend_min_ratio: float   # recent 5d avg vol / prior 5d avg vol minimum
+    recent_pick_penalty_per_day: float  # score penalty per recent-day repeat
+    recent_pick_penalty_lookback_days: int  # number of prior trading days to check
+    diversified_pick_pool_mult: int  # top-pool multiplier for diversified sampling
     # Output
     max_picks: int | None
 
@@ -76,6 +83,9 @@ STRICT_CONFIG = ScannerConfig(
     max_52w_high_ratio=0.90,        # 52주 고가 근접 리스크 구간 시작
     max_prev_day_change=0.07,       # 전일 7% 이상 급등락 제외
     volume_trend_min_ratio=1.0,     # 거래량 감소 종목 제외
+    recent_pick_penalty_per_day=3.2,
+    recent_pick_penalty_lookback_days=4,
+    diversified_pick_pool_mult=2,
     max_picks=None,
 )
 
@@ -87,10 +97,13 @@ BALANCED_CONFIG = ScannerConfig(
     volume_ma20_min=50_000,
     amount_ma20_min=3_000_000_000,    # 30억원/일
     min_listing_days=60,
-    min_up_days_in_5=2,
-    max_52w_high_ratio=0.95,        # 52주 고가 근접 리스크 구간 시작
-    max_prev_day_change=0.08,
-    volume_trend_min_ratio=0.9,
+    min_up_days_in_5=3,
+    max_52w_high_ratio=0.98,        # 강세장에서는 신고가 근접 허용폭 확대
+    max_prev_day_change=0.12,
+    volume_trend_min_ratio=1.0,
+    recent_pick_penalty_per_day=3.5,
+    recent_pick_penalty_lookback_days=4,
+    diversified_pick_pool_mult=3,
     max_picks=50,
 )
 
@@ -106,6 +119,9 @@ RELAXED_CONFIG = ScannerConfig(
     max_52w_high_ratio=0.97,        # 52주 고가 근접 리스크 구간 시작
     max_prev_day_change=0.10,
     volume_trend_min_ratio=0.8,
+    recent_pick_penalty_per_day=2.0,
+    recent_pick_penalty_lookback_days=3,
+    diversified_pick_pool_mult=4,
     max_picks=20,
 )
 
@@ -327,7 +343,7 @@ def calc_volume_relative_strength(daily_df, recent_window=5, base_window=20):
 # Candidate evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_candidate(code, name, daily_df, config):
+def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
 
     candidate = {
         "code": code,
@@ -354,6 +370,7 @@ def evaluate_candidate(code, name, daily_df, config):
         "prev_day_change": None,
         "is_last_bearish": None,
         "close_3d_return": None,
+        "repeat_recent_days": int(recent_pick_count or 0),
         "score": 0.0,
     }
 
@@ -557,6 +574,7 @@ def calculate_candidate_score(candidate, config):
     high_52w_ratio = candidate.get("high_52w_ratio")
     near_52w_high_override = bool(candidate.get("near_52w_high_override"))
     prev_day_change = candidate.get("prev_day_change")
+    repeat_recent_days = int(candidate.get("repeat_recent_days") or 0)
     is_last_bearish = bool(candidate.get("is_last_bearish"))
 
     if None in (price, atr_ratio, vol_ma20, amount_ma20):
@@ -613,6 +631,10 @@ def calculate_candidate_score(candidate, config):
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         overflow = min(0.15, prev_day_change - config.max_prev_day_change)
         score -= min(10.0, 4.0 + (overflow / 0.15) * 6.0)
+
+    # Penalize symbols repeatedly selected in recent days to reduce over-concentration.
+    if repeat_recent_days > 0:
+        score -= min(12.0, repeat_recent_days * config.recent_pick_penalty_per_day)
 
     # Price range preference (max 5): soft bias to tradable middle range.
     if price <= config.price_max:
@@ -685,6 +707,41 @@ def weighted_sample_without_replacement(rows, k, rng):
     return selected
 
 
+def pick_diversified_top_pool(sorted_rows, max_picks, rng, pool_mult=3):
+    """Diversified selection from a top-ranked pool, not only exact-score ties."""
+    if max_picks is None:
+        return list(sorted_rows)
+    if max_picks <= 0 or not sorted_rows:
+        return []
+
+    pool_size = min(len(sorted_rows), max(max_picks, max_picks * max(1, int(pool_mult))))
+    top_pool = list(sorted_rows[:pool_size])
+    if len(top_pool) <= max_picks:
+        return top_pool
+
+    top_score = float(top_pool[0].get("score") or 0.0)
+    base_score = float(top_pool[-1].get("score") or 0.0)
+    span = max(1.0, top_score - base_score)
+
+    pool = list(top_pool)
+    selected = []
+    while pool and len(selected) < max_picks:
+        weights = []
+        for row in pool:
+            score = float(row.get("score") or 0.0)
+            score_boost = 1.0 + ((score - base_score) / span)
+            weights.append(selection_weight(row) * (score_boost ** 1.35))
+        chosen = rng.choices(pool, weights=weights, k=1)[0]
+        selected.append(chosen)
+        pool.remove(chosen)
+
+    selected.sort(
+        key=lambda row: (row["score"], row.get("amount_ma20") or 0.0, row.get("atr_ratio") or 0.0),
+        reverse=True,
+    )
+    return selected
+
+
 def pick_with_tie_randomization(sorted_rows, max_picks, rng):
     """Pick by score rank, but randomize inside same-score buckets."""
     if max_picks is None:
@@ -721,7 +778,7 @@ def render_ranked_csv(selected_rows):
     header = (
         "rank,code,name,score,price,atr_ratio,vol_ma20,amount_ma20,"
         "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,"
-        "listing_days,prev_day_change"
+        "listing_days,prev_day_change,repeat_recent_days"
     )
     lines = [header]
     for rank, row in enumerate(selected_rows, start=1):
@@ -741,6 +798,7 @@ def render_ranked_csv(selected_rows):
             f"{row['high_52w_ratio']:.3f}" if row.get("high_52w_ratio") is not None else "",
             str(row.get("listing_days", 0)),
             f"{row['prev_day_change']:.4f}" if row.get("prev_day_change") is not None else "",
+            str(row.get("repeat_recent_days", 0)),
         ]))
     return "\n".join(lines)
 
@@ -748,7 +806,7 @@ def render_ranked_csv(selected_rows):
 def render_all_scan_csv(all_rows):
     header = (
         "rank,code,name,eligible,skip_reason,fail_reasons,soft_flags,score,price,atr_ratio,vol_ma20,amount_ma20,"
-        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,listing_days,prev_day_change"
+        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,listing_days,prev_day_change,repeat_recent_days"
     )
     lines = [header]
     for rank, row in enumerate(all_rows, start=1):
@@ -774,6 +832,7 @@ def render_all_scan_csv(all_rows):
             f"{row.get('high_52w_ratio'):.3f}" if row.get("high_52w_ratio") is not None else "",
             str(row.get("listing_days") if row.get("listing_days") is not None else ""),
             f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
+            str(row.get("repeat_recent_days") if row.get("repeat_recent_days") is not None else ""),
         ]))
     return "\n".join(lines)
 
@@ -826,6 +885,9 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         f"- max 52w high ratio: {config.max_52w_high_ratio}",
         f"- max prev day change: {config.max_prev_day_change:.1%}",
         f"- volume trend min ratio: {config.volume_trend_min_ratio}",
+        f"- recent pick penalty/day: {config.recent_pick_penalty_per_day}",
+        f"- recent pick lookback days: {config.recent_pick_penalty_lookback_days}",
+        f"- diversified pick pool x: {config.diversified_pick_pool_mult}",
         f"- max picks: {config.max_picks}",
         "",
         "## Summary",
@@ -837,13 +899,13 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         "",
         "## Ranked Picks",
         "",
-        "| rank | code | name | score | price | ATR/price | vol MA20 | amount MA20 | trend | up/5 | vol trend | 52w pos | listing |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |",
+        "| rank | code | name | score | price | ATR/price | vol MA20 | amount MA20 | trend | up/5 | vol trend | 52w pos | listing | repeat(d) |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, row in enumerate(scan_result["selected_rows"], start=1):
         lines.append(
-            "| {rank} | {code} | {name} | {score:.2f} | {price} | {atr} | {vol} | {amt} | {trend} | {up} | {vtd} | {h52w} | {listing} |".format(
+            "| {rank} | {code} | {name} | {score:.2f} | {price} | {atr} | {vol} | {amt} | {trend} | {up} | {vtd} | {h52w} | {listing} | {repeat} |".format(
                 rank=rank,
                 code=row["code"],
                 name=row["name"],
@@ -857,6 +919,7 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
                 vtd=f"{row['vol_trend_ratio']:.2f}" if row.get("vol_trend_ratio") is not None else "-",
                 h52w=f"{row['high_52w_ratio']:.1%}" if row.get("high_52w_ratio") is not None else "-",
                 listing=row.get("listing_days", "-"),
+                repeat=row.get("repeat_recent_days", 0),
             )
         )
 
@@ -982,6 +1045,40 @@ def filter_stock_list_by_min_bars(stock_list, data_root, target_date_str=None, m
     return qualified
 
 
+def load_recent_pick_counts(data_root: Path, target_date_str: str | None, lookback_days: int) -> dict[str, int]:
+    """Count how many prior recent days each symbol was picked."""
+    if not target_date_str or lookback_days <= 0:
+        return {}
+
+    date_dirs = sorted(
+        d for d in data_root.iterdir()
+        if d.is_dir() and d.name.isdigit() and len(d.name) == 8 and d.name < target_date_str
+    )
+    if not date_dirs:
+        return {}
+
+    recent_dirs = date_dirs[-lookback_days:]
+    counts: dict[str, int] = {}
+    for d in recent_dirs:
+        picks_file = d / f"_{d.name}_picks.txt"
+        if not picks_file.exists():
+            continue
+        try:
+            lines = [ln.strip() for ln in picks_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        except Exception:
+            continue
+        seen_today: set[str] = set()
+        for ln in lines:
+            code = str(ln.split(",", 1)[0]).strip().zfill(6)
+            if not re.fullmatch(r"\d{6}", code):
+                continue
+            if code in seen_today:
+                continue
+            seen_today.add(code)
+            counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
 # ---------------------------------------------------------------------------
 # Scan orchestration
 # ---------------------------------------------------------------------------
@@ -1017,6 +1114,12 @@ def scan(
         print("[ERROR] stock_list is empty! check load_symbols() or filter_stock_list_by_existing_data()")
         return {"selected": [], "selected_rows": [], "eligible_rows": [], "summary": {"selected_count": 0, "eligible_pool_count": 0, "skipped": 0, "fail_counts": {}, "soft_counts": {}}, "config": config, "selection_mode": "error_empty_list"} if return_details else []
 
+    recent_pick_counts = load_recent_pick_counts(
+        data_root,
+        target_date_str,
+        lookback_days=config.recent_pick_penalty_lookback_days,
+    )
+
     candidates = []
     skipped = 0
     insufficient_bars_count = 0
@@ -1034,7 +1137,10 @@ def scan(
                 print(f"[{idx}/{total}] 진행중 - 현재 스킵 {skipped}종목")
             continue
 
-        candidate = evaluate_candidate(code, name, daily_df, config)
+        recent_repeat_days = int(recent_pick_counts.get(code, 0))
+        candidate = evaluate_candidate(code, name, daily_df, config, recent_pick_count=recent_repeat_days)
+        if recent_repeat_days > 0:
+            candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
         candidates.append(candidate)
 
         if verbose:
@@ -1054,7 +1160,12 @@ def scan(
     selection_mode = "strict_eligible"
 
     if config.max_picks is not None:
-        selected_rows = pick_with_tie_randomization(eligible_rows, config.max_picks, rng)
+        selected_rows = pick_diversified_top_pool(
+            eligible_rows,
+            config.max_picks,
+            rng,
+            pool_mult=config.diversified_pick_pool_mult,
+        )
 
     # Fallback: fill up to max_picks with scorable non-down-trend candidates.
     if config.max_picks is not None and len(selected_rows) < config.max_picks:
@@ -1216,11 +1327,7 @@ if __name__ == "__main__":
 
     if picks:
         picks_file = out_dir / picks_filename
-        picks_sorted_by_code = sorted(
-            picks,
-            key=lambda row: row.split(",", 1)[0],
-        )
-        picks_file.write_text("\n".join(picks_sorted_by_code), encoding="utf-8")
+        picks_file.write_text("\n".join(picks), encoding="utf-8")
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
 
     ranked_file = out_dir / ranked_filename
@@ -1241,11 +1348,7 @@ if __name__ == "__main__":
     label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
     print(f"\n[{label}] 기준 추천 종목:")
     if picks:
-        picks_sorted_by_code = sorted(
-            picks,
-            key=lambda row: row.split(",", 1)[0],
-        )
-        for pick in picks_sorted_by_code:
+        for pick in picks:
             print(pick)
     else:
         print("(없음)")
