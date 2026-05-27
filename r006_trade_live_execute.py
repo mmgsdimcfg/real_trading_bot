@@ -876,12 +876,10 @@ def _format_trade_time_label(value: object) -> str:
 
 def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detail: str = "", code_name: str = "") -> None:
     """Prints a high-visibility trade event block to both console and file logs."""
-    line = "=" * 110
     if str(event).strip().upper() == "BUY SUBMITTED":
-        compact_label = f"{code}_{code_name}" if code_name else code
-        title = f"*** {compact_label} Buy Submission Summary | qty={qty} | price={price:,.0f} ***"
-    else:
-        title = f"*** {event} | {_format_code_label(code, code_name)} | qty={qty} | price={price:,.0f} ***"
+        return
+    line = "=" * 110
+    title = f"*** {event} | {_format_code_label(code, code_name)} | qty={qty} | price={price:,.0f} ***"
     log(line)
     log(title)
     log_trade(line)
@@ -889,9 +887,8 @@ def _log_trade_event_banner(event: str, code: str, qty: int, price: float, detai
     if detail:
         log(f"*** DETAIL: {detail}")
         log_trade(f"*** DETAIL: {detail}")
-    if str(event).strip().upper() != "BUY SUBMITTED":
-        log(line)
-        log_trade(line)
+    log(line)
+    log_trade(line)
 
 
 # ---------------------------------------------------------------------------
@@ -2300,12 +2297,11 @@ class TradingAPI:
         buy_time_label = _format_trade_time_label(pending.get("submitted_at"))
         buy_price_label = f"{fill_price:,.0f}" if fill_price > 0 else "N/A"
         buy_detail_text = str(pending.get("buy_detail", "")).strip()
-        detail_line = f"*** DETAIL: {buy_detail_text}" if buy_detail_text else "*** DETAIL:"
+        summary_line = f">>> {compact_code_label} Buy - {buy_detail_text}" if buy_detail_text else f">>> {compact_code_label} Buy"
         _log_trade_block(
             [
                 "=" * 110,
-                f">>> {compact_code_label} Buy Execution Summary",
-                detail_line,
+                summary_line,
                 f"*** 매수시각={buy_time_label} | 매수가격={buy_price_label} | 매수수량={filled_qty}",
             ],
             event_time=event_time,
@@ -2345,11 +2341,9 @@ class TradingAPI:
         _log_trade_block(
             [
                 "=" * 110,
-                f">>> {compact_code_label} Sell Execution Summary",
-                f"*** DETAIL: pnl={pnl_pct_label} reason={reason_text} exch={exch_text}",
+                f">>> {compact_code_label} Sell - 수익금액={profit_amount_label} | 수익율={pnl_pct_label} | reason={reason_text} exch={exch_text}",
                 f"*** 매수시각={buy_time_label} | 매수가격={buy_price_label} | 매수수량={buy_qty}",
                 f"*** 매도시각={sell_time_label} | 매도가격={fill_price_label} | 매도수량={filled_qty}",
-                f"*** 수익금액={profit_amount_label} | 수익율={pnl_pct_label}",
             ],
             event_time=event_time,
             mirror_main_log=False,
