@@ -57,7 +57,7 @@ class ScannerConfig:
     # Stock health
     min_listing_days: int           # minimum trading days on record
     min_up_days_in_5: int           # minimum bullish candles (close > open) in last 5 days
-    max_52w_high_ratio: float       # exclude if price >= ratio * 52-week high
+    max_52w_high_ratio: float       # risk-zone threshold if price >= ratio * 52-week high
     max_prev_day_change: float      # exclude if previous day abs return >= this
     volume_trend_min_ratio: float   # recent 5d avg vol / prior 5d avg vol minimum
     # Output
@@ -73,7 +73,7 @@ STRICT_CONFIG = ScannerConfig(
     amount_ma20_min=10_000_000_000,  # 10억원/일
     min_listing_days=120,
     min_up_days_in_5=3,
-    max_52w_high_ratio=0.90,        # 52주 고가 90% 이상이면 제외
+    max_52w_high_ratio=0.90,        # 52주 고가 근접 리스크 구간 시작
     max_prev_day_change=0.07,       # 전일 7% 이상 급등락 제외
     volume_trend_min_ratio=1.0,     # 거래량 감소 종목 제외
     max_picks=None,
@@ -88,7 +88,7 @@ BALANCED_CONFIG = ScannerConfig(
     amount_ma20_min=3_000_000_000,    # 30억원/일
     min_listing_days=60,
     min_up_days_in_5=2,
-    max_52w_high_ratio=0.95,
+    max_52w_high_ratio=0.95,        # 52주 고가 근접 리스크 구간 시작
     max_prev_day_change=0.08,
     volume_trend_min_ratio=0.9,
     max_picks=50,
@@ -103,7 +103,7 @@ RELAXED_CONFIG = ScannerConfig(
     amount_ma20_min=300_000_000,    # 3억원/일
     min_listing_days=30,
     min_up_days_in_5=1,
-    max_52w_high_ratio=0.97,
+    max_52w_high_ratio=0.97,        # 52주 고가 근접 리스크 구간 시작
     max_prev_day_change=0.10,
     volume_trend_min_ratio=0.8,
     max_picks=20,
@@ -350,6 +350,7 @@ def evaluate_candidate(code, name, daily_df, config):
         "vol_trend_ratio": None,
         "vol_rel_strength": None,
         "high_52w_ratio": None,
+        "near_52w_high_override": False,
         "prev_day_change": None,
         "is_last_bearish": None,
         "close_3d_return": None,
@@ -451,6 +452,23 @@ def evaluate_candidate(code, name, daily_df, config):
 
     trend_state = classify_trend(ma5, ma20, ma5_slope_3d)
 
+    # Near 52w-high override: keep strong momentum/liquidity names in play.
+    near_52w_overextended = (
+        high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio
+    )
+    support_signals = 0
+    if trend_state == "up":
+        support_signals += 1
+    if ma_gap is not None and ma_gap > 0:
+        support_signals += 1
+    if up_days_in_5 >= max(config.min_up_days_in_5, 3):
+        support_signals += 1
+    if vol_rel_strength is not None and vol_rel_strength >= 1.2:
+        support_signals += 1
+    if vol_trend_ratio is not None and vol_trend_ratio >= 1.0:
+        support_signals += 1
+    near_52w_high_override = near_52w_overextended and support_signals >= 3
+
     is_last_bearish = False
     if len(daily_df) >= 1:
         last = daily_df.iloc[-1]
@@ -478,6 +496,7 @@ def evaluate_candidate(code, name, daily_df, config):
         "vol_trend_ratio": vol_trend_ratio,
         "vol_rel_strength": vol_rel_strength,
         "high_52w_ratio": high_52w_ratio,
+        "near_52w_high_override": near_52w_high_override,
         "prev_day_change": prev_day_change,
         "is_last_bearish": is_last_bearish,
         "close_3d_return": close_3d_return,
@@ -511,7 +530,10 @@ def evaluate_candidate(code, name, daily_df, config):
     if high_52w_ratio is not None and high_52w_ratio < 0.4:
         candidate["soft_flags"].append("far_from_52w_high")
     if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
-        candidate["soft_flags"].append("near_52w_high")
+        if near_52w_high_override:
+            candidate["soft_flags"].append("near_52w_high_override")
+        else:
+            candidate["soft_flags"].append("near_52w_high")
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         candidate["soft_flags"].append("prev_day_gap_risk")
 
@@ -533,6 +555,7 @@ def calculate_candidate_score(candidate, config):
     vol_trend = candidate.get("vol_trend_ratio")
     vol_rel_strength = candidate.get("vol_rel_strength")
     high_52w_ratio = candidate.get("high_52w_ratio")
+    near_52w_high_override = bool(candidate.get("near_52w_high_override"))
     prev_day_change = candidate.get("prev_day_change")
     is_last_bearish = bool(candidate.get("is_last_bearish"))
 
@@ -580,7 +603,11 @@ def calculate_candidate_score(candidate, config):
     # Overextended near 52w high: keep candidate but apply risk penalty.
     if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
         overflow = min(0.20, high_52w_ratio - config.max_52w_high_ratio)
-        score -= min(12.0, 6.0 + (overflow / 0.20) * 6.0)
+        near_high_penalty = min(12.0, 6.0 + (overflow / 0.20) * 6.0)
+        if near_52w_high_override:
+            # Strong supporting signals can offset most overextension risk.
+            near_high_penalty *= 0.25
+        score -= near_high_penalty
 
     # Previous-day surge/gap risk: keep candidate but apply risk penalty.
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
