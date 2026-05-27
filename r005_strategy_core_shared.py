@@ -376,13 +376,35 @@ def check_buy_condition(
     ma5_bias_ok = cur_ma5 >= cur_bb and cur_ma5 >= prev_ma5
     upper_trigger = float(cross_info.get("upper_trigger", cur_bb))
     support_score = _buy_support_score(cur, prev, frame, config)
+    cur_open = _num(cur, "open")
+    cur_close = _num(cur, "close")
+
+    # Require recent BB-middle hold when entering without a fresh live cross-up.
+    recent_window = frame.tail(3)
+    recent_close = pd.to_numeric(recent_window.get("close"), errors="coerce")
+    recent_bb_mid = pd.to_numeric(recent_window.get("BB_MIDDLE"), errors="coerce")
+    recent_above_count = int((recent_close > recent_bb_mid).sum())
+    cur_close_above_bb = (not pd.isna(cur_close)) and cur_close > cur_bb
+
+    # Late-chase guard: if the live cross has not fired, only allow entries
+    # while price is still very close to BB middle.
+    if not live_cross_up_signal and cur_bb > 0:
+        bb_gap_pct = (live_price - cur_bb) / cur_bb
+        if bb_gap_pct > min(config.ma5_bb_follow_chase_max_gap_pct, 0.005):
+            return False, f"CHASE_BUY_BLOCK_BB_GAP_{bb_gap_pct*100:.2f}%_GT_0.50%"
 
     if not live_cross_up_signal:
+        if recent_above_count < 2 or not cur_close_above_bb:
+            return False, f"BB_MIDDLE_NOT_HELD_ABOVE_{recent_above_count}/3"
+
         # Allow early entry when broad support signals are already strong
         # even if explicit live-price cross confirmation has not fired yet.
         strong_signal_fallback = (
             support_score >= config.strong_trend_overbought_min_score
             and live_price > cur_bb
+            and not pd.isna(cur_open)
+            and not pd.isna(cur_close)
+            and cur_close > cur_open
             and cur_bb >= prev_bb
             and ma5_bias_ok
         )
@@ -400,7 +422,6 @@ def check_buy_condition(
     if cur_ma5 < prev_ma5:
         return False, "MA5_FALLING"
 
-    cur_open = _num(cur, "open")
     if not pd.isna(cur_open) and cur_open > 0 and live_price < (cur_open * 0.995):
         return False, "NOT_BULLISH"
 
