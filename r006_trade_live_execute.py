@@ -1834,6 +1834,51 @@ def _rise_from_prev_close(live_price: float, prev_close: float) -> float | None:
     return (float(live_price) / float(prev_close)) - 1.0
 
 
+def _extract_score_from_buy_reason(buy_reason: str) -> int | None:
+    m = re.search(r"SCORE_(\d+)", str(buy_reason or ""))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _passes_loss_pattern_buy_filter(frame: pd.DataFrame, buy_reason: str, live_price: float) -> tuple[bool, str]:
+    """Blocks entry patterns that showed repeated losses in today's live logs.
+
+    Focus: overbought-bypass entries with weak support/momentum.
+    """
+    reason_text = str(buy_reason or "")
+    if "OVERBOUGHT_BYPASS" not in reason_text:
+        return True, "OK"
+
+    score = _extract_score_from_buy_reason(reason_text)
+    if score is not None and score <= 3:
+        return False, f"LOSS_PATTERN_BLOCK_OVERBOUGHT_BYPASS_SCORE_{score}"
+
+    cur = frame.iloc[-1]
+    ma5 = _num(cur, "MA_5")
+    bar_close = _num(cur, "close")
+    bb_mid = _num(cur, "BB_MIDDLE")
+
+    weak_live_vs_ma5 = not pd.isna(ma5) and live_price <= ma5
+    bar_above_or_equal_ma5 = not pd.isna(bar_close) and not pd.isna(ma5) and bar_close >= ma5
+    near_bb_mid = (
+        not pd.isna(bb_mid)
+        and bb_mid > 0
+        and ((live_price / bb_mid) - 1.0) <= 0.005
+    )
+
+    if score is not None and score <= 4 and weak_live_vs_ma5 and bar_above_or_equal_ma5:
+        return False, "LOSS_PATTERN_BLOCK_WEAK_OVERBOUGHT_BYPASS_MA5"
+
+    if score is not None and score <= 4 and weak_live_vs_ma5 and near_bb_mid:
+        return False, "LOSS_PATTERN_BLOCK_WEAK_OVERBOUGHT_BYPASS_BBMID"
+
+    return True, "OK"
+
+
 def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
     ok, reason = shared_check_buy_condition(
         frame=frame,
@@ -3371,6 +3416,16 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             frame=frame,
                         )
                         log(f"  {symbol_label} [BUY REJECT] | {detail}")
+                        continue
+
+                    pattern_ok, pattern_reason = _passes_loss_pattern_buy_filter(frame, buy_reason, price)
+                    if not pattern_ok:
+                        buy_confirm_state.pop(code, None)
+                        log(
+                            f"  {symbol_label} [BUY REJECT] | {pattern_reason} | "
+                            f"reason={buy_reason} live={price:,.0f} "
+                            f"bb_mid={_num(cur, 'BB_MIDDLE'):.1f} bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
+                        )
                         continue
 
                     prev_close = fetch_prev_close(code, current_dt, nxt_tradeable)
