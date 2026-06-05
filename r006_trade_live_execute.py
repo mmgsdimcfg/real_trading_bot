@@ -20,6 +20,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-05] type=fix owner=copilot
+    summary: (한글) BB 중간값 진입 보조조건 변경에 맞춰 리젝트 사유 로그를 PREV_CLOSE_MISSING / LIVE_NOT_ABOVE_PREV_CLOSE_AND_BB_MIDDLE로 상세화.
+    impact: live
+    compatibility: backward-compatible
 - [2026-05-24] type=feat owner=copilot
     summary: exclude pre-held watchlist positions; trade only same-day buys with data/YYYYMMDD/today_buys.txt persistence.
     impact: live

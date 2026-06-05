@@ -18,6 +18,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-05] type=fix owner=copilot
+    summary: (한글) BB 중간값 진입 보조조건을 최근 3봉 유지(2/3)에서 "현재가 > 직전 3분봉 종가 && 현재가 > BB 중간값"으로 변경.
+    impact: common
+    compatibility: backward-compatible
 - [2026-05-10] type=refactor owner=copilot
     summary: created r76 shared core module and centralized core strategy logic.
     impact: common
