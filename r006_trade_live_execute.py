@@ -236,10 +236,21 @@ def _cfg_bool(name: str, default: bool) -> bool:
 
 def _cfg_int(name: str, default: int) -> int:
     return int(getattr(_r003_cfg, name, default))
+    
+def _cfg_float(name: str, default: float) -> float:
+    try:
+        return float(getattr(_r003_cfg, name, default))
+    except Exception:
+        return float(default)
 
 ENABLE_LIVE_DRY_RUN = _cfg_bool("ENABLE_LIVE_DRY_RUN", LIVE_DRY_RUN)
 ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP = _cfg_bool("ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP", False)
 WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = _cfg_int("WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS", 300)
+
+# AUX reversal exits can suffer from market-order slippage.
+# Keep trigger threshold conservative to avoid frequent sub-target realized pnl.
+AUX_SELL_MIN_REALIZED_TARGET_PCT = _cfg_float("AUX_SELL_MIN_REALIZED_TARGET_PCT", 0.010)
+AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT = _cfg_float("AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT", 0.005)
 
 MAIN_LOOP_MAX_CONSECUTIVE_ERRORS = 20
 LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
@@ -777,6 +788,24 @@ def _extract_order_number(result) -> str:
     value = _extract_order_value(result, ("odno", "ord_no", "order_no"))
     text = str(value).strip() if value is not None else ""
     return text
+    
+def _extract_aux_score_from_reason(reason: str) -> int | None:
+    m = re.search(r"AUX_REVERSAL_SCORE_(\d+)", str(reason or ""))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+def _aux_min_pnl_for_score(score: int) -> float | None:
+    if score >= 4:
+        return float(AUX_SELL_MIN_PNL_SCORE4)
+    if score == 3:
+        return float(AUX_SELL_MIN_PNL_SCORE3)
+    if score == 2:
+        return float(AUX_SELL_MIN_PNL_SCORE2)
+    return None
 
 
 def _extract_order_time(result) -> str:
@@ -1487,6 +1516,18 @@ def _buy_reject_detail(
 
     if buy_reason == "BB_MIDDLE_FALLING":
         return f"{buy_reason} | BB_MID {prev_bb:.1f}->{cur_bb:.1f} | {snapshot}"
+
+    if buy_reason == "PREV_CLOSE_MISSING":
+        prev_close = _num(prev, "close")
+        return f"{buy_reason} | prev_close={prev_close:.1f} | {snapshot}"
+
+    if buy_reason == "LIVE_NOT_ABOVE_PREV_CLOSE_AND_BB_MIDDLE":
+        prev_close = _num(prev, "close")
+        live_txt = f"{live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "nan"
+        return (
+            f"{buy_reason} | live={live_txt} prev_close={prev_close:,.0f} "
+            f"bb_mid={cur_bb:.1f} | {snapshot}"
+        )
 
     if buy_reason == "MA5_FALLING":
         return f"{buy_reason} | MA5 {prev_ma5:.1f}->{cur_ma5:.1f} | {snapshot}"
@@ -2929,6 +2970,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     log(f"CONFIG BANNER | env_dv={effective_env} | dry_run={effective_dry}")
     log(f"CONFIG BANNER | MARKET_DAY_FAIL_CLOSED={MARKET_DAY_FAIL_CLOSED} | SESSION_FORCE_CLOSE_ALL_AT_CUTOFF={SESSION_FORCE_CLOSE_ALL_AT_CUTOFF}")
     log(
+        "CONFIG BANNER | aux-trigger guard | "
+        f"min_target={AUX_SELL_MIN_REALIZED_TARGET_PCT*100:.2f}% "
+        f"slippage_buffer={AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT*100:.2f}%"
+    )
+    log(
         "CONFIG BANNER | price-lead integrated | "
         f"ENABLE_PRICE_LEAD_BB_BREAKOUT={ENABLE_PRICE_LEAD_BB_BREAKOUT}"
     )
@@ -3359,6 +3405,22 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     prev_bar = frame.iloc[-2]
                     sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, price, cross_info)
                     if sell_ok:
+                        aux_score = _extract_aux_score_from_reason(sell_reason)
+                        if aux_score is not None:
+                            aux_base_min = _aux_min_pnl_for_score(aux_score)
+                            if aux_base_min is not None:
+                                aux_required_pnl = max(
+                                    AUX_SELL_MIN_REALIZED_TARGET_PCT,
+                                    aux_base_min + AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
+                                )
+                                if pnl_pct < aux_required_pnl:
+                                    log(
+                                        f"  [SELL HOLD] {code} | AUX_TRIGGER_BUFFER_BLOCK "
+                                        f"score={aux_score} pnl={pnl_pct*100:.2f}% "
+                                        f"required>={aux_required_pnl*100:.2f}% "
+                                        f"(base={aux_base_min*100:.2f}%+buffer={AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT*100:.2f}%)"
+                                    )
+                                    continue
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, sell_reason, nxt_tradeable, price=price, code_name=name):
                             log(
                                 f"  [SELL EVAL] {code} | OK {sell_reason} | {current_dt:%H:%M:%S} | "

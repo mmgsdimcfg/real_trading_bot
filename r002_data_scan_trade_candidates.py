@@ -16,6 +16,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-01] type=feat owner=copilot
+    summary: replaced static liquidity hard-thresholds with market-relative filters using KOSPI/KOSDAQ average amount and price-adjusted volume benchmark.
+    impact: scanner
+    compatibility: breaking (candidate eligibility behavior changed)
 - [2026-05-27] type=feat owner=copilot
     summary: tuned balanced preset for bullish regime; added recent-pick penalty and diversified top-pool sampling to reduce repeated symbols.
     impact: scanner
@@ -41,7 +45,7 @@ import math
 import random
 import re
 from dataclasses import dataclass, replace as dc_replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -77,7 +81,7 @@ STRICT_CONFIG = ScannerConfig(
     price_max=1_000_000,
     atr_ratio_min=0.015,            # 1.5% daily ATR minimum
     volume_ma20_min=200_000,        # 20만주/일
-    amount_ma20_min=10_000_000_000,  # 10억원/일
+    amount_ma20_min=10_000_000_000,  # 100억원/일
     min_listing_days=120,
     min_up_days_in_5=3,
     max_52w_high_ratio=0.90,        # 52주 고가 근접 리스크 구간 시작
@@ -93,7 +97,7 @@ BALANCED_CONFIG = ScannerConfig(
     name="balanced",
     price_min=2_000,
     price_max=1_000_000,
-    atr_ratio_min=0.010,
+    atr_ratio_min=0.008,
     volume_ma20_min=50_000,
     amount_ma20_min=3_000_000_000,    # 30억원/일
     min_listing_days=60,
@@ -136,6 +140,9 @@ DEFAULT_HISTORY_WINDOW = 0
 DAILY_LOOKBACK = 260  # trading days of history to load per stock
 MIN_REQUIRED_BARS = 1
 MAX_PICKS_LIMIT = 50
+SCORE_CUTOFF = 40.0
+LIQUIDITY_RELAX_FACTOR = 0.70
+LOW_UP_DAYS_TOLERANCE = 1
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +377,9 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
         "prev_day_change": None,
         "is_last_bearish": None,
         "close_3d_return": None,
+        "market": "unknown",
+        "liquidity_amount_benchmark": None,
+        "liquidity_volume_benchmark": None,
         "repeat_recent_days": int(recent_pick_count or 0),
         "score": 0.0,
     }
@@ -408,8 +418,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
     listing_days = len(daily_df)
 
 
-    # --- Additional hard filters for strong bearish candle and consecutive down closes ---
-    # 1. Exclude if latest bar is a long bearish candle with no lower shadow
+    # --- Additional risk filters for strong bearish candle and consecutive down closes ---
+    # 1. Mark risk if latest bar is a long bearish candle with no lower shadow
     if len(daily_df) >= 1:
         last = daily_df.iloc[-1]
         open_, high, low, close = last["open"], last["high"], last["low"], last["close"]
@@ -423,12 +433,12 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
             lower_shadow < 0.002 * open_ and  # lower shadow < 0.2% of open price
             body > 0.6 * candle_range  # body is most of the candle
         ):
-            candidate["fail_reasons"].append("long_bearish_candle_no_lower_shadow")
+            candidate["soft_flags"].append("long_bearish_candle_no_lower_shadow")
 
-    # 2. Exclude if prior 3 trading days are continuously down (strict rule).
+    # 2. Prior 3-day downtrend is a soft risk signal (not hard fail).
     #    Requires at least 4 bars to evaluate 3 consecutive down steps.
     if len(daily_df) < 4:
-        candidate["fail_reasons"].append("insufficient_3d_trend_history")
+        candidate["soft_flags"].append("insufficient_3d_trend_history")
     else:
         closes4 = daily_df["close"].iloc[-4:]
         highs4 = daily_df["high"].iloc[-4:]
@@ -437,7 +447,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
         high_down_3 = all(highs4.iloc[i] > highs4.iloc[i + 1] for i in range(3))
         low_down_3 = all(lows4.iloc[i] > lows4.iloc[i + 1] for i in range(3))
         if close_down_3 or (high_down_3 and low_down_3):
-            candidate["fail_reasons"].append("3d_downtrend")
+            candidate["soft_flags"].append("3d_downtrend")
 
 
 
@@ -526,18 +536,15 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
         candidate["fail_reasons"].append("price_ceiling")
     if atr_ratio is None or atr_ratio < config.atr_ratio_min:
         candidate["fail_reasons"].append("atr_ratio")
-    if vol_ma20 is None or vol_ma20 < config.volume_ma20_min:
-        candidate["fail_reasons"].append("volume_ma20")
-    if amount_ma20 is None or amount_ma20 < config.amount_ma20_min:
-        candidate["fail_reasons"].append("amount_ma20")
     # new_listing: listing_days reflects local data count, not actual IPO age.
     # Universe stocks are already established; skip this as a hard filter.
     # (Noted as soft flag below when data is scarce.)
-    # low_up_days: meaningful only when we have at least 5 bars
-    if len(daily_df) >= 5 and up_days_in_5 < config.min_up_days_in_5:
+    # low_up_days: allow tolerance in relaxed mode to avoid over-pruning.
+    min_up_days_required = max(0, config.min_up_days_in_5 - LOW_UP_DAYS_TOLERANCE)
+    if len(daily_df) >= 5 and up_days_in_5 < min_up_days_required:
         candidate["fail_reasons"].append("low_up_days")
     if trend_state == "down":
-        candidate["fail_reasons"].append("down_trend")
+        candidate["soft_flags"].append("down_trend")
 
     # --- Soft flags (warning only, not disqualified) ---
     if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
@@ -555,7 +562,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
         candidate["soft_flags"].append("prev_day_gap_risk")
 
     candidate["score"] = calculate_candidate_score(candidate, config)
-    if candidate["score"] < 50.0:
+    if candidate["score"] < SCORE_CUTOFF:
         candidate["fail_reasons"].append("low_score")
     candidate["eligible"] = not candidate["fail_reasons"]
     return candidate
@@ -592,7 +599,10 @@ def calculate_candidate_score(candidate, config):
         score += max(0.0, min(18.0, (vol_rel_strength - 0.8) * 22.5))
 
     # Liquidity amount (max 18): smooth by log scale to reduce score clustering.
-    amt_ratio = max(0.0, amount_ma20 / config.amount_ma20_min)
+    amount_benchmark = candidate.get("liquidity_amount_benchmark")
+    if amount_benchmark in (None, 0):
+        amount_benchmark = config.amount_ma20_min
+    amt_ratio = max(0.0, amount_ma20 / max(1.0, float(amount_benchmark)))
     score += min(18.0, 9.0 * math.log1p(amt_ratio * 1.6))
 
     # Momentum: consecutive up days in last 5 (max 14)
@@ -878,8 +888,8 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         f"- config: {config.name}",
         f"- price range: {config.price_min:,} ~ {config.price_max:,}",
         f"- ATR/price min (daily): {config.atr_ratio_min:.4f}",
-        f"- volume MA20 min: {config.volume_ma20_min:,}",
-        f"- amount MA20 min: {config.amount_ma20_min:,}",
+        "- liquidity filter: market-relative (KOSPI/KOSDAQ average amount + price-adjusted volume)",
+        f"- amount baseline(for score only): {config.amount_ma20_min:,}",
         f"- min listing days: {config.min_listing_days}",
         f"- min up days in 5: {config.min_up_days_in_5}",
         f"- max 52w high ratio: {config.max_52w_high_ratio}",
@@ -1079,6 +1089,140 @@ def load_recent_pick_counts(data_root: Path, target_date_str: str | None, lookba
     return counts
 
 
+def _pick_market_reference_date(data_root: Path, target_date_str: str | None) -> str | None:
+    if target_date_str:
+        return find_nearest_trading_date(data_root, target_date_str)
+
+    date_dirs = sorted(
+        d.name for d in data_root.iterdir()
+        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+    )
+    return date_dirs[-1] if date_dirs else None
+
+
+def load_market_map(data_root: Path, target_date_str: str | None, verbose: bool = True) -> tuple[dict[str, str], str | None]:
+    """Load code->market map (kospi/kosdaq) from pykrx ticker snapshots."""
+    ref_date = _pick_market_reference_date(data_root, target_date_str)
+    if not ref_date:
+        return {}, None
+
+    try:
+        from pykrx import stock  # type: ignore
+    except Exception as exc:
+        if verbose:
+            print(f"[WARN] pykrx import 실패로 시장 구분 매핑을 사용하지 않습니다: {exc}")
+        return {}, ref_date
+
+    parsed = datetime.strptime(ref_date, "%Y%m%d")
+    for offset in range(0, 8):
+        date_str = (parsed - timedelta(days=offset)).strftime("%Y%m%d")
+        try:
+            kospi = set(stock.get_market_ticker_list(date_str, market="KOSPI"))
+            kosdaq = set(stock.get_market_ticker_list(date_str, market="KOSDAQ"))
+        except Exception:
+            continue
+
+        if not kospi and not kosdaq:
+            continue
+
+        market_map: dict[str, str] = {}
+        for code in kospi:
+            market_map[str(code).zfill(6)] = "kospi"
+        for code in kosdaq:
+            market_map[str(code).zfill(6)] = "kosdaq"
+
+        if verbose:
+            print(
+                f"[INFO] 시장 매핑 로드 완료 ({date_str}) | "
+                f"KOSPI={len(kospi)} KOSDAQ={len(kosdaq)}"
+            )
+        return market_map, date_str
+
+    if verbose:
+        print(f"[WARN] 시장 매핑 조회 실패: ref_date={ref_date} (최근 7일 내 유효 데이터 없음)")
+    return {}, ref_date
+
+
+def apply_market_relative_liquidity_filters(candidates: list[dict], market_map: dict[str, str]) -> dict[str, object]:
+    """Apply market-relative liquidity thresholds.
+
+    - amount threshold: market avg amount_ma20 (KOSPI/KOSDAQ)
+    - volume threshold: market avg amount converted by each stock price
+      (price-adjusted equivalent shares)
+    """
+    for row in candidates:
+        code = str(row.get("code") or "").zfill(6)
+        row["market"] = market_map.get(code, "unknown")
+
+    scorable = [
+        row for row in candidates
+        if row.get("skip_reason") is None
+        and row.get("price") is not None
+        and row.get("amount_ma20") is not None
+        and row.get("vol_ma20") is not None
+    ]
+
+    if not scorable:
+        return {
+            "enabled": False,
+            "global_amount_avg": None,
+            "market_amount_avg": {},
+            "market_counts": {},
+        }
+
+    global_amount_avg = float(pd.Series([float(r["amount_ma20"]) for r in scorable]).mean())
+    market_amount_avg: dict[str, float] = {}
+    market_counts: dict[str, int] = {}
+
+    for market in ("kospi", "kosdaq", "unknown"):
+        rows = [r for r in scorable if r.get("market") == market]
+        market_counts[market] = len(rows)
+        if rows:
+            market_amount_avg[market] = float(pd.Series([float(r["amount_ma20"]) for r in rows]).mean())
+
+    min_sample = 25
+    for row in candidates:
+        if row.get("skip_reason") is not None:
+            continue
+
+        price = row.get("price")
+        amount_ma20 = row.get("amount_ma20")
+        vol_ma20 = row.get("vol_ma20")
+        if price is None or amount_ma20 is None or vol_ma20 is None:
+            continue
+
+        market = str(row.get("market") or "unknown")
+        market_count = int(market_counts.get(market, 0))
+        market_avg_amt = market_amount_avg.get(market)
+        if market_avg_amt is None or market_count < min_sample:
+            market_avg_amt = global_amount_avg
+
+        required_amt = float(market_avg_amt) * LIQUIDITY_RELAX_FACTOR
+        required_vol = float(required_amt) / max(1.0, float(price))
+
+        row["liquidity_amount_benchmark"] = required_amt
+        row["liquidity_volume_benchmark"] = required_vol
+
+        vol_below = float(vol_ma20) < required_vol
+        amt_below = float(amount_ma20) < required_amt
+
+        # Relaxation: disqualify only when both liquidity checks fail.
+        if vol_below and amt_below:
+            row["fail_reasons"].append("liquidity_below_market_dual")
+        else:
+            if vol_below:
+                row["soft_flags"].append("volume_below_market_price_adjusted_avg")
+            if amt_below:
+                row["soft_flags"].append("amount_below_market_avg")
+
+    return {
+        "enabled": True,
+        "global_amount_avg": global_amount_avg,
+        "market_amount_avg": market_amount_avg,
+        "market_counts": market_counts,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Scan orchestration
 # ---------------------------------------------------------------------------
@@ -1119,6 +1263,7 @@ def scan(
         target_date_str,
         lookback_days=config.recent_pick_penalty_lookback_days,
     )
+    market_map, market_ref_date = load_market_map(data_root, target_date_str, verbose=verbose)
 
     candidates = []
     skipped = 0
@@ -1145,10 +1290,20 @@ def scan(
 
         if verbose:
             if candidate["eligible"]:
-                print(f"[{idx}/{total}] {code}_{name} **후보** (score={candidate['score']:.2f})          ")
+                print(f"[{idx}/{total}] {code}_{name} 🟢🟢🟢 [후보] (score={candidate['score']:.2f})          ")
             else:
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
-                print(f"[{idx}/{total}] {code}_{name} //탈락// ({', '.join(reasons)})          ")
+                print(f"[{idx}/{total}] {code}_{name} 🔴 [탈락] ({', '.join(reasons)})          ")
+
+    liquidity_filter_info = apply_market_relative_liquidity_filters(candidates, market_map)
+
+    for row in candidates:
+        score = calculate_candidate_score(row, config)
+        row["score"] = score
+        row["fail_reasons"] = [reason for reason in row.get("fail_reasons", []) if reason != "low_score"]
+        if score < SCORE_CUTOFF:
+            row["fail_reasons"].append("low_score")
+        row["eligible"] = not row["fail_reasons"]
 
     eligible_rows = [row for row in candidates if row["eligible"]]
     eligible_rows.sort(
@@ -1176,8 +1331,7 @@ def scan(
             # Keep fallback defensive: only clear up-trend names.
             and row.get("trend_state") == "up"
             and not bool(row.get("is_last_bearish"))
-            and row.get("score", 0.0) >= 50.0
-            and "3d_downtrend" not in row.get("fail_reasons", [])
+            and row.get("score", 0.0) >= SCORE_CUTOFF
             and "low_score" not in row.get("fail_reasons", [])
             and row["code"] not in selected_codes
         ]
@@ -1212,6 +1366,17 @@ def scan(
         print(f"평가된 종목: {len(candidates)}")
         print(f"적격 수: {summary['eligible_pool_count']}")
         print(f"최종 선정: {summary['selected_count']}")
+        if liquidity_filter_info.get("enabled"):
+            avg_amt = liquidity_filter_info.get("global_amount_avg")
+            mkt_counts = liquidity_filter_info.get("market_counts") or {}
+            print(
+                "시장상대 유동성 필터: "
+                f"ref={market_ref_date or target_date_str or 'latest'} "
+                f"global_avg_amt={avg_amt:,.0f} "
+                f"(kospi={mkt_counts.get('kospi', 0)}, "
+                f"kosdaq={mkt_counts.get('kosdaq', 0)}, "
+                f"unknown={mkt_counts.get('unknown', 0)})"
+            )
 
     if return_details:
         all_rows = sorted(
@@ -1227,6 +1392,8 @@ def scan(
             "summary": summary,
             "config": config,
             "selection_mode": selection_mode,
+            "market_ref_date": market_ref_date,
+            "liquidity_filter": liquidity_filter_info,
         }
     return selected
 
