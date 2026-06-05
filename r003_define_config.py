@@ -1,8 +1,18 @@
 ﻿# -*- coding: utf-8 -*-
 
-"""R76 shared configuration for live trading and simulation."""
+"""R76 shared configuration for live trading and simulation.
 
+Risk profile presets:
+- Set AUTO_TRADING_RISK_PROFILE to one of conservative|neutral|aggressive.
+- Korean aliases are supported: 보수|중립|공격.
+- If no profile is specified, neutral is applied by default.
+- Preset JSON files live under xgraph/auto_trading/risk_profiles/.
+"""
+
+import json
+import os
 from datetime import time as dt_time
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Path / file constants
@@ -262,3 +272,54 @@ WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = 300
 
 # 오전 NXT 신규 진입 종료 시각(별도 변수)
 MORNING_NXT_NEW_ENTRY_CUTOFF = MORNING_NXT_END
+
+
+def _apply_risk_profile_overrides() -> None:
+	raw_profile = (os.environ.get("AUTO_TRADING_RISK_PROFILE") or os.environ.get("RISK_PROFILE") or "").strip()
+	if not raw_profile:
+		raw_profile = "neutral"
+
+	alias = {
+		"safe": "conservative",
+		"conservative": "conservative",
+		"보수": "conservative",
+		"balanced": "neutral",
+		"neutral": "neutral",
+		"중립": "neutral",
+		"aggressive": "aggressive",
+		"attack": "aggressive",
+		"공격": "aggressive",
+	}
+	profile = alias.get(raw_profile.lower())
+	if profile is None:
+		print(
+			"[WARN] Unknown AUTO_TRADING_RISK_PROFILE "
+			f"'{raw_profile}'. Expected conservative|neutral|aggressive (or 보수|중립|공격)."
+		)
+		return
+
+	profile_path = Path(__file__).resolve().parent / "risk_profiles" / f"{profile}.json"
+	if not profile_path.is_file():
+		print(f"[WARN] Risk profile file not found: {profile_path}")
+		return
+
+	try:
+		overrides = json.loads(profile_path.read_text(encoding="utf-8"))
+	except Exception as exc:
+		print(f"[WARN] Failed to load risk profile '{profile}': {exc}")
+		return
+
+	if not isinstance(overrides, dict):
+		print(f"[WARN] Invalid risk profile format (expected object): {profile_path}")
+		return
+
+	applied_keys: list[str] = []
+	for key, value in overrides.items():
+		if key in globals():
+			globals()[key] = value
+			applied_keys.append(key)
+
+	print(f"[INFO] Applied risk profile '{profile}' ({len(applied_keys)} overrides)")
+
+
+_apply_risk_profile_overrides()

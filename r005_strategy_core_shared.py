@@ -379,12 +379,9 @@ def check_buy_condition(
     cur_open = _num(cur, "open")
     cur_close = _num(cur, "close")
 
-    # Require recent BB-middle hold when entering without a fresh live cross-up.
-    recent_window = frame.tail(3)
-    recent_close = pd.to_numeric(recent_window.get("close"), errors="coerce")
-    recent_bb_mid = pd.to_numeric(recent_window.get("BB_MIDDLE"), errors="coerce")
-    recent_above_count = int((recent_close > recent_bb_mid).sum())
-    cur_close_above_bb = (not pd.isna(cur_close)) and cur_close > cur_bb
+    # When no fresh live cross-up is available, allow buy only if
+    # current live price is above both previous 3-min close and current BB middle.
+    prev_close = _num(prev, "close")
 
     # Late-chase guard: if the live cross has not fired, only allow entries
     # while price is still very close to BB middle.
@@ -394,8 +391,10 @@ def check_buy_condition(
             return False, f"CHASE_BUY_BLOCK_BB_GAP_{bb_gap_pct*100:.2f}%_GT_0.50%"
 
     if not live_cross_up_signal:
-        if recent_above_count < 2 or not cur_close_above_bb:
-            return False, f"BB_MIDDLE_NOT_HELD_ABOVE_{recent_above_count}/3"
+        if pd.isna(prev_close):
+            return False, "PREV_CLOSE_MISSING"
+        if not (live_price > prev_close and live_price > cur_bb):
+            return False, "LIVE_NOT_ABOVE_PREV_CLOSE_AND_BB_MIDDLE"
 
         # Allow early entry when broad support signals are already strong
         # even if explicit live-price cross confirmation has not fired yet.
@@ -441,6 +440,11 @@ def check_buy_condition(
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
     score = _buy_support_score(cur, prev, frame, config)
+    strong_vol_ratio_ok = (
+        not any(pd.isna(v) for v in (vol, vol_ma))
+        and vol_ma > 0
+        and (vol / vol_ma) >= config.strong_trend_overbought_min_vol_ratio
+    )
     strong_entry_ok = (
         config.enable_strong_trend_overbought_bypass
         and score >= config.strong_trend_overbought_min_score
@@ -448,6 +452,7 @@ def check_buy_condition(
         and cur_bb >= prev_bb
         and cur_ma5 >= prev_ma5
         and (pd.isna(adx_val) or adx_val >= config.strong_trend_overbought_min_adx)
+        and strong_vol_ratio_ok
     )
 
     wr_val = _num(cur, "WILLIAMS_R")
@@ -479,6 +484,7 @@ def check_buy_condition(
         bypass_overbought = (
             config.enable_strong_trend_overbought_bypass
             and score >= config.strong_trend_overbought_min_score
+            and strong_vol_ratio_ok
         )
         if bypass_overbought:
             trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
@@ -517,6 +523,7 @@ def check_buy_condition(
         bypass_overbought = (
             config.enable_strong_trend_overbought_bypass
             and score >= config.strong_trend_overbought_min_score
+            and strong_vol_ratio_ok
         )
         if not bypass_overbought:
             return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
