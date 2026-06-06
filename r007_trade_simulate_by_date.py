@@ -2308,16 +2308,21 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     run_index = _next_simulation_run_index(log_dir)
     log_path = log_dir / f"{args.date}_simulate_{run_index:03d}_full_log.txt"
-    # logging 파일 핸들러 추가
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
-    logging.getLogger().addHandler(file_handler)
     # stdout/stderr tee
+    # Keep logging on StreamHandler and route it through Tee so ENOSPC on log file
+    # does not trigger logging-internal traceback spam.
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
-    log_file = open(log_path, "a", encoding="utf-8")
-    sys.stdout = Tee(orig_stdout, log_file)
-    sys.stderr = Tee(orig_stderr, log_file)
-    print(f"[INFO] Full simulation log will be saved to: {log_path}")
+    log_file = None
+    try:
+        log_file = open(log_path, "a", encoding="utf-8")
+        sys.stdout = Tee(orig_stdout, log_file)
+        sys.stderr = Tee(orig_stderr, log_file)
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.setStream(sys.stdout)
+        print(f"[INFO] Full simulation log will be saved to: {log_path}")
+    except OSError as exc:
+        print(f"[WARN] Full simulation log disabled (open failed): {exc}", file=orig_stderr)
 
     if args.tp is not None:
         TAKE_PROFIT_PERCENT = float(args.tp)
@@ -2365,9 +2370,9 @@ def main() -> None:
     try:
         sys.stdout.flush()
         sys.stderr.flush()
-        log_file.flush()
-        log_file.close()
-        logging.getLogger().removeHandler(file_handler)
+        if log_file is not None:
+            log_file.flush()
+            log_file.close()
     except Exception:
         pass
     raise SystemExit(exit_code)

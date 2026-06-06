@@ -530,21 +530,25 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
     })
 
     # --- Hard filters (fail = disqualified) ---
+    # [최적화] 절대적인 거부 조건만 하드 필터로 남깁니다.
     if price < config.price_min:
         candidate["fail_reasons"].append("price_floor")
     if price > config.price_max:
         candidate["fail_reasons"].append("price_ceiling")
+        
+    # [추가] 모멘텀 스캐너이므로 역배열(하락추세) 종목은 스코어와 상관없이 확실히 배제합니다.
+    if trend_state == "down":
+        candidate["fail_reasons"].append("down_trend")
+
+    # --- [최적화] 하드 필터에서 -> 스코어/소프트 플래그 처리로 이관된 항목들 ---
+    # 기존에 'atr_ratio'와 'low_up_days'로 즉시 탈락시키던 것을 제거하고 soft_flags로 전환하여 
+    # 종합 점수(SCORE_CUTOFF)에 의해 유연하게 필터링되도록 합니다. (Or 조건화)
     if atr_ratio is None or atr_ratio < config.atr_ratio_min:
-        candidate["fail_reasons"].append("atr_ratio")
-    # new_listing: listing_days reflects local data count, not actual IPO age.
-    # Universe stocks are already established; skip this as a hard filter.
-    # (Noted as soft flag below when data is scarce.)
-    # low_up_days: allow tolerance in relaxed mode to avoid over-pruning.
+        candidate["soft_flags"].append("low_volatility_atr")
+        
     min_up_days_required = max(0, config.min_up_days_in_5 - LOW_UP_DAYS_TOLERANCE)
     if len(daily_df) >= 5 and up_days_in_5 < min_up_days_required:
-        candidate["fail_reasons"].append("low_up_days")
-    if trend_state == "down":
-        candidate["soft_flags"].append("down_trend")
+        candidate["soft_flags"].append("low_up_days_warning")
 
     # --- Soft flags (warning only, not disqualified) ---
     if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
@@ -561,9 +565,14 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         candidate["soft_flags"].append("prev_day_gap_risk")
 
+    # 시장상대 유동성 필터(apply_market_relative_liquidity_filters)는 
+    # 함수 외부(scan)에서 실행되며 'liquidity_below_market_dual'을 fail_reasons에 추가하므로 그대로 유지됩니다.
+
+    # 1차 스코어 계산 후 cutoff 검증
     candidate["score"] = calculate_candidate_score(candidate, config)
     if candidate["score"] < SCORE_CUTOFF:
         candidate["fail_reasons"].append("low_score")
+        
     candidate["eligible"] = not candidate["fail_reasons"]
     return candidate
 
@@ -844,6 +853,49 @@ def render_all_scan_csv(all_rows):
             f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
             str(row.get("repeat_recent_days") if row.get("repeat_recent_days") is not None else ""),
         ]))
+    return "\n".join(lines)
+
+
+def render_all_scan_markdown(all_rows):
+    headers = [
+        "rank", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
+        "trend_state", "ma_gap", "up_days_in_5", "high_52w_ratio", "listing_days", "prev_day_change", "repeat_recent_days",
+        "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio",
+    ]
+
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+
+    for rank, row in enumerate(all_rows, start=1):
+        fail_reasons = "|".join(row.get("fail_reasons", []))
+        soft_flags = "|".join(row.get("soft_flags", []))
+        values = [
+            str(rank),
+            row.get("code", ""),
+            str(row.get("name", "")).replace(",", " "),
+            f"{float(row.get('score') or 0.0):.2f}",
+            format_metric(row.get("price"), 0).replace(",", "") if row.get("price") is not None else "",
+            f"{row.get('atr_ratio'):.6f}" if row.get("atr_ratio") is not None else "",
+            format_metric(row.get("vol_ma20"), 0).replace(",", "") if row.get("vol_ma20") is not None else "",
+            format_metric(row.get("amount_ma20"), 0).replace(",", "") if row.get("amount_ma20") is not None else "",
+            str(row.get("trend_state") or ""),
+            f"{row.get('ma_gap'):.2f}" if row.get("ma_gap") is not None else "",
+            str(row.get("up_days_in_5") if row.get("up_days_in_5") is not None else ""),
+            f"{row.get('high_52w_ratio'):.3f}" if row.get("high_52w_ratio") is not None else "",
+            str(row.get("listing_days") if row.get("listing_days") is not None else ""),
+            f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
+            str(row.get("repeat_recent_days") if row.get("repeat_recent_days") is not None else ""),
+            soft_flags,
+            fail_reasons,
+            "Y" if row.get("eligible") else "N",
+            str(row.get("skip_reason") or ""),
+            f"{row.get('vol_trend_ratio'):.3f}" if row.get("vol_trend_ratio") is not None else "",
+        ]
+        sanitized = [str(value).replace("|", "\\|") for value in values]
+        lines.append("| " + " | ".join(sanitized) + " |")
+
     return "\n".join(lines)
 
 
@@ -1290,10 +1342,17 @@ def scan(
 
         if verbose:
             if candidate["eligible"]:
-                print(f"[{idx}/{total}] {code}_{name} 🟢🟢🟢 [후보] (score={candidate['score']:.2f})          ")
+                # score 기반으로 🟢 개수 계산 (10점당 1개, 반올림, 최소 0개)
+                green_dots_count = max(0, round(candidate["score"] / 10.0))
+                green_dots = "🟢" * green_dots_count
+                
+                # 🟢 개수가 0개일 경우 가독성을 위해 공백 한 칸 유지
+                dots_str = f" {green_dots}" if green_dots else ""
+                
+                print(f"[{idx}/{total}] {code}_{name}{dots_str} [후보] (score={candidate['score']:.2f})          ")
             else:
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
-                print(f"[{idx}/{total}] {code}_{name} 🔴 [탈락] ({', '.join(reasons)})          ")
+                print(f"[{idx}/{total}] {code}_{name} [탈락] ({', '.join(reasons)})          ")
 
     liquidity_filter_info = apply_market_relative_liquidity_filters(candidates, market_map)
 
@@ -1490,7 +1549,7 @@ if __name__ == "__main__":
     picks_filename = f"_{output_prefix}_picks.txt" if output_prefix else "_picks.txt"
     ranked_filename = f"_{output_prefix}_ranked.txt" if output_prefix else "_ranked.txt"
     report_filename = f"_{output_prefix}_scanner_report.md" if output_prefix else "_scanner_report.md"
-    all_scan_filename = f"_{output_prefix}_scan_all.txt" if output_prefix else "_scan_all.txt"
+    all_scan_filename = f"_{output_prefix}_scan_all.md" if output_prefix else "_scan_all.md"
 
     if picks:
         picks_file = out_dir / picks_filename
@@ -1509,7 +1568,7 @@ if __name__ == "__main__":
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
 
     all_scan_file = out_dir / all_scan_filename
-    all_scan_file.write_text(render_all_scan_csv(scan_result["all_rows"]), encoding="utf-8")
+    all_scan_file.write_text(render_all_scan_markdown(scan_result["all_rows"]), encoding="utf-8")
     print(f"전체 스캔 결과를 저장했습니다: {all_scan_file}")
 
     label = effective_target_date.strftime("%Y%m%d") if effective_target_date else "최신 데이터"
