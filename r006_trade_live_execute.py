@@ -268,6 +268,13 @@ REQUIRE_DI_PLUS_DOMINANT = _cfg_bool("REQUIRE_DI_PLUS_DOMINANT", True)
 MFI_OVERBOUGHT_MAX = _cfg_float("MFI_OVERBOUGHT_MAX", 80.0)
 RSI_BUY_MOMENTUM_MAX = _cfg_float("RSI_BUY_MOMENTUM_MAX", 60.0)
 REQUIRE_OBV_SIGNAL_CROSS = _cfg_bool("REQUIRE_OBV_SIGNAL_CROSS", True)
+ENABLE_INTRABAR_LIVE_ENTRY_FILTER = _cfg_bool("ENABLE_INTRABAR_LIVE_ENTRY_FILTER", True)
+INTRABAR_MIN_ELAPSED_SECONDS = _cfg_float("INTRABAR_MIN_ELAPSED_SECONDS", 90.0)
+INTRABAR_MFI_MIN = _cfg_float("INTRABAR_MFI_MIN", 50.0)
+INTRABAR_MFI_MAX = _cfg_float("INTRABAR_MFI_MAX", 75.0)
+INTRABAR_RSI_MIN = _cfg_float("INTRABAR_RSI_MIN", 50.0)
+INTRABAR_RSI_MAX = _cfg_float("INTRABAR_RSI_MAX", 70.0)
+INTRABAR_ADX_MIN = _cfg_float("INTRABAR_ADX_MIN", 20.0)
 
 ENABLE_LIVE_DRY_RUN = _cfg_bool("ENABLE_LIVE_DRY_RUN", LIVE_DRY_RUN)
 ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP = _cfg_bool("ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP", False)
@@ -1409,6 +1416,8 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
         out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
 
     out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
+    out["EMA_5"] = out["close"].ewm(span=5, adjust=False).mean()
+    out["EMA_20"] = out["close"].ewm(span=20, adjust=False).mean()
     out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
 
     out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
@@ -1496,6 +1505,62 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["OBV_MA"] = out["OBV"].rolling(window=OBV_MA_PERIOD, min_periods=1).mean()
 
     return out
+
+
+def _build_realtime_entry_frame(
+    frame: pd.DataFrame,
+    code: str,
+    now: datetime,
+    live_price: float,
+    realtime_bar_state: dict[str, dict[str, object]],
+) -> tuple[pd.DataFrame, float]:
+    now_ts = pd.Timestamp(now)
+    bar_start = now_ts.floor("3min")
+    bar_end = bar_start + pd.Timedelta(minutes=3)
+    elapsed_seconds = max(0.0, (now_ts - bar_start).total_seconds())
+
+    if frame is None or frame.empty or pd.isna(live_price) or live_price <= 0:
+        return frame, elapsed_seconds
+
+    state = realtime_bar_state.get(code)
+    if state is None or state.get("bar_end") != bar_end:
+        state = {
+            "bar_end": bar_end,
+            "open": float(live_price),
+            "high": float(live_price),
+            "low": float(live_price),
+            "close": float(live_price),
+        }
+    else:
+        state["high"] = max(float(state.get("high", live_price)), float(live_price))
+        state["low"] = min(float(state.get("low", live_price)), float(live_price))
+        state["close"] = float(live_price)
+
+    realtime_bar_state[code] = state
+
+    working = frame.copy()
+    realtime_row = {
+        "open": float(state["open"]),
+        "high": float(state["high"]),
+        "low": float(state["low"]),
+        "close": float(state["close"]),
+        # Live quote API does not provide 10-second cumulative volume reliably.
+        # Keep intrabar volume at 0 and rely on closed bars for volume-based guards.
+        "volume": 0.0,
+    }
+    if len(working) > 0 and working.index[-1] == bar_end:
+        for key, val in realtime_row.items():
+            working.at[bar_end, key] = val
+    else:
+        working.loc[bar_end, ["open", "high", "low", "close", "volume"]] = [
+            realtime_row["open"],
+            realtime_row["high"],
+            realtime_row["low"],
+            realtime_row["close"],
+            realtime_row["volume"],
+        ]
+    working = working.sort_index()
+    return calculate_indicators(working), elapsed_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -1979,7 +2044,13 @@ def _passes_loss_pattern_buy_filter(frame: pd.DataFrame, buy_reason: str, live_p
     return True, "OK"
 
 
-def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
+def check_buy_condition(
+    frame: pd.DataFrame,
+    now: datetime,
+    live_price: float,
+    cross_info: dict[str, object],
+    intrabar_elapsed_seconds: float | None = None,
+) -> tuple[bool, str]:
     ok, reason = shared_check_buy_condition(
         frame=frame,
         now=pd.Timestamp(now),
@@ -2001,6 +2072,39 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
 
     cur = frame.iloc[-1]
     prev = frame.iloc[-2]
+
+    if ENABLE_INTRABAR_LIVE_ENTRY_FILTER:
+        if intrabar_elapsed_seconds is not None and intrabar_elapsed_seconds < INTRABAR_MIN_ELAPSED_SECONDS:
+            return False, f"INTRABAR_TOO_EARLY_{intrabar_elapsed_seconds:.0f}s_LT_{INTRABAR_MIN_ELAPSED_SECONDS:.0f}s"
+
+        ema20_cur = _num(cur, "EMA_20")
+        ema5_cur = _num(cur, "EMA_5")
+        vwap_cur = _num(cur, "VWAP")
+        ema20_prev = _num(prev, "EMA_20")
+        close_prev = _num(prev, "close")
+
+        if any(pd.isna(v) for v in (ema20_cur, vwap_cur)) or not (live_price > ema20_cur and live_price > vwap_cur):
+            return False, f"INTRABAR_LIVE_NOT_ABOVE_EMA20_VWAP_{live_price:.0f}"
+        if any(pd.isna(v) for v in (close_prev, ema20_prev)) or not (close_prev < ema20_prev):
+            return False, f"INTRABAR_PREV_CLOSE_NOT_BELOW_EMA20_{close_prev:.1f}_GE_{ema20_prev:.1f}"
+        if any(pd.isna(v) for v in (ema5_cur, ema20_cur)) or not (ema5_cur > ema20_cur):
+            return False, f"INTRABAR_EMA_ALIGNMENT_FAIL_EMA5_{ema5_cur:.1f}_LE_EMA20_{ema20_cur:.1f}"
+
+        mfi_prev = _num(prev, "MFI")
+        rsi_prev = _num(prev, "RSI")
+        adx_prev = _num(prev, "ADX")
+        di_plus_prev = _num(prev, "DI_PLUS")
+        di_minus_prev = _num(prev, "DI_MINUS")
+
+        if pd.isna(mfi_prev) or not (INTRABAR_MFI_MIN <= mfi_prev < INTRABAR_MFI_MAX):
+            return False, f"INTRABAR_MFI_RANGE_FAIL_{mfi_prev:.1f}"
+        if pd.isna(rsi_prev) or not (INTRABAR_RSI_MIN <= rsi_prev < INTRABAR_RSI_MAX):
+            return False, f"INTRABAR_RSI_RANGE_FAIL_{rsi_prev:.1f}"
+        if pd.isna(adx_prev) or adx_prev < INTRABAR_ADX_MIN:
+            return False, f"INTRABAR_ADX_TOO_LOW_{adx_prev:.1f}_LT_{INTRABAR_ADX_MIN:.1f}"
+        if pd.isna(di_plus_prev) or pd.isna(di_minus_prev) or di_plus_prev <= di_minus_prev:
+            return False, f"INTRABAR_DI_NOT_BULLISH_+DI_{di_plus_prev:.1f}_-DI_{di_minus_prev:.1f}"
+
     adx_val = _num(cur, "ADX")
     prev_adx = _num(prev, "ADX")
     di_plus = _num(cur, "DI_PLUS")
@@ -3025,26 +3129,44 @@ def _shutdown_save_live_state(api: TradingAPI | None) -> None:
 
 
 def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool | None = None, watchlist_source: str | None = None) -> None:
-    ka.auth()
     now = datetime.now()
     _ensure_log_date_for(now)
+    print(f"[R006 START] {now:%Y-%m-%d %H:%M:%S} | initializing live executor", flush=True)
+    log("R006 START | initializing live executor")
+
+    try:
+        print("[R006 AUTH] starting ka.auth()", flush=True)
+        ka.auth()
+        print("[R006 AUTH] success", flush=True)
+    except Exception as exc:
+        print(f"[R006 AUTH ERROR] {exc}", flush=True)
+        log(f"R006 AUTH ERROR | {exc}")
+        return
+
     _bind_session_trade_log()
     is_open_day, market_day_log = get_market_day_status(now)
+    print(f"[R006 MARKET] {market_day_log}", flush=True)
     log(market_day_log)
 
     if not is_open_day:
+        print("[R006 STOP] market closed day", flush=True)
         return
 
     watch_file = _resolve_watchlist_file(target_date, watchlist_source=watchlist_source or "auto")
+    print(f"[R006 WATCHLIST FILE] {watch_file}", flush=True)
     try:
         watch_map = load_today_codes(watch_file)
     except Exception as exc:
+        print(f"[R006 WATCHLIST ERROR] {exc}", flush=True)
         log(f"Failed to load code list: {exc}")
         watch_map = {}
 
     if not watch_map:
+        print("[R006 WATCHLIST] No codes loaded", flush=True)
         log("No codes loaded")
         return
+
+    print(f"[R006 WATCHLIST] loaded {len(watch_map)} codes", flush=True)
 
     register_symbol_names(watch_map)
 
@@ -3057,6 +3179,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     nxt_map = {code: is_nxt_tradeable(code) for code in watch_map}
     for code, name in watch_map.items():
+        print(f"[R006 WATCH] {code} | {name} | NXT={nxt_map[code]}", flush=True)
         log(f"WATCH | {code} | {name} | NXT={nxt_map[code]}")
 
     log("Strategy: live price cross over buffered BB middle + Stoch/RSI/Williams confirmation")
@@ -3109,6 +3232,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     live_price_backoff_until: dict[str, datetime] = {}
     frame_cache: dict[str, pd.DataFrame] = {}
     frame_last_refresh_at: dict[str, datetime] = {}
+    realtime_entry_bar_state: dict[str, dict[str, object]] = {}
     liquidation_state: dict = {}
     current_trade_date = now.date()
     loop_consecutive_errors = 0
@@ -3152,6 +3276,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             live_price_backoff_until.clear()
             frame_cache.clear()
             frame_last_refresh_at.clear()
+            realtime_entry_bar_state.clear()
 
         is_open_day, market_day_log = get_market_day_status(current_dt)
         if not is_open_day:
@@ -3259,12 +3384,29 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         age_text = f"{cache_age_sec:.0f}s" if cache_age_sec is not None else "unknown"
                         price_source = f"bar_close(stale_live={age_text})"
 
+                buy_frame = frame
+                intrabar_elapsed_seconds = max(0.0, (pd.Timestamp(current_dt) - pd.Timestamp(current_dt).floor("3min")).total_seconds())
+                if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:
+                    try:
+                        buy_frame, intrabar_elapsed_seconds = _build_realtime_entry_frame(
+                            frame,
+                            code,
+                            current_dt,
+                            float(price),
+                            realtime_entry_bar_state,
+                        )
+                    except Exception as exc:
+                        log(f"  [WARN] {symbol_label} | realtime entry-frame build failed: {exc}")
+                        buy_frame = frame
+
+                buy_cur = buy_frame.iloc[-1] if buy_frame is not None and not buy_frame.empty else cur
+
                 cross_info = update_live_price_cross_state(
                     live_price_cross_state,
                     code,
                     current_dt,
                     float(price),
-                    _num(cur, "BB_MIDDLE"),
+                    _num(buy_cur, "BB_MIDDLE"),
                 )
                 pos = api.get_open_positions().get(code)
                 pending = api.get_pending_order(code)
@@ -3589,34 +3731,40 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if signal_buy_bar.get(code) == bar_time:
                         continue
 
-                    prev_bar = frame.iloc[-2]
+                    prev_bar = buy_frame.iloc[-2]
                     norm_code = str(code).zfill(6)
                     if api.has_buy_exposure(norm_code):
                         log(f"  {symbol_label} [BUY SKIP] | ALREADY_TRADED_TODAY_UNTIL_SELL")
                         continue
 
-                    buy_ok, buy_reason = check_buy_condition(frame, current_dt, price, cross_info)
+                    buy_ok, buy_reason = check_buy_condition(
+                        buy_frame,
+                        current_dt,
+                        price,
+                        cross_info,
+                        intrabar_elapsed_seconds=intrabar_elapsed_seconds,
+                    )
 
                     if not buy_ok:
                         buy_confirm_state.pop(code, None)
                         detail = _buy_reject_detail(
                             buy_reason,
-                            cur,
+                            buy_frame.iloc[-1],
                             prev_bar,
                             live_price=price,
                             cross_info=cross_info,
-                            frame=frame,
+                            frame=buy_frame,
                         )
                         log(f"  {symbol_label} [BUY REJECT] | {detail}")
                         continue
 
-                    pattern_ok, pattern_reason = _passes_loss_pattern_buy_filter(frame, buy_reason, price)
+                    pattern_ok, pattern_reason = _passes_loss_pattern_buy_filter(buy_frame, buy_reason, price)
                     if not pattern_ok:
                         buy_confirm_state.pop(code, None)
                         log(
                             f"  {symbol_label} [BUY REJECT] | {pattern_reason} | "
                             f"reason={buy_reason} live={price:,.0f} "
-                            f"bb_mid={_num(cur, 'BB_MIDDLE'):.1f} bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
+                            f"bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} bar_close={_num(buy_frame.iloc[-1], 'close'):,.0f} ma5={_num(buy_frame.iloc[-1], 'MA_5'):.1f}"
                         )
                         continue
 
@@ -3668,8 +3816,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     session = classify_buy_session(current_dt)
                     buy_detail = (
                         f"reason={buy_reason} signal={cross_info.get('signal')} "
-                        f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} "
-                        f"bar_close={_num(cur, 'close'):,.0f} ma5={_num(cur, 'MA_5'):.1f}"
+                        f"live={price:,.0f} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} "
+                        f"bar_close={_num(buy_frame.iloc[-1], 'close'):,.0f} ma5={_num(buy_frame.iloc[-1], 'MA_5'):.1f}"
                     )
                     traded_today.add(norm_code)
                     api.live_state["traded_today"] = traded_today
@@ -3678,13 +3826,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         log(
                             f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
                             f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
-                            f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
-                            f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
-                            f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
-                            f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} | "
-                            f"ADX={_num(cur, 'ADX'):.1f} +DI={_num(cur, 'DI_PLUS'):.1f} -DI={_num(cur, 'DI_MINUS'):.1f} | "
-                            f"VOL={_num(cur, 'volume'):,.0f} VOLMA={_num(cur, 'VOL_MA20'):,.0f} | "
-                            f"VWAP={_num(cur, 'VWAP'):,.0f} OBV={_num(cur, 'OBV'):,.0f} OBVMA={_num(cur, 'OBV_MA'):,.0f}"
+                            f"RSI={_num(buy_frame.iloc[-1], 'RSI'):.1f} SIG={_num(buy_frame.iloc[-1], 'RSI_SIGNAL'):.1f} | "
+                            f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(buy_frame.iloc[-1], 'STOCH_K'):.1f} D={_num(buy_frame.iloc[-1], 'STOCH_D'):.1f} | "
+                            f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(buy_frame.iloc[-1], 'WILLIAMS_R'):.1f} WD={_num(buy_frame.iloc[-1], 'WILLIAMS_D'):.1f} | "
+                            f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(buy_frame.iloc[-1], 'MACD'):.2f} SIG={_num(buy_frame.iloc[-1], 'MACD_SIGNAL'):.2f} | "
+                            f"ADX={_num(buy_frame.iloc[-1], 'ADX'):.1f} +DI={_num(buy_frame.iloc[-1], 'DI_PLUS'):.1f} -DI={_num(buy_frame.iloc[-1], 'DI_MINUS'):.1f} | "
+                            f"VOL={_num(buy_frame.iloc[-1], 'volume'):,.0f} VOLMA={_num(buy_frame.iloc[-1], 'VOL_MA20'):,.0f} | "
+                            f"VWAP={_num(buy_frame.iloc[-1], 'VWAP'):,.0f} OBV={_num(buy_frame.iloc[-1], 'OBV'):,.0f} OBVMA={_num(buy_frame.iloc[-1], 'OBV_MA'):,.0f}"
                         )
                         log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
                         buy_confirm_state.pop(code, None)
