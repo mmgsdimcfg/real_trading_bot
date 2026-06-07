@@ -20,6 +20,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-07] type=feat owner=copilot
+    summary: strengthened buy gates with ADX rising+DI dominance, MFI overheat guard, RSI 50-break/50-60 zone, and OBV signal-cross confirmation.
+    impact: live
+    compatibility: backward-compatible
+- [2026-06-06] type=feat owner=copilot
+    summary: added ADX+MFI entry gate and ATR-based variable TP/SL risk model.
+    impact: live
+    compatibility: backward-compatible
 - [2026-06-05] type=fix owner=copilot
     summary: (한글) BB 중간값 진입 보조조건 변경에 맞춰 리젝트 사유 로그를 PREV_CLOSE_MISSING / LIVE_NOT_ABOVE_PREV_CLOSE_AND_BB_MIDDLE로 상세화.
     impact: live
@@ -69,6 +77,7 @@ from typing import Optional
 import pandas as pd
 from r003_define_config import (
     ACCOUNT_SYNC_INTERVAL_SECONDS,
+    ADX_BUY_MIN,
     ADX_MIN_TREND,
     ADX_PERIOD,
     ADX_STRONG_TREND,
@@ -119,6 +128,8 @@ from r003_define_config import (
     MACD_SLOW,
     MAX_ORDER_AMOUNT_KRW,
     MIN_BARS_REQUIRED,
+    MFI_BUY_MIN,
+    MFI_PERIOD,
     MORNING_NXT_END,
     MORNING_NXT_START,
     NEAR_CROSS_ARM_EXPIRE_BARS,
@@ -134,6 +145,9 @@ from r003_define_config import (
     NO_TREND_EXIT_CONFIRM_SECONDS,
     NO_TREND_EXIT_MAX_PEAK_PNL,
     NO_TREND_EXIT_MIN_PNL,
+    ATR_PERIOD,
+    ATR_STOP_MULTIPLIER,
+    ATR_TAKE_PROFIT_MULTIPLIER,
     OBV_MA_PERIOD,
     POLL_INTERVAL_SECONDS,
     PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
@@ -187,6 +201,7 @@ from r005_strategy_core_shared import (
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
 )
+from r010_watchlist_bridge import resolve_watchlist_path
 
 current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parents[1]
@@ -246,6 +261,13 @@ def _cfg_float(name: str, default: float) -> float:
         return float(getattr(_r003_cfg, name, default))
     except Exception:
         return float(default)
+
+
+REQUIRE_ADX_RISING = _cfg_bool("REQUIRE_ADX_RISING", True)
+REQUIRE_DI_PLUS_DOMINANT = _cfg_bool("REQUIRE_DI_PLUS_DOMINANT", True)
+MFI_OVERBOUGHT_MAX = _cfg_float("MFI_OVERBOUGHT_MAX", 80.0)
+RSI_BUY_MOMENTUM_MAX = _cfg_float("RSI_BUY_MOMENTUM_MAX", 60.0)
+REQUIRE_OBV_SIGNAL_CROSS = _cfg_bool("REQUIRE_OBV_SIGNAL_CROSS", True)
 
 ENABLE_LIVE_DRY_RUN = _cfg_bool("ENABLE_LIVE_DRY_RUN", LIVE_DRY_RUN)
 ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP = _cfg_bool("ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP", False)
@@ -636,21 +658,20 @@ def load_today_codes(code_file: Path | None = None) -> dict[str, str]:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="R76 real trading runner")
     parser.add_argument("--date", type=str, help="Watchlist date (YYYYMMDD). Use data/YYYYMMDD/picks.txt first")
+    parser.add_argument(
+        "--watchlist-source",
+        type=str,
+        default="auto",
+        choices=["auto", "r008", "scan-picks", "picks"],
+        help="Watchlist resolution: auto, r008, scan-picks, or legacy picks.txt",
+    )
     parser.add_argument("--dry-run", "--fake", dest="dry_run", action="store_true", help="Log orders without sending to broker")
     parser.add_argument("--env-dv", type=str, default=None, help="KIS env_dv override (default: env KIS_ENV_DV or real)")
     return parser.parse_args()
 
 
-def _resolve_watchlist_file(target_date: str | None) -> Path:
-    if not target_date:
-        return TODAY_CODE_FILE
-
-    picks_file = DATA_DIR / target_date / "picks.txt"
-    if picks_file.exists():
-        return picks_file
-
-    log(f"WARNING: picks file not found for --date {target_date}: {picks_file}. Fallback to {TODAY_CODE_FILE}")
-    return TODAY_CODE_FILE
+def _resolve_watchlist_file(target_date: str | None, watchlist_source: str = "auto") -> Path:
+    return resolve_watchlist_path(current_dir, target_date, watchlist_source, DATA_DIR)
 
 
 def _today_buys_file_path(date_str: str) -> Path:
@@ -1416,6 +1437,20 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["WILLIAMS_R"] = -100.0 * (high_w - out["close"]) / wr_denom
     out["WILLIAMS_D"] = out["WILLIAMS_R"].rolling(window=WILLIAMS_D_PERIOD, min_periods=1).mean()
 
+    # MFI - 가격과 거래량을 함께 반영하는 자금흐름 지표
+    typical_price = (out["high"] + out["low"] + out["close"]) / 3.0
+    raw_money_flow = typical_price * out["volume"]
+    price_delta = typical_price.diff()
+    positive_flow = raw_money_flow.where(price_delta > 0, 0.0)
+    negative_flow = raw_money_flow.where(price_delta < 0, 0.0)
+    positive_sum = positive_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
+    negative_sum = negative_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
+    money_ratio = positive_sum / negative_sum.replace(0, float("nan"))
+    out["MFI"] = 100.0 - (100.0 / (1.0 + money_ratio))
+    out.loc[(positive_sum == 0) & (negative_sum == 0), "MFI"] = 50.0
+    out.loc[(negative_sum == 0) & (positive_sum > 0), "MFI"] = 100.0
+    out.loc[(positive_sum == 0) & (negative_sum > 0), "MFI"] = 0.0
+
     # MACD - 단기 모멘텀 방향성(MA 돌파 전략 핵심 확인 지표)
     ema_fast = out["close"].ewm(span=MACD_FAST, adjust=False).mean()
     ema_slow = out["close"].ewm(span=MACD_SLOW, adjust=False).mean()
@@ -1445,6 +1480,14 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # VWAP - 당일 누적 거래량 가중 평균가 (세션 시작 시 누적값 리셋)
     cum_vol = out["volume"].cumsum()
     out["VWAP"] = (out["close"] * out["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
+
+    # ATR - 변동성 기반 손익비 판단용 평균 진폭
+    true_range = pd.concat([
+        out["high"] - out["low"],
+        (out["high"] - out["close"].shift(1)).abs(),
+        (out["low"] - out["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    out["ATR"] = true_range.ewm(alpha=1.0 / ATR_PERIOD, min_periods=1, adjust=False).mean()
 
     # OBV - 거래량 방향성(급등 방향, 가격 추세 확인)
     close_diff = out["close"].diff()
@@ -1584,6 +1627,11 @@ def _buy_reject_detail(
     if pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap):
         failed.append("VWAP")
 
+    mfi_c = _num(cur, "MFI")
+    mfi_p = _num(prev, "MFI")
+    if pd.isna(mfi_c) or pd.isna(mfi_p) or not (mfi_c >= MFI_BUY_MIN and mfi_c > mfi_p):
+        failed.append("MFI")
+
     obv_c = _num(cur, "OBV"); obv_ma_c = _num(cur, "OBV_MA"); obv_p = _num(prev, "OBV")
     obv_breakout = False
     if frame is not None and "OBV" in frame.columns and len(frame) >= OBV_BREAKOUT_LOOKBACK_BARS + 1:
@@ -1653,6 +1701,13 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
             obv_breakout = obv_c > float(recent_obv_high)
     if not any(pd.isna(v) for v in (obv_c, obv_ma_c, obv_p)):
         if obv_breakout or (obv_c > obv_ma_c and obv_c > obv_p):
+            score += 1
+
+    # 7) MFI: 거래량 유입 강도 확인
+    mfi_c = _num(cur, "MFI")
+    mfi_p = _num(prev, "MFI")
+    if not any(pd.isna(v) for v in (mfi_c, mfi_p)):
+        if mfi_c >= MFI_BUY_MIN and mfi_c > mfi_p:
             score += 1
 
     return score
@@ -1933,14 +1988,66 @@ def check_buy_condition(frame: pd.DataFrame, now: datetime, live_price: float, c
         config=SHARED_R76_CONFIG,
         volume_ratio_threshold_fn=lambda ts, adx_val: get_volume_ratio_threshold(ts.to_pydatetime(), adx_val),
     )
-    if ok:
-        return ok, reason
+    candidate_ok = ok
+    candidate_reason = reason
     if ENABLE_PRICE_LEAD_BB_BREAKOUT or ENABLE_NEAR_CROSS_ARM or ENABLE_EARLY_NEAR_CROSS_ENTRY:
         ctx = _price_lead_breakout_context(frame, now, live_price, cross_info)
         if ctx.get("can_enter"):
             entry_mode = ctx.get("entry_mode") or "PRICE_LEAD"
-            return True, str(entry_mode)
-    return ok, reason
+            candidate_ok = True
+            candidate_reason = str(entry_mode)
+    if not candidate_ok:
+        return ok, reason
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    adx_val = _num(cur, "ADX")
+    prev_adx = _num(prev, "ADX")
+    di_plus = _num(cur, "DI_PLUS")
+    di_minus = _num(cur, "DI_MINUS")
+    mfi_val = _num(cur, "MFI")
+    prev_mfi = _num(prev, "MFI")
+    rsi_val = _num(cur, "RSI")
+    prev_rsi = _num(prev, "RSI")
+    obv_val = _num(cur, "OBV")
+    prev_obv = _num(prev, "OBV")
+    obv_ma_val = _num(cur, "OBV_MA")
+    prev_obv_ma = _num(prev, "OBV_MA")
+
+    if pd.isna(adx_val) or adx_val < ADX_BUY_MIN:
+        return False, f"WEAK_TREND_ADX_{adx_val:.1f}_LT_{ADX_BUY_MIN:.1f}"
+    if REQUIRE_ADX_RISING and (pd.isna(prev_adx) or adx_val <= prev_adx):
+        return False, f"WEAK_TREND_ADX_NOT_RISING_{prev_adx:.1f}->{adx_val:.1f}"
+    if REQUIRE_DI_PLUS_DOMINANT and (pd.isna(di_plus) or pd.isna(di_minus) or di_plus <= di_minus):
+        return False, f"WEAK_TREND_DI_NOT_BULLISH_+DI_{di_plus:.1f}_-DI_{di_minus:.1f}"
+
+    if pd.isna(mfi_val) or mfi_val < MFI_BUY_MIN:
+        return False, f"LOW_VOLUME_MFI_{mfi_val:.1f}_LT_{MFI_BUY_MIN:.1f}"
+    if not pd.isna(prev_mfi) and mfi_val <= prev_mfi:
+        return False, f"LOW_VOLUME_MFI_FLAT_{prev_mfi:.1f}->{mfi_val:.1f}"
+    if not pd.isna(mfi_val) and mfi_val >= MFI_OVERBOUGHT_MAX:
+        return False, f"MFI_OVERBOUGHT_{mfi_val:.1f}_GE_{MFI_OVERBOUGHT_MAX:.1f}"
+
+    rsi_breakout = (not pd.isna(prev_rsi)) and (prev_rsi <= RSI_BUY_MIN < rsi_val)
+    rsi_zone_hold = RSI_BUY_MIN <= rsi_val <= RSI_BUY_MOMENTUM_MAX
+    if pd.isna(rsi_val) or not (rsi_breakout or rsi_zone_hold):
+        return False, f"RSI_MOMENTUM_WEAK_{prev_rsi:.1f}->{rsi_val:.1f}"
+
+    obv_signal_cross = (
+        not any(pd.isna(v) for v in (prev_obv, prev_obv_ma, obv_val, obv_ma_val))
+        and prev_obv <= prev_obv_ma
+        and obv_val > obv_ma_val
+    )
+    obv_breakout = False
+    if "OBV" in frame.columns and len(frame) >= OBV_BREAKOUT_LOOKBACK_BARS + 1:
+        obv_series = pd.to_numeric(frame["OBV"], errors="coerce")
+        recent_obv_high = obv_series.iloc[-(OBV_BREAKOUT_LOOKBACK_BARS + 1):-1].max()
+        if not pd.isna(obv_val) and not pd.isna(recent_obv_high):
+            obv_breakout = obv_val > float(recent_obv_high)
+    if REQUIRE_OBV_SIGNAL_CROSS and not (obv_signal_cross and obv_breakout):
+        return False, "OBV_CONFIRM_MISSING_SIGNAL_CROSS_OR_BREAKOUT"
+
+    return True, candidate_reason
 
 
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
@@ -2917,7 +3024,7 @@ def _shutdown_save_live_state(api: TradingAPI | None) -> None:
         log(f"WARNING: live state save on shutdown failed: {exc}")
 
 
-def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool | None = None) -> None:
+def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool | None = None, watchlist_source: str | None = None) -> None:
     ka.auth()
     now = datetime.now()
     _ensure_log_date_for(now)
@@ -2928,7 +3035,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     if not is_open_day:
         return
 
-    watch_file = _resolve_watchlist_file(target_date)
+    watch_file = _resolve_watchlist_file(target_date, watchlist_source=watchlist_source or "auto")
     try:
         watch_map = load_today_codes(watch_file)
     except Exception as exc:
@@ -2941,7 +3048,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     register_symbol_names(watch_map)
 
-    log(f"Watchlist source: {watch_file}")
+    log(f"[FEATURE_R008_WATCHLIST] Watchlist source: {watch_file}")
 
     if ENABLE_NXT_SESSION:
         log("MODE BANNER: REGULAR+NXT_MODE")
@@ -2962,7 +3069,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         f"frame refresh every {FRAME_POLL_INTERVAL_SECONDS}s (3min bars) + backfill {FRAME_BACKFILL_SYNC_SECONDS}s | "
         f"buy consecutive confirms={BUY_CONSECUTIVE_CONFIRM_COUNT}"
     )
-    log(f"TP={TAKE_PROFIT_PERCENT*100:.1f}% | SL={STOP_LOSS_PERCENT*100:.1f}% | Trail={TRAILING_STOP_FROM_PEAK*100:.1f}%")
+    log(
+        f"ATR model: stop={ATR_STOP_MULTIPLIER:.1f}x | tp={ATR_TAKE_PROFIT_MULTIPLIER:.1f}x | "
+        f"trail={TRAILING_STOP_FROM_PEAK*100:.1f}%"
+    )
     log(f"Indicator warmup: require bars >= {INDICATOR_WARMUP_BARS} before new entries")
     date_str = now.strftime("%Y%m%d")
     live_state = load_live_state(date_str)
@@ -3207,6 +3317,16 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # 확정봉 low를 직접 섞으면 현재가가 회복된 상태에서도 오손절이 날 수 있어
                     # 실시간 손절은 현재가 기준으로 판정한다.
                     _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else float("nan")
+                    atr_val = _num(cur, "ATR")
+                    atr_tp_price = float("nan")
+                    atr_sl_price = float("nan")
+                    atr_tp_pct = float("nan")
+                    atr_sl_pct = float("nan")
+                    if not pd.isna(atr_val) and atr_val > 0 and entry_price > 0:
+                        atr_tp_price = entry_price + float(atr_val) * ATR_TAKE_PROFIT_MULTIPLIER
+                        atr_sl_price = entry_price - float(atr_val) * ATR_STOP_MULTIPLIER
+                        atr_tp_pct = (atr_tp_price / entry_price) - 1.0
+                        atr_sl_pct = (atr_sl_price / entry_price) - 1.0
                     _sl_price = price
                     _pnl_sl = (_sl_price / entry_price) - 1.0
 
@@ -3216,17 +3336,20 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
                     profit_giveback = peak_pnl_pct - pnl_pct
 
-                    if pnl_pct >= TAKE_PROFIT_PERCENT:
+                    if not pd.isna(atr_tp_pct) and pnl_pct >= atr_tp_pct:
                         if ENABLE_TP_EXTENSION_TRAILING:
                             # TP 도달 시 즉시 익절 대신 고점 트레일링 모드로 전환
                             log(
-                                f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= TP {TAKE_PROFIT_PERCENT*100:.1f}% | "
+                                f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= ATR_TP {atr_tp_pct*100:.2f}% | "
                                 f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
-                                f"price={price:,.0f} peak={highest_price:,.0f}"
+                                f"price={price:,.0f} peak={highest_price:,.0f} atr={float(atr_val):.2f}"
                             )
                         else:
-                            reason_tp = f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%"
-                            log(f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%")
+                            reason_tp = f"ATR_TAKE_PROFIT_{ATR_TAKE_PROFIT_MULTIPLIER:.1f}x"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} "
+                                f"pnl={pnl_pct*100:.2f}% atr={float(atr_val):.2f} tp={atr_tp_price:,.0f}"
+                            )
                             if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price, code_name=name):
                                 log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
                             signal_sell_bar[code] = bar_time
@@ -3337,10 +3460,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # ── END NO-TREND TIME EXIT ────────────────────────────────────────
 
                     _held_sl = (current_dt - _buy_time).total_seconds()
-                    _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
-                    if _pnl_sl <= _sl_threshold:
-                        reason_sl = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
-                        log(f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% sl_pnl={_pnl_sl*100:.2f}%")
+                    if not pd.isna(atr_sl_pct) and _pnl_sl <= atr_sl_pct:
+                        reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} "
+                            f"bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% "
+                            f"sl_pnl={_pnl_sl*100:.2f}% atr={float(atr_val):.2f} sl={atr_sl_price:,.0f}"
+                        )
                         trailing_sell_confirm_state.pop(code, None)
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name):
                             log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
@@ -3355,7 +3481,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         # TP 도달 구간(peak >= TP)에서 이익이 1% 이내로 줄면 트레일링 적용
                         current_pnl_pct = (price / entry_price) - 1.0
                         profit_giveback = peak_pnl_pct - current_pnl_pct
-                        if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
+                        if ENABLE_TP_EXTENSION_TRAILING and not pd.isna(atr_tp_pct) and peak_pnl_pct >= atr_tp_pct:
                             trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
                             reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
                         else:
@@ -3595,4 +3721,4 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
 if __name__ == "__main__":
     args = _parse_args()
-    run(target_date=args.date, env_dv=args.env_dv, dry_run=args.dry_run)
+    run(target_date=args.date, env_dv=args.env_dv, dry_run=args.dry_run, watchlist_source=args.watchlist_source)

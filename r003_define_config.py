@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 """R76 shared configuration for live trading and simulation.
 
@@ -19,6 +19,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 DEFINE_TODAY_CODE_PATH = "r008_trade_watchlist_today.txt"
 DATA_DIR_NAME = "data"
+# ---------------------------------------------------------------------------
+# Feature: R008 watchlist pipeline (scanner -> r008 -> r006 live)
+# ---------------------------------------------------------------------------
+FEATURE_R008_WATCHLIST = True
+FEATURE_SCAN_EXPORT_TO_R008 = True
+FEATURE_WATCHLIST_RESOLVE_SCAN_PICKS = True
+
+R008_WATCHLIST_FILENAME = DEFINE_TODAY_CODE_PATH
+SCAN_PICKS_LEGACY_FILENAME = "picks.txt"
+SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
+
 
 # ---------------------------------------------------------------------------
 # Indicator parameters
@@ -41,6 +52,8 @@ RSI_SIGNAL_PERIOD = 6
 WILLIAMS_R_PERIOD = 10
 # Williams %D(평활) 기간
 WILLIAMS_D_PERIOD = 9
+# MFI 계산 기간
+MFI_PERIOD = 14
 # 거래량 이동평균 기간
 VOLUME_MA_PERIOD = 20
 # OBV 이동평균 기간
@@ -57,6 +70,17 @@ ADX_PERIOD = 7
 # ADX 최소값 완화
 ADX_MIN_TREND = 15.0  # 20.0 -> 15.0
 ADX_STRONG_TREND = 40.0
+# 매수 진입용 ADX 최소값
+ADX_BUY_MIN = 25.0
+# 매수 진입용 MFI 최소값
+MFI_BUY_MIN = 50.0
+
+# ATR 계산 기간
+ATR_PERIOD = 14
+# ATR 기반 손절 배수
+ATR_STOP_MULTIPLIER = 1.5
+# ATR 기반 익절 배수
+ATR_TAKE_PROFIT_MULTIPLIER = 3.0
 
 # ---------------------------------------------------------------------------
 # Trading parameters
