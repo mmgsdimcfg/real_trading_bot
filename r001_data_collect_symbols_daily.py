@@ -406,6 +406,65 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     return df_20sec
 
 
+def interpolate_to_10sec(minute_df: pd.DataFrame) -> pd.DataFrame:
+    """1분봉 데이터를 10초 간격으로 선형 보간해 확장한다.
+
+    Note:
+    - 이 데이터는 레거시 호환/시뮬레이션 정밀도 향상 목적의 보간 결과이며,
+      서버에서 10초 주기로 직접 수집한 체결 데이터가 아니다.
+    """
+    df = minute_df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+    df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+
+    if df.empty:
+        return df
+
+    df_indexed = df.set_index("datetime")
+    time_range_10sec = pd.date_range(
+        start=df_indexed.index.min(),
+        end=df_indexed.index.max(),
+        freq="10s"
+    )
+
+    df_reindexed = df_indexed.reindex(time_range_10sec.union(df_indexed.index)).sort_index()
+
+    price_cols = ["open", "high", "low", "close"]
+    for col in price_cols:
+        df_reindexed[col] = df_reindexed[col].interpolate(method="linear", limit_direction="both")
+
+    step_seconds = 10.0
+    if len(df.index) >= 2:
+        src_seconds = df["datetime"].diff().dropna().dt.total_seconds().median()
+        if pd.notna(src_seconds) and src_seconds > 0:
+            expansion = max(1.0, round(float(src_seconds) / step_seconds))
+        else:
+            expansion = 6.0
+    else:
+        expansion = 6.0
+
+    df_reindexed["volume"] = df_reindexed["volume"].ffill()
+    df_reindexed["volume"] = pd.to_numeric(df_reindexed["volume"], errors="coerce") / expansion
+    df_reindexed["volume"] = df_reindexed["volume"].fillna(0)
+
+    if "market" in df_reindexed.columns:
+        df_reindexed["market"] = df_reindexed["market"].ffill()
+
+    indicator_cols = [
+        "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
+        "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
+        "MACD", "MACD_SIGNAL", "MACD_HIST", "DI_PLUS", "DI_MINUS", "ADX",
+        "VWAP", "OBV", "OBV_MA",
+    ]
+    for col in indicator_cols:
+        if col in df_reindexed.columns:
+            df_reindexed[col] = df_reindexed[col].ffill()
+
+    df_10sec = df_reindexed.loc[time_range_10sec].reset_index()
+    df_10sec.rename(columns={"index": "datetime"}, inplace=True)
+    return df_10sec
+
+
 def build_3min_indicator_frame(minute_df: pd.DataFrame) -> pd.DataFrame:
     base = minute_df.copy()
     base["datetime"] = pd.to_datetime(base["datetime"], errors="coerce")
@@ -595,21 +654,24 @@ def main() -> None:
             else:
                 df_1m = enrich_with_strategy_indicators(df)
                 df_3m = build_3min_indicator_frame(df)
+                df_10s = interpolate_to_10sec(df_1m)
                 df_20s = interpolate_to_20sec(df_1m)
-                # Save 1-minute, live-aligned 3-minute, and legacy 20-second files.
+                # Save 1-minute, live-aligned 3-minute, and interpolated 10s/20s files.
                 safe_name = str(name).replace("/", "_").replace("\\", "_")
                 file_1m_path = output_dir / f"{code}_{safe_name}_1m.txt"
                 file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
+                file_10s_path = output_dir / f"{code}_{safe_name}_10s.txt"
                 legacy_20s_path = output_dir / f"{code}_{safe_name}.txt"
 
                 df_1m.to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
                 df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                df_10s.to_csv(file_10s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
                 df_20s.to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
 
                 saved_count += 1
                 saved_symbols.append((code, name))
                 logger.info(
-                    "[%d/%d] %s(%s) | NXT=%s | saved 1m=%d -> %s | 3m=%d -> %s | 20s(interpolated)=%d -> %s",
+                    "[%d/%d] %s(%s) | NXT=%s | saved 1m=%d -> %s | 3m=%d -> %s | 10s(interpolated)=%d -> %s | 20s(interpolated)=%d -> %s",
                     idx,
                     len(symbols),
                     code,
@@ -619,6 +681,8 @@ def main() -> None:
                     file_1m_path,
                     len(df_3m),
                     file_3m_path,
+                    len(df_10s),
+                    file_10s_path,
                     len(df_20s),
                     legacy_20s_path,
                 )

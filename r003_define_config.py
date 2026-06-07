@@ -74,6 +74,16 @@ ADX_STRONG_TREND = 40.0
 ADX_BUY_MIN = 25.0
 # 매수 진입용 MFI 최소값
 MFI_BUY_MIN = 50.0
+# 매수 시 ADX가 직전봉 대비 우상향이어야 하는지 여부
+REQUIRE_ADX_RISING = True
+# 매수 시 +DI가 -DI보다 커야 하는지 여부
+REQUIRE_DI_PLUS_DOMINANT = True
+# MFI 과열 상한(이상일 경우 추격 매수 금지)
+MFI_OVERBOUGHT_MAX = 80.0
+# RSI 모멘텀 허용 상한(기본: 50~60 구간 유지)
+RSI_BUY_MOMENTUM_MAX = 60.0
+# OBV 시그널 골든크로스+돌파 확인 필수 여부
+REQUIRE_OBV_SIGNAL_CROSS = True
 
 # ATR 계산 기간
 ATR_PERIOD = 14

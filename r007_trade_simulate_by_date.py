@@ -33,6 +33,7 @@ import collections
 import csv
 import json
 import logging
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -49,9 +50,15 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from r003_define_config import (
+    ADX_BUY_MIN,
     ADX_MIN_TREND,
     ADX_PERIOD,
     ADX_STRONG_TREND,
+        MFI_BUY_MIN,
+        MFI_OVERBOUGHT_MAX,
+        REQUIRE_ADX_RISING,
+        REQUIRE_DI_PLUS_DOMINANT,
+        REQUIRE_OBV_SIGNAL_CROSS,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
@@ -118,6 +125,7 @@ from r003_define_config import (
     REGULAR_START,
     RSI_BUY_MAX,
     RSI_BUY_MIN,
+    RSI_BUY_MOMENTUM_MAX,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
     STARTUP_WARMUP_SECONDS,
@@ -181,6 +189,45 @@ SIM_WARMUP_PRIOR_MAX_DAYS = 20
 NXT_ELIGIBLE_CODES_FALLBACK = frozenset(
     {"005930", "000660", "035420", "068270", "018880", "103590", "003490"}
 )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return float(default)
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+# Replay-only overrides for buy-gate sensitivity comparison.
+REQUIRE_ADX_RISING = _env_bool("R76_REQUIRE_ADX_RISING", REQUIRE_ADX_RISING)
+REQUIRE_DI_PLUS_DOMINANT = _env_bool("R76_REQUIRE_DI_PLUS_DOMINANT", REQUIRE_DI_PLUS_DOMINANT)
+REQUIRE_OBV_SIGNAL_CROSS = _env_bool("R76_REQUIRE_OBV_SIGNAL_CROSS", REQUIRE_OBV_SIGNAL_CROSS)
+MFI_OVERBOUGHT_MAX = _env_float("R76_MFI_OVERBOUGHT_MAX", MFI_OVERBOUGHT_MAX)
+RSI_BUY_MOMENTUM_MAX = _env_float("R76_RSI_BUY_MOMENTUM_MAX", RSI_BUY_MOMENTUM_MAX)
+
+ENABLE_INTRABAR_LIVE_ENTRY_FILTER = _env_bool("R76_ENABLE_INTRABAR_LIVE_ENTRY_FILTER", True)
+INTRABAR_MIN_ELAPSED_SECONDS = _env_float("R76_INTRABAR_MIN_ELAPSED_SECONDS", 90.0)
+INTRABAR_MFI_MIN = _env_float("R76_INTRABAR_MFI_MIN", 50.0)
+INTRABAR_MFI_MAX = _env_float("R76_INTRABAR_MFI_MAX", 75.0)
+INTRABAR_RSI_MIN = _env_float("R76_INTRABAR_RSI_MIN", 50.0)
+INTRABAR_RSI_MAX = _env_float("R76_INTRABAR_RSI_MAX", 70.0)
+INTRABAR_ADX_MIN = _env_float("R76_INTRABAR_ADX_MIN", 20.0)
+SIMULATE_10S_GRID_DEFAULT = _env_bool("R76_SIMULATE_10S_GRID", True)
 
 # Legacy compare mode parameter (kept for compare strategy behavior)
 TECH_SELL_MIN_HOLD_SECONDS = 300
@@ -284,6 +331,13 @@ _RAW_LOG_BUFFER: list[str] = []
 def raw(msg: str) -> None:
     print(msg)
     _RAW_LOG_BUFFER.append(str(msg))
+
+
+def _code_name_label(code: str, name: str | None) -> str:
+    name_text = str(name or "").strip()
+    if not name_text or name_text == str(code):
+        return str(code)
+    return f"{code}_{name_text}"
 
 
 def _load_text_lines(path: Path) -> list[str]:
@@ -426,7 +480,7 @@ def _find_code_txt_path(day_dir: Path, code: str) -> Path | None:
 
 
 def _find_code_txt_path_finest(day_dir: Path, code: str) -> Path | None:
-    """Return finest-granularity file for live-price simulation: prefers _20s > plain > _1m."""
+    """Return finest-granularity file for live-price simulation: prefers _10s > _20s > plain > _1m."""
     target = str(code).zfill(6)
     candidates: list[Path] = []
     for path in sorted(day_dir.glob("*.txt")):
@@ -439,12 +493,14 @@ def _find_code_txt_path_finest(day_dir: Path, code: str) -> Path | None:
 
     def _fineness(path: Path) -> tuple[int, int, str]:
         stem = path.stem.lower()
-        if stem.endswith("_20s"):
+        if stem.endswith("_10s"):
             tier = 0  # finest granularity
-        elif stem.endswith("_1m"):
-            tier = 2  # coarsest
-        else:
+        elif stem.endswith("_20s"):
             tier = 1
+        elif stem.endswith("_1m"):
+            tier = 3  # coarsest
+        else:
+            tier = 2
         return (tier, len(path.name), path.name)
 
     candidates.sort(key=_fineness)
@@ -624,6 +680,8 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # 이동평균 & 볼린저밴드
     out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
+    out["EMA_5"] = out["close"].ewm(span=5, adjust=False).mean()
+    out["EMA_20"] = out["close"].ewm(span=20, adjust=False).mean()
     out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
     out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
     out["BB_STD"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).std()
@@ -1229,8 +1287,9 @@ def check_buy_condition_r76_sim(
     ts: pd.Timestamp,
     live_price: float,
     cross_info: dict[str, object],
+    intrabar_elapsed_seconds: float | None = None,
 ) -> tuple[bool, str]:
-    return shared_check_buy_condition(
+    ok, reason = shared_check_buy_condition(
         frame=frame,
         now=ts,
         live_price=live_price,
@@ -1238,6 +1297,90 @@ def check_buy_condition_r76_sim(
         config=SHARED_R76_CONFIG,
         volume_ratio_threshold_fn=get_volume_ratio_threshold,
     )
+
+    if not ok:
+        return ok, reason
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+
+    if ENABLE_INTRABAR_LIVE_ENTRY_FILTER:
+        if intrabar_elapsed_seconds is not None and intrabar_elapsed_seconds < INTRABAR_MIN_ELAPSED_SECONDS:
+            return False, f"INTRABAR_TOO_EARLY_{intrabar_elapsed_seconds:.0f}s_LT_{INTRABAR_MIN_ELAPSED_SECONDS:.0f}s"
+
+        ema20_cur = _num(cur, "EMA_20")
+        ema5_cur = _num(cur, "EMA_5")
+        vwap_cur = _num(cur, "VWAP")
+        ema20_prev = _num(prev, "EMA_20")
+        close_prev = _num(prev, "close")
+        if any(pd.isna(v) for v in (ema20_cur, vwap_cur)) or not (live_price > ema20_cur and live_price > vwap_cur):
+            return False, f"INTRABAR_LIVE_NOT_ABOVE_EMA20_VWAP_{live_price:.0f}"
+        if any(pd.isna(v) for v in (close_prev, ema20_prev)) or not (close_prev < ema20_prev):
+            return False, f"INTRABAR_PREV_CLOSE_NOT_BELOW_EMA20_{close_prev:.1f}_GE_{ema20_prev:.1f}"
+        if any(pd.isna(v) for v in (ema5_cur, ema20_cur)) or not (ema5_cur > ema20_cur):
+            return False, f"INTRABAR_EMA_ALIGNMENT_FAIL_EMA5_{ema5_cur:.1f}_LE_EMA20_{ema20_cur:.1f}"
+
+        mfi_prev = _num(prev, "MFI")
+        rsi_prev = _num(prev, "RSI")
+        adx_prev = _num(prev, "ADX")
+        di_plus_prev = _num(prev, "DI_PLUS")
+        di_minus_prev = _num(prev, "DI_MINUS")
+        if pd.isna(mfi_prev) or not (INTRABAR_MFI_MIN <= mfi_prev < INTRABAR_MFI_MAX):
+            return False, f"INTRABAR_MFI_RANGE_FAIL_{mfi_prev:.1f}"
+        if pd.isna(rsi_prev) or not (INTRABAR_RSI_MIN <= rsi_prev < INTRABAR_RSI_MAX):
+            return False, f"INTRABAR_RSI_RANGE_FAIL_{rsi_prev:.1f}"
+        if pd.isna(adx_prev) or adx_prev < INTRABAR_ADX_MIN:
+            return False, f"INTRABAR_ADX_TOO_LOW_{adx_prev:.1f}_LT_{INTRABAR_ADX_MIN:.1f}"
+        if pd.isna(di_plus_prev) or pd.isna(di_minus_prev) or di_plus_prev <= di_minus_prev:
+            return False, f"INTRABAR_DI_NOT_BULLISH_+DI_{di_plus_prev:.1f}_-DI_{di_minus_prev:.1f}"
+
+    adx_val = _num(cur, "ADX")
+    prev_adx = _num(prev, "ADX")
+    di_plus = _num(cur, "DI_PLUS")
+    di_minus = _num(cur, "DI_MINUS")
+    mfi_val = _num(cur, "MFI")
+    prev_mfi = _num(prev, "MFI")
+    rsi_val = _num(cur, "RSI")
+    prev_rsi = _num(prev, "RSI")
+    obv_val = _num(cur, "OBV")
+    prev_obv = _num(prev, "OBV")
+    obv_ma_val = _num(cur, "OBV_MA")
+    prev_obv_ma = _num(prev, "OBV_MA")
+
+    if pd.isna(adx_val) or adx_val < ADX_BUY_MIN:
+        return False, f"WEAK_TREND_ADX_{adx_val:.1f}_LT_{ADX_BUY_MIN:.1f}"
+    if REQUIRE_ADX_RISING and (pd.isna(prev_adx) or adx_val <= prev_adx):
+        return False, f"WEAK_TREND_ADX_NOT_RISING_{prev_adx:.1f}->{adx_val:.1f}"
+    if REQUIRE_DI_PLUS_DOMINANT and (pd.isna(di_plus) or pd.isna(di_minus) or di_plus <= di_minus):
+        return False, f"WEAK_TREND_DI_NOT_BULLISH_+DI_{di_plus:.1f}_-DI_{di_minus:.1f}"
+
+    if pd.isna(mfi_val) or mfi_val < MFI_BUY_MIN:
+        return False, f"LOW_VOLUME_MFI_{mfi_val:.1f}_LT_{MFI_BUY_MIN:.1f}"
+    if not pd.isna(prev_mfi) and mfi_val <= prev_mfi:
+        return False, f"LOW_VOLUME_MFI_FLAT_{prev_mfi:.1f}->{mfi_val:.1f}"
+    if not pd.isna(mfi_val) and mfi_val >= MFI_OVERBOUGHT_MAX:
+        return False, f"MFI_OVERBOUGHT_{mfi_val:.1f}_GE_{MFI_OVERBOUGHT_MAX:.1f}"
+
+    rsi_breakout = (not pd.isna(prev_rsi)) and (prev_rsi <= RSI_BUY_MIN < rsi_val)
+    rsi_zone_hold = RSI_BUY_MIN <= rsi_val <= RSI_BUY_MOMENTUM_MAX
+    if pd.isna(rsi_val) or not (rsi_breakout or rsi_zone_hold):
+        return False, f"RSI_MOMENTUM_WEAK_{prev_rsi:.1f}->{rsi_val:.1f}"
+
+    obv_signal_cross = (
+        not any(pd.isna(v) for v in (prev_obv, prev_obv_ma, obv_val, obv_ma_val))
+        and prev_obv <= prev_obv_ma
+        and obv_val > obv_ma_val
+    )
+    obv_breakout = False
+    if "OBV" in frame.columns and len(frame) >= OBV_BREAKOUT_LOOKBACK_BARS + 1:
+        obv_series = pd.to_numeric(frame["OBV"], errors="coerce")
+        recent_obv_high = obv_series.iloc[-(OBV_BREAKOUT_LOOKBACK_BARS + 1):-1].max()
+        if not pd.isna(obv_val) and not pd.isna(recent_obv_high):
+            obv_breakout = obv_val > float(recent_obv_high)
+    if REQUIRE_OBV_SIGNAL_CROSS and not (obv_signal_cross and obv_breakout):
+        return False, "OBV_CONFIRM_MISSING_SIGNAL_CROSS_OR_BREAKOUT"
+
+    return True, reason
 
 
 def collect_buy_reject_reasons_r76_sim(
@@ -1515,6 +1658,64 @@ def get_latest_price_up_to(frame: pd.DataFrame, ts: pd.Timestamp) -> float | Non
     return float(available.iloc[-1]["close"])
 
 
+def upsample_price_frame_to_10s(frame: pd.DataFrame) -> pd.DataFrame:
+    """Upsample coarse intraday ticks (20s/1m) to 10s evaluation grid for r006 parity."""
+    if frame is None or frame.empty:
+        return frame
+    out = frame.copy().sort_index()
+    if len(out.index) < 2:
+        return out
+
+    grid = pd.date_range(start=out.index.min(), end=out.index.max(), freq="10s")
+    merged_idx = out.index.union(grid)
+    out = out.reindex(merged_idx).sort_index()
+
+    for col in ("open", "high", "low", "close"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").ffill()
+
+    if "volume" in out.columns:
+        out["volume"] = pd.to_numeric(out["volume"], errors="coerce").fillna(0.0)
+
+    return out.loc[grid]
+
+
+def _build_realtime_entry_frame_sim(frame: pd.DataFrame, ts: pd.Timestamp, live_price: float) -> tuple[pd.DataFrame, float]:
+    bar_start = ts.floor("3min")
+    bar_end = bar_start + pd.Timedelta(minutes=3)
+    elapsed_seconds = max(0.0, (ts - bar_start).total_seconds())
+
+    if frame is None or frame.empty or pd.isna(live_price) or live_price <= 0:
+        return frame, elapsed_seconds
+
+    out = frame.copy()
+    realtime_row = {
+        "open": float(live_price),
+        "high": float(live_price),
+        "low": float(live_price),
+        "close": float(live_price),
+        "volume": 0.0,
+    }
+
+    if len(out) > 0 and out.index[-1] == bar_end:
+        prev = out.iloc[-1]
+        realtime_row["open"] = float(_num(prev, "open")) if not pd.isna(_num(prev, "open")) else float(live_price)
+        prev_high = _num(prev, "high")
+        prev_low = _num(prev, "low")
+        realtime_row["high"] = max(float(live_price), float(prev_high) if not pd.isna(prev_high) else float(live_price))
+        realtime_row["low"] = min(float(live_price), float(prev_low) if not pd.isna(prev_low) else float(live_price))
+
+    out.loc[bar_end, ["open", "high", "low", "close", "volume"]] = [
+        realtime_row["open"],
+        realtime_row["high"],
+        realtime_row["low"],
+        realtime_row["close"],
+        realtime_row["volume"],
+    ]
+    out = out.sort_index()
+    return calculate_indicators(out), elapsed_seconds
+
+
 def _format_pending_pnl(reason_prefix: str, pnl_pct: float) -> str:
     return f"{reason_prefix}_{pnl_pct * 100:.2f}%"
 
@@ -1599,6 +1800,7 @@ def simulate_date(
     initial_capital: float = SIM_INITIAL_CAPITAL,
     run_index: int | None = None,
     allow_all_txt_fallback: bool = False,
+    simulate_10s_grid: bool = SIMULATE_10S_GRID_DEFAULT,
 ) -> int:
     global LAST_SIM_STATS, CURRENT_SIM_TS
     data_dir = data_root / date_str
@@ -1705,7 +1907,11 @@ def simulate_date(
             log(f"Skipped {code}: failed to build simulation frame")
             continue
         frames[code] = frame
-        price_frames[code] = raw_df
+        # r006 parity: evaluate live condition every 10s even if source file cadence is 20s/1m.
+        if simulate_10s_grid:
+            price_frames[code] = upsample_price_frame_to_10s(raw_df)
+        else:
+            price_frames[code] = raw_df
 
     if not frames:
         log("ERROR: No valid chart data loaded")
@@ -1743,7 +1949,11 @@ def simulate_date(
     if len(all_times) >= 2:
         diffs = pd.Series(all_times).diff().dropna().dt.total_seconds()
         data_interval_seconds = int(diffs.median())
-    log(f"Sim tick interval: {data_interval_seconds}s (raw data cadence) — matches r006 {SIM_CHECK_INTERVAL_SECONDS}s live poll semantics")
+    log(
+        f"Sim tick interval: {data_interval_seconds}s "
+        f"({'10s synthetic grid' if simulate_10s_grid else 'raw data cadence'}) "
+        f"— r006 target poll {SIM_CHECK_INTERVAL_SECONDS}s"
+    )
 
     sim = Simulator(initial_capital=initial_capital)
     compare_basic = PaperStrategyTracker(name="BASIC_CROSS", mode="basic")
@@ -1755,6 +1965,7 @@ def simulate_date(
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
+    buy_reject_counter: collections.Counter[str] = collections.Counter()
 
     for ts in all_times:
         CURRENT_SIM_TS = ts
@@ -1783,7 +1994,9 @@ def simulate_date(
             if len(available) < MIN_BARS_REQUIRED:
                 continue
 
-            cur = available.iloc[-1]
+            buy_available, intrabar_elapsed_seconds = _build_realtime_entry_frame_sim(available, ts, price)
+
+            cur = buy_available.iloc[-1]
             price = float(live_price)
             session = classify_buy_session(ts)
             # 실전 매매와 동일한 cross signal tracker/confirm logic 적용
@@ -1803,11 +2016,12 @@ def simulate_date(
             entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
                 entry_allowed = False
-            compare_basic.on_bar(code, available, ts, entry_allowed=entry_allowed)
-            compare_multi.on_bar(code, available, ts, entry_allowed=entry_allowed, live_price=price)
+            compare_basic.on_bar(code, buy_available, ts, entry_allowed=entry_allowed)
+            compare_multi.on_bar(code, buy_available, ts, entry_allowed=entry_allowed, live_price=price)
 
+            code_label = _code_name_label(code, selected_names.get(code, code))
             log_detail(
-                f"  [CHECK] {code}({selected_names.get(code, code)}) | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
+                f"  [CHECK] {code_label} | {ts:%H:%M:%S} | bars={len(available)} price={price:,.0f} | "
                 f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                 f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                 f"K={_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
@@ -1948,7 +2162,7 @@ def simulate_date(
                 if signal_sell_bar.get(code) == ts:
                     continue
 
-                should_sell, reason = check_sell_condition_r76_sim(available, profit_pct, price, cross_info)
+                should_sell, reason = check_sell_condition_r76_sim(buy_available, profit_pct, price, cross_info)
                 if should_sell:
                     sim.sell(code, price, ts, reason, session)
                     signal_sell_bar[code] = ts
@@ -1973,7 +2187,13 @@ def simulate_date(
             if signal_buy_bar.get(code) == ts:
                 continue
 
-            should_buy, reason = check_buy_condition_r76_sim(available, ts, price, cross_info)
+            should_buy, reason = check_buy_condition_r76_sim(
+                buy_available,
+                ts,
+                price,
+                cross_info,
+                intrabar_elapsed_seconds=intrabar_elapsed_seconds,
+            )
 
             if should_buy:
                 log(
@@ -1987,9 +2207,17 @@ def simulate_date(
                     signal_buy_bar[code] = ts
                     log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
                 else:
-                    log_detail(f"  [BUY REJECT] {code} | ORDER_REJECTED")
+                    log_detail(f"  [BUY REJECT] {code_label} | ORDER_REJECTED")
             else:
-                log_detail(f"  [BUY REJECT] {code} | {reason}")
+                for reject_reason in collect_buy_reject_reasons_r76_sim(
+                    buy_available,
+                    ts,
+                    price,
+                    cross_info,
+                    reason,
+                ):
+                    buy_reject_counter[str(reject_reason)] += 1
+                log_detail(f"  [BUY REJECT] {code_label} | {reason}")
 
 
 
@@ -2095,6 +2323,10 @@ def simulate_date(
         f"win_rate={multi_stats['win_rate']:.1f}% avg_pnl={multi_stats['avg_pnl_pct']:.2f}% "
         f"total_pnl={multi_stats['total_pnl_pct']:.2f}% equity={multi_stats['equity']:.4f}"
     )
+    if buy_reject_counter:
+        raw("  TOP BUY REJECT REASONS:")
+        for reason, cnt in buy_reject_counter.most_common(8):
+            raw(f"    - {reason}: {cnt}")
     raw(f"{'=' * 60}\n")
 
     LAST_SIM_STATS = {
@@ -2181,6 +2413,10 @@ def simulate_date(
         with open(out_path, "w", encoding="utf-8-sig") as f:
             f.write("\n".join(_RAW_LOG_BUFFER))
         print(f"[INFO] Simulation log saved: {out_path}")
+        print("[INFO] Begin saved result content")
+        for line in _RAW_LOG_BUFFER:
+            print(line)
+        print("[INFO] End saved result content")
     except Exception as exc:
         print(f"[WARN] Failed to save simulation log: {exc}")
     return 0
@@ -2293,6 +2529,18 @@ def main() -> None:
         default=COMPARE_SLIPPAGE_RATE,
         help="Compare strategy one-way slippage rate (e.g. 0.0002)",
     )
+    parser.add_argument(
+        "--simulate-10s-grid",
+        action="store_true",
+        default=SIMULATE_10S_GRID_DEFAULT,
+        help="Evaluate entries on synthetic 10-second grid (ffill from source ticks) for r006 parity",
+    )
+    parser.add_argument(
+        "--raw-tick-grid",
+        action="store_false",
+        dest="simulate_10s_grid",
+        help="Use raw tick cadence only (20s/1m), disable synthetic 10-second grid",
+    )
     args = parser.parse_args()
 
 
@@ -2365,6 +2613,7 @@ def main() -> None:
         names=names,
         initial_capital=args.capital,
         run_index=run_index,
+        simulate_10s_grid=bool(args.simulate_10s_grid),
     )
     # 핸들러/tee 정리
     try:
