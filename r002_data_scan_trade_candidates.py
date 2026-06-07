@@ -1471,6 +1471,32 @@ def parse_args():
         "--history-window", type=int, default=DEFAULT_HISTORY_WINDOW,
         help="Number of recent trading days to include in comparison report",
     )
+    parser.add_argument(
+        "--export-watchlist",
+        action="store_true",
+        help="[FEATURE_SCAN_EXPORT_TO_R008] Export picks to r008_trade_watchlist_today.txt",
+    )
+    parser.add_argument(
+        "--no-export-watchlist",
+        action="store_true",
+        help="Disable r008 export even when FEATURE_SCAN_EXPORT_TO_R008 is True",
+    )
+    parser.add_argument(
+        "--export-watchlist-path",
+        type=str,
+        default=None,
+        help="Override r008 export path (default: auto_trading/r008_trade_watchlist_today.txt)",
+    )
+    parser.add_argument(
+        "--for-next-trading-day",
+        action="store_true",
+        help="Add metadata comment for next calendar day in r008 export header",
+    )
+    parser.add_argument(
+        "--write-picks-alias",
+        action="store_true",
+        help="Also write data/YYYYMMDD/picks.txt (legacy r006 --date compatibility)",
+    )
     return parser.parse_args()
 
 
@@ -1555,6 +1581,37 @@ if __name__ == "__main__":
         picks_file = out_dir / picks_filename
         picks_file.write_text("\n".join(picks), encoding="utf-8")
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
+
+    try:
+        from r003_define_config import FEATURE_SCAN_EXPORT_TO_R008
+    except Exception:
+        FEATURE_SCAN_EXPORT_TO_R008 = True
+
+    export_enabled = FEATURE_SCAN_EXPORT_TO_R008 and not args.no_export_watchlist
+    if args.export_watchlist:
+        export_enabled = True
+
+    if export_enabled and picks:
+        from r010_watchlist_bridge import export_picks_to_r008, write_legacy_picks_alias
+
+        auto_dir = Path(__file__).resolve().parent
+        export_path = Path(args.export_watchlist_path) if args.export_watchlist_path else None
+        scan_date_str = output_prefix or None
+        r008_out = export_picks_to_r008(
+            picks,
+            auto_dir,
+            scan_date=scan_date_str,
+            config_name=config.name,
+            for_next_trading_day=bool(args.for_next_trading_day),
+            out_path=export_path,
+        )
+        if r008_out:
+            print(f"[FEATURE_SCAN_EXPORT_TO_R008] r008 watchlist 저장: {r008_out}")
+
+        if args.write_picks_alias and scan_date_str:
+            alias = write_legacy_picks_alias(picks, data_root, scan_date_str)
+            if alias:
+                print(f"[FEATURE_WATCHLIST_RESOLVE_SCAN_PICKS] legacy picks alias: {alias}")
 
     ranked_file = out_dir / ranked_filename
     ranked_file.write_text(render_ranked_csv(scan_result["selected_rows"]), encoding="utf-8")
