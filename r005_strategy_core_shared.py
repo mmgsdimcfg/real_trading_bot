@@ -344,11 +344,15 @@ def check_buy_condition(
 
     # 1차 필터: 가격/거래량/추격매수
     prev_close = _num(prev, "close")
-    if live_price <= cur_bb:
+    bb_buffer = max(config.live_price_bb_buffer_pct, 0.0)
+    bb_gate = cur_bb * (1.0 + bb_buffer)
+    prev_close_gate = prev_close * (1.0 + bb_buffer) if not pd.isna(prev_close) else float("nan")
+
+    if live_price <= bb_gate:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
     if pd.isna(prev_close):
         return False, "PREV_CLOSE_MISSING"
-    if live_price <= prev_close:
+    if live_price <= prev_close_gate:
         return False, "LIVE_NOT_ABOVE_PREV_CLOSE"
 
     vol = _num(cur, "volume")
