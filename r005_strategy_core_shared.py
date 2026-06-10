@@ -124,51 +124,17 @@ def _buy_support_score(
 ) -> int:
     score = 0
 
-    k_c = _num(cur, "STOCH_K")
-    d_c = _num(cur, "STOCH_D")
-    k_p = _num(prev, "STOCH_K")
-    d_p = _num(prev, "STOCH_D")
-    if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if k_c > d_c:
-            score += 1
-
     rsi_c = _num(cur, "RSI")
-    rsi_p = _num(prev, "RSI")
-    if not any(pd.isna(v) for v in (rsi_c, rsi_p)):
-        if config.rsi_buy_min <= rsi_c < config.rsi_buy_max and rsi_c > rsi_p:
-            score += 1
-
-    wr_c = _num(cur, "WILLIAMS_R")
-    wr_p = _num(prev, "WILLIAMS_R")
-    if not pd.isna(wr_c) and not pd.isna(wr_p):
-        if wr_c > wr_p and wr_c >= config.williams_buy_floor:
-            score += 1
+    if not pd.isna(rsi_c) and rsi_c > 50:
+        score += 1
 
     macd_c = _num(cur, "MACD")
     msig_c = _num(cur, "MACD_SIGNAL")
-    hist_c = _num(cur, "MACD_HIST")
-    hist_p = _num(prev, "MACD_HIST")
-    if not any(pd.isna(v) for v in (macd_c, msig_c, hist_c)):
-        hist_accel = (hist_c > 0) or (not pd.isna(hist_p) and hist_c < 0 and hist_c > hist_p)
-        if macd_c > msig_c and hist_accel:
-            score += 1
-
-    vwap = _num(cur, "VWAP")
-    close_v = _num(cur, "close")
-    if not pd.isna(vwap) and not pd.isna(close_v) and close_v > vwap:
+    if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c:
         score += 1
 
-    obv_c = _num(cur, "OBV")
-    obv_ma_c = _num(cur, "OBV_MA")
-    obv_p = _num(prev, "OBV")
-    obv_breakout = False
-    if "OBV" in frame.columns and len(frame) >= config.obv_breakout_lookback_bars + 1:
-        obv_series = pd.to_numeric(frame["OBV"], errors="coerce")
-        recent_obv_high = obv_series.iloc[-(config.obv_breakout_lookback_bars + 1):-1].max()
-        if not pd.isna(obv_c) and not pd.isna(recent_obv_high):
-            obv_breakout = obv_c > float(recent_obv_high)
-    obv_uptrend = not any(pd.isna(v) for v in (obv_c, obv_ma_c, obv_p)) and (obv_c > obv_ma_c and obv_c > obv_p)
-    if obv_breakout or obv_uptrend:
+    adx_c = _num(cur, "ADX")
+    if not pd.isna(adx_c) and adx_c >= config.adx_min_trend:
         score += 1
 
     return score
@@ -375,61 +341,27 @@ def check_buy_condition(
         return False, "MISSING_INDICATOR"
 
     live_cross_up_signal = cross_info.get("signal") == "cross_up"
-    confirmed_above = cross_info.get("confirmed_relation") == "above"
-    ma5_golden_cross_now = prev_ma5 <= prev_bb and cur_ma5 > cur_bb
-    ma5_bias_ok = cur_ma5 >= cur_bb and cur_ma5 >= prev_ma5
-    upper_trigger = float(cross_info.get("upper_trigger", cur_bb))
-    support_score = _buy_support_score(cur, prev, frame, config)
-    cur_open = _num(cur, "open")
-    cur_close = _num(cur, "close")
 
-    # When no fresh live cross-up is available, allow buy only if
-    # current live price is above both previous 3-min close and current BB middle.
+    # 1차 필터: 가격/거래량/추격매수
     prev_close = _num(prev, "close")
-
-    # Late-chase guard: if the live cross has not fired, only allow entries
-    # while price is still very close to BB middle.
-    if not live_cross_up_signal and cur_bb > 0:
-        bb_gap_pct = (live_price - cur_bb) / cur_bb
-        if bb_gap_pct > min(config.ma5_bb_follow_chase_max_gap_pct, 0.005):
-            return False, f"CHASE_BUY_BLOCK_BB_GAP_{bb_gap_pct*100:.2f}%_GT_0.50%"
-
-    if not live_cross_up_signal:
-        if pd.isna(prev_close):
-            return False, "PREV_CLOSE_MISSING"
-        if not (live_price > prev_close and live_price > cur_bb):
-            return False, "LIVE_NOT_ABOVE_PREV_CLOSE_AND_BB_MIDDLE"
-
-        # Allow early entry when broad support signals are already strong
-        # even if explicit live-price cross confirmation has not fired yet.
-        strong_signal_fallback = (
-            support_score >= config.strong_trend_overbought_min_score
-            and live_price > cur_bb
-            and not pd.isna(cur_open)
-            and not pd.isna(cur_close)
-            and cur_close > cur_open
-            and cur_bb >= prev_bb
-            and ma5_bias_ok
-        )
-        fallback_ok = (confirmed_above and ma5_bias_ok and live_price >= upper_trigger) or strong_signal_fallback
-        if not fallback_ok:
-            return False, "NO_LIVE_PRICE_BB_CROSS_UP"
-
-    if config.require_strict_buy_golden_cross and not ma5_golden_cross_now:
-        return False, "NO_MA5_BB_GOLDEN_CROSS"
-
     if live_price <= cur_bb:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
-    if cur_bb < prev_bb:
-        return False, "BB_MIDDLE_FALLING"
-    if cur_ma5 < prev_ma5:
-        return False, "MA5_FALLING"
+    if pd.isna(prev_close):
+        return False, "PREV_CLOSE_MISSING"
+    if live_price <= prev_close:
+        return False, "LIVE_NOT_ABOVE_PREV_CLOSE"
 
-    if not pd.isna(cur_open) and cur_open > 0 and live_price < (cur_open * 0.995):
-        return False, "NOT_BULLISH"
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    adx_val = _num(cur, "ADX")
+    if any(pd.isna(v) for v in (vol, vol_ma)) or vol_ma <= 0:
+        return False, "MISSING_VOLUME_DATA"
+    vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
+    vol_ratio = vol / vol_ma
+    if vol_ratio < vol_ratio_req:
+        return False, f"LOW_VOLUME_RATIO_{vol_ratio:.2f}_LT_{vol_ratio_req:.2f}"
 
-    # Prevent late chase entries after MA5/BB cross when no fresh live-price cross-up signal exists.
-    if (not live_cross_up_signal) and (not ma5_golden_cross_now) and cur_bb > 0:
+    if cur_bb > 0:
         bb_gap_pct = (live_price - cur_bb) / cur_bb
         if bb_gap_pct > config.ma5_bb_follow_chase_max_gap_pct:
             return False, (
@@ -437,127 +369,36 @@ def check_buy_condition(
                 f"_GT_{config.ma5_bb_follow_chase_max_gap_pct*100:.2f}%"
             )
 
-    stoch_k = _num(cur, "STOCH_K")
-    is_stoch_overbought = not pd.isna(stoch_k) and stoch_k >= config.stoch_overbought
+    # 2차 필터: 추세/정렬
+    if cur_ma5 < prev_ma5:
+        return False, "MA5_FALLING"
+    if cur_bb < prev_bb:
+        return False, "BB_MIDDLE_FALLING"
 
-    adx_val = _num(cur, "ADX")
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    score = _buy_support_score(cur, prev, frame, config)
-    strong_vol_ratio_ok = (
-        not any(pd.isna(v) for v in (vol, vol_ma))
-        and vol_ma > 0
-        and (vol / vol_ma) >= config.strong_trend_overbought_min_vol_ratio
-    )
-    strong_entry_ok = (
-        config.enable_strong_trend_overbought_bypass
-        and score >= config.strong_trend_overbought_min_score
-        and live_price > cur_bb
-        and cur_bb >= prev_bb
-        and cur_ma5 >= prev_ma5
-        and (pd.isna(adx_val) or adx_val >= config.strong_trend_overbought_min_adx)
-        and strong_vol_ratio_ok
-    )
+    ema5 = _num(cur, "EMA_5")
+    ema20 = _num(cur, "EMA_20")
+    if any(pd.isna(v) for v in (ema5, ema20)) or ema5 < ema20 or live_price <= ema20:
+        return False, "EMA_ALIGNMENT_FAIL"
 
-    wr_val = _num(cur, "WILLIAMS_R")
-    if not strong_entry_ok and not pd.isna(wr_val) and wr_val >= config.williams_overbought_ceil:
-        return False, f"OVERBOUGHT_WR_{wr_val:.1f}"
-
-    bb_up = _num(cur, "BB_UPPER")
-    bb_low_v = _num(cur, "BB_LOWER")
-    if not any(pd.isna(v) for v in (bb_up, bb_low_v)) and bb_up > bb_low_v:
-        bb_pos = (live_price - bb_low_v) / (bb_up - bb_low_v)
-        if bb_pos >= config.bb_upper_proximity_max:
-            return False, f"NEAR_BB_UPPER_{bb_pos:.2f}"
-
-    cur_close = _num(cur, "close")
-    if not any(pd.isna(v) for v in (bb_up, bb_low_v, cur_close)) and cur_close > 0:
-        bb_width_pct = (bb_up - bb_low_v) / cur_close
-        if bb_width_pct < config.bb_squeeze_min_width_pct:
-            return False, f"BB_SQUEEZE_{bb_width_pct*100:.2f}%_LT_{config.bb_squeeze_min_width_pct*100:.2f}%"
-
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        ratio = volume_ratio_threshold_fn(now, adx_val)
-        if (not strong_entry_ok) and vol < (vol_ma * ratio):
-            return False, f"LOW_VOLUME_{(vol / vol_ma):.2f}_LT_{ratio:.2f}"
-
-    if not pd.isna(adx_val) and adx_val < config.adx_min_trend:
+    # 3차 필터: 모멘텀/추세 보조
+    if pd.isna(adx_val) or adx_val < config.adx_min_trend:
         return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
 
-    if is_stoch_overbought:
-        bypass_overbought = (
-            config.enable_strong_trend_overbought_bypass
-            and score >= config.strong_trend_overbought_min_score
-            and strong_vol_ratio_ok
-        )
-        if bypass_overbought:
-            trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
-            return True, f"{trigger}_OVERBOUGHT_BYPASS_SCORE_{score}"
-
-    # --- 추가 필수 조건 ---
-    vwap = _num(cur, "VWAP")
-    close_v = _num(cur, "close")
-    if (not strong_entry_ok) and (pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap)):
-        return False, "NO_VWAP_BREAK"
-
-    # 거래량 > 평균 거래량 1.5배
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        if (not strong_entry_ok) and vol < (vol_ma * 1.5):
-            return False, f"LOW_VOLUME_1.5X_{(vol / vol_ma):.2f}"
-
-    # RSI > 55
     rsi_c = _num(cur, "RSI")
-    if pd.isna(rsi_c) or rsi_c <= 55:
-        return False, f"RSI_TOO_LOW_{rsi_c:.2f}"
+    if pd.isna(rsi_c):
+        return False, "MISSING_RSI"
+    if rsi_c >= config.rsi_buy_max:
+        return False, f"RSI_OVERBOUGHT_{rsi_c:.1f}"
 
-    # MACD Histogram 증가
-    hist_c = _num(cur, "MACD_HIST")
-    hist_p = _num(prev, "MACD_HIST")
-    if pd.isna(hist_c) or pd.isna(hist_p) or not (hist_c > hist_p):
-        return False, f"MACD_HIST_NOT_INCREASING_{hist_p:.2f}_TO_{hist_c:.2f}"
+    macd_c = _num(cur, "MACD")
+    msig_c = _num(cur, "MACD_SIGNAL")
+    macd_confirm = not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c
+    rsi_confirm = rsi_c > 50
+    if not (rsi_confirm or macd_confirm):
+        return False, "MOMENTUM_CONFIRM_MISSING"
 
-    # 체결강도 > 120 (값이 있으면 체크)
-    exec_strength = _num(cur, "EXECUTION_STRENGTH") if "EXECUTION_STRENGTH" in cur else float('nan')
-    if not pd.isna(exec_strength) and exec_strength <= 120:
-        return False, f"EXEC_STRENGTH_TOO_LOW_{exec_strength:.2f}"
-
-    score = support_score
-
-    if is_stoch_overbought:
-        bypass_overbought = (
-            config.enable_strong_trend_overbought_bypass
-            and score >= config.strong_trend_overbought_min_score
-            and strong_vol_ratio_ok
-        )
-        if not bypass_overbought:
-            return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
-
-    if config.enable_price_lead_bb_breakout:
-        breakout_window = frame.iloc[:-1].tail(3)
-        if breakout_window.empty:
-            return False, "INSUFFICIENT_BREAKOUT_HISTORY"
-
-        recent_high = pd.to_numeric(breakout_window["high"], errors="coerce").max()
-        if pd.isna(recent_high) or recent_high <= 0:
-            return False, "MISSING_BREAKOUT_HIGH"
-
-        breakout_buffer = 1.0 + max(config.live_price_bb_buffer_pct, 0.0005)
-        if live_price <= float(recent_high) * breakout_buffer:
-            return False, f"NO_PRICE_LEAD_BREAKOUT_{live_price:.0f}_LE_{float(recent_high):.0f}"
-
-        if score < config.price_lead_breakout_min_score:
-            return False, f"LOW_BREAKOUT_SCORE_{score}"
-
-        if not pd.isna(adx_val) and adx_val < config.price_lead_breakout_min_adx:
-            return False, f"WEAK_BREAKOUT_ADX_{adx_val:.1f}"
-
-        if not config.price_lead_breakout_allow_overbought and is_stoch_overbought:
-            return False, f"OVERBOUGHT_STOCH_{stoch_k:.1f}"
-
-    if score < 2:  # 3 → 2로 완화
-        return False, f"LOW_SCORE_{score}"
-
-    trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "MA5_BB_GOLDEN_CROSS_ABOVE_BB"
+    trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "LIVE_ABOVE_BB_PREV_CLOSE"
+    score = _buy_support_score(cur, prev, frame, config)
     return True, f"{trigger}_SCORE_{score}"
 
 
