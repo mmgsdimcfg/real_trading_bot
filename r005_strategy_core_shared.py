@@ -342,28 +342,13 @@ def check_buy_condition(
 
     live_cross_up_signal = cross_info.get("signal") == "cross_up"
 
-    # 1차 필터: 가격/거래량/추격매수
+    # 1차 필터: BB 중단 돌파
     prev_close = _num(prev, "close")
     bb_buffer = max(config.live_price_bb_buffer_pct, 0.0)
     bb_gate = cur_bb * (1.0 + bb_buffer)
-    prev_close_gate = prev_close * (1.0 + bb_buffer) if not pd.isna(prev_close) else float("nan")
 
     if live_price <= bb_gate:
         return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
-    if pd.isna(prev_close):
-        return False, "PREV_CLOSE_MISSING"
-    if live_price <= prev_close_gate:
-        return False, "LIVE_NOT_ABOVE_PREV_CLOSE"
-
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    adx_val = _num(cur, "ADX")
-    if any(pd.isna(v) for v in (vol, vol_ma)) or vol_ma <= 0:
-        return False, "MISSING_VOLUME_DATA"
-    vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
-    vol_ratio = vol / vol_ma
-    if vol_ratio < vol_ratio_req:
-        return False, f"LOW_VOLUME_RATIO_{vol_ratio:.2f}_LT_{vol_ratio_req:.2f}"
 
     if cur_bb > 0:
         bb_gap_pct = (live_price - cur_bb) / cur_bb
@@ -373,33 +358,53 @@ def check_buy_condition(
                 f"_GT_{config.ma5_bb_follow_chase_max_gap_pct*100:.2f}%"
             )
 
-    # 2차 필터: 추세/정렬
-    if cur_ma5 < prev_ma5:
-        return False, "MA5_FALLING"
-    if cur_bb < prev_bb:
-        return False, "BB_MIDDLE_FALLING"
+    # 핵심 5조건
+    macd_hist = _num(cur, "MACD_HIST")
+    if pd.isna(macd_hist) or macd_hist <= 0:
+        return False, "MACD_HIST_NOT_POSITIVE"
 
-    ema5 = _num(cur, "EMA_5")
-    ema20 = _num(cur, "EMA_20")
-    if any(pd.isna(v) for v in (ema5, ema20)) or ema5 < ema20 or live_price <= ema20:
-        return False, "EMA_ALIGNMENT_FAIL"
-
-    # 3차 필터: 모멘텀/추세 보조
-    if pd.isna(adx_val) or adx_val < config.adx_min_trend:
-        return False, f"WEAK_TREND_ADX_{adx_val:.1f}"
+    stoch_k = _num(cur, "STOCH_K")
+    stoch_d = _num(cur, "STOCH_D")
+    if any(pd.isna(v) for v in (stoch_k, stoch_d)) or stoch_k <= stoch_d:
+        return False, "STOCH_K_NOT_ABOVE_D"
+    if stoch_k >= 85:
+        return False, f"STOCH_K_OVERHEATED_{stoch_k:.1f}"
 
     rsi_c = _num(cur, "RSI")
-    if pd.isna(rsi_c):
-        return False, "MISSING_RSI"
-    if rsi_c >= config.rsi_buy_max:
-        return False, f"RSI_OVERBOUGHT_{rsi_c:.1f}"
+    if pd.isna(rsi_c) or rsi_c <= 30:
+        return False, f"RSI_TOO_LOW_{rsi_c:.1f}"
+    if rsi_c >= 75:
+        return False, f"RSI_OVERHEATED_{rsi_c:.1f}"
 
-    macd_c = _num(cur, "MACD")
-    msig_c = _num(cur, "MACD_SIGNAL")
-    macd_confirm = not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c
-    rsi_confirm = rsi_c > 50
-    if not (rsi_confirm or macd_confirm):
-        return False, "MOMENTUM_CONFIRM_MISSING"
+    di_plus = _num(cur, "DI_PLUS")
+    di_minus = _num(cur, "DI_MINUS")
+    if any(pd.isna(v) for v in (di_plus, di_minus)) or di_plus <= di_minus:
+        return False, f"DI_NOT_BULLISH_+DI_{di_plus:.1f}_-DI_{di_minus:.1f}"
+
+    # 이전 종가/거래량은 적극안에서 하드 차단 대신 소프트 가드로 완화
+    prev_close_soft_fail = False
+    if not pd.isna(prev_close):
+        prev_close_gate = prev_close * (1.0 + bb_buffer)
+        prev_close_soft_fail = live_price <= prev_close_gate
+
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    adx_val = _num(cur, "ADX")
+    vol_ratio = float("nan")
+    vol_ratio_req = float("nan")
+    volume_soft_fail = False
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
+        volume_soft_fail = vol_ratio < vol_ratio_req
+
+        # 극단적 거래량 부족은 여전히 차단
+        hard_floor = max(0.10, vol_ratio_req * 0.40)
+        if vol_ratio < hard_floor:
+            return False, f"LOW_VOLUME_RATIO_{vol_ratio:.2f}_LT_{hard_floor:.2f}"
+
+    if prev_close_soft_fail and volume_soft_fail:
+        return False, "LIVE_NOT_ABOVE_PREV_CLOSE_AND_LOW_VOLUME"
 
     trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "LIVE_ABOVE_BB_PREV_CLOSE"
     score = _buy_support_score(cur, prev, frame, config)

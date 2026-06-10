@@ -2116,6 +2116,7 @@ def _serialize_live_state(live_state: dict) -> dict:
             "entry_buy_time": _json_safe(meta.get("entry_buy_time") or meta.get("buy_time")),
             "buy_session": _json_safe(meta.get("buy_session")),
             "highest_price": _json_safe(meta.get("highest_price")),
+            "tp1_done": bool(meta.get("tp1_done", False)),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded}
@@ -2155,6 +2156,7 @@ def load_live_state(date_str: str) -> dict:
             "entry_buy_time": entry_buy_time,
             "buy_session": (meta or {}).get("buy_session"),
             "highest_price": (meta or {}).get("highest_price"),
+            "tp1_done": bool((meta or {}).get("tp1_done", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded}
@@ -2252,6 +2254,7 @@ class TradingAPI:
                     float(meta.get("highest_price", 0.0)),
                     float(pos.get("current_price", 0.0)),
                 )
+            pos["tp1_done"] = bool(meta.get("tp1_done", pos.get("tp1_done", False)))
 
     def _record_position_meta(self, code: str, pos: dict) -> None:
         meta_map = self.live_state.setdefault("positions_meta", {})
@@ -2260,6 +2263,7 @@ class TradingAPI:
             "entry_buy_time": pos.get("entry_buy_time") or pos.get("buy_time"),
             "buy_session": pos.get("buy_session"),
             "highest_price": pos.get("highest_price"),
+            "tp1_done": bool(pos.get("tp1_done", False)),
         }
 
     def _sync_live_state_from_positions(self) -> None:
@@ -2351,6 +2355,7 @@ class TradingAPI:
                 "buy_session": buy_session,
                 "current_price": current_price,
                 "highest_price": highest,
+                "tp1_done": bool(prev.get("tp1_done", persisted.get("tp1_done", False))),
             }
             self._record_position_meta(code, updated[code])
 
@@ -2505,6 +2510,7 @@ class TradingAPI:
         pos["buy_time"] = entry_time
         pos["entry_buy_time"] = entry_time
         pos["buy_session"] = pending.get("session", pos.get("buy_session", "synced"))
+        pos["tp1_done"] = False
         if fill_price > 0:
             pos["buy_price"] = fill_price
             pos["current_price"] = float(pos.get("current_price") or fill_price)
@@ -3396,6 +3402,81 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
                     peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
                     profit_giveback = peak_pnl_pct - pnl_pct
+
+                    # ── Aggressive Exit Plan (+1/+2, signal exits, -0.8% SL) ───────
+                    k_now = _num(cur, "STOCH_K")
+                    d_now = _num(cur, "STOCH_D")
+                    hist_now = _num(cur, "MACD_HIST")
+                    hist_prev = _num(frame.iloc[-2], "MACD_HIST")
+                    hist_prev2 = _num(frame.iloc[-3], "MACD_HIST") if len(frame) >= 3 else float("nan")
+
+                    # Hard stop-loss first
+                    if pnl_pct <= -0.008:
+                        reason_hard_sl = "HARD_STOP_LOSS_0.8PCT"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_hard_sl} | "
+                            f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%"
+                        )
+                        trailing_sell_confirm_state.pop(code, None)
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_hard_sl, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
+
+                    # +2.0% full take profit
+                    if pnl_pct >= 0.020:
+                        reason_tp2 = "TP2_FULL_2.0PCT"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_tp2} | "
+                            f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%"
+                        )
+                        trailing_sell_confirm_state.pop(code, None)
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp2, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
+
+                    # +1.0% one-time 50% partial take profit
+                    if (not bool(pos.get("tp1_done", False))) and pnl_pct >= 0.010:
+                        partial_qty = max(1, int(int(pos["quantity"]) * 0.5))
+                        partial_qty = min(partial_qty, int(pos["quantity"]))
+                        reason_tp1 = "TP1_PARTIAL_50PCT_1.0PCT"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_tp1} | "
+                            f"qty={partial_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
+                        )
+                        if api.place_sell_order(code, partial_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
+                            pos["tp1_done"] = True
+                            api._record_position_meta(code, pos)
+                            api.persist_live_state(date_str=date_str)
+                            log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={partial_qty} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
+
+                    # Signal-based full exits
+                    if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
+                        reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_sig_kd} | "
+                            f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}%"
+                        )
+                        trailing_sell_confirm_state.pop(code, None)
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sig_kd, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
+
+                    if not any(pd.isna(v) for v in (hist_now, hist_prev, hist_prev2)) and hist_now < hist_prev < hist_prev2:
+                        reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
+                        log(
+                            f"  [SELL TRIGGER] {code} | {reason_sig_macd} | "
+                            f"HIST={hist_prev2:.3f}->{hist_prev:.3f}->{hist_now:.3f} pnl={pnl_pct*100:.2f}%"
+                        )
+                        trailing_sell_confirm_state.pop(code, None)
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sig_macd, nxt_tradeable, price=price, code_name=name):
+                            log(f"  [SELL EXECUTED] {code} | {reason_sig_macd} | qty={pos['quantity']} price={price:,.0f}")
+                        signal_sell_bar[code] = bar_time
+                        continue
 
                     if not pd.isna(atr_tp_pct) and pnl_pct >= atr_tp_pct:
                         if ENABLE_TP_EXTENSION_TRAILING:
