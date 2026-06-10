@@ -367,14 +367,16 @@ def check_buy_condition(
     stoch_d = _num(cur, "STOCH_D")
     if any(pd.isna(v) for v in (stoch_k, stoch_d)) or stoch_k <= stoch_d:
         return False, "STOCH_K_NOT_ABOVE_D"
-    if stoch_k >= 85:
+    # 과열 차단은 config.stoch_overbought (92.0) 기준으로 통일
+    # 85 고정값은 강세장 전체를 차단하므로 사용 금지
+    if stoch_k >= config.stoch_overbought:
         return False, f"STOCH_K_OVERHEATED_{stoch_k:.1f}"
 
     rsi_c = _num(cur, "RSI")
     if pd.isna(rsi_c) or rsi_c <= 30:
         return False, f"RSI_TOO_LOW_{rsi_c:.1f}"
-    if rsi_c >= 75:
-        return False, f"RSI_OVERHEATED_{rsi_c:.1f}"
+    # RSI 상단 하드캡 제거: 강세장에서 RSI 86~100도 정상 진입 허용
+    # (과매수 차단은 K >= stoch_overbought 로만 유지)
 
     di_plus = _num(cur, "DI_PLUS")
     di_minus = _num(cur, "DI_MINUS")
