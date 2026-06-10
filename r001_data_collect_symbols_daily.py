@@ -13,8 +13,8 @@ Key behavior:
 - Collects by date from KIS minute API (`inquire_time_dailychartprice`).
 - Uses market priority NX > J > UN for overlapping timestamps.
 - Supports NXT pre/after sessions (08:00~19:59) when symbol is NXT-tradeable.
-- Exports 3-minute indicator bars used by live decision logic.
-- Keeps a legacy 20-second file via interpolation from minute bars (not a 20-second server fetch).
+- Exports 10-second interpolated bars (`_10s.txt`) for r007 simulation input.
+- Optionally saves legacy `_1m/_3m/_20s` files for backward compatibility.
 
 Usage examples:
 - Single code on specific date (regular market only):
@@ -101,6 +101,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=str, default=str(SCRIPT_DIR / "data"), help="Output data root")
     parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
     parser.add_argument("--nxt", action="store_true", help="Include NXT market data (08:00~20:00)")
+    parser.add_argument(
+        "--save-legacy-files",
+        action="store_true",
+        help="Also save legacy _1m/_3m/_20s files in addition to default _10s output",
+    )
     return parser.parse_args()
 
 
@@ -652,39 +657,45 @@ def main() -> None:
                 empty_count += 1
                 logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
             else:
-                df_1m = enrich_with_strategy_indicators(df)
-                df_3m = build_3min_indicator_frame(df)
-                df_10s = interpolate_to_10sec(df_1m)
-                df_20s = interpolate_to_20sec(df_1m)
-                # Save 1-minute, live-aligned 3-minute, and interpolated 10s/20s files.
-                safe_name = str(name).replace("/", "_").replace("\\", "_")
-                file_1m_path = output_dir / f"{code}_{safe_name}_1m.txt"
-                file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
-                file_10s_path = output_dir / f"{code}_{safe_name}_10s.txt"
-                legacy_20s_path = output_dir / f"{code}_{safe_name}.txt"
+                df_10s = interpolate_to_10sec(df)
 
-                df_1m.to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
-                df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                df_10s = calculate_r76_indicators(df_10s)
+                
+                safe_name = str(name).replace("/", "_").replace("\\", "_")
+                file_10s_path = output_dir / f"{code}_{safe_name}_10s.txt"
                 df_10s.to_csv(file_10s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
-                df_20s.to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+
+                legacy_log = ""
+                if args.save_legacy_files:
+                    df_1m = enrich_with_strategy_indicators(df)
+                    df_3m = build_3min_indicator_frame(df)
+                    df_20s = interpolate_to_20sec(df_1m)
+
+                    file_1m_path = output_dir / f"{code}_{safe_name}_1m.txt"
+                    file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
+                    legacy_20s_path = output_dir / f"{code}_{safe_name}_20s.txt"
+
+                    df_1m.to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                    df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                    df_20s.to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                    legacy_log = (
+                        f" | 1m={len(df_1m)} -> {file_1m_path}"
+                        f" | 3m={len(df_3m)} -> {file_3m_path}"
+                        f" | 20s(interpolated)={len(df_20s)} -> {legacy_20s_path}"
+                    )
 
                 saved_count += 1
                 saved_symbols.append((code, name))
                 logger.info(
-                    "[%d/%d] %s(%s) | NXT=%s | saved 1m=%d -> %s | 3m=%d -> %s | 10s(interpolated)=%d -> %s | 20s(interpolated)=%d -> %s",
+                    "[%d/%d] %s(%s) | NXT=%s | 10s(interpolated)=%d -> %s%s",
                     idx,
                     len(symbols),
                     code,
                     name,
                     nxt_tradeable,
-                    len(df_1m),
-                    file_1m_path,
-                    len(df_3m),
-                    file_3m_path,
                     len(df_10s),
                     file_10s_path,
-                    len(df_20s),
-                    legacy_20s_path,
+                    legacy_log,
                 )
 
             if args.sleep > 0:

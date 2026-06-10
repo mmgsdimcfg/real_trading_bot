@@ -3179,7 +3179,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     nxt_map = {code: is_nxt_tradeable(code) for code in watch_map}
     for code, name in watch_map.items():
-        print(f"[R006 WATCH] {code} | {name} | NXT={nxt_map[code]}", flush=True)
+#        print(f"[R006 WATCH] {code} | {name} | NXT={nxt_map[code]}", flush=True)
         log(f"WATCH | {code} | {name} | NXT={nxt_map[code]}")
 
     log("Strategy: live price cross over buffered BB middle + Stoch/RSI/Williams confirmation")
