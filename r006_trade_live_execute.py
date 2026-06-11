@@ -1539,14 +1539,15 @@ def _build_realtime_entry_frame(
     realtime_bar_state[code] = state
 
     working = frame.copy()
+    # 현재 미완성봉 거래량: API가 10초 누적을 신뢰성 있게 제공하지 않으므로
+    # 직전 확정봉의 거래량을 대리값으로 사용해 volume=0 으로 인한 리젝을 방지한다.
+    prev_bar_volume = float(frame.iloc[-1]["volume"]) if not frame.empty else 0.0
     realtime_row = {
         "open": float(state["open"]),
         "high": float(state["high"]),
         "low": float(state["low"]),
         "close": float(state["close"]),
-        # Live quote API does not provide 10-second cumulative volume reliably.
-        # Keep intrabar volume at 0 and rely on closed bars for volume-based guards.
-        "volume": 0.0,
+        "volume": prev_bar_volume,
     }
     if len(working) > 0 and working.index[-1] == bar_end:
         for key, val in realtime_row.items():
@@ -3409,6 +3410,15 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     hist_now = _num(cur, "MACD_HIST")
                     hist_prev = _num(frame.iloc[-2], "MACD_HIST")
                     hist_prev2 = _num(frame.iloc[-3], "MACD_HIST") if len(frame) >= 3 else float("nan")
+                    adx_now = _num(cur, "ADX")
+                    di_plus_now = _num(cur, "DI_PLUS")
+                    di_minus_now = _num(cur, "DI_MINUS")
+                    # 강한 상승 추세: ADX > 45 이고 +DI > -DI 이면 스토캐스틱 K<D 매도 신호 무시
+                    _strong_uptrend = (
+                        not pd.isna(adx_now) and adx_now > 45
+                        and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
+                        and di_plus_now > di_minus_now
+                    )
 
                     # Hard stop-loss first
                     if pnl_pct <= -0.008:
@@ -3455,17 +3465,22 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     # Signal-based full exits
                     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                        reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_sig_kd} | "
-                            f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}%"
-                        )
-                        trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sig_kd, nxt_tradeable, price=price, code_name=name):
-                            log(f"  [SELL EXECUTED] {code} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-
+                        if _strong_uptrend:
+                            log(
+                                f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed by strong uptrend | "
+                                f"K={k_now:.1f} D={d_now:.1f} ADX={adx_now:.1f} +DI={di_plus_now:.1f} -DI={di_minus_now:.1f}"
+                            )
+                        else:
+                            reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_sig_kd} | "
+                                f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}%"
+                            )
+                            trailing_sell_confirm_state.pop(code, None)
+                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sig_kd, nxt_tradeable, price=price, code_name=name):
+                                log(f"  [SELL EXECUTED] {code} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
+                            signal_sell_bar[code] = bar_time
+                            continue
                     if not any(pd.isna(v) for v in (hist_now, hist_prev, hist_prev2)) and hist_now < hist_prev < hist_prev2:
                         reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
                         log(
