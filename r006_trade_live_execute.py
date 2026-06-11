@@ -1967,7 +1967,7 @@ def _buy_condition_snapshot(
         f"GATES ma_cross={ma_cross} close_cross={close_cross} signal={live_signal} {live_part} "
         f"arm={bool(near_flags['can_arm'])} early={bool(near_flags['can_early'])} "
         f"gap={gap_ratio:.3f}% rise={ma_rise_ratio:.3f}% liq={liquidity_ok}:{liquidity_reason} "
-        f"score={support_score} vol_ratio={vol_ratio:.2f}"
+        f"score={support_score} vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f}"
     )
 
 
@@ -3347,7 +3347,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     continue
 
                 log(
-                    f"  {symbol_label} [CHECK] | bars={len(frame)} live={price:,.0f} ({price_source}) bar_close={float(cur['close']):,.0f} | "
+                    f"  {symbol_label} [CHECK] | bars={len(frame)} live={price:,.0f}  bar_close={float(cur['close']):,.0f} | "
                     f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
                     f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                     f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
@@ -3814,10 +3814,18 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         continue
 
                     session = classify_buy_session(current_dt)
+                    latest_vol = _num(buy_frame.iloc[-1], "volume")
+                    latest_vol_ma = _num(buy_frame.iloc[-1], "VOL_MA20")
+                    latest_vol_ratio = (
+                        latest_vol / latest_vol_ma
+                        if not any(pd.isna(v) for v in (latest_vol, latest_vol_ma)) and latest_vol_ma > 0
+                        else float("nan")
+                    )
                     buy_detail = (
                         f"reason={buy_reason} signal={cross_info.get('signal')} "
                         f"live={price:,.0f} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} "
-                        f"bar_close={_num(buy_frame.iloc[-1], 'close'):,.0f} ma5={_num(buy_frame.iloc[-1], 'MA_5'):.1f}"
+                        f"bar_close={_num(buy_frame.iloc[-1], 'close'):,.0f} ma5={_num(buy_frame.iloc[-1], 'MA_5'):.1f} "
+                        f"VOL={latest_vol:,.0f} VOLMA={latest_vol_ma:,.0f} vol_ratio={latest_vol_ratio:.4f}"
                     )
                     traded_today.add(norm_code)
                     api.live_state["traded_today"] = traded_today
