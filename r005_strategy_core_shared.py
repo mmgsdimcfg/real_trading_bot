@@ -327,6 +327,142 @@ def check_buy_condition(
     config: R76StrategyConfig,
     volume_ratio_threshold_fn: Callable[[pd.Timestamp, float], float],
 ) -> tuple[bool, str]:
+    return run_buy_condition_pipeline_comment(
+        frame=frame,
+        now=now,
+        live_price=live_price,
+        cross_info=cross_info,
+        config=config,
+        volume_ratio_threshold_fn=volume_ratio_threshold_fn,
+    )
+
+
+def buy_1st_live_price_above_bb_mid_within_gap_comment(
+    live_price: float,
+    cur_bb: float,
+    bb_buffer: float,
+    max_gap_pct: float,
+) -> tuple[bool, str]:
+    bb_gate = cur_bb * (1.0 + max(bb_buffer, 0.0))
+    if live_price <= bb_gate:
+        return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
+
+    if cur_bb > 0:
+        bb_gap_pct = (live_price - cur_bb) / cur_bb
+        if bb_gap_pct > max_gap_pct:
+            return False, (
+                f"CHASE_BUY_BLOCK_BB_GAP_{bb_gap_pct*100:.2f}%"
+                f"_GT_{max_gap_pct*100:.2f}%"
+            )
+
+    return True, "BUY_1ST_PASS"
+
+
+def buy_2nd_prev_bar_low_below_current_bb_mid_comment(prev: pd.Series, cur_bb: float) -> tuple[bool, str]:
+    prev_low = _num(prev, "low")
+    if pd.isna(prev_low) or pd.isna(cur_bb):
+        return False, "PREV_LOW_OR_BB_MISSING"
+    if prev_low >= cur_bb:
+        return False, f"PREV_LOW_NOT_BELOW_BB_MIDDLE_{prev_low:.1f}_GTE_{cur_bb:.1f}"
+    return True, "BUY_2ND_PASS"
+
+
+def buy_3rd_primary_gate_confirm_comment(first_ok: bool, second_ok: bool) -> tuple[bool, str]:
+    if first_ok and second_ok:
+        return True, "BUY_3RD_PRIMARY_GATE_PASS"
+    return False, "BUY_3RD_PRIMARY_GATE_FAIL"
+
+
+def buy_4th_macd_hist_positive_comment(cur: pd.Series) -> tuple[bool, str]:
+    macd_hist = _num(cur, "MACD_HIST")
+    if pd.isna(macd_hist) or macd_hist <= 0:
+        return False, "MACD_HIST_NOT_POSITIVE"
+    return True, "BUY_4TH_PASS"
+
+
+def buy_5th_stoch_k_over_d_comment(cur: pd.Series) -> tuple[bool, str]:
+    stoch_k = _num(cur, "STOCH_K")
+    stoch_d = _num(cur, "STOCH_D")
+    if any(pd.isna(v) for v in (stoch_k, stoch_d)) or stoch_k < stoch_d - 0.5:
+        return False, "STOCH_K_NOT_ABOVE_D"
+    return True, "BUY_5TH_PASS"
+
+
+def buy_6th_stoch_overheat_guard_comment(
+    cur: pd.Series,
+    config: R76StrategyConfig,
+    confirmed_cross: bool,
+) -> tuple[bool, str]:
+    stoch_k = _num(cur, "STOCH_K")
+    if pd.isna(stoch_k):
+        return False, "STOCH_K_NOT_ABOVE_D"
+    if stoch_k >= config.stoch_overbought:
+        adx_val = _num(cur, "ADX")
+        bypass = (
+            config.enable_strong_trend_overbought_bypass
+            and confirmed_cross
+            and not pd.isna(adx_val)
+            and adx_val >= config.strong_trend_overbought_min_adx
+        )
+        if not bypass:
+            return False, f"STOCH_K_OVERHEATED_{stoch_k:.1f}"
+    return True, "BUY_6TH_PASS"
+
+
+def buy_7th_rsi_floor_comment(cur: pd.Series) -> tuple[bool, str]:
+    rsi_c = _num(cur, "RSI")
+    if pd.isna(rsi_c) or rsi_c <= 25:
+        return False, f"RSI_TOO_LOW_{rsi_c:.1f}"
+    return True, "BUY_7TH_PASS"
+
+
+def buy_8th_di_bullish_comment(cur: pd.Series) -> tuple[bool, str]:
+    di_plus = _num(cur, "DI_PLUS")
+    di_minus = _num(cur, "DI_MINUS")
+    if any(pd.isna(v) for v in (di_plus, di_minus)) or di_plus <= di_minus:
+        return False, f"DI_NOT_BULLISH_+DI_{di_plus:.1f}_-DI_{di_minus:.1f}"
+    return True, "BUY_8TH_PASS"
+
+
+def buy_9th_volume_ratio_hard_floor_comment(
+    cur: pd.Series,
+    now: pd.Timestamp,
+    volume_ratio_threshold_fn: Callable[[pd.Timestamp, float], float],
+) -> tuple[bool, str, bool]:
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    adx_val = _num(cur, "ADX")
+
+    volume_soft_fail = False
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
+        volume_soft_fail = vol_ratio < vol_ratio_req
+
+        hard_floor = max(0.10, vol_ratio_req * 0.40)
+        if vol_ratio < hard_floor:
+            return False, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_{hard_floor:.4f}", volume_soft_fail
+
+    return True, "BUY_9TH_PASS", volume_soft_fail
+
+
+def buy_10th_prev_close_and_volume_soft_guard_comment(
+    prev_close_soft_fail: bool,
+    volume_soft_fail: bool,
+) -> tuple[bool, str]:
+    if prev_close_soft_fail and volume_soft_fail:
+        return False, "LIVE_NOT_ABOVE_PREV_CLOSE_AND_LOW_VOLUME"
+    return True, "BUY_10TH_PASS"
+
+
+def run_buy_condition_pipeline_comment(
+    frame: pd.DataFrame,
+    now: pd.Timestamp,
+    live_price: float,
+    cross_info: dict[str, object],
+    config: R76StrategyConfig,
+    volume_ratio_threshold_fn: Callable[[pd.Timestamp, float], float],
+) -> tuple[bool, str]:
     if len(frame) < 2:
         return False, "INSUFFICIENT_BARS"
 
@@ -341,72 +477,65 @@ def check_buy_condition(
         return False, "MISSING_INDICATOR"
 
     live_cross_up_signal = cross_info.get("signal") == "cross_up"
-
-    # 1차 필터: BB 중단 돌파
-    prev_close = _num(prev, "close")
     bb_buffer = max(config.live_price_bb_buffer_pct, 0.0)
-    bb_gate = cur_bb * (1.0 + bb_buffer)
 
-    if live_price <= bb_gate:
-        return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
+    first_ok, first_reason = buy_1st_live_price_above_bb_mid_within_gap_comment(
+        live_price=live_price,
+        cur_bb=cur_bb,
+        bb_buffer=bb_buffer,
+        max_gap_pct=config.ma5_bb_follow_chase_max_gap_pct,
+    )
+    if not first_ok:
+        return False, first_reason
 
-    if cur_bb > 0:
-        bb_gap_pct = (live_price - cur_bb) / cur_bb
-        if bb_gap_pct > config.ma5_bb_follow_chase_max_gap_pct:
-            return False, (
-                f"CHASE_BUY_BLOCK_BB_GAP_{bb_gap_pct*100:.2f}%"
-                f"_GT_{config.ma5_bb_follow_chase_max_gap_pct*100:.2f}%"
-            )
+    second_ok, second_reason = buy_2nd_prev_bar_low_below_current_bb_mid_comment(prev=prev, cur_bb=cur_bb)
+    if not second_ok:
+        return False, second_reason
 
-    # 핵심 5조건
-    macd_hist = _num(cur, "MACD_HIST")
-    if pd.isna(macd_hist) or macd_hist <= 0:
-        return False, "MACD_HIST_NOT_POSITIVE"
+    third_ok, third_reason = buy_3rd_primary_gate_confirm_comment(first_ok=first_ok, second_ok=second_ok)
+    if not third_ok:
+        return False, third_reason
 
-    stoch_k = _num(cur, "STOCH_K")
-    stoch_d = _num(cur, "STOCH_D")
-    if any(pd.isna(v) for v in (stoch_k, stoch_d)) or stoch_k <= stoch_d:
-        return False, "STOCH_K_NOT_ABOVE_D"
-    # 과열 차단은 config.stoch_overbought (92.0) 기준으로 통일
-    # 85 고정값은 강세장 전체를 차단하므로 사용 금지
-    if stoch_k >= config.stoch_overbought:
-        return False, f"STOCH_K_OVERHEATED_{stoch_k:.1f}"
+    close_val_cur = _num(cur, "close")
+    prev_close = _num(prev, "close")
+    confirmed_cross = (
+        (not any(pd.isna(v) for v in (prev_ma5, cur_ma5)) and prev_ma5 <= prev_bb and cur_ma5 > cur_bb)
+        or (not any(pd.isna(v) for v in (prev_close, close_val_cur, prev_bb, cur_bb))
+            and prev_close <= prev_bb and close_val_cur > cur_bb)
+    )
 
-    rsi_c = _num(cur, "RSI")
-    if pd.isna(rsi_c) or rsi_c <= 30:
-        return False, f"RSI_TOO_LOW_{rsi_c:.1f}"
-    # RSI 상단 하드캡 제거: 강세장에서 RSI 86~100도 정상 진입 허용
-    # (과매수 차단은 K >= stoch_overbought 로만 유지)
+    indicator_rules: list[Callable[[], tuple[bool, str]]] = [
+        lambda: buy_4th_macd_hist_positive_comment(cur),
+        lambda: buy_5th_stoch_k_over_d_comment(cur),
+        lambda: buy_6th_stoch_overheat_guard_comment(cur, config, confirmed_cross),
+        lambda: buy_7th_rsi_floor_comment(cur),
+        lambda: buy_8th_di_bullish_comment(cur),
+    ]
+    for rule in indicator_rules:
+        ok, reason = rule()
+        if not ok:
+            return False, reason
 
-    di_plus = _num(cur, "DI_PLUS")
-    di_minus = _num(cur, "DI_MINUS")
-    if any(pd.isna(v) for v in (di_plus, di_minus)) or di_plus <= di_minus:
-        return False, f"DI_NOT_BULLISH_+DI_{di_plus:.1f}_-DI_{di_minus:.1f}"
-
-    # 이전 종가/거래량은 적극안에서 하드 차단 대신 소프트 가드로 완화
+    # Volume and previous-close soft guard
     prev_close_soft_fail = False
     if not pd.isna(prev_close):
         prev_close_gate = prev_close * (1.0 + bb_buffer)
         prev_close_soft_fail = live_price <= prev_close_gate
 
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    adx_val = _num(cur, "ADX")
-    vol_ratio = float("nan")
-    vol_ratio_req = float("nan")
-    volume_soft_fail = False
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        vol_ratio = vol / vol_ma
-        vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
-        volume_soft_fail = vol_ratio < vol_ratio_req
+    ninth_ok, ninth_reason, volume_soft_fail = buy_9th_volume_ratio_hard_floor_comment(
+        cur=cur,
+        now=now,
+        volume_ratio_threshold_fn=volume_ratio_threshold_fn,
+    )
+    if not ninth_ok:
+        return False, ninth_reason
 
-        # 극단적 거래량 부족은 여전히 차단
-        hard_floor = max(0.10, vol_ratio_req * 0.40)
-        if vol_ratio < hard_floor:
-            return False, f"LOW_VOLUME_RATIO_{vol_ratio:.2f}_LT_{hard_floor:.2f}"
-
-    if prev_close_soft_fail and volume_soft_fail:
-        return False, "LIVE_NOT_ABOVE_PREV_CLOSE_AND_LOW_VOLUME"
+    tenth_ok, tenth_reason = buy_10th_prev_close_and_volume_soft_guard_comment(
+        prev_close_soft_fail=prev_close_soft_fail,
+        volume_soft_fail=volume_soft_fail,
+    )
+    if not tenth_ok:
+        return False, tenth_reason
 
     trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "LIVE_ABOVE_BB_PREV_CLOSE"
     score = _buy_support_score(cur, prev, frame, config)

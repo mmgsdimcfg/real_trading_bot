@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 
 """R76 shared configuration for live trading and simulation.
 
@@ -228,7 +228,7 @@ TRADE_COOLDOWN_MINUTES = 3
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = False # NXT 세션 포함 운용 여부
+ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)
@@ -247,7 +247,7 @@ AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59)
 # ---------------------------------------------------------------------------
 # Filter coefficients
 # ---------------------------------------------------------------------------
-STOCH_OVERBOUGHT = 92.0  # 85.0 -> 92.0 (3분봉 단타에서 80~90 이상도 급등신호)
+STOCH_OVERBOUGHT = 96.0  # 85.0 -> 92.0 -> 96.0 (과열 차단 기준 완화)
 # 매수 스토캐스틱 K 하한
 STOCH_BUY_MIN = 20.0
 # 매수 스토캐스틱 K 상한
@@ -279,7 +279,7 @@ STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO = 1.00
 STRONG_TREND_OVERBOUGHT_MIN_ADX = 15.0
 # 추격매수 방지: 실시간 BB 상향 크로스 없이(신호 없음) MA5/BB 후행 진입 시
 # 현재가가 BB 중심선 대비 과도하게 이격되면 매수 차단
-MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.010  # 1.00%
+MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.015  # 1.50%
 
 # 3. 거래량 완화
 # 장초반 거래량 필터 비율

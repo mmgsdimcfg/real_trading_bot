@@ -108,7 +108,7 @@ BALANCED_CONFIG = ScannerConfig(
     recent_pick_penalty_per_day=3.5,
     recent_pick_penalty_lookback_days=4,
     diversified_pick_pool_mult=3,
-    max_picks=50,
+    max_picks=30,
 )
 
 RELAXED_CONFIG = ScannerConfig(
