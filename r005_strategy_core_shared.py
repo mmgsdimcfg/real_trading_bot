@@ -536,6 +536,16 @@ def run_buy_condition_pipeline_comment(
     if not live_cross_up_signal and not confirmed_cross:
         return False, "NO_FRESH_CROSS_GATE"
 
+    # When no live cross signal was detected, require above-average volume to confirm
+    # the bar-level cross is genuine and not just a floating-above chase pattern.
+    if not live_cross_up_signal:
+        _vol = _num(cur, "volume")
+        _vol_ma = _num(cur, "VOL_MA20")
+        if not any(pd.isna(v) for v in (_vol, _vol_ma)) and _vol_ma > 0:
+            _vol_ratio = _vol / _vol_ma
+            if _vol_ratio < 1.0:
+                return False, f"NO_LIVE_CROSS_WEAK_VOLUME_{_vol_ratio:.3f}_LT_1.0"
+
     indicator_rules: list[Callable[[], tuple[bool, str]]] = [
         lambda: buy_4th_macd_hist_positive_comment(cur),
         lambda: buy_5th_stoch_k_over_d_comment(cur),

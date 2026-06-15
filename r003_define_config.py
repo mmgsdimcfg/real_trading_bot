@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 
 """R76 shared configuration for live trading and simulation.
 
@@ -279,7 +279,7 @@ STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO = 1.00
 STRONG_TREND_OVERBOUGHT_MIN_ADX = 15.0
 # 추격매수 방지: 실시간 BB 상향 크로스 없이(신호 없음) MA5/BB 후행 진입 시
 # 현재가가 BB 중심선 대비 과도하게 이격되면 매수 차단
-MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.015  # 1.50%
+MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when price is within 0.2% of BB middle
 
 # 3. 거래량 완화
 # 장초반 거래량 필터 비율
@@ -430,3 +430,4 @@ def _apply_risk_profile_overrides() -> None:
 
 
 _apply_risk_profile_overrides()
+
