@@ -2434,6 +2434,10 @@ class TradingAPI:
                         f"| remaining={int(status.get('remaining_qty', 0))} | order_no={status.get('order_no', '')}",
                         f"buy_pending:{int(status.get('filled_qty', 0))}:{int(status.get('remaining_qty', 0))}",
                     )
+                    log_trade(
+                        f"BUY pending | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                        f"| remaining={int(status.get('remaining_qty', 0))} | order_no={status.get('order_no', '')}"
+                    )
                 continue
 
             pre_submit_qty = int(pending.get("pre_submit_qty", pending.get("quantity", 0)))
@@ -2609,6 +2613,10 @@ class TradingAPI:
         detail_suffix = f" | {buy_detail}" if buy_detail else ""
         code_label = _format_code_label(code, code_name)
         log(
+            f"BUY submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
+            f"session={session} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}{detail_suffix}"
+        )
+        log_trade(
             f"BUY submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
             f"session={session} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}{detail_suffix}"
         )
@@ -3628,6 +3636,16 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     traded_today.add(norm_code)
                     api.live_state["traded_today"] = traded_today
                     signal_buy_bar[code] = bar_time
+
+                    cur_bar_open = _num(buy_frame.iloc[-1], "open")
+                    cur_bar_close = _num(buy_frame.iloc[-1], "close")
+                    if not any(pd.isna(v) for v in (cur_bar_open, cur_bar_close)) and cur_bar_open > 0:
+                        if cur_bar_close <= cur_bar_open:
+                            log(f"  {symbol_label} [BUY REJECT] | BEARISH_BAR | open={cur_bar_open:,.0f} close={cur_bar_close:,.0f}")
+                            traded_today.discard(norm_code)
+                            api.live_state["traded_today"] = traded_today
+                            signal_buy_bar.pop(code, None)
+                            continue
                     if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                         log(
                             f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
@@ -3676,3 +3694,4 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 if __name__ == "__main__":
     args = _parse_args()
     run(target_date=args.date, env_dv=args.env_dv, dry_run=args.dry_run, watchlist_source=args.watchlist_source)
+
