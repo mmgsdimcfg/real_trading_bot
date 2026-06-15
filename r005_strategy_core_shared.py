@@ -39,6 +39,9 @@ from r003_define_config import (
     ATR_PERIOD,
     BB_PERIOD,
     BB_STD_MULTIPLIER,
+    BB_SLOPE_LOOKBACK_BARS,
+    BB_UPPER_GAP_MIN_PCT,
+    CANDLE_GAIN_MIN_PCT,
     EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
     EARLY_NEAR_CROSS_MIN_VOL_MA,
     EARLY_NEAR_CROSS_MIN_VOLUME,
@@ -106,6 +109,7 @@ class R76StrategyConfig:
     strong_trend_overbought_min_vol_ratio: float = 1.5
     strong_trend_overbought_min_adx: float = 30.0
     ma5_bb_follow_chase_max_gap_pct: float = 0.01
+    bb_buy_score_threshold: int = 8
 
 
 def _num(candle: pd.Series, key: str) -> float:
@@ -142,6 +146,17 @@ def update_timed_condition_state(
         return 0.0
 
 
+def _compute_bb_slope_pct(frame: pd.DataFrame, lookback: int = BB_SLOPE_LOOKBACK_BARS) -> float:
+    if "BB_MIDDLE" not in frame.columns or len(frame) < 2:
+        return float("nan")
+    n = min(lookback, len(frame) - 1)
+    bb_now = _num(frame.iloc[-1], "BB_MIDDLE")
+    bb_ago = _num(frame.iloc[-(n + 1)], "BB_MIDDLE")
+    if pd.isna(bb_now) or pd.isna(bb_ago) or bb_ago <= 0:
+        return float("nan")
+    return (bb_now - bb_ago) / bb_ago * 100.0
+
+
 def _buy_support_score(
     cur: pd.Series,
     prev: pd.Series,
@@ -150,18 +165,57 @@ def _buy_support_score(
 ) -> int:
     score = 0
 
+    # RSI 구간 점수 (최대 2점)
     rsi_c = _num(cur, "RSI")
-    if not pd.isna(rsi_c) and rsi_c > 50:
-        score += 1
+    if not pd.isna(rsi_c):
+        if 50.0 <= rsi_c <= 65.0:
+            score += 2
+        elif 45.0 <= rsi_c < 50.0 or 65.0 < rsi_c <= 70.0:
+            score += 1
 
+    # 거래량 비율 점수 (최대 3점)
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        if vol_ratio >= 2.0:
+            score += 3
+        elif vol_ratio >= 1.5:
+            score += 2
+        elif vol_ratio >= 1.2:
+            score += 1
+
+    # ADX 추세 강도 점수 (최대 3점)
+    adx_c = _num(cur, "ADX")
+    if not pd.isna(adx_c):
+        if adx_c >= 35.0:
+            score += 3
+        elif adx_c >= 30.0:
+            score += 2
+        elif adx_c >= 25.0:
+            score += 1
+
+    # DI+/DI- 방향성 점수 (최대 2점)
+    di_plus = _num(cur, "DI_PLUS")
+    di_minus = _num(cur, "DI_MINUS")
+    if not any(pd.isna(v) for v in (di_plus, di_minus)) and di_plus > di_minus:
+        score += 2
+
+    # MACD 골든크로스 점수 (최대 2점)
     macd_c = _num(cur, "MACD")
     msig_c = _num(cur, "MACD_SIGNAL")
     if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c:
-        score += 1
+        score += 2
 
-    adx_c = _num(cur, "ADX")
-    if not pd.isna(adx_c) and adx_c >= config.adx_min_trend:
-        score += 1
+    # BB 중앙선 기울기 강도 점수 (최대 3점)
+    bb_slope_pct = _compute_bb_slope_pct(frame)
+    if not pd.isna(bb_slope_pct):
+        if bb_slope_pct >= 1.5:
+            score += 3
+        elif bb_slope_pct >= 1.0:
+            score += 2
+        elif bb_slope_pct >= 0.5:
+            score += 1
 
     return score
 
@@ -487,100 +541,68 @@ def run_buy_condition_pipeline_comment(
     live_price: float,
     cross_info: dict[str, object],
     config: R76StrategyConfig,
-    volume_ratio_threshold_fn: Callable[[pd.Timestamp, float], float],
+    volume_ratio_threshold_fn,
 ) -> tuple[bool, str]:
+    """BB 중앙선 상승 돌파 전략: 4개 필수조건 + 가점 8점 이상."""
     if len(frame) < 2:
         return False, "INSUFFICIENT_BARS"
 
     cur = frame.iloc[-1]
     prev = frame.iloc[-2]
     cur_bb = _num(cur, "BB_MIDDLE")
+    cur_bb_upper = _num(cur, "BB_UPPER")
     prev_bb = _num(prev, "BB_MIDDLE")
-    cur_ma5 = _num(cur, "MA_5")
-    prev_ma5 = _num(prev, "MA_5")
 
-    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_ma5, prev_ma5)):
+    if any(pd.isna(v) for v in (cur_bb, cur_bb_upper, prev_bb)):
         return False, "MISSING_INDICATOR"
 
-    live_cross_up_signal = cross_info.get("signal") == "cross_up"
-    bb_buffer = max(config.live_price_bb_buffer_pct, 0.0)
+    # 필수조건 1: BB 중앙선 상승 추세 (최근 lookback봉 대비 기울기 > 0)
+    bb_slope_pct = _compute_bb_slope_pct(frame)
+    if pd.isna(bb_slope_pct) or bb_slope_pct <= 0.0:
+        slope_str = f"{bb_slope_pct:.3f}" if not pd.isna(bb_slope_pct) else "nan"
+        return False, f"BB_SLOPE_NOT_RISING_{slope_str}%"
 
-    first_ok, first_reason = buy_1st_live_price_above_bb_mid_within_gap_comment(
-        live_price=live_price,
-        cur_bb=cur_bb,
-        bb_buffer=bb_buffer,
-        max_gap_pct=config.ma5_bb_follow_chase_max_gap_pct,
-    )
-    if not first_ok:
-        return False, first_reason
-
-    second_ok, second_reason = buy_2nd_prev_bar_low_below_current_bb_mid_comment(prev=prev, cur_bb=cur_bb)
-    if not second_ok:
-        return False, second_reason
-
-    third_ok, third_reason = buy_3rd_primary_gate_confirm_comment(first_ok=first_ok, second_ok=second_ok)
-    if not third_ok:
-        return False, third_reason
-
-    close_val_cur = _num(cur, "close")
+    # 필수조건 2: BB 중앙선 상향 돌파 (live cross signal OR close 기준 크로스)
+    live_cross_up = cross_info.get("signal") == "cross_up"
     prev_close = _num(prev, "close")
-    confirmed_cross = (
-        (not any(pd.isna(v) for v in (prev_ma5, cur_ma5)) and prev_ma5 <= prev_bb and cur_ma5 > cur_bb)
-        or (not any(pd.isna(v) for v in (prev_close, close_val_cur, prev_bb, cur_bb))
-            and prev_close <= prev_bb and close_val_cur > cur_bb)
+    cur_close = _num(cur, "close")
+    close_cross = (
+        not any(pd.isna(v) for v in (prev_close, cur_close, prev_bb, cur_bb))
+        and prev_close <= prev_bb
+        and cur_close > cur_bb
     )
+    if not live_cross_up and not close_cross:
+        return False, "NO_BB_MID_CROSS_UP"
 
-    # Require a fresh cross: either the live price polling detected an up-cross,
-    # or the most recent bar shows MA5/close crossing above BB middle from below.
-    # Without this, stocks floating above BB since market open trigger chase entries.
-    if not live_cross_up_signal and not confirmed_cross:
-        return False, "NO_FRESH_CROSS_GATE"
+    # 필수조건 3: 현재 진행중인 3분봉 양봉 (+CANDLE_GAIN_MIN_PCT% 이상)
+    cur_open = _num(cur, "open")
+    if pd.isna(cur_open) or cur_open <= 0:
+        return False, "CANDLE_OPEN_MISSING"
+    candle_gain_pct = (live_price - cur_open) / cur_open * 100.0
+    if candle_gain_pct <= CANDLE_GAIN_MIN_PCT:
+        return False, f"CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LTE_{CANDLE_GAIN_MIN_PCT:.1f}%"
 
-    # When no live cross signal was detected, require above-average volume to confirm
-    # the bar-level cross is genuine and not just a floating-above chase pattern.
-    if not live_cross_up_signal:
-        _vol = _num(cur, "volume")
-        _vol_ma = _num(cur, "VOL_MA20")
-        if not any(pd.isna(v) for v in (_vol, _vol_ma)) and _vol_ma > 0:
-            _vol_ratio = _vol / _vol_ma
-            if _vol_ratio < 1.0:
-                return False, f"NO_LIVE_CROSS_WEAK_VOLUME_{_vol_ratio:.3f}_LT_1.0"
+    # 필수조건 4: BB 상단까지 충분한 공간 (>= BB_UPPER_GAP_MIN_PCT%)
+    if live_price <= 0:
+        return False, "LIVE_PRICE_INVALID"
+    bb_upper_gap_pct = (cur_bb_upper - live_price) / live_price * 100.0
+    if bb_upper_gap_pct < BB_UPPER_GAP_MIN_PCT:
+        return False, f"BB_UPPER_GAP_TOO_SMALL_{bb_upper_gap_pct:.2f}%_LT_{BB_UPPER_GAP_MIN_PCT:.1f}%"
 
-    indicator_rules: list[Callable[[], tuple[bool, str]]] = [
-        lambda: buy_4th_macd_hist_positive_comment(cur),
-        lambda: buy_5th_stoch_k_over_d_comment(cur),
-        lambda: buy_6th_stoch_overheat_guard_comment(cur, config, confirmed_cross),
-        lambda: buy_7th_rsi_floor_comment(cur),
-        lambda: buy_8th_di_bullish_comment(cur),
-    ]
-    for rule in indicator_rules:
-        ok, reason = rule()
-        if not ok:
-            return False, reason
+    # 안전장치: 거래량 절대 최소치 (유동성 극히 부족한 경우 차단)
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        if vol_ratio < 0.10:
+            return False, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
 
-    # Volume and previous-close soft guard
-    prev_close_soft_fail = False
-    if not pd.isna(prev_close):
-        prev_close_gate = prev_close * (1.0 + bb_buffer)
-        prev_close_soft_fail = live_price <= prev_close_gate
-
-    ninth_ok, ninth_reason, volume_soft_fail = buy_9th_volume_ratio_hard_floor_comment(
-        cur=cur,
-        now=now,
-        volume_ratio_threshold_fn=volume_ratio_threshold_fn,
-    )
-    if not ninth_ok:
-        return False, ninth_reason
-
-    tenth_ok, tenth_reason = buy_10th_prev_close_and_volume_soft_guard_comment(
-        prev_close_soft_fail=prev_close_soft_fail,
-        volume_soft_fail=volume_soft_fail,
-    )
-    if not tenth_ok:
-        return False, tenth_reason
-
-    trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up_signal else "LIVE_ABOVE_BB_PREV_CLOSE"
+    # 가점 조건 합산 (RSI/거래량/ADX/DI/MACD/BB기울기, 최대 15점)
     score = _buy_support_score(cur, prev, frame, config)
+    if score < config.bb_buy_score_threshold:
+        return False, f"LOW_SCORE_{score}_LT_{config.bb_buy_score_threshold}"
+
+    trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up else "CLOSE_BB_UP_CROSS"
     return True, f"{trigger}_SCORE_{score}"
 
 

@@ -195,6 +195,7 @@ from r003_define_config import (
     WILLIAMS_R_PERIOD,
     AUX_SELL_MIN_REALIZED_TARGET_PCT,
     AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
+    BB_BUY_SCORE_THRESHOLD,
     BUY_CONSECUTIVE_CONFIRM_COUNT,
     ENABLE_INTRABAR_LIVE_ENTRY_FILTER,
     ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP,
@@ -232,6 +233,7 @@ from r005_strategy_core_shared import (
     check_sell_condition as shared_check_sell_condition,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
+    _compute_bb_slope_pct,
     _near_cross_momentum_flags,
     _passes_early_near_cross_liquidity,
 )
@@ -307,6 +309,7 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     strong_trend_overbought_min_vol_ratio=STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
     strong_trend_overbought_min_adx=STRONG_TREND_OVERBOUGHT_MIN_ADX,
     ma5_bb_follow_chase_max_gap_pct=MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
+    bb_buy_score_threshold=BB_BUY_SCORE_THRESHOLD,
 )
 
 INDICATOR_WARMUP_BARS = 1  # backtest uses MIN_BARS_REQUIRED=3; live needs only 1 closed bar (indicators use min_periods=1)
@@ -1452,187 +1455,122 @@ def _buy_reject_detail(
     frame: pd.DataFrame | None = None,
 ) -> str:
     """Returns reject reason + indicator context for every reject type."""
-    prev_ma5 = _num(prev, "MA_5");  cur_ma5  = _num(cur,  "MA_5")
-    prev_bb  = _num(prev, "BB_MIDDLE"); cur_bb = _num(cur, "BB_MIDDLE")
     snapshot = _buy_condition_snapshot(cur, prev, live_price=live_price, cross_info=cross_info, frame=frame)
 
-    if buy_reason == "NO_LIVE_PRICE_BB_CROSS_UP":
-        live_part = f"live={live_price:,.0f} " if live_price is not None and pd.notna(live_price) else ""
-        if cross_info:
-            pending_side = cross_info.get("pending_side")
-            pending_count = cross_info.get("pending_count", 0)
-            pending_seconds = cross_info.get("pending_seconds", 0.0)
-            return (
-                f"{buy_reason} | {live_part}BB_MID {cur_bb:.1f} upper={float(cross_info.get('upper_trigger', cur_bb)):.1f} | "
-                f"relation={cross_info.get('relation')} pending={pending_side} "
-                f"count={pending_count}/{LIVE_PRICE_CROSS_CONFIRM_POLLS} "
-                f"seconds={pending_seconds:.0f}/{LIVE_PRICE_CROSS_CONFIRM_SECONDS} | {snapshot}"
-            )
-        return (
-            f"{buy_reason} | "
-            f"{live_part}BB_MID {prev_bb:.1f}->{cur_bb:.1f} "
-            f"(need live price to stay above BB middle long enough) | {snapshot}"
-        )
+    # 새 전략 필수조건 거부 사유 (이유 문자열에 이미 값 포함)
+    if buy_reason.startswith("BB_SLOPE_NOT_RISING"):
+        bb_slope = _compute_bb_slope_pct(frame) if frame is not None else float("nan")
+        cur_bb = _num(cur, "BB_MIDDLE")
+        return f"{buy_reason} | bb_mid={cur_bb:.1f} bb_slope={bb_slope:.3f}% | {snapshot}"
 
-    if buy_reason == "NO_MA5_BB_GOLDEN_CROSS":
-        return f"{buy_reason} | MA5 {prev_ma5:.1f}->{cur_ma5:.1f} | BB_MID {prev_bb:.1f}->{cur_bb:.1f} | {snapshot}"
-
-    if buy_reason == "MA5_AT_OR_BELOW_BB_MIDDLE":
-        gap_pct = ((cur_bb - cur_ma5) / max(cur_bb, 1.0)) * 100
-        return f"{buy_reason} | MA5={cur_ma5:.1f} BB_MID={cur_bb:.1f} gap={gap_pct:.3f}% | {snapshot}"
-
-    if buy_reason == "BB_MIDDLE_FALLING":
-        return f"{buy_reason} | BB_MID {prev_bb:.1f}->{cur_bb:.1f} | {snapshot}"
-
-    if buy_reason == "PREV_CLOSE_MISSING":
+    if buy_reason == "NO_BB_MID_CROSS_UP":
+        prev_bb = _num(prev, "BB_MIDDLE")
+        cur_bb = _num(cur, "BB_MIDDLE")
         prev_close = _num(prev, "close")
-        return f"{buy_reason} | prev_close={prev_close:.1f} | {snapshot}"
-
-    if buy_reason == "LIVE_NOT_ABOVE_PREV_CLOSE_AND_BB_MIDDLE":
-        prev_close = _num(prev, "close")
+        cur_close = _num(cur, "close")
         live_txt = f"{live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "nan"
         return (
-            f"{buy_reason} | live={live_txt} prev_close={prev_close:,.0f} "
-            f"bb_mid={cur_bb:.1f} | {snapshot}"
+            f"{buy_reason} | live={live_txt} close={cur_close:.0f} bb_mid={cur_bb:.1f} | "
+            f"prev_close={prev_close:.0f} prev_bb_mid={prev_bb:.1f} | signal={cross_info.get('signal') if cross_info else None} | {snapshot}"
         )
 
-    if buy_reason == "MA5_FALLING":
-        return f"{buy_reason} | MA5 {prev_ma5:.1f}->{cur_ma5:.1f} | {snapshot}"
+    if buy_reason.startswith("CANDLE_NOT_BULLISH"):
+        cur_open = _num(cur, "open")
+        live_txt = f"{live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "nan"
+        return f"{buy_reason} | live={live_txt} open={cur_open:.0f} | {snapshot}"
 
-    if buy_reason == "NOT_BULLISH":
-        close_v = _num(cur, "close"); open_v = _num(cur, "open")
-        return f"{buy_reason} | close={close_v:.0f} open={open_v:.0f} | {snapshot}"
+    if buy_reason.startswith("BB_UPPER_GAP_TOO_SMALL"):
+        bb_upper = _num(cur, "BB_UPPER")
+        live_txt = f"{live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "nan"
+        return f"{buy_reason} | live={live_txt} bb_upper={bb_upper:.1f} | {snapshot}"
 
-    if buy_reason == "MISSING_INDICATOR":
-        missing = [k for k in ("MA_5", "BB_MIDDLE") if pd.isna(_num(cur, k)) or pd.isna(_num(prev, k))]
-        return f"{buy_reason} | NaN={','.join(missing)}"
-
-    if not buy_reason.startswith("LOW_SCORE"):
-        # OVERBOUGHT_*, NEAR_BB_UPPER_*, LOW_VOLUME_*, WEAK_TREND_ADX_*
-        # reason string already contains the offending value; no extra context needed
+    if buy_reason.startswith("LOW_VOLUME_RATIO"):
         return f"{buy_reason} | {snapshot}"
 
-    # LOW_SCORE: show which of the 6 sub-indicators failed
-    failed = []
+    if buy_reason.startswith("LOW_SCORE"):
+        # 새 15점 채점 방식 상세 분석
+        rsi_c = _num(cur, "RSI")
+        vol = _num(cur, "volume"); vol_ma = _num(cur, "VOL_MA20")
+        vol_ratio = vol / vol_ma if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0 else float("nan")
+        adx_c = _num(cur, "ADX")
+        di_plus = _num(cur, "DI_PLUS"); di_minus = _num(cur, "DI_MINUS")
+        macd_c = _num(cur, "MACD"); msig_c = _num(cur, "MACD_SIGNAL")
+        bb_slope = _compute_bb_slope_pct(frame) if frame is not None else float("nan")
+        score = _buy_support_score(cur, prev, frame)
 
-    k_c = _num(cur, "STOCH_K"); d_c = _num(cur, "STOCH_D")
-    k_p = _num(prev, "STOCH_K"); d_p = _num(prev, "STOCH_D")
-    if any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)) or not (
-        (k_p <= d_p and k_c > d_c)
-        and (STOCH_BUY_MIN <= k_c <= STOCH_BUY_MAX)
-        and (k_c > k_p)
-    ):
-        failed.append("STOCH")
+        rsi_str = f"{rsi_c:.1f}" if not pd.isna(rsi_c) else "nan"
+        vol_str = f"{vol_ratio:.2f}x" if not pd.isna(vol_ratio) else "nan"
+        adx_str = f"{adx_c:.1f}" if not pd.isna(adx_c) else "nan"
+        di_str = f"+DI={di_plus:.1f}>-DI={di_minus:.1f}" if not any(pd.isna(v) for v in (di_plus, di_minus)) else "nan"
+        macd_str = f"MACD>{msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c else f"MACD<={msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) else "nan"
+        slope_str = f"{bb_slope:.2f}%" if not pd.isna(bb_slope) else "nan"
+        return (
+            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/15 | {snapshot}"
+        )
 
-    rsi_c = _num(cur, "RSI")
-    rsi_p = _num(prev, "RSI")
-    if any(pd.isna(v) for v in (rsi_c, rsi_p)) or not (RSI_BUY_MIN <= rsi_c < RSI_BUY_MAX and rsi_c > rsi_p):
-        failed.append("RSI")
+    # 기타 / 하위 호환
+    return f"{buy_reason} | {snapshot}"
 
-    wr_c = _num(cur, "WILLIAMS_R"); wr_p = _num(prev, "WILLIAMS_R")
-    if pd.isna(wr_c) or pd.isna(wr_p) or not (wr_c > wr_p and wr_c >= WILLIAMS_BUY_FLOOR):
-        failed.append("WILLIAMS_R")
-
-    macd_c = _num(cur, "MACD"); msig_c = _num(cur, "MACD_SIGNAL")
-    macd_p = _num(prev, "MACD"); msig_p = _num(prev, "MACD_SIGNAL")
-    hist_c = _num(cur, "MACD_HIST")
-    hist_p = _num(prev, "MACD_HIST")
-    macd_accel_ok = (not pd.isna(hist_c) and hist_c > 0) or (
-        not any(pd.isna(v) for v in (hist_c, hist_p)) and hist_c < 0 and hist_c > hist_p
-    )
-    if any(pd.isna(v) for v in (macd_c, msig_c)) or not (macd_c > msig_c and macd_accel_ok):
-        failed.append("MACD")
-
-    vwap = _num(cur, "VWAP"); close_v = _num(cur, "close")
-    if pd.isna(vwap) or pd.isna(close_v) or not (close_v > vwap):
-        failed.append("VWAP")
-
-    mfi_c = _num(cur, "MFI")
-    mfi_p = _num(prev, "MFI")
-    if pd.isna(mfi_c) or pd.isna(mfi_p) or not (mfi_c >= MFI_BUY_MIN and mfi_c > mfi_p):
-        failed.append("MFI")
-
-    obv_c = _num(cur, "OBV"); obv_ma_c = _num(cur, "OBV_MA"); obv_p = _num(prev, "OBV")
-    obv_breakout = False
-    if frame is not None and "OBV" in frame.columns and len(frame) >= OBV_BREAKOUT_LOOKBACK_BARS + 1:
-        obv_series = pd.to_numeric(frame["OBV"], errors="coerce")
-        recent_obv_high = obv_series.iloc[-(OBV_BREAKOUT_LOOKBACK_BARS + 1):-1].max()
-        if not pd.isna(obv_c) and not pd.isna(recent_obv_high):
-            obv_breakout = obv_c > float(recent_obv_high)
-    obv_uptrend = not any(pd.isna(v) for v in (obv_c, obv_ma_c, obv_p)) and (obv_c > obv_ma_c and obv_c > obv_p)
-    if not (obv_breakout or obv_uptrend):
-        failed.append("OBV")
-
-    suffix = f" | FAILED={','.join(failed)}" if failed else ""
-    return f"{buy_reason}{suffix} | {snapshot}"
 
 
 def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | None = None) -> int:
+    """로컬 표시용 점수 계산 (r005 _buy_support_score와 동일 로직)."""
     score = 0
 
-    # 1) Stoch: K가 D 상향 돌파 + 20~50 구간 + 상승 중
-    k_c = _num(cur, "STOCH_K")
-    d_c = _num(cur, "STOCH_D")
-    k_p = _num(prev, "STOCH_K")
-    d_p = _num(prev, "STOCH_D")
-    if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if (k_p <= d_p and k_c > d_c) and (STOCH_BUY_MIN <= k_c <= STOCH_BUY_MAX) and (k_c > k_p):
-            score += 1
-
-    # 2) RSI: 50 이상 70 미만 + 상승 중
+    # RSI 구간 점수 (최대 2점)
     rsi_c = _num(cur, "RSI")
-    rsi_p = _num(prev, "RSI")
-    if not any(pd.isna(v) for v in (rsi_c, rsi_p)):
-        if RSI_BUY_MIN <= rsi_c < RSI_BUY_MAX and rsi_c > rsi_p:
+    if not pd.isna(rsi_c):
+        if 50.0 <= rsi_c <= 65.0:
+            score += 2
+        elif 45.0 <= rsi_c < 50.0 or 65.0 < rsi_c <= 70.0:
             score += 1
 
-    # 3) Williams %R: 상승 전환 및 과매수/과매도 복귀
-    wr_c = _num(cur, "WILLIAMS_R")
-    wr_p = _num(prev, "WILLIAMS_R")
-    if not pd.isna(wr_c) and not pd.isna(wr_p):
-        if wr_c > wr_p and wr_c >= WILLIAMS_BUY_FLOOR:
+    # 거래량 비율 점수 (최대 3점)
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        if vol_ratio >= 2.0:
+            score += 3
+        elif vol_ratio >= 1.5:
+            score += 2
+        elif vol_ratio >= 1.2:
             score += 1
 
-    # 4) MACD: MACD > Signal + 히스토그램이 양수 또는 수축
+    # ADX 추세 강도 점수 (최대 3점)
+    adx_c = _num(cur, "ADX")
+    if not pd.isna(adx_c):
+        if adx_c >= 35.0:
+            score += 3
+        elif adx_c >= 30.0:
+            score += 2
+        elif adx_c >= 25.0:
+            score += 1
+
+    # DI+/DI- 방향성 점수 (최대 2점)
+    di_plus = _num(cur, "DI_PLUS")
+    di_minus = _num(cur, "DI_MINUS")
+    if not any(pd.isna(v) for v in (di_plus, di_minus)) and di_plus > di_minus:
+        score += 2
+
+    # MACD 골든크로스 점수 (최대 2점)
     macd_c = _num(cur, "MACD")
     msig_c = _num(cur, "MACD_SIGNAL")
-    hist_c = _num(cur, "MACD_HIST")
-    hist_p = _num(prev, "MACD_HIST")
-    if not any(pd.isna(v) for v in (macd_c, msig_c, hist_c)):
-        hist_accel = (hist_c > 0) or (not pd.isna(hist_p) and hist_c < 0 and hist_c > hist_p)
-        if macd_c > msig_c and hist_accel:
-            score += 1
+    if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c:
+        score += 2
 
-    # 5) VWAP: 현재가 > VWAP (당일 수급 우위, 평균매수가 상회)
-    vwap = _num(cur, "VWAP")
-    close_v = _num(cur, "close")
-    if not pd.isna(vwap) and not pd.isna(close_v) and close_v > vwap:
-        score += 1
-
-    # 6) OBV: 최근 5봉 고점 돌파 또는 OBV 상승세
-    obv_c = _num(cur, "OBV")
-    obv_ma_c = _num(cur, "OBV_MA")
-    obv_p = _num(prev, "OBV")
-    obv_breakout = False
-    if frame is not None and "OBV" in frame.columns and len(frame) >= OBV_BREAKOUT_LOOKBACK_BARS + 1:
-        obv_series = pd.to_numeric(frame["OBV"], errors="coerce")
-        recent_obv_high = obv_series.iloc[-(OBV_BREAKOUT_LOOKBACK_BARS + 1):-1].max()
-        if not pd.isna(obv_c) and not pd.isna(recent_obv_high):
-            obv_breakout = obv_c > float(recent_obv_high)
-    if not any(pd.isna(v) for v in (obv_c, obv_ma_c, obv_p)):
-        if obv_breakout or (obv_c > obv_ma_c and obv_c > obv_p):
-            score += 1
-
-    # 7) MFI: 거래량 유입 강도 확인
-    mfi_c = _num(cur, "MFI")
-    mfi_p = _num(prev, "MFI")
-    if not any(pd.isna(v) for v in (mfi_c, mfi_p)):
-        if mfi_c >= MFI_BUY_MIN and mfi_c > mfi_p:
-            score += 1
+    # BB 중앙선 기울기 강도 점수 (최대 3점)
+    if frame is not None:
+        bb_slope_pct = _compute_bb_slope_pct(frame)
+        if not pd.isna(bb_slope_pct):
+            if bb_slope_pct >= 1.5:
+                score += 3
+            elif bb_slope_pct >= 1.0:
+                score += 2
+            elif bb_slope_pct >= 0.5:
+                score += 1
 
     return score
-
-
 def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
     score = 0
 
@@ -1751,29 +1689,35 @@ def _buy_condition_snapshot(
     cross_info: dict | None = None,
     frame: pd.DataFrame | None = None,
 ) -> str:
-    prev_ma5 = _num(prev, "MA_5")
-    cur_ma5 = _num(cur, "MA_5")
     prev_bb = _num(prev, "BB_MIDDLE")
     cur_bb = _num(cur, "BB_MIDDLE")
+    cur_bb_upper = _num(cur, "BB_UPPER")
     prev_close = _num(prev, "close")
-    close_val = _num(cur, "close")
+    cur_close = _num(cur, "close")
+    cur_open = _num(cur, "open")
     support_score = _buy_support_score(cur, prev, frame=frame) if frame is not None else -1
-    near_flags = _near_cross_momentum_flags(cur, prev)
-    liquidity_ok, liquidity_reason = _passes_early_near_cross_liquidity(cur)
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
     vol_ratio = vol / vol_ma if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0 else float("nan")
-    ma_cross = not any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)) and (prev_ma5 <= prev_bb) and (cur_ma5 > cur_bb)
-    close_cross = not any(pd.isna(v) for v in (prev_close, close_val, prev_bb, cur_bb)) and (prev_close <= prev_bb) and (close_val > cur_bb)
-    gap_ratio = float(near_flags["gap_ratio"]) * 100 if not pd.isna(float(near_flags["gap_ratio"])) else float("nan")
-    ma_rise_ratio = float(near_flags["ma_rise_ratio"]) * 100 if not pd.isna(float(near_flags["ma_rise_ratio"])) else float("nan")
+    adx_c = _num(cur, "ADX")
+    di_plus = _num(cur, "DI_PLUS"); di_minus = _num(cur, "DI_MINUS")
+    rsi_c = _num(cur, "RSI")
+    macd_c = _num(cur, "MACD"); msig_c = _num(cur, "MACD_SIGNAL")
+    bb_slope_pct = _compute_bb_slope_pct(frame) if frame is not None else float("nan")
+    close_cross = (
+        not any(pd.isna(v) for v in (prev_close, cur_close, prev_bb, cur_bb))
+        and prev_close <= prev_bb and cur_close > cur_bb
+    )
+    candle_gain_pct = (live_price - cur_open) / cur_open * 100.0 if (live_price and not pd.isna(cur_open) and cur_open > 0) else float("nan")
+    bb_upper_gap_pct = (cur_bb_upper - live_price) / live_price * 100.0 if (live_price and live_price > 0 and not pd.isna(cur_bb_upper)) else float("nan")
     live_signal = cross_info.get("signal") if cross_info else None
     live_part = f"live={live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "live=nan"
     return (
-        f"GATES ma_cross={ma_cross} close_cross={close_cross} signal={live_signal} {live_part} "
-        f"arm={bool(near_flags['can_arm'])} early={bool(near_flags['can_early'])} "
-        f"gap={gap_ratio:.3f}% rise={ma_rise_ratio:.3f}% liq={liquidity_ok}:{liquidity_reason} "
-        f"score={support_score} vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f}"
+        f"GATES close_cross={close_cross} signal={live_signal} {live_part} "
+        f"bb_mid={cur_bb:.1f} bb_upper={cur_bb_upper:.1f} "
+        f"bb_slope={bb_slope_pct:.3f}% bb_upper_gap={bb_upper_gap_pct:.2f}% candle_gain={candle_gain_pct:.2f}% "
+        f"RSI={rsi_c:.1f} ADX={adx_c:.1f} +DI={di_plus:.1f} -DI={di_minus:.1f} MACD={macd_c:.3f} SIG={msig_c:.3f} "
+        f"vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f} score={support_score}/15"
     )
 
 
@@ -1835,7 +1779,7 @@ def check_buy_condition(
     cross_info: dict[str, object],
     intrabar_elapsed_seconds: float | None = None,
 ) -> tuple[bool, str]:
-    ok, reason = shared_check_buy_condition(
+    return shared_check_buy_condition(
         frame=frame,
         now=pd.Timestamp(now),
         live_price=live_price,
@@ -1843,18 +1787,6 @@ def check_buy_condition(
         config=SHARED_R76_CONFIG,
         volume_ratio_threshold_fn=lambda ts, adx_val: get_volume_ratio_threshold(ts.to_pydatetime(), adx_val),
     )
-    candidate_ok = ok
-    candidate_reason = reason
-    if ENABLE_PRICE_LEAD_BB_BREAKOUT or ENABLE_NEAR_CROSS_ARM or ENABLE_EARLY_NEAR_CROSS_ENTRY:
-        ctx = _price_lead_breakout_context(frame, now, live_price, cross_info)
-        if ctx.get("can_enter"):
-            entry_mode = ctx.get("entry_mode") or "PRICE_LEAD"
-            candidate_ok = True
-            candidate_reason = str(entry_mode)
-    if not candidate_ok:
-        return ok, reason
-
-    return True, candidate_reason
 
 
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
