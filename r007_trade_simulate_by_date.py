@@ -64,7 +64,10 @@ from r003_define_config import (
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
     AFTERNOON_NXT_START,
+    ATR_STOP_MULTIPLIER,
+    ATR_TAKE_PROFIT_MULTIPLIER,
     ALLOW_REBUY_SAME_CODE,
+    BUY_CONSECUTIVE_CONFIRM_COUNT,
     AUX_SELL_MIN_PNL_SCORE2,
     AUX_SELL_MIN_PNL_SCORE3,
     AUX_SELL_MIN_PNL_SCORE4,
@@ -89,6 +92,7 @@ from r003_define_config import (
     ENABLE_PRICE_LEAD_BB_BREAKOUT,
     ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
     ENABLE_NXT_SESSION,
+    ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP,
     ENABLE_STRICT_MA5_BB_GOLDEN_CROSS as REQUIRE_STRICT_BUY_GOLDEN_CROSS,
     ENABLE_TP_EXTENSION_TRAILING,
     LIVE_PRICE_BB_BUFFER_PCT as SIM_LIVE_PRICE_BB_BUFFER_PCT,
@@ -108,6 +112,7 @@ from r003_define_config import (
     MAX_ORDER_AMOUNT_KRW,
     MIN_BARS_REQUIRED,
     MORNING_NXT_END,
+    MORNING_NXT_NEW_ENTRY_CUTOFF,
     MORNING_NXT_START,
     NEAR_CROSS_ARM_EXPIRE_BARS,
     NEAR_CROSS_ARM_GAP_MAX,
@@ -129,6 +134,7 @@ from r003_define_config import (
     RSI_BUY_MOMENTUM_MAX,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
+    SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
     STARTUP_WARMUP_SECONDS,
     BREAKEVEN_FAIL_ARM_PNL,
     BREAKEVEN_FAIL_CONFIRM_SECONDS,
@@ -167,26 +173,49 @@ from r003_define_config import (
     WILLIAMS_D_PERIOD,
     WILLIAMS_OVERBOUGHT_CEIL,
     WILLIAMS_R_PERIOD,
+    ENABLE_INTRABAR_LIVE_ENTRY_FILTER,
+    ENABLE_INTRABAR_VOLUME_FALLBACK,
+    INTRABAR_ADX_MIN,
+    INTRABAR_MFI_MAX,
+    INTRABAR_MFI_MIN,
+    INTRABAR_MIN_ELAPSED_SECONDS,
+    INTRABAR_RSI_MAX,
+    INTRABAR_RSI_MIN,
+    INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS,
+    SAME_DAY_MIN_BARS,
+    SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL,
+    SIM_CHECK_INTERVAL_SECONDS,
+    SIM_INITIAL_CAPITAL,
+    SIM_RELAXED_ALLOW_BELOW_BB,
+    SIM_RELAXED_ALLOW_FALLING_TREND,
+    SIM_RELAXED_MIN_SUPPORT_SCORE,
+    SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE,
+    SIM_RELAXED_REQUIRE_MA5_BIAS,
+    SIM_RELAXED_SHARED_GATES,
+    SIM_RELAXED_VWAP_MAX_UNDER_PCT,
+    SIM_WARMUP_PRIOR_MAX_DAYS,
+    SIM_WARMUP_TAIL_BARS,
+    SIMULATE_10S_GRID_DEFAULT,
+    TECH_SELL_MIN_HOLD_SECONDS,
 )
 from r005_strategy_core_shared import (
     R76StrategyConfig,
+    calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
+    _near_cross_momentum_flags,
+    _passes_early_near_cross_liquidity,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TODAY_CODE_FILE = SCRIPT_DIR / DEFINE_TODAY_CODE_PATH
 
 # ---------------------------------------------------------------------------
-# Simulation-only parameters (not used by live trading)
+# Simulation-only parameters
 # ---------------------------------------------------------------------------
-SIM_INITIAL_CAPITAL = 5_000_000
-SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL = True
 PICKS_FILENAME = "picks.txt"
-SIM_WARMUP_TAIL_BARS = 160
-SIM_WARMUP_PRIOR_MAX_DAYS = 20
 NXT_ELIGIBLE_CODES_FALLBACK = frozenset(
     {"005930", "000660", "035420", "068270", "018880", "103590", "003490"}
 )
@@ -214,7 +243,7 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
-# Replay-only overrides for buy-gate sensitivity comparison.
+# Replay-only overrides for buy-gate sensitivity comparison (defaults from r003).
 REQUIRE_ADX_RISING = _env_bool("R76_REQUIRE_ADX_RISING", REQUIRE_ADX_RISING)
 REQUIRE_DI_PLUS_DOMINANT = _env_bool("R76_REQUIRE_DI_PLUS_DOMINANT", REQUIRE_DI_PLUS_DOMINANT)
 REQUIRE_OBV_SIGNAL_CROSS = _env_bool("R76_REQUIRE_OBV_SIGNAL_CROSS", REQUIRE_OBV_SIGNAL_CROSS)
@@ -226,29 +255,24 @@ SIM_MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = _env_float(
     MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
 )
 
+# Intrabar filter: sim defaults differ from live (filter off by default in sim).
 ENABLE_INTRABAR_LIVE_ENTRY_FILTER = _env_bool("R76_ENABLE_INTRABAR_LIVE_ENTRY_FILTER", False)
-INTRABAR_MIN_ELAPSED_SECONDS = _env_float("R76_INTRABAR_MIN_ELAPSED_SECONDS", 90.0)
-INTRABAR_MFI_MIN = _env_float("R76_INTRABAR_MFI_MIN", 50.0)
-INTRABAR_MFI_MAX = _env_float("R76_INTRABAR_MFI_MAX", 75.0)
-INTRABAR_RSI_MIN = _env_float("R76_INTRABAR_RSI_MIN", 50.0)
-INTRABAR_RSI_MAX = _env_float("R76_INTRABAR_RSI_MAX", 70.0)
-INTRABAR_ADX_MIN = _env_float("R76_INTRABAR_ADX_MIN", 20.0)
-ENABLE_INTRABAR_VOLUME_FALLBACK = _env_bool("R76_ENABLE_INTRABAR_VOLUME_FALLBACK", True)
-INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS = _env_float("R76_INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS", 0.30)
-SIM_RELAXED_SHARED_GATES = _env_bool("R76_SIM_RELAXED_SHARED_GATES", True)
-SIM_RELAXED_MIN_SUPPORT_SCORE = _env_float("R76_SIM_RELAXED_MIN_SUPPORT_SCORE", 0)
-SIM_RELAXED_VWAP_MAX_UNDER_PCT = _env_float("R76_SIM_RELAXED_VWAP_MAX_UNDER_PCT", 0.0025)
-SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE = _env_bool("R76_SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE", False)
-SIM_RELAXED_REQUIRE_MA5_BIAS = _env_bool("R76_SIM_RELAXED_REQUIRE_MA5_BIAS", False)
-SIM_RELAXED_ALLOW_BELOW_BB = _env_bool("R76_SIM_RELAXED_ALLOW_BELOW_BB", True)
-SIM_RELAXED_ALLOW_FALLING_TREND = _env_bool("R76_SIM_RELAXED_ALLOW_FALLING_TREND", True)
-SIMULATE_10S_GRID_DEFAULT = _env_bool("R76_SIMULATE_10S_GRID", True)
-
-# Legacy compare mode parameter (kept for compare strategy behavior)
-TECH_SELL_MIN_HOLD_SECONDS = 300
-
-SAME_DAY_MIN_BARS = 10
-SIM_CHECK_INTERVAL_SECONDS = 10
+INTRABAR_MIN_ELAPSED_SECONDS = _env_float("R76_INTRABAR_MIN_ELAPSED_SECONDS", INTRABAR_MIN_ELAPSED_SECONDS)
+INTRABAR_MFI_MIN = _env_float("R76_INTRABAR_MFI_MIN", INTRABAR_MFI_MIN)
+INTRABAR_MFI_MAX = _env_float("R76_INTRABAR_MFI_MAX", INTRABAR_MFI_MAX)
+INTRABAR_RSI_MIN = _env_float("R76_INTRABAR_RSI_MIN", INTRABAR_RSI_MIN)
+INTRABAR_RSI_MAX = _env_float("R76_INTRABAR_RSI_MAX", INTRABAR_RSI_MAX)
+INTRABAR_ADX_MIN = _env_float("R76_INTRABAR_ADX_MIN", INTRABAR_ADX_MIN)
+ENABLE_INTRABAR_VOLUME_FALLBACK = _env_bool("R76_ENABLE_INTRABAR_VOLUME_FALLBACK", ENABLE_INTRABAR_VOLUME_FALLBACK)
+INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS = _env_float("R76_INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS", INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS)
+SIM_RELAXED_SHARED_GATES = _env_bool("R76_SIM_RELAXED_SHARED_GATES", SIM_RELAXED_SHARED_GATES)
+SIM_RELAXED_MIN_SUPPORT_SCORE = _env_float("R76_SIM_RELAXED_MIN_SUPPORT_SCORE", SIM_RELAXED_MIN_SUPPORT_SCORE)
+SIM_RELAXED_VWAP_MAX_UNDER_PCT = _env_float("R76_SIM_RELAXED_VWAP_MAX_UNDER_PCT", SIM_RELAXED_VWAP_MAX_UNDER_PCT)
+SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE = _env_bool("R76_SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE", SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE)
+SIM_RELAXED_REQUIRE_MA5_BIAS = _env_bool("R76_SIM_RELAXED_REQUIRE_MA5_BIAS", SIM_RELAXED_REQUIRE_MA5_BIAS)
+SIM_RELAXED_ALLOW_BELOW_BB = _env_bool("R76_SIM_RELAXED_ALLOW_BELOW_BB", SIM_RELAXED_ALLOW_BELOW_BB)
+SIM_RELAXED_ALLOW_FALLING_TREND = _env_bool("R76_SIM_RELAXED_ALLOW_FALLING_TREND", SIM_RELAXED_ALLOW_FALLING_TREND)
+SIMULATE_10S_GRID_DEFAULT = _env_bool("R76_SIMULATE_10S_GRID", SIMULATE_10S_GRID_DEFAULT)
 
 SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_bb_buffer_pct=SIM_LIVE_PRICE_BB_BUFFER_PCT,
@@ -646,8 +670,12 @@ def is_new_entry_allowed(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
         return ts.time() < REGULAR_NEW_ENTRY_CUTOFF
     if not ENABLE_NXT_SESSION:
         return False
+    current_time = ts.time()
     if is_nxt_session(ts) and nxt_tradeable:
-        return ts.time() < AFTERNOON_NXT_NEW_ENTRY_CUTOFF or ts.time() <= MORNING_NXT_END
+        if MORNING_NXT_START <= current_time <= MORNING_NXT_END:
+            return current_time < MORNING_NXT_NEW_ENTRY_CUTOFF
+        if AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END:
+            return current_time < AFTERNOON_NXT_NEW_ENTRY_CUTOFF
     return False
 
 
@@ -702,93 +730,6 @@ def is_early_near_cross_allowed(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     if EARLY_NEAR_CROSS_ALLOW_NXT and is_nxt_session(ts) and nxt_tradeable:
         return True
     return False
-
-
-def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    for column in ("open", "high", "low", "close", "volume"):
-        out[column] = pd.to_numeric(out[column], errors="coerce").astype("float64")
-
-    # 이동평균 & 볼린저밴드
-    out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
-    out["EMA_5"] = out["close"].ewm(span=5, adjust=False).mean()
-    out["EMA_20"] = out["close"].ewm(span=20, adjust=False).mean()
-    out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
-    out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
-    out["BB_STD"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).std()
-    out["BB_UPPER"] = out["BB_MIDDLE"] + out["BB_STD"] * BB_STD_MULTIPLIER
-    out["BB_LOWER"] = out["BB_MIDDLE"] - out["BB_STD"] * BB_STD_MULTIPLIER
-
-    # RSI - Wilder's smoothing (align with real trading script)
-    delta = out["close"].diff()
-    gain = delta.clip(lower=0).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
-    rs = gain / loss.replace(0, float("nan"))
-    out["RSI"] = 100 - (100 / (1 + rs))
-    out.loc[loss == 0, "RSI"] = 100.0
-    out["RSI_SIGNAL"] = out["RSI"].rolling(window=RSI_SIGNAL_PERIOD, min_periods=1).mean()
-
-    # Stochastic Fast K(10)/D(5)
-    low_n = out["low"].rolling(window=STOCH_K_PERIOD, min_periods=1).min()
-    high_n = out["high"].rolling(window=STOCH_K_PERIOD, min_periods=1).max()
-    denom = (high_n - low_n).replace(0, float("nan"))
-    out["STOCH_K"] = 100.0 * (out["close"] - low_n) / denom
-    out["STOCH_D"] = out["STOCH_K"].rolling(window=STOCH_D_PERIOD, min_periods=1).mean()
-
-    # Williams %R(10) & %D(9)
-    high_w = out["high"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).max()
-    low_w = out["low"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).min()
-    wr_denom = (high_w - low_w).replace(0, float("nan"))
-    out["WILLIAMS_R"] = -100.0 * (high_w - out["close"]) / wr_denom
-    out["WILLIAMS_D"] = out["WILLIAMS_R"].rolling(window=WILLIAMS_D_PERIOD, min_periods=1).mean()
-
-    # MFI - money flow intensity (price + volume)
-    typical_price = (out["high"] + out["low"] + out["close"]) / 3.0
-    raw_money_flow = typical_price * out["volume"]
-    tp_delta = typical_price.diff()
-    positive_flow = raw_money_flow.where(tp_delta > 0, 0.0)
-    negative_flow = raw_money_flow.where(tp_delta < 0, 0.0)
-    positive_sum = positive_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
-    negative_sum = negative_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
-    money_ratio = positive_sum / negative_sum.replace(0, float("nan"))
-    out["MFI"] = 100.0 - (100.0 / (1.0 + money_ratio))
-    out.loc[(positive_sum == 0) & (negative_sum == 0), "MFI"] = 50.0
-    out.loc[(negative_sum == 0) & (positive_sum > 0), "MFI"] = 100.0
-    out.loc[(positive_sum == 0) & (negative_sum > 0), "MFI"] = 0.0
-
-    ema_fast = out["close"].ewm(span=MACD_FAST, adjust=False).mean()
-    ema_slow = out["close"].ewm(span=MACD_SLOW, adjust=False).mean()
-    out["MACD"] = ema_fast - ema_slow
-    out["MACD_SIGNAL"] = out["MACD"].ewm(span=MACD_SIGNAL_PERIOD, adjust=False).mean()
-    out["MACD_HIST"] = out["MACD"] - out["MACD_SIGNAL"]
-
-    tr = pd.concat([
-        out["high"] - out["low"],
-        (out["high"] - out["close"].shift(1)).abs(),
-        (out["low"] - out["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    high_diff = out["high"] - out["high"].shift(1)
-    low_diff = out["low"].shift(1) - out["low"]
-    plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
-    minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
-    ema_tr = tr.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    ema_plus = plus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    ema_minus = minus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    out["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
-    out["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
-    di_sum = (out["DI_PLUS"] + out["DI_MINUS"]).replace(0, float("nan"))
-    dx = 100.0 * (out["DI_PLUS"] - out["DI_MINUS"]).abs() / di_sum
-    out["ADX"] = dx.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-
-    # VWAP / OBV (r73 매수 스코어 반영)
-    cum_vol = out["volume"].cumsum()
-    out["VWAP"] = (out["close"] * out["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
-    close_diff = out["close"].diff()
-    obv_vol = out["volume"] * close_diff.gt(0).astype(float) - out["volume"] * close_diff.lt(0).astype(float)
-    out["OBV"] = obv_vol.cumsum()
-    out["OBV_MA"] = out["OBV"].rolling(window=OBV_MA_PERIOD, min_periods=1).mean()
-
-    return out
 
 
 def _num(candle: pd.Series, key: str) -> float:
@@ -891,50 +832,6 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
             score += 1
 
     return score
-
-
-def _near_cross_momentum_flags(cur: pd.Series, prev: pd.Series) -> dict[str, float | bool]:
-    prev_ma5 = _num(prev, "MA_5")
-    cur_ma5 = _num(cur, "MA_5")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_bb = _num(cur, "BB_MIDDLE")
-
-    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
-        return {"can_arm": False, "can_early": False, "gap_ratio": float("nan"), "ma_rise_ratio": float("nan")}
-
-    gap = cur_bb - cur_ma5
-    gap_ratio = gap / max(abs(cur_bb), 1.0)
-    ma_rise_ratio = (cur_ma5 - prev_ma5) / max(abs(prev_ma5), 1.0)
-
-    below_or_equal = cur_ma5 <= cur_bb
-    arm_shape_ok = (prev_ma5 <= prev_bb) and below_or_equal
-
-    can_arm = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_ARM_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_ARM_MA_RISE_MIN)
-    can_early = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_EARLY_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_EARLY_MA_RISE_MIN)
-
-    return {
-        "can_arm": can_arm,
-        "can_early": can_early,
-        "gap_ratio": float(gap_ratio),
-        "ma_rise_ratio": float(ma_rise_ratio),
-    }
-
-
-def _passes_early_near_cross_liquidity(cur: pd.Series) -> tuple[bool, str]:
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    close_v = _num(cur, "close")
-    if any(pd.isna(v) for v in (vol, vol_ma, close_v)):
-        return False, "LIQUIDITY_DATA_NAN"
-
-    turnover = close_v * vol
-    if vol < EARLY_NEAR_CROSS_MIN_VOLUME:
-        return False, f"LOW_ABS_VOLUME_{vol:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOLUME}"
-    if vol_ma < EARLY_NEAR_CROSS_MIN_VOL_MA:
-        return False, f"LOW_VOL_MA_{vol_ma:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOL_MA}"
-    if turnover < EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:
-        return False, f"LOW_TURNOVER_{turnover:,.0f}_LT_{EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:,}"
-    return True, "OK"
 
 
 def _is_box_range_hold_zone(frame: pd.DataFrame) -> tuple[bool, str]:
@@ -1384,6 +1281,91 @@ def _simulate_relaxed_shared_gate(
     return False, shared_reason
 
 
+def _price_lead_breakout_context_sim(
+    cur: pd.Series,
+    prev: pd.Series,
+    frame: pd.DataFrame,
+    ts: pd.Timestamp,
+    price: float,
+    cross_info: dict,
+    nxt_tradeable: bool,
+) -> dict:
+    """r006 _price_lead_breakout_context() 시뮬레이션 버전."""
+    result = {"can_enter": False, "mode": "", "reason": ""}
+
+    bb_upper = _num(cur, "BB_UPPER")
+    price_breakout = price > bb_upper and not pd.isna(bb_upper)
+    live_cross_up = cross_info.get("live_cross_up", False)
+
+    if not price_breakout and not live_cross_up:
+        result["reason"] = "NO_PRICE_LEAD_SIGNAL"
+        return result
+
+    vol_col = "volume" if "volume" in cur.index else "VOLUME"
+    vol = _num(cur, vol_col) if vol_col in cur.index else float("nan")
+    vol_ma = _num(cur, "VOLUME_MA") if "VOLUME_MA" in cur.index else float("nan")
+    if not pd.isna(vol) and not pd.isna(vol_ma) and vol_ma > 0:
+        if vol < vol_ma * 0.5:
+            result["reason"] = "PRICE_LEAD_LOW_LIQUIDITY"
+            return result
+
+    adx = _num(cur, "ADX")
+    di_plus = _num(cur, "DI_PLUS")
+    di_minus = _num(cur, "DI_MINUS")
+    macd = _num(cur, "MACD")
+    macd_signal = _num(cur, "MACD_SIGNAL")
+    macd_hist = _num(cur, "MACD_HIST")
+
+    adx_ok = not pd.isna(adx) and adx >= PRICE_LEAD_BREAKOUT_MIN_ADX
+    momentum_ok = (
+        not any(pd.isna(v) for v in (macd, macd_signal, macd_hist))
+        and macd > macd_signal
+        and macd_hist > 0
+    )
+
+    near_cross = cross_info.get("near_cross", False)
+    near_cross_armed = cross_info.get("near_cross_armed", False)
+
+    if price_breakout and adx_ok and momentum_ok:
+        result["can_enter"] = True
+        result["mode"] = "PRICE_LEAD_BREAKOUT"
+        result["reason"] = f"PRICE_LEAD_BREAKOUT_ADX{adx:.0f}_MACD{macd_hist:.3f}"
+        return result
+
+    if live_cross_up and adx_ok and momentum_ok:
+        result["can_enter"] = True
+        result["mode"] = "PRICE_LEAD_CROSS_UP"
+        result["reason"] = f"PRICE_LEAD_CROSS_UP_ADX{adx:.0f}_MACD{macd_hist:.3f}"
+        return result
+
+    if near_cross_armed and adx_ok:
+        result["can_enter"] = True
+        result["mode"] = "ARMED_NEAR_CROSS"
+        result["reason"] = f"ARMED_NEAR_CROSS_ADX{adx:.0f}"
+        return result
+
+    if near_cross and adx_ok:
+        result["can_enter"] = True
+        result["mode"] = "EARLY_NEAR_CROSS"
+        result["reason"] = f"EARLY_NEAR_CROSS_ADX{adx:.0f}"
+        return result
+
+    result["reason"] = "PRICE_LEAD_CONDITIONS_NOT_MET"
+    return result
+
+
+def _extract_aux_score_from_reason(reason: str) -> int | None:
+    """AUX sell reason string에서 score 값 추출. e.g. 'AUX_SCORE3_...' -> 3"""
+    import re
+    m = re.search(r"AUX_SCORE(\d+)", reason)
+    return int(m.group(1)) if m else None
+
+
+def _aux_min_pnl_for_score(score: int) -> float | None:
+    """AUX_SELL_SCORE_MIN_PNL_MAP에서 score에 해당하는 최소 PnL 반환."""
+    return AUX_SELL_SCORE_MIN_PNL_MAP.get(score)
+
+
 def check_buy_condition_r76_sim(
     frame: pd.DataFrame,
     ts: pd.Timestamp,
@@ -1391,6 +1373,15 @@ def check_buy_condition_r76_sim(
     cross_info: dict[str, object],
     intrabar_elapsed_seconds: float | None = None,
 ) -> tuple[bool, str]:
+    candidate_ok: bool = False
+    candidate_reason: str = ""
+    if len(frame) >= 2:
+        plbc = _price_lead_breakout_context_sim(
+            frame.iloc[-1], frame.iloc[-2], frame, ts, live_price, cross_info, True
+        )
+        if plbc["can_enter"]:
+            candidate_ok = True
+            candidate_reason = "PRICE_LEAD|" + plbc["reason"]
     ok, reason = shared_check_buy_condition(
         frame=frame,
         now=ts,
@@ -1401,7 +1392,10 @@ def check_buy_condition_r76_sim(
     )
 
     if not ok:
-        if SIM_RELAXED_SHARED_GATES:
+        if candidate_ok:
+            ok = True
+            reason = candidate_reason
+        elif SIM_RELAXED_SHARED_GATES:
             relaxed_ok, relaxed_reason = _simulate_relaxed_shared_gate(
                 frame=frame,
                 live_price=live_price,
@@ -1498,7 +1492,7 @@ def check_buy_condition_r76_sim(
     if REQUIRE_OBV_SIGNAL_CROSS and not (obv_signal_cross and obv_breakout):
         return False, "OBV_CONFIRM_MISSING_SIGNAL_CROSS_OR_BREAKOUT"
 
-    return True, reason
+    return True, candidate_reason if candidate_ok else reason
 
 
 def collect_buy_reject_reasons_r76_sim(
@@ -1701,6 +1695,7 @@ class SimPosition:
         self.buy_time = buy_time
         self.buy_session = buy_session
         self.highest_price = buy_price
+        self.tp1_done: bool = False
 
 
 class Simulator:
@@ -1743,23 +1738,26 @@ class Simulator:
         log(f"  {rec}")
         return True
 
-    def sell(self, code: str, price: float, now: pd.Timestamp, reason: str, session: str) -> bool:
+    def sell(self, code: str, price: float, now: pd.Timestamp, reason: str, session: str, qty: int | None = None) -> bool:
         pos = self.positions.get(code)
         if pos is None or pos.quantity <= 0 or price <= 0:
             return False
-
-        proceeds = price * pos.quantity
+        sell_qty = min(int(qty), pos.quantity) if qty is not None else pos.quantity
+        if sell_qty <= 0:
+            return False
+        proceeds = price * sell_qty
         self.cash += proceeds
-
-        rec = TradeRecord(code, pos.name, "SELL", now, price, pos.quantity, reason, session)
+        rec = TradeRecord(code, pos.name, "SELL", now, price, sell_qty, reason, session)
         rec.pnl_pct = (price / pos.buy_price - 1.0) * 100.0
-        rec.pnl_krw = (price - pos.buy_price) * pos.quantity
+        rec.pnl_krw = (price - pos.buy_price) * sell_qty
         self.trade_log.append(rec)
         log(f"  {rec}")
-
-        del self.positions[code]
-        self.completed_codes.add(code)
-        self.set_cooldown(code, now)
+        if sell_qty >= pos.quantity:
+            del self.positions[code]
+            self.completed_codes.add(code)
+            self.set_cooldown(code, now)
+        else:
+            pos.quantity -= sell_qty
         return True
 
     def portfolio_value(self, last_prices: dict[str, float]) -> float:
@@ -1865,9 +1863,11 @@ def _format_pending_pnl(reason_prefix: str, pnl_pct: float) -> str:
 
 
 def _session_exit_plan(reason_prefix: str, pnl_pct: float) -> tuple[str, str]:
+    if SESSION_FORCE_CLOSE_ALL_AT_CUTOFF:
+        return "sell", _format_pending_pnl(f"{reason_prefix}_SESSION_FORCE_CLOSE_ALL", pnl_pct)
     if pnl_pct > 0:
         return "sell", _format_pending_pnl(f"{reason_prefix}_PROFIT_CLOSE", pnl_pct)
-    if pnl_pct >= STOP_LOSS_PERCENT:
+    if ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP and pnl_pct >= STOP_LOSS_PERCENT:
         return "hold", _format_pending_pnl(f"{reason_prefix}_OVERNIGHT_HOLD_WITHIN_STOP", pnl_pct)
     return "sell", _format_pending_pnl(f"{reason_prefix}_STOP_LOSS_BREACH", pnl_pct)
 
@@ -2116,6 +2116,8 @@ def simulate_date(
     post_buy_bb_drop_state: dict[str, dict] = {}
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
+    trailing_sell_confirm_state: dict[str, dict] = {}
+    buy_confirm_state: dict[str, dict] = {}
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
     buy_primary_reject_counter: collections.Counter[str] = collections.Counter()
     buy_reject_counter: collections.Counter[str] = collections.Counter()
@@ -2205,12 +2207,100 @@ def simulate_date(
                 pos.highest_price = max(pos.highest_price, price)
                 peak_pnl_pct = (pos.highest_price / pos.buy_price) - 1.0 if pos.highest_price > 0 and pos.buy_price > 0 else 0.0
                 giveback = peak_pnl_pct - profit_pct
-                if profit_pct >= TAKE_PROFIT_PERCENT and not ENABLE_TP_EXTENSION_TRAILING:
-                    sim.sell(code, price, ts, f"TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}%", session)
+                # ATR-based TP/SL targets
+                atr_val = _num(cur, "ATR")
+                atr_tp_pct = float("nan")
+                atr_sl_pct = float("nan")
+                if not pd.isna(atr_val) and atr_val > 0 and pos.buy_price > 0:
+                    atr_tp_price = pos.buy_price + float(atr_val) * ATR_TAKE_PROFIT_MULTIPLIER
+                    atr_sl_price = pos.buy_price - float(atr_val) * ATR_STOP_MULTIPLIER
+                    atr_tp_pct = (atr_tp_price / pos.buy_price) - 1.0
+                    atr_sl_pct = (atr_sl_price / pos.buy_price) - 1.0
+
+                # Signal indicators
+                k_now = _num(cur, "STOCH_K")
+                d_now = _num(cur, "STOCH_D")
+                hist_now = _num(cur, "MACD_HIST")
+                hist_prev_v = _num(buy_available.iloc[-2], "MACD_HIST") if len(buy_available) >= 2 else float("nan")
+                hist_prev2_v = _num(buy_available.iloc[-3], "MACD_HIST") if len(buy_available) >= 3 else float("nan")
+                adx_now = _num(cur, "ADX")
+                di_plus_now = _num(cur, "DI_PLUS")
+                di_minus_now = _num(cur, "DI_MINUS")
+                _strong_uptrend = (
+                    not pd.isna(adx_now) and adx_now > 45
+                    and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
+                    and di_plus_now > di_minus_now
+                )
+
+                # 1. Hard stop -0.8%
+                if profit_pct <= -0.008:
+                    trailing_sell_confirm_state.pop(code, None)
+                    sim.sell(code, price, ts, "HARD_STOP_LOSS_0.8PCT", session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | TAKE_PROFIT_+{TAKE_PROFIT_PERCENT*100:.1f}% | price={price:,.0f}")
+                    log(f"  [SELL EXECUTED] {code} | HARD_STOP_LOSS_0.8PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
                     continue
-                # ── POST-BUY ENTRY DROP GUARD ─────────────────────────────────────
+
+                # 2. Full take-profit +2.0%
+                if profit_pct >= 0.020:
+                    trailing_sell_confirm_state.pop(code, None)
+                    sim.sell(code, price, ts, "TP2_FULL_2.0PCT", session)
+                    signal_sell_bar[code] = ts
+                    log(f"  [SELL EXECUTED] {code} | TP2_FULL_2.0PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                    continue
+
+                # 3. Partial take-profit +1.0% at 50%, one-time
+                if (not pos.tp1_done) and profit_pct >= 0.010:
+                    partial_qty = max(1, int(pos.quantity * 0.5))
+                    partial_qty = min(partial_qty, pos.quantity)
+                    if sim.sell(code, price, ts, "TP1_PARTIAL_50PCT_1.0PCT", session, qty=partial_qty):
+                        remaining = sim.positions.get(code)
+                        if remaining is not None:
+                            remaining.tp1_done = True
+                    signal_sell_bar[code] = ts
+                    log(f"  [SELL EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                    continue
+
+                # 4. Signal exit: Stoch K < D (suppressed in strong uptrend)
+                if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
+                    if _strong_uptrend:
+                        log(
+                            f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed by strong uptrend | "
+                            f"K={k_now:.1f} D={d_now:.1f} ADX={adx_now:.1f} +DI={di_plus_now:.1f} -DI={di_minus_now:.1f}"
+                        )
+                    else:
+                        trailing_sell_confirm_state.pop(code, None)
+                        sim.sell(code, price, ts, "SIGNAL_EXIT_STOCH_K_LT_D", session)
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | SIGNAL_EXIT_STOCH_K_LT_D | K={k_now:.1f} D={d_now:.1f} pnl={profit_pct*100:.2f}%")
+                        continue
+
+                # 5. Signal exit: MACD histogram declining 2 consecutive bars
+                if not any(pd.isna(v) for v in (hist_now, hist_prev_v, hist_prev2_v)) and hist_now < hist_prev_v < hist_prev2_v:
+                    trailing_sell_confirm_state.pop(code, None)
+                    sim.sell(code, price, ts, "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS", session)
+                    signal_sell_bar[code] = ts
+                    log(
+                        f"  [SELL EXECUTED] {code} | SIGNAL_EXIT_MACD_HIST_DOWN_2BARS | "
+                        f"HIST={hist_prev2_v:.3f}->{hist_prev_v:.3f}->{hist_now:.3f} pnl={profit_pct*100:.2f}%"
+                    )
+                    continue
+
+                # 6. ATR-based take-profit
+                if not pd.isna(atr_tp_pct) and profit_pct >= atr_tp_pct:
+                    if ENABLE_TP_EXTENSION_TRAILING:
+                        log(
+                            f"  [TP_EXTENSION] {code} | pnl={profit_pct*100:.2f}% >= ATR_TP {atr_tp_pct*100:.2f}% | "
+                            f"trailing mode (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%)"
+                        )
+                    else:
+                        reason_atr_tp = f"ATR_TAKE_PROFIT_{ATR_TAKE_PROFIT_MULTIPLIER:.1f}x"
+                        trailing_sell_confirm_state.pop(code, None)
+                        sim.sell(code, price, ts, reason_atr_tp, session)
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | {reason_atr_tp} | price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        continue
+
+                # -- POST-BUY ENTRY DROP GUARD -----------------------------------------------
                 _held_for_guard = (ts - pos.buy_time).total_seconds()
                 if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
                     _drop_hold_seconds = update_timed_condition_state(
@@ -2231,15 +2321,16 @@ def simulate_date(
                         post_buy_bb_drop_state.pop(code, None)
                         breakeven_fail_state.pop(code, None)
                         no_trend_exit_state.pop(code, None)
+                        trailing_sell_confirm_state.pop(code, None)
                         sim.sell(code, price, ts, reason_bbdrop, session)
                         signal_sell_bar[code] = ts
                         log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | price={price:,.0f}")
                         continue
                 else:
                     post_buy_bb_drop_state.pop(code, None)
-                # ── END POST-BUY ENTRY DROP GUARD ─────────────────────────────────
+                # -- END POST-BUY ENTRY DROP GUARD -------------------------------------------
 
-                # ── BREAKEVEN FAILURE GUARD ────────────────────────────────────────
+                # -- BREAKEVEN FAILURE GUARD -------------------------------------------------
                 _breakeven_hold_seconds = update_timed_condition_state(
                     breakeven_fail_state,
                     code,
@@ -2262,13 +2353,14 @@ def simulate_date(
                     post_buy_bb_drop_state.pop(code, None)
                     breakeven_fail_state.pop(code, None)
                     no_trend_exit_state.pop(code, None)
+                    trailing_sell_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_breakeven, session)
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | price={price:,.0f}")
                     continue
-                # ── END BREAKEVEN FAILURE GUARD ───────────────────────────────────
+                # -- END BREAKEVEN FAILURE GUARD ---------------------------------------------
 
-                # ── NO-TREND TIME EXIT ────────────────────────────────────────────
+                # -- NO-TREND TIME EXIT ------------------------------------------------------
                 _bb_mid_guard = _num(cur, "BB_MIDDLE")
                 _no_trend_condition = (
                     _held_for_guard >= NO_TREND_EXIT_ARM_SECONDS
@@ -2297,34 +2389,72 @@ def simulate_date(
                     post_buy_bb_drop_state.pop(code, None)
                     breakeven_fail_state.pop(code, None)
                     no_trend_exit_state.pop(code, None)
+                    trailing_sell_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_no_trend, session)
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | price={price:,.0f}")
                     continue
-                # ── END NO-TREND TIME EXIT ────────────────────────────────────────
+                # -- END NO-TREND TIME EXIT --------------------------------------------------
 
-                _held_sl = (ts - pos.buy_time).total_seconds()
-                _sl_threshold = STOP_LOSS_EARLY_PERCENT if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else STOP_LOSS_PERCENT
-                if profit_pct <= _sl_threshold:
-                    _sl_label = f"STOP_LOSS_EARLY_{_sl_threshold*100:.1f}%" if _held_sl < STOP_LOSS_MIN_HOLD_SECONDS else f"STOP_LOSS_{_sl_threshold*100:.1f}%"
-                    sim.sell(code, price, ts, _sl_label, session)
+                # 10. ATR-based stop loss
+                if not pd.isna(atr_sl_pct) and profit_pct <= atr_sl_pct:
+                    reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
+                    trailing_sell_confirm_state.pop(code, None)
+                    sim.sell(code, price, ts, reason_sl, session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | {_sl_label} | held={_held_sl:.0f}s price={price:,.0f}")
+                    log(
+                        f"  [SELL EXECUTED] {code} | {reason_sl} | "
+                        f"held={_held_for_guard:.0f}s price={price:,.0f} pnl={profit_pct*100:.2f}% "
+                        f"sl_pct={atr_sl_pct*100:.2f}%"
+                    )
                     continue
-                highest_price = float(pos.highest_price)
-                if highest_price > 0 and pos.buy_price > 0:
+
+                # 11. Trailing stop with 1-bar confirmation
+                if pos.highest_price > 0 and pos.buy_price > 0:
                     current_pnl_pct = profit_pct
-                    giveback = peak_pnl_pct - current_pnl_pct
-                    if ENABLE_TP_EXTENSION_TRAILING and peak_pnl_pct >= TAKE_PROFIT_PERCENT:
+                    profit_giveback = peak_pnl_pct - current_pnl_pct
+                    if ENABLE_TP_EXTENSION_TRAILING and not pd.isna(atr_tp_pct) and peak_pnl_pct >= atr_tp_pct:
                         trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
                         reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
                     else:
                         trail_threshold = TRAILING_STOP_FROM_PEAK
                         reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
-                    if peak_pnl_pct > 0 and current_pnl_pct > 0 and giveback >= trail_threshold:
+                    trailing_condition = peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold
+
+                    pending_state = trailing_sell_confirm_state.get(code)
+                    if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
+                        if not trailing_condition and pending_state is not None:
+                            trailing_sell_confirm_state.pop(code, None)
+                            log(
+                                f"  [SELL HOLD CANCEL] {code} | trailing recovered before confirm | "
+                                f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                            )
+
+                    if trailing_condition:
+                        _bar_time_trail = ts.floor("3min") + pd.Timedelta(minutes=3)
+                        if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
+                            if pending_state is None:
+                                trailing_sell_confirm_state[code] = {
+                                    "trigger_bar_time": _bar_time_trail,
+                                    "triggered_at": ts,
+                                    "reason": reason_ts,
+                                }
+                                log(
+                                    f"  [SELL HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
+                                    f"pnl={current_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                                )
+                                continue
+                            if pending_state.get("trigger_bar_time") == _bar_time_trail:
+                                continue
+
+                        trailing_sell_confirm_state.pop(code, None)
                         sim.sell(code, price, ts, reason_ts, session)
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | {reason_ts} | price={price:,.0f}")
+                        log(
+                            f"  [SELL EXECUTED] {code} | {reason_ts} | "
+                            f"price={price:,.0f} pnl={current_pnl_pct*100:.2f}% "
+                            f"peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
+                        )
                         continue
 
                 if signal_sell_bar.get(code) == ts:
@@ -2332,6 +2462,21 @@ def simulate_date(
 
                 should_sell, reason = check_sell_condition_r76_sim(buy_available, profit_pct, price, cross_info)
                 if should_sell:
+                    aux_score = _extract_aux_score_from_reason(reason)
+                    if aux_score is not None:
+                        aux_base_min = _aux_min_pnl_for_score(aux_score)
+                        if aux_base_min is not None:
+                            aux_required_pnl = max(
+                                AUX_SELL_MIN_REALIZED_TARGET_PCT,
+                                aux_base_min + AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
+                            )
+                            if profit_pct < aux_required_pnl:
+                                log(
+                                    f"  [SELL HOLD] {code} | AUX_TRIGGER_BUFFER_BLOCK "
+                                    f"score={aux_score} pnl={profit_pct*100:.2f}% "
+                                    f"required>={aux_required_pnl*100:.2f}%"
+                                )
+                                continue
                     sim.sell(code, price, ts, reason, session)
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EVAL] {code} | OK {reason} | pnl={profit_pct*100:.2f}%")
@@ -2364,6 +2509,15 @@ def simulate_date(
             )
 
             if should_buy:
+                _confirm_state = buy_confirm_state.setdefault(code, {"count": 0, "first_ts": ts})
+                _confirm_state["count"] += 1
+                if _confirm_state["count"] < BUY_CONSECUTIVE_CONFIRM_COUNT:
+                    log(
+                        f"  [BUY HOLD] {code} | consecutive confirm {_confirm_state["count"]}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
+                        f"price={price:,.0f}"
+                    )
+                    continue
+                buy_confirm_state.pop(code, None)
                 log(
                     f"  [BUY SIGNAL] {code} | {ts:%H:%M} | {reason} | "
                     f"MA5={_num(cur,'MA_5'):.1f} BB_MID={_num(cur,'BB_MIDDLE'):.1f} | "
@@ -2377,6 +2531,7 @@ def simulate_date(
                 else:
                     log_detail(f"  [BUY REJECT] {code_label} | ORDER_REJECTED")
             else:
+                buy_confirm_state.pop(code, None)
                 buy_primary_reject_counter[str(reason)] += 1
                 for reject_reason in collect_buy_reject_reasons_r76_sim(
                     buy_available,

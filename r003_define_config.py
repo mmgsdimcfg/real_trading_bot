@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 """R76 shared configuration for live trading and simulation.
 
@@ -204,7 +204,7 @@ EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
 # 메인 루프 폴링 간격(초)
 POLL_INTERVAL_SECONDS = 10  # 15 -> 10 (더 빠른 대응)
 # 실시간 현재가 재조회 간격(초)
-LIVE_PRICE_POLL_INTERVAL_SECONDS = 5
+LIVE_PRICE_POLL_INTERVAL_SECONDS = 10
 # BB 크로스 판정용 버퍼(노이즈 필터)
 LIVE_PRICE_BB_BUFFER_PCT = 0.0005  # 0.0008
 # 상향 크로스 확정에 필요한 연속 관측 횟수
@@ -228,7 +228,7 @@ TRADE_COOLDOWN_MINUTES = 3
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부
+ENABLE_NXT_SESSION = False  # NXT 세션 포함 운용 여부
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)
@@ -306,6 +306,79 @@ WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = 300
 
 # 오전 NXT 신규 진입 종료 시각(별도 변수)
 MORNING_NXT_NEW_ENTRY_CUTOFF = MORNING_NXT_END
+
+
+# ---------------------------------------------------------------------------
+# Live execution parameters (r006_trade_live_execute)
+# ---------------------------------------------------------------------------
+# 3분봉 프레임 갱신 주기(초)
+FRAME_POLL_INTERVAL_SECONDS = 20
+# 시작 시 과거 바 백필 동기화 범위(초)
+FRAME_BACKFILL_SYNC_SECONDS = 600
+# 매수 연속 확인 횟수
+BUY_CONSECUTIVE_CONFIRM_COUNT = 2
+# 주문 상태 폴링 간격(초)
+ORDER_STATUS_POLL_INTERVAL_SECONDS = 15
+# 현재가 조회 backoff 초기값(초)
+LIVE_PRICE_BACKOFF_BASE_SECONDS = 5
+# 현재가 조회 backoff 최대값(초)
+LIVE_PRICE_BACKOFF_MAX_SECONDS = 60
+# 현재가 stale TTL(초)
+LIVE_PRICE_STALE_TTL_SECONDS = 20
+# 미결 주문 상태 backoff 최대값(초)
+PENDING_STATUS_BACKOFF_MAX_SECONDS = 120
+# 메인 루프 연속 오류 허용 최대 횟수
+MAIN_LOOP_MAX_CONSECUTIVE_ERRORS = 20
+# 라이브 상태 저장 주기(초)
+LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
+# 미결 매수 주문 대기 여유 시간(초)
+PENDING_BUY_GRACE_SECONDS = 90
+
+# 인트라바 실시간 진입 필터
+ENABLE_INTRABAR_LIVE_ENTRY_FILTER = True
+INTRABAR_MIN_ELAPSED_SECONDS = 90.0
+INTRABAR_MFI_MIN = 50.0
+INTRABAR_MFI_MAX = 75.0
+INTRABAR_RSI_MIN = 50.0
+INTRABAR_RSI_MAX = 70.0
+INTRABAR_ADX_MIN = 20.0
+
+# AUX 매도 슬리피지 버퍼
+AUX_SELL_MIN_REALIZED_TARGET_PCT = 0.010
+AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT = 0.005
+
+# ---------------------------------------------------------------------------
+# Simulation parameters (r007_trade_simulate_by_date)
+# ---------------------------------------------------------------------------
+# 초기 시뮬레이션 자본금(KRW)
+SIM_INITIAL_CAPITAL = 5_000_000
+# 매도 완료 후 재진입 허용 여부
+SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL = True
+# 웜업용 tail 봉 개수
+SIM_WARMUP_TAIL_BARS = 160
+# 웜업 이전 데이터 최대 조회일수
+SIM_WARMUP_PRIOR_MAX_DAYS = 20
+# 기술적 매도 최소 보유 시간(초)
+TECH_SELL_MIN_HOLD_SECONDS = 300
+# 당일 최소 처리 봉 수
+SAME_DAY_MIN_BARS = 10
+# 시뮬레이션 내부 체크 간격(초)
+SIM_CHECK_INTERVAL_SECONDS = 10
+# 10초 그리드 시뮬레이션 기본값
+SIMULATE_10S_GRID_DEFAULT = True
+# 인트라바 볼륨 폴백 활성화
+ENABLE_INTRABAR_VOLUME_FALLBACK = True
+# 인트라바 볼륨 폴백 최소 진행률
+INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS = 0.30
+
+# 시뮬레이션 완화 게이트
+SIM_RELAXED_SHARED_GATES = True
+SIM_RELAXED_MIN_SUPPORT_SCORE = 0
+SIM_RELAXED_VWAP_MAX_UNDER_PCT = 0.0025
+SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE = False
+SIM_RELAXED_REQUIRE_MA5_BIAS = False
+SIM_RELAXED_ALLOW_BELOW_BB = True
+SIM_RELAXED_ALLOW_FALLING_TREND = True
 
 
 def _apply_risk_profile_overrides() -> None:

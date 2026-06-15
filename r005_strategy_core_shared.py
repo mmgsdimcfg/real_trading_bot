@@ -1,4 +1,4 @@
-"""R76 shared strategy core.
+﻿"""R76 shared strategy core.
 
 Overview:
 - Single source of truth for live/sim buy-sell decision logic.
@@ -34,6 +34,32 @@ from dataclasses import dataclass
 from typing import Callable
 
 import pandas as pd
+from r003_define_config import (
+    ADX_PERIOD,
+    ATR_PERIOD,
+    BB_PERIOD,
+    BB_STD_MULTIPLIER,
+    EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
+    EARLY_NEAR_CROSS_MIN_VOL_MA,
+    EARLY_NEAR_CROSS_MIN_VOLUME,
+    MACD_FAST,
+    MACD_SIGNAL_PERIOD,
+    MACD_SLOW,
+    MA_PERIOD,
+    MFI_PERIOD,
+    NEAR_CROSS_ARM_GAP_MAX,
+    NEAR_CROSS_ARM_MA_RISE_MIN,
+    NEAR_CROSS_EARLY_GAP_MAX,
+    NEAR_CROSS_EARLY_MA_RISE_MIN,
+    OBV_MA_PERIOD,
+    RSI_PERIOD,
+    RSI_SIGNAL_PERIOD,
+    STOCH_D_PERIOD,
+    STOCH_K_PERIOD,
+    VOLUME_MA_PERIOD,
+    WILLIAMS_D_PERIOD,
+    WILLIAMS_R_PERIOD,
+)
 
 
 @dataclass(frozen=True)
@@ -504,6 +530,12 @@ def run_buy_condition_pipeline_comment(
             and prev_close <= prev_bb and close_val_cur > cur_bb)
     )
 
+    # Require a fresh cross: either the live price polling detected an up-cross,
+    # or the most recent bar shows MA5/close crossing above BB middle from below.
+    # Without this, stocks floating above BB since market open trigger chase entries.
+    if not live_cross_up_signal and not confirmed_cross:
+        return False, "NO_FRESH_CROSS_GATE"
+
     indicator_rules: list[Callable[[], tuple[bool, str]]] = [
         lambda: buy_4th_macd_hist_positive_comment(cur),
         lambda: buy_5th_stoch_k_over_d_comment(cur),
@@ -593,3 +625,145 @@ def check_sell_condition(
     if pnl_pct >= min_pnl_req:
         return True, f"AUX_REVERSAL_SCORE_{score}"
     return False, f"AUX_BLOCKED_SCORE_{score}_PNL_{pnl_pct * 100:.2f}%_LT_{min_pnl_req * 100:.2f}%"
+
+
+# ---------------------------------------------------------------------------
+# Shared indicator calculation (used by r006 and r007)
+# ---------------------------------------------------------------------------
+
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in ("open", "high", "low", "close", "volume"):
+        out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
+
+    out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
+    out["EMA_5"] = out["close"].ewm(span=5, adjust=False).mean()
+    out["EMA_20"] = out["close"].ewm(span=20, adjust=False).mean()
+    out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
+
+    out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
+    out["BB_STD"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).std()
+    out["BB_UPPER"] = out["BB_MIDDLE"] + out["BB_STD"] * BB_STD_MULTIPLIER
+    out["BB_LOWER"] = out["BB_MIDDLE"] - out["BB_STD"] * BB_STD_MULTIPLIER
+
+    delta = out["close"].diff()
+    avg_gain = delta.clip(lower=0).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
+    avg_loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    out["RSI"] = 100 - (100 / (1 + rs))
+    out.loc[avg_loss == 0, "RSI"] = 100.0
+    out["RSI_SIGNAL"] = out["RSI"].rolling(window=RSI_SIGNAL_PERIOD, min_periods=1).mean()
+
+    low_n = out["low"].rolling(window=STOCH_K_PERIOD, min_periods=1).min()
+    high_n = out["high"].rolling(window=STOCH_K_PERIOD, min_periods=1).max()
+    denom = (high_n - low_n).replace(0, float("nan"))
+    out["STOCH_K"] = 100.0 * (out["close"] - low_n) / denom
+    out["STOCH_D"] = out["STOCH_K"].rolling(window=STOCH_D_PERIOD, min_periods=1).mean()
+
+    high_w = out["high"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).max()
+    low_w = out["low"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).min()
+    wr_denom = (high_w - low_w).replace(0, float("nan"))
+    out["WILLIAMS_R"] = -100.0 * (high_w - out["close"]) / wr_denom
+    out["WILLIAMS_D"] = out["WILLIAMS_R"].rolling(window=WILLIAMS_D_PERIOD, min_periods=1).mean()
+
+    typical_price = (out["high"] + out["low"] + out["close"]) / 3.0
+    raw_money_flow = typical_price * out["volume"]
+    price_delta = typical_price.diff()
+    positive_flow = raw_money_flow.where(price_delta > 0, 0.0)
+    negative_flow = raw_money_flow.where(price_delta < 0, 0.0)
+    positive_sum = positive_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
+    negative_sum = negative_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
+    money_ratio = positive_sum / negative_sum.replace(0, float("nan"))
+    out["MFI"] = 100.0 - (100.0 / (1.0 + money_ratio))
+    out.loc[(positive_sum == 0) & (negative_sum == 0), "MFI"] = 50.0
+    out.loc[(negative_sum == 0) & (positive_sum > 0), "MFI"] = 100.0
+    out.loc[(positive_sum == 0) & (negative_sum > 0), "MFI"] = 0.0
+
+    ema_fast = out["close"].ewm(span=MACD_FAST, adjust=False).mean()
+    ema_slow = out["close"].ewm(span=MACD_SLOW, adjust=False).mean()
+    out["MACD"] = ema_fast - ema_slow
+    out["MACD_SIGNAL"] = out["MACD"].ewm(span=MACD_SIGNAL_PERIOD, adjust=False).mean()
+    out["MACD_HIST"] = out["MACD"] - out["MACD_SIGNAL"]
+
+    tr = pd.concat([
+        out["high"] - out["low"],
+        (out["high"] - out["close"].shift(1)).abs(),
+        (out["low"] - out["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    high_diff = out["high"] - out["high"].shift(1)
+    low_diff = out["low"].shift(1) - out["low"]
+    plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
+    minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
+    ema_tr = tr.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
+    ema_plus = plus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
+    ema_minus = minus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
+    out["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
+    out["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
+    di_sum = (out["DI_PLUS"] + out["DI_MINUS"]).replace(0, float("nan"))
+    dx = 100.0 * (out["DI_PLUS"] - out["DI_MINUS"]).abs() / di_sum
+    out["ADX"] = dx.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
+
+    cum_vol = out["volume"].cumsum()
+    out["VWAP"] = (out["close"] * out["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
+
+    # ATR - 변동성 기반 손익비 판단용 평균 진폭
+    true_range = pd.concat([
+        out["high"] - out["low"],
+        (out["high"] - out["close"].shift(1)).abs(),
+        (out["low"] - out["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    out["ATR"] = true_range.ewm(alpha=1.0 / ATR_PERIOD, min_periods=1, adjust=False).mean()
+
+    close_diff = out["close"].diff()
+    obv_vol = out["volume"] * close_diff.gt(0).astype(float) - out["volume"] * close_diff.lt(0).astype(float)
+    out["OBV"] = obv_vol.cumsum()
+    out["OBV_MA"] = out["OBV"].rolling(window=OBV_MA_PERIOD, min_periods=1).mean()
+
+    return out
+
+
+def _near_cross_momentum_flags(cur: pd.Series, prev: pd.Series) -> dict[str, float | bool]:
+    """Builds near-cross diagnostics used by both live and sim entry logic."""
+    prev_ma5 = _num(prev, "MA_5")
+    cur_ma5 = _num(cur, "MA_5")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_bb = _num(cur, "BB_MIDDLE")
+
+    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
+        return {"can_arm": False, "can_early": False, "gap_ratio": float("nan"), "ma_rise_ratio": float("nan")}
+
+    gap = cur_bb - cur_ma5
+    gap_ratio = gap / max(abs(cur_bb), 1.0)
+    ma_rise_ratio = (cur_ma5 - prev_ma5) / max(abs(prev_ma5), 1.0)
+
+    below_or_equal = cur_ma5 <= cur_bb
+    arm_shape_ok = (prev_ma5 <= prev_bb) and below_or_equal
+
+    can_arm = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_ARM_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_ARM_MA_RISE_MIN)
+    can_early = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_EARLY_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_EARLY_MA_RISE_MIN)
+
+    return {
+        "can_arm": can_arm,
+        "can_early": can_early,
+        "gap_ratio": float(gap_ratio),
+        "ma_rise_ratio": float(ma_rise_ratio),
+    }
+
+
+def _passes_early_near_cross_liquidity(cur: pd.Series) -> tuple[bool, str]:
+    """Liquidity guard for ARM/EARLY near-cross entry."""
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    close_v = _num(cur, "close")
+    if any(pd.isna(v) for v in (vol, vol_ma, close_v)):
+        return False, "LIQUIDITY_DATA_NAN"
+
+    turnover = close_v * vol
+    if vol < EARLY_NEAR_CROSS_MIN_VOLUME:
+        return False, f"LOW_ABS_VOLUME_{vol:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOLUME}"
+    if vol_ma < EARLY_NEAR_CROSS_MIN_VOL_MA:
+        return False, f"LOW_VOL_MA_{vol_ma:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOL_MA}"
+    if turnover < EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:
+        return False, f"LOW_TURNOVER_{turnover:,.0f}_LT_{EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:,}"
+    return True, "OK"
+
