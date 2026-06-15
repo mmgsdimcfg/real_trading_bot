@@ -281,6 +281,12 @@ STRONG_TREND_OVERBOUGHT_MIN_ADX = 15.0
 # 현재가가 BB 중심선 대비 과도하게 이격되면 매수 차단
 MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when price is within 0.2% of BB middle
 
+# BB 중앙선 상승 돌파 전략 파라미터 (BB slope break cross strategy)
+BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 약 1시간)
+BB_UPPER_GAP_MIN_PCT = 1.0       # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단
+CANDLE_GAIN_MIN_PCT = 0.3        # 현재봉 양봉 최소 상승률 (%) - 약세봉 진입 차단
+BB_BUY_SCORE_THRESHOLD = 8       # 매수 최소 점수 (공격형=6, 중립형=8, 보수형=10)
+
 # 3. 거래량 완화
 # 장초반 거래량 필터 비율
 VOLUME_RATIO_OPEN = 0.40  # 0.60 -> 0.40 (아침 변동성 높은 시간 더 완화)
