@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 
 """R76 live trading executor - BB middle cross strategy with multi indicators.
 
@@ -193,13 +193,47 @@ from r003_define_config import (
     WILLIAMS_D_PERIOD,
     WILLIAMS_OVERBOUGHT_CEIL,
     WILLIAMS_R_PERIOD,
+    AUX_SELL_MIN_REALIZED_TARGET_PCT,
+    AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
+    BUY_CONSECUTIVE_CONFIRM_COUNT,
+    ENABLE_INTRABAR_LIVE_ENTRY_FILTER,
+    ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP,
+    FRAME_BACKFILL_SYNC_SECONDS,
+    FRAME_POLL_INTERVAL_SECONDS,
+    INTRABAR_ADX_MIN,
+    INTRABAR_MFI_MAX,
+    INTRABAR_MFI_MIN,
+    INTRABAR_MIN_ELAPSED_SECONDS,
+    INTRABAR_RSI_MAX,
+    INTRABAR_RSI_MIN,
+    LIVE_PRICE_BACKOFF_BASE_SECONDS,
+    LIVE_PRICE_BACKOFF_MAX_SECONDS,
+    LIVE_PRICE_POLL_INTERVAL_SECONDS,
+    LIVE_PRICE_STALE_TTL_SECONDS,
+    LIVE_STATE_SAVE_INTERVAL_SECONDS,
+    MAIN_LOOP_MAX_CONSECUTIVE_ERRORS,
+    MARKET_DAY_FAIL_CLOSED,
+    MFI_OVERBOUGHT_MAX,
+    MORNING_NXT_NEW_ENTRY_CUTOFF,
+    ORDER_STATUS_POLL_INTERVAL_SECONDS,
+    PENDING_BUY_GRACE_SECONDS,
+    PENDING_STATUS_BACKOFF_MAX_SECONDS,
+    REQUIRE_ADX_RISING,
+    REQUIRE_DI_PLUS_DOMINANT,
+    REQUIRE_OBV_SIGNAL_CROSS,
+    RSI_BUY_MOMENTUM_MAX,
+    SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
+    WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS,
 )
 from r005_strategy_core_shared import (
     R76StrategyConfig,
+    calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
+    _near_cross_momentum_flags,
+    _passes_early_near_cross_liquidity,
 )
 from r010_watchlist_bridge import resolve_watchlist_path
 
@@ -232,61 +266,7 @@ KIS_ENV_DV = (os.environ.get("KIS_ENV_DV", "real") or "real").strip()
 _LIVE_DRY_RUN_RAW = (os.environ.get("LIVE_DRY_RUN", "") or "").strip().lower()
 LIVE_DRY_RUN = _LIVE_DRY_RUN_RAW in ("1", "true", "yes", "on", "y")
 
-try:
-    from r003_define_config import MARKET_DAY_FAIL_CLOSED as _R003_MARKET_DAY_FAIL_CLOSED
-except Exception:
-    _R003_MARKET_DAY_FAIL_CLOSED = True
-MARKET_DAY_FAIL_CLOSED = bool(_R003_MARKET_DAY_FAIL_CLOSED)
-
-try:
-    from r003_define_config import SESSION_FORCE_CLOSE_ALL_AT_CUTOFF as _R003_SESSION_FORCE_CLOSE_ALL_AT_CUTOFF
-except Exception:
-    _R003_SESSION_FORCE_CLOSE_ALL_AT_CUTOFF = True
-SESSION_FORCE_CLOSE_ALL_AT_CUTOFF = bool(_R003_SESSION_FORCE_CLOSE_ALL_AT_CUTOFF)
-
-try:
-    from r003_define_config import MORNING_NXT_NEW_ENTRY_CUTOFF as _MORNING_NXT_NEW_ENTRY_CUTOFF
-except Exception:
-    _MORNING_NXT_NEW_ENTRY_CUTOFF = MORNING_NXT_END
-import r003_define_config as _r003_cfg
-
-def _cfg_bool(name: str, default: bool) -> bool:
-    return bool(getattr(_r003_cfg, name, default))
-
-def _cfg_int(name: str, default: int) -> int:
-    return int(getattr(_r003_cfg, name, default))
-    
-def _cfg_float(name: str, default: float) -> float:
-    try:
-        return float(getattr(_r003_cfg, name, default))
-    except Exception:
-        return float(default)
-
-
-REQUIRE_ADX_RISING = _cfg_bool("REQUIRE_ADX_RISING", True)
-REQUIRE_DI_PLUS_DOMINANT = _cfg_bool("REQUIRE_DI_PLUS_DOMINANT", True)
-MFI_OVERBOUGHT_MAX = _cfg_float("MFI_OVERBOUGHT_MAX", 80.0)
-RSI_BUY_MOMENTUM_MAX = _cfg_float("RSI_BUY_MOMENTUM_MAX", 60.0)
-REQUIRE_OBV_SIGNAL_CROSS = _cfg_bool("REQUIRE_OBV_SIGNAL_CROSS", True)
-ENABLE_INTRABAR_LIVE_ENTRY_FILTER = _cfg_bool("ENABLE_INTRABAR_LIVE_ENTRY_FILTER", True)
-INTRABAR_MIN_ELAPSED_SECONDS = _cfg_float("INTRABAR_MIN_ELAPSED_SECONDS", 90.0)
-INTRABAR_MFI_MIN = _cfg_float("INTRABAR_MFI_MIN", 50.0)
-INTRABAR_MFI_MAX = _cfg_float("INTRABAR_MFI_MAX", 75.0)
-INTRABAR_RSI_MIN = _cfg_float("INTRABAR_RSI_MIN", 50.0)
-INTRABAR_RSI_MAX = _cfg_float("INTRABAR_RSI_MAX", 70.0)
-INTRABAR_ADX_MIN = _cfg_float("INTRABAR_ADX_MIN", 20.0)
-
-ENABLE_LIVE_DRY_RUN = _cfg_bool("ENABLE_LIVE_DRY_RUN", LIVE_DRY_RUN)
-ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP = _cfg_bool("ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP", False)
-WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = _cfg_int("WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS", 300)
-
-# AUX reversal exits can suffer from market-order slippage.
-# Keep trigger threshold conservative to avoid frequent sub-target realized pnl.
-AUX_SELL_MIN_REALIZED_TARGET_PCT = _cfg_float("AUX_SELL_MIN_REALIZED_TARGET_PCT", 0.010)
-AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT = _cfg_float("AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT", 0.005)
-
-MAIN_LOOP_MAX_CONSECUTIVE_ERRORS = 20
-LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
+ENABLE_LIVE_DRY_RUN = LIVE_DRY_RUN
 
 SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_bb_buffer_pct=LIVE_PRICE_BB_BUFFER_PCT,
@@ -329,29 +309,7 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     ma5_bb_follow_chase_max_gap_pct=MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
 )
 
-# 3-minute frame refresh controls:
-# - Keep polling live price every loop (10s).
-# - Poll server frame every 20s and rebuild indicators on 3-minute bars.
-FRAME_POLL_INTERVAL_SECONDS = 20
-FRAME_BACKFILL_SYNC_SECONDS = 600
-
-# Live-price polling / order trigger controls.
-LIVE_PRICE_POLL_INTERVAL_SECONDS = 10
-BUY_CONSECUTIVE_CONFIRM_COUNT = 2
-ORDER_STATUS_POLL_INTERVAL_SECONDS = 15
-
-# Live warmup:
-# Use only a minimal closed-bar requirement and let the 10-second live-price
-# checks drive actual entries/exits.
-INDICATOR_WARMUP_BARS = MIN_BARS_REQUIRED
-
-# Live-price fetch backoff controls.
-LIVE_PRICE_BACKOFF_BASE_SECONDS = 5
-LIVE_PRICE_BACKOFF_MAX_SECONDS = 60
-LIVE_PRICE_STALE_TTL_SECONDS = 20
-
-# Pending-order status query backoff controls.
-PENDING_STATUS_BACKOFF_MAX_SECONDS = 120
+INDICATOR_WARMUP_BARS = 1  # backtest uses MIN_BARS_REQUIRED=3; live needs only 1 closed bar (indicators use min_periods=1)
 
 # Market-day status cache (holiday API call reduction).
 _MARKET_DAY_STATUS_CACHE: dict[str, tuple[bool, str]] = {}
@@ -371,7 +329,6 @@ _LOG_CTX: dict[str, object] = {"date_str": datetime.now().strftime("%Y%m%d")}
 import threading
 
 _TRADE_LOG_WRITE_LOCK = threading.Lock()
-PENDING_BUY_GRACE_SECONDS = 90
 
 _SYMBOL_CODE_PATTERN = re.compile(r"\b(\d{6})\b")
 _INVALID_FILENAME_CHARS = re.compile(r"[<>:\"/\\|?*\x00-\x1F]")
@@ -1147,7 +1104,7 @@ def is_new_entry_allowed(now: datetime, nxt_tradeable: bool) -> bool:
         return False
     current_time = now.time()
     if MORNING_NXT_START <= current_time <= MORNING_NXT_END:
-        return current_time < _MORNING_NXT_NEW_ENTRY_CUTOFF
+        return current_time < MORNING_NXT_NEW_ENTRY_CUTOFF
     if AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END:
         return current_time < AFTERNOON_NXT_NEW_ENTRY_CUTOFF
     return False
@@ -1404,109 +1361,6 @@ def update_live_price_cross_state(
         bb_middle=bb_middle,
         config=SHARED_R76_CONFIG,
     )
-
-
-# ---------------------------------------------------------------------------
-# 지표 계산
-# ---------------------------------------------------------------------------
-
-def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    for col in ("open", "high", "low", "close", "volume"):
-        out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
-
-    out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
-    out["EMA_5"] = out["close"].ewm(span=5, adjust=False).mean()
-    out["EMA_20"] = out["close"].ewm(span=20, adjust=False).mean()
-    out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
-
-    out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
-    out["BB_STD"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).std()
-    out["BB_UPPER"] = out["BB_MIDDLE"] + out["BB_STD"] * BB_STD_MULTIPLIER
-    out["BB_LOWER"] = out["BB_MIDDLE"] - out["BB_STD"] * BB_STD_MULTIPLIER
-
-    # RSI - Wilder's smoothing (EWM alpha=1/period, 단순이동평균보다 정확)
-    delta = out["close"].diff()
-    avg_gain = delta.clip(lower=0).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
-    avg_loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, float("nan"))
-    out["RSI"] = 100 - (100 / (1 + rs))
-    out.loc[avg_loss == 0, "RSI"] = 100.0
-    out["RSI_SIGNAL"] = out["RSI"].rolling(window=RSI_SIGNAL_PERIOD, min_periods=1).mean()
-
-    low_n = out["low"].rolling(window=STOCH_K_PERIOD, min_periods=1).min()
-    high_n = out["high"].rolling(window=STOCH_K_PERIOD, min_periods=1).max()
-    denom = (high_n - low_n).replace(0, float("nan"))
-    out["STOCH_K"] = 100.0 * (out["close"] - low_n) / denom
-    out["STOCH_D"] = out["STOCH_K"].rolling(window=STOCH_D_PERIOD, min_periods=1).mean()
-
-    high_w = out["high"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).max()
-    low_w = out["low"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).min()
-    wr_denom = (high_w - low_w).replace(0, float("nan"))
-    out["WILLIAMS_R"] = -100.0 * (high_w - out["close"]) / wr_denom
-    out["WILLIAMS_D"] = out["WILLIAMS_R"].rolling(window=WILLIAMS_D_PERIOD, min_periods=1).mean()
-
-    # MFI - 가격과 거래량을 함께 반영하는 자금흐름 지표
-    typical_price = (out["high"] + out["low"] + out["close"]) / 3.0
-    raw_money_flow = typical_price * out["volume"]
-    price_delta = typical_price.diff()
-    positive_flow = raw_money_flow.where(price_delta > 0, 0.0)
-    negative_flow = raw_money_flow.where(price_delta < 0, 0.0)
-    positive_sum = positive_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
-    negative_sum = negative_flow.rolling(window=MFI_PERIOD, min_periods=1).sum()
-    money_ratio = positive_sum / negative_sum.replace(0, float("nan"))
-    out["MFI"] = 100.0 - (100.0 / (1.0 + money_ratio))
-    out.loc[(positive_sum == 0) & (negative_sum == 0), "MFI"] = 50.0
-    out.loc[(negative_sum == 0) & (positive_sum > 0), "MFI"] = 100.0
-    out.loc[(positive_sum == 0) & (negative_sum > 0), "MFI"] = 0.0
-
-    # MACD - 단기 모멘텀 방향성(MA 돌파 전략 핵심 확인 지표)
-    ema_fast = out["close"].ewm(span=MACD_FAST, adjust=False).mean()
-    ema_slow = out["close"].ewm(span=MACD_SLOW, adjust=False).mean()
-    out["MACD"] = ema_fast - ema_slow
-    out["MACD_SIGNAL"] = out["MACD"].ewm(span=MACD_SIGNAL_PERIOD, adjust=False).mean()
-    out["MACD_HIST"] = out["MACD"] - out["MACD_SIGNAL"]
-
-    # ADX / DI - 추세 강도 (Wilder's smoothing, 보조지표 신뢰도)
-    tr = pd.concat([
-        out["high"] - out["low"],
-        (out["high"] - out["close"].shift(1)).abs(),
-        (out["low"] - out["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    high_diff = out["high"] - out["high"].shift(1)
-    low_diff = out["low"].shift(1) - out["low"]
-    plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
-    minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
-    ema_tr = tr.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    ema_plus = plus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    ema_minus = minus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    out["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
-    out["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
-    di_sum = (out["DI_PLUS"] + out["DI_MINUS"]).replace(0, float("nan"))
-    dx = 100.0 * (out["DI_PLUS"] - out["DI_MINUS"]).abs() / di_sum
-    out["ADX"] = dx.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-
-    # VWAP - 당일 누적 거래량 가중 평균가 (세션 시작 시 누적값 리셋)
-    cum_vol = out["volume"].cumsum()
-    out["VWAP"] = (out["close"] * out["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
-
-    # ATR - 변동성 기반 손익비 판단용 평균 진폭
-    true_range = pd.concat([
-        out["high"] - out["low"],
-        (out["high"] - out["close"].shift(1)).abs(),
-        (out["low"] - out["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    out["ATR"] = true_range.ewm(alpha=1.0 / ATR_PERIOD, min_periods=1, adjust=False).mean()
-
-    # OBV - 거래량 방향성(급등 방향, 가격 추세 확인)
-    close_diff = out["close"].diff()
-    obv_vol = out["volume"] * close_diff.gt(0).astype(float) - out["volume"] * close_diff.lt(0).astype(float)
-    out["OBV"] = obv_vol.cumsum()
-    out["OBV_MA"] = out["OBV"].rolling(window=OBV_MA_PERIOD, min_periods=1).mean()
-
-    return out
-
-
 def _build_realtime_entry_frame(
     frame: pd.DataFrame,
     code: str,
@@ -1826,55 +1680,6 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
     return score
 
 
-def _near_cross_momentum_flags(cur: pd.Series, prev: pd.Series) -> dict[str, float | bool]:
-    """Builds near-cross diagnostics for reject logging.
-
-    Live entry decisions are owned by the shared core strategy.
-    """
-    prev_ma5 = _num(prev, "MA_5")
-    cur_ma5 = _num(cur, "MA_5")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_bb = _num(cur, "BB_MIDDLE")
-
-    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
-        return {"can_arm": False, "can_early": False, "gap_ratio": float("nan"), "ma_rise_ratio": float("nan")}
-
-    gap = cur_bb - cur_ma5
-    gap_ratio = gap / max(abs(cur_bb), 1.0)
-    ma_rise_ratio = (cur_ma5 - prev_ma5) / max(abs(prev_ma5), 1.0)
-
-    below_or_equal = cur_ma5 <= cur_bb
-    arm_shape_ok = (prev_ma5 <= prev_bb) and below_or_equal
-
-    can_arm = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_ARM_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_ARM_MA_RISE_MIN)
-    can_early = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_EARLY_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_EARLY_MA_RISE_MIN)
-
-    return {
-        "can_arm": can_arm,
-        "can_early": can_early,
-        "gap_ratio": float(gap_ratio),
-        "ma_rise_ratio": float(ma_rise_ratio),
-    }
-
-
-def _passes_early_near_cross_liquidity(cur: pd.Series) -> tuple[bool, str]:
-    """Liquidity guard for ARM/EARLY near-cross entry."""
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    close_v = _num(cur, "close")
-    if any(pd.isna(v) for v in (vol, vol_ma, close_v)):
-        return False, "LIQUIDITY_DATA_NAN"
-
-    turnover = close_v * vol
-    if vol < EARLY_NEAR_CROSS_MIN_VOLUME:
-        return False, f"LOW_ABS_VOLUME_{vol:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOLUME}"
-    if vol_ma < EARLY_NEAR_CROSS_MIN_VOL_MA:
-        return False, f"LOW_VOL_MA_{vol_ma:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOL_MA}"
-    if turnover < EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:
-        return False, f"LOW_TURNOVER_{turnover:,.0f}_LT_{EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:,}"
-    return True, "OK"
-
-
 def _price_lead_breakout_context(
     frame: pd.DataFrame,
     now: datetime,
@@ -1970,28 +1775,6 @@ def _buy_condition_snapshot(
         f"gap={gap_ratio:.3f}% rise={ma_rise_ratio:.3f}% liq={liquidity_ok}:{liquidity_reason} "
         f"score={support_score} vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f}"
     )
-
-
-def _is_box_range_hold_zone(frame: pd.DataFrame) -> tuple[bool, str]:
-    """Detects narrow-range consolidation zone for technical-sell hold."""
-    if len(frame) < BOX_RANGE_HOLD_LOOKBACK_BARS:
-        return False, "INSUFFICIENT_BOX_BARS"
-
-    recent = frame.tail(BOX_RANGE_HOLD_LOOKBACK_BARS)
-    high_v = pd.to_numeric(recent["high"], errors="coerce").max()
-    low_v = pd.to_numeric(recent["low"], errors="coerce").min()
-    close_v = _num(recent.iloc[-1], "close")
-    bb_up = _num(recent.iloc[-1], "BB_UPPER")
-    bb_low = _num(recent.iloc[-1], "BB_LOWER")
-
-    if any(pd.isna(v) for v in (high_v, low_v, close_v, bb_up, bb_low)) or close_v <= 0:
-        return False, "BOX_DATA_NAN"
-
-    range_pct = (float(high_v) - float(low_v)) / float(close_v)
-    bb_width_pct = (float(bb_up) - float(bb_low)) / float(close_v)
-    is_box = range_pct <= BOX_RANGE_HOLD_MAX_RANGE_PCT and bb_width_pct <= BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT
-
-    return is_box, f"RANGE_{range_pct*100:.2f}%_BBW_{bb_width_pct*100:.2f}%"
 
 
 def _rise_from_prev_close(live_price: float, prev_close: float) -> float | None:
