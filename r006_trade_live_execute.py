@@ -3590,20 +3590,22 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         continue
 
                     confirm_state = buy_confirm_state.get(code)
-                    if (
-                        confirm_state is None
-                        or confirm_state.get("bar_time") != bar_time
-                    ):
+                    _last_confirmed = confirm_state.get("confirmed_at") if confirm_state else None
+                    _elapsed = (
+                        (current_dt - _last_confirmed).total_seconds()
+                        if isinstance(_last_confirmed, datetime) else None
+                    )
+                    if _elapsed is None or _elapsed > POLL_INTERVAL_SECONDS * 2:
                         confirm_count = 1
                     else:
                         confirm_count = int(confirm_state.get("count", 0)) + 1
 
-                    buy_confirm_state[code] = {"bar_time": bar_time, "count": confirm_count}
+                    buy_confirm_state[code] = {"confirmed_at": current_dt, "count": confirm_count, "bar_time": bar_time}
                     if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
                         log(
-                            f"  {symbol_label} [BUY HOLD] | reason=WAIT_CONSECUTIVE_CONFIRM | "
-                            f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
-                            f"bar={bar_time:%H:%M:%S}"
+                                f"  {symbol_label} [BUY HOLD] | reason=WAIT_NEXT_POLL_CONFIRM | "
+                                f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
+                                f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} bar={bar_time:%H:%M:%S}"
                         )
                         continue
 
@@ -3694,4 +3696,5 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 if __name__ == "__main__":
     args = _parse_args()
     run(target_date=args.date, env_dv=args.env_dv, dry_run=args.dry_run, watchlist_source=args.watchlist_source)
+
 
