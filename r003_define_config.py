@@ -283,8 +283,8 @@ MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when pri
 
 # BB 중앙선 상승 돌파 전략 파라미터 (BB slope break cross strategy)
 BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 약 1시간)
-BB_UPPER_GAP_MIN_PCT = 1.0       # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단
-CANDLE_GAIN_MIN_PCT = 0.3        # 현재봉 양봉 최소 상승률 (%) - 약세봉 진입 차단
+BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25)
+CANDLE_GAIN_MIN_PCT = 0.1        # 현재봉 양봉 최소 상승률 (%) - 약세봉 진입 차단 (0.3->0.1)
 BB_BUY_SCORE_THRESHOLD = 8       # 매수 최소 점수 (공격형=6, 중립형=8, 보수형=10)
 
 # 3. 거래량 완화

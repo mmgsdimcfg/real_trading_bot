@@ -3136,9 +3136,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     adx_now = _num(cur, "ADX")
                     di_plus_now = _num(cur, "DI_PLUS")
                     di_minus_now = _num(cur, "DI_MINUS")
-                    # 강한 상승 추세: ADX > 45 이고 +DI > -DI 이면 스토캐스틱 K<D 매도 신호 무시
+                    # 강한 상승 추세: ADX > 28 이고 +DI > -DI 이면 스토캐스틱 K<D 매도 신호 무시
+                    _sig_buy_time_raw = pos.get("buy_time")
+                    _sig_held_seconds = (current_dt - _sig_buy_time_raw).total_seconds() if isinstance(_sig_buy_time_raw, datetime) else 0.0
+                    _signal_min_hold_seconds = 300.0  # signal exit min hold: 5 min
                     _strong_uptrend = (
-                        not pd.isna(adx_now) and adx_now > 45
+                        not pd.isna(adx_now) and adx_now > 28
                         and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
                         and di_plus_now > di_minus_now
                     )
@@ -3188,7 +3191,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     # Signal-based full exits
                     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                        if _strong_uptrend:
+                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds:
                             log(
                                 f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed by strong uptrend | "
                                 f"K={k_now:.1f} D={d_now:.1f} ADX={adx_now:.1f} +DI={di_plus_now:.1f} -DI={di_minus_now:.1f}"
@@ -3204,7 +3207,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                 log(f"  [SELL EXECUTED] {code} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
                             signal_sell_bar[code] = bar_time
                             continue
-                    if not any(pd.isna(v) for v in (hist_now, hist_prev, hist_prev2)) and hist_now < hist_prev < hist_prev2:
+                    if (not any(pd.isna(v) for v in (hist_now, hist_prev, hist_prev2))
+                            and hist_now < hist_prev < hist_prev2
+                            and not _strong_uptrend
+                            and _sig_held_seconds >= _signal_min_hold_seconds):
                         reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_sig_macd} | "

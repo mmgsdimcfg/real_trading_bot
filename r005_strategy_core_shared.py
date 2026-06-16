@@ -558,7 +558,7 @@ def run_buy_condition_pipeline_comment(
 
     # 필수조건 1: BB 중앙선 상승 추세 (최근 lookback봉 대비 기울기 > 0)
     bb_slope_pct = _compute_bb_slope_pct(frame)
-    if pd.isna(bb_slope_pct) or bb_slope_pct <= 0.0:
+    if pd.isna(bb_slope_pct) or bb_slope_pct <= -0.5:
         slope_str = f"{bb_slope_pct:.3f}" if not pd.isna(bb_slope_pct) else "nan"
         return False, f"BB_SLOPE_NOT_RISING_{slope_str}%"
 
@@ -571,6 +571,13 @@ def run_buy_condition_pipeline_comment(
         and prev_close <= prev_bb
         and cur_close > cur_bb
     )
+    # 2봉 이전 크로스 체크: prev bar가 위에 있어도 2봉 이전이 아래였다면 최근 크로스로 인정
+    if not close_cross and len(frame) >= 3:
+        bar2_close = _num(frame.iloc[-3], "close")
+        bar2_bb = _num(frame.iloc[-3], "BB_MIDDLE")
+        if not any(pd.isna(v) for v in (bar2_close, bar2_bb, prev_close, prev_bb, cur_close, cur_bb)):
+            if bar2_close <= bar2_bb and prev_close > prev_bb and cur_close > cur_bb:
+                close_cross = True
     if not live_cross_up and not close_cross:
         return False, "NO_BB_MID_CROSS_UP"
 
