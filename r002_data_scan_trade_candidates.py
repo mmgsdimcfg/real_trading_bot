@@ -317,13 +317,20 @@ def calc_volume_trend_ratio(daily_df, window=10):
 
     > 1.0  volume is increasing (bullish signal).
     < 1.0  volume is declining.
+    Falls back to available data when fewer than window days exist (min 2).
     """
     vols = daily_df["volume"].tail(window)
-    if len(vols) < window:
+    n = len(vols)
+    if n < 2:
         return None
-    half = window // 2
-    recent_avg = float(vols.tail(half).mean())
-    prior_avg = float(vols.head(half).mean())
+    if n < window:
+        half = max(1, n // 2)
+        recent_avg = float(vols.tail(half).mean())
+        prior_avg = float(vols.head(n - half).mean())
+    else:
+        half = window // 2
+        recent_avg = float(vols.tail(half).mean())
+        prior_avg = float(vols.head(half).mean())
     if prior_avg == 0:
         return None
     return recent_avg / prior_avg
