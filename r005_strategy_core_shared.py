@@ -558,7 +558,7 @@ def run_buy_condition_pipeline_comment(
 
     # 필수조건 1: BB 중앙선 상승 추세 (최근 lookback봉 대비 기울기 > 0)
     bb_slope_pct = _compute_bb_slope_pct(frame)
-    if pd.isna(bb_slope_pct) or bb_slope_pct <= -0.5:
+    if pd.isna(bb_slope_pct) or bb_slope_pct <= -0.7:
         slope_str = f"{bb_slope_pct:.3f}" if not pd.isna(bb_slope_pct) else "nan"
         return False, f"BB_SLOPE_NOT_RISING_{slope_str}%"
 
@@ -586,8 +586,8 @@ def run_buy_condition_pipeline_comment(
     if pd.isna(cur_open) or cur_open <= 0:
         return False, "CANDLE_OPEN_MISSING"
     candle_gain_pct = (live_price - cur_open) / cur_open * 100.0
-    if candle_gain_pct <= CANDLE_GAIN_MIN_PCT:
-        return False, f"CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LTE_{CANDLE_GAIN_MIN_PCT:.1f}%"
+    if candle_gain_pct < CANDLE_GAIN_MIN_PCT:
+        return False, f"CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{CANDLE_GAIN_MIN_PCT:.1f}%"
 
     # 필수조건 4: BB 상단까지 충분한 공간 (>= BB_UPPER_GAP_MIN_PCT%)
     if live_price <= 0:
