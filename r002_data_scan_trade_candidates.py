@@ -1,4 +1,4 @@
-"""R76 trade-candidate scanner.
+﻿"""R76 trade-candidate scanner.
 
 Purpose:
 - Read multi-day intraday data, aggregate to daily bars, and rank symbols
@@ -16,6 +16,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-17] type=fix owner=copilot
+    summary: restored min_listing_days as a hard filter; stocks with fewer data days than config.min_listing_days are now disqualified before scoring to prevent unreliable ATR14/MA20/vol_rel_strength estimates from inflating scores.
+    impact: scanner
+    compatibility: breaking (fewer candidates may pass when data history is short)
 - [2026-06-01] type=feat owner=copilot
     summary: replaced static liquidity hard-thresholds with market-relative filters using KOSPI/KOSDAQ average amount and price-adjusted volume benchmark.
     impact: scanner
@@ -542,7 +546,12 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
         candidate["fail_reasons"].append("price_floor")
     if price > config.price_max:
         candidate["fail_reasons"].append("price_ceiling")
-        
+
+    # 데이터 일수 최소 기준: 부족하면 ATR14/MA20/vol_rel_strength 등 핵심 지표가
+    # 단축 계산(min_periods=1/fallback)되어 신뢰할 수 없음.
+    if listing_days < config.min_listing_days:
+        candidate["fail_reasons"].append("insufficient_listing_days")
+
     # [추가] 모멘텀 스캐너이므로 역배열(하락추세) 종목은 스코어와 상관없이 확실히 배제합니다.
     if trend_state == "down":
         candidate["fail_reasons"].append("down_trend")
