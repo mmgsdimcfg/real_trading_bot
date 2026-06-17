@@ -1117,6 +1117,25 @@ def is_new_entry_allowed(now: datetime, nxt_tradeable: bool) -> bool:
     return False
 
 
+def _fetch_bid_ask_price(code: str, market_div: str) -> tuple[float | None, float | None]:
+    """매수1호가(bid)와 매도1호가(ask) 조회. 실패 시 (None, None) 반환."""
+    try:
+        df1, _ = dsf.inquire_asking_price_exp_ccn(
+            env_dv=KIS_ENV_DV,
+            fid_cond_mrkt_div_code=market_div,
+            fid_input_iscd=str(code).zfill(6),
+        )
+        if df1.empty:
+            return None, None
+        row = df1.iloc[0]
+        bid = float(row.get("bidp1") or 0) or None
+        ask = float(row.get("askp1") or 0) or None
+        return bid, ask
+    except Exception as exc:
+        log(f"WARNING: 호가 조회 실패 {code}: {exc}")
+        return None, None
+
+
 def get_order_spec(now: datetime, nxt_tradeable: bool) -> dict | None:
     if is_regular_session(now):
         return {"exchange": "KRX", "ord_dvsn": "01", "ord_unpr": "0"}
@@ -2502,7 +2521,11 @@ class TradingAPI:
         if order_spec is None:
             return False
 
-        ord_unpr = order_spec["ord_unpr"] if order_spec["ord_unpr"] is not None else str(int(round(price)))
+        market_div = "NX" if order_spec["exchange"] == "NXT" else "J"
+        bid_price, _ = _fetch_bid_ask_price(norm_code, market_div)
+        limit_price = int(round(bid_price)) if (bid_price and bid_price > 0) else int(round(price))
+        ord_dvsn = "00"  # 매수1호가 지정가 주문
+        ord_unpr = str(limit_price)
         self.buy_inflight_codes.add(norm_code)
         if self.dry_run:
             log(f"DRY_RUN BUY | {code} | qty={qty} | price={price:,.0f} | session={session} | exch={order_spec['exchange']}")
@@ -2515,7 +2538,7 @@ class TradingAPI:
                     cano=self.cano,
                     acnt_prdt_cd=self.acnt_prdt_cd,
                     pdno=code,
-                    ord_dvsn=order_spec["ord_dvsn"],
+                    ord_dvsn=ord_dvsn,
                     ord_qty=str(qty),
                     ord_unpr=ord_unpr,
                     excg_id_dvsn_cd=order_spec["exchange"],
@@ -2585,7 +2608,11 @@ class TradingAPI:
             return False
 
         current_price = float(price or pos.get("current_price") or pos["buy_price"])
-        ord_unpr = order_spec["ord_unpr"] if order_spec["ord_unpr"] is not None else str(int(round(current_price)))
+        market_div = "NX" if order_spec["exchange"] == "NXT" else "J"
+        _, ask_price = _fetch_bid_ask_price(norm_code, market_div)
+        limit_price = int(round(ask_price)) if (ask_price and ask_price > 0) else int(round(current_price))
+        ord_dvsn = "00"  # 매도1호가 지정가 주문
+        ord_unpr = str(limit_price)
 
         if self.dry_run:
             log(f"DRY_RUN SELL | {code} | qty={qty} | reason={reason} | exch={order_spec['exchange']}")
@@ -2598,7 +2625,7 @@ class TradingAPI:
                     cano=self.cano,
                     acnt_prdt_cd=self.acnt_prdt_cd,
                     pdno=code,
-                    ord_dvsn=order_spec["ord_dvsn"],
+                    ord_dvsn=ord_dvsn,
                     ord_qty=str(qty),
                     ord_unpr=ord_unpr,
                     excg_id_dvsn_cd=order_spec["exchange"],

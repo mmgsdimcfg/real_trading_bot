@@ -44,7 +44,9 @@ from r003_define_config import (
     BB_PERIOD,
     BB_STD_MULTIPLIER,
     BB_SLOPE_LOOKBACK_BARS,
+    BB_MID_CHASE_MAX_GAP_PCT,
     BB_UPPER_GAP_MIN_PCT,
+    CANDLE_GAIN_MAX_PCT,
     CANDLE_GAIN_MIN_PCT,
     EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
     EARLY_NEAR_CROSS_MIN_VOL_MA,
@@ -628,6 +630,13 @@ def run_buy_condition_pipeline_comment(
     candle_gain_pct = (live_price - cur_open) / cur_open * 100.0
     if candle_gain_pct < CANDLE_GAIN_MIN_PCT:
         return False, f"CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{CANDLE_GAIN_MIN_PCT:.1f}%"
+    # 추격 매수 방지 1: 현재봉 과도 상승 차단 (급등봉 추격)
+    if candle_gain_pct > CANDLE_GAIN_MAX_PCT:
+        return False, f"CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{CANDLE_GAIN_MAX_PCT:.1f}%"
+    # 추격 매수 방지 2: BB 중간선 대비 현재가 갭 과도 차단 (스파이크 추격)
+    _bb_mid_gap_pct = (live_price - cur_bb) / cur_bb * 100.0 if cur_bb > 0 else 0.0
+    if _bb_mid_gap_pct > BB_MID_CHASE_MAX_GAP_PCT:
+        return False, f"CHASE_BUY_BB_GAP_{_bb_mid_gap_pct:.2f}%_GT_{BB_MID_CHASE_MAX_GAP_PCT:.1f}%"
 
     # 필수조건 4: BB 상단까지 충분한 공간 (>= BB_UPPER_GAP_MIN_PCT%)
     if live_price <= 0:
