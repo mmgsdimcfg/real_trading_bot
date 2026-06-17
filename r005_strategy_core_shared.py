@@ -18,6 +18,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-17] type=fix owner=copilot
+    summary: (1) 크로스 룩백을 3봉→5봉으로 확장하여 최근 15분 내 크로스 인정, (2) UPTREND_CONT 진입경로 추가: live>BB중간선+종가상승+ADX30이상++DI>-DI+BB위3봉이상이면 크로스 없이도 매수 허용.
+    impact: common
+    compatibility: backward-compatible
 - [2026-06-05] type=fix owner=copilot
     summary: (한글) BB 중간값 진입 보조조건을 최근 3봉 유지(2/3)에서 "현재가 > 직전 3분봉 종가 && 현재가 > BB 중간값"으로 변경.
     impact: common
@@ -571,14 +575,50 @@ def run_buy_condition_pipeline_comment(
         and prev_close <= prev_bb
         and cur_close > cur_bb
     )
-    # 2봉 이전 크로스 체크: prev bar가 위에 있어도 2봉 이전이 아래였다면 최근 크로스로 인정
-    if not close_cross and len(frame) >= 3:
-        bar2_close = _num(frame.iloc[-3], "close")
-        bar2_bb = _num(frame.iloc[-3], "BB_MIDDLE")
-        if not any(pd.isna(v) for v in (bar2_close, bar2_bb, prev_close, prev_bb, cur_close, cur_bb)):
-            if bar2_close <= bar2_bb and prev_close > prev_bb and cur_close > cur_bb:
+    # N봉 이전 크로스 체크 (5봉으로 확장): 전환봉 이후 현재까지 BB 위 연속 유지 시 크로스 인정
+    if not close_cross:
+        for _lb in range(3, min(6, len(frame)) + 1):
+            _bar_n_close = _num(frame.iloc[-_lb], "close")
+            _bar_n_bb = _num(frame.iloc[-_lb], "BB_MIDDLE")
+            if any(pd.isna(v) for v in (_bar_n_close, _bar_n_bb)) or _bar_n_close > _bar_n_bb:
+                continue  # 이 봉도 BB 위이면 더 이전 탐색 or NaN
+            # 전환봉 이후 현재까지 모든 봉이 연속으로 BB 위인지 확인
+            _all_above = all(
+                not any(pd.isna(v) for v in (_num(frame.iloc[-_k], "close"), _num(frame.iloc[-_k], "BB_MIDDLE")))
+                and _num(frame.iloc[-_k], "close") > _num(frame.iloc[-_k], "BB_MIDDLE")
+                for _k in range(1, _lb)
+            )
+            if _all_above:
                 close_cross = True
+                break
+
+    # 우상향 추세 지속 진입: 크로스 이벤트 없이도 강한 추세 + BB 위 지속이면 매수 허용
+    # 크로스가 5봉 이전에 발생했지만 추세가 계속 이어지는 구간 포착
+    _uptrend_continuation = False
     if not live_cross_up and not close_cross:
+        _adx = _num(cur, "ADX")
+        _di_plus = _num(cur, "DI_PLUS")
+        _di_minus = _num(cur, "DI_MINUS")
+        # 최근 최대 5봉 중 종가가 BB 위에 있는 봉 수 카운트
+        _n_above = 0
+        for _i in range(1, min(6, len(frame)) + 1):
+            _bc = _num(frame.iloc[-_i], "close")
+            _bbb = _num(frame.iloc[-_i], "BB_MIDDLE")
+            if not any(pd.isna(v) for v in (_bc, _bbb)) and _bc > _bbb:
+                _n_above += 1
+        if (
+            not any(pd.isna(v) for v in (cur_close, cur_bb, prev_close, _adx, _di_plus, _di_minus))
+            and live_price > cur_bb        # 현재가 BB 중간선 위
+            and cur_close > cur_bb         # 현재봉 종가 BB 위
+            and cur_close > prev_close     # 현재봉 종가 > 전봉 종가 (상승 모멘텀)
+            and bb_slope_pct > 0.0         # BB 중간선 상승 추세
+            and _adx >= 30.0               # ADX 30 이상 (뚜렷한 추세)
+            and _di_plus > _di_minus       # +DI > -DI (상승 방향성 우세)
+            and _n_above >= 3              # 최근 5봉 중 3봉 이상 BB 위 유지
+        ):
+            _uptrend_continuation = True
+
+    if not live_cross_up and not close_cross and not _uptrend_continuation:
         return False, "NO_BB_MID_CROSS_UP"
 
     # 필수조건 3: 현재 진행중인 3분봉 양봉 (+CANDLE_GAIN_MIN_PCT% 이상)
@@ -609,7 +649,12 @@ def run_buy_condition_pipeline_comment(
     if score < config.bb_buy_score_threshold:
         return False, f"LOW_SCORE_{score}_LT_{config.bb_buy_score_threshold}"
 
-    trigger = "LIVE_PRICE_BB_UP_CROSS" if live_cross_up else "CLOSE_BB_UP_CROSS"
+    if live_cross_up:
+        trigger = "LIVE_PRICE_BB_UP_CROSS"
+    elif close_cross:
+        trigger = "CLOSE_BB_UP_CROSS"
+    else:
+        trigger = "UPTREND_CONT"
     return True, f"{trigger}_SCORE_{score}"
 
 

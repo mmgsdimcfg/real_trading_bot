@@ -20,6 +20,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-17] type=fix owner=copilot
+    summary: (r005 연동) UPTREND_CONT 진입 경로 추가 - 크로스 없이도 ADX30+/+DI우세/BB위3봉이상이면 매수; 크로스 룩백 5봉 확장.
+    impact: live
+    compatibility: backward-compatible
 - [2026-06-07] type=feat owner=copilot
     summary: strengthened buy gates with ADX rising+DI dominance, MFI overheat guard, RSI 50-break/50-60 zone, and OBV signal-cross confirmation.
     impact: live

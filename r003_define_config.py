@@ -208,7 +208,7 @@ LIVE_PRICE_POLL_INTERVAL_SECONDS = 10
 # BB 크로스 판정용 버퍼(노이즈 필터)
 LIVE_PRICE_BB_BUFFER_PCT = 0.0005  # 0.0008
 # 상향 크로스 확정에 필요한 연속 관측 횟수
-LIVE_PRICE_CROSS_CONFIRM_POLLS = 3
+LIVE_PRICE_CROSS_CONFIRM_POLLS = 2  # 3 -> 2: 크로스 확인 속도 향상 (30s -> ~10s)
 LIVE_PRICE_CROSS_CONFIRM_SECONDS = 10  # 20 -> 10 (보다 빠른 진입 확인)
 # 하향 크로스 확정에 필요한 연속 관측 횟수
 LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1

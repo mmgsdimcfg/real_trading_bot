@@ -1,4 +1,5 @@
-﻿"""R76 trade-candidate scanner.
+﻿"""
+r002_data_scan_trade_candidates.py
 
 Purpose:
 - Read multi-day intraday data, aggregate to daily bars, and rank symbols
