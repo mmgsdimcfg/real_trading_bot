@@ -20,6 +20,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-17] type=feat owner=copilot
+    summary: (r005 연동) BB 중간선 최근 4봉(12분) 연속 우하향 시 매수 차단 - BB_MID_DOWNTREND_4BARS 거부 사유 추가.
+    impact: live
+    compatibility: backward-compatible
 - [2026-06-17] type=fix owner=copilot
     summary: (r005 연동) UPTREND_CONT 진입 경로 추가 - 크로스 없이도 ADX30+/+DI우세/BB위3봉이상이면 매수; 크로스 룩백 5봉 확장.
     impact: live

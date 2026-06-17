@@ -18,6 +18,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-17] type=feat owner=copilot
+    summary: BB 중간선 최근 4봉(12분) 연속 우하향 시 매수 차단 조건 추가 (BB_MID_DOWNTREND_4BARS); _bb_middle_is_downtrend 함수 신규.
+    impact: common
+    compatibility: backward-compatible
 - [2026-06-17] type=fix owner=copilot
     summary: (1) 크로스 룩백을 3봉→5봉으로 확장하여 최근 15분 내 크로스 인정, (2) UPTREND_CONT 진입경로 추가: live>BB중간선+종가상승+ADX30이상++DI>-DI+BB위3봉이상이면 크로스 없이도 매수 허용.
     impact: common
@@ -44,6 +48,7 @@ from r003_define_config import (
     BB_PERIOD,
     BB_STD_MULTIPLIER,
     BB_SLOPE_LOOKBACK_BARS,
+    BB_MID_DOWNTREND_BARS,
     BB_MID_CHASE_MAX_GAP_PCT,
     BB_UPPER_GAP_MIN_PCT,
     CANDLE_GAIN_MAX_PCT,
@@ -162,6 +167,16 @@ def _compute_bb_slope_pct(frame: pd.DataFrame, lookback: int = BB_SLOPE_LOOKBACK
         return float("nan")
     return (bb_now - bb_ago) / bb_ago * 100.0
 
+
+
+def _bb_middle_is_downtrend(frame: pd.DataFrame, n: int = BB_MID_DOWNTREND_BARS) -> bool:
+    """최근 n봉(=n*3분) 동안 BB 중간선이 연속으로 하락 중이면 True."""
+    if "BB_MIDDLE" not in frame.columns or len(frame) < n + 1:
+        return False
+    vals = [_num(frame.iloc[-(i + 1)], "BB_MIDDLE") for i in range(n)]
+    if any(pd.isna(v) for v in vals):
+        return False
+    return all(vals[i] < vals[i + 1] for i in range(n - 1))
 
 def _buy_support_score(
     cur: pd.Series,
@@ -567,6 +582,12 @@ def run_buy_condition_pipeline_comment(
     if pd.isna(bb_slope_pct) or bb_slope_pct <= -0.7:
         slope_str = f"{bb_slope_pct:.3f}" if not pd.isna(bb_slope_pct) else "nan"
         return False, f"BB_SLOPE_NOT_RISING_{slope_str}%"
+
+    # 필수조건 1-b: BB 중간선 최근 12분(4봉) 연속 우하향 시 매수 차단
+    if _bb_middle_is_downtrend(frame):
+        bb_vals = [_num(frame.iloc[-(i+1)], "BB_MIDDLE") for i in range(4)] if len(frame) >= 4 else []
+        vals_str = " > ".join(f"{v:.1f}" for v in reversed(bb_vals))
+        return False, f"BB_MID_DOWNTREND_4BARS_{vals_str}"
 
     # 필수조건 2: BB 중앙선 상향 돌파 (live cross signal OR close 기준 크로스)
     live_cross_up = cross_info.get("signal") == "cross_up"
