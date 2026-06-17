@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""R76 date-based market data collector.
+"""
+r001_data_collect_symbols_daily.py
 
 Purpose:
 - Collect minute bars for a target date from KIS APIs.
