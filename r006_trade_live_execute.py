@@ -20,6 +20,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-18] type=feat owner=copilot
+    summary: 손절(HARD_STOP_LOSS_0.8PCT, ATR_STOP_LOSS) 시 시장가(ord_dvsn=01) 즉시 매도; place_sell_order에 market_order 파라미터 추가. NXT 세션은 지정가 유지.
+    impact: live
+    compatibility: backward-compatible
 - [2026-06-17] type=feat owner=copilot
     summary: (r005 연동) BB 중간선 최근 4봉(12분) 연속 우하향 시 매수 차단 - BB_MID_DOWNTREND_4BARS 거부 사유 추가.
     impact: live
@@ -2596,7 +2600,7 @@ class TradingAPI:
         self.persist_live_state()
         return True
 
-    def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "") -> bool:
+    def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "", market_order: bool = False) -> bool:
         self.sync_positions_from_account(force=False)
         pos = self.positions.get(code)
         if not pos or pos.get("quantity", 0) <= 0:
@@ -2613,10 +2617,16 @@ class TradingAPI:
 
         current_price = float(price or pos.get("current_price") or pos["buy_price"])
         market_div = "NX" if order_spec["exchange"] == "NXT" else "J"
-        _, ask_price = _fetch_bid_ask_price(norm_code, market_div)
-        limit_price = int(round(ask_price)) if (ask_price and ask_price > 0) else int(round(current_price))
-        ord_dvsn = "00"  # 매도1호가 지정가 주문
-        ord_unpr = str(limit_price)
+        # 손절 시장가: 정규장(KRX)은 시장가(01), NXT는 지정가(ask) 유지
+        use_market = market_order and order_spec["exchange"] != "NXT"
+        if use_market:
+            ord_dvsn = "01"  # 시장가
+            ord_unpr = "0"
+        else:
+            _, ask_price = _fetch_bid_ask_price(norm_code, market_div)
+            limit_price = int(round(ask_price)) if (ask_price and ask_price > 0) else int(round(current_price))
+            ord_dvsn = "00"  # 지정가
+            ord_unpr = str(limit_price)
 
         if self.dry_run:
             log(f"DRY_RUN SELL | {code} | qty={qty} | reason={reason} | exch={order_spec['exchange']}")
@@ -3189,7 +3199,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%"
                         )
                         trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_hard_sl, nxt_tradeable, price=price, code_name=name):
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_hard_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
                             log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
                         continue
@@ -3389,7 +3399,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             f"sl_pnl={_pnl_sl*100:.2f}% atr={float(atr_val):.2f} sl={atr_sl_price:,.0f}"
                         )
                         trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name):
+                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
                             log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
                         continue
