@@ -2617,8 +2617,8 @@ class TradingAPI:
 
         current_price = float(price or pos.get("current_price") or pos["buy_price"])
         market_div = "NX" if order_spec["exchange"] == "NXT" else "J"
-        # 손절 시장가: 정규장(KRX)은 시장가(01), NXT는 지정가(ask) 유지
-        use_market = market_order and order_spec["exchange"] != "NXT"
+        # 정규장(KRX)은 항상 시장가(01), NXT는 지정가(ask) 유지
+        use_market = order_spec["exchange"] != "NXT"
         if use_market:
             ord_dvsn = "01"  # 시장가
             ord_unpr = "0"
