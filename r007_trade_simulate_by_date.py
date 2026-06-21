@@ -2417,6 +2417,17 @@ def simulate_date(
                 continue
             if is_startup_warmup_active(ts, nxt_tradeable):
                 continue
+            if MAX_BUY_RISE_PCT_FROM_PREV_CLOSE > 0:
+                _pc2 = _prev_close_map.get(code)
+                if _pc2 is not None and _pc2 > 0:
+                    _rise2 = (price / _pc2) - 1.0
+                    if _rise2 >= MAX_BUY_RISE_PCT_FROM_PREV_CLOSE:
+                        log_detail(
+                            f"  [ENTRY BLOCK] {code} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
+                            f"{_rise2*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
+                            f"prev_close={_pc2:,.0f} price={price:,.0f}"
+                        )
+                        continue
             if sim.in_cooldown(code, ts):
                 continue
             if (not ALLOW_REBUY_SAME_CODE) and code in sim.completed_codes:
