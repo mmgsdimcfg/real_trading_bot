@@ -290,19 +290,23 @@ BB_BUY_SCORE_THRESHOLD = 8       # 매수 최소 점수 (공격형=6, 중립형=
 CANDLE_GAIN_MAX_PCT = 1.5        # 현재봉 최대 허용 상승률 (%) - 초과 시 추격 매수 차단
 BB_MID_CHASE_MAX_GAP_PCT = 1.0   # BB 중간선 대비 현재가 최대 허용 갭 (%) - 초과 시 추격 매수 차단
 
-# 3. 거래량 완화
+# 3. 거래량 필터 (저유동성 종목 손실 방지 강화)
 # 장초반 거래량 필터 비율
-VOLUME_RATIO_OPEN = 0.40  # 0.60 -> 0.40 (아침 변동성 높은 시간 더 완화)
+VOLUME_RATIO_OPEN = 0.60    # 0.40 -> 0.60 (장초반 저유동성 차단 강화)
 # 한낮 거래량 필터 비율
-VOLUME_RATIO_MIDDAY = 0.35  # 0.45 -> 0.35 (한낮 변동성 낮은 시간 더 완화)
+VOLUME_RATIO_MIDDAY = 0.55  # 0.35 -> 0.55 (한낮 저유동성 차단 강화)
 # 장마감 구간 거래량 필터 비율
-VOLUME_RATIO_CLOSE = 0.50  # 0.70 -> 0.50 (마감 거래량 필터 완화)
+VOLUME_RATIO_CLOSE = 0.65   # 0.50 -> 0.65 (마감 저유동성 차단 강화)
 # NXT 세션 거래량 필터 비율
-VOLUME_RATIO_NXT = 0.30  # 0.40 -> 0.30 (NXT 세션 거래량 필터 더 완화)
+VOLUME_RATIO_NXT = 0.35     # 0.30 -> 0.35 (NXT 세션 약간 강화)
 # 강추세일 때 거래량 필터 완화 가중치
-VOLUME_RATIO_STRONG_RELAX = 0.15  # 0.10 -> 0.15 (강한 추세 보너스 증가)
+VOLUME_RATIO_STRONG_RELAX = 0.10  # 0.15 -> 0.10 (과도한 완화 축소)
 # 거래량 필터 최소 하한선
 VOLUME_RATIO_FLOOR = 0.50
+# 매수 시 거래량 MA 절대 최소치 (극저유동성 종목 차단)
+MIN_ENTRY_VOL_MA = 1500     # VOL_MA20 < 1500이면 매수 무조건 차단
+# 매수 시 현재봉 절대 최소 거래량
+MIN_ENTRY_VOLUME = 200      # 현재봉 거래량 < 200이면 매수 차단
 
 # 시장일 확인 실패 시 보수적으로 비거래 처리
 MARKET_DAY_FAIL_CLOSED = True
@@ -342,6 +346,8 @@ MAIN_LOOP_MAX_CONSECUTIVE_ERRORS = 20
 LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
 # 미결 매수 주문 대기 여유 시간(초)
 PENDING_BUY_GRACE_SECONDS = 90
+# 미결 매수 주문 장기 대기 경고 임계값(초) - 이 이상 미체결이면 [BUY STALE] 경고 출력
+BUY_ORDER_STALE_WARN_SECONDS = 180
 
 # 인트라바 실시간 진입 필터
 ENABLE_INTRABAR_LIVE_ENTRY_FILTER = True

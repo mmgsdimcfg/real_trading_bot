@@ -56,6 +56,8 @@ from r003_define_config import (
     EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
     EARLY_NEAR_CROSS_MIN_VOL_MA,
     EARLY_NEAR_CROSS_MIN_VOLUME,
+    MIN_ENTRY_VOL_MA,
+    MIN_ENTRY_VOLUME,
     MACD_FAST,
     MACD_SIGNAL_PERIOD,
     MACD_SLOW,
@@ -540,7 +542,7 @@ def buy_9th_volume_ratio_hard_floor_comment(
         vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
         volume_soft_fail = vol_ratio < vol_ratio_req
 
-        hard_floor = max(0.10, vol_ratio_req * 0.40)
+        hard_floor = max(0.15, vol_ratio_req * 0.65)
         if vol_ratio < hard_floor:
             return False, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_{hard_floor:.4f}", volume_soft_fail
 
@@ -666,13 +668,18 @@ def run_buy_condition_pipeline_comment(
     if bb_upper_gap_pct < BB_UPPER_GAP_MIN_PCT:
         return False, f"BB_UPPER_GAP_TOO_SMALL_{bb_upper_gap_pct:.2f}%_LT_{BB_UPPER_GAP_MIN_PCT:.1f}%"
 
-    # 안전장치: 거래량 절대 최소치 (유동성 극히 부족한 경우 차단)
+    # 안전장치: 거래량 절대/상대 최소치 (저유동성 종목 차단)
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        vol_ratio = vol / vol_ma
-        if vol_ratio < 0.10:
-            return False, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
+    if not any(pd.isna(v) for v in (vol, vol_ma)):
+        if vol_ma < MIN_ENTRY_VOL_MA:
+            return False, f"LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
+        if vol < MIN_ENTRY_VOLUME:
+            return False, f"LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
+        if vol_ma > 0:
+            vol_ratio = vol / vol_ma
+            if vol_ratio < 0.10:
+                return False, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
 
     # 가점 조건 합산 (RSI/거래량/ADX/DI/MACD/BB기울기, 최대 15점)
     score = _buy_support_score(cur, prev, frame, config)
