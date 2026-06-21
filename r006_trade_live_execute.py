@@ -230,6 +230,7 @@ from r003_define_config import (
     MORNING_NXT_NEW_ENTRY_CUTOFF,
     ORDER_STATUS_POLL_INTERVAL_SECONDS,
     PENDING_BUY_GRACE_SECONDS,
+    BUY_ORDER_STALE_WARN_SECONDS,
     PENDING_STATUS_BACKOFF_MAX_SECONDS,
     REQUIRE_ADX_RISING,
     REQUIRE_DI_PLUS_DOMINANT,
@@ -2391,6 +2392,18 @@ class TradingAPI:
                         self.pending_orders.pop(str(code).zfill(6), None)
                         continue
 
+                    # 미체결 장기 대기 경고
+                    _sub_at = pending.get("submitted_at")
+                    if (
+                        isinstance(_sub_at, datetime)
+                        and int(status.get("filled_qty", 0)) <= 0
+                        and (now - _sub_at).total_seconds() >= BUY_ORDER_STALE_WARN_SECONDS
+                    ):
+                        _age = int((now - _sub_at).total_seconds())
+                        log(
+                            f"  [BUY STALE] {code} | {_age}s 미체결 대기중 "
+                            f"| order_no={pending.get('order_no', '')} | 시장 변화로 체결 불가 가능성 높음"
+                        )
                     self._maybe_log_pending_progress(
                         pending,
                         f"BUY pending | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
