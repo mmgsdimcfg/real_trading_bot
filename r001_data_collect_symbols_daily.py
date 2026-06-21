@@ -99,6 +99,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--date", type=str, default=None, help="Target date YYYYMMDD, or comma-separated list (e.g. 20260508,20260509,20260510)")
     parser.add_argument("--code", type=str, default="", help="Collect only this code (6-digit). Comma-separated supported")
     parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "r009_universe_symbols_master.txt"), help="Path to r009_universe_symbols_master.txt")
+    parser.add_argument("--watchlist-file", type=str, default="", help="r008-style watchlist file(s) with code,name per line. Comma-separated multiple paths.")
+    parser.add_argument("--watchlist-only", action="store_true", help="Use --watchlist-file as the only symbol source, ignoring --symbols-file.")
     parser.add_argument("--data-root", type=str, default=str(SCRIPT_DIR / "data"), help="Output data root")
     parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
     parser.add_argument("--nxt", action="store_true", help="Include NXT market data (08:00~20:00)")
@@ -344,11 +346,11 @@ def calculate_r76_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
-    """1분봉 데이터를 20초 간격으로 선형 보간해 확장한다.
+    """1遺꾨큺 ?곗씠?곕? 20珥?媛꾧꺽?쇰줈 ?좏삎 蹂닿컙???뺤옣?쒕떎.
 
     Note:
-    - 이 데이터는 레거시 호환 목적의 보간 결과이며,
-      서버에서 20초 주기로 직접 수집한 체결/호가 데이터가 아니다.
+    - ???곗씠?곕뒗 ?덇굅???명솚 紐⑹쟻??蹂닿컙 寃곌낵?대ŉ,
+      ?쒕쾭?먯꽌 20珥?二쇨린濡?吏곸젒 ?섏쭛??泥닿껐/?멸? ?곗씠?곌? ?꾨땲??
     """
     df = minute_df.copy()
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
@@ -357,25 +359,24 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     
-    # datetime을 인덱스로 지정
-    df_indexed = df.set_index("datetime")
+    # datetime???몃뜳?ㅻ줈 吏??    df_indexed = df.set_index("datetime")
     
-    # 20초 간격의 시간 생성
+    # 20珥?媛꾧꺽???쒓컙 ?앹꽦
     time_range_20sec = pd.date_range(
         start=df_indexed.index.min(),
         end=df_indexed.index.max(),
         freq="20s"
     )
     
-    # datetime 인덱스로 리인덱싱
+    # datetime ?몃뜳?ㅻ줈 由ъ씤?깆떛
     df_reindexed = df_indexed.reindex(time_range_20sec.union(df_indexed.index)).sort_index()
     
-    # 가격 데이터 선형 보간
+    # 媛寃??곗씠???좏삎 蹂닿컙
     price_cols = ["open", "high", "low", "close"]
     for col in price_cols:
         df_reindexed[col] = df_reindexed[col].interpolate(method="linear", limit_direction="both")
     
-    # 거래량은 20초 봉 합계가 원본 분봉 합계와 최대한 일치하도록 분할한다.
+    # 嫄곕옒?됱? 20珥?遊??⑷퀎媛 ?먮낯 遺꾨큺 ?⑷퀎? 理쒕????쇱튂?섎룄濡?遺꾪븷?쒕떎.
     step_seconds = 20.0
     if len(df.index) >= 2:
         src_seconds = df["datetime"].diff().dropna().dt.total_seconds().median()
@@ -394,7 +395,7 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     if "market" in df_reindexed.columns:
         df_reindexed["market"] = df_reindexed["market"].ffill()
     
-    # 지표 컬럼은 이전 값으로 채움(1봉 이상이면 그대로 복사)
+    # 吏??而щ읆? ?댁쟾 媛믪쑝濡?梨꾩?(1遊??댁긽?대㈃ 洹몃?濡?蹂듭궗)
     indicator_cols = [
         "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
         "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
@@ -413,11 +414,11 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def interpolate_to_10sec(minute_df: pd.DataFrame) -> pd.DataFrame:
-    """1분봉 데이터를 10초 간격으로 선형 보간해 확장한다.
+    """1遺꾨큺 ?곗씠?곕? 10珥?媛꾧꺽?쇰줈 ?좏삎 蹂닿컙???뺤옣?쒕떎.
 
     Note:
-    - 이 데이터는 레거시 호환/시뮬레이션 정밀도 향상 목적의 보간 결과이며,
-      서버에서 10초 주기로 직접 수집한 체결 데이터가 아니다.
+    - ???곗씠?곕뒗 ?덇굅???명솚/?쒕??덉씠???뺣????μ긽 紐⑹쟻??蹂닿컙 寃곌낵?대ŉ,
+      ?쒕쾭?먯꽌 10珥?二쇨린濡?吏곸젒 ?섏쭛??泥닿껐 ?곗씠?곌? ?꾨땲??
     """
     df = minute_df.copy()
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
@@ -547,6 +548,69 @@ def load_symbols(symbols_file: Path) -> list[tuple[str, str]]:
     return deduped
 
 
+def _load_watchlist_file(path: Path) -> list[tuple[str, str]]:
+    """Load code,name pairs from an r008-style watchlist (# comment lines skipped)."""
+    pairs: list[tuple[str, str]] = []
+    for encoding in ("utf-8-sig", "utf-8", "cp949"):
+        try:
+            with open(path, "r", encoding=encoding) as _f:
+                for line in _f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(",", 1)
+                    code = parts[0].strip().zfill(6)
+                    if not code.isdigit() or len(code) != 6:
+                        continue
+                    name = parts[1].strip() if len(parts) > 1 else code
+                    pairs.append((code, name))
+            break
+        except UnicodeDecodeError:
+            continue
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for code, name in pairs:
+        if code not in seen:
+            seen.add(code)
+            deduped.append((code, name))
+    return deduped
+
+
+def _compute_prev_close_from_data(code: str, target_date: str, data_root: Path) -> float | None:
+    """Return last-bar close from the most recent prior trading day already collected.
+
+    Replicates r006 fetch_prev_close() without extra API calls, so r007 can apply
+    MAX_BUY_RISE_PCT_FROM_PREV_CLOSE on stored data.
+    """
+    import json as _json_pc
+    target = datetime.strptime(target_date, "%Y%m%d").date()
+    for back in range(1, 15):
+        prior = (target - timedelta(days=back)).strftime("%Y%m%d")
+        prior_dir = data_root / prior
+        if not prior_dir.is_dir():
+            continue
+        daily_close_path = prior_dir / "_daily_close.json"
+        if daily_close_path.exists():
+            try:
+                with open(daily_close_path, encoding="utf-8") as _f:
+                    dc = _json_pc.load(_f)
+                val = dc.get(str(code).zfill(6))
+                if val is not None:
+                    return float(val)
+            except Exception:
+                pass
+        for p in sorted(prior_dir.glob(f"{code}_*_10s.txt")):
+            try:
+                import pandas as _pd_pc
+                _df = _pd_pc.read_csv(p, usecols=["close"])
+                _col = _df["close"].dropna()
+                if len(_col) > 0:
+                    return float(_col.iloc[-1])
+            except Exception:
+                pass
+    return None
+
+
 def _parse_code_filter(raw: str) -> set[str]:
     if not raw:
         return set()
@@ -588,7 +652,31 @@ def main() -> None:
     if not symbols_file.is_file():
         raise SystemExit(f"symbols file not found: {symbols_file}")
 
-    symbols = load_symbols(symbols_file)
+    if args.watchlist_only:
+        symbols = []
+    else:
+        symbols = load_symbols(symbols_file)
+
+    # Merge extra symbols from --watchlist-file (r008 watchlist)
+    if args.watchlist_file:
+        wl_paths = [p.strip() for p in args.watchlist_file.split(",") if p.strip()]
+        for wl_path_str in wl_paths:
+            wl_path = Path(wl_path_str)
+            if not wl_path.is_file():
+                logger.warning("watchlist-file not found (skipped): %s", wl_path)
+                continue
+            wl_syms = _load_watchlist_file(wl_path)
+            existing_codes = {c for c, _ in symbols}
+            added = 0
+            for c, n in wl_syms:
+                if c not in existing_codes:
+                    symbols.append((c, n))
+                    existing_codes.add(c)
+                    added += 1
+            logger.info(
+                "watchlist-file %s: %d symbols added (%d total after merge)",
+                wl_path.name, added, len(symbols),
+            )
 
     # Parse --date: single value or comma-separated list (e.g. 20260508,20260509,20260510)
     raw_dates = [d.strip() for d in (args.date or "").split(",") if d.strip()]
@@ -629,21 +717,20 @@ def main() -> None:
             df = None
             last_error = None
 
-            # 최대 2회 시도
+            # 理쒕? 2???쒕룄
             for attempt in range(2):
                 try:
                     nxt_tradeable = probe_nxt_tradeable(code) if include_nxt else False
                     nxt_flags[code] = nxt_tradeable
                     df = fetch_symbol_data(code=code, target_date=target_date, include_nxt=nxt_tradeable)
                     last_error = None
-                    break  # 성공하면 루프 탈출
+                    break  # ?깃났?섎㈃ 猷⑦봽 ?덉텧
                 except Exception as exc:
                     last_error = exc
                     if attempt == 0:
                         logger.warning("[%d/%d] %s(%s) | fetch error (retry): %s", idx, len(symbols), code, name, exc)
-                        time.sleep(0.5)  # 재시도 전 잠깐 대기
-
-            # 2회 시도 모두 실패한 경우
+                        time.sleep(0.5)  # ?ъ떆?????좉퉸 ?湲?
+            # 2???쒕룄 紐⑤몢 ?ㅽ뙣??寃쎌슦
             if last_error is not None:
                 logger.error("[%d/%d] %s(%s) | fetch error (final): %s", idx, len(symbols), code, name, last_error)
                 nxt_flags[code] = False
@@ -708,6 +795,37 @@ def main() -> None:
             with open(nxt_flags_path, "w", encoding="utf-8") as _f:
                 json.dump(nxt_flags, _f, ensure_ascii=False, indent=2)
             logger.info("saved NXT flags (%d codes): %s", len(nxt_flags), nxt_flags_path)
+
+        # Save daily close (last bar close) for each symbol used as next-day prev_close in r007.
+        daily_close_map: dict[str, float] = {}
+        for _dc_code, _dc_name in saved_symbols:
+            _safe = str(_dc_name).replace("/", "_").replace("\\", "_")
+            _f10 = output_dir / f"{_dc_code}_{_safe}_10s.txt"
+            if _f10.exists():
+                try:
+                    _dc_df = pd.read_csv(_f10, usecols=["close"])
+                    _dc_col = _dc_df["close"].dropna()
+                    if len(_dc_col) > 0:
+                        daily_close_map[_dc_code] = float(_dc_col.iloc[-1])
+                except Exception:
+                    pass
+        if daily_close_map:
+            daily_close_path = output_dir / "_daily_close.json"
+            with open(daily_close_path, "w", encoding="utf-8") as _f:
+                json.dump(daily_close_map, _f, ensure_ascii=False, indent=2)
+            logger.info("saved daily_close.json (%d codes): %s", len(daily_close_map), daily_close_path)
+
+        # Save prev_close from prior trading day data (mirrors r006 fetch_prev_close).
+        prev_close_map: dict[str, float] = {}
+        for _pc_code, _ in saved_symbols:
+            _pc = _compute_prev_close_from_data(_pc_code, target_date, output_dir.parent)
+            if _pc is not None:
+                prev_close_map[_pc_code] = _pc
+        if prev_close_map:
+            prev_close_path = output_dir / "_prev_close.json"
+            with open(prev_close_path, "w", encoding="utf-8") as _f:
+                json.dump(prev_close_map, _f, ensure_ascii=False, indent=2)
+            logger.info("saved prev_close.json (%d codes): %s", len(prev_close_map), prev_close_path)
 
         # Save date-scoped picks file for r007 simulation input.
         if saved_symbols:
