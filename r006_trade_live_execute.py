@@ -181,6 +181,8 @@ from r003_define_config import (
     STOP_LOSS_EARLY_PERCENT,
     STOP_LOSS_MIN_HOLD_SECONDS,
     STOP_LOSS_PERCENT,
+    HARD_STOP_LOSS_PCT,
+    HARD_STOP_MIN_HOLD_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
     STOCH_BUY_MAX,
     STOCH_BUY_MIN,
@@ -3223,12 +3225,18 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         and di_plus_now > di_minus_now
                     )
 
-                    # Hard stop-loss first
-                    if pnl_pct <= -0.008:
-                        reason_hard_sl = "HARD_STOP_LOSS_0.8PCT"
+                    # Hard stop-loss: 매수 후 HARD_STOP_MIN_HOLD_SECONDS 경과 후 활성화
+                    # (초기 3분은 POST_BUY guard가 담당, 이후 1.2% 하드스탑)
+                    _held_for_hard_sl = (
+                        (current_dt - pos["buy_time"]).total_seconds()
+                        if isinstance(pos.get("buy_time"), datetime) else 9999.0
+                    )
+                    if pnl_pct <= -HARD_STOP_LOSS_PCT and _held_for_hard_sl >= HARD_STOP_MIN_HOLD_SECONDS:
+                        reason_hard_sl = f"HARD_STOP_LOSS_{HARD_STOP_LOSS_PCT*100:.1f}PCT"
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_hard_sl} | "
-                            f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%"
+                            f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% "
+                            f"held={_held_for_hard_sl:.0f}s"
                         )
                         trailing_sell_confirm_state.pop(code, None)
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_hard_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
@@ -3268,10 +3276,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     # Signal-based full exits
                     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds:
+                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > -0.005:
                             log(
-                                f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed by strong uptrend | "
-                                f"K={k_now:.1f} D={d_now:.1f} ADX={adx_now:.1f} +DI={di_plus_now:.1f} -DI={di_minus_now:.1f}"
+                                f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
+                                f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}% held={_sig_held_seconds:.0f}s"
                             )
                         else:
                             reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"

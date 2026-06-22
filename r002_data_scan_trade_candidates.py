@@ -87,7 +87,7 @@ STRICT_CONFIG = ScannerConfig(
     atr_ratio_min=0.015,            # 1.5% daily ATR minimum
     volume_ma20_min=200_000,        # 20만주/일
     amount_ma20_min=10_000_000_000,  # 100억원/일
-    min_listing_days=120,
+    min_listing_days=15,
     min_up_days_in_5=3,
     max_52w_high_ratio=0.90,        # 52주 고가 근접 리스크 구간 시작
     max_prev_day_change=0.07,       # 전일 7% 이상 급등락 제외
@@ -105,8 +105,8 @@ BALANCED_CONFIG = ScannerConfig(
     atr_ratio_min=0.008,
     volume_ma20_min=50_000,
     amount_ma20_min=3_000_000_000,    # 30억원/일
-    min_listing_days=60,
-    min_up_days_in_5=3,
+    min_listing_days=10,
+    min_up_days_in_5=2,
     max_52w_high_ratio=0.98,        # 강세장에서는 신고가 근접 허용폭 확대
     max_prev_day_change=0.12,
     volume_trend_min_ratio=1.0,
@@ -123,7 +123,7 @@ RELAXED_CONFIG = ScannerConfig(
     atr_ratio_min=0.007,
     volume_ma20_min=20_000,
     amount_ma20_min=300_000_000,    # 3억원/일
-    min_listing_days=30,
+    min_listing_days=5,
     min_up_days_in_5=1,
     max_52w_high_ratio=0.97,        # 52주 고가 근접 리스크 구간 시작
     max_prev_day_change=0.10,
@@ -134,18 +134,37 @@ RELAXED_CONFIG = ScannerConfig(
     max_picks=20,
 )
 
+INTRADAY_CONFIG = ScannerConfig(
+    name="intraday",
+    price_min=3_000,              # 저가주 제외 (변동성/유동성 부족)
+    price_max=300_000,
+    atr_ratio_min=0.010,          # 일중 1% 이상 변동 필수
+    volume_ma20_min=50_000,       # 50,000주/일
+    amount_ma20_min=2_000_000_000, # 20억원/일
+    min_listing_days=5,           # 최소 5거래일 (단기매매에 충분)
+    min_up_days_in_5=2,           # 5일 중 2일 이상 양봉
+    max_52w_high_ratio=0.99,      # 52주 신고가 직전까지 허용
+    max_prev_day_change=0.12,     # 전일 12% 이상 급등락 제외
+    volume_trend_min_ratio=0.9,   # 거래량 소폭 감소 허용
+    recent_pick_penalty_per_day=3.0,
+    recent_pick_penalty_lookback_days=3,
+    diversified_pick_pool_mult=3,
+    max_picks=20,
+)
+
 CONFIG_MAP = {
     "strict": STRICT_CONFIG,
     "balanced": BALANCED_CONFIG,
     "relaxed": RELAXED_CONFIG,
+    "intraday": INTRADAY_CONFIG,
 }
 
-DEFAULT_CONFIG = BALANCED_CONFIG
+DEFAULT_CONFIG = INTRADAY_CONFIG
 DEFAULT_HISTORY_WINDOW = 0
 DAILY_LOOKBACK = 260  # trading days of history to load per stock
 MIN_REQUIRED_BARS = 1
 MAX_PICKS_LIMIT = 50
-SCORE_CUTOFF = 40.0
+SCORE_CUTOFF = 30.0
 LIQUIDITY_RELAX_FACTOR = 0.70
 LOW_UP_DAYS_TOLERANCE = 1
 
@@ -448,10 +467,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
             candidate["soft_flags"].append("long_bearish_candle_no_lower_shadow")
 
     # 2. Prior 3-day downtrend is a soft risk signal (not hard fail).
-    #    Requires at least 4 bars to evaluate 3 consecutive down steps.
-    if len(daily_df) < 4:
-        candidate["soft_flags"].append("insufficient_3d_trend_history")
-    else:
+    if len(daily_df) >= 4:
         closes4 = daily_df["close"].iloc[-4:]
         highs4 = daily_df["high"].iloc[-4:]
         lows4 = daily_df["low"].iloc[-4:]
@@ -638,21 +654,21 @@ def calculate_candidate_score(candidate, config):
     if vol_trend is not None:
         score += max(0.0, min(8.0, (vol_trend - 0.9) * 10.0))
 
-    # Penalize latest bearish close to avoid over-rating short-term weakness.
+    # Penalize latest bearish close (단기매매에서는 전일 조정이 진입 기회일 수 있으므로 -4로 완화).
     if is_last_bearish:
-        score -= 8.0
+        score -= 4.0
 
     # Trend alignment: MA5 / MA20 ratio (±10)
     if ma5 is not None and ma20 not in (None, 0):
         trend_ratio = (ma5 / ma20) - 1.0
         score += max(-10.0, min(10.0, trend_ratio * 420.0))
 
-    # 52-week positioning (max 10): continuous preference around 65% zone.
+    # 52-week positioning (max 5): 단기매매는 신고가 모멘텀 중시, 70% 구간 선호.
     if high_52w_ratio is not None and 0.20 <= high_52w_ratio <= config.max_52w_high_ratio:
-        center = 0.65
-        width = 0.35
+        center = 0.70
+        width = 0.40
         proximity = max(0.0, 1.0 - (abs(high_52w_ratio - center) / width))
-        score += 10.0 * proximity
+        score += 5.0 * proximity
 
     # Overextended near 52w high: keep candidate but apply risk penalty.
     if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
@@ -667,6 +683,11 @@ def calculate_candidate_score(candidate, config):
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         overflow = min(0.15, prev_day_change - config.max_prev_day_change)
         score -= min(10.0, 4.0 + (overflow / 0.15) * 6.0)
+
+    # 3일 수익률 모멘텀 가산점 (±5): 단기 상승 탄력 평가.
+    close_3d_return = candidate.get("close_3d_return")
+    if close_3d_return is not None:
+        score += max(-5.0, min(5.0, close_3d_return * 60))
 
     # Penalize symbols repeatedly selected in recent days to reduce over-concentration.
     if repeat_recent_days > 0:
@@ -1479,7 +1500,7 @@ def parse_args():
     parser.add_argument("--date", type=str, default=None, help="Base date (YYYYMMDD)")
     parser.add_argument("--data-dir", type=str, default=None, help="Root data folder (default: data/)")
     parser.add_argument(
-        "--config", type=str, default="balanced",
+        "--config", type=str, default="intraday",
         choices=list(CONFIG_MAP.keys()),
         help="Scanner config preset",
     )
