@@ -1,4 +1,4 @@
-﻿"""
+"""
 r002_data_scan_trade_candidates.py
 
 Purpose:
@@ -149,7 +149,7 @@ INTRADAY_CONFIG = ScannerConfig(
     recent_pick_penalty_per_day=3.0,
     recent_pick_penalty_lookback_days=3,
     diversified_pick_pool_mult=3,
-    max_picks=20,
+    max_picks=30,
 )
 
 CONFIG_MAP = {
