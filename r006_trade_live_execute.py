@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 """R76 live trading executor - BB middle cross strategy with multi indicators.
 
@@ -1142,6 +1142,25 @@ def _fetch_bid_ask_price(code: str, market_div: str) -> tuple[float | None, floa
         return bid, ask
     except Exception as exc:
         log(f"WARNING: 호가 조회 실패 {code}: {exc}")
+        return None, None
+
+
+def _fetch_orderbook_totals(code: str, market_div: str) -> tuple[float | None, float | None]:
+    """총 매도호가 잔량(ask)과 총 매수호가 잔량(bid) 조회. 실패 시 (None, None) 반환."""
+    try:
+        df1, _ = dsf.inquire_asking_price_exp_ccn(
+            env_dv=KIS_ENV_DV,
+            fid_cond_mrkt_div_code=market_div,
+            fid_input_iscd=str(code).zfill(6),
+        )
+        if df1.empty:
+            return None, None
+        row = df1.iloc[0]
+        ask_total = float(row.get("total_askp_rsqn") or 0) or None
+        bid_total = float(row.get("total_bidp_rsqn") or 0) or None
+        return ask_total, bid_total
+    except Exception as exc:
+        log(f"WARNING: 호가잔량 조회 실패 {code}: {exc}")
         return None, None
 
 
@@ -3640,6 +3659,19 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if not any(pd.isna(v) for v in (cur_bar_open, cur_bar_close)) and cur_bar_open > 0:
                         if cur_bar_close <= cur_bar_open:
                             log(f"  {symbol_label} [BUY REJECT] | BEARISH_BAR | open={cur_bar_open:,.0f} close={cur_bar_close:,.0f}")
+                            traded_today.discard(norm_code)
+                            api.live_state["traded_today"] = traded_today
+                            signal_buy_bar.pop(code, None)
+                            continue
+                    _ob_spec = get_order_spec(current_dt, nxt_tradeable)
+                    _ob_mkt = "NX" if (_ob_spec and _ob_spec.get("exchange") == "NXT") else "J"
+                    _ask_total, _bid_total = _fetch_orderbook_totals(norm_code, _ob_mkt)
+                    if _ask_total is not None and _bid_total is not None and _bid_total > 0:
+                        if _ask_total < _bid_total * 0.5:
+                            log(
+                                f"  {symbol_label} [BUY REJECT] | ORDERBOOK_ASK_THIN | "
+                                f"ask={_ask_total:,.0f} bid={_bid_total:,.0f} ratio={_ask_total / _bid_total:.2f}"
+                            )
                             traded_today.discard(norm_code)
                             api.live_state["traded_today"] = traded_today
                             signal_buy_bar.pop(code, None)
