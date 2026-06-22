@@ -106,6 +106,10 @@ STOP_LOSS_PERCENT = -0.021  # 기본 손절 기준(-2.1%)
 STOP_LOSS_EARLY_PERCENT = -0.020
 # 손절 로직이 본격 적용되기 전 최소 보유 시간(초)
 STOP_LOSS_MIN_HOLD_SECONDS = 600
+# 하드스탑 손절 기준 (개장 노이즈 완화: 0.8% -> 1.2%)
+HARD_STOP_LOSS_PCT = 0.012
+# 하드스탑 활성화 최소 보유 시간(초): 초기 3분은 POST_BUY guard가 담당
+HARD_STOP_MIN_HOLD_SECONDS = 180.0
 
 # 추격매수 방지: 전일 종가 대비 현재가 상승률이 임계치 이상이면 매수 차단
 MAX_BUY_RISE_PCT_FROM_PREV_CLOSE = 0.23  # 23%
@@ -115,14 +119,14 @@ MAX_BUY_RISE_PCT_FROM_PREV_CLOSE = 0.23  # 23%
 # 매수가 대비 POST_BUY_BB_DROP_PCT 이상 낮은 상태가
 # POST_BUY_DROP_CONFIRM_SECONDS 동안 유지되면 손절 이전에 조기 매도한다.
 POST_BUY_BB_DROP_POLLS = 6  # 레거시 로그/호환용 값
-POST_BUY_BB_DROP_PCT = 0.007  # 매수가 대비 이탈 임계치 (-0.7%)
-POST_BUY_BB_DROP_ARMED_SECONDS = 300.0  # 매수 후 가드 활성 구간 (초, 기본 5분)
-POST_BUY_DROP_CONFIRM_SECONDS = 40.0  # 급락 지속 확인 시간 (초)
+POST_BUY_BB_DROP_PCT = 0.010  # 매수가 대비 이탈 임계치 (-1.0%)
+POST_BUY_BB_DROP_ARMED_SECONDS = 180.0  # 매수 후 가드 활성 구간 (3분, 하드스탑 활성 전까지)
+POST_BUY_DROP_CONFIRM_SECONDS = 60.0  # 급락 지속 확인 시간 (초)
 
 # 초기 수익 반납 실패 보호
-BREAKEVEN_FAIL_ARM_PNL = 0.008  # 한 번이라도 +0.8% 이익 도달 시 활성화
-BREAKEVEN_FAIL_GIVEBACK_PCT = 0.0075  # 고점 대비 0.75% 이상 반납
-BREAKEVEN_FAIL_CONFIRM_SECONDS = 30.0  # 실패 지속 확인 시간 (초)
+BREAKEVEN_FAIL_ARM_PNL = 0.010  # 한 번이라도 +1.0% 이익 도달 시 활성화 (0.8%->1.0%)
+BREAKEVEN_FAIL_GIVEBACK_PCT = 0.008  # 고점 대비 0.8% 이상 반납 (0.75%->0.8%)
+BREAKEVEN_FAIL_CONFIRM_SECONDS = 60.0  # 실패 지속 확인 시간 (30초->60초)
 
 # 무추세 시간 손절
 NO_TREND_EXIT_ARM_SECONDS = 1200.0  # 20분 동안 추세 미발생 시 점검 시작
@@ -300,13 +304,13 @@ VOLUME_RATIO_OPEN = 0.40  # 0.60 -> 0.40 (아침 변동성 높은 시간 더 완
 # 한낮 거래량 필터 비율
 VOLUME_RATIO_MIDDAY = 0.35  # 0.45 -> 0.35 (한낮 변동성 낮은 시간 더 완화)
 # 장마감 구간 거래량 필터 비율
-VOLUME_RATIO_CLOSE = 0.50  # 0.70 -> 0.50 (마감 거래량 필터 완화)
+VOLUME_RATIO_CLOSE = 0.60  # 0.50 -> 0.60 (낮은 vol_ratio 매수 억제)
 # NXT 세션 거래량 필터 비율
 VOLUME_RATIO_NXT = 0.30  # 0.40 -> 0.30 (NXT 세션 거래량 필터 더 완화)
 # 강추세일 때 거래량 필터 완화 가중치
 VOLUME_RATIO_STRONG_RELAX = 0.15  # 0.10 -> 0.15 (강한 추세 보너스 증가)
 # 거래량 필터 최소 하한선
-VOLUME_RATIO_FLOOR = 0.50
+VOLUME_RATIO_FLOOR = 0.55  # 0.50 -> 0.55 (최소 거래량 기준 강화)
 
 # 시장일 확인 실패 시 보수적으로 비거래 처리
 MARKET_DAY_FAIL_CLOSED = True
