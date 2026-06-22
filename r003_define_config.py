@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 """R76 shared configuration for live trading and simulation.
 
@@ -197,6 +197,10 @@ EARLY_NEAR_CROSS_ALLOW_NXT = False
 EARLY_NEAR_CROSS_MIN_VOLUME = 800
 # early near-cross 거래량 MA 최소치
 EARLY_NEAR_CROSS_MIN_VOL_MA = 500
+# 매수 진입 거래량 MA20 최소치 (저유동성 차단)
+MIN_ENTRY_VOL_MA = 300
+# 매수 진입 현재봉 거래량 최소치 (저유동성 차단)
+MIN_ENTRY_VOLUME = 500
 # early near-cross 최소 거래대금(KRW)
 EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
 
@@ -283,30 +287,26 @@ MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when pri
 
 # BB 중앙선 상승 돌파 전략 파라미터 (BB slope break cross strategy)
 BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 약 1시간)
-BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 12분): 연속 하락 시 매수 차단
+BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
 BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25)
 CANDLE_GAIN_MIN_PCT = 0.0        # 현재봉 양봉 최소 상승률 (%) - 음봉만 차단, 0.00%는 허용 (0.1->0.0)
 BB_BUY_SCORE_THRESHOLD = 8       # 매수 최소 점수 (공격형=6, 중립형=8, 보수형=10)
 CANDLE_GAIN_MAX_PCT = 1.5        # 현재봉 최대 허용 상승률 (%) - 초과 시 추격 매수 차단
 BB_MID_CHASE_MAX_GAP_PCT = 1.0   # BB 중간선 대비 현재가 최대 허용 갭 (%) - 초과 시 추격 매수 차단
 
-# 3. 거래량 필터 (저유동성 종목 손실 방지 강화)
+# 3. 거래량 완화
 # 장초반 거래량 필터 비율
-VOLUME_RATIO_OPEN = 0.60    # 0.40 -> 0.60 (장초반 저유동성 차단 강화)
+VOLUME_RATIO_OPEN = 0.40  # 0.60 -> 0.40 (아침 변동성 높은 시간 더 완화)
 # 한낮 거래량 필터 비율
-VOLUME_RATIO_MIDDAY = 0.55  # 0.35 -> 0.55 (한낮 저유동성 차단 강화)
+VOLUME_RATIO_MIDDAY = 0.35  # 0.45 -> 0.35 (한낮 변동성 낮은 시간 더 완화)
 # 장마감 구간 거래량 필터 비율
-VOLUME_RATIO_CLOSE = 0.65   # 0.50 -> 0.65 (마감 저유동성 차단 강화)
+VOLUME_RATIO_CLOSE = 0.50  # 0.70 -> 0.50 (마감 거래량 필터 완화)
 # NXT 세션 거래량 필터 비율
-VOLUME_RATIO_NXT = 0.35     # 0.30 -> 0.35 (NXT 세션 약간 강화)
+VOLUME_RATIO_NXT = 0.30  # 0.40 -> 0.30 (NXT 세션 거래량 필터 더 완화)
 # 강추세일 때 거래량 필터 완화 가중치
-VOLUME_RATIO_STRONG_RELAX = 0.10  # 0.15 -> 0.10 (과도한 완화 축소)
+VOLUME_RATIO_STRONG_RELAX = 0.15  # 0.10 -> 0.15 (강한 추세 보너스 증가)
 # 거래량 필터 최소 하한선
 VOLUME_RATIO_FLOOR = 0.50
-# 매수 시 거래량 MA 절대 최소치 (극저유동성 종목 차단)
-MIN_ENTRY_VOL_MA = 1500     # VOL_MA20 < 1500이면 매수 무조건 차단
-# 매수 시 현재봉 절대 최소 거래량
-MIN_ENTRY_VOLUME = 200      # 현재봉 거래량 < 200이면 매수 차단
 
 # 시장일 확인 실패 시 보수적으로 비거래 처리
 MARKET_DAY_FAIL_CLOSED = True
@@ -346,8 +346,8 @@ MAIN_LOOP_MAX_CONSECUTIVE_ERRORS = 20
 LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
 # 미결 매수 주문 대기 여유 시간(초)
 PENDING_BUY_GRACE_SECONDS = 90
-# 미결 매수 주문 장기 대기 경고 임계값(초) - 이 이상 미체결이면 [BUY STALE] 경고 출력
-BUY_ORDER_STALE_WARN_SECONDS = 180
+# 매수 미체결 경고 기준 시간(초)
+BUY_ORDER_STALE_WARN_SECONDS = 60
 
 # 인트라바 실시간 진입 필터
 ENABLE_INTRABAR_LIVE_ENTRY_FILTER = True
