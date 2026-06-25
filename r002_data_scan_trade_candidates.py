@@ -17,6 +17,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-26] type=fix owner=copilot
+    summary: 신규 하드 필터 3개 추가 - (1)연속 상한가 후 급락(_has_upperlimit_streak_then_crash), (2)대상일 장대 음봉(big_bearish_candle>=2.0%), (3)3일 연속 종가 하락(3d_close_downtrend)
+    impact: scanner
+    compatibility: breaking (fewer candidates)
 - [2026-06-25] type=fix owner=copilot
     summary: 일봉 5일 연속 하락 하드 필터 추가 (_is_5d_close_downtrend) + 반전 예외 처리 (_has_reversal_signal) + r001 daily CSV 로드 (_load_daily_csv); MA 지연으로 통과되던 우하향 종목 차단
     impact: scanner
@@ -436,6 +440,31 @@ def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFram
         return None
 
 
+def _is_3d_close_downtrend(df):
+    """True when the last 3 daily closes form an unbroken consecutive decline."""
+    closes = df["close"].dropna()
+    if len(closes) < 4:
+        return False
+    tail = closes.tail(4).values
+    return all(tail[i] > tail[i + 1] for i in range(3))
+
+
+def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, crash_pct=0.10):
+    """연속 상한가(2일 이상, +20% 기준) 이후 급락(-10% 이상) 패턴 감지. pump & dump / 테마 급등락 종목 차단."""
+    if len(df) < 4:
+        return False
+    closes = df["close"].dropna().tail(lookback)
+    if len(closes) < 4:
+        return False
+    pct = closes.pct_change().fillna(0).values
+    for i in range(len(pct) - 2):
+        if pct[i] >= upperlimit_min_pct and pct[i + 1] >= upperlimit_min_pct:
+            for j in range(i + 2, len(pct)):
+                if pct[j] <= -crash_pct:
+                    return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Candidate evaluation
 # ---------------------------------------------------------------------------
@@ -506,35 +535,6 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
     # Listing age (number of trading days with data)
     listing_days = len(daily_df)
-
-
-    # --- Additional risk filters for strong bearish candle and consecutive down closes ---
-    # 1. Mark risk if latest bar is a long bearish candle with no lower shadow
-    if len(daily_df) >= 1:
-        last = daily_df.iloc[-1]
-        open_, high, low, close = last["open"], last["high"], last["low"], last["close"]
-        body = abs(close - open_)
-        candle_range = high - low
-        lower_shadow = min(open_, close) - low
-        # Criteria: long red candle, almost no lower shadow, close << open
-        if (
-            close < open_ and
-            body > 0.018 * open_ and  # body > 1.8% of open price (tunable)
-            lower_shadow < 0.002 * open_ and  # lower shadow < 0.2% of open price
-            body > 0.6 * candle_range  # body is most of the candle
-        ):
-            candidate["soft_flags"].append("long_bearish_candle_no_lower_shadow")
-
-    # 2. Prior 3-day downtrend is a soft risk signal (not hard fail).
-    if len(daily_df) >= 4:
-        closes4 = daily_df["close"].iloc[-4:]
-        highs4 = daily_df["high"].iloc[-4:]
-        lows4 = daily_df["low"].iloc[-4:]
-        close_down_3 = all(closes4.iloc[i] > closes4.iloc[i + 1] for i in range(3))
-        high_down_3 = all(highs4.iloc[i] > highs4.iloc[i + 1] for i in range(3))
-        low_down_3 = all(lows4.iloc[i] > lows4.iloc[i + 1] for i in range(3))
-        if close_down_3 or (high_down_3 and low_down_3):
-            candidate["soft_flags"].append("3d_downtrend")
 
 
 
@@ -637,6 +637,22 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     _check_df = daily_hist if daily_hist is not None else daily_df
     if _is_5d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
         candidate["fail_reasons"].append("daily_5d_downtrend")
+
+    # 연속 상한가(2일 이상) 이후 급락 하드 필터 - pump & dump / 테마 급등락 차단
+    if _has_upperlimit_streak_then_crash(_check_df):
+        candidate["fail_reasons"].append("upperlimit_streak_crash")
+
+    # 대상일 일봉 장대 음봉 하드 필터 (close < open, body >= 2.0%)
+    if len(daily_df) >= 1:
+        _last = daily_df.iloc[-1]
+        _open_p = float(_last.get("open") or 0)
+        _close_p = float(_last.get("close") or 0)
+        if _open_p > 0 and _close_p < _open_p and (_open_p - _close_p) / _open_p >= 0.020:
+            candidate["fail_reasons"].append("big_bearish_candle")
+
+    # 이전 3 거래일 연속 종가 하락 하드 필터 (반전 신호 없을 때)
+    if _is_3d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
+        candidate["fail_reasons"].append("3d_close_downtrend")
 
     # --- [최적화] 하드 필터에서 -> 스코어/소프트 플래그 처리로 이관된 항목들 ---
     # 기존에 'atr_ratio'와 'low_up_days'로 즉시 탈락시키던 것을 제거하고 soft_flags로 전환하여 
