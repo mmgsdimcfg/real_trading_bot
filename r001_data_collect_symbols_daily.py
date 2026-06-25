@@ -34,6 +34,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-25] type=feat owner=copilot
+    summary: 일봉 데이터 취득 추가 (fetch_and_save_daily_ohlcv); inquire_daily_itemchartprice API로 이전 10 영업일 일봉 OHLCV 저장 ({code}_daily.csv) - r002 우하향 종목 필터에 사용
+    impact: collector
+    compatibility: backward-compatible
 - [2026-05-10] type=docs owner=copilot
     summary: added standardized file header and expandable update-log format.
     impact: collector
@@ -57,6 +61,7 @@ PROJECT_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_user" / "domestic_stock"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_time_dailychartprice"))
+sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_daily_itemchartprice"))
 
 import kis_auth as ka
 import domestic_stock_functions as dsf
@@ -526,6 +531,73 @@ def enrich_with_strategy_indicators(minute_df: pd.DataFrame) -> pd.DataFrame:
     return enriched
 
 
+def fetch_and_save_daily_ohlcv(
+    code: str,
+    name: str,
+    env_dv: str,
+    target_date: str,
+    output_dir: Path,
+    lookback_days: int = 10,
+) -> bool:
+    """Fetch actual daily (일봉) OHLCV for the past lookback_days business days.
+    Saves {code}_{name}_daily.csv to output_dir for r002 downtrend filter.
+    Uses KIS inquire_daily_itemchartprice API.  Returns True on success.
+    """
+    try:
+        from inquire_daily_itemchartprice import inquire_daily_itemchartprice as _daily_api
+    except ImportError:
+        logger.debug("inquire_daily_itemchartprice not importable; skipping daily OHLCV for %s", code)
+        return False
+
+    target_dt = datetime.strptime(target_date, "%Y%m%d")
+    date_from = (target_dt - timedelta(days=lookback_days * 2 + 5)).strftime("%Y%m%d")
+
+    try:
+        _, df2 = _daily_api(
+            env_dv=env_dv,
+            fid_cond_mrkt_div_code="J",
+            fid_input_iscd=code,
+            fid_input_date_1=date_from,
+            fid_input_date_2=target_date,
+            fid_period_div_code="D",
+            fid_org_adj_prc="0",
+        )
+    except Exception as exc:
+        logger.debug("daily OHLCV fetch failed %s: %s", code, exc)
+        return False
+
+    if df2 is None or df2.empty:
+        return False
+
+    col_map = {
+        "stck_bsop_date": "date",
+        "stck_oprc": "open",
+        "stck_hgpr": "high",
+        "stck_lwpr": "low",
+        "stck_clpr": "close",
+        "acml_vol": "volume",
+        "acml_tr_pbmn": "amount",
+    }
+    df2 = df2.rename(columns={k: v for k, v in col_map.items() if k in df2.columns})
+    keep = [c for c in ("date", "open", "high", "low", "close", "volume", "amount") if c in df2.columns]
+    if "date" not in keep or "close" not in keep:
+        return False
+
+    df2 = df2[keep].copy()
+    for col in ("open", "high", "low", "close", "volume", "amount"):
+        if col in df2.columns:
+            df2[col] = pd.to_numeric(df2[col], errors="coerce")
+    df2 = df2.dropna(subset=["close"]).sort_values("date").tail(lookback_days)
+    if df2.empty:
+        return False
+
+    safe_name = str(name).replace("/", "_").replace("\\", "_")
+    out_path = output_dir / f"{code}_{safe_name}_daily.csv"
+    df2.to_csv(out_path, index=False, encoding="utf-8-sig")
+    logger.debug("[daily] %s(%s) | %d rows -> %s", code, name, len(df2), out_path)
+    return True
+
+
 def load_symbols(symbols_file: Path) -> list[tuple[str, str]]:
     df = pd.read_csv(symbols_file)
     if "code" not in df.columns:
@@ -772,6 +844,11 @@ def main() -> None:
                         f" | 20s(interpolated)={len(df_20s)} -> {legacy_20s_path}"
                     )
 
+                # 일봉 데이터 취득 및 저장 (r002 우하향 종목 필터용)
+                fetch_and_save_daily_ohlcv(
+                    code=code, name=name, env_dv=args.env,
+                    target_date=target_date, output_dir=output_dir,
+                )
                 saved_count += 1
                 saved_symbols.append((code, name))
                 logger.info(
