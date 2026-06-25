@@ -17,6 +17,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-25] type=fix owner=copilot
+    summary: 일봉 5일 연속 하락 하드 필터 추가 (_is_5d_close_downtrend) + 반전 예외 처리 (_has_reversal_signal) + r001 daily CSV 로드 (_load_daily_csv); MA 지연으로 통과되던 우하향 종목 차단
+    impact: scanner
+    compatibility: breaking (fewer candidates: continuously-declining stocks now hard-fail)
 - [2026-06-17] type=fix owner=copilot
     summary: restored min_listing_days as a hard filter; stocks with fewer data days than config.min_listing_days are now disqualified before scoring to prevent unreliable ATR14/MA20/vol_rel_strength estimates from inflating scores.
     impact: scanner
@@ -378,10 +382,65 @@ def calc_volume_relative_strength(daily_df, recent_window=5, base_window=20):
 
 
 # ---------------------------------------------------------------------------
+# Daily trend filter helpers
+# ---------------------------------------------------------------------------
+
+def _is_5d_close_downtrend(df: pd.DataFrame) -> bool:
+    """True when the last 5 daily closes form an unbroken consecutive decline.
+    Catches downtrends that MA5/MA20 comparison misses due to lag.
+    """
+    closes = df["close"].dropna()
+    if len(closes) < 5:
+        return False
+    tail = closes.tail(5).values
+    return all(tail[i] > tail[i + 1] for i in range(4))
+
+
+def _has_reversal_signal(df: pd.DataFrame) -> bool:
+    """True when bottom reversal detected:
+    - 2 consecutive bullish candles (close > open), OR
+    - 2 consecutive rising closes.
+    """
+    if len(df) < 2:
+        return False
+    last2 = df.tail(2)
+    if "open" in df.columns and all(last2["close"].values > last2["open"].values):
+        return True
+    closes = df["close"].dropna().tail(3).values
+    return len(closes) >= 3 and float(closes[-1]) > float(closes[-2]) > float(closes[-3])
+
+
+def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFrame | None":
+    """Load {code}_*_daily.csv saved by r001 from the target date directory.
+    Returns None if file not found or unreadable.
+    """
+    if not target_date_str:
+        return None
+    date_dir = data_root / str(target_date_str)
+    if not date_dir.is_dir():
+        return None
+    matches = sorted(date_dir.glob(f"{code}_*_daily.csv")) + sorted(date_dir.glob(f"{code}_daily.csv"))
+    if not matches:
+        return None
+    try:
+        df = pd.read_csv(matches[0])
+        if "date" not in df.columns or "close" not in df.columns:
+            return None
+        df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d", errors="coerce")
+        df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+        for col in ("open", "high", "low", "close", "volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Candidate evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
+def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None):
 
     candidate = {
         "code": code,
@@ -572,6 +631,12 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0):
     # [추가] 모멘텀 스캐너이므로 역배열(하락추세) 종목은 스코어와 상관없이 확실히 배제합니다.
     if trend_state == "down":
         candidate["fail_reasons"].append("down_trend")
+
+    # 일봉 5일 연속 하락 하드 필터 (MA 지연으로 통과되는 우하향 종목 차단)
+    # 단, 최근 2일 연속 양봉 또는 2일 연속 종가 상승이면 바닥 반전으로 간주하여 통과
+    _check_df = daily_hist if daily_hist is not None else daily_df
+    if _is_5d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
+        candidate["fail_reasons"].append("daily_5d_downtrend")
 
     # --- [최적화] 하드 필터에서 -> 스코어/소프트 플래그 처리로 이관된 항목들 ---
     # 기존에 'atr_ratio'와 'low_up_days'로 즉시 탈락시키던 것을 제거하고 soft_flags로 전환하여 
@@ -1373,7 +1438,8 @@ def scan(
             continue
 
         recent_repeat_days = int(recent_pick_counts.get(code, 0))
-        candidate = evaluate_candidate(code, name, daily_df, config, recent_pick_count=recent_repeat_days)
+        daily_hist = _load_daily_csv(code, data_root, target_date_str)
+        candidate = evaluate_candidate(code, name, daily_df, config, recent_pick_count=recent_repeat_days, daily_hist=daily_hist)
         if recent_repeat_days > 0:
             candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
         candidates.append(candidate)
