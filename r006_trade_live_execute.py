@@ -20,6 +20,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-25] type=fix owner=copilot
+    summary: SIGNAL_EXIT 조기 매도 방지 강화 - _signal_min_hold_seconds 300->600초(10분), STOCH_K_LT_D 억제 pnl 기준 -0.5%->-0.8%, MACD_HIST_DOWN_2BARS에 pnl<=-0.5% 하한 추가
+    impact: live
+    compatibility: backward-compatible
 - [2026-06-18] type=feat owner=copilot
     summary: 손절(HARD_STOP_LOSS_0.8PCT, ATR_STOP_LOSS) 시 시장가(ord_dvsn=01) 즉시 매도; place_sell_order에 market_order 파라미터 추가. NXT 세션은 지정가 유지.
     impact: live
@@ -3218,7 +3222,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # 강한 상승 추세: ADX > 28 이고 +DI > -DI 이면 스토캐스틱 K<D 매도 신호 무시
                     _sig_buy_time_raw = pos.get("buy_time")
                     _sig_held_seconds = (current_dt - _sig_buy_time_raw).total_seconds() if isinstance(_sig_buy_time_raw, datetime) else 0.0
-                    _signal_min_hold_seconds = 300.0  # signal exit min hold: 5 min
+                    _signal_min_hold_seconds = 600.0  # signal exit min hold: 10 min
                     _strong_uptrend = (
                         not pd.isna(adx_now) and adx_now > 28
                         and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
@@ -3276,7 +3280,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     # Signal-based full exits
                     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > -0.005:
+                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > -0.008:
                             log(
                                 f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
                                 f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}% held={_sig_held_seconds:.0f}s"
@@ -3295,7 +3299,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if (not any(pd.isna(v) for v in (hist_now, hist_prev, hist_prev2))
                             and hist_now < hist_prev < hist_prev2
                             and not _strong_uptrend
-                            and _sig_held_seconds >= _signal_min_hold_seconds):
+                            and _sig_held_seconds >= _signal_min_hold_seconds
+                            and pnl_pct <= -0.005):
                         reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_sig_macd} | "
