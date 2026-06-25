@@ -1,4 +1,7 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
+
+# Update log
+# - [2026-06-26] type=fix owner=copilot summary=BREAKEVEN_FAIL 완화(giveback 2.0%, confirm 120s) + VOLUME_RATIO_MIDDAY 강화(0.50)
 
 """R76 shared configuration for live trading and simulation.
 
@@ -125,8 +128,8 @@ POST_BUY_DROP_CONFIRM_SECONDS = 60.0  # 급락 지속 확인 시간 (초)
 
 # 초기 수익 반납 실패 보호
 BREAKEVEN_FAIL_ARM_PNL = 0.010  # 한 번이라도 +1.0% 이익 도달 시 활성화 (0.8%->1.0%)
-BREAKEVEN_FAIL_GIVEBACK_PCT = 0.008  # 고점 대비 0.8% 이상 반납 (0.75%->0.8%)
-BREAKEVEN_FAIL_CONFIRM_SECONDS = 60.0  # 실패 지속 확인 시간 (30초->60초)
+BREAKEVEN_FAIL_GIVEBACK_PCT = 0.020  # 고점 대비 2.0% 이상 반납 (0.8%->2.0%, 조기청산 과민 방지)
+BREAKEVEN_FAIL_CONFIRM_SECONDS = 120.0  # 실패 지속 확인 시간 (60초->120초, 일시 pullback 무시)
 
 # 무추세 시간 손절
 NO_TREND_EXIT_ARM_SECONDS = 1200.0  # 20분 동안 추세 미발생 시 점검 시작
@@ -305,7 +308,7 @@ OPENING_GUARD_SCORE_THRESHOLD = 10  # 개장 직후 요구 최소 점수 (일반
 # 장초반 거래량 필터 비율
 VOLUME_RATIO_OPEN = 0.40  # 0.60 -> 0.40 (아침 변동성 높은 시간 더 완화)
 # 한낮 거래량 필터 비율
-VOLUME_RATIO_MIDDAY = 0.35  # 0.45 -> 0.35 (한낮 변동성 낮은 시간 더 완화)
+VOLUME_RATIO_MIDDAY = 0.50  # 0.35 -> 0.50 (저거래량 종목 매수 억제 강화)
 # 장마감 구간 거래량 필터 비율
 VOLUME_RATIO_CLOSE = 0.60  # 0.50 -> 0.60 (낮은 vol_ratio 매수 억제)
 # NXT 세션 거래량 필터 비율
