@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 
 """R76 live trading executor - BB middle cross strategy with multi indicators.
 
@@ -20,6 +20,8 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-26] type=fix owner=copilot
+    summary: BREAKEVEN_FAIL 발동 조건 pnl_pct<0 -> pnl_pct<-0.005 강화(TP1 후 일시 pullback 청산 방지)
 - [2026-06-25] type=fix owner=copilot
     summary: SIGNAL_EXIT 조기 매도 방지 강화 - _signal_min_hold_seconds 300->600초(10분), STOCH_K_LT_D 억제 pnl 기준 -0.5%->-0.8%, MACD_HIST_DOWN_2BARS에 pnl<=-0.5% 하한 추가
     impact: live
@@ -3374,7 +3376,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             _buy_token,
                             current_dt,
                             peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
-                            and pnl_pct < 0
+                            and pnl_pct < -0.005
                             and profit_giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT,
                         )
                         if _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:

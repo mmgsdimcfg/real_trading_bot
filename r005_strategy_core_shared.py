@@ -18,6 +18,8 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-26] type=fix owner=copilot
+    summary: buy_9th hard_floor 공식 강화 max(0.15,req*0.65)->max(0.30,req*0.75) 저거래량 종목 매수 차단
 - [2026-06-25] type=feat owner=copilot
     summary: (1) BB_MID_CHASE_MAX_GAP_PCT 1.0%→0.7% 강화; (2) BB_UPPER_GAP_MIN_PCT 0.25%→0.5% 상향; (3) 개장 직후(09:00~09:08, 첫 3봉) CLOSE/UPTREND_CONT 진입 시 score threshold를 10으로 상향(OPENING_GUARD).
     impact: common
@@ -548,7 +550,7 @@ def buy_9th_volume_ratio_hard_floor_comment(
         vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
         volume_soft_fail = vol_ratio < vol_ratio_req
 
-        hard_floor = max(0.15, vol_ratio_req * 0.65)
+        hard_floor = max(0.30, vol_ratio_req * 0.75)  # 0.15->0.30, 0.65->0.75 (저거래량 차단 강화)
         if vol_ratio < hard_floor:
             return False, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_{hard_floor:.4f}", volume_soft_fail
 
