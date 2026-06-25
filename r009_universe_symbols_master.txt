@@ -2679,7 +2679,7 @@ code,name,market
 950250,테라뷰,KOSDAQ
 0167Z0,KODEX 미국우주항공,KOSPI
 0181L0,SOL 미국우주항공TOP10,KOSPI
-
+394420,리센스메디컬,KOSDAQ
 
 # 046070,코다코
 # 038880,아이에이,KOSDAQ
@@ -2695,5 +2695,4 @@ code,name,market
 # 033830,티비씨,KOSDAQ
 # 031860,디에이치엑스컴퍼니,KOSDAQ
 # 229000,젠큐릭스,KOSDAQ
-# 394420,리센스메디컬,KOSDAQ
 # 355690,에이텀,KOSDAQ

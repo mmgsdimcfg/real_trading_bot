@@ -18,6 +18,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-25] type=feat owner=copilot
+    summary: (1) BB_MID_CHASE_MAX_GAP_PCT 1.0%→0.7% 강화; (2) BB_UPPER_GAP_MIN_PCT 0.25%→0.5% 상향; (3) 개장 직후(09:00~09:08, 첫 3봉) CLOSE/UPTREND_CONT 진입 시 score threshold를 10으로 상향(OPENING_GUARD).
+    impact: common
+    compatibility: backward-compatible
 - [2026-06-17] type=feat owner=copilot
     summary: BB 중간선 최근 4봉(12분) 연속 우하향 시 매수 차단 조건 추가 (BB_MID_DOWNTREND_4BARS); _bb_middle_is_downtrend 함수 신규.
     impact: common
@@ -75,6 +79,8 @@ from r003_define_config import (
     VOLUME_MA_PERIOD,
     WILLIAMS_D_PERIOD,
     WILLIAMS_R_PERIOD,
+    OPENING_GUARD_MINUTES,
+    OPENING_GUARD_SCORE_THRESHOLD,
 )
 
 
@@ -683,6 +689,13 @@ def run_buy_condition_pipeline_comment(
 
     # 가점 조건 합산 (RSI/거래량/ADX/DI/MACD/BB기울기, 최대 15점)
     score = _buy_support_score(cur, prev, frame, config)
+
+    # 개장 직후 보호: 09:00~09:08 (첫 3봉) 동안 추격매수 차단 강화
+    # live_cross_up(실시간 돌파)은 제외, close/uptrend 기반 진입만 제한
+    if not live_cross_up and now.hour == 9 and now.minute < OPENING_GUARD_MINUTES:
+        if score < OPENING_GUARD_SCORE_THRESHOLD:
+            return False, f"OPENING_GUARD_{now.strftime('%H:%M')}_{score}_LT_{OPENING_GUARD_SCORE_THRESHOLD}"
+
     if score < config.bb_buy_score_threshold:
         return False, f"LOW_SCORE_{score}_LT_{config.bb_buy_score_threshold}"
 

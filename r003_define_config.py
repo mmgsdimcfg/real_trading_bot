@@ -292,11 +292,14 @@ MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when pri
 # BB 중앙선 상승 돌파 전략 파라미터 (BB slope break cross strategy)
 BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 약 1시간)
 BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
-BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25)
+BB_UPPER_GAP_MIN_PCT = 0.5       # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5)
 CANDLE_GAIN_MIN_PCT = 0.0        # 현재봉 양봉 최소 상승률 (%) - 음봉만 차단, 0.00%는 허용 (0.1->0.0)
 BB_BUY_SCORE_THRESHOLD = 8       # 매수 최소 점수 (공격형=6, 중립형=8, 보수형=10)
 CANDLE_GAIN_MAX_PCT = 1.5        # 현재봉 최대 허용 상승률 (%) - 초과 시 추격 매수 차단
-BB_MID_CHASE_MAX_GAP_PCT = 1.0   # BB 중간선 대비 현재가 최대 허용 갭 (%) - 초과 시 추격 매수 차단
+BB_MID_CHASE_MAX_GAP_PCT = 0.7   # BB 중간선 대비 현재가 최대 허용 갭 (%) - 초과 시 추격 매수 차단 (1.0->0.7)
+# 개장 직후 보호: 장 시작(09:00) 후 이 분 수 이내에는 score threshold를 높여 추격매수 방지
+OPENING_GUARD_MINUTES = 9        # 개장 후 9분(첫 3봉) 동안 강화된 필터 적용
+OPENING_GUARD_SCORE_THRESHOLD = 10  # 개장 직후 요구 최소 점수 (일반=8, 개장보호=10)
 
 # 3. 거래량 완화
 # 장초반 거래량 필터 비율
