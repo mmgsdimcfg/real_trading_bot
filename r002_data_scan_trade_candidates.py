@@ -18,7 +18,7 @@ Update log format (append only):
 
 Update log:
 - [2026-06-26] type=fix owner=copilot
-    summary: 신규 하드 필터 3개 추가 - (1)연속 상한가 후 급락(_has_upperlimit_streak_then_crash), (2)대상일 장대 음봉(big_bearish_candle>=2.0%), (3)3일 연속 종가 하락(3d_close_downtrend)
+    summary: 신규 하드 필터 4개 추가 - (1)연속 상한가 후 급락, (2)대상일 장대 음봉(>=2.0%), (3)3일 연속 종가 하락, (4)3일 중 음봉 2개 이상(bearish_2in3d, 단 최근 종가 > 3일전 종가면 예외)
     impact: scanner
     compatibility: breaking (fewer candidates)
 - [2026-06-25] type=fix owner=copilot
@@ -653,6 +653,17 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # 이전 3 거래일 연속 종가 하락 하드 필터 (반전 신호 없을 때)
     if _is_3d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
         candidate["fail_reasons"].append("3d_close_downtrend")
+
+    # 이전 3 거래일 중 음봉 2개 이상 하드 필터
+    # 예외: 1거래일(최근) 종가 > 3거래일 종가이면 전반적 상승 중 조정으로 간주하여 통과
+    if len(_check_df) >= 3 and "open" in _check_df.columns:
+        _last3 = _check_df.tail(3)
+        _bearish_count = int((_last3["close"] < _last3["open"]).sum())
+        if _bearish_count >= 2:
+            _c1 = float(_last3["close"].iloc[-1])   # 최근(1거래일) 종가
+            _c3 = float(_last3["close"].iloc[0])    # 3거래일 전 종가
+            if not (_c3 > 0 and _c1 > _c3):
+                candidate["fail_reasons"].append(f"bearish_2in3d_{_bearish_count}")
 
     # --- [최적화] 하드 필터에서 -> 스코어/소프트 플래그 처리로 이관된 항목들 ---
     # 기존에 'atr_ratio'와 'low_up_days'로 즉시 탈락시키던 것을 제거하고 soft_flags로 전환하여 
