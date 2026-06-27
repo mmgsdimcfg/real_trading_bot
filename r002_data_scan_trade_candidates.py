@@ -1,4 +1,4 @@
-"""
+﻿"""
 r002_data_scan_trade_candidates.py
 
 Purpose:
@@ -17,6 +17,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-28] type=fix owner=copilot
+    summary: INTRADAY_CONFIG 강화 - volume_ma20_min(50k->100k), amount_ma20_min(20억->50억), min_up_days_in_5(2->3), volume_trend(0.9->1.0), price_min(3k->4k)
+    impact: scanner
+    compatibility: breaking (fewer candidates)
+- [2026-06-28] type=fix owner=copilot
+    summary: INTRADAY_CONFIG 강화 - volume_ma20_min(50k->100k), amount_ma20_min(20억->50억), min_up_days_in_5(2->3), volume_trend(0.9->1.0), price_min(3k->4k), max_picks(30->25)
+    impact: scanner
+    compatibility: breaking (fewer candidates)
 - [2026-06-26] type=fix owner=copilot
     summary: 신규 하드 필터 4개 추가 - (1)연속 상한가 후 급락, (2)대상일 장대 음봉(>=2.0%), (3)3일 연속 종가 하락, (4)3일 중 음봉 2개 이상(bearish_2in3d, 단 최근 종가 > 3일전 종가면 예외)
     impact: scanner
@@ -144,20 +152,20 @@ RELAXED_CONFIG = ScannerConfig(
 
 INTRADAY_CONFIG = ScannerConfig(
     name="intraday",
-    price_min=3_000,              # 저가주 제외 (변동성/유동성 부족)
+    price_min=4_000,              # 저가주 제외 (3000->4000, 유동성 부족 차단 강화)
     price_max=300_000,
     atr_ratio_min=0.010,          # 일중 1% 이상 변동 필수
-    volume_ma20_min=50_000,       # 50,000주/일
-    amount_ma20_min=2_000_000_000, # 20억원/일
-    min_listing_days=5,           # 최소 5거래일 (단기매매에 충분)
-    min_up_days_in_5=2,           # 5일 중 2일 이상 양봉
+    volume_ma20_min=100_000,      # 50,000->100,000주/일 (유동성 기준 강화)
+    amount_ma20_min=5_000_000_000, # 20억->50억원/일 (거래대금 기준 강화)
+    min_listing_days=10,          # 5->10거래일 (신뢰할 수 있는 기술적 지표 최소 기간)
+    min_up_days_in_5=3,           # 2->3: 5일 중 3일 이상 양봉 (우상향 필수)
     max_52w_high_ratio=0.99,      # 52주 신고가 직전까지 허용
-    max_prev_day_change=0.12,     # 전일 12% 이상 급등락 제외
-    volume_trend_min_ratio=0.9,   # 거래량 소폭 감소 허용
+    max_prev_day_change=0.09,     # 전일 12%->9% 이상 급등락 제외
+    volume_trend_min_ratio=1.0,   # 0.9->1.0: 거래량 증가 추세 필수 (감소 종목 배제)
     recent_pick_penalty_per_day=3.0,
     recent_pick_penalty_lookback_days=3,
     diversified_pick_pool_mult=3,
-    max_picks=30,
+    max_picks=25,                 # 30->25 (과도한 분산 방지)
 )
 
 CONFIG_MAP = {
@@ -675,9 +683,12 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     if len(daily_df) >= 5 and up_days_in_5 < min_up_days_required:
         candidate["soft_flags"].append("low_up_days_warning")
 
-    # --- Soft flags (warning only, not disqualified) ---
+    # volume_trend_min_ratio 미달 종목: INTRADAY_CONFIG(=1.0)에서는 하드 필터로 차단
+    # 거래량 감소 추세면 단기 모멘텀 매매 대상 제외
     if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
-        candidate["soft_flags"].append("volume_declining")
+        candidate["fail_reasons"].append("volume_declining")
+
+    # --- Soft flags (warning only, not disqualified) ---
     if trend_state == "flat":
         candidate["soft_flags"].append("flat_trend")
     if high_52w_ratio is not None and high_52w_ratio < 0.4:
@@ -1766,5 +1777,8 @@ if __name__ == "__main__":
             print(pick)
     else:
         print("(없음)")
+
+
+
 
 
