@@ -18,6 +18,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-28] type=refactor owner=copilot
+    summary: 불필요 로직 제거(Williams/RSI_SIGNAL/DI이중/EMA미사용) + VWAP·거래량방향·BB폭확장·MA5방향 신호 추가; BB_BUY_SCORE_THRESHOLD 8->9
+    impact: common
+    compatibility: backward-compatible
 - [2026-06-28] type=fix owner=copilot
     summary: buy_9th hard_floor max(0.30,req*0.75)->max(0.65,req*0.90) 저거래량 진입 완전 차단
     impact: common
@@ -230,11 +234,36 @@ def _buy_support_score(
         elif adx_c >= 25.0:
             score += 1
 
-    # DI+/DI- 방향성 점수 (최대 2점)
-    di_plus = _num(cur, "DI_PLUS")
-    di_minus = _num(cur, "DI_MINUS")
-    if not any(pd.isna(v) for v in (di_plus, di_minus)) and di_plus > di_minus:
-        score += 2
+    # VWAP 대비 현재가 위치 (최대 2점): 현재가 > VWAP → 기관 평균 매수가 상회 (DI이중반영 제거 후 대체)
+    vwap_v = _num(cur, "VWAP")
+    close_v = _num(cur, "close")
+    if not any(pd.isna(v) for v in (vwap_v, close_v)) and vwap_v > 0:
+        if close_v > vwap_v * 1.002:
+            score += 2
+        elif close_v > vwap_v:
+            score += 1
+
+    # 거래량 증가 방향 (최대 1점): 현봉 > 전봉 → 관심 유입 중
+    vol_prev = _num(prev, "volume")
+    if not any(pd.isna(v) for v in (vol, vol_prev)) and vol_prev > 0:
+        if vol > vol_prev:
+            score += 1
+
+    # BB 폭 확장 (최대 1점): 스퀴즈 해소 → 추세 발생 초기 신호
+    bb_upper_c = _num(cur, "BB_UPPER")
+    bb_lower_c = _num(cur, "BB_LOWER")
+    bb_upper_p = _num(prev, "BB_UPPER")
+    bb_lower_p = _num(prev, "BB_LOWER")
+    if not any(pd.isna(v) for v in (bb_upper_c, bb_lower_c, bb_upper_p, bb_lower_p)):
+        if (bb_upper_c - bb_lower_c) > (bb_upper_p - bb_lower_p):
+            score += 1
+
+    # MA5 단기 상승 (최대 1점): MA5[t] > MA5[t-1] → 단기 추세 유지
+    ma5_c = _num(cur, "MA_5")
+    ma5_p = _num(prev, "MA_5")
+    if not any(pd.isna(v) for v in (ma5_c, ma5_p)) and ma5_p > 0:
+        if ma5_c > ma5_p:
+            score += 1
 
     # MACD 골든크로스 점수 (최대 2점)
     macd_c = _num(cur, "MACD")
@@ -266,20 +295,18 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series, config: R76StrategyConf
         if k_c < d_c:
             score += 1
 
+    # RSI 하락 방향 (빠른 모멘텀 약화 감지): RSI[t] < RSI[t-1] — RSI_SIGNAL 크로스보다 빠름
     rsi_c = _num(cur, "RSI")
-    sig_c = _num(cur, "RSI_SIGNAL")
     rsi_p = _num(prev, "RSI")
-    sig_p = _num(prev, "RSI_SIGNAL")
-    if not any(pd.isna(v) for v in (rsi_c, sig_c, rsi_p, sig_p)):
-        if rsi_p >= sig_p and rsi_c < sig_c:
+    if not any(pd.isna(v) for v in (rsi_c, rsi_p)):
+        if rsi_c < rsi_p:
             score += 1
 
-    wr_c = _num(cur, "WILLIAMS_R")
-    wd_c = _num(cur, "WILLIAMS_D")
-    wr_p = _num(prev, "WILLIAMS_R")
-    wd_p = _num(prev, "WILLIAMS_D")
-    if not any(pd.isna(v) for v in (wr_c, wd_c, wr_p, wd_p)):
-        if wr_p >= wd_p and wr_c < wd_c:
+    # VWAP 이탈 (기관 매도 압력): 현재가 < VWAP — Williams %R/%D 제거 후 대체
+    vwap_v = _num(cur, "VWAP")
+    close_v = _num(cur, "close")
+    if not any(pd.isna(v) for v in (vwap_v, close_v)) and vwap_v > 0:
+        if close_v < vwap_v:
             score += 1
 
     macd_c = _num(cur, "MACD")
@@ -636,6 +663,8 @@ def run_buy_condition_pipeline_comment(
         _adx = _num(cur, "ADX")
         _di_plus = _num(cur, "DI_PLUS")
         _di_minus = _num(cur, "DI_MINUS")
+        _ma5_cur = _num(cur, "MA_5")
+        _ma5_prev = _num(prev, "MA_5")
         # 최근 최대 5봉 중 종가가 BB 위에 있는 봉 수 카운트
         _n_above = 0
         for _i in range(1, min(6, len(frame)) + 1):
@@ -652,6 +681,8 @@ def run_buy_condition_pipeline_comment(
             and _adx >= 30.0               # ADX 30 이상 (뚜렷한 추세)
             and _di_plus > _di_minus       # +DI > -DI (상승 방향성 우세)
             and _n_above >= 3              # 최근 5봉 중 3봉 이상 BB 위 유지
+            and not any(pd.isna(v) for v in (_ma5_cur, _ma5_prev))
+            and _ma5_cur > _ma5_prev       # MA5 단기 상승 중 (이미 꺾인 추세 추격 차단)
         ):
             _uptrend_continuation = True
 
@@ -777,8 +808,6 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
         out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
 
     out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
-    out["EMA_5"] = out["close"].ewm(span=5, adjust=False).mean()
-    out["EMA_20"] = out["close"].ewm(span=20, adjust=False).mean()
     out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
 
     out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
