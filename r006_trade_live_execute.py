@@ -26,6 +26,10 @@ Update log:
     summary: SIGNAL_EXIT 조기 매도 방지 강화 - _signal_min_hold_seconds 300->600초(10분), STOCH_K_LT_D 억제 pnl 기준 -0.5%->-0.8%, MACD_HIST_DOWN_2BARS에 pnl<=-0.5% 하한 추가
     impact: live
     compatibility: backward-compatible
+- [2026-06-28] type=fix owner=copilot
+    summary: 연속 HARD_STOP 서킷브레이커 + 당일 HARD_STOP 종목 재진입 차단
+    impact: live
+    compatibility: backward-compatible
 - [2026-06-18] type=feat owner=copilot
     summary: 손절(HARD_STOP_LOSS_0.8PCT, ATR_STOP_LOSS) 시 시장가(ord_dvsn=01) 즉시 매도; place_sell_order에 market_order 파라미터 추가. NXT 세션은 지정가 유지.
     impact: live
@@ -246,6 +250,9 @@ from r003_define_config import (
     RSI_BUY_MOMENTUM_MAX,
     SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
     WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS,
+    HARD_STOP_CIRCUIT_BREAKER_COUNT,
+    HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN,
+    HARD_STOP_BLOCK_REENTRY_TODAY,
 )
 from r005_strategy_core_shared import (
     R76StrategyConfig,
@@ -2959,6 +2966,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     post_buy_bb_drop_state: dict[str, dict] = {}
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
+    # 연속 HARD_STOP 서킷브레이커 상태
+    hard_stop_today_codes: set[str] = set()  # 당일 HARD_STOP 발생 종목 (재진입 영구 차단)
+    hard_stop_circuit_breaker_until: datetime | None = None  # 서킷브레이커 해제 시각
+    hard_stop_daily_count: int = 0  # 당일 HARD_STOP 누적 횟수
     live_price_cross_state: dict[str, dict] = {}
     live_price_cache: dict[str, float] = {}
     live_price_cache_at: dict[str, datetime] = {}
@@ -2996,6 +3007,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             api.live_state = live_state
             api.live_state["traded_today"] = traded_today
             api._apply_persisted_position_meta()
+            # 날짜 변경: 서킷브레이커 상태 초기화
+            hard_stop_today_codes.clear()
+            hard_stop_circuit_breaker_until = None
+            hard_stop_daily_count = 0
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()
             no_trend_exit_state.clear()
@@ -3247,6 +3262,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         trailing_sell_confirm_state.pop(code, None)
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_hard_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
                             log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | qty={pos['quantity']} price={price:,.0f}")
+                            # 서킷브레이커: HARD_STOP 누적 및 당일 재진입 차단 등록
+                            hard_stop_today_codes.add(str(code).zfill(6))
+                            hard_stop_daily_count += 1
+                            if hard_stop_daily_count >= HARD_STOP_CIRCUIT_BREAKER_COUNT:
+                                hard_stop_circuit_breaker_until = current_dt + timedelta(minutes=HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN)
+                                log(f"  [CIRCUIT_BREAKER] HARD_STOP {hard_stop_daily_count}회 발생 → 신규 매수 {HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN}분 차단 until {hard_stop_circuit_breaker_until:%H:%M:%S}")
                         signal_sell_bar[code] = bar_time
                         continue
 
@@ -3571,6 +3592,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     norm_code = str(code).zfill(6)
                     if api.has_buy_exposure(norm_code):
                         log(f"  {symbol_label} [BUY SKIP] | ALREADY_TRADED_TODAY_UNTIL_SELL")
+                        continue
+                    # 당일 HARD_STOP 발생 종목 재진입 차단
+                    if HARD_STOP_BLOCK_REENTRY_TODAY and norm_code in hard_stop_today_codes:
+                        log(f"  {symbol_label} [BUY SKIP] | HARD_STOP_REENTRY_BLOCKED_TODAY")
+                        continue
+                    # 연속 HARD_STOP 서킷브레이커 활성 시 신규 매수 차단
+                    if hard_stop_circuit_breaker_until is not None and current_dt < hard_stop_circuit_breaker_until:
+                        log(f"  {symbol_label} [BUY SKIP] | CIRCUIT_BREAKER_ACTIVE until={hard_stop_circuit_breaker_until:%H:%M:%S} count={hard_stop_daily_count}")
                         continue
 
                     buy_ok, buy_reason = check_buy_condition(

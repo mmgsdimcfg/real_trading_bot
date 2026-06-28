@@ -1,6 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-06-28] type=fix owner=copilot summary=(2) NO_TREND_EXIT peak 0.3%->0.6% + 연속HARD_STOP 서킷브레이커 + 당일HARD_STOP 종목 재진입 차단 상수 추가
 # - [2026-06-28] type=fix owner=copilot summary=저거래량 추격매수 차단 강화 + 거래량 hard_floor 상향 + 개장 직후 보호 강화 + BB 갭 추격 기준 엄격화
 # - [2026-06-26] type=fix owner=copilot summary=BREAKEVEN_FAIL 완화(giveback 2.0%, confirm 120s) + VOLUME_RATIO_MIDDAY 강화(0.50)
 
@@ -134,9 +135,18 @@ BREAKEVEN_FAIL_CONFIRM_SECONDS = 120.0  # 실패 지속 확인 시간 (60초->12
 
 # 무추세 시간 손절
 NO_TREND_EXIT_ARM_SECONDS = 1200.0  # 20분 동안 추세 미발생 시 점검 시작
-NO_TREND_EXIT_MAX_PEAK_PNL = 0.003  # 최고 수익이 +0.3% 미만이면 무추세로 간주
+NO_TREND_EXIT_MAX_PEAK_PNL = 0.006  # 0.3%->0.6%: 24건 전패(-58,653원) 개선 - 단기 노이즈 무추세 오판 방지
 NO_TREND_EXIT_MIN_PNL = -0.005  # 현재 손익이 -0.5% 이하일 때만 적용
 NO_TREND_EXIT_CONFIRM_SECONDS = 90.0  # BB 하단 약세 지속 확인 시간 (초)
+
+# ---------------------------------------------------------------------------
+# 연속 손절 서킷브레이커 (시장 하락일 과매수 차단)
+# ---------------------------------------------------------------------------
+# HARD_STOP이 N번 연속 발생하면 N분간 신규 매수 차단 (6/22, 6/23 전손절 방지)
+HARD_STOP_CIRCUIT_BREAKER_COUNT = 3      # 연속 HARD_STOP 발생 횟수 임계치
+HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN = 60  # 서킷브레이커 발동 시 신규 매수 차단 시간(분)
+# 당일 HARD_STOP_LOSS 발생 종목 재진입 차단 여부 (같은 날 같은 종목 손절 후 재매수 금지)
+HARD_STOP_BLOCK_REENTRY_TODAY = True
 
 STARTUP_WARMUP_SECONDS = 90
 
