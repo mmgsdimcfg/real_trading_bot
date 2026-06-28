@@ -34,6 +34,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-06-28] type=fix owner=copilot
+    summary: 일봉 lookback 10->20일, 10초봉 보간 이상값 클리핑(±15%초과), 3분봉 기본 저장
+    impact: collector
+    compatibility: backward-compatible
 - [2026-06-25] type=feat owner=copilot
     summary: 일봉 데이터 취득 추가 (fetch_and_save_daily_ohlcv); inquire_daily_itemchartprice API로 이전 10 영업일 일봉 OHLCV 저장 ({code}_daily.csv) - r002 우하향 종목 필터에 사용
     impact: collector
@@ -445,6 +449,12 @@ def interpolate_to_10sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     for col in price_cols:
         df_reindexed[col] = df_reindexed[col].interpolate(method="linear", limit_direction="both")
 
+    # 10초 선형 보간 아티팩트 제거: 연속 봉 간 ±15% 초과 변화는 이전 값으로 대체
+    for col in price_cols:
+        pct_chg = df_reindexed[col].pct_change().abs()
+        mask = pct_chg > 0.15
+        df_reindexed[col] = df_reindexed[col].where(~mask, df_reindexed[col].ffill())
+
     step_seconds = 10.0
     if len(df.index) >= 2:
         src_seconds = df["datetime"].diff().dropna().dt.total_seconds().median()
@@ -537,7 +547,7 @@ def fetch_and_save_daily_ohlcv(
     env_dv: str,
     target_date: str,
     output_dir: Path,
-    lookback_days: int = 10,
+    lookback_days: int = 20,
 ) -> bool:
     """Fetch actual daily (일봉) OHLCV for the past lookback_days business days.
     Saves {code}_{name}_daily.csv to output_dir for r002 downtrend filter.
@@ -825,22 +835,22 @@ def main() -> None:
                 file_10s_path = output_dir / f"{code}_{safe_name}_10s.txt"
                 df_10s.to_csv(file_10s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
 
-                legacy_log = ""
+                # 3분봉 파일 기본 저장 (r006 전략 로직의 메인 신호 소스)
+                df_3m = build_3min_indicator_frame(df)
+                file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
+                df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                legacy_log = f" | 3m={len(df_3m)} -> {file_3m_path}"
                 if args.save_legacy_files:
                     df_1m = enrich_with_strategy_indicators(df)
-                    df_3m = build_3min_indicator_frame(df)
                     df_20s = interpolate_to_20sec(df_1m)
 
                     file_1m_path = output_dir / f"{code}_{safe_name}_1m.txt"
-                    file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
                     legacy_20s_path = output_dir / f"{code}_{safe_name}_20s.txt"
 
                     df_1m.to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
-                    df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
                     df_20s.to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
-                    legacy_log = (
+                    legacy_log += (
                         f" | 1m={len(df_1m)} -> {file_1m_path}"
-                        f" | 3m={len(df_3m)} -> {file_3m_path}"
                         f" | 20s(interpolated)={len(df_20s)} -> {legacy_20s_path}"
                     )
 
