@@ -18,6 +18,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-02] type=fix owner=copilot
+    summary: 거래량비율 점수에 0.7~1.2배 구간(+1점) 추가. 093370 사례처럼 vol_ratio 0.7~1.2 사이에서 0점 처리되어 유효 반전신호가 과도하게 반려되던 문제 완화.
+    impact: common
+    compatibility: backward-compatible (more entries pass score gate)
 - [2026-06-28] type=refactor owner=copilot
     summary: 불필요 로직 제거(Williams/RSI_SIGNAL/DI이중/EMA미사용) + VWAP·거래량방향·BB폭확장·MA5방향 신호 추가; BB_BUY_SCORE_THRESHOLD 8->9
     impact: common
@@ -222,6 +226,8 @@ def _buy_support_score(
         elif vol_ratio >= 1.5:
             score += 2
         elif vol_ratio >= 1.2:
+            score += 1
+        elif vol_ratio >= 0.7:
             score += 1
 
     # ADX 추세 강도 점수 (최대 3점)

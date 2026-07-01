@@ -20,6 +20,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-02] type=fix owner=copilot
+    summary: (1) 매도 체결 후 포지션정리(positions.pop/traded_today.discard) 판단 기준을 계좌동기화 캐시(current_qty)에서 주문상태 자체의 remaining_qty로 변경 - 161890 사례처럼 sync 지연 시 정상 매도 후에도 당일 재매수가 영구 잠기던 버그 수정. (2) 로컬 표시용 _buy_support_score가 r005의 구(舊) 15점 체계(DI+/- 포함)로 남아있어 실제 게이트 점수(r005, 18점제)와 로그 표시가 어긋나던 문제 수정 - r005와 동일한 18점 체계로 동기화, 로그 라벨 /15->/18
+    impact: live
+    compatibility: backward-compatible
 - [2026-06-26] type=fix owner=copilot
     summary: BREAKEVEN_FAIL 발동 조건 pnl_pct<0 -> pnl_pct<-0.005 강화(TP1 후 일시 pullback 청산 방지)
 - [2026-06-25] type=fix owner=copilot
@@ -1571,7 +1575,7 @@ def _buy_reject_detail(
         macd_str = f"MACD>{msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c else f"MACD<={msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) else "nan"
         slope_str = f"{bb_slope:.2f}%" if not pd.isna(bb_slope) else "nan"
         return (
-            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/15 | {snapshot}"
+            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/18 | {snapshot}"
         )
 
     # 기타 / 하위 호환
@@ -1580,7 +1584,7 @@ def _buy_reject_detail(
 
 
 def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | None = None) -> int:
-    """로컬 표시용 점수 계산 (r005 _buy_support_score와 동일 로직)."""
+    """로컬 표시용 점수 계산 (r005 _buy_support_score와 동일 로직, max 18점)."""
     score = 0
 
     # RSI 구간 점수 (최대 2점)
@@ -1602,6 +1606,8 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
             score += 2
         elif vol_ratio >= 1.2:
             score += 1
+        elif vol_ratio >= 0.7:
+            score += 1
 
     # ADX 추세 강도 점수 (최대 3점)
     adx_c = _num(cur, "ADX")
@@ -1613,11 +1619,36 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
         elif adx_c >= 25.0:
             score += 1
 
-    # DI+/DI- 방향성 점수 (최대 2점)
-    di_plus = _num(cur, "DI_PLUS")
-    di_minus = _num(cur, "DI_MINUS")
-    if not any(pd.isna(v) for v in (di_plus, di_minus)) and di_plus > di_minus:
-        score += 2
+    # VWAP 대비 현재가 위치 (최대 2점): 현재가 > VWAP → 기관 평균 매수가 상회
+    vwap_v = _num(cur, "VWAP")
+    close_v = _num(cur, "close")
+    if not any(pd.isna(v) for v in (vwap_v, close_v)) and vwap_v > 0:
+        if close_v > vwap_v * 1.002:
+            score += 2
+        elif close_v > vwap_v:
+            score += 1
+
+    # 거래량 증가 방향 (최대 1점): 현봉 > 전봉 → 관심 유입 중
+    vol_prev = _num(prev, "volume")
+    if not any(pd.isna(v) for v in (vol, vol_prev)) and vol_prev > 0:
+        if vol > vol_prev:
+            score += 1
+
+    # BB 폭 확장 (최대 1점): 스퀴즈 해소 → 추세 발생 초기 신호
+    bb_upper_c = _num(cur, "BB_UPPER")
+    bb_lower_c = _num(cur, "BB_LOWER")
+    bb_upper_p = _num(prev, "BB_UPPER")
+    bb_lower_p = _num(prev, "BB_LOWER")
+    if not any(pd.isna(v) for v in (bb_upper_c, bb_lower_c, bb_upper_p, bb_lower_p)):
+        if (bb_upper_c - bb_lower_c) > (bb_upper_p - bb_lower_p):
+            score += 1
+
+    # MA5 단기 상승 (최대 1점): MA5[t] > MA5[t-1] → 단기 추세 유지
+    ma5_c = _num(cur, "MA_5")
+    ma5_p = _num(prev, "MA_5")
+    if not any(pd.isna(v) for v in (ma5_c, ma5_p)) and ma5_p > 0:
+        if ma5_c > ma5_p:
+            score += 1
 
     # MACD 골든크로스 점수 (최대 2점)
     macd_c = _num(cur, "MACD")
@@ -1783,7 +1814,7 @@ def _buy_condition_snapshot(
         f"bb_mid={cur_bb:.1f} bb_upper={cur_bb_upper:.1f} "
         f"bb_slope={bb_slope_pct:.3f}% bb_upper_gap={bb_upper_gap_pct:.2f}% candle_gain={candle_gain_pct:.2f}% "
         f"RSI={rsi_c:.1f} ADX={adx_c:.1f} +DI={di_plus:.1f} -DI={di_minus:.1f} MACD={macd_c:.3f} SIG={msig_c:.3f} "
-        f"vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f} score={support_score}/15"
+        f"vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f} score={support_score}/18"
     )
 
 
@@ -2462,7 +2493,7 @@ class TradingAPI:
                 cancel_yn = str(status.get("cancel_yn", ""))
                 terminal = remaining_qty <= 0 or cancel_yn == "Y" or rejected_qty >= order_qty
                 if filled_qty > 0 and terminal:
-                    self._confirm_pending_sell(code, pending, status, current_qty)
+                    self._confirm_pending_sell(code, pending, status, remaining_qty)
                     continue
 
             if current_qty <= expected_remaining_qty:
