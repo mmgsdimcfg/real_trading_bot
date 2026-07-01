@@ -17,6 +17,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-01] type=fix owner=copilot
+    summary: trend_state==down 하드 필터에 반전 신호 예외 추가 (_has_reversal_signal 또는 신규 _has_volume_thrust_reversal). MA5/MA20 후행성으로 막 반전한 종목(6/29~6/30 유형)이 무조건 배제되던 문제 수정.
+    impact: scanner
+    compatibility: breaking (more candidates pass when a genuine reversal pattern is detected)
+- [2026-07-01] type=feat owner=copilot
+    summary: 기본 선별 종목 수 확대 - INTRADAY_CONFIG.max_picks(25->50), BALANCED_CONFIG.max_picks(30->50)
+    impact: scanner
+    compatibility: backward-compatible (more candidates output)
 - [2026-06-28] type=fix owner=copilot
     summary: INTRADAY_CONFIG 강화 - volume_ma20_min(50k->100k), amount_ma20_min(20억->50억), min_up_days_in_5(2->3), volume_trend(0.9->1.0), price_min(3k->4k)
     impact: scanner
@@ -129,7 +137,7 @@ BALANCED_CONFIG = ScannerConfig(
     recent_pick_penalty_per_day=3.5,
     recent_pick_penalty_lookback_days=4,
     diversified_pick_pool_mult=3,
-    max_picks=30,
+    max_picks=50,
 )
 
 RELAXED_CONFIG = ScannerConfig(
@@ -165,7 +173,7 @@ INTRADAY_CONFIG = ScannerConfig(
     recent_pick_penalty_per_day=3.0,
     recent_pick_penalty_lookback_days=3,
     diversified_pick_pool_mult=3,
-    max_picks=25,                 # 30->25 (과도한 분산 방지)
+    max_picks=50,                 # 25->50 (반전 신호 종목 등 후보군 확대)
 )
 
 CONFIG_MAP = {
@@ -422,6 +430,36 @@ def _has_reversal_signal(df: pd.DataFrame) -> bool:
     return len(closes) >= 3 and float(closes[-1]) > float(closes[-2]) > float(closes[-3])
 
 
+def _has_volume_thrust_reversal(df: pd.DataFrame) -> bool:
+    """True when the last bar is a single strong V-bottom reversal day:
+    - Bullish body >= 3% of open
+    - Volume >= 1.5x the prior 5-day average (money-flow thrust)
+    - Closes above the prior day's high (breaks immediate overhead resistance)
+    - Closes above the 5-day MA (recovers above short-term average)
+    Catches sharp one-day breakouts that _has_reversal_signal's 2-day
+    pattern misses (e.g. down day followed by a single large up day).
+    """
+    if len(df) < 6:
+        return False
+    last = df.iloc[-1]
+    prior5 = df.iloc[-6:-1]
+    open_p = float(last.get("open") or 0)
+    close_p = float(last.get("close") or 0)
+    if open_p <= 0 or close_p <= open_p:
+        return False
+    body_pct = (close_p - open_p) / open_p
+    avg_vol5 = float(prior5["volume"].mean())
+    ma5_close = float(df["close"].tail(5).mean())
+    last_volume = float(last.get("volume") or 0)
+    prior_day_high = float(prior5["high"].iloc[-1])
+    return (
+        body_pct >= 0.03
+        and avg_vol5 > 0
+        and last_volume >= avg_vol5 * 1.5
+        and close_p > prior_day_high
+        and close_p > ma5_close
+    )
+
 def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFrame | None":
     """Load {code}_*_daily.csv saved by r001 from the target date directory.
     Returns None if file not found or unreadable.
@@ -637,12 +675,18 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         candidate["fail_reasons"].append("insufficient_listing_days")
 
     # [추가] 모멘텀 스캐너이므로 역배열(하락추세) 종목은 스코어와 상관없이 확실히 배제합니다.
+    # 단, MA5/MA20는 후행지표라 6/29~6/30 사례처럼 막 반전한 종목을 놓칠 수 있어
+    # 일봉 반전 신호(2일 연속 양봉/종가상승, 또는 거래량 동반 단일 V자 반등)가 있으면 예외 허용.
+    _check_df = daily_hist if daily_hist is not None else daily_df
+    trend_reversal_detected = _has_reversal_signal(_check_df) or _has_volume_thrust_reversal(_check_df)
     if trend_state == "down":
-        candidate["fail_reasons"].append("down_trend")
+        if trend_reversal_detected:
+            candidate["soft_flags"].append("down_trend_reversal_override")
+        else:
+            candidate["fail_reasons"].append("down_trend")
 
     # 일봉 5일 연속 하락 하드 필터 (MA 지연으로 통과되는 우하향 종목 차단)
     # 단, 최근 2일 연속 양봉 또는 2일 연속 종가 상승이면 바닥 반전으로 간주하여 통과
-    _check_df = daily_hist if daily_hist is not None else daily_df
     if _is_5d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
         candidate["fail_reasons"].append("daily_5d_downtrend")
 
