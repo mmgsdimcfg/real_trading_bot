@@ -20,6 +20,15 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-16] type=fix owner=copilot
+    summary: 시그널 매도(SIGNAL_EXIT) pnl 억제 기준 완화 - STOCH_K_LT_D -0.8%->-1.2%, MACD_HIST_DOWN_2BARS
+      -0.5%->-0.8%. r007로 D일 picks를 D+1일 데이터에 매매 시뮬레이션한 결과 STOCH_K_LT_D 31건 중 61.3%,
+      MACD_HIST_DOWN_2BARS 59건 중 71.2%가 청산 후 본전 이상으로 회복하는 것으로 나타나, 급락 후 반등을
+      놓치지 않도록 조기청산 기준을 완화함. r003의 HARD_STOP_LOSS_PCT/BREAKEVEN_FAIL_GIVEBACK_PCT/
+      POST_BUY_BB_DROP_PCT 등 관련 손절 파라미터도 동일 배경으로 함께 완화(r003 Update log 참조).
+    impact: live
+    compatibility: breaking (해당 시그널 매도 발동이 더 늦어짐 - 개별 손실폭 확대 가능성 있으나 조기청산
+      기회손실 감소가 목표)
 - [2026-07-02] type=fix owner=copilot
     summary: (1) 매도 체결 후 포지션정리(positions.pop/traded_today.discard) 판단 기준을 계좌동기화 캐시(current_qty)에서 주문상태 자체의 remaining_qty로 변경 - 161890 사례처럼 sync 지연 시 정상 매도 후에도 당일 재매수가 영구 잠기던 버그 수정. (2) 로컬 표시용 _buy_support_score가 r005의 구(舊) 15점 체계(DI+/- 포함)로 남아있어 실제 게이트 점수(r005, 18점제)와 로그 표시가 어긋나던 문제 수정 - r005와 동일한 18점 체계로 동기화, 로그 라벨 /15->/18
     impact: live
@@ -3334,7 +3343,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     # Signal-based full exits
                     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > -0.008:
+                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > -0.012:
                             log(
                                 f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
                                 f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}% held={_sig_held_seconds:.0f}s"
@@ -3354,7 +3363,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             and hist_now < hist_prev < hist_prev2
                             and not _strong_uptrend
                             and _sig_held_seconds >= _signal_min_hold_seconds
-                            and pnl_pct <= -0.005):
+                            and pnl_pct <= -0.008):
                         reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_sig_macd} | "

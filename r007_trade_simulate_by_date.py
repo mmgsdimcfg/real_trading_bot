@@ -16,6 +16,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-16] type=fix owner=copilot
+    summary: 시그널 매도(SIGNAL_EXIT) pnl 억제 기준 완화 - STOCH_K_LT_D -0.8%->-1.2%, MACD_HIST_DOWN_2BARS
+      -0.5%->-0.8% (r006과 동일하게 적용). 교차일 백테스트(D일 picks -> D+1일 데이터) 결과 STOCH_K_LT_D
+      31건 중 61.3%, MACD_HIST_DOWN_2BARS 59건 중 71.2%가 청산 후 본전 이상 회복 - 조기청산 완화.
+    impact: sim
+    compatibility: breaking (해당 시그널 매도 발동이 더 늦어짐)
+- [2026-07-16] type=fix owner=copilot
+    summary: r006 라이브와 어긋나 있던 매도 조건 보정 - (1) 하드스탑 -0.8% 고정값을 HARD_STOP_LOSS_PCT(config)+HARD_STOP_MIN_HOLD_SECONDS 게이트로 교체, (2) STOCH K<D / MACD_HIST 2봉하락 시그널 매도에 pnl/보유시간 게이트(600초, -0.8%/-0.5%) 추가, (3) 강추세 억제 기준 ADX 45->28 (r006 동일화). 이전에는 이 값들이 하드코딩되어 있어 r006 설정 변경이 시뮬레이션에 반영되지 않았음.
+    impact: sim
+    compatibility: breaking (시뮬레이션 결과가 이전보다 r006 실제 동작에 가깝게 변함 - 손절 지연/완화됨)
 - [2026-05-25] type=fix owner=copilot
     summary: r007 allows same-day re-entry after completed sell via simulation-only override flag.
     impact: sim
@@ -67,6 +77,8 @@ from r003_define_config import (
     ATR_STOP_MULTIPLIER,
     ATR_TAKE_PROFIT_MULTIPLIER,
     ALLOW_REBUY_SAME_CODE,
+    HARD_STOP_LOSS_PCT,
+    HARD_STOP_MIN_HOLD_SECONDS,
     BUY_CONSECUTIVE_CONFIRM_COUNT,
     AUX_SELL_MIN_PNL_SCORE2,
     AUX_SELL_MIN_PNL_SCORE3,
@@ -2150,18 +2162,23 @@ def simulate_date(
                 adx_now = _num(cur, "ADX")
                 di_plus_now = _num(cur, "DI_PLUS")
                 di_minus_now = _num(cur, "DI_MINUS")
+                # r006 parity: strong-uptrend suppression uses ADX > 28 (was 45 here, drifted from live)
                 _strong_uptrend = (
-                    not pd.isna(adx_now) and adx_now > 45
+                    not pd.isna(adx_now) and adx_now > 28
                     and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
                     and di_plus_now > di_minus_now
                 )
+                _sig_held_seconds = (ts - pos.buy_time).total_seconds() if isinstance(pos.buy_time, pd.Timestamp) else 9999.0
+                _signal_min_hold_seconds = 600.0  # signal exit min hold: 10 min (r006 parity)
 
-                # 1. Hard stop -0.8%
-                if profit_pct <= -0.008:
+                # 1. Hard stop-loss: r006 parity - config-driven HARD_STOP_LOSS_PCT gated by HARD_STOP_MIN_HOLD_SECONDS
+                # (was hardcoded -0.8% with no min-hold gate here, drifted from live)
+                if profit_pct <= -HARD_STOP_LOSS_PCT and _sig_held_seconds >= HARD_STOP_MIN_HOLD_SECONDS:
+                    reason_hard_sl = f"HARD_STOP_LOSS_{HARD_STOP_LOSS_PCT*100:.1f}PCT"
                     trailing_sell_confirm_state.pop(code, None)
-                    sim.sell(code, price, ts, "HARD_STOP_LOSS_0.8PCT", session)
+                    sim.sell(code, price, ts, reason_hard_sl, session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | HARD_STOP_LOSS_0.8PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                    log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | price={price:,.0f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s")
                     continue
 
                 # 2. Full take-profit +2.0%
@@ -2184,12 +2201,12 @@ def simulate_date(
                     log(f"  [SELL EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
                     continue
 
-                # 4. Signal exit: Stoch K < D (suppressed in strong uptrend)
+                # 4. Signal exit: Stoch K < D (r006 parity: requires held>=600s and pnl<=-0.8%, unless strong uptrend)
                 if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                    if _strong_uptrend:
+                    if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or profit_pct > -0.012:
                         log(
-                            f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed by strong uptrend | "
-                            f"K={k_now:.1f} D={d_now:.1f} ADX={adx_now:.1f} +DI={di_plus_now:.1f} -DI={di_minus_now:.1f}"
+                            f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
+                            f"K={k_now:.1f} D={d_now:.1f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s"
                         )
                     else:
                         trailing_sell_confirm_state.pop(code, None)
@@ -2199,7 +2216,14 @@ def simulate_date(
                         continue
 
                 # 5. Signal exit: MACD histogram declining 2 consecutive bars
-                if not any(pd.isna(v) for v in (hist_now, hist_prev_v, hist_prev2_v)) and hist_now < hist_prev_v < hist_prev2_v:
+                # (r006 parity: requires held>=600s, pnl<=-0.5%, and not strong uptrend)
+                if (
+                    not any(pd.isna(v) for v in (hist_now, hist_prev_v, hist_prev2_v))
+                    and hist_now < hist_prev_v < hist_prev2_v
+                    and not _strong_uptrend
+                    and _sig_held_seconds >= _signal_min_hold_seconds
+                    and profit_pct <= -0.008
+                ):
                     trailing_sell_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS", session)
                     signal_sell_bar[code] = ts
