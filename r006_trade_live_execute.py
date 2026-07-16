@@ -21,6 +21,17 @@ Update log format (append only):
 
 Update log:
 - [2026-07-16] type=fix owner=copilot
+    summary: 3분봉 프레임이 매 refresh마다 KIS inquire_time_itemchartprice 응답으로 통째로 교체되어,
+      해당 API가 반환하는 최근 롤링 윈도우(리샘플 후 약 10봉)에 항상 갇혀 있던 문제 수정. 신규 조회
+      결과를 기존 캐시와 병합(원본 OHLCV 기준, 인덱스 중복은 최신값 우선) 후 전체 이력에 대해
+      calculate_indicators()를 재계산하도록 변경 - BB_PERIOD/VOLUME_MA_PERIOD=20 등 20봉 롤링
+      지표가 실제로 20봉 이력을 확보하도록 함(FRAME_CACHE_MAX_BARS=200으로 상한, 일자 변경 시 기존대로
+      초기화). 매수가 장시간 발생하지 않던 사례 조사 중 발견 - 신호 자체가 없던 것(버그 아님)으로
+      확인되었으나, 지표 안정성 개선을 위해 근본 원인을 함께 수정.
+    impact: live
+    compatibility: breaking (지표값이 이전보다 더 많은 이력을 반영하여 계산되므로 크로스/점수 타이밍이
+      달라질 수 있음; 봇 재시작 후 적용됨)
+- [2026-07-16] type=fix owner=copilot
     summary: 시그널 매도(SIGNAL_EXIT) pnl 억제 기준 완화 - STOCH_K_LT_D -0.8%->-1.2%, MACD_HIST_DOWN_2BARS
       -0.5%->-0.8%. r007로 D일 picks를 D+1일 데이터에 매매 시뮬레이션한 결과 STOCH_K_LT_D 31건 중 61.3%,
       MACD_HIST_DOWN_2BARS 59건 중 71.2%가 청산 후 본전 이상으로 회복하는 것으로 나타나, 급락 후 반등을
@@ -1414,6 +1425,25 @@ def should_refresh_3min_frame(
         return True
 
     return False
+
+
+# KIS's inquire_time_itemchartprice only returns a recent rolling window per call
+# (observed: ~10 three-minute bars after resampling), so simply replacing the cache
+# with each fresh call permanently starves rolling indicators that need more history
+# (BB_PERIOD/VOLUME_MA_PERIOD=20 never actually see 20 bars). Accumulate raw OHLCV
+# across refreshes instead, then recompute indicators once over the full history.
+FRAME_CACHE_MAX_BARS = 200  # generous cap (~10h of 3-min bars); covers a full NXT+regular session
+
+
+def _merge_3min_frame(previous: pd.DataFrame | None, refreshed: pd.DataFrame) -> pd.DataFrame:
+    if previous is None or previous.empty:
+        combined = refreshed
+    else:
+        combined = pd.concat([previous, refreshed])
+        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    if len(combined) > FRAME_CACHE_MAX_BARS:
+        combined = combined.tail(FRAME_CACHE_MAX_BARS)
+    return calculate_indicators(combined[["open", "high", "low", "close", "volume"]])
 
 
 def _live_price_backoff_seconds(fail_count: int) -> int:
@@ -3122,9 +3152,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         refreshed_frame = None
 
                     if refreshed_frame is not None and not refreshed_frame.empty:
-                        frame_cache[code] = refreshed_frame
+                        merged_frame = _merge_3min_frame(cached_frame, refreshed_frame)
+                        frame_cache[code] = merged_frame
                         frame_last_refresh_at[code] = current_dt
-                        frame = refreshed_frame
+                        frame = merged_frame
 
                 if frame is None:
                     log(f"  [SKIP] {symbol_label} | frame=None (fetch failed)")
