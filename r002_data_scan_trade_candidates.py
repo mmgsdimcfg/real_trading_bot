@@ -17,6 +17,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-16] type=feat owner=copilot
+    summary: 신규 하드 필터 추가 - 일봉 기준 볼린저밴드 하한선(20일, 2.0 std)이 최근 3거래일
+      이상 순상승하지 않는(횡보/우하향 포함) 종목 배제. calc_bb_lower()/_bb_lower_is_uptrend()
+      신규 추가, evaluate_candidate()의 3일 연속 하락 필터 다음 단계에 배치.
+    impact: scanner
+    compatibility: breaking (BB 하한선이 우상향이 아닌 종목은 이제 무조건 배제됨 - 후보 감소 가능)
 - [2026-07-01] type=fix owner=copilot
     summary: trend_state==down 하드 필터에 반전 신호 예외 추가 (_has_reversal_signal 또는 신규 _has_volume_thrust_reversal). MA5/MA20 후행성으로 막 반전한 종목(6/29~6/30 유형)이 무조건 배제되던 문제 수정.
     impact: scanner
@@ -343,6 +349,13 @@ def calc_atr(df, length=14):
     return tr.rolling(window=length).mean()
 
 
+def calc_bb_lower(daily_df, period=20, std_mult=2.0):
+    """Daily-bar Bollinger Band lower line (MA - std_mult * rolling STD)."""
+    ma = daily_df["close"].rolling(period, min_periods=1).mean()
+    std = daily_df["close"].rolling(period, min_periods=1).std()
+    return ma - std_mult * std
+
+
 def safe_float(value):
     if pd.isna(value):
         return None
@@ -493,6 +506,18 @@ def _is_3d_close_downtrend(df):
         return False
     tail = closes.tail(4).values
     return all(tail[i] > tail[i + 1] for i in range(3))
+
+
+def _bb_lower_is_uptrend(df, lookback_days=3):
+    """True when the daily BB-lower line has risen net over the last
+    `lookback_days` trading days (BB_LOWER[-1] > BB_LOWER[-1-lookback_days]).
+    Requires at least lookback_days+1 valid bars; treated as not-uptrend
+    (conservative exclusion) when there isn't enough history yet.
+    """
+    bb_lower = calc_bb_lower(df).dropna()
+    if len(bb_lower) < lookback_days + 1:
+        return False
+    return float(bb_lower.iloc[-1]) > float(bb_lower.iloc[-1 - lookback_days])
 
 
 def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, crash_pct=0.10):
@@ -705,6 +730,11 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # 이전 3 거래일 연속 종가 하락 하드 필터 (반전 신호 없을 때)
     if _is_3d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
         candidate["fail_reasons"].append("3d_close_downtrend")
+
+    # 볼린저밴드 하한선 우상향 필터: 최근 3거래일 이상 일봉 기준 BB 하한선이
+    # 순상승하지 않으면(횡보/우하향 포함) 배제
+    if not _bb_lower_is_uptrend(_check_df, lookback_days=3):
+        candidate["fail_reasons"].append("bb_lower_not_uptrend")
 
     # 이전 3 거래일 중 음봉 2개 이상 하드 필터
     # 예외: 1거래일(최근) 종가 > 3거래일 종가이면 전반적 상승 중 조정으로 간주하여 통과
