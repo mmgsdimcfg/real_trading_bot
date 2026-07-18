@@ -1,6 +1,10 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-07-18] type=fix owner=copilot
+#     summary: BB_UPPER_GAP_MIN_PCT 0.5% → 0.25% 하향 조정 - 저변동성 종목 오후 구간에서 BB 폭 좁아져 매수 차단 완화.
+#     impact: common
+#     compatibility: backward-compatible
 # - [2026-07-16] type=fix owner=copilot
 #     summary: 매도/손절 조건 완화 - r007로 D일 picks를 D+1일 실데이터에 매매 시뮬레이션(look-ahead 없는 교차일 백테스트)한
 #       결과, 급락 후 반등을 놓치는 조기청산 비중이 높게 나타나 값 조정.
@@ -188,7 +192,7 @@ PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT = True  # 과열 상태에서도 허용 여
 # BB 중앙선 상승 돌파 전략 파라미터 (BB slope break cross strategy)
 BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 약 1시간)
 BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
-BB_UPPER_GAP_MIN_PCT = 0.5       # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5)
+BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5->0.25)
 CANDLE_GAIN_MIN_PCT = 0.0        # 현재봉 양봉 최소 상승률 (%) - 음봉만 차단, 0.00%는 허용 (0.1->0.0)
 CANDLE_GAIN_MAX_PCT = 0.8        # 현재봉 최대 허용 상승률 (%) - 초과 시 추격 매수 차단
 BB_MID_CHASE_MAX_GAP_PCT = 0.35  # BB 중간선 대비 현재가 최대 허용 갭 (%) - 초과 시 추격 매수 차단 (1.0->0.7)

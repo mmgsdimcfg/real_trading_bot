@@ -18,6 +18,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-18] type=fix owner=copilot
+    summary: BB_MID_DOWNTREND 조건 완화 - 가격이 이미 BB_MID 위에 있을 경우 BB_MID 하락추세 차단 해제. 후행 지표 아티팩트로 인한 오진입 차단 방지.
+    impact: common
+    compatibility: backward-compatible (BB_MID 하락 시 가격이 이미 돌파한 경우 추가 허용)
 - [2026-07-02] type=fix owner=copilot
     summary: 거래량비율 점수에 0.7~1.2배 구간(+1점) 추가. 093370 사례처럼 vol_ratio 0.7~1.2 사이에서 0점 처리되어 유효 반전신호가 과도하게 반려되던 문제 완화.
     impact: common
@@ -631,10 +635,13 @@ def run_buy_condition_pipeline_comment(
         return False, f"BB_SLOPE_NOT_RISING_{slope_str}%"
 
     # 필수조건 1-b: BB 중간선 최근 12분(4봉) 연속 우하향 시 매수 차단
+    # 단, 가격이 이미 BB_MID를 상향 돌파한 경우(후행 지표 아티팩트) 차단 해제
     if _bb_middle_is_downtrend(frame):
-        bb_vals = [_num(frame.iloc[-(i+1)], "BB_MIDDLE") for i in range(4)] if len(frame) >= 4 else []
-        vals_str = " > ".join(f"{v:.1f}" for v in reversed(bb_vals))
-        return False, f"BB_MID_DOWNTREND_4BARS_{vals_str}"
+        _price_above_bb_pct = (live_price - cur_bb) / cur_bb * 100.0 if cur_bb > 0 else 0.0
+        if _price_above_bb_pct <= 0.0:
+            bb_vals = [_num(frame.iloc[-(i+1)], "BB_MIDDLE") for i in range(4)] if len(frame) >= 4 else []
+            vals_str = " > ".join(f"{v:.1f}" for v in reversed(bb_vals))
+            return False, f"BB_MID_DOWNTREND_4BARS_{vals_str}"
 
     # 필수조건 2: BB 중앙선 상향 돌파 (live cross signal OR close 기준 크로스)
     live_cross_up = cross_info.get("signal") == "cross_up"
