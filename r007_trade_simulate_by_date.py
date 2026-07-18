@@ -17,6 +17,10 @@ Update log format (append only):
 
 Update log:
 - [2026-07-18] type=fix owner=copilot
+    summary: 종목별 매매 내역 출력을 매수/매도 분리 대신 bar_time 시간순으로 통합 정렬.
+    impact: sim
+    compatibility: backward-compatible
+- [2026-07-18] type=fix owner=copilot
     summary: completed_codes 재진입 차단 버그 수정 - SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL이 외부 가드에 미반영,
       오전 매수청산 종목의 오후 재진입이 완전 차단되던 문제 수정.
     impact: sim
@@ -2572,17 +2576,17 @@ def simulate_date(
         # Show both code and name in the header line, e.g. [009830] 한화솔루션
         raw(f"\n  [{code}] {name}")
         raw(f"  {'-' * 50}")
-        for record in buys:
+        for record in sorted(buys + sells, key=lambda r: r.bar_time):
             bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
-            raw(f"    {bar_dt}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
-        for record in sells:
-            pnl_pct = record.pnl_pct if record.pnl_pct is not None else 0.0
-            pnl_krw = record.pnl_krw if record.pnl_krw is not None else 0.0
-            bar_dt = record.bar_time.strftime("%Y-%m-%d %H:%M")
-            raw(
-                f"    {bar_dt}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
-                f"  {pnl_pct:+.2f}%  {pnl_krw:+,.0f} KRW  [{record.reason}]"
-            )
+            if record.action == "BUY":
+                raw(f"    {bar_dt}  매수  qty={record.qty:>4d}  price={record.price:>9,.0f}  [{record.reason}]")
+            else:
+                pnl_pct = record.pnl_pct if record.pnl_pct is not None else 0.0
+                pnl_krw = record.pnl_krw if record.pnl_krw is not None else 0.0
+                raw(
+                    f"    {bar_dt}  매도  qty={record.qty:>4d}  price={record.price:>9,.0f}"
+                    f"  {pnl_pct:+.2f}%  {pnl_krw:+,.0f} KRW  [{record.reason}]"
+                )
         raw(f"    {'-' * 46}")
         raw(f"    종목 손익: {code_pnl:+,.0f} KRW  (매수 {len(buys)}건 / 매도 {len(sells)}건)")
 
