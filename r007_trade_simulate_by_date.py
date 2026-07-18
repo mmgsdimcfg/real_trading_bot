@@ -16,6 +16,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-18] type=fix owner=copilot
+    summary: completed_codes 재진입 차단 버그 수정 - SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL이 외부 가드에 미반영,
+      오전 매수청산 종목의 오후 재진입이 완전 차단되던 문제 수정.
+    impact: sim
+    compatibility: backward-compatible
+- [2026-07-18] type=feat owner=copilot
+    summary: full_log 파일명을 고정명(YYYYMMDD_simulate_full_log.txt)으로 변경, 기존 파일 있으면
+      _001 _002 ... 백업 후 저장. _next_simulation_run_index는 result 파일만 체크하도록 단순화.
+    impact: sim
+    compatibility: breaking (기존 YYYYMMDD_simulate_NNN_full_log.txt 형식에서 변경)
 - [2026-07-18] type=feat owner=copilot
     summary: 시뮬레이션 대상 종목 소스를 날짜별 picks 파일(_YYYYMMDD_picks.txt) 대신 r008_trade_watchlist_today.txt 로 변경.
       picks 파일은 r008이 없을 때만 fallback으로 사용.
@@ -2457,7 +2467,7 @@ def simulate_date(
                         continue
             if sim.in_cooldown(code, ts):
                 continue
-            if (not ALLOW_REBUY_SAME_CODE) and code in sim.completed_codes:
+            if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in sim.completed_codes:
                 continue
             if signal_buy_bar.get(code) == ts:
                 continue
@@ -2737,13 +2747,27 @@ class Tee:
 
 
 def _next_simulation_run_index(day_dir: Path) -> int:
-    """Find next shared run index for both result and full log outputs."""
+    """Find next available index for result file output."""
     for idx in range(1, 1000):
         result_path = day_dir / f"{day_dir.name}_simulate_{idx:03d}_result.txt"
-        full_log_path = day_dir / f"{day_dir.name}_simulate_{idx:03d}_full_log.txt"
-        if not result_path.exists() and not full_log_path.exists():
+        if not result_path.exists():
             return idx
     return 999
+
+
+def _backup_full_log(log_path: Path) -> None:
+    """기존 full_log 파일이 있으면 _001, _002 ... 형태로 백업 후 반환."""
+    if not log_path.exists():
+        return
+    stem = log_path.stem      # e.g. 20260716_simulate_full_log
+    suffix = log_path.suffix  # .txt
+    parent = log_path.parent
+    for idx in range(1, 1000):
+        backup = parent / f"{stem}_{idx:03d}{suffix}"
+        if not backup.exists():
+            log_path.rename(backup)
+            print(f"[INFO] Previous log backed up: {backup.name}")
+            return
 
 def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
@@ -2853,11 +2877,13 @@ def main() -> None:
         sys.exit(1)
 
     # --- 전체 실행 로그 파일 핸들러 및 tee 설정 ---
-    # 로그 파일명: YYYYMMDD_simulate_001_full_log.txt, 002, ...
+    # 로그 파일명: YYYYMMDD_simulate_full_log.txt (고정)
+    # 기존 파일 존재 시 _001, _002 ... 형태로 백업 후 새 파일 생성
     log_dir = Path(args.data_root) / args.date
     log_dir.mkdir(parents=True, exist_ok=True)
     run_index = _next_simulation_run_index(log_dir)
-    log_path = log_dir / f"{args.date}_simulate_{run_index:03d}_full_log.txt"
+    log_path = log_dir / f"{args.date}_simulate_full_log.txt"
+    _backup_full_log(log_path)
     # stdout/stderr tee
     # Keep logging on StreamHandler and route it through Tee so ENOSPC on log file
     # does not trigger logging-internal traceback spam.
