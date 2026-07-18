@@ -51,6 +51,7 @@ Update log:
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 import sys
@@ -61,7 +62,7 @@ from pathlib import Path
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parents[1]
+PROJECT_ROOT = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_user" / "domestic_stock"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_time_dailychartprice"))

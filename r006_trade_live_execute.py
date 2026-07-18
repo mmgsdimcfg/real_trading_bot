@@ -292,7 +292,7 @@ from r005_strategy_core_shared import (
 from r010_watchlist_bridge import resolve_watchlist_path
 
 current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parents[1]
+project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
 sys.path.insert(0, str(project_root / "examples_llm"))
 sys.path.insert(0, str(project_root / "examples_user" / "domestic_stock"))
 sys.path.insert(0, str(project_root / "examples_llm" / "domestic_stock" / "inquire_time_itemchartprice"))

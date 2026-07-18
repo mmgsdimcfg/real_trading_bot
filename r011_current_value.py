@@ -6,6 +6,7 @@
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -25,7 +26,7 @@ def main() -> None:
     args = parser.parse_args()
 
     current_dir = Path(__file__).resolve().parent
-    project_root = current_dir.parents[1]
+    project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
 
     sys.path.insert(0, str(project_root / "examples_llm"))
     sys.path.insert(0, str(project_root / "examples_user" / "domestic_stock"))
