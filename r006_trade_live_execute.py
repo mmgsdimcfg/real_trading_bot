@@ -20,6 +20,35 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-20] type=fix owner=copilot
+    summary: 인트라바(미완성 3분봉) 실시간 진입 프레임이 안전게이트 없이 그대로 매수 판단에
+      쓰이던 문제 수정. ENABLE_INTRABAR_LIVE_ENTRY_FILTER=True일 때 _build_realtime_entry_frame()이
+      아직 끝나지 않은 3분봉의 close를 실시간가로 계속 덮어써 만든 합성봉을 buy_frame으로 교체했는데,
+      이 합성봉이 check_buy_condition() 전체(BB_SLOPE/close_cross/캔들/점수 등)에 그대로 사용되면서
+      "CLOSE_BB_UP_CROSS"(확정 종가 크로스)라는 사유로 기록된 매수가 실제로는 실시간가 변동에
+      반응한 것으로 나타남(003680 한성기업 09:29:49 매수 사례 - 확정된 09:27 3분봉은 크로스가
+      없었는데 매수 시점 로그의 bar_close/bb_mid가 그 순간 실시간가로 재계산된 값과 일치).
+      원래 r003에 이 합성봉을 신뢰할지 판단하는 INTRABAR_MIN_ELAPSED_SECONDS/RSI/MFI/ADX 게이트가
+      정의돼 있었으나 r006 check_buy_condition()이 intrabar_elapsed_seconds를 받기만 하고
+      shared_check_buy_condition()에 전달하지 않아(shared 쪽도 애초에 파라미터가 없음) 실질적으로
+      아무 게이트도 적용되지 않는 죽은 코드였음(사례 당시 RSI=86.7로 INTRABAR_RSI_MAX=70 초과).
+      _passes_intrabar_entry_gate() 신규 도입 - 이 4개 기준을 모두 통과해야 합성봉을 매수 판단에
+      사용하고, 하나라도 실패하면(경과시간 부족 제외) [INTRABAR SKIP] 로그를 남기고 진짜 확정된
+      3분봉으로 폴백하도록 함. 더 이상 쓰이지 않는 intrabar_elapsed_seconds 파라미터는
+      check_buy_condition()에서 제거.
+    impact: live
+    compatibility: backward-compatible (합성봉이 안전 기준을 통과하는 경우에만 계속 사용되고,
+      실패 시 항상 확정 3분봉 기준으로 재평가되므로 신규 진입은 더 보수적으로 바뀔 수 있음)
+- [2026-07-20] type=fix owner=copilot
+    summary: 메인 루프가 "전 종목 처리 완료 + LIVE_PRICE_POLL_INTERVAL_SECONDS초 대기" 방식이라
+      종목 수(약 50개)가 늘수록 실제 주기가 뒤로 밀려 매분 0/20/40초 같은 고정 시각에 맞춰 돌지
+      않던 문제 수정. _next_aligned_tick()/_sleep_until_next_tick() 신규 도입 - 매 루프가
+      항상 벽시계 기준 LIVE_PRICE_POLL_INTERVAL_SECONDS(=20)의 배수 초(0/20/40)에 깨어나도록
+      정렬하고, 직전 처리가 한 틱을 넘겨 지연됐을 경우 그 틱은 건너뛰고 다음 정렬 시각으로
+      넘어가 밀린 틱이 몰아서 실행되지 않게 함. r003의 LIVE_PRICE_POLL_INTERVAL_SECONDS도
+      10->20으로 조정(0/20/40초 3틱 고정 스케줄에 맞춤, r003 Update log 참조).
+    impact: live
+    compatibility: backward-compatible (틱 시각만 벽시계에 정렬되며 매매 판단 로직은 변경 없음)
 - [2026-07-16] type=fix owner=copilot
     summary: 3분봉 프레임이 매 refresh마다 KIS inquire_time_itemchartprice 응답으로 통째로 교체되어,
       해당 API가 반환하는 최근 롤링 윈도우(리샘플 후 약 10봉)에 항상 갇혀 있던 문제 수정. 신규 조회
@@ -1458,6 +1487,29 @@ def _pending_status_backoff_seconds(fail_count: int) -> int:
     return int(min(PENDING_STATUS_BACKOFF_MAX_SECONDS, seconds))
 
 
+def _next_aligned_tick(after: datetime, interval_seconds: int) -> datetime:
+    """`after` 이후 가장 가까운 정렬 시각을 반환한다 (interval_seconds=20이면 매분 00/20/40초).
+    반환값은 항상 `after`보다 뒤(다음 틱)이다."""
+    if interval_seconds <= 0:
+        return after
+    minute_start = after.replace(second=0, microsecond=0)
+    elapsed = (after - minute_start).total_seconds()
+    steps = int(elapsed // interval_seconds) + 1
+    return minute_start + timedelta(seconds=steps * interval_seconds)
+
+
+def _sleep_until_next_tick(scheduled_tick: datetime, interval_seconds: int) -> datetime:
+    """다음 정렬 틱(예: 매분 00/20/40초)까지 대기하고 그 시각을 반환한다.
+    직전 처리가 한 틱 구간을 넘겨 지연됐다면 이미 지나간 틱은 건너뛰고 그 다음 정렬
+    시각으로 넘어간다 - 밀린 틱을 몰아서 처리하지 않기 위함."""
+    next_tick = _next_aligned_tick(scheduled_tick, interval_seconds)
+    now = datetime.now()
+    while next_tick <= now:
+        next_tick = _next_aligned_tick(next_tick, interval_seconds)
+    time.sleep(max(0.0, (next_tick - now).total_seconds()))
+    return next_tick
+
+
 def update_live_price_cross_state(
     cross_state: dict[str, dict],
     code: str,
@@ -1528,6 +1580,28 @@ def _build_realtime_entry_frame(
         ]
     working = working.sort_index()
     return calculate_indicators(working), elapsed_seconds
+
+
+def _passes_intrabar_entry_gate(frame: pd.DataFrame, elapsed_seconds: float) -> tuple[bool, str]:
+    """미완성(인트라바) 3분봉을 매수 판단에 신뢰해도 되는지 여부.
+    r003의 INTRABAR_MIN_ELAPSED_SECONDS/RSI/MFI/ADX 기준을 모두 통과해야 True.
+    실패 시 호출자는 반드시 진짜 확정된 3분봉으로 폴백해야 한다 - 그렇지 않으면 실시간가
+    변동이 확정 종가 크로스(CLOSE_BB_UP_CROSS)로 오인되어 매수될 수 있다."""
+    if elapsed_seconds < INTRABAR_MIN_ELAPSED_SECONDS:
+        return False, f"INTRABAR_ELAPSED_{elapsed_seconds:.0f}s_LT_{INTRABAR_MIN_ELAPSED_SECONDS:.0f}s"
+    if frame is None or frame.empty:
+        return False, "INTRABAR_FRAME_EMPTY"
+    cur = frame.iloc[-1]
+    rsi = _num(cur, "RSI")
+    if pd.isna(rsi) or not (INTRABAR_RSI_MIN <= rsi <= INTRABAR_RSI_MAX):
+        return False, f"INTRABAR_RSI_{rsi:.1f}_OUT_OF_{INTRABAR_RSI_MIN:.0f}-{INTRABAR_RSI_MAX:.0f}"
+    mfi = _num(cur, "MFI")
+    if pd.isna(mfi) or not (INTRABAR_MFI_MIN <= mfi <= INTRABAR_MFI_MAX):
+        return False, f"INTRABAR_MFI_{mfi:.1f}_OUT_OF_{INTRABAR_MFI_MIN:.0f}-{INTRABAR_MFI_MAX:.0f}"
+    adx = _num(cur, "ADX")
+    if pd.isna(adx) or adx < INTRABAR_ADX_MIN:
+        return False, f"INTRABAR_ADX_{adx:.1f}_LT_{INTRABAR_ADX_MIN:.0f}"
+    return True, "INTRABAR_GATE_PASS"
 
 
 # ---------------------------------------------------------------------------
@@ -1913,7 +1987,6 @@ def check_buy_condition(
     now: datetime,
     live_price: float,
     cross_info: dict[str, object],
-    intrabar_elapsed_seconds: float | None = None,
 ) -> tuple[bool, str]:
     return shared_check_buy_condition(
         frame=frame,
@@ -3063,6 +3136,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             f"after regular session start ({REGULAR_START:%H:%M})"
         )
 
+    served_tick = datetime.now()
+
     while True:
         current_dt = datetime.now()
         _ensure_log_date_for(current_dt)
@@ -3110,7 +3185,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             break
 
         if not is_regular_session(current_dt) and not is_nxt_session(current_dt):
-            time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
+            served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)
             continue
 
         try:
@@ -3130,7 +3205,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             # 15:20~15:30 정규장 마감 구간은 종목별 매도 체크 건너뛰고
             # 동시호가 예약 청산 로직(당일 매수 + 수익 구간)만 실행한다.
             if is_regular_call_auction(current_dt):
-                time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
+                served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)
                 continue
 
             for code, name in watch_map.items():
@@ -3208,13 +3283,19 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 intrabar_elapsed_seconds = max(0.0, (pd.Timestamp(current_dt) - pd.Timestamp(current_dt).floor("3min")).total_seconds())
                 if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:
                     try:
-                        buy_frame, intrabar_elapsed_seconds = _build_realtime_entry_frame(
+                        realtime_frame, realtime_elapsed = _build_realtime_entry_frame(
                             frame,
                             code,
                             current_dt,
                             float(price),
                             realtime_entry_bar_state,
                         )
+                        gate_ok, gate_reason = _passes_intrabar_entry_gate(realtime_frame, realtime_elapsed)
+                        intrabar_elapsed_seconds = realtime_elapsed
+                        if gate_ok:
+                            buy_frame = realtime_frame
+                        elif not gate_reason.startswith("INTRABAR_ELAPSED_"):
+                            log(f"  [INTRABAR SKIP] {symbol_label} | {gate_reason} | using confirmed 3min bar instead")
                     except Exception as exc:
                         log(f"  [WARN] {symbol_label} | realtime entry-frame build failed: {exc}")
                         buy_frame = frame
@@ -3678,7 +3759,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         current_dt,
                         price,
                         cross_info,
-                        intrabar_elapsed_seconds=intrabar_elapsed_seconds,
                     )
 
                     if not buy_ok:
@@ -3833,7 +3913,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 log("MAIN LOOP STOP | reason=max_consecutive_errors")
                 break
 
-        time.sleep(LIVE_PRICE_POLL_INTERVAL_SECONDS)
+        served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":

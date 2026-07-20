@@ -1,6 +1,19 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-07-20] type=fix owner=copilot
+#     summary: LIVE_PRICE_POLL_INTERVAL_SECONDS 20->10 원복 - 직전 커밋에서 사용자가 실제로 알고
+#       있던 기존 값(10초)을 확인 없이 20초로 임의 변경했던 것을 사용자 확인 후 되돌림. r006의
+#       틱 정렬 로직(_next_aligned_tick/_sleep_until_next_tick)은 이 상수를 그대로 읽어 매분
+#       00/10/20/30/40/50초(6틱/분)에 정렬되도록 자동 적용되므로 이 값 변경 외 다른 수정은 불필요.
+#     impact: live
+#     compatibility: backward-compatible
+# - [2026-07-20] type=fix owner=copilot
+#     summary: LIVE_PRICE_POLL_INTERVAL_SECONDS 10->20 - r006 메인 루프를 매분 00/20/40초
+#       벽시계 정렬 틱(3틱/분)으로 고정 스케줄링하도록 바꾸면서, 20초 배수가 되도록 조정.
+#       (r006 Update log 참조)
+#     impact: live
+#     compatibility: backward-compatible
 # - [2026-07-18] type=fix owner=copilot
 #     summary: BB_UPPER_GAP_MIN_PCT 0.5% → 0.25% 하향 조정 - 저변동성 종목 오후 구간에서 BB 폭 좁아져 매수 차단 완화.
 #     impact: common
@@ -337,8 +350,8 @@ MORNING_NXT_NEW_ENTRY_CUTOFF = MORNING_NXT_END
 STARTUP_WARMUP_SECONDS = 90
 # 메인 루프 폴링 간격(초)
 POLL_INTERVAL_SECONDS = 10  # 15 -> 10 (더 빠른 대응)
-# 실시간 현재가 재조회 간격(초)
-LIVE_PRICE_POLL_INTERVAL_SECONDS = 10
+# 실시간 현재가 재조회 간격(초) - 매분 00/10/20/30/40/50초 등 이 값의 배수 시각에 맞춰 폴링(r006 참고)
+LIVE_PRICE_POLL_INTERVAL_SECONDS = 10  # 20->10 원복: 사용자 확인 결과 기존 10초 유지가 맞음
 # 계좌/체결 상태 동기화 주기(초)
 ACCOUNT_SYNC_INTERVAL_SECONDS = 90
 # 3분봉 프레임 갱신 주기(초)

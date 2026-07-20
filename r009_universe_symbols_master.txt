@@ -223,7 +223,6 @@ code,name,market
 003620,KG모빌리티,KOSPI
 003650,미창석유,KOSPI
 003670,포스코퓨처엠,KOSPI
-003680,한성기업,KOSPI
 003690,코리안리,KOSPI
 003720,삼영,KOSPI
 003780,진양산업,KOSPI
@@ -2696,3 +2695,4 @@ code,name,market
 # 031860,디에이치엑스컴퍼니,KOSDAQ
 # 229000,젠큐릭스,KOSDAQ
 # 355690,에이텀,KOSDAQ
+# 003680,한성기업,KOSPI
