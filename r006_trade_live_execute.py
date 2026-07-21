@@ -20,6 +20,17 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-21] type=fix owner=copilot
+    summary: ATR_STOP_LOSS 청산이 당일 재진입 차단(hard_stop_today_codes/HARD_STOP_BLOCK_REENTRY_TODAY)과
+      서킷브레이커(hard_stop_daily_count/HARD_STOP_CIRCUIT_BREAKER_COUNT)에 전혀 반영되지 않던 문제 수정.
+      logs/20260720 실매매 로그 분석 결과 당일 청산 18건 중 11건(손실의 87%)이 ATR_STOP_LOSS였는데
+      이 경로는 hard_stop_today_codes.add()/hard_stop_daily_count 증가를 호출하지 않아, HARD_STOP_LOSS
+      전용으로 설계된 재진입 차단이 사실상 무력화된 상태였음. 그 결과 323410(카카오뱅크)이 하루 3번,
+      119850(지엔씨에너지)/010950(S-Oil)가 각 2번 재매수되어 재진입마다 다시 손실/본전에 그침.
+      ATR_STOP_LOSS 매도 성공 시에도 HARD_STOP_LOSS와 동일하게 hard_stop_today_codes.add() +
+      hard_stop_daily_count 증가 + 서킷브레이커 카운트를 적용하도록 수정.
+    impact: live
+    compatibility: breaking (ATR 손절 종목도 당일 재진입이 차단되어 매매 빈도 감소, 반복 손절 방지 목적)
 - [2026-07-20] type=fix owner=copilot
     summary: 인트라바(미완성 3분봉) 실시간 진입 프레임이 안전게이트 없이 그대로 매수 판단에
       쓰이던 문제 수정. ENABLE_INTRABAR_LIVE_ENTRY_FILTER=True일 때 _build_realtime_entry_frame()이
@@ -3621,6 +3632,15 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         trailing_sell_confirm_state.pop(code, None)
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
                             log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
+                            # ATR_STOP_LOSS도 HARD_STOP_LOSS와 동일하게 당일 재진입 차단/서킷브레이커에 반영한다.
+                            # (2026-07-20 로그 분석: 당일 손실의 87%가 ATR_STOP_LOSS였는데 이 카운터는
+                            # HARD_STOP_LOSS만 추적해 카카오뱅크/지엔씨에너지/S-Oil이 같은 날 손절 직후
+                            # 재매수되어 또 손실이 반복됨.)
+                            hard_stop_today_codes.add(str(code).zfill(6))
+                            hard_stop_daily_count += 1
+                            if hard_stop_daily_count >= HARD_STOP_CIRCUIT_BREAKER_COUNT:
+                                hard_stop_circuit_breaker_until = current_dt + timedelta(minutes=HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN)
+                                log(f"  [CIRCUIT_BREAKER] STOP_LOSS(ATR/HARD) {hard_stop_daily_count}\ud68c \ubc1c\uc0dd \u2192 \uc2e0\uaddc \ub9e4\uc218 {HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN}\ubd84 \ucc28\ub2e8 until {hard_stop_circuit_breaker_until:%H:%M:%S}")
                         signal_sell_bar[code] = bar_time
                         continue
 
