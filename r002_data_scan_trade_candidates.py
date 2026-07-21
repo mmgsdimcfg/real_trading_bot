@@ -17,6 +17,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-21] type=feat owner=copilot
+    summary: 20일 선형회귀 기울기 기반 장기추세 하드 필터 추가 (_linreg_slope_pct_per_day/_is_long_term_downtrend).
+      기존 3~5일 연속하락/연속음봉 체크는 짧은 반등 캔들 1개만 있어도 체인이 끊겨 무력화되는 허점이 있어
+      (033160/089030/035720/377300 사례: 반등 하루/이틀로 down_trend, daily_5d_downtrend, 3d_close_downtrend,
+      bb_lower_not_uptrend, bearish_2in3d를 모두 통과), window 전체 종가의 OLS 기울기로 짧은 반등에
+      흔들리지 않는 장기 하락추세를 별도 판정. 반전 신호 예외 없음(의도적).
+    impact: scanner
+    compatibility: breaking (기존에 통과하던 장기 하락추세 종목이 새로 배제될 수 있음)
 - [2026-07-16] type=feat owner=copilot
     summary: 신규 하드 필터 추가 - 일봉 기준 볼린저밴드 하한선(20일, 2.0 std)이 최근 3거래일
       이상 순상승하지 않는(횡보/우하향 포함) 종목 배제. calc_bb_lower()/_bb_lower_is_uptrend()
@@ -76,6 +84,7 @@ Update log:
 """
 
 import argparse
+import json
 import math
 import random
 import re
@@ -83,6 +92,7 @@ from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -134,7 +144,7 @@ BALANCED_CONFIG = ScannerConfig(
     price_max=1_000_000,
     atr_ratio_min=0.008,
     volume_ma20_min=50_000,
-    amount_ma20_min=3_000_000_000,    # 30억원/일
+    amount_ma20_min=5_000_000_000,    # 50억원/일
     min_listing_days=10,
     min_up_days_in_5=2,
     max_52w_high_ratio=0.98,        # 강세장에서는 신고가 근접 허용폭 확대
@@ -152,7 +162,7 @@ RELAXED_CONFIG = ScannerConfig(
     price_max=1_000_000,
     atr_ratio_min=0.007,
     volume_ma20_min=20_000,
-    amount_ma20_min=300_000_000,    # 3억원/일
+    amount_ma20_min=1_000_000_000,    # 10억원/일
     min_listing_days=5,
     min_up_days_in_5=1,
     max_52w_high_ratio=0.97,        # 52주 고가 근접 리스크 구간 시작
@@ -520,6 +530,41 @@ def _bb_lower_is_uptrend(df, lookback_days=3):
     return float(bb_lower.iloc[-1]) > float(bb_lower.iloc[-1 - lookback_days])
 
 
+def _linreg_slope_pct_per_day(df, window=20, min_bars=15):
+    """OLS(최소제곱법) slope of the last `window` daily closes, expressed as
+    %/day relative to the window's mean close. Unlike the short (3~5-day)
+    consecutive-decline checks, this fits every bar in the window so a
+    1~2 day bounce inside a longer decline cannot reset/hide the trend.
+    """
+    closes = df["close"].dropna().tail(window)
+    n = len(closes)
+    if n < min_bars:
+        return None
+    y = closes.to_numpy(dtype=float)
+    x = np.arange(n, dtype=float)
+    mean_close = float(y.mean())
+    if mean_close <= 0:
+        return None
+    slope = float(np.polyfit(x, y, 1)[0])
+    return slope / mean_close
+
+
+def _is_long_term_downtrend(df, window=20, min_bars=15, slope_pct_per_day_threshold=-0.003):
+    """True when the `window`-day linear-regression slope of daily closes is
+    persistently negative (default: -0.3%/day, roughly -6% net over 20
+    trading days). Intended to catch multi-week downtrends that a brief
+    1~2 day bounce would otherwise hide from the short-window (3~5 day)
+    filters and from the MA5/MA20 trend_state classification. No reversal-
+    signal exception: that exception is exactly what let a short bounce
+    mask a longer downtrend in the 2026-07-20 scan (033160/089030/035720/
+    377300).
+    """
+    slope_pct = _linreg_slope_pct_per_day(df, window=window, min_bars=min_bars)
+    if slope_pct is None:
+        return False
+    return slope_pct <= slope_pct_per_day_threshold
+
+
 def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, crash_pct=0.10):
     """연속 상한가(2일 이상, +20% 기준) 이후 급락(-10% 이상) 패턴 감지. pump & dump / 테마 급등락 종목 차단."""
     if len(df) < 4:
@@ -540,7 +585,7 @@ def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, 
 # Candidate evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None):
+def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None):
 
     candidate = {
         "code": code,
@@ -584,53 +629,64 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         candidate["skip_reason"] = "invalid_price"
         return candidate
 
+    # r001이 KIS inquire_daily_itemchartprice API로 받아온 실제 서버 일봉(daily_hist)이
+    # 있으면 이를 우선 사용한다. 로컬 인트라데이 파일을 date-dir별로 집계한 daily_df는
+    # data_root에 실제로 존재하는 날짜 폴더 수만큼만 히스토리가 쌓이므로(현재 약 13~14일)
+    # MA20/ATR14/추세 판정이 짧은 창에서 왜곡될 수 있다. price(당일 실거래가)만은 실시간
+    # 인트라데이 집계인 daily_df를 그대로 쓰고, 그 외 이력 기반 지표는 _check_df를 쓴다.
+    _check_df = daily_hist if daily_hist is not None else daily_df
+
     # Daily ATR (14-day); fall back to single-bar range when history is short
-    atr_series = calc_atr(daily_df)
+    atr_series = calc_atr(_check_df)
     atr = safe_float(atr_series.iloc[-1]) if not atr_series.empty else None
     if atr is None:
         # Use intraday range of the most recent bar as a volatility proxy
-        last_high = safe_float(daily_df["high"].iloc[-1])
-        last_low = safe_float(daily_df["low"].iloc[-1])
+        last_high = safe_float(_check_df["high"].iloc[-1])
+        last_low = safe_float(_check_df["low"].iloc[-1])
         if last_high is not None and last_low is not None and last_high > last_low:
             atr = last_high - last_low
     atr_ratio = (atr / price) if (atr is not None and price > 0) else None
 
     # Daily moving averages
-    ma5 = safe_float(daily_df["close"].rolling(5, min_periods=1).mean().iloc[-1])
-    ma20 = safe_float(daily_df["close"].rolling(20, min_periods=1).mean().iloc[-1])
+    ma5 = safe_float(_check_df["close"].rolling(5, min_periods=1).mean().iloc[-1])
+    ma20 = safe_float(_check_df["close"].rolling(20, min_periods=1).mean().iloc[-1])
     ma_gap = (ma5 - ma20) if (ma5 is not None and ma20 is not None) else None
 
     # Liquidity
-    vol_ma20 = safe_float(daily_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
-    amount_ma20 = safe_float(daily_df["amount"].rolling(20, min_periods=1).mean().iloc[-1])
+    vol_ma20 = safe_float(_check_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
+    amount_ma20 = safe_float(_check_df["amount"].rolling(20, min_periods=1).mean().iloc[-1])
 
     # Listing age (number of trading days with data)
-    listing_days = len(daily_df)
-
-
+    listing_days = len(_check_df)
 
     # Consecutive up days: close > open in last 5 trading days
-    last5 = daily_df.tail(5)
+    last5 = _check_df.tail(5)
     up_days_in_5 = int((last5["close"] > last5["open"]).sum())
 
     # Volume trend ratio (recent 5d vs prior 5d)
-    vol_trend_ratio = calc_volume_trend_ratio(daily_df, window=10)
+    vol_trend_ratio = calc_volume_trend_ratio(_check_df, window=10)
     # Relative strength: recent 5d avg volume vs prior 20d avg volume
-    vol_rel_strength = calc_volume_relative_strength(daily_df, recent_window=5, base_window=20)
+    vol_rel_strength = calc_volume_relative_strength(_check_df, recent_window=5, base_window=20)
 
-    # 52-week high position
-    lookback_52w = min(252, len(daily_df))
-    week52_high = safe_float(daily_df["high"].tail(lookback_52w).max())
+    # 52-week high position: prefer KIS inquire_price server value (w52_hgpr, real
+    # 52-week high) over the local daily-bar max, which only spans a few weeks and
+    # understates how far a stock has fallen from its real 52-week high.
+    week52_high = None
+    if w52_info and w52_info.get("w52_high"):
+        week52_high = safe_float(w52_info.get("w52_high"))
+    if week52_high is None:
+        lookback_52w = min(252, len(_check_df))
+        week52_high = safe_float(_check_df["high"].tail(lookback_52w).max())
     high_52w_ratio = (price / week52_high) if (week52_high is not None and week52_high > 0) else None
 
     # Previous day absolute return (gap / surge risk)
     prev_day_change = None
-    if len(daily_df) >= 2:
-        prev_close = safe_float(daily_df["close"].iloc[-2])
+    if len(_check_df) >= 2:
+        prev_close = safe_float(_check_df["close"].iloc[-2])
         if prev_close is not None and prev_close > 0:
             prev_day_change = abs(price - prev_close) / prev_close
 
-    ma5_series = daily_df["close"].rolling(5, min_periods=1).mean()
+    ma5_series = _check_df["close"].rolling(5, min_periods=1).mean()
     ma5_slope_3d = None
     if len(ma5_series) >= 4:
         ma5_slope_3d = safe_float(ma5_series.iloc[-1] - ma5_series.iloc[-4])
@@ -655,14 +711,14 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     near_52w_high_override = near_52w_overextended and support_signals >= 3
 
     is_last_bearish = False
-    if len(daily_df) >= 1:
-        last = daily_df.iloc[-1]
+    if len(_check_df) >= 1:
+        last = _check_df.iloc[-1]
         is_last_bearish = bool(last["close"] < last["open"])
 
     close_3d_return = None
-    if len(daily_df) >= 3:
-        c0 = safe_float(daily_df["close"].iloc[-3])
-        c2 = safe_float(daily_df["close"].iloc[-1])
+    if len(_check_df) >= 3:
+        c0 = safe_float(_check_df["close"].iloc[-3])
+        c2 = safe_float(_check_df["close"].iloc[-1])
         if c0 is not None and c0 > 0 and c2 is not None:
             close_3d_return = (c2 / c0) - 1.0
 
@@ -702,7 +758,6 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # [추가] 모멘텀 스캐너이므로 역배열(하락추세) 종목은 스코어와 상관없이 확실히 배제합니다.
     # 단, MA5/MA20는 후행지표라 6/29~6/30 사례처럼 막 반전한 종목을 놓칠 수 있어
     # 일봉 반전 신호(2일 연속 양봉/종가상승, 또는 거래량 동반 단일 V자 반등)가 있으면 예외 허용.
-    _check_df = daily_hist if daily_hist is not None else daily_df
     trend_reversal_detected = _has_reversal_signal(_check_df) or _has_volume_thrust_reversal(_check_df)
     if trend_state == "down":
         if trend_reversal_detected:
@@ -714,6 +769,12 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # 단, 최근 2일 연속 양봉 또는 2일 연속 종가 상승이면 바닥 반전으로 간주하여 통과
     if _is_5d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
         candidate["fail_reasons"].append("daily_5d_downtrend")
+
+    # 20일 선형회귀 기울기 기반 장기추세 하드 필터 (반전 신호 예외 없음)
+    # 짧은 반등 캔들 1~2개로는 무너지지 않는 window 전체 OLS 기울기 기준이라,
+    # 3~5일 연속하락 체크만으로는 잡히지 않는 다주(多週) 하락추세를 별도로 차단한다.
+    if _is_long_term_downtrend(_check_df):
+        candidate["fail_reasons"].append("linreg_long_term_downtrend")
 
     # 연속 상한가(2일 이상) 이후 급락 하드 필터 - pump & dump / 테마 급등락 차단
     if _has_upperlimit_streak_then_crash(_check_df):
@@ -1356,6 +1417,24 @@ def load_recent_pick_counts(data_root: Path, target_date_str: str | None, lookba
     return counts
 
 
+def load_w52_high_low(data_root: Path, target_date_str: str | None) -> dict[str, dict]:
+    """Load code -> {w52_high, w52_low} saved by r001 from KIS inquire_price
+    (real server 52-week high/low, field w52_hgpr/w52_lwpr). Returns {} if the
+    snapshot file is missing (falls back to local daily-bar max in that case).
+    """
+    if not target_date_str:
+        return {}
+    snapshot_path = data_root / str(target_date_str) / "_52w_high_low.json"
+    if not snapshot_path.exists():
+        return {}
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _pick_market_reference_date(data_root: Path, target_date_str: str | None) -> str | None:
     if target_date_str:
         return find_nearest_trading_date(data_root, target_date_str)
@@ -1531,6 +1610,7 @@ def scan(
         lookback_days=config.recent_pick_penalty_lookback_days,
     )
     market_map, market_ref_date = load_market_map(data_root, target_date_str, verbose=verbose)
+    w52_map = load_w52_high_low(data_root, target_date_str)
 
     candidates = []
     skipped = 0
@@ -1551,7 +1631,11 @@ def scan(
 
         recent_repeat_days = int(recent_pick_counts.get(code, 0))
         daily_hist = _load_daily_csv(code, data_root, target_date_str)
-        candidate = evaluate_candidate(code, name, daily_df, config, recent_pick_count=recent_repeat_days, daily_hist=daily_hist)
+        candidate = evaluate_candidate(
+            code, name, daily_df, config,
+            recent_pick_count=recent_repeat_days, daily_hist=daily_hist,
+            w52_info=w52_map.get(code),
+        )
         if recent_repeat_days > 0:
             candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
         candidates.append(candidate)

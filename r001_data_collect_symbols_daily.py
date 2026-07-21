@@ -34,6 +34,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-21] type=feat owner=copilot
+    summary: KIS inquire_price API로 실서버 52주 고가/저가(w52_hgpr/w52_lwpr) 스냅샷 추가 수집
+      (fetch_52w_high_low), 종목별 누적하여 _52w_high_low.json으로 저장. r002가 이 값을 직접 읽어
+      high_52w_ratio 계산에 쓰면 로컬 일봉(약 13~20일치) 최고값으로 진짜 52주 고가를 대체하던
+      왜곡을 제거함. 종목당 API 1회 추가 호출(기존 일봉 fetch와 동일한 루프/env_dv/rate-limit 패턴 재사용).
+    impact: collector
+    compatibility: backward-compatible (API 실패 시 None 반환, r002는 기존 로컬 계산으로 폴백)
 - [2026-06-28] type=fix owner=copilot
     summary: 일봉 lookback 10->20일, 10초봉 보간 이상값 클리핑(±15%초과), 3분봉 기본 저장
     impact: collector
@@ -67,6 +74,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "examples_llm"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_user" / "domestic_stock"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_time_dailychartprice"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_daily_itemchartprice"))
+sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_price"))
 
 import kis_auth as ka
 import domestic_stock_functions as dsf
@@ -609,6 +617,39 @@ def fetch_and_save_daily_ohlcv(
     return True
 
 
+def fetch_52w_high_low(code: str, env_dv: str) -> dict | None:
+    """Fetch the real 52-week high/low from KIS inquire_price (fields
+    w52_hgpr/w52_lwpr). Used by r002 to compute high_52w_ratio against the
+    true 52-week high instead of the max of a short local daily-bar window.
+    Returns None on any failure (r002 falls back to its own local calc).
+    """
+    try:
+        from inquire_price import inquire_price as _price_api
+    except ImportError:
+        logger.debug("inquire_price not importable; skipping 52w snapshot for %s", code)
+        return None
+
+    try:
+        df = _price_api(env_dv=env_dv, fid_cond_mrkt_div_code="J", fid_input_iscd=code)
+    except Exception as exc:
+        logger.debug("52w price snapshot fetch failed %s: %s", code, exc)
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    row = df.iloc[0]
+    try:
+        w52_high = float(row.get("w52_hgpr"))
+        w52_low = float(row.get("w52_lwpr"))
+    except (TypeError, ValueError):
+        return None
+    if w52_high <= 0:
+        return None
+
+    return {"w52_high": w52_high, "w52_low": w52_low}
+
+
 def load_symbols(symbols_file: Path) -> list[tuple[str, str]]:
     df = pd.read_csv(symbols_file)
     if "code" not in df.columns:
@@ -793,6 +834,7 @@ def main() -> None:
         empty_count = 0
         nxt_flags: dict[str, bool] = {}
         saved_symbols: list[tuple[str, str]] = []
+        w52_map: dict[str, dict] = {}
 
         for idx, (code, name) in enumerate(symbols, start=1):
 
@@ -860,6 +902,13 @@ def main() -> None:
                     code=code, name=name, env_dv=args.env,
                     target_date=target_date, output_dir=output_dir,
                 )
+
+                # Real 52-week high/low snapshot (KIS inquire_price) for r002's
+                # high_52w_ratio, replacing its short local daily-bar max.
+                w52 = fetch_52w_high_low(code=code, env_dv=args.env)
+                if w52:
+                    w52_map[code] = w52
+
                 saved_count += 1
                 saved_symbols.append((code, name))
                 logger.info(
@@ -902,6 +951,12 @@ def main() -> None:
             with open(daily_close_path, "w", encoding="utf-8") as _f:
                 json.dump(daily_close_map, _f, ensure_ascii=False, indent=2)
             logger.info("saved daily_close.json (%d codes): %s", len(daily_close_map), daily_close_path)
+
+        if w52_map:
+            w52_path = output_dir / "_52w_high_low.json"
+            with open(w52_path, "w", encoding="utf-8") as _f:
+                json.dump(w52_map, _f, ensure_ascii=False, indent=2)
+            logger.info("saved 52w_high_low.json (%d codes): %s", len(w52_map), w52_path)
 
         # Save prev_close from prior trading day data (mirrors r006 fetch_prev_close).
         prev_close_map: dict[str, float] = {}
