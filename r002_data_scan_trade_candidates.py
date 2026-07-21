@@ -17,6 +17,17 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-21] type=fix owner=copilot
+    summary: scan()의 fallback 채우기 로직이 trend_state==up + score>=cutoff만 확인하고
+      down_trend/daily_5d_downtrend/bb_lower_not_uptrend/linreg_long_term_downtrend/
+      bearish_2in3d_*/big_bearish_candle 등 다른 모든 하드필터 fail_reason을 무시하던 문제 수정.
+      089030(테크윙)이 evaluate_candidate에서 linreg_long_term_downtrend로 확실히 탈락했음에도
+      MA5/MA20 단기 반등으로 trend_state=up이 되어 fallback으로 최종 picks에 재유입되는 것을
+      2026-07-20 데이터 재스캔에서 확인. FALLBACK_RELAXABLE_FAIL_REASONS(low_score,
+      liquidity_below_market_dual, volume_declining)만 fallback이 override 가능하도록 제한.
+    impact: scanner
+    compatibility: breaking (fallback 유입 후보 감소 - eligible pool이 작을 때 최종 picks 수가
+      max_picks보다 적어질 수 있음)
 - [2026-07-21] type=feat owner=copilot
     summary: 20일 선형회귀 기울기 기반 장기추세 하드 필터 추가 (_linreg_slope_pct_per_day/_is_long_term_downtrend).
       기존 3~5일 연속하락/연속음봉 체크는 짧은 반등 캔들 1개만 있어도 체인이 끊겨 무력화되는 허점이 있어
@@ -207,6 +218,9 @@ MAX_PICKS_LIMIT = 50
 SCORE_CUTOFF = 30.0
 LIQUIDITY_RELAX_FACTOR = 0.70
 LOW_UP_DAYS_TOLERANCE = 1
+FALLBACK_RELAXABLE_FAIL_REASONS = {
+    "low_score", "liquidity_below_market_dual", "volume_declining",
+}  # fallback may override only these; trend/candle-pattern fail_reasons block rescue
 
 
 # ---------------------------------------------------------------------------
@@ -1682,6 +1696,15 @@ def scan(
         )
 
     # Fallback: fill up to max_picks with scorable non-down-trend candidates.
+    # NOTE: fallback previously only checked trend_state/is_last_bearish/score and
+    # explicitly excluded "low_score", but silently ignored every OTHER hard-filter
+    # fail_reason (down_trend, daily_5d_downtrend, bb_lower_not_uptrend,
+    # linreg_long_term_downtrend, bearish_2in3d_*, big_bearish_candle,
+    # upperlimit_streak_crash). A stock whose short-term MA5/MA20 flipped to "up"
+    # off a bounce (e.g. 089030 on 2026-07-20) could fail every downtrend hard
+    # filter and still get rescued back into the picks via this path. Liquidity-
+    # only reasons stay relaxable (that was the original intent); trend/candle
+    # pattern failures are not.
     if config.max_picks is not None and len(selected_rows) < config.max_picks:
         selected_codes = {row["code"] for row in selected_rows}
         fallback_rows = [
@@ -1691,7 +1714,7 @@ def scan(
             and row.get("trend_state") == "up"
             and not bool(row.get("is_last_bearish"))
             and row.get("score", 0.0) >= SCORE_CUTOFF
-            and "low_score" not in row.get("fail_reasons", [])
+            and not (set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS)
             and row["code"] not in selected_codes
         ]
         fallback_rows.sort(
@@ -1935,6 +1958,7 @@ if __name__ == "__main__":
             print(pick)
     else:
         print("(없음)")
+
 
 
 
