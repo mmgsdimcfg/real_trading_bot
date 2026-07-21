@@ -1,0 +1,52 @@
+# R76 daily live trading watchlist.
+#
+# Purpose:
+# - List of symbols used by r006_trade_live_execute.py and optional simulation watchlist mode.
+#
+# Format:
+# - code,name
+# - Example: 005930,삼성전자
+#
+# [FEATURE_R008_WATCHLIST] auto-generated from r002 scanner export.
+# scan_date=20260720
+# for_trading_day=20260721 (calendar+1, verify market day)
+# scanner_config=intraday
+# [FEATURE_SCAN_EXPORT_TO_R008]
+
+475150,SK이터닉스
+078930,GS
+317400,자이에스앤디
+006880,신송홀딩스
+314140,알피바이오
+222040,코스맥스엔비티
+435570,에르코스
+322510,제이엘케이
+475960,토모큐브
+050960,수산아이앤티
+153710,옵티팜
+333620,엔시스
+002170,SYTS
+111770,영원무역
+226400,오스테오닉
+003830,대한화섬
+003120,일성아이에스
+080010,이상네트웍스
+061250,화일약품
+017940,E1
+036220,오상헬스케어
+188040,바이오포트
+035720,카카오
+134060,이퓨쳐
+117580,대성에너지
+155660,DSR
+256150,한독크린텍
+009240,한샘
+067920,이글루
+001940,KISCO홀딩스
+030190,NICE평가정보
+038390,레드캡투어
+030200,KT
+034590,인천도시가스
+417310,코람코더원리츠
+332370,아이디피
+001065,JW중외제약우

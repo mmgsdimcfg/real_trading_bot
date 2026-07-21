@@ -21,6 +21,29 @@ Update log format (append only):
 
 Update log:
 - [2026-07-21] type=fix owner=copilot
+    summary: STAGED_TP3_PCT 1.8%->3.0% (r003 변경 반영) - 3단계 익절 중 3차(잔량 전체 청산) 임계값만
+      확장, 1차(+1.0%)/2차(+1.4%)는 유지. 3차 익절 로그 주석 하드코딩 값도 함께 정리.
+    impact: live
+    compatibility: backward-compatible (값만 변경, 로직 동일)
+- [2026-07-21] type=feat owner=copilot
+    summary: (1) 1분봉 BB 중간값 골든크로스 매수 신규 도입 - 매수 판단 타임프레임을 3분봉에서 1분봉으로
+      축소하고, 매수 조건을 "확정된 1분봉 종가가 BB 중간값을 상향 돌파(골든크로스)"로 단순화
+      (check_buy_condition_1min 신규). 기존 3분봉 다중 필터(BB기울기/스코어9~10점/RSI/MACD/Stoch/DI
+      우세/오프닝가드 등)는 신호 확인용으로는 적용하지 않되, 계좌/체결 안전장치(거래량 최소조건
+      MIN_ENTRY_VOL_MA·MIN_ENTRY_VOLUME/캔들 양봉 CANDLE_GAIN_MIN_PCT·MAX_PCT/추격매수 방지
+      BB_MID_CHASE_MAX_GAP_PCT/오더북 씬 체크/전일종가 대비 과열 상승 차단 등)는 그대로 재사용.
+      매도(데드크로스)·손절(HARD_STOP/ATR)은 기존 3분봉 기준 그대로 유지. ENABLE_1MIN_GOLDEN_CROSS_BUY
+      플래그(r003)로 기존 3분봉 파이프라인과 즉시 전환 가능. fetch_1min_frame/frame_cache_1min을
+      3분봉과 병행 유지하며, 매수 판단에 쓰이는 buy_frame/bar_time_for_buy만 1분봉으로 교체하고
+      cross_info(데드크로스 판정)는 기존 3분봉 기준을 그대로 사용해 매도 로직에는 영향 없음.
+      (2) 익절을 3단계 분할청산(진입수량의 40%/30%/30%, +1.0%/+1.4%/+1.8% 계단식)으로 변경 -
+      기존 2단계(50%@+1.0%, 전량@+2.0%)를 대체. 포지션의 최초 진입수량을 entry_quantity로
+      position_meta에 신규 영속화(재시작/계좌동기화 후에도 tp1/tp2/tp3 비중 계산 기준 유지)하고
+      tp1_done/tp2_done/tp3_done을 순차 게이트로 사용. ENABLE_STAGED_TAKE_PROFIT 플래그(r003)로
+      기존 2단계 방식과 즉시 전환 가능.
+    impact: live
+    compatibility: breaking (매수 판단 타임프레임/신호와 익절 단계가 모두 변경됨; 각 플래그로 즉시 롤백 가능)
+- [2026-07-21] type=fix owner=copilot
     summary: ATR_STOP_LOSS 청산이 당일 재진입 차단(hard_stop_today_codes/HARD_STOP_BLOCK_REENTRY_TODAY)과
       서킷브레이커(hard_stop_daily_count/HARD_STOP_CIRCUIT_BREAKER_COUNT)에 전혀 반영되지 않던 문제 수정.
       logs/20260720 실매매 로그 분석 결과 당일 청산 18건 중 11건(손실의 87%)이 ATR_STOP_LOSS였는데
@@ -175,6 +198,7 @@ from r003_define_config import (
     AUX_SELL_MIN_PNL_SCORE2,
     AUX_SELL_MIN_PNL_SCORE3,
     AUX_SELL_MIN_PNL_SCORE4,
+    BB_MID_CHASE_MAX_GAP_PCT,
     BB_PERIOD,
     BB_SQUEEZE_MIN_WIDTH_PCT,
     BB_STD_MULTIPLIER,
@@ -182,6 +206,8 @@ from r003_define_config import (
     BOX_RANGE_HOLD_LOOKBACK_BARS,
     BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT,
     BOX_RANGE_HOLD_MAX_RANGE_PCT,
+    CANDLE_GAIN_MAX_PCT,
+    CANDLE_GAIN_MIN_PCT,
     DATA_DIR_NAME,
     DEFINE_TODAY_CODE_PATH,
     EARLY_NEAR_CROSS_ALLOWED_END,
@@ -190,10 +216,12 @@ from r003_define_config import (
     EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
     EARLY_NEAR_CROSS_MIN_VOL_MA,
     EARLY_NEAR_CROSS_MIN_VOLUME,
+    ENABLE_1MIN_GOLDEN_CROSS_BUY,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_EARLY_NEAR_CROSS_ENTRY,
     ENABLE_NEAR_CROSS_ARM,
     ENABLE_PRICE_LEAD_BB_BREAKOUT,
+    ENABLE_STAGED_TAKE_PROFIT,
     ENABLE_STRICT_MA5_BB_GOLDEN_CROSS,
     ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
     ENABLE_NXT_SESSION,
@@ -214,6 +242,8 @@ from r003_define_config import (
     MACD_SLOW,
     MAX_ORDER_AMOUNT_KRW,
     MIN_BARS_REQUIRED,
+    MIN_ENTRY_VOL_MA,
+    MIN_ENTRY_VOLUME,
     MFI_BUY_MIN,
     MFI_PERIOD,
     MORNING_NXT_END,
@@ -266,6 +296,11 @@ from r003_define_config import (
     STRONG_TREND_OVERBOUGHT_MIN_ADX,
     STRONG_TREND_OVERBOUGHT_MIN_SCORE,
     STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
+    STAGED_TP1_PCT,
+    STAGED_TP1_RATIO,
+    STAGED_TP2_PCT,
+    STAGED_TP2_RATIO,
+    STAGED_TP3_PCT,
     TAKE_PROFIT_PERCENT,
     TP_EXTENSION_TRAIL_FROM_PEAK,
     TRADE_COOLDOWN_MINUTES,
@@ -1312,7 +1347,7 @@ def _is_allowed_intraday_time(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     return False
 
 
-def _normalize_intraday_frame(df: pd.DataFrame, target_date: str, nxt_tradeable: bool) -> pd.DataFrame | None:
+def _normalize_intraday_frame(df: pd.DataFrame, target_date: str, nxt_tradeable: bool, bar_interval: str = "3min") -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
 
@@ -1346,7 +1381,7 @@ def _normalize_intraday_frame(df: pd.DataFrame, target_date: str, nxt_tradeable:
     if out.empty:
         return None
 
-    out = out.resample("3min", label="right", closed="right").agg(
+    out = out.resample(bar_interval, label="right", closed="right").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     ).dropna(subset=["open", "high", "low", "close"])
 
@@ -1378,6 +1413,40 @@ def fetch_3min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
         if frame is not None and not frame.empty:
             # fetch 시점 기준으로 확정 완료된 3분봉까지만 사용
             last_closed_bar = pd.Timestamp(now).floor("3min")
+            frame = frame[frame.index <= last_closed_bar]
+            if frame.empty:
+                continue
+            return calculate_indicators(frame)
+
+    return None
+
+
+def fetch_1min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFrame | None:
+    """1분봉 프레임 조회 (1분봉 BB 중간값 골든크로스 매수 판단 전용)."""
+    if inquire_time_itemchartprice is None:
+        return None
+
+    candidates = ["NX", "UN", "J"] if (is_nxt_session(now) and nxt_tradeable) else ["J", "UN"]
+    today_str = now.strftime("%Y%m%d")
+
+    for market_div in candidates:
+        try:
+            _, raw_df = inquire_time_itemchartprice(
+                env_dv=KIS_ENV_DV,
+                fid_cond_mrkt_div_code=market_div,
+                fid_input_iscd=code,
+                fid_input_hour_1=now.strftime("%H%M%S"),
+                fid_pw_data_incu_yn="Y",
+                fid_etc_cls_code="",
+            )
+        except Exception as exc:
+            log(f"WARNING: 1min chart fetch failed for {code} ({market_div}): {exc}")
+            continue
+
+        frame = _normalize_intraday_frame(raw_df, today_str, nxt_tradeable, bar_interval="1min")
+        if frame is not None and not frame.empty:
+            # fetch 시점 기준으로 확정 완료된 1분봉까지만 사용
+            last_closed_bar = pd.Timestamp(now).floor("1min")
             frame = frame[frame.index <= last_closed_bar]
             if frame.empty:
                 continue
@@ -1475,7 +1544,8 @@ def should_refresh_3min_frame(
 FRAME_CACHE_MAX_BARS = 200  # generous cap (~10h of 3-min bars); covers a full NXT+regular session
 
 
-def _merge_3min_frame(previous: pd.DataFrame | None, refreshed: pd.DataFrame) -> pd.DataFrame:
+def _merge_bar_frame(previous: pd.DataFrame | None, refreshed: pd.DataFrame) -> pd.DataFrame:
+    """봉 간격에 무관한 공용 병합 로직 (3분봉/1분봉 캐시 겸용)."""
     if previous is None or previous.empty:
         combined = refreshed
     else:
@@ -2019,6 +2089,58 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float,
     )
 
 
+def check_buy_condition_1min(frame_1min: pd.DataFrame) -> tuple[bool, str]:
+    """1분봉 BB 중간값 골든크로스 매수 조건 (단순화 컨셉).
+
+    확정된 1분봉 종가가 BB 중간값을 상향 돌파하면 매수 신호로 본다.
+    기존 3분봉 다중 필터(BB기울기/스코어/RSI/MACD/Stoch/DI 등)는 적용하지 않고,
+    계좌/체결 안전장치(거래량 최소조건/캔들 양봉/추격매수 방지)만 재사용한다.
+    """
+    if frame_1min is None or len(frame_1min) < 2:
+        return False, "1MIN_INSUFFICIENT_BARS"
+
+    cur = frame_1min.iloc[-1]
+    prev = frame_1min.iloc[-2]
+
+    cur_bb = _num(cur, "BB_MIDDLE")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_close = _num(cur, "close")
+    prev_close = _num(prev, "close")
+    cur_open = _num(cur, "open")
+
+    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
+        return False, "1MIN_MISSING_INDICATOR"
+
+    golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+    if not golden_cross:
+        return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
+
+    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
+    if candle_gain_pct < CANDLE_GAIN_MIN_PCT:
+        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{CANDLE_GAIN_MIN_PCT:.1f}%"
+    if candle_gain_pct > CANDLE_GAIN_MAX_PCT:
+        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{CANDLE_GAIN_MAX_PCT:.1f}%"
+
+    if cur_bb > 0:
+        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
+        if bb_gap_pct > BB_MID_CHASE_MAX_GAP_PCT:
+            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{BB_MID_CHASE_MAX_GAP_PCT:.1f}%"
+
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)):
+        if vol_ma < MIN_ENTRY_VOL_MA:
+            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
+        if vol < MIN_ENTRY_VOLUME:
+            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
+        if vol_ma > 0:
+            vol_ratio = vol / vol_ma
+            if vol_ratio < 0.10:
+                return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
+
+    return True, "1MIN_BB_MID_GOLDEN_CROSS"
+
+
 
 # ---------------------------------------------------------------------------
 # Live state persistence (DATA_DIR/live_state/YYYYMMDD.json)
@@ -2052,7 +2174,10 @@ def _serialize_live_state(live_state: dict) -> dict:
             "entry_buy_time": _json_safe(meta.get("entry_buy_time") or meta.get("buy_time")),
             "buy_session": _json_safe(meta.get("buy_session")),
             "highest_price": _json_safe(meta.get("highest_price")),
+            "entry_quantity": int(meta.get("entry_quantity", 0) or 0),
             "tp1_done": bool(meta.get("tp1_done", False)),
+            "tp2_done": bool(meta.get("tp2_done", False)),
+            "tp3_done": bool(meta.get("tp3_done", False)),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded}
@@ -2092,7 +2217,10 @@ def load_live_state(date_str: str) -> dict:
             "entry_buy_time": entry_buy_time,
             "buy_session": (meta or {}).get("buy_session"),
             "highest_price": (meta or {}).get("highest_price"),
+            "entry_quantity": int((meta or {}).get("entry_quantity", 0) or 0),
             "tp1_done": bool((meta or {}).get("tp1_done", False)),
+            "tp2_done": bool((meta or {}).get("tp2_done", False)),
+            "tp3_done": bool((meta or {}).get("tp3_done", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded}
@@ -2190,7 +2318,10 @@ class TradingAPI:
                     float(meta.get("highest_price", 0.0)),
                     float(pos.get("current_price", 0.0)),
                 )
+            pos["entry_quantity"] = int(meta.get("entry_quantity", 0) or pos.get("entry_quantity", 0) or pos.get("quantity", 0) or 0)
             pos["tp1_done"] = bool(meta.get("tp1_done", pos.get("tp1_done", False)))
+            pos["tp2_done"] = bool(meta.get("tp2_done", pos.get("tp2_done", False)))
+            pos["tp3_done"] = bool(meta.get("tp3_done", pos.get("tp3_done", False)))
 
     def _record_position_meta(self, code: str, pos: dict) -> None:
         meta_map = self.live_state.setdefault("positions_meta", {})
@@ -2199,7 +2330,10 @@ class TradingAPI:
             "entry_buy_time": pos.get("entry_buy_time") or pos.get("buy_time"),
             "buy_session": pos.get("buy_session"),
             "highest_price": pos.get("highest_price"),
+            "entry_quantity": int(pos.get("entry_quantity", 0) or 0),
             "tp1_done": bool(pos.get("tp1_done", False)),
+            "tp2_done": bool(pos.get("tp2_done", False)),
+            "tp3_done": bool(pos.get("tp3_done", False)),
         }
 
     def _sync_live_state_from_positions(self) -> None:
@@ -2283,6 +2417,7 @@ class TradingAPI:
                 float(persisted.get("highest_price", current_price) or current_price),
                 current_price,
             )
+            entry_quantity = int(prev.get("entry_quantity", 0) or persisted.get("entry_quantity", 0) or qty)
             updated[code] = {
                 "buy_price": avg_price,
                 "quantity": qty,
@@ -2291,7 +2426,10 @@ class TradingAPI:
                 "buy_session": buy_session,
                 "current_price": current_price,
                 "highest_price": highest,
+                "entry_quantity": entry_quantity,
                 "tp1_done": bool(prev.get("tp1_done", persisted.get("tp1_done", False))),
+                "tp2_done": bool(prev.get("tp2_done", persisted.get("tp2_done", False))),
+                "tp3_done": bool(prev.get("tp3_done", persisted.get("tp3_done", False))),
             }
             self._record_position_meta(code, updated[code])
 
@@ -2447,6 +2585,9 @@ class TradingAPI:
         pos["entry_buy_time"] = entry_time
         pos["buy_session"] = pending.get("session", pos.get("buy_session", "synced"))
         pos["tp1_done"] = False
+        pos["tp2_done"] = False
+        pos["tp3_done"] = False
+        pos["entry_quantity"] = max(int(pos.get("entry_quantity", 0) or 0), filled_qty)
         if fill_price > 0:
             pos["buy_price"] = fill_price
             pos["current_price"] = float(pos.get("current_price") or fill_price)
@@ -3131,6 +3272,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     live_price_backoff_until: dict[str, datetime] = {}
     frame_cache: dict[str, pd.DataFrame] = {}
     frame_last_refresh_at: dict[str, datetime] = {}
+    frame_cache_1min: dict[str, pd.DataFrame] = {}
+    frame_last_refresh_at_1min: dict[str, datetime] = {}
     realtime_entry_bar_state: dict[str, dict[str, object]] = {}
     liquidation_state: dict = {}
     current_trade_date = now.date()
@@ -3181,6 +3324,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             live_price_backoff_until.clear()
             frame_cache.clear()
             frame_last_refresh_at.clear()
+            frame_cache_1min.clear()
+            frame_last_refresh_at_1min.clear()
             realtime_entry_bar_state.clear()
 
         is_open_day, market_day_log = get_market_day_status(current_dt)
@@ -3238,7 +3383,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         refreshed_frame = None
 
                     if refreshed_frame is not None and not refreshed_frame.empty:
-                        merged_frame = _merge_3min_frame(cached_frame, refreshed_frame)
+                        merged_frame = _merge_bar_frame(cached_frame, refreshed_frame)
                         frame_cache[code] = merged_frame
                         frame_last_refresh_at[code] = current_dt
                         frame = merged_frame
@@ -3434,35 +3579,95 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         signal_sell_bar[code] = bar_time
                         continue
 
-                    # +2.0% full take profit
-                    if pnl_pct >= 0.020:
-                        reason_tp2 = "TP2_FULL_2.0PCT"
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_tp2} | "
-                            f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%"
-                        )
-                        trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp2, nxt_tradeable, price=price, code_name=name):
-                            log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={pos['quantity']} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
+                    if ENABLE_STAGED_TAKE_PROFIT:
+                        entry_qty = int(pos.get("entry_quantity", 0) or 0)
+                        if entry_qty <= 0:
+                            entry_qty = int(pos["quantity"])
 
-                    # +1.0% one-time 50% partial take profit
-                    if (not bool(pos.get("tp1_done", False))) and pnl_pct >= 0.010:
-                        partial_qty = max(1, int(int(pos["quantity"]) * 0.5))
-                        partial_qty = min(partial_qty, int(pos["quantity"]))
-                        reason_tp1 = "TP1_PARTIAL_50PCT_1.0PCT"
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_tp1} | "
-                            f"qty={partial_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
-                        )
-                        if api.place_sell_order(code, partial_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
-                            pos["tp1_done"] = True
-                            api._record_position_meta(code, pos)
-                            api.persist_live_state(date_str=date_str)
-                            log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={partial_qty} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
+                        # 1차 익절: entry_qty의 STAGED_TP1_RATIO(40%), +STAGED_TP1_PCT(1.0%) 도달 시
+                        if (not bool(pos.get("tp1_done", False))) and pnl_pct >= STAGED_TP1_PCT:
+                            tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
+                            tp1_qty = min(tp1_qty, int(pos["quantity"]))
+                            reason_tp1 = f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{STAGED_TP1_PCT*100:.1f}PCT"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_tp1} | "
+                                f"qty={tp1_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
+                            )
+                            if api.place_sell_order(code, tp1_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
+                                pos["tp1_done"] = True
+                                pos["entry_quantity"] = entry_qty
+                                api._record_position_meta(code, pos)
+                                api.persist_live_state(date_str=date_str)
+                                log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f}")
+                            signal_sell_bar[code] = bar_time
+                            continue
+
+                        # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), +STAGED_TP2_PCT(1.4%) 도달 시 (1차 완료 후)
+                        if bool(pos.get("tp1_done", False)) and (not bool(pos.get("tp2_done", False))) and pnl_pct >= STAGED_TP2_PCT:
+                            tp2_qty = max(1, int(round(entry_qty * STAGED_TP2_RATIO)))
+                            tp2_qty = min(tp2_qty, int(pos["quantity"]))
+                            reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{STAGED_TP2_PCT*100:.1f}PCT"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_tp2} | "
+                                f"qty={tp2_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
+                            )
+                            if api.place_sell_order(code, tp2_qty, current_dt, reason_tp2, nxt_tradeable, price=price, code_name=name):
+                                pos["tp2_done"] = True
+                                api._record_position_meta(code, pos)
+                                api.persist_live_state(date_str=date_str)
+                                log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={tp2_qty} price={price:,.0f}")
+                            signal_sell_bar[code] = bar_time
+                            continue
+
+                        # 3차 익절: 잔량 전체 청산, +STAGED_TP3_PCT(현재 3.0%) 도달 시 (1,2차 완료 후)
+                        if (
+                            bool(pos.get("tp1_done", False))
+                            and bool(pos.get("tp2_done", False))
+                            and (not bool(pos.get("tp3_done", False)))
+                            and pnl_pct >= STAGED_TP3_PCT
+                        ):
+                            reason_tp3 = f"TP3_FULL_{STAGED_TP3_PCT*100:.1f}PCT"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_tp3} | "
+                                f"qty={int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
+                            )
+                            trailing_sell_confirm_state.pop(code, None)
+                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp3, nxt_tradeable, price=price, code_name=name):
+                                pos["tp3_done"] = True
+                                api._record_position_meta(code, pos)
+                                log(f"  [SELL EXECUTED] {code} | {reason_tp3} | qty={pos['quantity']} price={price:,.0f}")
+                            signal_sell_bar[code] = bar_time
+                            continue
+                    else:
+                        # +2.0% full take profit
+                        if pnl_pct >= 0.020:
+                            reason_tp2 = "TP2_FULL_2.0PCT"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_tp2} | "
+                                f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%"
+                            )
+                            trailing_sell_confirm_state.pop(code, None)
+                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp2, nxt_tradeable, price=price, code_name=name):
+                                log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={pos['quantity']} price={price:,.0f}")
+                            signal_sell_bar[code] = bar_time
+                            continue
+
+                        # +1.0% one-time 50% partial take profit
+                        if (not bool(pos.get("tp1_done", False))) and pnl_pct >= 0.010:
+                            partial_qty = max(1, int(int(pos["quantity"]) * 0.5))
+                            partial_qty = min(partial_qty, int(pos["quantity"]))
+                            reason_tp1 = "TP1_PARTIAL_50PCT_1.0PCT"
+                            log(
+                                f"  [SELL TRIGGER] {code} | {reason_tp1} | "
+                                f"qty={partial_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
+                            )
+                            if api.place_sell_order(code, partial_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
+                                pos["tp1_done"] = True
+                                api._record_position_meta(code, pos)
+                                api.persist_live_state(date_str=date_str)
+                                log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={partial_qty} price={price:,.0f}")
+                            signal_sell_bar[code] = bar_time
+                            continue
 
                     # Signal-based full exits
                     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
@@ -3757,7 +3962,29 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             continue
                     if api._in_cooldown(code, current_dt):
                         continue
-                    if signal_buy_bar.get(code) == bar_time:
+
+                    bar_time_for_buy = bar_time
+                    if ENABLE_1MIN_GOLDEN_CROSS_BUY:
+                        cached_frame_1min = frame_cache_1min.get(code)
+                        last_frame_refresh_1min = frame_last_refresh_at_1min.get(code)
+                        frame_1min = cached_frame_1min
+                        if should_refresh_3min_frame(current_dt, cached_frame_1min, last_frame_refresh_1min):
+                            try:
+                                refreshed_frame_1min = fetch_1min_frame(code, current_dt, nxt_tradeable)
+                            except Exception as exc:
+                                log(f"{code} 1min frame error: {exc}")
+                                refreshed_frame_1min = None
+                            if refreshed_frame_1min is not None and not refreshed_frame_1min.empty:
+                                frame_1min = _merge_bar_frame(cached_frame_1min, refreshed_frame_1min)
+                                frame_cache_1min[code] = frame_1min
+                                frame_last_refresh_at_1min[code] = current_dt
+                        if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
+                            log(f"  {symbol_label} [BUY SKIP] | 1MIN_FRAME_UNAVAILABLE")
+                            continue
+                        buy_frame = frame_1min
+                        bar_time_for_buy = frame_1min.index[-1]
+
+                    if signal_buy_bar.get(code) == bar_time_for_buy:
                         continue
 
                     prev_bar = buy_frame.iloc[-2]
@@ -3774,12 +4001,15 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         log(f"  {symbol_label} [BUY SKIP] | CIRCUIT_BREAKER_ACTIVE until={hard_stop_circuit_breaker_until:%H:%M:%S} count={hard_stop_daily_count}")
                         continue
 
-                    buy_ok, buy_reason = check_buy_condition(
-                        buy_frame,
-                        current_dt,
-                        price,
-                        cross_info,
-                    )
+                    if ENABLE_1MIN_GOLDEN_CROSS_BUY:
+                        buy_ok, buy_reason = check_buy_condition_1min(buy_frame)
+                    else:
+                        buy_ok, buy_reason = check_buy_condition(
+                            buy_frame,
+                            current_dt,
+                            price,
+                            cross_info,
+                        )
 
                     if not buy_ok:
                         buy_confirm_state.pop(code, None)
@@ -3830,12 +4060,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     else:
                         confirm_count = int(confirm_state.get("count", 0)) + 1
 
-                    buy_confirm_state[code] = {"confirmed_at": current_dt, "count": confirm_count, "bar_time": bar_time}
+                    buy_confirm_state[code] = {"confirmed_at": current_dt, "count": confirm_count, "bar_time": bar_time_for_buy}
                     if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
                         log(
                                 f"  {symbol_label} [BUY HOLD] | reason=WAIT_NEXT_POLL_CONFIRM | "
                                 f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
-                                f"live={price:,.0f} bb_mid={_num(cur, 'BB_MIDDLE'):.1f} bar={bar_time:%H:%M:%S}"
+                                f"live={price:,.0f} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} bar={bar_time_for_buy:%H:%M:%S}"
                         )
                         continue
 
@@ -3867,7 +4097,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     )
                     traded_today.add(norm_code)
                     api.live_state["traded_today"] = traded_today
-                    signal_buy_bar[code] = bar_time
+                    signal_buy_bar[code] = bar_time_for_buy
 
                     cur_bar_open = _num(buy_frame.iloc[-1], "open")
                     cur_bar_close = _num(buy_frame.iloc[-1], "close")
@@ -3894,7 +4124,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                         log(
                             f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
-                            f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
+                            f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} | "
                             f"RSI={_num(buy_frame.iloc[-1], 'RSI'):.1f} SIG={_num(buy_frame.iloc[-1], 'RSI_SIGNAL'):.1f} | "
                             f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(buy_frame.iloc[-1], 'STOCH_K'):.1f} D={_num(buy_frame.iloc[-1], 'STOCH_D'):.1f} | "
                             f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(buy_frame.iloc[-1], 'WILLIAMS_R'):.1f} WD={_num(buy_frame.iloc[-1], 'WILLIAMS_D'):.1f} | "
