@@ -20,6 +20,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-22] type=fix owner=copilot
+    summary: 보조 거래 로그 파일명(_trade_log_target_paths) 순서를 buy_sell_YYYYMMDD.log/
+      trade_events_YYYYMMDD.log에서 YYYYMMDD_buy_sell.log/YYYYMMDD_trade_events.log로 변경 -
+      날짜가 파일명 뒤가 아닌 앞에 오도록 정렬(다른 로그 파일들과 명명 규칙 통일).
+    impact: live
+    compatibility: breaking (로그 파일명 변경 - 기존 파일명을 참조하는 외부 스크립트/모니터링이
+      있다면 갱신 필요)
 - [2026-07-22] type=feat owner=copilot
     summary: 개장 초반(개장 후 OPENING_GAP_GATE_WINDOW_MINUTES=5분) 갭/거래량폭발 라이브 게이트
       신규 도입 (_passes_opening_gap_volume_gate). r002 스캐너는 전일 종가 기준 데이터로 picks를
@@ -646,8 +653,8 @@ def log(msg: str) -> None:
 def _trade_log_target_paths() -> list[Path]:
     date_str = str(_LOG_CTX.get("date_str") or datetime.now().strftime("%Y%m%d"))
     candidates: list[Path] = [
-        current_dir / "logs" / f"buy_sell_{date_str}.log",
-        current_dir / "logs" / f"trade_events_{date_str}.log",
+        current_dir / "logs" / f"{date_str}_buy_sell.log",
+        current_dir / "logs" / f"{date_str}_trade_events.log",
     ]
     for key in ("flat_trade_log", "trade_log", "session_buy_sell_log"):
         value = _LOG_CTX.get(key)
