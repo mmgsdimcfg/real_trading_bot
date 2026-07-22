@@ -1,6 +1,13 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-07-22] type=feat owner=copilot
+#     summary: 개장 초반(09:01~09:05류) 갭/거래량폭발 라이브 게이트용 설정값 신규 추가
+#       (ENABLE_OPENING_GAP_VOLUME_GATE 등). r002 스캐너는 전일 종가 기준 데이터라 당일
+#       시가 갭이나 거래량 급변을 반영하지 못하는 한계가 있어, r006 실시간 매수 직전에
+#       한 번 더 검증하기 위함 (r006 Update log 참조).
+#     impact: live
+#     compatibility: backward-compatible (기본 True, 플래그로 즉시 롤백 가능)
 # - [2026-07-21] type=fix owner=copilot
 #     summary: STAGED_TP3_PCT 1.8%->3.0% - 사용자 요청으로 3단계 익절 중 3차(잔량 전체 청산) 임계값만
 #       확장(1차 +1.0%/2차 +1.4%는 유지). 최대 익절폭이 기존 대비 넓어짐.
@@ -316,6 +323,18 @@ MAX_ORDER_AMOUNT_KRW = 500_000  # 1회 매수 주문 최대 금액(KRW)
 # 그대로 재사용한다. 매도(데드크로스)/손절 조건은 기존 3분봉 기준 그대로 유지된다.
 # False로 설정 시 즉시 기존 3분봉 다중필터 매수 파이프라인으로 롤백된다.
 ENABLE_1MIN_GOLDEN_CROSS_BUY = True
+
+# --- 13. 개장 초반 갭/거래량폭발 라이브 게이트 (Opening gap/volume live gate) -------
+# r002 스캐너는 전일 종가 기준 데이터로 랭킹을 매기므로, 당일 아침 뉴스/해외증시
+# 영향으로 갭상승/갭하락 출발하거나 거래량이 급변하는 경우를 반영하지 못한다.
+# 이를 보완하기 위해 개장 후 일정 시간(윈도우) 동안 신규 매수 직전에 한 번 더
+# 당일 시가 갭 비율과 초반 거래량을 실시간으로 검증한다.
+ENABLE_OPENING_GAP_VOLUME_GATE = True
+OPENING_GAP_GATE_WINDOW_MINUTES = 5     # 개장 후 이 분(分) 이내에만 게이트 적용
+OPENING_GAP_MIN_PCT = 0.0               # 선호 갭 하한 (0%)
+OPENING_GAP_MAX_PCT = 0.05              # 선호 갭 상한 (+5%)
+OPENING_GAP_HARD_FLOOR_PCT = -0.02      # 이 미만 갭하락이면 해당 종목 당일 신규매수 자체를 차단 (-2%)
+OPENING_MIN_EARLY_VOLUME_RATIO = 1.5    # 개장초반 거래량 폭발 판정 배수 (현재봉 거래량 / VOL_MA20)
 
 
 # ---------------------------------------------------------------------------

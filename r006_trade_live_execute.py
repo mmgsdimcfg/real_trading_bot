@@ -20,6 +20,20 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-22] type=feat owner=copilot
+    summary: 개장 초반(개장 후 OPENING_GAP_GATE_WINDOW_MINUTES=5분) 갭/거래량폭발 라이브 게이트
+      신규 도입 (_passes_opening_gap_volume_gate). r002 스캐너는 전일 종가 기준 데이터로 picks를
+      선정하므로 당일 아침 뉴스/해외증시 영향으로 갭상승/갭하락 출발하거나 거래량이 급변하는
+      경우를 반영하지 못하는 한계가 있어(사용자 지적), 신규 매수 직전에 실시간으로 한 번 더
+      검증한다. (1) 개장 후 5분 이내에 시가 갭이 -2%(OPENING_GAP_HARD_FLOOR_PCT) 미만이면
+      해당 종목은 당일 신규매수 자체를 영구 차단(gap_blocked_codes). (2) 갭이 선호구간
+      0~+5%(OPENING_GAP_MIN_PCT~MAX_PCT) 밖이거나 (3) 현재봉 거래량이 VOL_MA20의 1.5배
+      (OPENING_MIN_EARLY_VOLUME_RATIO) 미만이면 이 5분 창 안에서의 매수만 보류(창이 지나면
+      일반 로직으로 복귀). 기존 MAX_BUY_RISE_PCT_FROM_PREV_CLOSE(23%, 과도 급등 차단)와는
+      별개로 개장 초반에만 적용되는 좁은 선호구간 게이트. ENABLE_OPENING_GAP_VOLUME_GATE
+      플래그(r003)로 즉시 롤백 가능.
+    impact: live
+    compatibility: breaking (개장 초반 5분 내 매수가 이전보다 더 자주 보류될 수 있음; 플래그로 롤백 가능)
 - [2026-07-21] type=fix owner=copilot
     summary: STAGED_TP3_PCT 1.8%->3.0% (r003 변경 반영) - 3단계 익절 중 3차(잔량 전체 청산) 임계값만
       확장, 1차(+1.0%)/2차(+1.4%)는 유지. 3차 익절 로그 주석 하드코딩 값도 함께 정리.
@@ -288,6 +302,12 @@ from r003_define_config import (
     HARD_STOP_LOSS_PCT,
     HARD_STOP_MIN_HOLD_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
+    ENABLE_OPENING_GAP_VOLUME_GATE,
+    OPENING_GAP_GATE_WINDOW_MINUTES,
+    OPENING_GAP_MIN_PCT,
+    OPENING_GAP_MAX_PCT,
+    OPENING_GAP_HARD_FLOOR_PCT,
+    OPENING_MIN_EARLY_VOLUME_RATIO,
     STOCH_BUY_MAX,
     STOCH_BUY_MIN,
     STOCH_D_PERIOD,
@@ -2018,6 +2038,49 @@ def _rise_from_prev_close(live_price: float, prev_close: float) -> float | None:
     return (float(live_price) / float(prev_close)) - 1.0
 
 
+def _passes_opening_gap_volume_gate(
+    code: str,
+    current_dt: datetime,
+    session_open_dt: datetime | None,
+    gap_pct: float | None,
+    buy_frame: pd.DataFrame,
+    gap_blocked_codes: set[str],
+) -> tuple[bool, str]:
+    """개장 초반 갭/거래량폭발 라이브 게이트.
+
+    r002 스캐너는 전일 종가 기준 데이터라 당일 시가 갭이나 초반 거래량 급변을
+    반영하지 못한다. 개장 후 OPENING_GAP_GATE_WINDOW_MINUTES 이내에만 적용되며,
+    심한 갭하락(OPENING_GAP_HARD_FLOOR_PCT 미만)은 당일 재검사 없이 영구 차단한다.
+    """
+    norm_code = str(code).zfill(6)
+    if norm_code in gap_blocked_codes:
+        return False, "OPENING_GAP_BLOCKED_TODAY"
+
+    if session_open_dt is None or gap_pct is None:
+        return True, "OK"
+
+    elapsed = (current_dt - session_open_dt).total_seconds()
+    if elapsed < 0 or elapsed > OPENING_GAP_GATE_WINDOW_MINUTES * 60:
+        return True, "OK"  # 게이트 적용 윈도우 밖이면 통과 (일반 로직으로 복귀)
+
+    if gap_pct < OPENING_GAP_HARD_FLOOR_PCT:
+        gap_blocked_codes.add(norm_code)
+        return False, f"OPENING_GAP_DOWN_BLOCKED_{gap_pct*100:.2f}%"
+
+    if not (OPENING_GAP_MIN_PCT <= gap_pct <= OPENING_GAP_MAX_PCT):
+        return False, f"OPENING_GAP_OUT_OF_RANGE_{gap_pct*100:.2f}%"
+
+    cur_row = buy_frame.iloc[-1] if buy_frame is not None and not buy_frame.empty else None
+    vol = _num(cur_row, "volume") if cur_row is not None else float("nan")
+    vol_ma = _num(cur_row, "VOL_MA20") if cur_row is not None else float("nan")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        if vol_ratio < OPENING_MIN_EARLY_VOLUME_RATIO:
+            return False, f"OPENING_VOLUME_INSUFFICIENT_{vol_ratio:.2f}x"
+
+    return True, "OK"
+
+
 def _extract_score_from_buy_reason(buy_reason: str) -> int | None:
     m = re.search(r"SCORE_(\d+)", str(buy_reason or ""))
     if not m:
@@ -3263,6 +3326,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     no_trend_exit_state: dict[str, dict] = {}
     # 연속 HARD_STOP 서킷브레이커 상태
     hard_stop_today_codes: set[str] = set()  # 당일 HARD_STOP 발생 종목 (재진입 영구 차단)
+    gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목
     hard_stop_circuit_breaker_until: datetime | None = None  # 서킷브레이커 해제 시각
     hard_stop_daily_count: int = 0  # 당일 HARD_STOP 누적 횟수
     live_price_cross_state: dict[str, dict] = {}
@@ -3308,6 +3372,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             api._apply_persisted_position_meta()
             # 날짜 변경: 서킷브레이커 상태 초기화
             hard_stop_today_codes.clear()
+            gap_blocked_codes.clear()
             hard_stop_circuit_breaker_until = None
             hard_stop_daily_count = 0
             post_buy_bb_drop_state.clear()
@@ -4048,6 +4113,16 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             f"prev_close={float(prev_close):,.0f} live={price:,.0f}"
                         )
                         continue
+
+                    if ENABLE_OPENING_GAP_VOLUME_GATE:
+                        gap_ok, gap_reason = _passes_opening_gap_volume_gate(
+                            code, current_dt, session_open_dt, rise_ratio, buy_frame, gap_blocked_codes,
+                        )
+                        if not gap_ok:
+                            buy_confirm_state.pop(code, None)
+                            _gap_txt = f"{rise_ratio*100:.2f}%" if rise_ratio is not None else "nan"
+                            log(f"  {symbol_label} [BUY REJECT] | {gap_reason} | gap={_gap_txt} live={price:,.0f}")
+                            continue
 
                     confirm_state = buy_confirm_state.get(code)
                     _last_confirmed = confirm_state.get("confirmed_at") if confirm_state else None
