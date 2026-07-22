@@ -17,6 +17,30 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-22] type=refactor owner=copilot
+    summary: 스캐너 파이프라인을 4단계(0.기본필터/1.하드필터/2.소프트플래그/3.점수/4.최종선정)로
+      재구성하고 배점표를 전면 재작성 (사용자 지정 표 기반).
+      (1) Stage0: min_listing_days와 기본 유동성 하한(volume_ma20_min/amount_ma20_min - 기존에
+      정의만 되고 실제로는 미사용이었음)을 하드필터가 아닌 조기 skip_reason으로 이동.
+      (2) Stage1(하드, 절충안 적용): 가격범위/20일회귀+R²(신규, R²>=0.5일 때만 하드탈락)/
+      장대음봉/상한가후급락/시장상대 극저유동성만 유지. MA5-MA20 역배열(down_trend)도 하드 유지.
+      (3) Stage2(소프트로 전환, 2026-07-21에 하드필터로 추가됐던 항목 포함): daily_5d_downtrend,
+      3d_close_downtrend, bearish_2in3d, bb_lower_not_uptrend, volume_declining. R² 낮은
+      장기하락 신호(weak_signal_long_term_downtrend)도 소프트로 신규 추가.
+      *** 리스크: 089030(테크윙) 사례로 하드필터화됐던 항목들을 다시 소프트로 낮춘 것이므로,
+      단기 반등으로 트렌드가 up으로 바뀌는 종목이 재유입될 수 있음 - fallback_selected/soft_flags
+      카운트로 실제 영향을 모니터링 필요. ***
+      (4) Stage3(점수, 합계 100점): 거래량22(vol_rel_strength 기반, 기존 18에서 상향)/
+      거래대금20(기존 18)/ATR18(기존 22에서 하향)/RS15(신규, KOSPI·KOSDAQ 대비 20일 상대강도,
+      pykrx 필요)/ADX10(신규, 일봉14일)/MA정렬±8(기존 ±10)/3일모멘텀±5(변경없음)/가격대2(기존 5).
+      기존 "연속상승일수(+14)", "거래량추세(+8)", "52주포지셔닝(+5)" 점수항목은 제거(표에 없음,
+      up_days/vol_trend는 소프트플래그로만 반영). 각종 페널티(전일음봉/52주과열/전일급등/
+      최근반복선정/소프트플래그개수)는 구조 유지.
+      calc_adx()/calc_relative_strength()/load_market_index_series() 신규 함수 추가.
+      SCORE_CUTOFF(30.0)는 그대로 유지 - 배점 구성이 달라져 점수 분포가 이동할 수 있어
+      추후 실제 스캔 결과를 보며 재조정 필요.
+    impact: scanner
+    compatibility: breaking (하드/소프트 재분류 + 배점표 전면 변경으로 최종 picks 구성이 달라짐)
 - [2026-07-21] type=fix owner=copilot
     summary: scan()의 fallback 채우기 로직이 trend_state==up + score>=cutoff만 확인하고
       down_trend/daily_5d_downtrend/bb_lower_not_uptrend/linreg_long_term_downtrend/
@@ -219,8 +243,9 @@ SCORE_CUTOFF = 30.0
 LIQUIDITY_RELAX_FACTOR = 0.70
 LOW_UP_DAYS_TOLERANCE = 1
 FALLBACK_RELAXABLE_FAIL_REASONS = {
-    "low_score", "liquidity_below_market_dual", "volume_declining",
+    "low_score", "liquidity_below_market_dual",
 }  # fallback may override only these; trend/candle-pattern fail_reasons block rescue
+  # (2026-07-22: volume_declining은 이제 fail_reason이 아니라 soft_flag이므로 제거)
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +405,39 @@ def calc_bb_lower(daily_df, period=20, std_mult=2.0):
     return ma - std_mult * std
 
 
+def calc_adx(daily_df, period=14):
+    """일봉 기준 ADX(Wilder's smoothing)와 +DI/-DI를 함께 반환.
+    (adx_series, plus_di_series, minus_di_series) 튜플. 데이터가 `period`보다
+    짧으면 해당 구간은 NaN이며, 호출자는 safe_float()으로 마지막 값만 취한다.
+    """
+    high = daily_df["high"]
+    low = daily_df["low"]
+    close = daily_df["close"]
+    prev_close = close.shift(1)
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+
+    up_move = high - prev_high
+    down_move = prev_low - low
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    plus_dm_smooth = pd.Series(plus_dm, index=daily_df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    minus_dm_smooth = pd.Series(minus_dm, index=daily_df.index).ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
+    plus_di = 100.0 * (plus_dm_smooth / atr.replace(0, np.nan))
+    minus_di = 100.0 * (minus_dm_smooth / atr.replace(0, np.nan))
+    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    return adx, plus_di, minus_di
+
+
 def safe_float(value):
     if pd.isna(value):
         return None
@@ -436,6 +494,27 @@ def calc_volume_relative_strength(daily_df, recent_window=5, base_window=20):
     if prior_avg == 0:
         return None
     return recent_avg / prior_avg
+
+
+def calc_relative_strength(daily_df, market_close_series, window=20):
+    """window일 주가수익률 - 같은 기간 시장지수(KOSPI/KOSDAQ) 수익률 차이(%p, RS).
+
+    market_close_series가 없거나(pykrx 미설치 등) 데이터가 부족하면 None을
+    반환하고, 호출자(점수 계산)는 이를 중립(기여 0점)으로 처리한다.
+    """
+    if market_close_series is None or len(market_close_series) == 0:
+        return None
+    closes = daily_df["close"].dropna()
+    if len(closes) < window + 1:
+        return None
+    stock_ret = float(closes.iloc[-1] / closes.iloc[-1 - window] - 1.0)
+
+    idx = market_close_series.dropna()
+    if len(idx) < window + 1:
+        return None
+    market_ret = float(idx.iloc[-1] / idx.iloc[-1 - window] - 1.0)
+
+    return (stock_ret - market_ret) * 100.0  # %p 단위
 
 
 # ---------------------------------------------------------------------------
@@ -544,39 +623,65 @@ def _bb_lower_is_uptrend(df, lookback_days=3):
     return float(bb_lower.iloc[-1]) > float(bb_lower.iloc[-1 - lookback_days])
 
 
-def _linreg_slope_pct_per_day(df, window=20, min_bars=15):
-    """OLS(최소제곱법) slope of the last `window` daily closes, expressed as
-    %/day relative to the window's mean close. Unlike the short (3~5-day)
-    consecutive-decline checks, this fits every bar in the window so a
-    1~2 day bounce inside a longer decline cannot reset/hide the trend.
+LINREG_R2_HARD_THRESHOLD = 0.5  # 이 값 이상일 때만 장기 하락추세를 "확실"로 보고 하드탈락시킴
+
+
+def _linreg_slope_and_r2(df, window=20, min_bars=15):
+    """OLS(최소제곱법) slope(%/day)와 결정계수 R²를 함께 반환.
+    R²가 낮으면(등락이 심해 추세선이 데이터를 잘 설명하지 못하면) 기울기만으로
+    장기추세를 하드 판정하기에는 근거가 약하다는 뜻이라, 호출자가 R² 기준으로
+    하드탈락 vs 소프트경고를 구분할 수 있도록 둘 다 반환한다.
     """
     closes = df["close"].dropna().tail(window)
     n = len(closes)
     if n < min_bars:
-        return None
+        return None, None
     y = closes.to_numpy(dtype=float)
     x = np.arange(n, dtype=float)
     mean_close = float(y.mean())
     if mean_close <= 0:
-        return None
-    slope = float(np.polyfit(x, y, 1)[0])
-    return slope / mean_close
+        return None, None
+    slope, intercept = np.polyfit(x, y, 1)
+    y_pred = slope * x + intercept
+    ss_res = float(np.sum((y - y_pred) ** 2))
+    ss_tot = float(np.sum((y - mean_close) ** 2))
+    r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+    return float(slope) / mean_close, r2
+
+
+def _linreg_slope_pct_per_day(df, window=20, min_bars=15):
+    """하위호환용 래퍼: 기울기(%/day)만 반환 (R²는 버림)."""
+    slope_pct, _ = _linreg_slope_and_r2(df, window=window, min_bars=min_bars)
+    return slope_pct
 
 
 def _is_long_term_downtrend(df, window=20, min_bars=15, slope_pct_per_day_threshold=-0.003):
     """True when the `window`-day linear-regression slope of daily closes is
     persistently negative (default: -0.3%/day, roughly -6% net over 20
-    trading days). Intended to catch multi-week downtrends that a brief
-    1~2 day bounce would otherwise hide from the short-window (3~5 day)
-    filters and from the MA5/MA20 trend_state classification. No reversal-
-    signal exception: that exception is exactly what let a short bounce
-    mask a longer downtrend in the 2026-07-20 scan (033160/089030/035720/
-    377300).
+    trading days) AND the fit is clean enough (R² >= LINREG_R2_HARD_THRESHOLD)
+    to hard-fail with confidence. No reversal-signal exception: that exception
+    is exactly what let a short bounce mask a longer downtrend in the
+    2026-07-20 scan (033160/089030/035720/377300).
+
+    A negative-but-noisy fit (low R², e.g. a choppy/volatile stock whose
+    trend line doesn't actually explain the price action) is NOT hard-failed
+    here - see _is_weak_long_term_downtrend_signal() for the soft-flag path.
     """
-    slope_pct = _linreg_slope_pct_per_day(df, window=window, min_bars=min_bars)
-    if slope_pct is None:
+    slope_pct, r2 = _linreg_slope_and_r2(df, window=window, min_bars=min_bars)
+    if slope_pct is None or r2 is None:
         return False
-    return slope_pct <= slope_pct_per_day_threshold
+    return slope_pct <= slope_pct_per_day_threshold and r2 >= LINREG_R2_HARD_THRESHOLD
+
+
+def _is_weak_long_term_downtrend_signal(df, window=20, min_bars=15, slope_pct_per_day_threshold=-0.003):
+    """True when the slope is negative but R² is too low to hard-fail
+    confidently (noisy/choppy decline) - surfaced as a soft flag instead of
+    an outright exclusion so the score can still reflect the risk.
+    """
+    slope_pct, r2 = _linreg_slope_and_r2(df, window=window, min_bars=min_bars)
+    if slope_pct is None or r2 is None:
+        return False
+    return slope_pct <= slope_pct_per_day_threshold and r2 < LINREG_R2_HARD_THRESHOLD
 
 
 def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, crash_pct=0.10):
@@ -599,7 +704,7 @@ def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, 
 # Candidate evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None):
+def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None, market_map=None, market_index_series=None):
 
     candidate = {
         "code": code,
@@ -626,6 +731,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "prev_day_change": None,
         "is_last_bearish": None,
         "close_3d_return": None,
+        "adx": None,
+        "relative_strength": None,
         "market": "unknown",
         "liquidity_amount_benchmark": None,
         "liquidity_volume_benchmark": None,
@@ -650,6 +757,27 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # 인트라데이 집계인 daily_df를 그대로 쓰고, 그 외 이력 기반 지표는 _check_df를 쓴다.
     _check_df = daily_hist if daily_hist is not None else daily_df
 
+    # --- Stage 0: 데이터/상장일수/기본 유동성 - 값싸고 절대적인 기준이라 이 시점에
+    # 즉시 skip 처리한다(하드필터 fail_reasons가 아니라 skip_reason). 이후 계산되는
+    # ATR14/MA20/추세 지표 등은 이 기준을 통과한 종목에 대해서만 의미가 있다.
+    listing_days = len(_check_df)
+    if listing_days < config.min_listing_days:
+        candidate["skip_reason"] = "insufficient_listing_days"
+        candidate["listing_days"] = listing_days
+        return candidate
+
+    vol_ma20 = safe_float(_check_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
+    amount_ma20 = safe_float(_check_df["amount"].rolling(20, min_periods=1).mean().iloc[-1])
+    if (
+        (vol_ma20 is not None and vol_ma20 < config.volume_ma20_min)
+        or (amount_ma20 is not None and amount_ma20 < config.amount_ma20_min)
+    ):
+        candidate["skip_reason"] = "basic_liquidity_floor"
+        candidate["listing_days"] = listing_days
+        candidate["vol_ma20"] = vol_ma20
+        candidate["amount_ma20"] = amount_ma20
+        return candidate
+
     # Daily ATR (14-day); fall back to single-bar range when history is short
     atr_series = calc_atr(_check_df)
     atr = safe_float(atr_series.iloc[-1]) if not atr_series.empty else None
@@ -666,13 +794,6 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     ma20 = safe_float(_check_df["close"].rolling(20, min_periods=1).mean().iloc[-1])
     ma_gap = (ma5 - ma20) if (ma5 is not None and ma20 is not None) else None
 
-    # Liquidity
-    vol_ma20 = safe_float(_check_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
-    amount_ma20 = safe_float(_check_df["amount"].rolling(20, min_periods=1).mean().iloc[-1])
-
-    # Listing age (number of trading days with data)
-    listing_days = len(_check_df)
-
     # Consecutive up days: close > open in last 5 trading days
     last5 = _check_df.tail(5)
     up_days_in_5 = int((last5["close"] > last5["open"]).sum())
@@ -681,6 +802,16 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     vol_trend_ratio = calc_volume_trend_ratio(_check_df, window=10)
     # Relative strength: recent 5d avg volume vs prior 20d avg volume
     vol_rel_strength = calc_volume_relative_strength(_check_df, recent_window=5, base_window=20)
+
+    # ADX(14, daily) - 추세강도 (점수 산정용)
+    adx_series, _plus_di_series, _minus_di_series = calc_adx(_check_df)
+    adx = safe_float(adx_series.iloc[-1]) if adx_series is not None and not adx_series.empty else None
+
+    # RS(20일, 시장대비 상대강도) - market_map/market_index_series가 없거나(pykrx 미설치 등)
+    # 데이터가 부족하면 None -> 점수 계산에서 중립(0점) 처리됨.
+    _market_label = (market_map or {}).get(str(code).zfill(6), "unknown")
+    _market_series = (market_index_series or {}).get(_market_label)
+    relative_strength = calc_relative_strength(_check_df, _market_series, window=20)
 
     # 52-week high position: prefer KIS inquire_price server value (w52_hgpr, real
     # 52-week high) over the local daily-bar max, which only spans a few weeks and
@@ -755,6 +886,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "prev_day_change": prev_day_change,
         "is_last_bearish": is_last_bearish,
         "close_3d_return": close_3d_return,
+        "adx": adx,
+        "relative_strength": relative_strength,
     })
 
     # --- Hard filters (fail = disqualified) ---
@@ -764,10 +897,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     if price > config.price_max:
         candidate["fail_reasons"].append("price_ceiling")
 
-    # 데이터 일수 최소 기준: 부족하면 ATR14/MA20/vol_rel_strength 등 핵심 지표가
-    # 단축 계산(min_periods=1/fallback)되어 신뢰할 수 없음.
-    if listing_days < config.min_listing_days:
-        candidate["fail_reasons"].append("insufficient_listing_days")
+    # (상장일수 기준은 stage 0에서 이미 skip_reason으로 처리됨 - 여기 도달했다면 통과한 것)
 
     # [추가] 모멘텀 스캐너이므로 역배열(하락추세) 종목은 스코어와 상관없이 확실히 배제합니다.
     # 단, MA5/MA20는 후행지표라 6/29~6/30 사례처럼 막 반전한 종목을 놓칠 수 있어
@@ -779,16 +909,22 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         else:
             candidate["fail_reasons"].append("down_trend")
 
-    # 일봉 5일 연속 하락 하드 필터 (MA 지연으로 통과되는 우하향 종목 차단)
-    # 단, 최근 2일 연속 양봉 또는 2일 연속 종가 상승이면 바닥 반전으로 간주하여 통과
+    # 일봉 5일 연속 하락 (MA 지연으로 통과되는 우하향 종목 감지) - 소프트 경고로 완화
+    # (2026-07-22: 하드필터 -> 소프트플래그. MA5/20 역배열과 20일회귀+R² 하드필터는 유지되므로
+    # 명백한 장기 하락추세는 여전히 배제되고, 이 항목은 점수 페널티(-0.7/soft flag)로만 반영)
+    # 단, 최근 2일 연속 양봉 또는 2일 연속 종가 상승이면 바닥 반전으로 간주하여 플래그 생략
     if _is_5d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
-        candidate["fail_reasons"].append("daily_5d_downtrend")
+        candidate["soft_flags"].append("daily_5d_downtrend")
 
-    # 20일 선형회귀 기울기 기반 장기추세 하드 필터 (반전 신호 예외 없음)
+    # 20일 선형회귀 기울기 기반 장기추세 하드 필터 (반전 신호 예외 없음, R²>=0.5일 때만 하드탈락)
     # 짧은 반등 캔들 1~2개로는 무너지지 않는 window 전체 OLS 기울기 기준이라,
     # 3~5일 연속하락 체크만으로는 잡히지 않는 다주(多週) 하락추세를 별도로 차단한다.
+    # 단, 기울기는 음수여도 R²(적합도)가 낮아 추세선이 실제 가격을 잘 설명하지 못하면
+    # (등락이 심한 노이즈성 종목) 하드탈락 대신 소프트 경고로 완화한다.
     if _is_long_term_downtrend(_check_df):
         candidate["fail_reasons"].append("linreg_long_term_downtrend")
+    elif _is_weak_long_term_downtrend_signal(_check_df):
+        candidate["soft_flags"].append("weak_signal_long_term_downtrend")
 
     # 연속 상한가(2일 이상) 이후 급락 하드 필터 - pump & dump / 테마 급등락 차단
     if _has_upperlimit_streak_then_crash(_check_df):
@@ -802,17 +938,17 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         if _open_p > 0 and _close_p < _open_p and (_open_p - _close_p) / _open_p >= 0.020:
             candidate["fail_reasons"].append("big_bearish_candle")
 
-    # 이전 3 거래일 연속 종가 하락 하드 필터 (반전 신호 없을 때)
+    # 이전 3 거래일 연속 종가 하락 (반전 신호 없을 때) - 소프트 경고로 완화 (2026-07-22)
     if _is_3d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
-        candidate["fail_reasons"].append("3d_close_downtrend")
+        candidate["soft_flags"].append("3d_close_downtrend")
 
     # 볼린저밴드 하한선 우상향 필터: 최근 3거래일 이상 일봉 기준 BB 하한선이
-    # 순상승하지 않으면(횡보/우하향 포함) 배제
+    # 순상승하지 않으면(횡보/우하향 포함) 소프트 경고 (2026-07-22: 하드필터 -> 소프트플래그)
     if not _bb_lower_is_uptrend(_check_df, lookback_days=3):
-        candidate["fail_reasons"].append("bb_lower_not_uptrend")
+        candidate["soft_flags"].append("bb_lower_not_uptrend")
 
-    # 이전 3 거래일 중 음봉 2개 이상 하드 필터
-    # 예외: 1거래일(최근) 종가 > 3거래일 종가이면 전반적 상승 중 조정으로 간주하여 통과
+    # 이전 3 거래일 중 음봉 2개 이상 - 소프트 경고 (2026-07-22: 하드필터 -> 소프트플래그)
+    # 예외: 1거래일(최근) 종가 > 3거래일 종가이면 전반적 상승 중 조정으로 간주하여 플래그 생략
     if len(_check_df) >= 3 and "open" in _check_df.columns:
         _last3 = _check_df.tail(3)
         _bearish_count = int((_last3["close"] < _last3["open"]).sum())
@@ -820,7 +956,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
             _c1 = float(_last3["close"].iloc[-1])   # 최근(1거래일) 종가
             _c3 = float(_last3["close"].iloc[0])    # 3거래일 전 종가
             if not (_c3 > 0 and _c1 > _c3):
-                candidate["fail_reasons"].append(f"bearish_2in3d_{_bearish_count}")
+                candidate["soft_flags"].append(f"bearish_2in3d_{_bearish_count}")
 
     # --- [최적화] 하드 필터에서 -> 스코어/소프트 플래그 처리로 이관된 항목들 ---
     # 기존에 'atr_ratio'와 'low_up_days'로 즉시 탈락시키던 것을 제거하고 soft_flags로 전환하여 
@@ -832,10 +968,10 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     if len(daily_df) >= 5 and up_days_in_5 < min_up_days_required:
         candidate["soft_flags"].append("low_up_days_warning")
 
-    # volume_trend_min_ratio 미달 종목: INTRADAY_CONFIG(=1.0)에서는 하드 필터로 차단
-    # 거래량 감소 추세면 단기 모멘텀 매매 대상 제외
+    # volume_trend_min_ratio 미달 종목 - 소프트 경고로 완화 (2026-07-22: 하드필터 -> 소프트플래그)
+    # 거래량 감소 추세면 단기 모멘텀상 불리하지만, 즉시 배제 대신 점수 페널티로 반영
     if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
-        candidate["fail_reasons"].append("volume_declining")
+        candidate["soft_flags"].append("volume_declining")
 
     # --- Soft flags (warning only, not disqualified) ---
     if trend_state == "flat":
@@ -863,15 +999,19 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
 
 def calculate_candidate_score(candidate, config):
+    """배점표 (2026-07-22 재설계, 합계 100점):
+    거래량22 + 거래대금20 + ATR18 + RS15 + ADX10 + MA정렬±8 + 3일모멘텀±5 + 가격대2
+    + 각종 페널티(전일음봉/52주과열/전일급등/최근반복선정/소프트플래그 개수).
+    """
     price = candidate.get("price")
     atr_ratio = candidate.get("atr_ratio")
     vol_ma20 = candidate.get("vol_ma20")
     amount_ma20 = candidate.get("amount_ma20")
     ma5 = candidate.get("ma5")
     ma20 = candidate.get("ma20")
-    up_days = candidate.get("up_days_in_5") or 0
-    vol_trend = candidate.get("vol_trend_ratio")
     vol_rel_strength = candidate.get("vol_rel_strength")
+    relative_strength = candidate.get("relative_strength")
+    adx = candidate.get("adx")
     high_52w_ratio = candidate.get("high_52w_ratio")
     near_52w_high_override = bool(candidate.get("near_52w_high_override"))
     prev_day_change = candidate.get("prev_day_change")
@@ -883,74 +1023,70 @@ def calculate_candidate_score(candidate, config):
 
     score = 0.0
 
-    # Volatility (max 22): reward above threshold with diminishing returns.
-    atr_ratio_norm = max(0.0, atr_ratio / config.atr_ratio_min)
-    score += min(22.0, 10.0 * math.log1p(atr_ratio_norm * 1.8))
-
-    # Liquidity volume (max 18): use relative strength vs prior 20-day baseline.
-    # 1.0 means neutral; below 0.8 gives little/no contribution, >=1.6 saturates.
+    # 1) 거래량 (max 22): 최근 5일 평균거래량 vs 이전 20일 평균거래량 상대강도.
+    # 1.0=중립, 0.8 미만은 기여 거의 없음, 1.8 이상에서 포화.
     if vol_rel_strength is not None:
-        score += max(0.0, min(18.0, (vol_rel_strength - 0.8) * 22.5))
+        score += max(0.0, min(22.0, (vol_rel_strength - 0.8) * 22.0))
 
-    # Liquidity amount (max 18): smooth by log scale to reduce score clustering.
+    # 2) 거래대금 (max 20): 시장/설정 벤치마크 대비 로그스케일.
     amount_benchmark = candidate.get("liquidity_amount_benchmark")
     if amount_benchmark in (None, 0):
         amount_benchmark = config.amount_ma20_min
     amt_ratio = max(0.0, amount_ma20 / max(1.0, float(amount_benchmark)))
-    score += min(18.0, 9.0 * math.log1p(amt_ratio * 1.6))
+    score += min(20.0, 10.0 * math.log1p(amt_ratio * 1.6))
 
-    # Momentum: consecutive up days in last 5 (max 14)
-    score += min(14.0, up_days * 2.8)
+    # 3) ATR (max 18): 변동성, 문턱값 대비 로그스케일.
+    atr_ratio_norm = max(0.0, atr_ratio / config.atr_ratio_min)
+    score += min(18.0, 8.2 * math.log1p(atr_ratio_norm * 1.8))
 
-    # Momentum: volume trend ratio (max 8)
-    if vol_trend is not None:
-        score += max(0.0, min(8.0, (vol_trend - 0.9) * 10.0))
+    # 4) RS (max 15): 시장(KOSPI/KOSDAQ) 대비 20일 상대강도(%p). 0%p=시장과 동일,
+    # +15%p 이상이면 포화. pykrx 미설치 등으로 계산 불가 시 중립(기여 0).
+    if relative_strength is not None:
+        score += max(0.0, min(15.0, relative_strength * 1.0))
 
-    # Penalize latest bearish close (단기매매에서는 전일 조정이 진입 기회일 수 있으므로 -4로 완화).
-    if is_last_bearish:
-        score -= 4.0
+    # 5) ADX (max 10): 일봉 14일 추세강도. 15 이하는 무추세(기여 0), 40 이상에서 포화.
+    if adx is not None:
+        score += max(0.0, min(10.0, (adx - 15.0) * (10.0 / 25.0)))
 
-    # Trend alignment: MA5 / MA20 ratio (±10)
+    # 6) MA 정렬 (±8): MA5/MA20 비율.
     if ma5 is not None and ma20 not in (None, 0):
         trend_ratio = (ma5 / ma20) - 1.0
-        score += max(-10.0, min(10.0, trend_ratio * 420.0))
+        score += max(-8.0, min(8.0, trend_ratio * 336.0))
 
-    # 52-week positioning (max 5): 단기매매는 신고가 모멘텀 중시, 70% 구간 선호.
-    if high_52w_ratio is not None and 0.20 <= high_52w_ratio <= config.max_52w_high_ratio:
-        center = 0.70
-        width = 0.40
-        proximity = max(0.0, 1.0 - (abs(high_52w_ratio - center) / width))
-        score += 5.0 * proximity
-
-    # Overextended near 52w high: keep candidate but apply risk penalty.
-    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
-        overflow = min(0.20, high_52w_ratio - config.max_52w_high_ratio)
-        near_high_penalty = min(12.0, 6.0 + (overflow / 0.20) * 6.0)
-        if near_52w_high_override:
-            # Strong supporting signals can offset most overextension risk.
-            near_high_penalty *= 0.25
-        score -= near_high_penalty
-
-    # Previous-day surge/gap risk: keep candidate but apply risk penalty.
-    if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
-        overflow = min(0.15, prev_day_change - config.max_prev_day_change)
-        score -= min(10.0, 4.0 + (overflow / 0.15) * 6.0)
-
-    # 3일 수익률 모멘텀 가산점 (±5): 단기 상승 탄력 평가.
+    # 7) 3일 모멘텀 (±5): 단기 상승 탄력 평가.
     close_3d_return = candidate.get("close_3d_return")
     if close_3d_return is not None:
         score += max(-5.0, min(5.0, close_3d_return * 60))
 
-    # Penalize symbols repeatedly selected in recent days to reduce over-concentration.
+    # 8) 가격대 선호 (max 2): 거래 편의성 위주 소폭 가점.
+    if price <= config.price_max:
+        pref = 1.0 - min(1.0, max(0.0, (price - config.price_min) / max(1.0, (200_000 - config.price_min))))
+        score += 1.0 + (1.0 * pref)
+
+    # --- 각종 페널티 ---
+    # 전일 음봉 (단기매매에서는 전일 조정이 진입 기회일 수 있으므로 -4로 완화).
+    if is_last_bearish:
+        score -= 4.0
+
+    # 52주 신고가 과열 (근접 리스크 구간): near_52w_high_override 시 페널티 대폭 완화.
+    if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
+        overflow = min(0.20, high_52w_ratio - config.max_52w_high_ratio)
+        near_high_penalty = min(12.0, 6.0 + (overflow / 0.20) * 6.0)
+        if near_52w_high_override:
+            near_high_penalty *= 0.25
+        score -= near_high_penalty
+
+    # 전일 급등/갭 리스크.
+    if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
+        overflow = min(0.15, prev_day_change - config.max_prev_day_change)
+        score -= min(10.0, 4.0 + (overflow / 0.15) * 6.0)
+
+    # 최근 반복 선정 페널티 (과도한 종목 편중 방지).
     if repeat_recent_days > 0:
         score -= min(12.0, repeat_recent_days * config.recent_pick_penalty_per_day)
 
-    # Price range preference (max 5): soft bias to tradable middle range.
-    if price <= config.price_max:
-        pref = 1.0 - min(1.0, max(0.0, (price - config.price_min) / max(1.0, (200_000 - config.price_min))))
-        score += 2.0 + (3.0 * pref)
-
-    # Soft-flag penalty to separate near-identical candidates.
+    # 소프트플래그 개수 페널티 (2026-07-22: 3일하락/BB하한/거래량감소 등이 소프트로
+    # 편입되며 개수가 늘 수 있어 근소한 차이를 가르는 타이브레이커 역할이 커짐).
     score -= 0.7 * len(candidate.get("soft_flags", []))
 
     return round(score, 2)
@@ -1087,7 +1223,7 @@ def render_ranked_csv(selected_rows):
     header = (
         "rank,code,name,score,price,atr_ratio,vol_ma20,amount_ma20,"
         "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,"
-        "listing_days,prev_day_change,repeat_recent_days"
+        "listing_days,prev_day_change,repeat_recent_days,adx,relative_strength"
     )
     lines = [header]
     for rank, row in enumerate(selected_rows, start=1):
@@ -1108,6 +1244,8 @@ def render_ranked_csv(selected_rows):
             str(row.get("listing_days", 0)),
             f"{row['prev_day_change']:.4f}" if row.get("prev_day_change") is not None else "",
             str(row.get("repeat_recent_days", 0)),
+            f"{row['adx']:.1f}" if row.get("adx") is not None else "",
+            f"{row['relative_strength']:.2f}" if row.get("relative_strength") is not None else "",
         ]))
     return "\n".join(lines)
 
@@ -1115,7 +1253,8 @@ def render_ranked_csv(selected_rows):
 def render_all_scan_csv(all_rows):
     header = (
         "rank,code,name,eligible,skip_reason,fail_reasons,soft_flags,score,price,atr_ratio,vol_ma20,amount_ma20,"
-        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,listing_days,prev_day_change,repeat_recent_days"
+        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,listing_days,prev_day_change,repeat_recent_days,"
+        "adx,relative_strength"
     )
     lines = [header]
     for rank, row in enumerate(all_rows, start=1):
@@ -1142,6 +1281,8 @@ def render_all_scan_csv(all_rows):
             str(row.get("listing_days") if row.get("listing_days") is not None else ""),
             f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
             str(row.get("repeat_recent_days") if row.get("repeat_recent_days") is not None else ""),
+            f"{row.get('adx'):.1f}" if row.get("adx") is not None else "",
+            f"{row.get('relative_strength'):.2f}" if row.get("relative_strength") is not None else "",
         ]))
     return "\n".join(lines)
 
@@ -1150,7 +1291,7 @@ def render_all_scan_markdown(all_rows):
     headers = [
         "rank", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
         "trend_state", "ma_gap", "up_days_in_5", "high_52w_ratio", "listing_days", "prev_day_change", "repeat_recent_days",
-        "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio",
+        "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "relative_strength",
     ]
 
     lines = [
@@ -1182,6 +1323,8 @@ def render_all_scan_markdown(all_rows):
             "Y" if row.get("eligible") else "N",
             str(row.get("skip_reason") or ""),
             f"{row.get('vol_trend_ratio'):.3f}" if row.get("vol_trend_ratio") is not None else "",
+            f"{row.get('adx'):.1f}" if row.get("adx") is not None else "",
+            f"{row.get('relative_strength'):.2f}" if row.get("relative_strength") is not None else "",
         ]
         sanitized = [str(value).replace("|", "\\|") for value in values]
         lines.append("| " + " | ".join(sanitized) + " |")
@@ -1503,6 +1646,36 @@ def load_market_map(data_root: Path, target_date_str: str | None, verbose: bool 
     return {}, ref_date
 
 
+def load_market_index_series(target_date_str: str | None, window: int = 25) -> dict[str, "pd.Series"]:
+    """KOSPI(1001)/KOSDAQ(2001) 지수 종가 시계열 로드 (pykrx). RS(상대강도) 계산용.
+    pykrx가 없거나 조회 실패 시 빈 dict를 반환하며, 이 경우 RS는 점수에 중립(0점) 기여한다.
+    """
+    if not target_date_str:
+        return {}
+    try:
+        from pykrx import stock  # type: ignore
+    except Exception:
+        return {}
+
+    try:
+        parsed = datetime.strptime(target_date_str, "%Y%m%d")
+    except ValueError:
+        return {}
+
+    start = (parsed - timedelta(days=window * 3 + 15)).strftime("%Y%m%d")
+    result: dict[str, "pd.Series"] = {}
+    for key, idx_code in (("kospi", "1001"), ("kosdaq", "2001")):
+        try:
+            df = stock.get_index_ohlcv_by_date(start, target_date_str, idx_code)
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        close_col = "종가" if "종가" in df.columns else df.columns[-1]
+        result[key] = df[close_col].astype(float)
+    return result
+
+
 def apply_market_relative_liquidity_filters(candidates: list[dict], market_map: dict[str, str]) -> dict[str, object]:
     """Apply market-relative liquidity thresholds.
 
@@ -1624,6 +1797,7 @@ def scan(
         lookback_days=config.recent_pick_penalty_lookback_days,
     )
     market_map, market_ref_date = load_market_map(data_root, target_date_str, verbose=verbose)
+    market_index_series = load_market_index_series(target_date_str)
     w52_map = load_w52_high_low(data_root, target_date_str)
 
     candidates = []
@@ -1649,6 +1823,7 @@ def scan(
             code, name, daily_df, config,
             recent_pick_count=recent_repeat_days, daily_hist=daily_hist,
             w52_info=w52_map.get(code),
+            market_map=market_map, market_index_series=market_index_series,
         )
         if recent_repeat_days > 0:
             candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
