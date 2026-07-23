@@ -17,6 +17,22 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-22] type=fix owner=copilot
+    summary: --date 20260721 실행 결과 검증 중 발견된 어제(같은날) 배점표 재작성의 구조적 결함
+      수정. (1) calc_adx() period 14->10 - Wilder 이중평활 특성상 2*period 봉이 필요한데
+      로컬 데이터는 종목당 약 20봉만 있어 ADX가 100%(382/382종목) NaN으로 계산되고 있었음
+      (합성데이터로 14~50봉 테스트해 28봉부터 값이 나옴을 확인); period=10이면 약 20봉으로
+      계산 가능해짐. (2) ADX/RS가 계산 불가(이력부족/pykrx 미설치)일 때 0점 대신 중립 절반점
+      (ADX 5.0/15, RS 7.5/15)을 부여하도록 변경 - 데이터 부재만으로 후보가 구조적으로
+      불이익받던 문제 완화(RS는 pykrx 미설치 시 여전히 0이 아닌 7.5로 처리됨).
+      (3) 시장상대 유동성 하드필터(liquidity_below_market_dual)에 절대기준 안전판
+      LIQUIDITY_ABSOLUTE_SAFE_AMOUNT(200억원/일) 추가 - 실제 20260721 스캔에서 272개 종목이
+      거래대금 5~383억원/일(설정 절대기준 50억원 이상)임에도 그날 시장평균이 높아 하드탈락한
+      것을 확인, 거래대금이 충분히 크면 시장 상대 비교와 무관하게 통과하도록 안전판 추가.
+      동일 검증에서 SCORE_CUTOFF=30 기준 2552종목 중 2181종목(85.5%)이 low_score 단독
+      사유로 탈락한 것도 확인됨 - (1)(2) 수정으로 대부분 해소될 것으로 예상되나 재검증 필요.
+    impact: scanner
+    compatibility: breaking (ADX 계산 성공률 및 유동성/점수 통과율이 크게 증가할 수 있음)
 - [2026-07-22] type=refactor owner=copilot
     summary: 스캐너 파이프라인을 4단계(0.기본필터/1.하드필터/2.소프트플래그/3.점수/4.최종선정)로
       재구성하고 배점표를 전면 재작성 (사용자 지정 표 기반).
@@ -241,6 +257,7 @@ MIN_REQUIRED_BARS = 1
 MAX_PICKS_LIMIT = 50
 SCORE_CUTOFF = 30.0
 LIQUIDITY_RELAX_FACTOR = 0.70
+LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 시장상대 비교와 무관하게 유동성 하드탈락 면제
 LOW_UP_DAYS_TOLERANCE = 1
 FALLBACK_RELAXABLE_FAIL_REASONS = {
     "low_score", "liquidity_below_market_dual",
@@ -405,7 +422,7 @@ def calc_bb_lower(daily_df, period=20, std_mult=2.0):
     return ma - std_mult * std
 
 
-def calc_adx(daily_df, period=14):
+def calc_adx(daily_df, period=10):
     """일봉 기준 ADX(Wilder's smoothing)와 +DI/-DI를 함께 반환.
     (adx_series, plus_di_series, minus_di_series) 튜플. 데이터가 `period`보다
     짧으면 해당 구간은 NaN이며, 호출자는 safe_float()으로 마지막 값만 취한다.
@@ -1040,13 +1057,19 @@ def calculate_candidate_score(candidate, config):
     score += min(18.0, 8.2 * math.log1p(atr_ratio_norm * 1.8))
 
     # 4) RS (max 15): 시장(KOSPI/KOSDAQ) 대비 20일 상대강도(%p). 0%p=시장과 동일,
-    # +15%p 이상이면 포화. pykrx 미설치 등으로 계산 불가 시 중립(기여 0).
+    # +15%p 이상이면 포화. pykrx 미설치 등으로 계산 불가 시 데이터 부재로 인한 불이익을
+    # 피하기 위해 중립 절반점(7.5)을 부여한다(0점 처리 시 후보가 구조적으로 불리해짐).
     if relative_strength is not None:
         score += max(0.0, min(15.0, relative_strength * 1.0))
+    else:
+        score += 7.5
 
-    # 5) ADX (max 10): 일봉 14일 추세강도. 15 이하는 무추세(기여 0), 40 이상에서 포화.
+    # 5) ADX (max 10, period=10): 일봉 추세강도. 15 이하는 무추세(기여 0), 40 이상에서 포화.
+    # 이력 부족(2*period 미만)으로 계산 불가 시 중립 절반점(5.0) 부여.
     if adx is not None:
         score += max(0.0, min(10.0, (adx - 15.0) * (10.0 / 25.0)))
+    else:
+        score += 5.0
 
     # 6) MA 정렬 (±8): MA5/MA20 비율.
     if ma5 is not None and ma20 not in (None, 0):
@@ -1738,10 +1761,18 @@ def apply_market_relative_liquidity_filters(candidates: list[dict], market_map: 
 
         vol_below = float(vol_ma20) < required_vol
         amt_below = float(amount_ma20) < required_amt
+        absolute_safe = float(amount_ma20) >= LIQUIDITY_ABSOLUTE_SAFE_AMOUNT
 
-        # Relaxation: disqualify only when both liquidity checks fail.
+        # Relaxation: disqualify only when both liquidity checks fail, unless the
+        # stock's absolute turnover is high enough to be safe regardless of how the
+        # market average happens to look that day (e.g. a mega-cap-heavy trading day
+        # can inflate the market-relative benchmark and unfairly exclude genuinely
+        # liquid mid/large-caps).
         if vol_below and amt_below:
-            row["fail_reasons"].append("liquidity_below_market_dual")
+            if absolute_safe:
+                row["soft_flags"].append("liquidity_below_market_dual_but_absolute_safe")
+            else:
+                row["fail_reasons"].append("liquidity_below_market_dual")
         else:
             if vol_below:
                 row["soft_flags"].append("volume_below_market_price_adjusted_avg")
