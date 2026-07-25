@@ -1,6 +1,16 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-07-25] type=feat owner=copilot
+#     summary: 매매 파이프라인 개선 4건 반영 (r006 Update log에 상세 배경 기술).
+#       (1) CANDLE_CONFIRM_DELAY_SECONDS 신규 - 봉 마감 직후 거래소 API 지연(1~2초)으로
+#       인한 미확정 데이터 사용 방지. (2) TP1_ATR_MULTIPLIER 신규 - 1차 익절 목표를
+#       고정 1.0%에서 max(1.0%, ATR*1.2) 동적 목표로 전환. (3) STAGED_TP3_PCT는 더 이상
+#       r006 라이브 매매의 고정 청산 트리거로 쓰이지 않음 - 1,2차 익절 이후 잔량은
+#       기존 트레일링 스탑 로직에 위임(3단계=트레일링 30%). r007 시뮬레이션 참고용으로만 유지.
+#       (4) ENABLE_PYRAMIDING/PYRAMID_TRIGGER_PNL_PCT 신규 - 추세 지속 확인 시 1회 추가진입(불타기).
+#     impact: live
+#     compatibility: breaking (익절 3단계/매수 확정 타이밍/봉 확정 판정이 변경됨; 플래그로 즉시 롤백 가능)
 # - [2026-07-22] type=feat owner=copilot
 #     summary: 개장 초반(09:01~09:05류) 갭/거래량폭발 라이브 게이트용 설정값 신규 추가
 #       (ENABLE_OPENING_GAP_VOLUME_GATE 등). r002 스캐너는 전일 종가 기준 데이터라 당일
@@ -137,7 +147,12 @@ STAGED_TP1_PCT = 0.010   # 1차 익절 기준 (+1.0%) - 진입 수량의 40% 청
 STAGED_TP1_RATIO = 0.40
 STAGED_TP2_PCT = 0.014   # 2차 익절 기준 (+1.4%) - 진입 수량의 30% 청산
 STAGED_TP2_RATIO = 0.30
-STAGED_TP3_PCT = 0.030   # 3차 익절 기준 (+3.0%, 1.8%->3.0%: 최대 익절폭 확대 요청) - 잔량 전체 청산
+STAGED_TP3_PCT = 0.030   # (r006 라이브에서는 더 이상 고정 청산 트리거로 쓰이지 않음 - r007 시뮬레이션 참고용)
+# 1차 익절 목표를 고정 STAGED_TP1_PCT 대신 종목 변동성(ATR)에 연동해 동적으로 산출한다.
+# 목표익절 = max(STAGED_TP1_PCT, (ATR/entry_price) * TP1_ATR_MULTIPLIER)
+TP1_ATR_MULTIPLIER = 1.2
+# 3차 익절(잔량 처리) 방식: 고정 목표가 청산 대신, 1/2차 완료 후 잔량을 트레일링 스탑에 위임한다.
+# (기존 TRAILING_STOP_FROM_PEAK / TP_EXTENSION_TRAIL_FROM_PEAK 로직을 그대로 재사용)
 
 # --- 3. 매수 후 보호 가드 (Post-buy protective exits) -----------------------
 # 매수 직후 급락 방지: 매수 후 일정 시간 동안 현재가가 매수가 대비
@@ -314,6 +329,13 @@ MARKET_DAY_FAIL_CLOSED = True
 # --- 11. 주문/자금 관리 -------------------------------------------------------
 MAX_ORDER_AMOUNT_KRW = 300_000  # 1회 매수 주문 최대 금액(KRW)
 
+# --- 11-b. 피라미딩(불타기) - 추세 지속 시 1회 추가 진입 ----------------------
+# 평균단가 대비 PYRAMID_TRIGGER_PNL_PCT 이상 이익이고 MA5/BB중간선/ADX가 모두
+# 상승(직전봉 대비) 중일 때 1회에 한해 추가 매수한다(같은 포지션당 최대 1회).
+# 추가매수 금액도 MAX_ORDER_AMOUNT_KRW 한도를 그대로 따른다.
+ENABLE_PYRAMIDING = True
+PYRAMID_TRIGGER_PNL_PCT = 0.005  # 평균단가 대비 +0.5%
+
 # --- 12. 1분봉 BB 중간값 골든크로스 매수 (단순화 진입 컨셉) -------------------
 # 매수 판단 타임프레임을 3분봉에서 1분봉으로 축소하고, 매수 조건을 "확정된 1분봉
 # 종가가 BB 중간값을 상향 돌파(골든크로스)"로 단순화한다. 기존 3분봉 다중 필터
@@ -335,6 +357,12 @@ OPENING_GAP_MIN_PCT = 0.0               # 선호 갭 하한 (0%)
 OPENING_GAP_MAX_PCT = 0.05              # 선호 갭 상한 (+5%)
 OPENING_GAP_HARD_FLOOR_PCT = -0.02      # 이 미만 갭하락이면 해당 종목 당일 신규매수 자체를 차단 (-2%)
 OPENING_MIN_EARLY_VOLUME_RATIO = 1.5    # 개장초반 거래량 폭발 판정 배수 (현재봉 거래량 / VOL_MA20)
+
+# --- 14. 봉 확정 지연 유예 (Candle confirmation delay) -----------------------
+# 거래소/브로커 API가 봉 마감 시각 직후 1~2초 정도 최종 체결 데이터 반영이 지연될
+# 수 있어, 정확히 마감된 시각까지만 포함하면 아직 데이터가 덜 채워진 봉을 '확정봉'
+# 으로 오인할 수 있다. 봉 확정 판정 시각을 이 값만큼 뒤로 미뤄 안전 마진을 둔다.
+CANDLE_CONFIRM_DELAY_SECONDS = 2
 
 
 # ---------------------------------------------------------------------------

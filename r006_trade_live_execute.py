@@ -20,6 +20,29 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-07-25] type=feat owner=copilot
+    summary: 매매 파이프라인 개선 4건 (사용자 제안 분석 후 적용, r003 Update log에 요약).
+      (1) fetch_1min_frame/fetch_3min_frame의 확정봉 판정 시각에 CANDLE_CONFIRM_DELAY_SECONDS(2초)
+      유예를 둠 - 거래소 API의 봉마감 직후 체결데이터 반영 지연으로 인해 미확정 봉을 확정봉으로
+      오인하는 것을 방지. (2) check_buy_condition_1min에 require_fresh_cross 파라미터 추가하고
+      1분봉 골든크로스 매수를 "GC 발생봉 즉시 매수"에서 "GC 발생봉 확인(ARM) -> 다음 1분봉도
+      BB중간값 위 유지 확인 -> 매수"로 변경 (gc_confirm_state 신규, 최대 3분 경과 시 자동 만료).
+      (3) 3단계 분할익절의 3차(기존: +STAGED_TP3_PCT 도달 시 잔량 전체 고정가 청산)를 폐지하고,
+      1·2차(40%@1.0%/30%@1.4%) 완료 후 잔량 30%는 고정 목표가 없이 기존 트레일링 스탑
+      로직(TRAILING_STOP_FROM_PEAK/TP_EXTENSION_TRAIL_FROM_PEAK)에 위임 (Trail 30%). 1차 익절
+      목표도 고정 1.0%에서 max(1.0%, ATR*TP1_ATR_MULTIPLIER/진입가) 동적 목표로 변경, 2차는
+      1차와 동일 간격(+0.4%p) 유지. (4) 피라미딩(불타기) 신규 도입 - 평균단가 대비
+      PYRAMID_TRIGGER_PNL_PCT(+0.5%) 이상이고 MA5/BB중간선/ADX가 모두 직전봉 대비 상승 중이면
+      포지션당 1회 추가매수(place_buy_order에 pyramid 파라미터 신규). 기존 주문체결 파이프라인은
+      "종목당 매수 1회"를 전제로 평단가를 체결가로 덮어쓰고 TP진행상태를 리셋했기 때문에,
+      _confirm_pending_buy/refresh_pending_orders/포지션 메타 영속화 함수들에 pyramid 분기를
+      추가해 기존 평단가·tp1/tp2_done·보유시작시각을 보존하고 브로커 계좌 재동기화(sync_positions_
+      from_account)로 정확한 가중평균 단가를 반영하도록 함. 추가매수 주문이 미체결 대기 중에도
+      기존 보유수량의 손절/익절 감시가 끊기지 않도록 메인루프의 PENDING 게이트도 함께 수정.
+      각 기능은 r003의 ENABLE_PYRAMIDING/ENABLE_STAGED_TAKE_PROFIT 등 플래그로 개별 롤백 가능.
+    impact: live
+    compatibility: breaking (매수 확정 타이밍/봉 확정 판정/익절 3단계 동작이 변경되고, 신규
+      피라미딩 매수가 추가됨; 각 기능은 r003 플래그로 개별 롤백 가능)
 - [2026-07-22] type=fix owner=copilot
     summary: 보조 거래 로그 파일명(_trade_log_target_paths) 순서를 buy_sell_YYYYMMDD.log/
       trade_events_YYYYMMDD.log에서 YYYYMMDD_buy_sell.log/YYYYMMDD_trade_events.log로 변경 -
@@ -379,6 +402,10 @@ from r003_define_config import (
     HARD_STOP_CIRCUIT_BREAKER_COUNT,
     HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN,
     HARD_STOP_BLOCK_REENTRY_TODAY,
+    CANDLE_CONFIRM_DELAY_SECONDS,
+    TP1_ATR_MULTIPLIER,
+    ENABLE_PYRAMIDING,
+    PYRAMID_TRIGGER_PNL_PCT,
 )
 from r005_strategy_core_shared import (
     R76StrategyConfig,
@@ -1438,8 +1465,9 @@ def fetch_3min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
 
         frame = _normalize_intraday_frame(raw_df, today_str, nxt_tradeable)
         if frame is not None and not frame.empty:
-            # fetch 시점 기준으로 확정 완료된 3분봉까지만 사용
-            last_closed_bar = pd.Timestamp(now).floor("3min")
+            # fetch 시점 기준으로 확정 완료된 3분봉까지만 사용 (거래소 API 반영 지연 감안,
+            # CANDLE_CONFIRM_DELAY_SECONDS만큼 여유를 두고 확정 판정)
+            last_closed_bar = (pd.Timestamp(now) - pd.Timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("3min")
             frame = frame[frame.index <= last_closed_bar]
             if frame.empty:
                 continue
@@ -1472,8 +1500,9 @@ def fetch_1min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
 
         frame = _normalize_intraday_frame(raw_df, today_str, nxt_tradeable, bar_interval="1min")
         if frame is not None and not frame.empty:
-            # fetch 시점 기준으로 확정 완료된 1분봉까지만 사용
-            last_closed_bar = pd.Timestamp(now).floor("1min")
+            # fetch 시점 기준으로 확정 완료된 1분봉까지만 사용 (거래소 API 반영 지연 감안,
+            # CANDLE_CONFIRM_DELAY_SECONDS만큼 여유를 두고 확정 판정)
+            last_closed_bar = (pd.Timestamp(now) - pd.Timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("1min")
             frame = frame[frame.index <= last_closed_bar]
             if frame.empty:
                 continue
@@ -2159,12 +2188,18 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float,
     )
 
 
-def check_buy_condition_1min(frame_1min: pd.DataFrame) -> tuple[bool, str]:
+def check_buy_condition_1min(frame_1min: pd.DataFrame, require_fresh_cross: bool = True) -> tuple[bool, str]:
     """1분봉 BB 중간값 골든크로스 매수 조건 (단순화 컨셉).
 
     확정된 1분봉 종가가 BB 중간값을 상향 돌파하면 매수 신호로 본다.
     기존 3분봉 다중 필터(BB기울기/스코어/RSI/MACD/Stoch/DI 등)는 적용하지 않고,
     계좌/체결 안전장치(거래량 최소조건/캔들 양봉/추격매수 방지)만 재사용한다.
+
+    require_fresh_cross=True(기본): 직전봉<=BB중간값, 현재봉>BB중간값(골든크로스가
+    발생한 바로 그 봉)만 통과시킨다.
+    require_fresh_cross=False: 골든크로스 확인봉(다음 1분봉) 판정용 - 크로스가 이전
+    봉에서 이미 발생했더라도 현재봉 종가가 BB중간값 위에 유지되고만 있으면 통과시킨다.
+    나머지 안전장치 필터(양봉/추격매수/거래량)는 두 모드 모두 동일하게 적용된다.
     """
     if frame_1min is None or len(frame_1min) < 2:
         return False, "1MIN_INSUFFICIENT_BARS"
@@ -2181,9 +2216,13 @@ def check_buy_condition_1min(frame_1min: pd.DataFrame) -> tuple[bool, str]:
     if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
         return False, "1MIN_MISSING_INDICATOR"
 
-    golden_cross = prev_close <= prev_bb and cur_close > cur_bb
-    if not golden_cross:
-        return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
+    if require_fresh_cross:
+        golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+        if not golden_cross:
+            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
+    else:
+        if not (cur_close > cur_bb):
+            return False, "1MIN_CONFIRM_LOST_BB_MID"
 
     candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
     if candle_gain_pct < CANDLE_GAIN_MIN_PCT:
@@ -2248,6 +2287,7 @@ def _serialize_live_state(live_state: dict) -> dict:
             "tp1_done": bool(meta.get("tp1_done", False)),
             "tp2_done": bool(meta.get("tp2_done", False)),
             "tp3_done": bool(meta.get("tp3_done", False)),
+            "pyramid_done": bool(meta.get("pyramid_done", False)),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded}
@@ -2291,6 +2331,7 @@ def load_live_state(date_str: str) -> dict:
             "tp1_done": bool((meta or {}).get("tp1_done", False)),
             "tp2_done": bool((meta or {}).get("tp2_done", False)),
             "tp3_done": bool((meta or {}).get("tp3_done", False)),
+            "pyramid_done": bool((meta or {}).get("pyramid_done", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded}
@@ -2392,6 +2433,7 @@ class TradingAPI:
             pos["tp1_done"] = bool(meta.get("tp1_done", pos.get("tp1_done", False)))
             pos["tp2_done"] = bool(meta.get("tp2_done", pos.get("tp2_done", False)))
             pos["tp3_done"] = bool(meta.get("tp3_done", pos.get("tp3_done", False)))
+            pos["pyramid_done"] = bool(meta.get("pyramid_done", pos.get("pyramid_done", False)))
 
     def _record_position_meta(self, code: str, pos: dict) -> None:
         meta_map = self.live_state.setdefault("positions_meta", {})
@@ -2404,6 +2446,7 @@ class TradingAPI:
             "tp1_done": bool(pos.get("tp1_done", False)),
             "tp2_done": bool(pos.get("tp2_done", False)),
             "tp3_done": bool(pos.get("tp3_done", False)),
+            "pyramid_done": bool(pos.get("pyramid_done", False)),
         }
 
     def _sync_live_state_from_positions(self) -> None:
@@ -2500,6 +2543,7 @@ class TradingAPI:
                 "tp1_done": bool(prev.get("tp1_done", persisted.get("tp1_done", False))),
                 "tp2_done": bool(prev.get("tp2_done", persisted.get("tp2_done", False))),
                 "tp3_done": bool(prev.get("tp3_done", persisted.get("tp3_done", False))),
+                "pyramid_done": bool(prev.get("pyramid_done", persisted.get("pyramid_done", False))),
             }
             self._record_position_meta(code, updated[code])
 
@@ -2650,6 +2694,39 @@ class TradingAPI:
         avg_price = float(status.get("avg_price", 0.0)) if status else 0.0
         fill_price = avg_price if avg_price > 0 else float(pos.get("buy_price") or pos.get("current_price") or pending.get("requested_price", 0.0))
 
+        if bool(pending.get("pyramid")):
+            # 피라미딩(불타기) 추가매수 체결 확정: 기존 포지션의 평단가/보유시간/TP진행상태는
+            # 그대로 두고, 브로커 계좌의 실제 가중평균 단가·수량(sync)만 신뢰해서 반영한다.
+            # (직접 가중평균을 계산하면 sync 타이밍에 따라 이중계산될 위험이 있어 회피)
+            add_qty = filled_qty if filled_qty > 0 else requested_qty
+            pos["entry_quantity"] = int(pos.get("entry_quantity", 0) or 0) + add_qty
+            self.sync_positions_from_account(force=True)
+            pos = self.positions.get(code) or pos
+            if fill_price > 0:
+                pos["highest_price"] = max(
+                    float(pos.get("highest_price", fill_price)),
+                    float(pos.get("current_price", fill_price)),
+                    fill_price,
+                )
+            code_name = str(pending.get("code_name", ""))
+            compact_code_label = f"{code}_{code_name}" if code_name else code
+            buy_detail_text = str(pending.get("buy_detail", "")).strip()
+            title = f">>> {compact_code_label} Pyramid Buy - {buy_detail_text}" if buy_detail_text else f">>> {compact_code_label} Pyramid Buy"
+            _log_trade_block(
+                [
+                    "=" * 110,
+                    title,
+                    f"*** 추가매수수량={add_qty} 추가매수가={fill_price:,.0f} | "
+                    f"신규평단가={float(pos.get('buy_price', 0.0)):,.0f} 신규수량={int(pos.get('quantity', 0))}",
+                ],
+                event_time=datetime.now(),
+                mirror_main_log=False,
+            )
+            self._record_position_meta(code, pos)
+            self.persist_live_state()
+            self.pending_orders.pop(str(code).zfill(6), None)
+            return
+
         entry_time = pending.get("submitted_at", pos.get("entry_buy_time", pos.get("buy_time", datetime.now())))
         pos["buy_time"] = entry_time
         pos["entry_buy_time"] = entry_time
@@ -2760,6 +2837,47 @@ class TradingAPI:
                 pending.pop("next_status_poll_at", None)
 
             if side == "buy":
+                if bool(pending.get("pyramid")):
+                    # 피라미딩 추가매수는 이미 보유 중(quantity>0)이라 기존 "pos.quantity>0 = 체결됨"
+                    # 휴리스틱을 쓸 수 없다 - 주문 상태(status)의 체결/잔량으로 직접 종결 여부를 판정한다.
+                    if status is not None:
+                        filled_qty = int(status.get("filled_qty", 0))
+                        remaining_qty = int(status.get("remaining_qty", 0))
+                        rejected_qty = int(status.get("rejected_qty", 0))
+                        order_qty = int(status.get("order_qty", pending.get("quantity", 0)))
+                        cancel_yn = str(status.get("cancel_yn", ""))
+                        terminal = remaining_qty <= 0 or cancel_yn == "Y" or rejected_qty >= order_qty
+                        if filled_qty > 0 and terminal:
+                            if pos is None:
+                                log(f"  [PYRAMID BUY WARN] {code} | 체결되었으나 기존 포지션을 찾을 수 없음 - 확정 보류")
+                            else:
+                                self._confirm_pending_buy(code, pending, pos, status)
+                            continue
+                        if filled_qty <= 0 and terminal:
+                            self._maybe_log_pending_progress(
+                                pending,
+                                f"PYRAMID BUY closed without fill | {code} | order_no={pending.get('order_no', '')}",
+                                "pyramid_buy_closed_without_fill",
+                            )
+                            self.pending_orders.pop(str(code).zfill(6), None)
+                            continue
+                        submitted_at = pending.get("submitted_at")
+                        if (
+                            isinstance(submitted_at, datetime)
+                            and filled_qty <= 0
+                            and (now - submitted_at).total_seconds() >= BUY_ORDER_STALE_WARN_SECONDS
+                        ):
+                            log(
+                                f"  [PYRAMID BUY STALE] {code} | {int((now - submitted_at).total_seconds())}s 미체결 대기중 | "
+                                f"order_no={pending.get('order_no', '')}"
+                            )
+                        self._maybe_log_pending_progress(
+                            pending,
+                            f"PYRAMID BUY pending | {code} | filled={filled_qty}/{order_qty} | remaining={remaining_qty}",
+                            f"pyramid_buy_pending:{filled_qty}:{remaining_qty}",
+                        )
+                    continue
+
                 if pos is not None and pos.get("quantity", 0) > 0:
                     if status and int(status.get("remaining_qty", 0)) > 0:
                         self._maybe_log_pending_progress(
@@ -2923,9 +3041,9 @@ class TradingAPI:
 
         return max(0, min(qty_by_budget, qty_by_psbl))
 
-    def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "") -> bool:
+    def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "", pyramid: bool = False) -> bool:
         norm_code = str(code).zfill(6)
-        if self.has_buy_exposure(norm_code):
+        if not pyramid and self.has_buy_exposure(norm_code):
             log(f"BUY skipped | {code} | reason=BUY_EXPOSURE_ACTIVE")
             return False
         if qty <= 0 or self._in_cooldown(norm_code, now) or self.has_pending_order(norm_code):
@@ -2987,6 +3105,7 @@ class TradingAPI:
             "order_time": order_time,
             "buy_detail": buy_detail,
             "code_name": code_name,
+            "pyramid": pyramid,
         }
         self._mark_trade_lock(norm_code, now)
         detail_suffix = f" | {buy_detail}" if buy_detail else ""
@@ -3328,6 +3447,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     signal_sell_bar: dict[str, object] = {}
     trailing_sell_confirm_state: dict[str, dict[str, object]] = {}
     buy_confirm_state: dict[str, dict[str, object]] = {}
+    gc_confirm_state: dict[str, dict[str, object]] = {}  # 1분봉 골든크로스 확인봉 대기 상태
     post_buy_bb_drop_state: dict[str, dict] = {}
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
@@ -3544,11 +3664,20 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     pending_side = str(pending.get("side", "")).upper() or "UNKNOWN"
                     pending_qty = int(pending.get("quantity", 0))
                     pending_time = pending.get("submitted_at", current_dt)
+                    is_pyramid_pending = (
+                        bool(pending.get("pyramid"))
+                        and pos is not None
+                        and int(pos.get("quantity", 0) or 0) > 0
+                    )
                     log(
                         f"  [PENDING] {symbol_label} | side={pending_side} qty={pending_qty} "
                         f"submitted={pending_time:%H:%M:%S} | order_no={pending.get('order_no', '') or 'UNKNOWN'}"
+                        + (" | PYRAMID_ADD_IN_FLIGHT - position monitoring continues" if is_pyramid_pending else "")
                     )
-                    continue
+                    if not is_pyramid_pending:
+                        continue
+                    # 피라미딩 추가매수 체결 대기 중에도 기존 보유수량에 대한 손절/익절 감시는
+                    # 계속 진행한다 (아래 포지션 관리 블록으로 그대로 진입).
 
                 log(
                     f"  {symbol_label} [CHECK] | bars={len(frame)} live={price:,.0f}  bar_close={float(cur['close']):,.0f} | "
@@ -3651,19 +3780,82 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         signal_sell_bar[code] = bar_time
                         continue
 
+                    # ── PYRAMIDING (불타기): 추세 지속 시 1회 추가 진입 ──────────────────
+                    if (
+                        ENABLE_PYRAMIDING
+                        and not bool(pos.get("pyramid_done", False))
+                        and not api.has_pending_order(str(code).zfill(6))
+                        and pnl_pct >= PYRAMID_TRIGGER_PNL_PCT
+                    ):
+                        _prev_pyr = frame.iloc[-2]
+                        _ma5_cur_pyr = _num(cur, "MA_5")
+                        _ma5_prev_pyr = _num(_prev_pyr, "MA_5")
+                        _bb_mid_cur_pyr = _num(cur, "BB_MIDDLE")
+                        _bb_mid_prev_pyr = _num(_prev_pyr, "BB_MIDDLE")
+                        _adx_cur_pyr = _num(cur, "ADX")
+                        _adx_prev_pyr = _num(_prev_pyr, "ADX")
+                        _pyramid_ok = (
+                            not any(
+                                pd.isna(v) for v in (
+                                    _ma5_cur_pyr, _ma5_prev_pyr, _bb_mid_cur_pyr,
+                                    _bb_mid_prev_pyr, _adx_cur_pyr, _adx_prev_pyr,
+                                )
+                            )
+                            and _ma5_cur_pyr > _ma5_prev_pyr
+                            and _bb_mid_cur_pyr > _bb_mid_prev_pyr
+                            and _adx_cur_pyr > _adx_prev_pyr
+                        )
+                        if _pyramid_ok:
+                            pyr_qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
+                            if pyr_qty > 0:
+                                pyr_session = classify_buy_session(current_dt)
+                                reason_pyr = f"PYRAMID_2ND_ENTRY_PNL_{pnl_pct*100:.2f}PCT"
+                                log(
+                                    f"  [BUY TRIGGER] {code} | {reason_pyr} | "
+                                    f"add_qty={pyr_qty} price={price:,.0f} avg_entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% | "
+                                    f"MA5={_ma5_prev_pyr:.1f}->{_ma5_cur_pyr:.1f} BB_MID={_bb_mid_prev_pyr:.1f}->{_bb_mid_cur_pyr:.1f} "
+                                    f"ADX={_adx_prev_pyr:.1f}->{_adx_cur_pyr:.1f}"
+                                )
+                                pos["pyramid_done"] = True
+                                if api.place_buy_order(
+                                    code, price, pyr_qty, current_dt, nxt_tradeable, pyr_session,
+                                    buy_detail=reason_pyr, code_name=name, pyramid=True,
+                                ):
+                                    api._record_position_meta(code, pos)
+                                    api.persist_live_state(date_str=date_str)
+                                else:
+                                    pos["pyramid_done"] = False
+                                continue
+                    # ── END PYRAMIDING ───────────────────────────────────────────────────
+
                     if ENABLE_STAGED_TAKE_PROFIT:
                         entry_qty = int(pos.get("entry_quantity", 0) or 0)
                         if entry_qty <= 0:
                             entry_qty = int(pos["quantity"])
 
-                        # 1차 익절: entry_qty의 STAGED_TP1_RATIO(40%), +STAGED_TP1_PCT(1.0%) 도달 시
-                        if (not bool(pos.get("tp1_done", False))) and pnl_pct >= STAGED_TP1_PCT:
+                        # 1차 익절 목표를 종목 변동성(ATR)에 연동해 동적으로 산출한다.
+                        # 목표 = max(고정 STAGED_TP1_PCT, ATR*TP1_ATR_MULTIPLIER/진입가). 2차는
+                        # 기존 1차-2차 간격(STAGED_TP2_PCT - STAGED_TP1_PCT)만큼 그 위에 얹는다.
+                        _atr_tp1_dynamic_pct = (
+                            (float(atr_val) * TP1_ATR_MULTIPLIER) / entry_price
+                            if not pd.isna(atr_val) and atr_val > 0 and entry_price > 0
+                            else float("nan")
+                        )
+                        tp1_target_pct = (
+                            max(STAGED_TP1_PCT, _atr_tp1_dynamic_pct)
+                            if not pd.isna(_atr_tp1_dynamic_pct) else STAGED_TP1_PCT
+                        )
+                        tp2_target_pct = tp1_target_pct + (STAGED_TP2_PCT - STAGED_TP1_PCT)
+
+                        # 1차 익절: entry_qty의 STAGED_TP1_RATIO(40%), tp1_target_pct(동적, 기본 1.0%) 도달 시
+                        if (not bool(pos.get("tp1_done", False))) and pnl_pct >= tp1_target_pct:
                             tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
                             tp1_qty = min(tp1_qty, int(pos["quantity"]))
-                            reason_tp1 = f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{STAGED_TP1_PCT*100:.1f}PCT"
+                            reason_tp1 = f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{tp1_target_pct*100:.2f}PCT"
                             log(
                                 f"  [SELL TRIGGER] {code} | {reason_tp1} | "
-                                f"qty={tp1_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
+                                f"qty={tp1_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}% "
+                                f"target={tp1_target_pct*100:.2f}% (atr_based={_atr_tp1_dynamic_pct*100:.2f}%)"
                             )
                             if api.place_sell_order(code, tp1_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
                                 pos["tp1_done"] = True
@@ -3674,11 +3866,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             signal_sell_bar[code] = bar_time
                             continue
 
-                        # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), +STAGED_TP2_PCT(1.4%) 도달 시 (1차 완료 후)
-                        if bool(pos.get("tp1_done", False)) and (not bool(pos.get("tp2_done", False))) and pnl_pct >= STAGED_TP2_PCT:
+                        # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
+                        if bool(pos.get("tp1_done", False)) and (not bool(pos.get("tp2_done", False))) and pnl_pct >= tp2_target_pct:
                             tp2_qty = max(1, int(round(entry_qty * STAGED_TP2_RATIO)))
                             tp2_qty = min(tp2_qty, int(pos["quantity"]))
-                            reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{STAGED_TP2_PCT*100:.1f}PCT"
+                            reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{tp2_target_pct*100:.2f}PCT"
                             log(
                                 f"  [SELL TRIGGER] {code} | {reason_tp2} | "
                                 f"qty={tp2_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
@@ -3691,25 +3883,19 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             signal_sell_bar[code] = bar_time
                             continue
 
-                        # 3차 익절: 잔량 전체 청산, +STAGED_TP3_PCT(현재 3.0%) 도달 시 (1,2차 완료 후)
+                        # 3차: 고정 목표가 전량청산 대신, 1/2차 완료 후 잔량(30%)을 트레일링 스탑에
+                        # 위임한다(Trail 30%). 여기서는 sell 주문을 내지 않고 로그만 1회 남긴 뒤
+                        # 아래 시그널 청산/트레일링 스탑 로직으로 자연스럽게 이어지도록 둔다.
                         if (
                             bool(pos.get("tp1_done", False))
                             and bool(pos.get("tp2_done", False))
-                            and (not bool(pos.get("tp3_done", False)))
-                            and pnl_pct >= STAGED_TP3_PCT
+                            and not bool(pos.get("tp3_trail_armed", False))
                         ):
-                            reason_tp3 = f"TP3_FULL_{STAGED_TP3_PCT*100:.1f}PCT"
+                            pos["tp3_trail_armed"] = True
                             log(
-                                f"  [SELL TRIGGER] {code} | {reason_tp3} | "
-                                f"qty={int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
+                                f"  [TP3_TRAIL_ARMED] {code} | 1,2차 익절 완료 - 잔량 {int(pos['quantity'])}주 "
+                                f"고정청산 없이 트레일링 스탑에 위임 | price={price:,.0f} pnl={pnl_pct*100:.2f}%"
                             )
-                            trailing_sell_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp3, nxt_tradeable, price=price, code_name=name):
-                                pos["tp3_done"] = True
-                                api._record_position_meta(code, pos)
-                                log(f"  [SELL EXECUTED] {code} | {reason_tp3} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
                     else:
                         # +2.0% full take profit
                         if pnl_pct >= 0.020:
@@ -4074,7 +4260,42 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         continue
 
                     if ENABLE_1MIN_GOLDEN_CROSS_BUY:
-                        buy_ok, buy_reason = check_buy_condition_1min(buy_frame)
+                        armed = gc_confirm_state.get(code)
+                        if armed is not None:
+                            _armed_bar = armed.get("gc_bar_time")
+                            _stale = (
+                                not isinstance(_armed_bar, pd.Timestamp)
+                                or not isinstance(bar_time_for_buy, pd.Timestamp)
+                                or (bar_time_for_buy - _armed_bar) > pd.Timedelta(minutes=3)
+                            )
+                            if _stale:
+                                gc_confirm_state.pop(code, None)
+                                armed = None
+
+                        if armed is not None and armed.get("gc_bar_time") == bar_time_for_buy:
+                            # 골든크로스 발생봉과 같은 봉 - 다음 봉 마감까지 대기
+                            log(
+                                f"  {symbol_label} [BUY HOLD] | reason=WAIT_NEXT_BAR_CONFIRM | "
+                                f"gc_bar={armed['gc_bar_time']:%H:%M:%S}"
+                            )
+                            continue
+
+                        if armed is not None:
+                            # 새 봉 마감 - 골든크로스 확인봉 판정 (BB중간값 위 유지 여부만 재검사)
+                            gc_confirm_state.pop(code, None)
+                            buy_ok, buy_reason = check_buy_condition_1min(buy_frame, require_fresh_cross=False)
+                            if buy_ok:
+                                buy_reason = f"{buy_reason}_CONFIRMED_NEXT_BAR"
+                        else:
+                            buy_ok, buy_reason = check_buy_condition_1min(buy_frame)
+                            if buy_ok:
+                                gc_confirm_state[code] = {"gc_bar_time": bar_time_for_buy}
+                                log(
+                                    f"  {symbol_label} [BUY HOLD] | reason=GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR | "
+                                    f"gc_bar={bar_time_for_buy:%H:%M:%S} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} "
+                                    f"close={_num(buy_frame.iloc[-1], 'close'):,.0f}"
+                                )
+                                continue
                     else:
                         buy_ok, buy_reason = check_buy_condition(
                             buy_frame,
