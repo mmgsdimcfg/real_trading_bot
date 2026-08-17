@@ -17,6 +17,18 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-17] type=fix owner=copilot
+    summary: evaluate_candidate()의 3d_close_downtrend 소프트플래그가 daily_5d_downtrend와
+      중복 카운트되던 문제 수정. 최근 5거래일 연속 하락(daily_5d_downtrend, c[-5]>c[-4]>c[-3]>
+      c[-2]>c[-1])은 정의상 항상 최근 3거래일 연속 하락(3d_close_downtrend, c[-4]>c[-3]>c[-2]>
+      c[-1])을 포함하는 부분집합 관계라, 둘 다 같은 반전 신호 예외(_has_reversal_signal)를
+      쓰는데도 5일 하락 종목은 사실상 동일한 하락 구간에 대해 소프트플래그 페널티(-0.7점)를
+      두 번 받고 있었음. daily_5d_downtrend가 이미 플래그된 경우 3d_close_downtrend는
+      생략하도록 수정(3일 하락만 있고 5일 하락은 아닌 경우는 그대로 3d_close_downtrend 단독
+      플래그).
+    impact: scanner
+    compatibility: breaking (5일 연속하락 종목의 소프트플래그 페널티가 -1.4점->-0.7점으로 감소,
+      점수 및 최종 picks 순위가 소폭 달라질 수 있음)
 - [2026-07-22] type=fix owner=copilot
     summary: --date 20260721 실행 결과 검증 중 발견된 어제(같은날) 배점표 재작성의 구조적 결함
       수정. (1) calc_adx() period 14->10 - Wilder 이중평활 특성상 2*period 봉이 필요한데
@@ -956,7 +968,14 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
             candidate["fail_reasons"].append("big_bearish_candle")
 
     # 이전 3 거래일 연속 종가 하락 (반전 신호 없을 때) - 소프트 경고로 완화 (2026-07-22)
-    if _is_3d_close_downtrend(_check_df) and not _has_reversal_signal(_check_df):
+    # 단, daily_5d_downtrend가 이미 잡혔다면 생략한다: 최근 5거래일 연속 하락(c[-5]>c[-4]>c[-3]>c[-2]>c[-1])은
+    # 수학적으로 항상 최근 3거래일 연속 하락(c[-4]>c[-3]>c[-2]>c[-1])을 포함하므로, 두 플래그가 동시에 잡히면
+    # 사실상 같은 하나의 하락 구간을 -0.7점씩 두 번 페널티 주는 중복 카운트가 된다.
+    if (
+        _is_3d_close_downtrend(_check_df)
+        and not _has_reversal_signal(_check_df)
+        and "daily_5d_downtrend" not in candidate["soft_flags"]
+    ):
         candidate["soft_flags"].append("3d_close_downtrend")
 
     # 볼린저밴드 하한선 우상향 필터: 최근 3거래일 이상 일봉 기준 BB 하한선이
