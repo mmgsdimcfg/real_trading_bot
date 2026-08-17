@@ -16,6 +16,38 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-17] type=fix owner=copilot
+    summary: check_buy_condition_1min_sim의 최소 봉 수 요건을 2봉 -> BB_PERIOD(20)봉으로 상향
+      (r006 check_buy_condition_1min과 동일 배경 - 장 시작 직후 BB_MIDDLE이 20봉 미만 구간에서
+      짧은 평균처럼 움직여 가짜 골든크로스를 유발하던 문제 수정). r006 Update log 참조.
+    impact: sim
+    compatibility: breaking (개장 후 약 20분간 시뮬레이션 매수도 지연/차단됨 - r006과 동작 일치)
+- [2026-08-17] type=fix owner=copilot
+    summary: ATR_STOP_LOSS에 최소 보유시간 게이트(HARD_STOP_MIN_HOLD_SECONDS) 추가 - r006과 동일한
+      배경(실매매 로그 분석 결과 ATR_STOP_LOSS가 손절의 33%, 해당 기간 순손실의 97%를 차지, 다른
+      보호성 매도는 모두 보유시간 게이트가 있는데 ATR_STOP_LOSS만 없었음). r006 Update log 참조.
+    impact: sim
+    compatibility: breaking (ATR 손절 발동이 진입 후 최소 240초 지연됨 - r006과 동작 일치)
+- [2026-07-25] type=feat owner=copilot
+    summary: r006 실전 매매의 2026-07-21~07-25 변경분을 r007 시뮬레이터에 동기화 (그동안 r007이
+      3분봉 다중필터 매수 + 고정 2단계 익절이라는 구버전 전략을 계속 시뮬레이션하고 있었음).
+      (1) 1분봉 골든크로스 매수 파이프라인 신규 이식 - normalize_to_strategy_bars_1min/
+      frames_1min로 1분봉 프레임 병행 구축, check_buy_condition_1min_sim(+require_fresh_cross)
+      및 gc_confirm_state로 "GC 발생봉 확인 -> 다음 1분봉도 BB중간값 위 유지 확인 -> 매수"
+      확인봉 로직까지 반영. ENABLE_1MIN_GOLDEN_CROSS_BUY 플래그로 기존 3분봉 다중필터
+      (shared_check_buy_condition)와 즉시 전환 가능. (2) 익절을 기존 2단계(50%@1.0%+전량@2.0%)
+      에서 3단계 분할(40%@동적목표/30%@+0.4%p/잔량 트레일링 위임)로 변경, 1차 목표는
+      max(1.0%, ATR*TP1_ATR_MULTIPLIER/진입가)로 동적 산출. ENABLE_STAGED_TAKE_PROFIT
+      플래그로 롤백 가능. (3) 피라미딩(불타기) 신규 - 평균단가 +0.5% 이상이고 MA5/BB중간선/
+      ADX가 모두 직전봉 대비 상승 중이면 포지션당 1회 추가매수(Simulator.add_to_position
+      신규, 가중평균 단가로 합산). 시뮬레이터는 실거래와 달리 주문대기(pending) 개념이 없어
+      즉시체결로 단순화. ENABLE_PYRAMIDING 플래그로 롤백 가능. SimPosition에 entry_quantity/
+      tp2_done/tp3_trail_armed/pyramid_done 필드 추가.
+      * CANDLE_CONFIRM_DELAY_SECONDS(r006의 봉확정 API지연 유예)는 이식하지 않음 - 시뮬레이션은
+      이미 확정된 과거 데이터를 쓰므로 개념적으로 해당 없음.
+    impact: sim
+    compatibility: breaking (매수 파이프라인/익절 단계/신규 피라미딩 매수로 시뮬레이션 결과가
+      이전과 달라짐; 각 기능은 r003 플래그로 개별 롤백 가능)
 - [2026-07-18] type=fix owner=copilot
     summary: 종목별 매매 내역 출력을 매수/매도 분리 대신 bar_time 시간순으로 통합 정렬.
     impact: sim
@@ -232,6 +264,19 @@ from r003_define_config import (
     SIMULATE_10S_GRID_DEFAULT,
     TECH_SELL_MIN_HOLD_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
+    CANDLE_GAIN_MAX_PCT,
+    BB_MID_CHASE_MAX_GAP_PCT,
+    MIN_ENTRY_VOL_MA,
+    MIN_ENTRY_VOLUME,
+    ENABLE_1MIN_GOLDEN_CROSS_BUY,
+    ENABLE_STAGED_TAKE_PROFIT,
+    STAGED_TP1_PCT,
+    STAGED_TP1_RATIO,
+    STAGED_TP2_PCT,
+    STAGED_TP2_RATIO,
+    TP1_ATR_MULTIPLIER,
+    ENABLE_PYRAMIDING,
+    PYRAMID_TRIGGER_PNL_PCT,
 )
 from r005_strategy_core_shared import (
     R76StrategyConfig,
@@ -633,6 +678,35 @@ def normalize_to_strategy_bars(df: pd.DataFrame) -> pd.DataFrame:
             agg_map[col] = "last"
 
         out = df.resample("3min", label="right", closed="right").agg(agg_map)
+        out = out.dropna(subset=["open", "high", "low", "close"])
+        return out
+
+    return df
+
+
+def normalize_to_strategy_bars_1min(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize raw bars to 1-minute bars (r006 1분봉 골든크로스 매수 파이프라인 대응)."""
+    if df.empty or len(df.index) < 2:
+        return df
+
+    diffs = df.index.to_series().diff().dropna().dt.total_seconds()
+    if diffs.empty:
+        return df
+
+    median_seconds = float(diffs.median())
+    if median_seconds <= 90.0:
+        agg_map: dict[str, str] = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        indicator_cols = [col for col in INDICATOR_COLUMNS if col in df.columns]
+        for col in indicator_cols:
+            agg_map[col] = "last"
+
+        out = df.resample("1min", label="right", closed="right").agg(agg_map)
         out = out.dropna(subset=["open", "high", "low", "close"])
         return out
 
@@ -1459,6 +1533,67 @@ def check_buy_condition_r76_sim(
     return ok, reason
 
 
+def check_buy_condition_1min_sim(frame_1min: pd.DataFrame, require_fresh_cross: bool = True) -> tuple[bool, str]:
+    """1분봉 BB 중간값 골든크로스 매수 조건 (r006 check_buy_condition_1min 시뮬레이션 대응판).
+
+    require_fresh_cross=True(기본): 직전봉<=BB중간값, 현재봉>BB중간값(골든크로스가
+    발생한 바로 그 봉)만 통과시킨다.
+    require_fresh_cross=False: 골든크로스 확인봉(다음 1분봉) 판정용 - 크로스가 이전
+    봉에서 이미 발생했더라도 현재봉 종가가 BB중간값 위에 유지되고만 있으면 통과시킨다.
+
+    r006 check_buy_condition_1min과 동일 이유로 최소 봉 수를 BB_PERIOD로 높임 - 장
+    시작 직후 실제 봉 수가 20개 미만이면 BB_MIDDLE이 짧은 구간 평균(빠른 이동평균)처럼
+    움직여 가짜 골든크로스가 발생하기 쉬움.
+    """
+    if frame_1min is None or len(frame_1min) < BB_PERIOD:
+        return False, "1MIN_INSUFFICIENT_BARS"
+
+    cur = frame_1min.iloc[-1]
+    prev = frame_1min.iloc[-2]
+
+    cur_bb = _num(cur, "BB_MIDDLE")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_close = _num(cur, "close")
+    prev_close = _num(prev, "close")
+    cur_open = _num(cur, "open")
+
+    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
+        return False, "1MIN_MISSING_INDICATOR"
+
+    if require_fresh_cross:
+        golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+        if not golden_cross:
+            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
+    else:
+        if not (cur_close > cur_bb):
+            return False, "1MIN_CONFIRM_LOST_BB_MID"
+
+    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
+    if candle_gain_pct < CANDLE_GAIN_MIN_PCT:
+        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{CANDLE_GAIN_MIN_PCT:.1f}%"
+    if candle_gain_pct > CANDLE_GAIN_MAX_PCT:
+        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{CANDLE_GAIN_MAX_PCT:.1f}%"
+
+    if cur_bb > 0:
+        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
+        if bb_gap_pct > BB_MID_CHASE_MAX_GAP_PCT:
+            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{BB_MID_CHASE_MAX_GAP_PCT:.1f}%"
+
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)):
+        if vol_ma < MIN_ENTRY_VOL_MA:
+            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
+        if vol < MIN_ENTRY_VOLUME:
+            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
+        if vol_ma > 0:
+            vol_ratio = vol / vol_ma
+            if vol_ratio < 0.10:
+                return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
+
+    return True, "1MIN_BB_MID_GOLDEN_CROSS"
+
+
 def collect_buy_reject_reasons_r76_sim(
     frame: pd.DataFrame,
     ts: pd.Timestamp,
@@ -1603,6 +1738,10 @@ class SimPosition:
         self.buy_session = buy_session
         self.highest_price = buy_price
         self.tp1_done: bool = False
+        self.tp2_done: bool = False
+        self.tp3_trail_armed: bool = False
+        self.pyramid_done: bool = False
+        self.entry_quantity: int = quantity
 
 
 class Simulator:
@@ -1641,6 +1780,31 @@ class Simulator:
         self.set_cooldown(code, now)
 
         rec = TradeRecord(code, name, "BUY", now, price, qty, reason, session)
+        self.trade_log.append(rec)
+        log(f"  {rec}")
+        return True
+
+    def add_to_position(self, code: str, price: float, qty: int, now: pd.Timestamp, reason: str) -> bool:
+        """피라미딩(불타기) 추가매수: 기존 포지션에 가중평균 단가로 합산한다.
+        시뮬레이터는 실거래와 달리 주문 대기(pending) 개념이 없어 즉시 체결로 처리한다."""
+        pos = self.positions.get(code)
+        if pos is None or price <= 0 or qty <= 0:
+            return False
+
+        affordable_qty = int(self.cash / price)
+        qty = min(qty, affordable_qty)
+        if qty <= 0:
+            return False
+
+        self.cash -= price * qty
+        old_qty = pos.quantity
+        new_qty = old_qty + qty
+        pos.buy_price = ((pos.buy_price * old_qty) + (price * qty)) / new_qty
+        pos.quantity = new_qty
+        pos.entry_quantity += qty
+        pos.highest_price = max(pos.highest_price, price)
+
+        rec = TradeRecord(code, pos.name, "BUY", now, price, qty, reason, pos.buy_session)
         self.trade_log.append(rec)
         log(f"  {rec}")
         return True
@@ -1960,6 +2124,7 @@ def simulate_date(
         return 1
 
     frames: dict[str, pd.DataFrame] = {}
+    frames_1min: dict[str, pd.DataFrame] = {}
     price_frames: dict[str, pd.DataFrame] = {}
     target_date = datetime.strptime(date_str, "%Y%m%d").date()
     for code in sorted(csv_files):
@@ -1985,6 +2150,13 @@ def simulate_date(
             log(f"Skipped {code}: failed to build simulation frame")
             continue
         frames[code] = frame
+        # r006 parity: 1분봉 골든크로스 매수 파이프라인용 1분봉 프레임 병행 구축.
+        if ENABLE_1MIN_GOLDEN_CROSS_BUY:
+            strategy_df_1min = normalize_to_strategy_bars_1min(raw_df)
+            if strategy_df_1min is not None and not strategy_df_1min.empty:
+                frame_1min = calculate_indicators(strategy_df_1min)
+                if frame_1min is not None and not frame_1min.empty:
+                    frames_1min[code] = frame_1min
         # r006 parity: evaluate live condition every 10s even if source file cadence is 20s/1m.
         if simulate_10s_grid:
             price_frames[code] = upsample_price_frame_to_10s(raw_df)
@@ -2059,6 +2231,7 @@ def simulate_date(
     no_trend_exit_state: dict[str, dict] = {}
     trailing_sell_confirm_state: dict[str, dict] = {}
     buy_confirm_state: dict[str, dict] = {}
+    gc_confirm_state: dict[str, dict] = {}  # 1분봉 골든크로스 확인봉 대기 상태 (r006 parity)
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
     buy_primary_reject_counter: collections.Counter[str] = collections.Counter()
     buy_reject_counter: collections.Counter[str] = collections.Counter()
@@ -2107,6 +2280,14 @@ def simulate_date(
 
             price = float(live_price)
             buy_available, intrabar_elapsed_seconds = _build_realtime_entry_frame_sim(available, ts, price)
+
+            buy_available_1min: pd.DataFrame | None = None
+            if ENABLE_1MIN_GOLDEN_CROSS_BUY:
+                _frame_1min_full = frames_1min.get(code)
+                if _frame_1min_full is not None and not _frame_1min_full.empty:
+                    _avail_1min = _frame_1min_full[_frame_1min_full.index <= ts]
+                    if len(_avail_1min) >= 2:
+                        buy_available_1min = _avail_1min
 
             cur = buy_available.iloc[-1]
             session = classify_buy_session(ts)
@@ -2198,25 +2379,120 @@ def simulate_date(
                     log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | price={price:,.0f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s")
                     continue
 
-                # 2. Full take-profit +2.0%
-                if profit_pct >= 0.020:
-                    trailing_sell_confirm_state.pop(code, None)
-                    sim.sell(code, price, ts, "TP2_FULL_2.0PCT", session)
-                    signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | TP2_FULL_2.0PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
-                    continue
+                # ── PYRAMIDING (불타기): 추세 지속 시 1회 추가 진입 (r006 parity) ──────
+                if (
+                    ENABLE_PYRAMIDING
+                    and not pos.pyramid_done
+                    and profit_pct >= PYRAMID_TRIGGER_PNL_PCT
+                    and len(available) >= 2
+                ):
+                    _cur_pyr = available.iloc[-1]
+                    _prev_pyr = available.iloc[-2]
+                    _ma5_cur_pyr = _num(_cur_pyr, "MA_5")
+                    _ma5_prev_pyr = _num(_prev_pyr, "MA_5")
+                    _bb_mid_cur_pyr = _num(_cur_pyr, "BB_MIDDLE")
+                    _bb_mid_prev_pyr = _num(_prev_pyr, "BB_MIDDLE")
+                    _adx_cur_pyr = _num(_cur_pyr, "ADX")
+                    _adx_prev_pyr = _num(_prev_pyr, "ADX")
+                    _pyramid_ok = (
+                        not any(
+                            pd.isna(v) for v in (
+                                _ma5_cur_pyr, _ma5_prev_pyr, _bb_mid_cur_pyr,
+                                _bb_mid_prev_pyr, _adx_cur_pyr, _adx_prev_pyr,
+                            )
+                        )
+                        and _ma5_cur_pyr > _ma5_prev_pyr
+                        and _bb_mid_cur_pyr > _bb_mid_prev_pyr
+                        and _adx_cur_pyr > _adx_prev_pyr
+                    )
+                    if _pyramid_ok:
+                        pyr_qty = int(MAX_ORDER_AMOUNT_KRW / price) if price > 0 else 0
+                        if pyr_qty > 0:
+                            reason_pyr = f"PYRAMID_2ND_ENTRY_PNL_{profit_pct*100:.2f}PCT"
+                            pos.pyramid_done = True
+                            if sim.add_to_position(code, price, pyr_qty, ts, reason_pyr):
+                                log(
+                                    f"  [BUY EXECUTED] {code} | {reason_pyr} | "
+                                    f"add_qty={pyr_qty} price={price:,.0f} new_avg={pos.buy_price:,.0f} new_qty={pos.quantity} | "
+                                    f"MA5={_ma5_prev_pyr:.1f}->{_ma5_cur_pyr:.1f} BB_MID={_bb_mid_prev_pyr:.1f}->{_bb_mid_cur_pyr:.1f} "
+                                    f"ADX={_adx_prev_pyr:.1f}->{_adx_cur_pyr:.1f}"
+                                )
+                            else:
+                                pos.pyramid_done = False
+                            continue
+                # ── END PYRAMIDING ───────────────────────────────────────────────────
 
-                # 3. Partial take-profit +1.0% at 50%, one-time
-                if (not pos.tp1_done) and profit_pct >= 0.010:
-                    partial_qty = max(1, int(pos.quantity * 0.5))
-                    partial_qty = min(partial_qty, pos.quantity)
-                    if sim.sell(code, price, ts, "TP1_PARTIAL_50PCT_1.0PCT", session, qty=partial_qty):
-                        remaining = sim.positions.get(code)
-                        if remaining is not None:
-                            remaining.tp1_done = True
-                    signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
-                    continue
+                # 2-3. 익절 (r006 parity): ENABLE_STAGED_TAKE_PROFIT=True면 3단계 분할익절
+                # (1차 ATR동적목표@40% / 2차@30% / 3차는 고정청산 대신 트레일링 위임),
+                # False면 기존 2단계(50%@1.0% + 전량@2.0%)로 즉시 롤백.
+                if ENABLE_STAGED_TAKE_PROFIT:
+                    entry_qty = pos.entry_quantity if pos.entry_quantity > 0 else pos.quantity
+
+                    _atr_tp1_dynamic_pct = (
+                        (float(atr_val) * TP1_ATR_MULTIPLIER) / pos.buy_price
+                        if not pd.isna(atr_val) and atr_val > 0 and pos.buy_price > 0
+                        else float("nan")
+                    )
+                    tp1_target_pct = (
+                        max(STAGED_TP1_PCT, _atr_tp1_dynamic_pct)
+                        if not pd.isna(_atr_tp1_dynamic_pct) else STAGED_TP1_PCT
+                    )
+                    tp2_target_pct = tp1_target_pct + (STAGED_TP2_PCT - STAGED_TP1_PCT)
+
+                    # 1차 익절: entry_qty의 STAGED_TP1_RATIO(40%), tp1_target_pct(동적, 기본 1.0%) 도달 시
+                    if (not pos.tp1_done) and profit_pct >= tp1_target_pct:
+                        tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
+                        tp1_qty = min(tp1_qty, pos.quantity)
+                        reason_tp1 = f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{tp1_target_pct*100:.2f}PCT"
+                        if sim.sell(code, price, ts, reason_tp1, session, qty=tp1_qty):
+                            remaining = sim.positions.get(code)
+                            if remaining is not None:
+                                remaining.tp1_done = True
+                                remaining.entry_quantity = entry_qty
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        continue
+
+                    # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
+                    if pos.tp1_done and (not pos.tp2_done) and profit_pct >= tp2_target_pct:
+                        tp2_qty = max(1, int(round(entry_qty * STAGED_TP2_RATIO)))
+                        tp2_qty = min(tp2_qty, pos.quantity)
+                        reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{tp2_target_pct*100:.2f}PCT"
+                        if sim.sell(code, price, ts, reason_tp2, session, qty=tp2_qty):
+                            remaining = sim.positions.get(code)
+                            if remaining is not None:
+                                remaining.tp2_done = True
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={tp2_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        continue
+
+                    # 3차: 고정 목표가 전량청산 대신, 1/2차 완료 후 잔량(30%)을 트레일링 스탑에 위임 (Trail 30%)
+                    if pos.tp1_done and pos.tp2_done and not pos.tp3_trail_armed:
+                        pos.tp3_trail_armed = True
+                        log(
+                            f"  [TP3_TRAIL_ARMED] {code} | 1,2차 익절 완료 - 잔량 {pos.quantity}주 "
+                            f"고정청산 없이 트레일링 스탑에 위임 | price={price:,.0f} pnl={profit_pct*100:.2f}%"
+                        )
+                else:
+                    # 2. Full take-profit +2.0%
+                    if profit_pct >= 0.020:
+                        trailing_sell_confirm_state.pop(code, None)
+                        sim.sell(code, price, ts, "TP2_FULL_2.0PCT", session)
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | TP2_FULL_2.0PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        continue
+
+                    # 3. Partial take-profit +1.0% at 50%, one-time
+                    if (not pos.tp1_done) and profit_pct >= 0.010:
+                        partial_qty = max(1, int(pos.quantity * 0.5))
+                        partial_qty = min(partial_qty, pos.quantity)
+                        if sim.sell(code, price, ts, "TP1_PARTIAL_50PCT_1.0PCT", session, qty=partial_qty):
+                            remaining = sim.positions.get(code)
+                            if remaining is not None:
+                                remaining.tp1_done = True
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        continue
 
                 # 4. Signal exit: Stoch K < D (r006 parity: requires held>=600s and pnl<=-0.8%, unless strong uptrend)
                 if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
@@ -2362,7 +2638,7 @@ def simulate_date(
                 # -- END NO-TREND TIME EXIT --------------------------------------------------
 
                 # 10. ATR-based stop loss
-                if not pd.isna(atr_sl_pct) and profit_pct <= atr_sl_pct:
+                if not pd.isna(atr_sl_pct) and profit_pct <= atr_sl_pct and _held_for_guard >= HARD_STOP_MIN_HOLD_SECONDS:
                     reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
                     trailing_sell_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_sl, session)
@@ -2476,13 +2752,50 @@ def simulate_date(
             if signal_buy_bar.get(code) == ts:
                 continue
 
-            should_buy, reason = check_buy_condition_r76_sim(
-                buy_available,
-                ts,
-                price,
-                cross_info,
-                intrabar_elapsed_seconds=intrabar_elapsed_seconds,
-            )
+            is_1min_gc_reason = False
+            if ENABLE_1MIN_GOLDEN_CROSS_BUY:
+                is_1min_gc_reason = True
+                if buy_available_1min is None:
+                    should_buy, reason = False, "1MIN_FRAME_UNAVAILABLE"
+                else:
+                    bar_time_for_buy = buy_available_1min.index[-1]
+                    armed = gc_confirm_state.get(code)
+                    if armed is not None:
+                        _armed_bar = armed.get("gc_bar_time")
+                        _stale = (
+                            not isinstance(_armed_bar, pd.Timestamp)
+                            or (bar_time_for_buy - _armed_bar) > pd.Timedelta(minutes=3)
+                        )
+                        if _stale:
+                            gc_confirm_state.pop(code, None)
+                            armed = None
+
+                    if armed is not None and armed.get("gc_bar_time") == bar_time_for_buy:
+                        # 골든크로스 발생봉과 같은 봉 - 다음 봉 마감까지 대기
+                        should_buy, reason = False, "1MIN_WAIT_NEXT_BAR_CONFIRM"
+                    elif armed is not None:
+                        # 새 봉 마감 - 골든크로스 확인봉 판정 (BB중간값 위 유지 여부만 재검사)
+                        gc_confirm_state.pop(code, None)
+                        should_buy, reason = check_buy_condition_1min_sim(buy_available_1min, require_fresh_cross=False)
+                        if should_buy:
+                            reason = f"{reason}_CONFIRMED_NEXT_BAR"
+                    else:
+                        should_buy, reason = check_buy_condition_1min_sim(buy_available_1min)
+                        if should_buy:
+                            gc_confirm_state[code] = {"gc_bar_time": bar_time_for_buy}
+                            log_detail(
+                                f"  [BUY HOLD] {code} | GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR | "
+                                f"gc_bar={bar_time_for_buy:%H:%M:%S}"
+                            )
+                            should_buy, reason = False, "1MIN_GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR"
+            else:
+                should_buy, reason = check_buy_condition_r76_sim(
+                    buy_available,
+                    ts,
+                    price,
+                    cross_info,
+                    intrabar_elapsed_seconds=intrabar_elapsed_seconds,
+                )
 
             if should_buy:
                 _confirm_state = buy_confirm_state.setdefault(code, {"count": 0, "first_ts": ts})
@@ -2509,14 +2822,19 @@ def simulate_date(
             else:
                 buy_confirm_state.pop(code, None)
                 buy_primary_reject_counter[str(reason)] += 1
-                for reject_reason in collect_buy_reject_reasons_r76_sim(
-                    buy_available,
-                    ts,
-                    price,
-                    cross_info,
-                    reason,
-                ):
-                    buy_reject_counter[str(reject_reason)] += 1
+                if is_1min_gc_reason:
+                    # 1분봉 GC 경로는 3분봉 다중필터 진단(collect_buy_reject_reasons_r76_sim)과
+                    # 무관하므로 주 사유만 카운트한다.
+                    buy_reject_counter[str(reason)] += 1
+                else:
+                    for reject_reason in collect_buy_reject_reasons_r76_sim(
+                        buy_available,
+                        ts,
+                        price,
+                        cross_info,
+                        reason,
+                    ):
+                        buy_reject_counter[str(reject_reason)] += 1
                 log_detail(f"  [BUY REJECT] {code_label} | {reason}")
 
 

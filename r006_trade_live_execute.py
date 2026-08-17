@@ -20,6 +20,37 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-17] type=fix owner=copilot
+    summary: (1) check_buy_condition_1min의 최소 봉 수 요건을 2봉 -> BB_PERIOD(20)봉으로 상향.
+      BB_MIDDLE은 calculate_indicators에서 rolling(window=BB_PERIOD, min_periods=1)로
+      계산되는데, 장 시작 직후 실제 확정봉이 20개 미만인 동안에는 BB_MIDDLE이 사실상 그
+      짧은 구간 평균(5봉 이동평균에 가까운 매우 빠른 선)처럼 움직여, 가격이 이미 "진짜" BB
+      중간선 위에서 유지 중인데도 이 불안정한 초반 평균을 잠깐 뚫기만 해도 가짜 골든크로스로
+      매수가 발생하는 문제가 있었음(사용자 제보: 5일선/20일선 기준으로 매수되는 것처럼 보이는
+      현상의 원인). 1분봉 기준 장 시작 후 약 20분간은 신규 매수 자체가 나가지 않게 됨.
+      (2) 매수 직전 중복 검사였던 BEARISH_BAR 재확인(cur_bar_close<=cur_bar_open) 삭제 -
+      check_buy_condition_1min이 이미 같은 확정봉으로 CANDLE_GAIN_MIN_PCT(0.0%, 음봉만 차단)
+      기준의 양봉 검사를 통과시킨 직후라 100% 중복이었고, 오히려 <=로 더 엄격하게 재검사해
+      "0.00%는 허용"이라는 CANDLE_GAIN_MIN_PCT의 명시된 설계 의도(r003 주석)와 충돌해 보합
+      마감봉을 이유 없이 추가로 막고 있었음. r007에는 애초에 이 재확인이 없어 r006에만 있던
+      불일치이기도 함.
+    impact: live
+    compatibility: breaking (개장 후 약 20분간 신규 매수 지연/차단됨 - 개장 초반 가짜 크로스로
+      인한 저품질 진입은 줄어들지만, 그 구간에 실제로 발생하는 진짜 기회도 함께 놓칠 수 있음)
+- [2026-08-17] type=fix owner=copilot
+    summary: ATR_STOP_LOSS에 최소 보유시간 게이트(HARD_STOP_MIN_HOLD_SECONDS) 추가 - 실매매 로그
+      (logs/20260701~20260724, 85건) 분석 결과 ATR_STOP_LOSS가 전체 매도의 33%(28건)를 차지하면서
+      해당 기간 순손실 -56,307원의 97%(-54,587원)를 차지하는 것으로 확인됨. 다른 모든 보호성 매도
+      (HARD_STOP_LOSS/POST_BUY_BB_DROP/BREAKEVEN_FAIL/NO_TREND_EXIT)는 전부 최소 보유시간이나
+      확인시간 게이트를 갖고 있는데 ATR_STOP_LOSS만 게이트 없이 매수 직후부터 매 폴링마다 즉시
+      평가되고 있어, 진입 직후의 정상 변동성(노이즈)에 반응해 조기 손절되는 경우가 많았음(평균
+      손실폭은 -0.91%로 크지 않으나 발생 빈도가 매우 높았음). 다른 손절 가드와 동일하게
+      HARD_STOP_MIN_HOLD_SECONDS(240초) 경과 후에만 발동하도록 수정 - 매수 직후 240초 이내에는
+      POST_BUY_BB_DROP_GUARD가 보호를 담당하고, 그 이후에는 ATR_STOP_LOSS/HARD_STOP_LOSS가
+      함께 최종 손절선 역할을 하도록 일원화.
+    impact: live
+    compatibility: breaking (ATR 손절 발동이 진입 후 최소 240초 지연됨 - 진입 직후 급락 시 손실폭이
+      기존보다 커질 수 있으나, 정상 변동성에 의한 조기 손절 빈도는 크게 감소할 것으로 예상)
 - [2026-07-25] type=feat owner=copilot
     summary: 매매 파이프라인 개선 4건 (사용자 제안 분석 후 적용, r003 Update log에 요약).
       (1) fetch_1min_frame/fetch_3min_frame의 확정봉 판정 시각에 CANDLE_CONFIRM_DELAY_SECONDS(2초)
@@ -2200,8 +2231,17 @@ def check_buy_condition_1min(frame_1min: pd.DataFrame, require_fresh_cross: bool
     require_fresh_cross=False: 골든크로스 확인봉(다음 1분봉) 판정용 - 크로스가 이전
     봉에서 이미 발생했더라도 현재봉 종가가 BB중간값 위에 유지되고만 있으면 통과시킨다.
     나머지 안전장치 필터(양봉/추격매수/거래량)는 두 모드 모두 동일하게 적용된다.
+
+    BB_MIDDLE은 BB_PERIOD(20)봉 이동평균인데 calculate_indicators가
+    rolling(window=BB_PERIOD, min_periods=1)로 계산되어, 장 시작 직후 실제 봉 수가
+    20개 미만인 동안에는 "BB 중간값"이 사실상 그 짧은 구간의 평균(5봉선에 가까운
+    매우 빠른 이동평균)처럼 움직인다. 이 상태에서는 가격이 잠깐만 올라도 이 불안정한
+    평균을 위로 뚫는 "가짜 골든크로스"가 쉽게 발생한다(장 시작 직후 이미 BB 중간선
+    위에서 유지 중인데도 매수가 들어오는 것처럼 보이는 현상의 원인). BB_MIDDLE이
+    실제로 20봉 평균이 되는 시점(1분봉 기준 장 시작 후 약 20분) 이전에는 크로스
+    판정 자체를 하지 않도록 최소 봉 수를 BB_PERIOD로 높인다.
     """
-    if frame_1min is None or len(frame_1min) < 2:
+    if frame_1min is None or len(frame_1min) < BB_PERIOD:
         return False, "1MIN_INSUFFICIENT_BARS"
 
     cur = frame_1min.iloc[-1]
@@ -4085,7 +4125,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # ── END NO-TREND TIME EXIT ────────────────────────────────────────
 
                     _held_sl = (current_dt - _buy_time).total_seconds()
-                    if not pd.isna(atr_sl_pct) and _pnl_sl <= atr_sl_pct:
+                    if not pd.isna(atr_sl_pct) and _pnl_sl <= atr_sl_pct and _held_sl >= HARD_STOP_MIN_HOLD_SECONDS:
                         reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} "
@@ -4402,15 +4442,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     api.live_state["traded_today"] = traded_today
                     signal_buy_bar[code] = bar_time_for_buy
 
-                    cur_bar_open = _num(buy_frame.iloc[-1], "open")
-                    cur_bar_close = _num(buy_frame.iloc[-1], "close")
-                    if not any(pd.isna(v) for v in (cur_bar_open, cur_bar_close)) and cur_bar_open > 0:
-                        if cur_bar_close <= cur_bar_open:
-                            log(f"  {symbol_label} [BUY REJECT] | BEARISH_BAR | open={cur_bar_open:,.0f} close={cur_bar_close:,.0f}")
-                            traded_today.discard(norm_code)
-                            api.live_state["traded_today"] = traded_today
-                            signal_buy_bar.pop(code, None)
-                            continue
                     _ob_spec = get_order_spec(current_dt, nxt_tradeable)
                     _ob_mkt = "NX" if (_ob_spec and _ob_spec.get("exchange") == "NXT") else "J"
                     _ask_total, _bid_total = _fetch_orderbook_totals(norm_code, _ob_mkt)

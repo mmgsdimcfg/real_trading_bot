@@ -18,6 +18,40 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-17] type=fix owner=copilot
+    summary: 사용자가 캡처한 실제 차트(2026-08-14 현대차/삼성전기 3분봉)에서 육안상 매수가
+      나와야 할 지점이 실제로는 걸러지는 것을 발견해 원인 2건 수정. (1) 필수조건 5(스토캐스틱)의
+      상한을 STOCH_BUY_MAX(50)에서 config.stoch_overbought(96, 진짜 과열 기준)로 완화 -
+      %K는 10봉 오실레이터라 BB중앙선 돌파 순간엔 이미 50을 넘는 게 정상적인 움직임인데,
+      50을 상한으로 걸어놓아 정상적인 돌파 대부분을 걸러내고 있었음(현대차 12:12 사례로 확인).
+      (2) 필수조건 1(BB 기울기)의 하드코딩 임계값 -0.7%를 신규 상수 BB_SLOPE_MIN_PCT(-2.0%,
+      r003)로 분리 및 완화 - 60분 lookback 기울기가 급등 후 되돌림 국면에서 가격/스토캐스틱/
+      윌리엄스%R이 이미 반전된 뒤에도 한참 뒤늦게 양전환되어 진입을 막고 있었음(삼성전기 10:42
+      사례로 확인). 두 수정 모두 2026-08-14 실데이터 재생으로 검증 완료.
+    impact: common
+    compatibility: breaking (매수 필수조건 통과 기준이 완화되어 매수 빈도/타이밍이 달라짐)
+- [2026-08-17] type=feat owner=copilot
+    summary: run_buy_condition_pipeline_comment(3분봉 다중필터 매수)에 필수조건 5/6으로
+      스토캐스틱 패스트/윌리엄스 %R 매수신호를 신규 추가. 사용자가 원래 의도한 설계는
+      "3분봉 BB 중앙선 골든크로스 시점에 스토캐스틱 패스트와 윌리엄스 %R의 매수신호가
+      함께 나올 때 매수"였는데, 실제 코드는 2026-06-28 리팩토링(불필요 로직 제거 명목)
+      이후 스토캐스틱은 매도 판단에만, 윌리엄스 %R은 어디에도 쓰이지 않는 상태였음
+      (STOCH_BUY_MIN/MAX, WILLIAMS_BUY_FLOOR/OVERBOUGHT_CEIL 등 관련 config 필드도
+      R76StrategyConfig에 정의만 되고 아무 곳에서도 읽히지 않는 죽은 필드였음). 필수조건 5는
+      스토캐스틱 %K가 %D를 상향 돌파하거나(골든크로스) %K>%D이면서 STOCH_BUY_MIN~MAX
+      구간(과열 아님)일 때 통과, 필수조건 6은 윌리엄스 %R이 직전봉 대비 상승 중이면서
+      WILLIAMS_BUY_FLOOR~WILLIAMS_OVERBOUGHT_CEIL 구간(바닥권 탈출~과열 직전)일 때
+      통과. r003의 ENABLE_1MIN_GOLDEN_CROSS_BUY도 False로 되돌려 이 3분봉 경로가 다시
+      기본 매수 경로가 되도록 함(r003 Update log 참조).
+    impact: common
+    compatibility: breaking (매수 필수조건이 2개 늘어나 매수 빈도가 줄어들 수 있음)
+- [2026-08-17] type=refactor owner=copilot
+    summary: 죽은 코드 제거 - buy_1st_live_price_above_bb_mid_within_gap_comment ~
+      buy_10th_prev_close_and_volume_soft_guard_comment (10개 함수, "가짜" 10단계 매수 파이프라인)가
+      r006/r007 어디에서도 호출되지 않는 것으로 확인됨(run_buy_condition_pipeline_comment는 자체
+      로직을 재구현하고 있어 이 함수들과 무관). 실제 사용되지 않는 죽은 코드라 전체 삭제.
+    impact: common
+    compatibility: backward-compatible (미사용 함수 삭제만, 동작 변화 없음)
 - [2026-07-18] type=fix owner=copilot
     summary: BB_MID_DOWNTREND 조건 완화 - 가격이 이미 BB_MID 위에 있을 경우 BB_MID 하락추세 차단 해제. 후행 지표 아티팩트로 인한 오진입 차단 방지.
     impact: common
@@ -70,6 +104,7 @@ from r003_define_config import (
     BB_PERIOD,
     BB_STD_MULTIPLIER,
     BB_SLOPE_LOOKBACK_BARS,
+    BB_SLOPE_MIN_PCT,
     BB_MID_DOWNTREND_BARS,
     BB_MID_CHASE_MAX_GAP_PCT,
     BB_UPPER_GAP_MIN_PCT,
@@ -92,10 +127,13 @@ from r003_define_config import (
     OBV_MA_PERIOD,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
+    STOCH_BUY_MIN,
     STOCH_D_PERIOD,
     STOCH_K_PERIOD,
     VOLUME_MA_PERIOD,
+    WILLIAMS_BUY_FLOOR,
     WILLIAMS_D_PERIOD,
+    WILLIAMS_OVERBOUGHT_CEIL,
     WILLIAMS_R_PERIOD,
     OPENING_GUARD_MINUTES,
     OPENING_GUARD_SCORE_THRESHOLD,
@@ -489,124 +527,6 @@ def check_buy_condition(
     )
 
 
-def buy_1st_live_price_above_bb_mid_within_gap_comment(
-    live_price: float,
-    cur_bb: float,
-    bb_buffer: float,
-    max_gap_pct: float,
-) -> tuple[bool, str]:
-    bb_gate = cur_bb * (1.0 + max(bb_buffer, 0.0))
-    if live_price <= bb_gate:
-        return False, "LIVE_PRICE_NOT_ABOVE_BB_MIDDLE"
-
-    if cur_bb > 0:
-        bb_gap_pct = (live_price - cur_bb) / cur_bb
-        if bb_gap_pct > max_gap_pct:
-            return False, (
-                f"CHASE_BUY_BLOCK_BB_GAP_{bb_gap_pct*100:.2f}%"
-                f"_GT_{max_gap_pct*100:.2f}%"
-            )
-
-    return True, "BUY_1ST_PASS"
-
-
-def buy_2nd_prev_bar_low_below_current_bb_mid_comment(prev: pd.Series, cur_bb: float) -> tuple[bool, str]:
-    prev_low = _num(prev, "low")
-    if pd.isna(prev_low) or pd.isna(cur_bb):
-        return False, "PREV_LOW_OR_BB_MISSING"
-    if prev_low >= cur_bb:
-        return False, f"PREV_LOW_NOT_BELOW_BB_MIDDLE_{prev_low:.1f}_GTE_{cur_bb:.1f}"
-    return True, "BUY_2ND_PASS"
-
-
-def buy_3rd_primary_gate_confirm_comment(first_ok: bool, second_ok: bool) -> tuple[bool, str]:
-    if first_ok and second_ok:
-        return True, "BUY_3RD_PRIMARY_GATE_PASS"
-    return False, "BUY_3RD_PRIMARY_GATE_FAIL"
-
-
-def buy_4th_macd_hist_positive_comment(cur: pd.Series) -> tuple[bool, str]:
-    macd_hist = _num(cur, "MACD_HIST")
-    if pd.isna(macd_hist) or macd_hist <= 0:
-        return False, "MACD_HIST_NOT_POSITIVE"
-    return True, "BUY_4TH_PASS"
-
-
-def buy_5th_stoch_k_over_d_comment(cur: pd.Series) -> tuple[bool, str]:
-    stoch_k = _num(cur, "STOCH_K")
-    stoch_d = _num(cur, "STOCH_D")
-    if any(pd.isna(v) for v in (stoch_k, stoch_d)) or stoch_k < stoch_d - 0.5:
-        return False, "STOCH_K_NOT_ABOVE_D"
-    return True, "BUY_5TH_PASS"
-
-
-def buy_6th_stoch_overheat_guard_comment(
-    cur: pd.Series,
-    config: R76StrategyConfig,
-    confirmed_cross: bool,
-) -> tuple[bool, str]:
-    stoch_k = _num(cur, "STOCH_K")
-    if pd.isna(stoch_k):
-        return False, "STOCH_K_NOT_ABOVE_D"
-    if stoch_k >= config.stoch_overbought:
-        adx_val = _num(cur, "ADX")
-        bypass = (
-            config.enable_strong_trend_overbought_bypass
-            and confirmed_cross
-            and not pd.isna(adx_val)
-            and adx_val >= config.strong_trend_overbought_min_adx
-        )
-        if not bypass:
-            return False, f"STOCH_K_OVERHEATED_{stoch_k:.1f}"
-    return True, "BUY_6TH_PASS"
-
-
-def buy_7th_rsi_floor_comment(cur: pd.Series) -> tuple[bool, str]:
-    rsi_c = _num(cur, "RSI")
-    if pd.isna(rsi_c) or rsi_c <= 25:
-        return False, f"RSI_TOO_LOW_{rsi_c:.1f}"
-    return True, "BUY_7TH_PASS"
-
-
-def buy_8th_di_bullish_comment(cur: pd.Series) -> tuple[bool, str]:
-    di_plus = _num(cur, "DI_PLUS")
-    di_minus = _num(cur, "DI_MINUS")
-    if any(pd.isna(v) for v in (di_plus, di_minus)) or di_plus <= di_minus:
-        return False, f"DI_NOT_BULLISH_+DI_{di_plus:.1f}_-DI_{di_minus:.1f}"
-    return True, "BUY_8TH_PASS"
-
-
-def buy_9th_volume_ratio_hard_floor_comment(
-    cur: pd.Series,
-    now: pd.Timestamp,
-    volume_ratio_threshold_fn: Callable[[pd.Timestamp, float], float],
-) -> tuple[bool, str, bool]:
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    adx_val = _num(cur, "ADX")
-
-    volume_soft_fail = False
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        vol_ratio = vol / vol_ma
-        vol_ratio_req = volume_ratio_threshold_fn(now, adx_val)
-        volume_soft_fail = vol_ratio < vol_ratio_req
-
-        hard_floor = max(0.65, vol_ratio_req * 0.90)  # 0.30->0.65, 0.75->0.90 (저거래량 추격매수 완전 차단)
-        if vol_ratio < hard_floor:
-            return False, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_{hard_floor:.4f}", volume_soft_fail
-
-    return True, "BUY_9TH_PASS", volume_soft_fail
-
-
-def buy_10th_prev_close_and_volume_soft_guard_comment(
-    prev_close_soft_fail: bool,
-    volume_soft_fail: bool,
-) -> tuple[bool, str]:
-    if prev_close_soft_fail and volume_soft_fail:
-        return False, "LIVE_NOT_ABOVE_PREV_CLOSE_AND_LOW_VOLUME"
-    return True, "BUY_10TH_PASS"
-
-
 def run_buy_condition_pipeline_comment(
     frame: pd.DataFrame,
     now: pd.Timestamp,
@@ -615,7 +535,7 @@ def run_buy_condition_pipeline_comment(
     config: R76StrategyConfig,
     volume_ratio_threshold_fn,
 ) -> tuple[bool, str]:
-    """BB 중앙선 상승 돌파 전략: 4개 필수조건 + 가점 8점 이상."""
+    """BB 중앙선 상승 돌파 전략: 6개 필수조건(BB돌파+스토캐스틱+윌리엄스%R 포함) + 가점 임계값 이상."""
     if len(frame) < 2:
         return False, "INSUFFICIENT_BARS"
 
@@ -628,9 +548,9 @@ def run_buy_condition_pipeline_comment(
     if any(pd.isna(v) for v in (cur_bb, cur_bb_upper, prev_bb)):
         return False, "MISSING_INDICATOR"
 
-    # 필수조건 1: BB 중앙선 상승 추세 (최근 lookback봉 대비 기울기 > 0)
+    # 필수조건 1: BB 중앙선 상승 추세 (최근 lookback봉 대비 기울기 > BB_SLOPE_MIN_PCT)
     bb_slope_pct = _compute_bb_slope_pct(frame)
-    if pd.isna(bb_slope_pct) or bb_slope_pct <= -0.7:
+    if pd.isna(bb_slope_pct) or bb_slope_pct <= BB_SLOPE_MIN_PCT:
         slope_str = f"{bb_slope_pct:.3f}" if not pd.isna(bb_slope_pct) else "nan"
         return False, f"BB_SLOPE_NOT_RISING_{slope_str}%"
 
@@ -723,6 +643,35 @@ def run_buy_condition_pipeline_comment(
     bb_upper_gap_pct = (cur_bb_upper - live_price) / live_price * 100.0
     if bb_upper_gap_pct < BB_UPPER_GAP_MIN_PCT:
         return False, f"BB_UPPER_GAP_TOO_SMALL_{bb_upper_gap_pct:.2f}%_LT_{BB_UPPER_GAP_MIN_PCT:.1f}%"
+
+    # 필수조건 5: 스토캐스틱 패스트 매수신호 (%K가 %D를 상향 돌파, 또는 %K>%D이면서 진짜 과열(stoch_overbought) 아닌 구간)
+    # 주의: %K는 10봉 오실레이터라 BB중앙선 돌파 순간엔 이미 50을 넘어서는 게 정상적인 움직임이라
+    # STOCH_BUY_MAX(50)를 상한으로 쓰면 정상적인 돌파 대부분을 걸러내 버린다. 상한은 config.stoch_overbought
+    # (진짜 과열 기준, 기본 96)로 완화한다.
+    stoch_k = _num(cur, "STOCH_K")
+    stoch_d = _num(cur, "STOCH_D")
+    stoch_k_prev = _num(prev, "STOCH_K")
+    stoch_d_prev = _num(prev, "STOCH_D")
+    if any(pd.isna(v) for v in (stoch_k, stoch_d, stoch_k_prev, stoch_d_prev)):
+        return False, "STOCH_DATA_MISSING"
+    stoch_golden_cross = stoch_k_prev <= stoch_d_prev and stoch_k > stoch_d
+    stoch_buy_signal = stoch_golden_cross or (
+        stoch_k > stoch_d and STOCH_BUY_MIN <= stoch_k < config.stoch_overbought
+    )
+    if not stoch_buy_signal:
+        return False, f"NO_STOCH_BUY_SIGNAL_K_{stoch_k:.1f}_D_{stoch_d:.1f}"
+
+    # 필수조건 6: 윌리엄스 %R 매수신호 (상승 중이면서 과열 상한 밑, 바닥권 탈출 하한 이상)
+    williams_r = _num(cur, "WILLIAMS_R")
+    williams_r_prev = _num(prev, "WILLIAMS_R")
+    if any(pd.isna(v) for v in (williams_r, williams_r_prev)):
+        return False, "WILLIAMS_DATA_MISSING"
+    williams_buy_signal = (
+        williams_r > williams_r_prev
+        and WILLIAMS_BUY_FLOOR <= williams_r <= WILLIAMS_OVERBOUGHT_CEIL
+    )
+    if not williams_buy_signal:
+        return False, f"NO_WILLIAMS_BUY_SIGNAL_R_{williams_r:.1f}"
 
     # 안전장치: 거래량 절대/상대 최소치 (저유동성 종목 차단)
     vol = _num(cur, "volume")
