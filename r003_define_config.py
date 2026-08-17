@@ -1,6 +1,23 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-08-17] type=fix owner=copilot
+#     summary: BB_SLOPE_MIN_PCT(-2.0%) 신규 추가 - run_buy_condition_pipeline_comment의
+#       필수조건 1(BB 기울기) 하드코딩값 -0.7%를 상수로 분리하며 완화. 사용자 제공 실제 차트
+#       (2026-08-14 삼성전기)에서 급등 후 되돌림 국면 중 가격/스토캐스틱/윌리엄스%R은 이미
+#       반전됐는데 60분 BB기울기만 아직 음(-)이라 매수가 막히는 사례를 확인해 조정.
+#     impact: common
+#     compatibility: breaking (매수 필수조건 1 통과 기준 완화)
+# - [2026-08-17] type=fix owner=copilot
+#     summary: ENABLE_1MIN_GOLDEN_CROSS_BUY True->False - 사용자가 원래 의도한 매수 설계
+#       ("3분봉 BB 중앙선 골든크로스 + 스토캐스틱 패스트/윌리엄스 %R 매수신호 확인")를
+#       확인해보니 1분봉 골든크로스 경로는 스토캐스틱/윌리엄스를 전혀 참조하지 않는 것으로
+#       드러남(2026-06-28 리팩토링 때 매수 스코어링에서 제거된 뒤 복구되지 않았음). 3분봉
+#       다중필터 경로(check_buy_condition)로 되돌리고, 그 안에 스토캐스틱/윌리엄스 %R
+#       매수신호 필수조건을 신규 추가함(r005 Update log 참조).
+#     impact: live
+#     compatibility: breaking (매수 판단 타임프레임이 1분봉 -> 3분봉으로 되돌아가고, 매수
+#       빈도/타이밍이 최근 한 달간 라이브 운용과 크게 달라짐)
 # - [2026-07-25] type=feat owner=copilot
 #     summary: 매매 파이프라인 개선 4건 반영 (r006 Update log에 상세 배경 기술).
 #       (1) CANDLE_CONFIRM_DELAY_SECONDS 신규 - 봉 마감 직후 거래소 API 지연(1~2초)으로
@@ -254,6 +271,10 @@ PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT = True  # 과열 상태에서도 허용 여
 
 # BB 중앙선 상승 돌파 전략 파라미터 (BB slope break cross strategy)
 BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 약 1시간)
+# BB 중앙선 기울기 최소 허용치(%) - 이 값 이하면 매수 차단 (기존 -0.7 하드코딩값을 상수로 분리 + 완화)
+# 60분 lookback은 급등 후 되돌림 국면에서 BB중앙선이 실제 저점 형성보다 한참 늦게 양전환되어,
+# 가격/스토캐스틱/윌리엄스%R이 이미 반전된 뒤에도 한동안 매수를 막는 경우가 있어 -0.7%->-2.0%로 완화.
+BB_SLOPE_MIN_PCT = -2.0
 BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
 BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5->0.25)
 CANDLE_GAIN_MIN_PCT = 0.0        # 현재봉 양봉 최소 상승률 (%) - 음봉만 차단, 0.00%는 허용 (0.1->0.0)
@@ -344,7 +365,12 @@ PYRAMID_TRIGGER_PNL_PCT = 0.005  # 평균단가 대비 +0.5%
 # CANDLE_GAIN_MIN_PCT·MAX_PCT/추격매수 방지 BB_MID_CHASE_MAX_GAP_PCT/오더북 확인 등)는
 # 그대로 재사용한다. 매도(데드크로스)/손절 조건은 기존 3분봉 기준 그대로 유지된다.
 # False로 설정 시 즉시 기존 3분봉 다중필터 매수 파이프라인으로 롤백된다.
-ENABLE_1MIN_GOLDEN_CROSS_BUY = True
+# 2026-08-17: 사용자 요청으로 3분봉 다중필터 경로로 되돌림(False) - 원래 설계 의도가
+# "3분봉 BB 중앙선 골든크로스 시점에 스토캐스틱 패스트/윌리엄스 %R 매수신호까지 확인"
+# 이었는데, 1분봉 골든크로스 경로는 스토캐스틱/윌리엄스를 전혀 보지 않아 이 의도와
+# 어긋났음(r005 Update log 참조. run_buy_condition_pipeline_comment에 스토캐스틱/
+# 윌리엄스 %R 필수조건 신규 추가).
+ENABLE_1MIN_GOLDEN_CROSS_BUY = False
 
 # --- 13. 개장 초반 갭/거래량폭발 라이브 게이트 (Opening gap/volume live gate) -------
 # r002 스캐너는 전일 종가 기준 데이터로 랭킹을 매기므로, 당일 아침 뉴스/해외증시
