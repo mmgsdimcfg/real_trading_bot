@@ -1,6 +1,24 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-08-21] type=fix owner=copilot
+#     summary: PRE_CROSS_ACCUM_LOOKBACK_BARS 3->5, 매집봉 거래량 증가 판정 기준을 "직전봉 대비"에서
+#       "VOL_MA20(20봉 평균) 대비"로 변경(r005 Update log 참조). 어제(2026-08-20) 신규 추가된
+#       필수조건 2-b가 257720 실리콘투 2026-08-21 09:57 BB중앙선 상향 돌파 사례를 막은 것을 사용자가
+#       발견 - 돌파 직전 3봉(09:48/09:51/09:54) 각각의 거래량을 직전봉과 비교하면 09:48봉이 그 직전
+#       09:45봉(장중 거래량 스파이크)보다 낮게 나와 탈락했는데, VOL_MA20 대비로는 낮지 않아 정상
+#       매집 국면이 직전봉 대비 잡음 때문에 오탈락한 사례로 판단됨. 사용자 요청으로 (1) 판정 기준을
+#       변동성이 큰 "직전 1봉"에서 안정적인 "20봉 평균" 대비로 변경, (2) 룩백도 3->5봉으로 확장.
+#     impact: common
+#     compatibility: breaking (매수 필수조건 2-b 통과 기준이 완화되어 매수 빈도가 다시 늘어날 수 있음)
+# - [2026-08-20] type=feat owner=copilot
+#     summary: ENABLE_PRE_CROSS_ACCUM_BAR_CHECK/PRE_CROSS_ACCUM_LOOKBACK_BARS 신규 추가 -
+#       BB 중앙선 상향 돌파 직전에 매집(거래량 증가) 양봉이 있었는지 확인하는 필수조건.
+#       사용자 요청으로 run_buy_condition_pipeline_comment에 신규 필수조건으로 삽입(r005
+#       Update log 참조). 매수 빈도 급감을 막기 위해 직전봉 1개가 아니라 최근
+#       PRE_CROSS_ACCUM_LOOKBACK_BARS(3)개 봉 중 하나라도 만족하면 통과시킴.
+#     impact: live
+#     compatibility: breaking (신규 필수조건 추가로 매수 빈도가 줄어들 수 있음; 플래그로 즉시 롤백 가능)
 # - [2026-08-17] type=fix owner=copilot
 #     summary: BB_SLOPE_MIN_PCT(-2.0%) 신규 추가 - run_buy_condition_pipeline_comment의
 #       필수조건 1(BB 기울기) 하드코딩값 -0.7%를 상수로 분리하며 완화. 사용자 제공 실제 차트
@@ -238,6 +256,20 @@ MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when pri
 BUY_CONSECUTIVE_CONFIRM_COUNT = 2
 MIN_BARS_REQUIRED = 3
 
+# --- 5-b. 매수 진입 - 직전 매집봉(Pre-cross accumulation bar) 확인 -----------
+# BB 중앙선 상향 돌파 직전에 "매집(거래량 증가) 양봉"이 있었는지 확인하는 필수조건.
+# 최근 PRE_CROSS_ACCUM_LOOKBACK_BARS개 봉 중 하나라도 아래 3가지를 모두 만족하면 통과:
+#   1) 그 봉의 저가~고가 범위가 그 봉 시점의 BB중간값을 포함
+#   2) 그 봉이 양봉(종가>시가)
+#   3) 그 봉의 거래량이 그 봉 시점의 VOL_MA20(20봉 평균)보다 큼
+# 직전봉(-2) 1개만 보면 매수 빈도가 크게 줄어들어, close_cross 판정처럼 최근 몇 봉으로
+# 룩백을 넓혀 빈도 감소를 완화한다. False로 설정 시 이 필수조건 자체를 건너뛴다(롤백용).
+# [2026-08-21] 3->5봉, 거래량 기준 "직전봉 대비"->"VOL_MA20 대비"로 완화 (r005 Update log 참조) -
+#   257720 실리콘투 09:57 사례처럼 매집 구간에서도 봉 하나하나의 직전봉 대비 거래량은 들쭉날쭉해
+#   정상적인 매집 국면을 놓치는 오탈락이 발생해, 더 안정적인 평균 대비 기준 + 넓은 룩백으로 변경.
+ENABLE_PRE_CROSS_ACCUM_BAR_CHECK = True
+PRE_CROSS_ACCUM_LOOKBACK_BARS = 5
+
 # --- 6. 매수 진입 - 근접교차(Near-cross) / 조기진입 / 가격선행돌파 ------------
 # Near-cross ARM 모드: BB 중단과 MA5 간 최대 허용 갭 / MA5 최소 상승률
 ENABLE_NEAR_CROSS_ARM = True
@@ -348,13 +380,13 @@ TRADE_COOLDOWN_MINUTES = 3
 MARKET_DAY_FAIL_CLOSED = True
 
 # --- 11. 주문/자금 관리 -------------------------------------------------------
-MAX_ORDER_AMOUNT_KRW = 300_000  # 1회 매수 주문 최대 금액(KRW)
+MAX_ORDER_AMOUNT_KRW = 500_000  # 1회 매수 주문 최대 금액(KRW)
 
 # --- 11-b. 피라미딩(불타기) - 추세 지속 시 1회 추가 진입 ----------------------
 # 평균단가 대비 PYRAMID_TRIGGER_PNL_PCT 이상 이익이고 MA5/BB중간선/ADX가 모두
 # 상승(직전봉 대비) 중일 때 1회에 한해 추가 매수한다(같은 포지션당 최대 1회).
 # 추가매수 금액도 MAX_ORDER_AMOUNT_KRW 한도를 그대로 따른다.
-ENABLE_PYRAMIDING = True
+ENABLE_PYRAMIDING = False  # 2026-08-20: 보유중 종목 중복 재매수 방지 위해 비활성화
 PYRAMID_TRIGGER_PNL_PCT = 0.005  # 평균단가 대비 +0.5%
 
 # --- 12. 1분봉 BB 중간값 골든크로스 매수 (단순화 진입 컨셉) -------------------
@@ -435,7 +467,7 @@ ATR_PERIOD = 14
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부
+ENABLE_NXT_SESSION = False  # NXT 세션 포함 운용 여부
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)

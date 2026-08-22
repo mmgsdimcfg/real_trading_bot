@@ -18,6 +18,23 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-21] type=fix owner=copilot
+    summary: 필수조건 2-b(직전 매집봉 확인)의 거래량 증가 판정을 "직전봉 대비"에서 "VOL_MA20(20봉
+      평균) 대비"로 변경, 룩백도 3->5봉으로 확장(PRE_CROSS_ACCUM_LOOKBACK_BARS, r003). 어제
+      추가된 이 조건이 257720 실리콘투 2026-08-21 09:57 BB중앙선 상향 돌파를 막은 사례를 사용자가
+      발견 - 돌파 직전 3봉 중 09:48봉이 직전 09:45봉(장중 거래량 스파이크)보다 거래량이 낮게
+      나와 "거래량 증가" 조건에서 탈락했는데, VOL_MA20 대비로는 낮지 않았음. 봉 대 봉 비교는
+      매집 국면에서도 노이즈로 인해 오탈락하기 쉬워, 더 안정적인 평균 대비 기준으로 교체.
+    impact: common
+    compatibility: breaking (필수조건 2-b 통과 기준 완화로 매수 빈도가 다시 늘어날 수 있음)
+- [2026-08-20] type=feat owner=copilot
+    summary: run_buy_condition_pipeline_comment에 필수조건 2-b(직전 매집봉 확인) 신규 추가 -
+      BB 중앙선 상향 돌파 직전 PRE_CROSS_ACCUM_LOOKBACK_BARS(3, r003)개 봉 중 하나라도
+      (1) 그 봉의 저가~고가가 그 봉 시점 BB중간값을 포함, (2) 양봉, (3) 거래량이 바로 이전
+      봉보다 큼을 모두 만족해야 통과. 직전봉 1개만 보면 매수 빈도가 크게 줄어들어 최근 3봉
+      룩백으로 완화. ENABLE_PRE_CROSS_ACCUM_BAR_CHECK(r003) False 시 건너뜀(즉시 롤백 가능).
+    impact: common
+    compatibility: breaking (신규 필수조건 추가로 매수 빈도가 줄어들 수 있음)
 - [2026-08-17] type=fix owner=copilot
     summary: 사용자가 캡처한 실제 차트(2026-08-14 현대차/삼성전기 3분봉)에서 육안상 매수가
       나와야 할 지점이 실제로는 걸러지는 것을 발견해 원인 2건 수정. (1) 필수조건 5(스토캐스틱)의
@@ -137,6 +154,8 @@ from r003_define_config import (
     WILLIAMS_R_PERIOD,
     OPENING_GUARD_MINUTES,
     OPENING_GUARD_SCORE_THRESHOLD,
+    ENABLE_PRE_CROSS_ACCUM_BAR_CHECK,
+    PRE_CROSS_ACCUM_LOOKBACK_BARS,
 )
 
 
@@ -621,6 +640,42 @@ def run_buy_condition_pipeline_comment(
 
     if not live_cross_up and not close_cross and not _uptrend_continuation:
         return False, "NO_BB_MID_CROSS_UP"
+
+    # 필수조건 2-b: 직전 매집봉 확인 (BB중간선 포함 + 양봉 + 거래량 증가)
+    # 돌파 직전에 매집(거래량 증가) 양봉이 있었는지 확인. 직전봉(-2) 1개만 보면 매수 빈도가
+    # 크게 줄어들므로, close_cross 판정과 동일하게 최근 PRE_CROSS_ACCUM_LOOKBACK_BARS개 봉
+    # 중 하나라도 만족하면 통과시켜 빈도 감소를 완화한다.
+    # 거래량 증가 판정은 "직전봉 대비"가 아니라 "VOL_MA20(20봉 평균) 대비"로 본다 - 직전봉 대비는
+    # 봉 하나하나의 잡음에 취약해서(연속 매집 구간에서도 바로 전 봉보다만 작으면 탈락), 실제로는
+    # 평균 대비 거래량이 살아있는 매집봉을 놓치는 사례가 확인됨(257720 실리콘투 2026-08-21 09:57
+    # 사례: 09:48봉 거래량이 직전 09:45봉보다는 줄었지만 VOL_MA20 대비로는 낮지 않았음).
+    if ENABLE_PRE_CROSS_ACCUM_BAR_CHECK:
+        _accum_ok = False
+        _accum_bars_checked = 0
+        for _ofs in range(2, 2 + PRE_CROSS_ACCUM_LOOKBACK_BARS):
+            if _ofs + 1 > len(frame):
+                break
+            _accum_bars_checked += 1
+            _cand = frame.iloc[-_ofs]
+            _cand_open = _num(_cand, "open")
+            _cand_close = _num(_cand, "close")
+            _cand_low = _num(_cand, "low")
+            _cand_high = _num(_cand, "high")
+            _cand_bb = _num(_cand, "BB_MIDDLE")
+            _cand_vol = _num(_cand, "volume")
+            _cand_vol_ma = _num(_cand, "VOL_MA20")
+            if any(pd.isna(v) for v in (
+                _cand_open, _cand_close, _cand_low, _cand_high, _cand_bb, _cand_vol, _cand_vol_ma,
+            )):
+                continue
+            _contains_bb_mid = _cand_low <= _cand_bb <= _cand_high
+            _is_bullish = _cand_close > _cand_open
+            _vol_rising = _cand_vol > _cand_vol_ma
+            if _contains_bb_mid and _is_bullish and _vol_rising:
+                _accum_ok = True
+                break
+        if not _accum_ok:
+            return False, f"NO_PRE_CROSS_ACCUM_BAR_LOOKBACK_{_accum_bars_checked}"
 
     # 필수조건 3: 현재 진행중인 3분봉 양봉 (+CANDLE_GAIN_MIN_PCT% 이상)
     cur_open = _num(cur, "open")
