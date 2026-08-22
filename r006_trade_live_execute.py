@@ -20,6 +20,27 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-21] type=fix owner=copilot
+    summary: place_sell_order()의 has_pending_order() 차단 조건이 매도(sell) 대기 주문뿐 아니라
+      매수(buy) 대기 주문(특히 피라미딩 추가매수)에도 걸려, 피라미딩 매수 주문이 미체결로 남아있는
+      동안 익절(TP1/TP2/트레일링)·손절(ATR_STOP/HARD_STOP) 매도가 전부 조용히 실패(return False)하고
+      다음 폴링에서 [SELL TRIGGER] 로그만 재출력되던 문제 수정. logs/20260817~20260821 실매매 로그
+      분석 결과 003010(혜인) 사례에서 13:28:09 피라미딩 매수 주문(order_no=0017559900)이 대기 중인
+      3분14초 동안 TP1(목표 도달가=1.46%, 당시가=8.84%) 매도가 8회 연속 실패하다가 주문이 풀린
+      13:31:23에야 체결되었고, 그 사이 가격이 고점(12,500) 대비 하락해 이어진 TP_EXTENSION_TRAIL
+      청산까지 포함하면 peak_pnl 8.84% 중 8.53%p를 반납(giveback)함. 같은 유형(피라미딩 대기 중
+      익절/손절 지연)의 TP_EXTENSION_TRAIL/TRAILING_STOP_GIVEBACK 사례가 5일간 30건, 총 66.80%p
+      giveback(건당 평균 2.23%p)으로 확인됨. pos["quantity"]는 브로커 확정 체결분만 반영하므로
+      (피라미딩 확정 시 sync_positions_from_account(force=True)로 별도 반영) 대기 중인 매수 주문과
+      무관하게 이미 보유 중인 확정 수량은 즉시 매도 가능 - place_sell_order()의 가드를
+      "대기 주문이 있으면 무조건 차단"에서 "대기 주문이 매도(side=sell)일 때만 차단(중복 매도 제출
+      방지)"으로 변경. 대기 중인 피라미딩 매수가 매도 이후 뒤늦게 체결되는 경우는 sync_positions_
+      from_account가 브로커의 실제 잔고를 그대로 반영해 신규 포지션으로 자연 처리되며(다른 포지션과
+      동일하게 손절/익절 로직의 보호를 받음), r007 시뮬레이터는 대기 주문 개념이 없어 해당 없음.
+    impact: live
+    compatibility: breaking (피라미딩 대기 중에도 익절/손절 매도가 즉시 실행됨 - 매도 타이밍이
+      빨라지고 수익 반납/손절 지연이 감소하나, 드물게 피라미딩 매수가 매도 이후 체결되어 의도치
+      않은 소량 재진입 포지션이 생길 수 있음(기존 손절/익절 로직으로 계속 보호됨))
 - [2026-08-17] type=fix owner=copilot
     summary: (1) check_buy_condition_1min의 최소 봉 수 요건을 2봉 -> BB_PERIOD(20)봉으로 상향.
       BB_MIDDLE은 calculate_indicators에서 rolling(window=BB_PERIOD, min_periods=1)로
@@ -3179,7 +3200,13 @@ class TradingAPI:
 
         norm_code = str(code).zfill(6)
         qty = min(int(qty), int(pos["quantity"]))
-        if qty <= 0 or self._in_cooldown(norm_code, now) or self.has_pending_order(norm_code):
+        if qty <= 0 or self._in_cooldown(norm_code, now):
+            return False
+        # 피라미딩 추가매수 주문이 대기 중이어도(side=buy) 이미 확정 체결된 기존 수량(pos["quantity"])에
+        # 대한 매도(익절/손절)는 막지 않는다. 매도는 중복 제출 방지를 위해 대기 중인 매도 주문이
+        # 있을 때만(side=sell) 차단한다.
+        pending_order = self.pending_orders.get(norm_code)
+        if pending_order is not None and pending_order.get("side") != "buy":
             return False
 
         order_spec = get_order_spec(now, nxt_tradeable)
