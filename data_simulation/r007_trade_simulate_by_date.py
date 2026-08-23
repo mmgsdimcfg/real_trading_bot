@@ -16,6 +16,24 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-23] type=feat owner=copilot
+    summary: r006의 개장 초반 갭/거래량폭발 라이브 게이트(_passes_opening_gap_volume_gate,
+      ENABLE_OPENING_GAP_VOLUME_GATE)가 r007에 전혀 이식돼 있지 않아, 개장 직후 갭하락/갭상승
+      과다/초반거래량부족 종목을 live는 걸러내는데 sim은 그대로 진입시키던 차이를 발견 - r006과
+      동일 로직의 _passes_opening_gap_volume_gate_sim() 신규 추가, get_session_open_timestamp()
+      (기존 이식된 함수) + MAX_BUY_RISE_PCT_FROM_PREV_CLOSE 계산에 쓰던 rise_ratio를 gap_pct로
+      재사용해 두 매수 경로(3분봉 다중필터/1분봉 골든크로스 대체경로) 모두에 배선. 필요 데이터는
+      전부 기존 프레임+_prev_close.json에서 나와 신규 API/수집 불필요. gap_blocked_codes는
+      시뮬레이션이 하루 단위라 r006의 일별 clear() 없이 런 시작 시 1회 생성.
+    impact: sim
+    compatibility: breaking (개장 5분 이내 진입이 갭/거래량 조건에 안 맞으면 이제 시뮬레이션에서도
+      차단됨 - ENABLE_OPENING_GAP_VOLUME_GATE=False(r003)로 즉시 롤백 가능)
+    * 알려진 미이식 항목(의도적, 데이터 원천상 불가): r006 place_buy_order 직전의 매수1/매도1호가
+      기반 주문가(_fetch_bid_ask_price)와 매수 직전 호가잔량 박스 체크(_fetch_orderbook_totals,
+      ORDERBOOK_ASK_THIN - 매도호가 잔량이 매수호가 잔량의 50% 미만이면 매수 거부)는 KIS
+      inquire_asking_price_exp_ccn의 실시간 스냅샷이라 과거 특정 날짜의 호가창을 소급 수집할
+      방법이 없어 r001/r007에 이식 불가. r007의 체결가는 close/slippage 비용모델로 근사하며,
+      ORDERBOOK_ASK_THIN 미모델링으로 인해 sim 매수 빈도가 live보다 약간 더 높게 나올 수 있음.
 - [2026-08-17] type=fix owner=copilot
     summary: check_buy_condition_1min_sim의 최소 봉 수 요건을 2봉 -> BB_PERIOD(20)봉으로 상향
       (r006 check_buy_condition_1min과 동일 배경 - 장 시작 직후 BB_MIDDLE이 20봉 미만 구간에서
@@ -280,6 +298,12 @@ from r003_define_config import (
     TP1_ATR_MULTIPLIER,
     ENABLE_PYRAMIDING,
     PYRAMID_TRIGGER_PNL_PCT,
+    ENABLE_OPENING_GAP_VOLUME_GATE,
+    OPENING_GAP_GATE_WINDOW_MINUTES,
+    OPENING_GAP_MIN_PCT,
+    OPENING_GAP_MAX_PCT,
+    OPENING_GAP_HARD_FLOOR_PCT,
+    OPENING_MIN_EARLY_VOLUME_RATIO,
 )
 from r005_strategy_core_shared import (
     R76StrategyConfig,
@@ -809,6 +833,44 @@ def get_session_open_timestamp(ts: pd.Timestamp, nxt_tradeable: bool) -> pd.Time
     if AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END and nxt_tradeable:
         return pd.Timestamp(datetime.combine(day, AFTERNOON_NXT_START))
     return None
+
+
+def _passes_opening_gap_volume_gate_sim(
+    code: str,
+    ts: pd.Timestamp,
+    session_open_ts: pd.Timestamp | None,
+    gap_pct: float | None,
+    buy_frame: pd.DataFrame,
+    gap_blocked_codes: set[str],
+) -> tuple[bool, str]:
+    """r006 _passes_opening_gap_volume_gate 이식 (동일 파라미터/판정 순서)."""
+    norm_code = str(code).zfill(6)
+    if norm_code in gap_blocked_codes:
+        return False, "OPENING_GAP_BLOCKED_TODAY"
+
+    if session_open_ts is None or gap_pct is None:
+        return True, "OK"
+
+    elapsed = (ts - session_open_ts).total_seconds()
+    if elapsed < 0 or elapsed > OPENING_GAP_GATE_WINDOW_MINUTES * 60:
+        return True, "OK"
+
+    if gap_pct < OPENING_GAP_HARD_FLOOR_PCT:
+        gap_blocked_codes.add(norm_code)
+        return False, f"OPENING_GAP_DOWN_BLOCKED_{gap_pct*100:.2f}%"
+
+    if not (OPENING_GAP_MIN_PCT <= gap_pct <= OPENING_GAP_MAX_PCT):
+        return False, f"OPENING_GAP_OUT_OF_RANGE_{gap_pct*100:.2f}%"
+
+    cur_row = buy_frame.iloc[-1] if buy_frame is not None and not buy_frame.empty else None
+    vol = _num(cur_row, "volume") if cur_row is not None else float("nan")
+    vol_ma = _num(cur_row, "VOL_MA20") if cur_row is not None else float("nan")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        if vol_ratio < OPENING_MIN_EARLY_VOLUME_RATIO:
+            return False, f"OPENING_VOLUME_INSUFFICIENT_{vol_ratio:.2f}x"
+
+    return True, "OK"
 
 
 def is_startup_warmup_active(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
@@ -2238,6 +2300,7 @@ def simulate_date(
     buy_confirm_state: dict[str, dict] = {}
     gc_confirm_state: dict[str, dict] = {}  # 1분봉 골든크로스 확인봉 대기 상태 (r006 parity)
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
+    gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목 (r006 parity)
     buy_primary_reject_counter: collections.Counter[str] = collections.Counter()
     buy_reject_counter: collections.Counter[str] = collections.Counter()
 
@@ -2314,17 +2377,26 @@ def simulate_date(
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
                 entry_allowed = False
             # r006 parity: block entry if price has risen >= MAX_BUY_RISE_PCT_FROM_PREV_CLOSE from prev-day close.
+            _pc = _prev_close_map.get(code)
+            _rise = (price / _pc) - 1.0 if (_pc is not None and _pc > 0) else None
             if entry_allowed and pos is None and MAX_BUY_RISE_PCT_FROM_PREV_CLOSE > 0:
-                _pc = _prev_close_map.get(code)
-                if _pc is not None and _pc > 0:
-                    _rise = (price / _pc) - 1.0
-                    if _rise >= MAX_BUY_RISE_PCT_FROM_PREV_CLOSE:
-                        entry_allowed = False
-                        log_detail(
-                            f"  [ENTRY BLOCK] {code} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
-                            f"{_rise*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
-                            f"prev_close={_pc:,.0f} price={price:,.0f}"
-                        )
+                if _rise is not None and _rise >= MAX_BUY_RISE_PCT_FROM_PREV_CLOSE:
+                    entry_allowed = False
+                    log_detail(
+                        f"  [ENTRY BLOCK] {code} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
+                        f"{_rise*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
+                        f"prev_close={_pc:,.0f} price={price:,.0f}"
+                    )
+            # r006 parity: opening-window gap/volume live gate (_passes_opening_gap_volume_gate).
+            if entry_allowed and pos is None and ENABLE_OPENING_GAP_VOLUME_GATE:
+                _session_open_ts = get_session_open_timestamp(ts, nxt_tradeable)
+                _gap_ok, _gap_reason = _passes_opening_gap_volume_gate_sim(
+                    code, ts, _session_open_ts, _rise, buy_available, gap_blocked_codes,
+                )
+                if not _gap_ok:
+                    entry_allowed = False
+                    _gap_txt = f"{_rise*100:.2f}%" if _rise is not None else "nan"
+                    log_detail(f"  [ENTRY BLOCK] {code} | {_gap_reason} | gap={_gap_txt} price={price:,.0f}")
             compare_basic.on_bar(code, buy_available, ts, entry_allowed=entry_allowed)
             compare_multi.on_bar(code, buy_available, ts, entry_allowed=entry_allowed, live_price=price)
 
@@ -2739,17 +2811,25 @@ def simulate_date(
                 continue
             if is_startup_warmup_active(ts, nxt_tradeable):
                 continue
+            _pc2 = _prev_close_map.get(code)
+            _rise2 = (price / _pc2) - 1.0 if (_pc2 is not None and _pc2 > 0) else None
             if MAX_BUY_RISE_PCT_FROM_PREV_CLOSE > 0:
-                _pc2 = _prev_close_map.get(code)
-                if _pc2 is not None and _pc2 > 0:
-                    _rise2 = (price / _pc2) - 1.0
-                    if _rise2 >= MAX_BUY_RISE_PCT_FROM_PREV_CLOSE:
-                        log_detail(
-                            f"  [ENTRY BLOCK] {code} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
-                            f"{_rise2*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
-                            f"prev_close={_pc2:,.0f} price={price:,.0f}"
-                        )
-                        continue
+                if _rise2 is not None and _rise2 >= MAX_BUY_RISE_PCT_FROM_PREV_CLOSE:
+                    log_detail(
+                        f"  [ENTRY BLOCK] {code} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
+                        f"{_rise2*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
+                        f"prev_close={_pc2:,.0f} price={price:,.0f}"
+                    )
+                    continue
+            if ENABLE_OPENING_GAP_VOLUME_GATE:
+                _session_open_ts2 = get_session_open_timestamp(ts, nxt_tradeable)
+                _gap_ok2, _gap_reason2 = _passes_opening_gap_volume_gate_sim(
+                    code, ts, _session_open_ts2, _rise2, buy_available, gap_blocked_codes,
+                )
+                if not _gap_ok2:
+                    _gap_txt2 = f"{_rise2*100:.2f}%" if _rise2 is not None else "nan"
+                    log_detail(f"  [ENTRY BLOCK] {code} | {_gap_reason2} | gap={_gap_txt2} price={price:,.0f}")
+                    continue
             if sim.in_cooldown(code, ts):
                 continue
             if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in sim.completed_codes:

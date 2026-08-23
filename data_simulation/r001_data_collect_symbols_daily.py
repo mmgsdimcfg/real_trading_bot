@@ -34,6 +34,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-23] type=fix owner=copilot
+    summary: prev_close 계산(_compute_prev_close_from_data 폴백 + 당일 _daily_close.json 생성)이
+      "10s 파일의 마지막 행"을 그대로 썼는데, --nxt로 수집한 날은 마지막 행이 정규장 종가(15:30)가
+      아니라 NXT 오후세션(~20:00) 체결가일 수 있어 r006 fetch_prev_close()(stck_sdpr/prdy_clpr 등
+      공식 전일종가 필드)와 어긋날 수 있었음. 신규 _regular_session_last_close() 헬퍼로 두 지점 모두
+      REGULAR_END(15:30, r003) 이하 행만 사용하도록 수정 - r007의 MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
+      게이트가 live와 동일한 기준가를 쓰도록 정합성 확보.
+    impact: collector
+    compatibility: backward-compatible (--nxt 미사용 날짜는 결과 동일, --nxt 사용 날짜만 prev_close
+      값이 변경될 수 있음)
 - [2026-07-21] type=feat owner=copilot
     summary: KIS inquire_price API로 실서버 52주 고가/저가(w52_hgpr/w52_lwpr) 스냅샷 추가 수집
       (fetch_52w_high_low), 종목별 누적하여 _52w_high_low.json으로 저장. r002가 이 값을 직접 읽어
@@ -89,6 +99,7 @@ from r003_define_config import (
     MACD_SIGNAL_PERIOD,
     MACD_SLOW,
     OBV_MA_PERIOD,
+    REGULAR_END,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
     STOCH_D_PERIOD,
@@ -701,8 +712,30 @@ def _load_watchlist_file(path: Path) -> list[tuple[str, str]]:
     return deduped
 
 
+def _regular_session_last_close(csv_path: Path) -> float | None:
+    """Last close of a collected 10s file, restricted to the regular session (<= REGULAR_END).
+
+    KIS's live quote API (`stck_sdpr`/`prdy_clpr`/... used by r006's fetch_prev_close())
+    always reports the official regular-session close as "전일 종가", never an NXT
+    after-hours print. When a day was collected with --nxt, the file's last row can be
+    from the NXT afternoon session (up to 20:00) instead - using it as-is as "prev close"
+    would silently diverge from what r006 sees live. Filtering to REGULAR_END keeps both
+    in sync regardless of whether --nxt was used for the prior day's collection.
+    """
+    try:
+        _df = pd.read_csv(csv_path, usecols=["datetime", "close"])
+    except Exception:
+        return None
+    _dt = pd.to_datetime(_df["datetime"], errors="coerce")
+    _mask = _dt.notna() & (_dt.dt.time <= REGULAR_END) & _df["close"].notna()
+    _col = _df.loc[_mask, "close"]
+    if len(_col) == 0:
+        return None
+    return float(_col.iloc[-1])
+
+
 def _compute_prev_close_from_data(code: str, target_date: str, data_root: Path) -> float | None:
-    """Return last-bar close from the most recent prior trading day already collected.
+    """Return the prior trading day's regular-session close from already-collected data.
 
     Replicates r006 fetch_prev_close() without extra API calls, so r007 can apply
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE on stored data.
@@ -725,14 +758,9 @@ def _compute_prev_close_from_data(code: str, target_date: str, data_root: Path) 
             except Exception:
                 pass
         for p in sorted(prior_dir.glob(f"{code}_*_10s.txt")):
-            try:
-                import pandas as _pd_pc
-                _df = _pd_pc.read_csv(p, usecols=["close"])
-                _col = _df["close"].dropna()
-                if len(_col) > 0:
-                    return float(_col.iloc[-1])
-            except Exception:
-                pass
+            val = _regular_session_last_close(p)
+            if val is not None:
+                return val
     return None
 
 
@@ -934,19 +962,17 @@ def main() -> None:
                 json.dump(nxt_flags, _f, ensure_ascii=False, indent=2)
             logger.info("saved NXT flags (%d codes): %s", len(nxt_flags), nxt_flags_path)
 
-        # Save daily close (last bar close) for each symbol used as next-day prev_close in r007.
+        # Save daily close (regular-session last close) for each symbol, used as next-day
+        # prev_close in r007. Restricted to REGULAR_END so --nxt-collected days don't leak
+        # an NXT after-hours print in place of the official close (see _regular_session_last_close).
         daily_close_map: dict[str, float] = {}
         for _dc_code, _dc_name in saved_symbols:
             _safe = str(_dc_name).replace("/", "_").replace("\\", "_")
             _f10 = output_dir / f"{_dc_code}_{_safe}_10s.txt"
             if _f10.exists():
-                try:
-                    _dc_df = pd.read_csv(_f10, usecols=["close"])
-                    _dc_col = _dc_df["close"].dropna()
-                    if len(_dc_col) > 0:
-                        daily_close_map[_dc_code] = float(_dc_col.iloc[-1])
-                except Exception:
-                    pass
+                _dc_val = _regular_session_last_close(_f10)
+                if _dc_val is not None:
+                    daily_close_map[_dc_code] = _dc_val
         if daily_close_map:
             daily_close_path = output_dir / "_daily_close.json"
             with open(daily_close_path, "w", encoding="utf-8") as _f:
