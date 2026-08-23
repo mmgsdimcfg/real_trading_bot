@@ -151,12 +151,15 @@ import json
 import math
 import random
 import re
+import sys
 from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r003_define_config
 
 
 @dataclass(frozen=True)
@@ -2142,7 +2145,7 @@ if __name__ == "__main__":
     if export_enabled and picks:
         from r010_watchlist_bridge import export_picks_to_r008, write_legacy_picks_alias
 
-        auto_dir = Path(__file__).resolve().parent
+        auto_dir = Path(__file__).resolve().parent.parent / "live_trading"  # r008 watchlist lives there
         export_path = Path(args.export_watchlist_path) if args.export_watchlist_path else None
         scan_date_str = output_prefix or None
         r008_out = export_picks_to_r008(

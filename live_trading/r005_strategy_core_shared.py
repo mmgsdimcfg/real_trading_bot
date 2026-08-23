@@ -18,6 +18,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-23] type=feat owner=copilot
+    summary: check_entry_condition_1min() 신규 추가 - 3분봉 다중필터(run_buy_condition_pipeline_
+      comment) 통과 이후 1분봉에서 진입 타이밍을 한 번 더 점수제로 검증하는 2단계 게이트.
+      필수조건 없이 EMA9>EMA20(+2)/Close>EMA9(+1)/직전고점돌파(+2)/거래량>VOL_MA20(+2) 4개를
+      점수화해 ENTRY_SCORE_THRESHOLD(기본 5, r003) 이상이면 통과. calculate_indicators()에
+      EMA_9/EMA_20 컬럼 신규 추가(EMA 계열 지표가 기존에 전혀 없었음, MA_5 SMA만 존재).
+      r006/r007의 실제 배선은 ENABLE_1MIN_ENTRY_SCORE_GATE(r003) 플래그로 제어되며, 기존
+      ENABLE_1MIN_GOLDEN_CROSS_BUY(단독 대체 경로, 섹션12)와는 완전히 별개.
+    impact: common
+    compatibility: breaking (신규 2단계 게이트로 매수 빈도가 줄어들 수 있음, False로 즉시 롤백 가능)
 - [2026-08-21] type=fix owner=copilot
     summary: 필수조건 2-b(직전 매집봉 확인)의 거래량 증가 판정을 "직전봉 대비"에서 "VOL_MA20(20봉
       평균) 대비"로 변경, 룩백도 3->5봉으로 확장(PRE_CROSS_ACCUM_LOOKBACK_BARS, r003). 어제
@@ -156,6 +166,14 @@ from r003_define_config import (
     OPENING_GUARD_SCORE_THRESHOLD,
     ENABLE_PRE_CROSS_ACCUM_BAR_CHECK,
     PRE_CROSS_ACCUM_LOOKBACK_BARS,
+    EMA_9_PERIOD,
+    EMA_20_PERIOD,
+    ENTRY_PREV_HIGH_LOOKBACK_BARS,
+    ENTRY_EMA_CROSS_SCORE,
+    ENTRY_CLOSE_ABOVE_EMA9_SCORE,
+    ENTRY_PREV_HIGH_BREAKOUT_SCORE,
+    ENTRY_VOLUME_ABOVE_MA_SCORE,
+    ENTRY_SCORE_THRESHOLD,
 )
 
 
@@ -815,6 +833,53 @@ def check_sell_condition(
     return False, f"AUX_BLOCKED_SCORE_{score}_PNL_{pnl_pct * 100:.2f}%_LT_{min_pnl_req * 100:.2f}%"
 
 
+def _entry_score_1min(cur: pd.Series, frame_1min: pd.DataFrame) -> tuple[int, dict[str, bool]]:
+    score = 0
+    detail: dict[str, bool] = {}
+
+    ema9 = _num(cur, "EMA_9")
+    ema20 = _num(cur, "EMA_20")
+    if not any(pd.isna(v) for v in (ema9, ema20)) and ema9 > ema20:
+        score += ENTRY_EMA_CROSS_SCORE
+        detail["ema_cross"] = True
+
+    close_v = _num(cur, "close")
+    if not any(pd.isna(v) for v in (close_v, ema9)) and close_v > ema9:
+        score += ENTRY_CLOSE_ABOVE_EMA9_SCORE
+        detail["close_above_ema9"] = True
+
+    if len(frame_1min) > ENTRY_PREV_HIGH_LOOKBACK_BARS:
+        prior = frame_1min.iloc[-(ENTRY_PREV_HIGH_LOOKBACK_BARS + 1):-1]
+        prior_high = pd.to_numeric(prior["high"], errors="coerce").max()
+        if not pd.isna(prior_high) and not pd.isna(close_v) and close_v > prior_high:
+            score += ENTRY_PREV_HIGH_BREAKOUT_SCORE
+            detail["prev_high_breakout"] = True
+
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol > vol_ma:
+        score += ENTRY_VOLUME_ABOVE_MA_SCORE
+        detail["volume_above_ma"] = True
+
+    return score, detail
+
+
+def check_entry_condition_1min(frame_1min: pd.DataFrame) -> tuple[bool, str]:
+    """3분봉 신호(check_buy_condition) 통과 후 1분봉에서 진입 타이밍을 재검증하는 점수제 게이트.
+
+    필수조건 없이 EMA9>EMA20 / Close>EMA9 / 직전고점돌파 / 거래량>VOL_MA20 4개를 점수화해
+    ENTRY_SCORE_THRESHOLD 이상이면 통과. r003.ENABLE_1MIN_ENTRY_SCORE_GATE로 켜고 끈다.
+    """
+    if frame_1min is None or len(frame_1min) < ENTRY_PREV_HIGH_LOOKBACK_BARS + 1:
+        return False, "1MIN_ENTRY_INSUFFICIENT_BARS"
+
+    cur = frame_1min.iloc[-1]
+    score, _detail = _entry_score_1min(cur, frame_1min)
+    if score < ENTRY_SCORE_THRESHOLD:
+        return False, f"1MIN_ENTRY_LOW_SCORE_{score}_LT_{ENTRY_SCORE_THRESHOLD}"
+    return True, f"1MIN_ENTRY_SCORE_{score}"
+
+
 # ---------------------------------------------------------------------------
 # Shared indicator calculation (used by r006 and r007)
 # ---------------------------------------------------------------------------
@@ -826,6 +891,9 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
     out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
+
+    out["EMA_9"] = out["close"].ewm(span=EMA_9_PERIOD, adjust=False).mean()
+    out["EMA_20"] = out["close"].ewm(span=EMA_20_PERIOD, adjust=False).mean()
 
     out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
     out["BB_STD"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).std()

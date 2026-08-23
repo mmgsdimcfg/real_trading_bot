@@ -9,8 +9,11 @@ Feature-gated by r003_define_config:
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r003_define_config
 
 try:
     from r003_define_config import (

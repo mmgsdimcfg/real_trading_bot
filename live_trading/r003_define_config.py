@@ -404,6 +404,22 @@ PYRAMID_TRIGGER_PNL_PCT = 0.005  # 평균단가 대비 +0.5%
 # 윌리엄스 %R 필수조건 신규 추가).
 ENABLE_1MIN_GOLDEN_CROSS_BUY = False
 
+# --- 12-b. 1분봉 Entry Score 게이트 (3분봉 신호 확인 후 진입 타이밍 재검증) --------
+# 위 섹션(12)과는 별개다. 섹션 12는 3분봉 다중필터를 완전히 대체하는 단독 경로이고,
+# 이 게이트는 기존 3분봉 다중필터(run_buy_condition_pipeline_comment)가 통과된
+# 이후에 "지금이 실제로 들어갈 타이밍인가"를 1분봉에서 한 번 더 점수제로 확인하는
+# 추가 단계다. EMA9/EMA20/직전고점돌파/거래량을 점수화해 ENTRY_SCORE_THRESHOLD
+# 이상이면 통과. False로 설정 시 기존처럼 3분봉 통과만으로 즉시 매수한다.
+ENABLE_1MIN_ENTRY_SCORE_GATE = True
+EMA_9_PERIOD = 9
+EMA_20_PERIOD = 20
+ENTRY_PREV_HIGH_LOOKBACK_BARS = 10    # "직전 고점" 판정 룩백(1분봉 기준 10분, 현재봉 제외)
+ENTRY_EMA_CROSS_SCORE = 2             # EMA9 > EMA20
+ENTRY_CLOSE_ABOVE_EMA9_SCORE = 1      # Close > EMA9
+ENTRY_PREV_HIGH_BREAKOUT_SCORE = 2    # Close > 직전 ENTRY_PREV_HIGH_LOOKBACK_BARS봉 고점
+ENTRY_VOLUME_ABOVE_MA_SCORE = 2       # Volume > VOL_MA20 (1분봉 기준)
+ENTRY_SCORE_THRESHOLD = 5             # 만점 7점 중 5점 이상 (3분봉이 이미 엄격해 완화적으로 시작)
+
 # --- 13. 개장 초반 갭/거래량폭발 라이브 게이트 (Opening gap/volume live gate) -------
 # r002 스캐너는 전일 종가 기준 데이터로 랭킹을 매기므로, 당일 아침 뉴스/해외증시
 # 영향으로 갭상승/갭하락 출발하거나 거래량이 급변하는 경우를 반영하지 못한다.

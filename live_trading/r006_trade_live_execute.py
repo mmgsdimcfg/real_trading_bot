@@ -313,6 +313,7 @@ from r003_define_config import (
     EARLY_NEAR_CROSS_MIN_VOL_MA,
     EARLY_NEAR_CROSS_MIN_VOLUME,
     ENABLE_1MIN_GOLDEN_CROSS_BUY,
+    ENABLE_1MIN_ENTRY_SCORE_GATE,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_EARLY_NEAR_CROSS_ENTRY,
     ENABLE_NEAR_CROSS_ARM,
@@ -464,15 +465,19 @@ from r005_strategy_core_shared import (
     calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
+    check_entry_condition_1min,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
     _near_cross_momentum_flags,
     _passes_early_near_cross_liquidity,
 )
-from r010_watchlist_bridge import resolve_watchlist_path
 
 current_dir = Path(__file__).resolve().parent
+data_sim_dir = current_dir.parent / "data_simulation"
+sys.path.insert(0, str(data_sim_dir))  # r010_watchlist_bridge
+from r010_watchlist_bridge import resolve_watchlist_path
+
 project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
 sys.path.insert(0, str(project_root / "examples_llm"))
 sys.path.insert(0, str(project_root / "examples_user" / "domestic_stock"))
@@ -488,7 +493,7 @@ except Exception:
     inquire_time_itemchartprice = None
 
 TODAY_CODE_FILE = current_dir / DEFINE_TODAY_CODE_PATH
-DATA_DIR = current_dir / DATA_DIR_NAME
+DATA_DIR = data_sim_dir / DATA_DIR_NAME  # data/ lives under data_simulation/
 TODAY_BUYS_FILENAME = "today_buys.txt"
 
 LIVE_RUNTIME_DIR = DATA_DIR / "live_runtime"
@@ -633,7 +638,7 @@ class _PerSymbolFileHandler(logging.Handler):
 
 def _rotate_logging_for_date(date_str: str) -> None:
     _LOG_CTX["date_str"] = date_str
-    log_dir = current_dir / "logs"
+    log_dir = data_sim_dir / "logs"
     log_date_dir = log_dir / date_str
     log_dir.mkdir(parents=True, exist_ok=True)
     log_date_dir.mkdir(parents=True, exist_ok=True)
@@ -732,8 +737,8 @@ def log(msg: str) -> None:
 def _trade_log_target_paths() -> list[Path]:
     date_str = str(_LOG_CTX.get("date_str") or datetime.now().strftime("%Y%m%d"))
     candidates: list[Path] = [
-        current_dir / "logs" / f"{date_str}_buy_sell.log",
-        current_dir / "logs" / f"{date_str}_trade_events.log",
+        data_sim_dir / "logs" / f"{date_str}_buy_sell.log",
+        data_sim_dir / "logs" / f"{date_str}_trade_events.log",
     ]
     for key in ("flat_trade_log", "trade_log", "session_buy_sell_log"):
         value = _LOG_CTX.get(key)
@@ -752,7 +757,7 @@ def _trade_log_target_paths() -> list[Path]:
 
 def _bind_session_trade_log() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session_path = current_dir / "logs" / f"{timestamp}_r006_trade_live_execute_buy_sell.log"
+    session_path = data_sim_dir / "logs" / f"{timestamp}_r006_trade_live_execute_buy_sell.log"
     _LOG_CTX["session_buy_sell_log"] = session_path
     log_trade(f"SESSION trade log | path={session_path}")
 
@@ -1662,6 +1667,30 @@ def _merge_bar_frame(previous: pd.DataFrame | None, refreshed: pd.DataFrame) -> 
     if len(combined) > FRAME_CACHE_MAX_BARS:
         combined = combined.tail(FRAME_CACHE_MAX_BARS)
     return calculate_indicators(combined[["open", "high", "low", "close", "volume"]])
+
+
+def _get_or_refresh_1min_frame(
+    code: str,
+    current_dt: datetime,
+    nxt_tradeable: bool,
+    frame_cache_1min: dict[str, pd.DataFrame],
+    frame_last_refresh_at_1min: dict[str, datetime],
+) -> pd.DataFrame | None:
+    """1분봉 캐시 조회/갱신 공용 헬퍼 (ENABLE_1MIN_GOLDEN_CROSS_BUY 및 ENABLE_1MIN_ENTRY_SCORE_GATE 겸용)."""
+    cached_frame_1min = frame_cache_1min.get(code)
+    last_frame_refresh_1min = frame_last_refresh_at_1min.get(code)
+    frame_1min = cached_frame_1min
+    if should_refresh_3min_frame(current_dt, cached_frame_1min, last_frame_refresh_1min):
+        try:
+            refreshed_frame_1min = fetch_1min_frame(code, current_dt, nxt_tradeable)
+        except Exception as exc:
+            log(f"{code} 1min frame error: {exc}")
+            refreshed_frame_1min = None
+        if refreshed_frame_1min is not None and not refreshed_frame_1min.empty:
+            frame_1min = _merge_bar_frame(cached_frame_1min, refreshed_frame_1min)
+            frame_cache_1min[code] = frame_1min
+            frame_last_refresh_at_1min[code] = current_dt
+    return frame_1min
 
 
 def _live_price_backoff_seconds(fail_count: int) -> int:
@@ -4290,19 +4319,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     bar_time_for_buy = bar_time
                     if ENABLE_1MIN_GOLDEN_CROSS_BUY:
-                        cached_frame_1min = frame_cache_1min.get(code)
-                        last_frame_refresh_1min = frame_last_refresh_at_1min.get(code)
-                        frame_1min = cached_frame_1min
-                        if should_refresh_3min_frame(current_dt, cached_frame_1min, last_frame_refresh_1min):
-                            try:
-                                refreshed_frame_1min = fetch_1min_frame(code, current_dt, nxt_tradeable)
-                            except Exception as exc:
-                                log(f"{code} 1min frame error: {exc}")
-                                refreshed_frame_1min = None
-                            if refreshed_frame_1min is not None and not refreshed_frame_1min.empty:
-                                frame_1min = _merge_bar_frame(cached_frame_1min, refreshed_frame_1min)
-                                frame_cache_1min[code] = frame_1min
-                                frame_last_refresh_at_1min[code] = current_dt
+                        frame_1min = _get_or_refresh_1min_frame(
+                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
+                        )
                         if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
                             log(f"  {symbol_label} [BUY SKIP] | 1MIN_FRAME_UNAVAILABLE")
                             continue
@@ -4393,6 +4412,21 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             f"bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} bar_close={_num(buy_frame.iloc[-1], 'close'):,.0f} ma5={_num(buy_frame.iloc[-1], 'MA_5'):.1f}"
                         )
                         continue
+
+                    if ENABLE_1MIN_ENTRY_SCORE_GATE and not ENABLE_1MIN_GOLDEN_CROSS_BUY:
+                        frame_1min_entry = _get_or_refresh_1min_frame(
+                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
+                        )
+                        if frame_1min_entry is None or frame_1min_entry.empty or len(frame_1min_entry) < 2:
+                            buy_confirm_state.pop(code, None)
+                            log(f"  {symbol_label} [BUY REJECT] | 1MIN_FRAME_UNAVAILABLE | (3min_ok={buy_reason})")
+                            continue
+                        entry_ok, entry_reason = check_entry_condition_1min(frame_1min_entry)
+                        if not entry_ok:
+                            buy_confirm_state.pop(code, None)
+                            log(f"  {symbol_label} [BUY REJECT] | {entry_reason} | (3min_ok={buy_reason})")
+                            continue
+                        buy_reason = f"{buy_reason}+{entry_reason}"
 
                     prev_close = fetch_prev_close(code, current_dt, nxt_tradeable)
                     rise_ratio = _rise_from_prev_close(price, float(prev_close or 0.0))
