@@ -19,6 +19,18 @@ Update log format (append only):
 
 Update log:
 - [2026-08-23] type=feat owner=copilot
+    summary: _buy_support_score()에 장기 추세 정합성 가점 신규 추가 - EMA20 > EMA60이면
+      +EMA_TREND_ALIGN_SCORE(기본 2, r003)점. 사용자가 제안한 3분봉 Signal V1 스코어
+      구성안(EMA20>EMA60/BB Middle상승/RSI/ADX/VolumeRatio/StochK>D) 중 기존 코드에
+      전혀 없던 유일한 신호였음 - 나머지(BB돌파/RSI/ADX/VolumeRatio/Stochastic)는 이미
+      필수조건 또는 가점으로 반영돼 있었고, 제안안의 V2 항목(윌리엄스%R/BB폭/추격매수
+      방지/개장시간필터/거래대금/시장상대강도)도 대부분 이미 구현돼 있었음(r002 RS15,
+      turnover 필터 등). calculate_indicators()에 EMA_60 컬럼 추가(EMA_20은 1분봉
+      게이트용으로 기존에 이미 계산되던 컬럼을 재사용, 3분봉 프레임에도 동일하게 존재).
+    impact: common
+    compatibility: backward-compatible (기존 가점 항목에 최대 +2점 추가되는 것뿐, 새 필수조건
+      아님 - 매수 문턱을 낮추는 방향이라 빈도가 소폭 늘어날 수 있음)
+- [2026-08-23] type=feat owner=copilot
     summary: check_entry_condition_1min() 신규 추가 - 3분봉 다중필터(run_buy_condition_pipeline_
       comment) 통과 이후 1분봉에서 진입 타이밍을 한 번 더 점수제로 검증하는 2단계 게이트.
       필수조건 없이 EMA9>EMA20(+2)/Close>EMA9(+1)/직전고점돌파(+2)/거래량>VOL_MA20(+2) 4개를
@@ -174,6 +186,8 @@ from r003_define_config import (
     ENTRY_PREV_HIGH_BREAKOUT_SCORE,
     ENTRY_VOLUME_ABOVE_MA_SCORE,
     ENTRY_SCORE_THRESHOLD,
+    EMA_60_PERIOD,
+    EMA_TREND_ALIGN_SCORE,
 )
 
 
@@ -294,6 +308,12 @@ def _buy_support_score(
             score += 2
         elif 45.0 <= rsi_c < 50.0 or 65.0 < rsi_c <= 70.0:
             score += 1
+
+    # 장기 추세 정합성 (최대 EMA_TREND_ALIGN_SCORE점): EMA20 > EMA60 → 상위 추세 우상향
+    ema20_c = _num(cur, "EMA_20")
+    ema60_c = _num(cur, "EMA_60")
+    if not any(pd.isna(v) for v in (ema20_c, ema60_c)) and ema20_c > ema60_c:
+        score += EMA_TREND_ALIGN_SCORE
 
     # 거래량 비율 점수 (최대 3점)
     vol = _num(cur, "volume")
@@ -894,6 +914,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     out["EMA_9"] = out["close"].ewm(span=EMA_9_PERIOD, adjust=False).mean()
     out["EMA_20"] = out["close"].ewm(span=EMA_20_PERIOD, adjust=False).mean()
+    out["EMA_60"] = out["close"].ewm(span=EMA_60_PERIOD, adjust=False).mean()
 
     out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
     out["BB_STD"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).std()

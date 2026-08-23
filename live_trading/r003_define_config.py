@@ -420,6 +420,11 @@ ENTRY_PREV_HIGH_BREAKOUT_SCORE = 2    # Close > 직전 ENTRY_PREV_HIGH_LOOKBACK_
 ENTRY_VOLUME_ABOVE_MA_SCORE = 2       # Volume > VOL_MA20 (1분봉 기준)
 ENTRY_SCORE_THRESHOLD = 5             # 만점 7점 중 5점 이상 (3분봉이 이미 엄격해 완화적으로 시작)
 
+# 3분봉 가점(_buy_support_score)용 장기 추세 정합성: EMA20 > EMA60이면 상위 추세가
+# 우상향이라는 뜻으로 +2점. EMA_20_PERIOD는 위 1분봉 게이트와 공유(같은 컬럼, 프레임만 다름).
+EMA_60_PERIOD = 60
+EMA_TREND_ALIGN_SCORE = 2             # EMA20 > EMA60 (3분봉 기준)
+
 # --- 13. 개장 초반 갭/거래량폭발 라이브 게이트 (Opening gap/volume live gate) -------
 # r002 스캐너는 전일 종가 기준 데이터로 랭킹을 매기므로, 당일 아침 뉴스/해외증시
 # 영향으로 갭상승/갭하락 출발하거나 거래량이 급변하는 경우를 반영하지 못한다.
