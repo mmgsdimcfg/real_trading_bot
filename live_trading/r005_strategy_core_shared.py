@@ -18,6 +18,22 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-23] type=fix owner=copilot
+    summary: run_buy_condition_pipeline_comment(현재 활성 3분봉 다중필터 경로, r006에서
+      ENABLE_1MIN_GOLDEN_CROSS_BUY=False라 실제로 매매를 결정하는 그 함수)의 최소 봉 수
+      요건이 len(frame)<2(사실상 3분봉 기준 장 시작 후 약 6분부터 판정 시작)로만 걸려있어,
+      calculate_indicators()가 BB_PERIOD(20) 미만 구간에서 rolling(min_periods=1)으로
+      만든 불안정한 BB_MIDDLE/BB_STD(사실상 2~3봉짜리 초단기 평균)를 그대로 판정에 썼음 -
+      사용자가 HTS 차트에서 볼린저밴드가 3분봉은 10시부터, 1분봉은 09:20부터만 그려지는
+      것을 보고 발견. 완전히 동일한 원인이 check_buy_condition_1min(1분봉 골든크로스
+      대체경로, 현재 비활성)에서는 2026-08-17에 이미 len(frame)<BB_PERIOD 가드로 수정된
+      바 있었는데, 실제 매매를 결정하는 이 3분봉 경로에는 그 수정이 적용되지 않고 있었음.
+      동일한 가드로 통일. OPENING_GUARD_MINUTES(15분, 점수 상향 방식)는 그대로 두되, 이제
+      BB_PERIOD 미만 구간(3분봉 기준 최초 약 60분)에는 그보다 먼저 이 가드가 걸려 판정
+      자체가 발생하지 않는다.
+    impact: common
+    compatibility: breaking (장 시작 후 약 60분간 3분봉 신규 매수가 전면 차단됨 - 그 구간에서
+      나오던 신호는 통계적으로 신뢰하기 어려운 "가짜 돌파"였을 가능성이 높음)
 - [2026-08-23] type=feat owner=copilot
     summary: _buy_support_score()에 장기 추세 정합성 가점 신규 추가 - EMA20 > EMA60이면
       +EMA_TREND_ALIGN_SCORE(기본 2, r003)점. 사용자가 제안한 3분봉 Signal V1 스코어
@@ -592,8 +608,17 @@ def run_buy_condition_pipeline_comment(
     config: R76StrategyConfig,
     volume_ratio_threshold_fn,
 ) -> tuple[bool, str]:
-    """BB 중앙선 상승 돌파 전략: 6개 필수조건(BB돌파+스토캐스틱+윌리엄스%R 포함) + 가점 임계값 이상."""
-    if len(frame) < 2:
+    """BB 중앙선 상승 돌파 전략: 6개 필수조건(BB돌파+스토캐스틱+윌리엄스%R 포함) + 가점 임계값 이상.
+
+    BB_MIDDLE/BB_STD는 calculate_indicators()에서 rolling(window=BB_PERIOD,
+    min_periods=1)로 계산되어, 실제 봉 수가 BB_PERIOD(20) 미만인 장 시작 직후에는
+    "BB 중간값"이 사실상 그 짧은 구간의 평균처럼 움직인다 - 가격이 잠깐만 올라도
+    이 불안정한 평균을 위로 뚫는 "가짜 돌파"가 쉽게 발생한다(check_buy_condition_1min과
+    동일한 근본 원인, r005/r006 Update log 2026-08-17 참조 - 그쪽은 이미 이 최소 봉 수
+    가드가 걸려 있었으나 이 3분봉 경로에는 누락돼 있었음). BB_MIDDLE이 실제로 20봉
+    평균이 되는 시점(3분봉 기준 장 시작 후 약 60분) 이전에는 판정 자체를 하지 않는다.
+    """
+    if len(frame) < BB_PERIOD:
         return False, "INSUFFICIENT_BARS"
 
     cur = frame.iloc[-1]
