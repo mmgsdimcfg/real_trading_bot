@@ -17,6 +17,26 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-23] type=fix owner=copilot
+    summary: Stage 0의 절대 유동성 하한(vol_ma20 < config.volume_ma20_min OR amount_ma20 <
+      config.amount_ma20_min이면 skip_reason=basic_liquidity_floor로 즉시 배제)이 나중에
+      실행되는 apply_market_relative_liquidity_filters(시장상대 유동성 필터, 2026-XX 도입,
+      "거래대금이 충분히 크면 시장 상대 비교와 무관하게 통과" 안전판 포함)를 무력화하고 있었음
+      - 그 함수는 skip_reason이 이미 있는 후보는 애초에 건드리지 않기 때문. 결과적으로 고려아연
+      (일평균 29,951주지만 거래대금은 348억원/일), KCC(24,147주/101억원/일)처럼 주가가 비싸
+      주식수 기준으로는 낮아 보이지만 거래대금 기준으로는 명백히 유동적인 종목들이 스캔 결과에서
+      "basic_liquidity_floor"로 잘못 배제되고 있었음(사용자가 _20260821_scan_all.md에서 발견).
+      Stage 0을 vol_ma20<=0 / amount_ma20<=0(진짜 0에 가까운 데이터만) 배제로 완화하고, 실질적인
+      유동성 판정은 전량 market-relative 필터에 위임 - 원래 그 필터를 도입한 취지("replaced static
+      liquidity hard-thresholds with market-relative filters", 이 파일 changelog 참조) 그대로 복원.
+    impact: scanner
+    compatibility: breaking (고가/저주식수-고거래대금 종목이 이제 스캔 후보 풀에 정상 진입 - 최종
+      선정 여부는 market-relative 필터/스코어 결과에 따라 달라짐)
+    * 후속: 위 수정으로 ScannerConfig.volume_ma20_min이 완전히 미사용 상태가 됨(4개 프로파일
+      전부에서 삭제). 사용자가 지적한 대로 고정 주식수 기준은 종목마다 주가가 천차만별이라
+      price-blind하고, amount_ma20_min(거래대금, 원 단위이므로 주가 무관하게 비교 가능)과
+      본질적으로 같은 것을 재는 지표라 별도 유지할 이유가 없음 - amount_ma20_min 단일 기준으로
+      통합.
 - [2026-08-17] type=fix owner=copilot
     summary: evaluate_candidate()의 3d_close_downtrend 소프트플래그가 daily_5d_downtrend와
       중복 카운트되던 문제 수정. 최근 5거래일 연속 하락(daily_5d_downtrend, c[-5]>c[-4]>c[-3]>
@@ -170,8 +190,8 @@ class ScannerConfig:
     price_max: int
     # Volatility: daily ATR / close (e.g. 0.010 = 1% daily range minimum)
     atr_ratio_min: float
-    # Liquidity
-    volume_ma20_min: int            # daily volume MA20 (shares/day)
+    # Liquidity (KRW turnover only - a fixed share-count floor is price-blind and
+    # unfairly penalizes high-price/low-share-count stocks, see 2026-08-23 changelog)
     amount_ma20_min: int            # daily trading amount MA20 (KRW/day)
     # Stock health
     min_listing_days: int           # minimum trading days on record
@@ -191,7 +211,6 @@ STRICT_CONFIG = ScannerConfig(
     price_min=2_000,
     price_max=1_000_000,
     atr_ratio_min=0.015,            # 1.5% daily ATR minimum
-    volume_ma20_min=200_000,        # 20만주/일
     amount_ma20_min=10_000_000_000,  # 100억원/일
     min_listing_days=15,
     min_up_days_in_5=3,
@@ -209,7 +228,6 @@ BALANCED_CONFIG = ScannerConfig(
     price_min=2_000,
     price_max=1_000_000,
     atr_ratio_min=0.008,
-    volume_ma20_min=50_000,
     amount_ma20_min=5_000_000_000,    # 50억원/일
     min_listing_days=10,
     min_up_days_in_5=2,
@@ -227,7 +245,6 @@ RELAXED_CONFIG = ScannerConfig(
     price_min=2_000,
     price_max=1_000_000,
     atr_ratio_min=0.007,
-    volume_ma20_min=20_000,
     amount_ma20_min=1_000_000_000,    # 10억원/일
     min_listing_days=5,
     min_up_days_in_5=1,
@@ -245,7 +262,6 @@ INTRADAY_CONFIG = ScannerConfig(
     price_min=4_000,              # 저가주 제외 (3000->4000, 유동성 부족 차단 강화)
     price_max=500_000,
     atr_ratio_min=0.010,          # 일중 1% 이상 변동 필수
-    volume_ma20_min=100_000,      # 50,000->100,000주/일 (유동성 기준 강화)
     amount_ma20_min=5_000_000_000, # 20억->50억원/일 (거래대금 기준 강화)
     min_listing_days=10,          # 5->10거래일 (신뢰할 수 있는 기술적 지표 최소 기간)
     min_up_days_in_5=3,           # 2->3: 5일 중 3일 이상 양봉 (우상향 필수)
@@ -800,10 +816,19 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
     vol_ma20 = safe_float(_check_df["volume"].rolling(20, min_periods=1).mean().iloc[-1])
     amount_ma20 = safe_float(_check_df["amount"].rolling(20, min_periods=1).mean().iloc[-1])
-    if (
-        (vol_ma20 is not None and vol_ma20 < config.volume_ma20_min)
-        or (amount_ma20 is not None and amount_ma20 < config.amount_ma20_min)
-    ):
+    # NOTE: a static share-count floor used to hard-skip here alongside amount_ma20_min,
+    # but that pre-empts apply_market_relative_liquidity_filters (see its docstring/
+    # changelog: "replaced static liquidity hard-thresholds with market-relative
+    # filters") - that later, smarter check never runs for a candidate that already
+    # has skip_reason set, since it only scores rows with skip_reason is None. A
+    # share-count floor is price-blind and unfairly kills high-price/low-share-count
+    # stocks (e.g. 고려아연 at ~29,951 shares/day but 348억원/day turnover) that are
+    # obviously liquid in won terms - removed from ScannerConfig entirely (2026-08-23).
+    # Only reject here for genuinely degenerate zero/negative data; real liquidity
+    # screening is left entirely to the market-relative filter downstream, which
+    # already has its own dual vol+amount check and an absolute-safe override
+    # (LIQUIDITY_ABSOLUTE_SAFE_AMOUNT).
+    if (vol_ma20 is not None and vol_ma20 <= 0) or (amount_ma20 is not None and amount_ma20 <= 0):
         candidate["skip_reason"] = "basic_liquidity_floor"
         candidate["listing_days"] = listing_days
         candidate["vol_ma20"] = vol_ma20
