@@ -110,6 +110,8 @@ except ModuleNotFoundError as exc:
         "On Ubuntu, run 'python3 -m pip install -r requirements.txt' from repository root."
     ) from exc
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r003_define_config, r005_strategy_core_shared
+
 from r003_define_config import (
     ADX_BUY_MIN,
     ADX_MIN_TREND,
@@ -269,6 +271,7 @@ from r003_define_config import (
     MIN_ENTRY_VOL_MA,
     MIN_ENTRY_VOLUME,
     ENABLE_1MIN_GOLDEN_CROSS_BUY,
+    ENABLE_1MIN_ENTRY_SCORE_GATE,
     ENABLE_STAGED_TAKE_PROFIT,
     STAGED_TP1_PCT,
     STAGED_TP1_RATIO,
@@ -283,6 +286,7 @@ from r005_strategy_core_shared import (
     calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
+    check_entry_condition_1min,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _near_cross_momentum_flags,
@@ -291,7 +295,8 @@ from r005_strategy_core_shared import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-TODAY_CODE_FILE = SCRIPT_DIR / DEFINE_TODAY_CODE_PATH
+LIVE_TRADING_DIR = SCRIPT_DIR.parent / "live_trading"
+TODAY_CODE_FILE = LIVE_TRADING_DIR / DEFINE_TODAY_CODE_PATH
 
 # ---------------------------------------------------------------------------
 # Simulation-only parameters
@@ -2081,7 +2086,7 @@ def simulate_date(
         return 1
 
     selected_names = dict(names or {})
-    _r008_path = SCRIPT_DIR / "r008_trade_watchlist_today.txt"
+    _r008_path = LIVE_TRADING_DIR / "r008_trade_watchlist_today.txt"
     _r008_picks = load_picks(_r008_path) if not codes else None
     picks_file = resolve_picks_file(data_dir, date_str)
     picks = None if codes or _r008_picks else load_picks(picks_file)
@@ -2150,8 +2155,8 @@ def simulate_date(
             log(f"Skipped {code}: failed to build simulation frame")
             continue
         frames[code] = frame
-        # r006 parity: 1분봉 골든크로스 매수 파이프라인용 1분봉 프레임 병행 구축.
-        if ENABLE_1MIN_GOLDEN_CROSS_BUY:
+        # r006 parity: 1분봉 골든크로스 매수 파이프라인 / 1분봉 Entry Score 게이트용 1분봉 프레임 병행 구축.
+        if ENABLE_1MIN_GOLDEN_CROSS_BUY or ENABLE_1MIN_ENTRY_SCORE_GATE:
             strategy_df_1min = normalize_to_strategy_bars_1min(raw_df)
             if strategy_df_1min is not None and not strategy_df_1min.empty:
                 frame_1min = calculate_indicators(strategy_df_1min)
@@ -2282,7 +2287,7 @@ def simulate_date(
             buy_available, intrabar_elapsed_seconds = _build_realtime_entry_frame_sim(available, ts, price)
 
             buy_available_1min: pd.DataFrame | None = None
-            if ENABLE_1MIN_GOLDEN_CROSS_BUY:
+            if ENABLE_1MIN_GOLDEN_CROSS_BUY or ENABLE_1MIN_ENTRY_SCORE_GATE:
                 _frame_1min_full = frames_1min.get(code)
                 if _frame_1min_full is not None and not _frame_1min_full.empty:
                     _avail_1min = _frame_1min_full[_frame_1min_full.index <= ts]
@@ -2796,6 +2801,15 @@ def simulate_date(
                     cross_info,
                     intrabar_elapsed_seconds=intrabar_elapsed_seconds,
                 )
+                if should_buy and ENABLE_1MIN_ENTRY_SCORE_GATE:
+                    if buy_available_1min is None or len(buy_available_1min) < 2:
+                        should_buy, reason = False, "1MIN_FRAME_UNAVAILABLE"
+                    else:
+                        entry_ok, entry_reason = check_entry_condition_1min(buy_available_1min)
+                        if not entry_ok:
+                            should_buy, reason = False, entry_reason
+                        else:
+                            reason = f"{reason}+{entry_reason}"
 
             if should_buy:
                 _confirm_state = buy_confirm_state.setdefault(code, {"count": 0, "first_ts": ts})
