@@ -9,9 +9,9 @@ Core idea:
 4) Use take-profit, stop-loss, and trailing-stop for risk control.
 
 Run examples:
-- python xgraph/auto_trading/r006_trade_live_execute.py
-- python xgraph/auto_trading/r006_trade_live_execute.py --date 20260508
-- python xgraph/auto_trading/r006_trade_live_execute.py --fake
+- python xgraph/auto_trading/r003_trade_live_execute.py
+- python xgraph/auto_trading/r003_trade_live_execute.py --date 20260508
+- python xgraph/auto_trading/r003_trade_live_execute.py --fake
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -20,6 +20,41 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-24] type=feat owner=copilot
+    summary: PEAK_NEXT_BAR_BEARISH_EXIT 신규 매도 규칙 추가 - 포지션의 고점(highest_price)이
+      갱신될 때마다 그 틱이 속한 확정봉을 pos["peak_bar_time"]으로 기록해두고, 그 바로 다음
+      확정봉이 음봉이면서 고점 대비 PEAK_NEXT_BAR_DROP_PCT(0.5%, r003) 이상 하락하면
+      TP_EXTENSION_TRAIL(고점 대비 -1.0%) 도달을 기다리지 않고 즉시 시장가 매도한다.
+      017670 SK텔레콤 2026-08-24 12:40 매매 분석 계기: peak pnl 1.26%(12:58) -> 고점 바로
+      다음 3분봉(13:00봉, 종가 104,300)이 이미 하락 시작했는데도 giveback이 1.0%에 못 미쳐
+      13:08:24까지 안 팔리고 실현 0.19%(거래세 포함 시 순손실)로 끝남. ATR_TP 도달 이후
+      (peak_pnl_pct>=atr_tp_pct)에만 작동 - 매수 직후 초반은 POST_BUY_BB_DROP_GUARD/
+      ATR_STOP_LOSS가 별도로 담당하므로 겹치지 않음. pos["peak_bar_time"]/
+      ["peak_next_bar_checked"]는 positions_meta 직렬화 화이트리스트에 없어 재시작 시
+      리셋됨(다른 in-memory 전용 상태들과 동일한 수준).
+    impact: live
+    compatibility: backward-compatible (ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT=False로 즉시
+      롤백 가능; 기존 TP_EXTENSION_TRAIL/신호 매도 등 다른 매도 경로는 그대로 유지)
+- [2026-08-24] type=refactor owner=copilot
+    summary: _buy_condition_snapshot()(BUY REJECT 로그의 GATES 진단 문구)이 close_cross를
+      즉시 2봉 비교만으로 자체 계산하고 있어, 실제 판정 함수(run_buy_condition_pipeline_comment,
+      r005)의 5봉 룩백/우상향추세지속 로직으로는 통과했을 케이스도 로그엔 close_cross=False로
+      찍히던 문제 발견(051900 LG생활건강 09:12 사례로 사용자가 지적). r005에 새로 추출한
+      _evaluate_bb_mid_cross()를 import해 동일 로직을 재사용하도록 교체 - GATES 라인에
+      cross_pass(최종 통과 여부)/uptrend_cont 필드 신규 추가. 로그 전용 변경이라 실매매
+      판정에는 영향 없음(frame/live_price가 없는 예외 상황에서만 기존 단순 2봉 fallback 유지).
+    impact: live (로그만, 판정 로직 아님)
+    compatibility: backward-compatible (로그 필드 추가만, 기존 필드 의미도 그대로 유지)
+- [2026-08-24] type=fix owner=copilot
+    summary: check_buy_condition_1min(비활성 대체경로, ENABLE_1MIN_GOLDEN_CROSS_BUY=False)의
+      최소 봉 수 요건을 BB_PERIOD(20)봉 -> 2봉으로 되돌림. 사용자가 MTS에서 051900 LG생활건강
+      1분봉/3분봉 볼린저밴드가 09:00 장 시작 즉시 정상 렌더링되고 골든크로스도 유효함을 실측 확인 -
+      2026-08-17 당시 전제(HTS 미표시=BB_MIDDLE이 20봉 미만이면 통계적으로 불안정)가 HTS 자체
+      렌더링 문제였을 가능성이 높음. r005 Update log 2026-08-24 참조(실제 매매를 결정하는
+      run_buy_condition_pipeline_comment에도 동일 revert 적용).
+    impact: live
+    compatibility: breaking (경로 자체는 여전히 비활성 - 향후 재활성화 시 개장 직후 20분 차단이
+      없어짐)
 - [2026-08-21] type=fix owner=copilot
     summary: place_sell_order()의 has_pending_order() 차단 조건이 매도(sell) 대기 주문뿐 아니라
       매수(buy) 대기 주문(특히 피라미딩 추가매수)에도 걸려, 피라미딩 매수 주문이 미체결로 남아있는
@@ -280,7 +315,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from r003_define_config import (
+from r001_define_config import (
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     ADX_BUY_MIN,
     ADX_MIN_TREND,
@@ -401,6 +436,8 @@ from r003_define_config import (
     STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
     STAGED_TP1_PCT,
     STAGED_TP1_RATIO,
+    ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT,
+    PEAK_NEXT_BAR_DROP_PCT,
     STAGED_TP2_PCT,
     STAGED_TP2_RATIO,
     STAGED_TP3_PCT,
@@ -460,7 +497,7 @@ from r003_define_config import (
     ENABLE_PYRAMIDING,
     PYRAMID_TRIGGER_PNL_PCT,
 )
-from r005_strategy_core_shared import (
+from r002_strategy_core_shared import (
     R76StrategyConfig,
     calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
@@ -469,14 +506,15 @@ from r005_strategy_core_shared import (
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
+    _evaluate_bb_mid_cross,
     _near_cross_momentum_flags,
     _passes_early_near_cross_liquidity,
 )
 
 current_dir = Path(__file__).resolve().parent
 data_sim_dir = current_dir.parent / "data_simulation"
-sys.path.insert(0, str(data_sim_dir))  # r010_watchlist_bridge
-from r010_watchlist_bridge import resolve_watchlist_path
+sys.path.insert(0, str(data_sim_dir))  # g005_watchlist_bridge
+from g005_watchlist_bridge import resolve_watchlist_path
 
 project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
 sys.path.insert(0, str(project_root / "examples_llm"))
@@ -757,7 +795,7 @@ def _trade_log_target_paths() -> list[Path]:
 
 def _bind_session_trade_log() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session_path = data_sim_dir / "logs" / f"{timestamp}_r006_trade_live_execute_buy_sell.log"
+    session_path = data_sim_dir / "logs" / f"{timestamp}_r003_trade_live_execute_buy_sell.log"
     _LOG_CTX["session_buy_sell_log"] = session_path
     log_trade(f"SESSION trade log | path={session_path}")
 
@@ -867,8 +905,8 @@ def _parse_args() -> argparse.Namespace:
         "--watchlist-source",
         type=str,
         default="auto",
-        choices=["auto", "r008", "scan-picks", "picks"],
-        help="Watchlist resolution: auto, r008, scan-picks, or legacy picks.txt",
+        choices=["auto", "r004", "scan-picks", "picks"],
+        help="Watchlist resolution: auto, r004, scan-picks, or legacy picks.txt",
     )
     parser.add_argument("--dry-run", "--fake", dest="dry_run", action="store_true", help="Log orders without sending to broker")
     parser.add_argument("--env-dv", type=str, default=None, help="KIS env_dv override (default: env KIS_ENV_DV or real)")
@@ -2120,8 +2158,6 @@ def _buy_condition_snapshot(
     prev_bb = _num(prev, "BB_MIDDLE")
     cur_bb = _num(cur, "BB_MIDDLE")
     cur_bb_upper = _num(cur, "BB_UPPER")
-    prev_close = _num(prev, "close")
-    cur_close = _num(cur, "close")
     cur_open = _num(cur, "open")
     support_score = _buy_support_score(cur, prev, frame=frame) if frame is not None else -1
     vol = _num(cur, "volume")
@@ -2132,16 +2168,32 @@ def _buy_condition_snapshot(
     rsi_c = _num(cur, "RSI")
     macd_c = _num(cur, "MACD"); msig_c = _num(cur, "MACD_SIGNAL")
     bb_slope_pct = _compute_bb_slope_pct(frame) if frame is not None else float("nan")
-    close_cross = (
-        not any(pd.isna(v) for v in (prev_close, cur_close, prev_bb, cur_bb))
-        and prev_close <= prev_bb and cur_close > cur_bb
-    )
+    # 실제 매수 판정 함수(run_buy_condition_pipeline_comment)와 동일한 _evaluate_bb_mid_cross()를
+    # 그대로 재사용 - 예전엔 여기서 즉시 2봉 close_cross만 따로 계산해서, 실제로는 5봉 룩백/
+    # 우상향추세지속으로 통과하는 케이스가 로그엔 close_cross=False로 잘못 찍히곤 했음
+    # (2026-08-24, r005 Update log 참조).
+    if frame is not None and not frame.empty and live_price is not None and pd.notna(live_price):
+        _cross_eval = _evaluate_bb_mid_cross(
+            frame, cur, prev, cur_bb, prev_bb, float(live_price), bb_slope_pct, cross_info or {}
+        )
+        close_cross = _cross_eval["close_cross"]
+        uptrend_cont = _cross_eval["uptrend_continuation"]
+        cross_pass = _cross_eval["passed"]
+    else:
+        prev_close = _num(prev, "close")
+        cur_close = _num(cur, "close")
+        close_cross = (
+            not any(pd.isna(v) for v in (prev_close, cur_close, prev_bb, cur_bb))
+            and prev_close <= prev_bb and cur_close > cur_bb
+        )
+        uptrend_cont = False
+        cross_pass = close_cross or ((cross_info or {}).get("signal") == "cross_up")
     candle_gain_pct = (live_price - cur_open) / cur_open * 100.0 if (live_price and not pd.isna(cur_open) and cur_open > 0) else float("nan")
     bb_upper_gap_pct = (cur_bb_upper - live_price) / live_price * 100.0 if (live_price and live_price > 0 and not pd.isna(cur_bb_upper)) else float("nan")
     live_signal = cross_info.get("signal") if cross_info else None
     live_part = f"live={live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "live=nan"
     return (
-        f"GATES close_cross={close_cross} signal={live_signal} {live_part} "
+        f"GATES cross_pass={cross_pass} close_cross={close_cross} uptrend_cont={uptrend_cont} signal={live_signal} {live_part} "
         f"bb_mid={cur_bb:.1f} bb_upper={cur_bb_upper:.1f} "
         f"bb_slope={bb_slope_pct:.3f}% bb_upper_gap={bb_upper_gap_pct:.2f}% candle_gain={candle_gain_pct:.2f}% "
         f"RSI={rsi_c:.1f} ADX={adx_c:.1f} +DI={di_plus:.1f} -DI={di_minus:.1f} MACD={macd_c:.3f} SIG={msig_c:.3f} "
@@ -2282,16 +2334,12 @@ def check_buy_condition_1min(frame_1min: pd.DataFrame, require_fresh_cross: bool
     봉에서 이미 발생했더라도 현재봉 종가가 BB중간값 위에 유지되고만 있으면 통과시킨다.
     나머지 안전장치 필터(양봉/추격매수/거래량)는 두 모드 모두 동일하게 적용된다.
 
-    BB_MIDDLE은 BB_PERIOD(20)봉 이동평균인데 calculate_indicators가
-    rolling(window=BB_PERIOD, min_periods=1)로 계산되어, 장 시작 직후 실제 봉 수가
-    20개 미만인 동안에는 "BB 중간값"이 사실상 그 짧은 구간의 평균(5봉선에 가까운
-    매우 빠른 이동평균)처럼 움직인다. 이 상태에서는 가격이 잠깐만 올라도 이 불안정한
-    평균을 위로 뚫는 "가짜 골든크로스"가 쉽게 발생한다(장 시작 직후 이미 BB 중간선
-    위에서 유지 중인데도 매수가 들어오는 것처럼 보이는 현상의 원인). BB_MIDDLE이
-    실제로 20봉 평균이 되는 시점(1분봉 기준 장 시작 후 약 20분) 이전에는 크로스
-    판정 자체를 하지 않도록 최소 봉 수를 BB_PERIOD로 높인다.
+    BB_MIDDLE은 calculate_indicators가 rolling(window=BB_PERIOD, min_periods=1)로
+    계산하는 성장형(growing-window) 평균이다 - 이는 실제 HTS/MTS가 분봉 차트에
+    볼린저밴드를 그리는 방식과 동일하다(2026-08-24 MTS 실측으로 확인, r005 Update log
+    2026-08-24 참조). 최소 봉 수는 prev/cur 두 봉만 있으면 된다.
     """
-    if frame_1min is None or len(frame_1min) < BB_PERIOD:
+    if frame_1min is None or len(frame_1min) < 2:
         return False, "1MIN_INSUFFICIENT_BARS"
 
     cur = frame_1min.iloc[-1]
@@ -3487,11 +3535,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         log("No codes loaded")
         return
 
-    print(f"[R006 WATCHLIST] loaded {len(watch_map)} codes", flush=True)
+    print(f"[R003 WATCHLIST] loaded {len(watch_map)} codes", flush=True)
 
     register_symbol_names(watch_map)
 
-    log(f"[FEATURE_R008_WATCHLIST] Watchlist source: {watch_file}")
+    log(f"[FEATURE_R004_WATCHLIST] Watchlist source: {watch_file}")
 
     if ENABLE_NXT_SESSION:
         log("MODE BANNER: REGULAR+NXT_MODE")
@@ -3827,10 +3875,52 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     _pnl_sl = (_sl_price / entry_price) - 1.0
 
                     pos["current_price"] = price
-                    pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
+                    _prev_highest_price = float(pos.get("highest_price", 0.0) or 0.0)
+                    pos["highest_price"] = max(_prev_highest_price, price)
                     highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
+                    if highest_price > _prev_highest_price:
+                        # 이 틱에서 신고점을 찍었다 - 그 신고점이 속한 확정봉을 "고점봉"으로 기록해둔다
+                        # (PEAK_NEXT_BAR_BEARISH_EXIT에서 "고점봉 바로 다음 확정봉" 판정에 사용).
+                        pos["peak_bar_time"] = bar_time
                     peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
                     profit_giveback = peak_pnl_pct - pnl_pct
+
+                    # ── PEAK NEXT-BAR BEARISH REVERSAL EXIT ─────────────────────────────
+                    # 고점봉 바로 다음 확정봉이 음봉이면서 고점 대비 PEAK_NEXT_BAR_DROP_PCT
+                    # 이상 하락하면 TP_EXTENSION_TRAIL(고점 대비 -1.0%) 도달을 기다리지 않고
+                    # 즉시 매도. 017670 SK텔레콤 2026-08-24 12:40 매매(peak pnl 1.26% -> 실현
+                    # 0.19%, giveback 1.07%p - 거래세 포함 시 순손실)처럼, 고점 바로 다음 3분봉이
+                    # 이미 확정적으로 꺾였는데도 1.0% 트레일 폭을 다 기다리다 익절분 대부분을
+                    # 반납하는 사례가 있었음(r003 Update log 2026-08-24 참조). ATR_TP 도달
+                    # 이후(peak_pnl_pct>=atr_tp_pct)에만 작동 - 매수 직후 초반 노이즈는
+                    # POST_BUY_BB_DROP_GUARD/ATR_STOP_LOSS가 별도로 담당.
+                    if (
+                        ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT
+                        and not pd.isna(atr_tp_pct)
+                        and peak_pnl_pct >= atr_tp_pct
+                        and pos.get("peak_bar_time") is not None
+                        and bar_time > pos["peak_bar_time"]
+                        and pos.get("peak_next_bar_checked") != pos["peak_bar_time"]
+                    ):
+                        pos["peak_next_bar_checked"] = pos["peak_bar_time"]
+                        _cur_open_pb = _num(cur, "open")
+                        _cur_close_pb = _num(cur, "close")
+                        if not any(pd.isna(v) for v in (_cur_open_pb, _cur_close_pb)) and highest_price > 0:
+                            _drop_from_peak_pct = (highest_price - _cur_close_pb) / highest_price
+                            if _cur_close_pb < _cur_open_pb and _drop_from_peak_pct >= PEAK_NEXT_BAR_DROP_PCT:
+                                reason_pb = f"PEAK_NEXT_BAR_BEARISH_{PEAK_NEXT_BAR_DROP_PCT*100:.1f}pct"
+                                log(
+                                    f"  [SELL TRIGGER] {code} | {reason_pb} | "
+                                    f"peak={highest_price:,.0f}({pos['peak_bar_time']:%H:%M:%S}) "
+                                    f"next_bar={bar_time:%H:%M:%S} open={_cur_open_pb:,.0f} close={_cur_close_pb:,.0f} "
+                                    f"drop={_drop_from_peak_pct*100:.2f}% pnl={pnl_pct*100:.2f}%"
+                                )
+                                trailing_sell_confirm_state.pop(code, None)
+                                if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_pb, nxt_tradeable, price=price, code_name=name, market_order=True):
+                                    log(f"  [SELL EXECUTED] {code} | {reason_pb} | qty={pos['quantity']} price={price:,.0f}")
+                                signal_sell_bar[code] = bar_time
+                                continue
+                    # ── END PEAK NEXT-BAR BEARISH REVERSAL EXIT ─────────────────────────
 
                     # ── Aggressive Exit Plan (+1/+2, signal exits, -0.8% SL) ───────
                     k_now = _num(cur, "STOCH_K")
@@ -3956,6 +4046,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             if api.place_sell_order(code, tp1_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
                                 pos["tp1_done"] = True
                                 pos["entry_quantity"] = entry_qty
+                                if STAGED_TP2_RATIO <= 0:
+                                    pos["tp2_done"] = True
                                 api._record_position_meta(code, pos)
                                 api.persist_live_state(date_str=date_str)
                                 log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f}")
@@ -3963,7 +4055,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             continue
 
                         # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
-                        if bool(pos.get("tp1_done", False)) and (not bool(pos.get("tp2_done", False))) and pnl_pct >= tp2_target_pct:
+                        # STAGED_TP2_RATIO<=0이면 2차 단계 자체를 건너뛴다 (1차 이후 잔량은 트레일링 위임).
+                        if STAGED_TP2_RATIO > 0 and bool(pos.get("tp1_done", False)) and (not bool(pos.get("tp2_done", False))) and pnl_pct >= tp2_target_pct:
                             tp2_qty = max(1, int(round(entry_qty * STAGED_TP2_RATIO)))
                             tp2_qty = min(tp2_qty, int(pos["quantity"]))
                             reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{tp2_target_pct*100:.2f}PCT"
@@ -4211,7 +4304,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         # TP 도달 구간(peak >= TP)에서 이익이 1% 이내로 줄면 트레일링 적용
                         current_pnl_pct = (price / entry_price) - 1.0
                         profit_giveback = peak_pnl_pct - current_pnl_pct
-                        if ENABLE_TP_EXTENSION_TRAILING and not pd.isna(atr_tp_pct) and peak_pnl_pct >= atr_tp_pct:
+                        if ENABLE_TP_EXTENSION_TRAILING and (
+                            bool(pos.get("tp1_done", False))
+                            or (not pd.isna(atr_tp_pct) and peak_pnl_pct >= atr_tp_pct)
+                        ):
                             trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
                             reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
                         else:

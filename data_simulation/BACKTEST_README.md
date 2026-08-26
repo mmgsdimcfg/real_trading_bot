@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a complete backtesting framework for the **R76 MA5/BB Cross Strategy** that mirrors the real trading logic in `r006_trade_live_execute.py`.
+This is a complete backtesting framework for the **R76 MA5/BB Cross Strategy** that mirrors the real trading logic in `r003_trade_live_execute.py`.
 
 ### Key Features
 
@@ -29,7 +29,7 @@ xgraph/auto_trading/
 │   ├── portfolio.py                 # Position/cash management
 │   └── backtest.py                  # Main simulation loop
 │
-├── r006_trade_live_execute.py       # Real trading (uses shared)
+├── r003_trade_live_execute.py       # Real trading (uses shared)
 ├── run_backtest.py                  # Backtest runner
 └── data/                            # Historical OHLCV data
     ├── 20260422/

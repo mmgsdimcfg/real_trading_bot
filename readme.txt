@@ -10,10 +10,10 @@ python3 -m venv venv
 source venv/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
-python3 xgraph/auto_trading/r007_trade_simulate_by_date.py --date 20260422
+python3 xgraph/auto_trading/g003_trade_simulate_by_date.py --date 20260422
 
 Optional:
-python3 xgraph/auto_trading/r007_trade_simulate_by_date.py --date 20260422 --codes 003490 018880
+python3 xgraph/auto_trading/g003_trade_simulate_by_date.py --date 20260422 --codes 003490 018880
 
 Shortcut launcher:
 bash xgraph/auto_trading/r004_run_simulation.sh 20260422 --codes 003490 018880

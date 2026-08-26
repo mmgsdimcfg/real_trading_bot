@@ -1,5 +1,5 @@
 ﻿"""
-r002_data_scan_trade_candidates.py
+g002_data_scan_trade_candidates.py
 
 Purpose:
 - Read multi-day intraday data, aggregate to daily bars, and rank symbols
@@ -7,8 +7,8 @@ Purpose:
 - Export picks used by live trading and simulation.
 
 Run examples:
-- python xgraph/auto_trading/r002_data_scan_trade_candidates.py --date 20260508
-- python xgraph/auto_trading/r002_data_scan_trade_candidates.py --date 20260508 --max-picks 20 --config balanced
+- python xgraph/auto_trading/g002_data_scan_trade_candidates.py --date 20260508
+- python xgraph/auto_trading/g002_data_scan_trade_candidates.py --date 20260508 --max-picks 20 --config balanced
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -17,6 +17,26 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-26] type=fix owner=copilot
+    summary: _20260825_scan_all.md 검증 중 발견된 "상승추세 미확정" 종목 통과 문제 수정.
+      (1) trend_state=="flat"을 down_trend와 동일하게 소프트플래그(-0.7점)에서 하드 배제로
+      승격(반전 신호 있으면 예외) - 003490 대한항공(trend_state=flat, ma_gap=-375, soft_flags=
+      flat_trend 단독)이 score=43.76으로 eligible=Y 처리되던 사례 수정.
+      (2) 신규 하드 필터 box_range_no_progress(_is_box_range_no_progress) 추가 - 최근 10거래일
+      고점-저점 변동폭은 5% 이상인데 첫날 대비 순변동률은 2% 미만인 "박스권 왕복" 종목 배제.
+      classify_trend()의 MA5/MA20 비교는 후행지표라 급락 후 원래 자리로만 회복해도 우연히
+      trend_state=up으로 잡힐 수 있어 flat_trend 배제만으로는 못 잡음 - 178320 서진시스템
+      (최근 10일 range_pct=16.5%, net_pct=0.26%인데 trend_state=up으로 eligible=Y) 사례로 확인.
+      (3) 신규 하드 필터 bearish_candle_dominant(_is_bearish_candle_dominant) 추가 - 최근
+      10거래일 중 음봉 비율 60% 이상이면 배제(반전 신호 예외). 기존 daily_5d_downtrend/
+      3d_close_downtrend/bearish_2in3d는 "연속" 하락만 보아 반등 캔들 하나로 체인이 끊기던
+      허점을 캔들 분포 기준으로 보완(사용자 요청 "우하향캔들 분포" 대응, 두 예시 종목에는
+      해당 안 됐으나 재발 방지용으로 함께 추가).
+      세 필터 모두 FALLBACK_RELAXABLE_FAIL_REASONS에 넣지 않아 fallback 채우기로도 구제되지
+      않음(down_trend/linreg_long_term_downtrend 등 기존 추세/캔들패턴 하드필터와 동일 취급).
+    impact: scanner
+    compatibility: breaking (flat_trend/박스권왕복/음봉분포 종목이 새로 배제되어 최종 picks
+      구성과 개수가 달라질 수 있음 - eligible pool이 작을 때 max_picks 미만으로 나올 수 있음)
 - [2026-08-23] type=fix owner=copilot
     summary: Stage 0의 절대 유동성 하한(vol_ma20 < config.volume_ma20_min OR amount_ma20 <
       config.amount_ma20_min이면 skip_reason=basic_liquidity_floor로 즉시 배제)이 나중에
@@ -179,7 +199,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r003_define_config
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r001_define_config
 
 
 @dataclass(frozen=True)
@@ -732,6 +752,61 @@ def _is_weak_long_term_downtrend_signal(df, window=20, min_bars=15, slope_pct_pe
     return slope_pct <= slope_pct_per_day_threshold and r2 < LINREG_R2_HARD_THRESHOLD
 
 
+BOX_RANGE_NO_PROGRESS_WINDOW = 10
+BOX_RANGE_NO_PROGRESS_MIN_NET_PCT = 0.02     # 최근 window거래일 순변동률이 이 미만이면 "무진전"
+BOX_RANGE_NO_PROGRESS_MIN_RANGE_PCT = 0.05   # 이 이상 변동폭이 있어야 "박스권 왕복"으로 판정
+                                              # (변동폭 자체가 작은 저변동 종목은 low_volatility_atr로 별도 처리)
+
+
+def _is_box_range_no_progress(
+    df,
+    window=BOX_RANGE_NO_PROGRESS_WINDOW,
+    min_net_pct=BOX_RANGE_NO_PROGRESS_MIN_NET_PCT,
+    min_range_pct=BOX_RANGE_NO_PROGRESS_MIN_RANGE_PCT,
+):
+    """최근 `window`거래일 동안 고점-저점 변동폭(range_pct)은 충분히 컸지만(등락은 있었지만)
+    첫날 종가 대비 마지막 종가의 순변동률(net_pct)이 미미해 사실상 제자리로 돌아온 "박스권
+    왕복" 종목을 감지한다.
+
+    classify_trend()의 MA5/MA20 비교는 후행지표라, 이런 왕복 구간(예: 급락 후 원래 자리까지만
+    회복)에서도 우연히 MA5>MA20으로 잡혀 trend_state="up"이 될 수 있다(2026-08-25 스캔에서
+    178320 서진시스템 사례: 최근 10거래일 range_pct=16.5%인데 net_pct=0.26%에 불과했음에도
+    trend_state=up, eligible=Y로 통과). 하드 배제로 이 사각지대를 보완한다.
+    """
+    if len(df) < window:
+        return False
+    recent = df.tail(window)
+    first_close = float(recent["close"].iloc[0])
+    last_close = float(recent["close"].iloc[-1])
+    if first_close <= 0 or last_close <= 0:
+        return False
+    net_pct = (last_close - first_close) / first_close
+    range_pct = (float(recent["high"].max()) - float(recent["low"].min())) / last_close
+    return range_pct >= min_range_pct and net_pct < min_net_pct
+
+
+BEARISH_CANDLE_DOMINANCE_WINDOW = 10
+BEARISH_CANDLE_DOMINANCE_MIN_RATIO = 0.6  # 최근 window거래일 중 음봉 비율이 이 이상이면 하드 배제
+
+
+def _is_bearish_candle_dominant(
+    df,
+    window=BEARISH_CANDLE_DOMINANCE_WINDOW,
+    min_ratio=BEARISH_CANDLE_DOMINANCE_MIN_RATIO,
+):
+    """최근 `window`거래일 중 음봉(종가<시가) 비율이 min_ratio 이상이면 True("우하향 캔들 분포").
+
+    daily_5d_downtrend/3d_close_downtrend는 "연속" 하락만 보므로 중간에 반등 캔들이 하루만
+    끼어도 체인이 끊겨 무력화되지만, 이 체크는 연속 여부와 무관하게 캔들 분포 자체로 하락
+    성향을 판정하므로 그 허점을 보완한다.
+    """
+    if "open" not in df.columns or len(df) < window:
+        return False
+    recent = df.tail(window)
+    bearish = int((recent["close"] < recent["open"]).sum())
+    return (bearish / window) >= min_ratio
+
+
 def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, crash_pct=0.10):
     """연속 상한가(2일 이상, +20% 기준) 이후 급락(-10% 이상) 패턴 감지. pump & dump / 테마 급등락 종목 차단."""
     if len(df) < 4:
@@ -966,6 +1041,32 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         else:
             candidate["fail_reasons"].append("down_trend")
 
+    # [2026-08-26] 상승추세 미확정(flat) 종목 하드 배제. 기존에는 soft_flags(-0.7점)에 불과해
+    # 사실상 그대로 통과했음 - 2026-08-25 스캔에서 003490 대한항공(trend_state=flat, ma_gap=
+    # -375, soft_flags=flat_trend 단독)이 score=43.76으로 eligible=Y 처리된 사례로 확인.
+    # 모멘텀 스캐너는 "상승추세 확정" 종목만 선별해야 하므로, down_trend와 동일하게 반전 신호가
+    # 없는 flat 종목은 하드 배제하고, 신선한 반전 신호가 있으면 예외 허용한다.
+    if trend_state == "flat":
+        if trend_reversal_detected:
+            candidate["soft_flags"].append("flat_trend_reversal_override")
+        else:
+            candidate["fail_reasons"].append("flat_trend")
+
+    # [2026-08-26] 박스권 왕복(변동은 있었지만 순진전 없음) 하드 필터 - MA5/MA20 크로스가
+    # 우연히 up으로 잡히는 사각지대 보완 (위 flat_trend 배제로도 못 잡는 케이스, 예: 178320
+    # 서진시스템 - 최근 10일 급락 후 원래 자리로 회복하며 trend_state=up으로 통과했던 사례)
+    if _is_box_range_no_progress(_check_df):
+        candidate["fail_reasons"].append("box_range_no_progress")
+
+    # [2026-08-26] 우하향 캔들 분포 하드 필터 - 연속성과 무관하게 최근 10거래일 캔들의
+    # 60% 이상이 음봉이면 배제(반전 신호 있으면 예외). 기존 bearish_2in3d(3일 중 2일)보다
+    # 더 넓은 창으로 "분포" 자체의 하락 성향을 판정.
+    if _is_bearish_candle_dominant(_check_df):
+        if trend_reversal_detected:
+            candidate["soft_flags"].append("bearish_candle_dominant_reversal_override")
+        else:
+            candidate["fail_reasons"].append("bearish_candle_dominant")
+
     # 일봉 5일 연속 하락 (MA 지연으로 통과되는 우하향 종목 감지) - 소프트 경고로 완화
     # (2026-07-22: 하드필터 -> 소프트플래그. MA5/20 역배열과 20일회귀+R² 하드필터는 유지되므로
     # 명백한 장기 하락추세는 여전히 배제되고, 이 항목은 점수 페널티(-0.7/soft flag)로만 반영)
@@ -1038,8 +1139,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         candidate["soft_flags"].append("volume_declining")
 
     # --- Soft flags (warning only, not disqualified) ---
-    if trend_state == "flat":
-        candidate["soft_flags"].append("flat_trend")
+    # (flat_trend은 위에서 하드 필터로 승격됨 - 여기서 중복 추가하지 않음)
     if high_52w_ratio is not None and high_52w_ratio < 0.4:
         candidate["soft_flags"].append("far_from_52w_high")
     if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
@@ -1524,15 +1624,15 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
 
 
 def load_symbols():
-    symbols_path = Path("r009_universe_symbols_master.txt")
+    symbols_path = Path("g004_universe_symbols_master.txt")
 
     if not symbols_path.exists():
-        raise SystemExit("r009_universe_symbols_master.txt 파일이 없습니다.")
+        raise SystemExit("g004_universe_symbols_master.txt 파일이 없습니다.")
 
     df = pd.read_csv(symbols_path)
 
     if "code" not in df.columns:
-        raise SystemExit("r009_universe_symbols_master.txt에 'code' 컬럼이 필요합니다.")
+        raise SystemExit("g004_universe_symbols_master.txt에 'code' 컬럼이 필요합니다.")
 
     name_col = "name" if "name" in df.columns else (df.columns[1] if len(df.columns) > 1 else None)
     if name_col:
@@ -2050,28 +2150,28 @@ def parse_args():
     parser.add_argument(
         "--export-watchlist",
         action="store_true",
-        help="[FEATURE_SCAN_EXPORT_TO_R008] Export picks to r008_trade_watchlist_today.txt",
+        help="[FEATURE_SCAN_EXPORT_TO_R004] Export picks to r004_trade_watchlist_today.txt",
     )
     parser.add_argument(
         "--no-export-watchlist",
         action="store_true",
-        help="Disable r008 export even when FEATURE_SCAN_EXPORT_TO_R008 is True",
+        help="Disable r004 export even when FEATURE_SCAN_EXPORT_TO_R004 is True",
     )
     parser.add_argument(
         "--export-watchlist-path",
         type=str,
         default=None,
-        help="Override r008 export path (default: auto_trading/r008_trade_watchlist_today.txt)",
+        help="Override r004 export path (default: auto_trading/r004_trade_watchlist_today.txt)",
     )
     parser.add_argument(
         "--for-next-trading-day",
         action="store_true",
-        help="Add metadata comment for next calendar day in r008 export header",
+        help="Add metadata comment for next calendar day in r004 export header",
     )
     parser.add_argument(
         "--write-picks-alias",
         action="store_true",
-        help="Also write data/YYYYMMDD/picks.txt (legacy r006 --date compatibility)",
+        help="Also write data/YYYYMMDD/picks.txt (legacy r003 --date compatibility)",
     )
     return parser.parse_args()
 
@@ -2159,21 +2259,21 @@ if __name__ == "__main__":
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
 
     try:
-        from r003_define_config import FEATURE_SCAN_EXPORT_TO_R008
+        from r001_define_config import FEATURE_SCAN_EXPORT_TO_R004
     except Exception:
-        FEATURE_SCAN_EXPORT_TO_R008 = True
+        FEATURE_SCAN_EXPORT_TO_R004 = True
 
-    export_enabled = FEATURE_SCAN_EXPORT_TO_R008 and not args.no_export_watchlist
+    export_enabled = FEATURE_SCAN_EXPORT_TO_R004 and not args.no_export_watchlist
     if args.export_watchlist:
         export_enabled = True
 
     if export_enabled and picks:
-        from r010_watchlist_bridge import export_picks_to_r008, write_legacy_picks_alias
+        from g005_watchlist_bridge import export_picks_to_r004, write_legacy_picks_alias
 
-        auto_dir = Path(__file__).resolve().parent.parent / "live_trading"  # r008 watchlist lives there
+        auto_dir = Path(__file__).resolve().parent.parent / "live_trading"  # r004 watchlist lives there
         export_path = Path(args.export_watchlist_path) if args.export_watchlist_path else None
         scan_date_str = output_prefix or None
-        r008_out = export_picks_to_r008(
+        r004_out = export_picks_to_r004(
             picks,
             auto_dir,
             scan_date=scan_date_str,
@@ -2181,8 +2281,8 @@ if __name__ == "__main__":
             for_next_trading_day=bool(args.for_next_trading_day),
             out_path=export_path,
         )
-        if r008_out:
-            print(f"[FEATURE_SCAN_EXPORT_TO_R008] r008 watchlist 저장: {r008_out}")
+        if r004_out:
+            print(f"[FEATURE_SCAN_EXPORT_TO_R004] r004 watchlist 저장: {r004_out}")
 
         if args.write_picks_alias and scan_date_str:
             alias = write_legacy_picks_alias(picks, data_root, scan_date_str)

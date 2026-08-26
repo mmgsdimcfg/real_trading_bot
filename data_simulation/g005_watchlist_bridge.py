@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""R010 watchlist bridge: r002 scanner picks -> r008 live watchlist.
+"""G005 watchlist bridge: g002 scanner picks -> r004 live watchlist.
 
-Feature-gated by r003_define_config:
-- FEATURE_R008_WATCHLIST
-- FEATURE_SCAN_EXPORT_TO_R008
+Feature-gated by r001_define_config:
+- FEATURE_R004_WATCHLIST
+- FEATURE_SCAN_EXPORT_TO_R004
 - FEATURE_WATCHLIST_RESOLVE_SCAN_PICKS
 """
 
@@ -13,37 +13,37 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r003_define_config
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r001_define_config
 
 try:
-    from r003_define_config import (
-        FEATURE_R008_WATCHLIST,
-        FEATURE_SCAN_EXPORT_TO_R008,
+    from r001_define_config import (
+        FEATURE_R004_WATCHLIST,
+        FEATURE_SCAN_EXPORT_TO_R004,
         FEATURE_WATCHLIST_RESOLVE_SCAN_PICKS,
-        R008_WATCHLIST_FILENAME,
+        R004_WATCHLIST_FILENAME,
         SCAN_PICKS_LEGACY_FILENAME,
         SCAN_PICKS_PREFIX_TEMPLATE,
         DATA_DIR_NAME,
     )
 except Exception:
-    FEATURE_R008_WATCHLIST = True
-    FEATURE_SCAN_EXPORT_TO_R008 = True
+    FEATURE_R004_WATCHLIST = True
+    FEATURE_SCAN_EXPORT_TO_R004 = True
     FEATURE_WATCHLIST_RESOLVE_SCAN_PICKS = True
-    R008_WATCHLIST_FILENAME = "r008_trade_watchlist_today.txt"
+    R004_WATCHLIST_FILENAME = "r004_trade_watchlist_today.txt"
     SCAN_PICKS_LEGACY_FILENAME = "picks.txt"
     SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
     DATA_DIR_NAME = "data"
 
-R008_HEADER = """# R76 daily live trading watchlist.
+R004_HEADER = """# R76 daily live trading watchlist.
 #
 # Purpose:
-# - List of symbols used by r006_trade_live_execute.py and optional simulation watchlist mode.
+# - List of symbols used by r003_trade_live_execute.py and optional simulation watchlist mode.
 #
 # Format:
 # - code,name
 # - Example: 005930,삼성전자
 #
-# [FEATURE_R008_WATCHLIST] auto-generated from r002 scanner export.
+# [FEATURE_R004_WATCHLIST] auto-generated from g002 scanner export.
 """
 
 
@@ -63,17 +63,17 @@ def resolve_watchlist_path(
 ) -> Path:
     """Resolve watchlist file for r006 / simulation."""
     data_root = data_dir or (auto_trading_dir / DATA_DIR_NAME)
-    r008_path = auto_trading_dir / R008_WATCHLIST_FILENAME
+    r004_path = auto_trading_dir / R004_WATCHLIST_FILENAME
     source = (watchlist_source or "auto").strip().lower()
 
     if source == "auto":
         if target_date:
             source = "scan-picks" if FEATURE_WATCHLIST_RESOLVE_SCAN_PICKS else "picks"
         else:
-            source = "r008" if FEATURE_R008_WATCHLIST else "r008"
+            source = "r004" if FEATURE_R004_WATCHLIST else "r004"
 
-    if source == "r008" or not target_date:
-        return r008_path
+    if source == "r004" or not target_date:
+        return r004_path
 
     date_dir = data_root / target_date
     if source == "scan-picks":
@@ -83,10 +83,10 @@ def resolve_watchlist_path(
     legacy = legacy_picks_path(data_root, target_date)
     if legacy.exists():
         return legacy
-    return r008_path
+    return r004_path
 
 
-def render_r008_content(
+def render_r004_content(
     picks_lines: list[str],
     scan_date: str | None = None,
     config_name: str | None = None,
@@ -103,13 +103,13 @@ def render_r008_content(
             pass
     if config_name:
         meta.append(f"# scanner_config={config_name}")
-    meta.append("# [FEATURE_SCAN_EXPORT_TO_R008]")
+    meta.append("# [FEATURE_SCAN_EXPORT_TO_R004]")
 
     body = [ln.strip() for ln in picks_lines if ln.strip() and not ln.strip().startswith("#")]
-    return R008_HEADER + "\n".join(meta) + "\n\n" + "\n".join(body) + "\n"
+    return R004_HEADER + "\n".join(meta) + "\n\n" + "\n".join(body) + "\n"
 
 
-def export_picks_to_r008(
+def export_picks_to_r004(
     picks_lines: list[str],
     auto_trading_dir: Path,
     scan_date: str | None = None,
@@ -117,13 +117,13 @@ def export_picks_to_r008(
     for_next_trading_day: bool = False,
     out_path: Path | None = None,
 ) -> Path | None:
-    if not FEATURE_SCAN_EXPORT_TO_R008:
+    if not FEATURE_SCAN_EXPORT_TO_R004:
         return None
     if not picks_lines:
         return None
-    dest = out_path or (auto_trading_dir / R008_WATCHLIST_FILENAME)
+    dest = out_path or (auto_trading_dir / R004_WATCHLIST_FILENAME)
     dest.write_text(
-        render_r008_content(
+        render_r004_content(
             picks_lines,
             scan_date=scan_date,
             config_name=config_name,
