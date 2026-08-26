@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-r001_data_collect_symbols_daily.py
+g001_data_collect_symbols_daily.py
 
 Purpose:
 - Collect minute bars for a target date from KIS APIs.
@@ -19,13 +19,13 @@ Key behavior:
 
 Usage examples:
 - Single code on specific date (regular market only):
-    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310
 - Single code on specific date (include NXT market):
-    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310 --nxt
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310 --nxt
 - Multiple codes on specific date:
-    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930 --nxt
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930 --nxt
 - Full list from symbols file:
-    python xgraph/auto_trading/r001_data_collect_symbols_daily.py --date 20260508 --symbols-file xgraph/auto_trading/r009_universe_symbols_master.txt
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --symbols-file xgraph/auto_trading/g004_universe_symbols_master.txt
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -79,7 +79,7 @@ from pathlib import Path
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parent / "live_trading"))  # r003_define_config, r005_strategy_core_shared
+sys.path.insert(0, str(SCRIPT_DIR.parent / "live_trading"))  # r001_define_config, r002_strategy_core_shared
 PROJECT_ROOT = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_user" / "domestic_stock"))
@@ -90,7 +90,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inqui
 import kis_auth as ka
 import domestic_stock_functions as dsf
 from inquire_time_dailychartprice import inquire_time_dailychartprice
-from r003_define_config import (
+from r001_define_config import (
     ADX_PERIOD,
     BB_PERIOD,
     BB_STD_MULTIPLIER,
@@ -119,7 +119,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Indicator parameters are imported from r003_define_config so collector, live,
+# Indicator parameters are imported from r001_define_config so collector, live,
 # and simulation stay in sync when strategy settings change.
 
 
@@ -128,8 +128,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env", type=str, default="real", choices=["real", "demo"], help="API environment")
     parser.add_argument("--date", type=str, default=None, help="Target date YYYYMMDD, or comma-separated list (e.g. 20260508,20260509,20260510)")
     parser.add_argument("--code", type=str, default="", help="Collect only this code (6-digit). Comma-separated supported")
-    parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "r009_universe_symbols_master.txt"), help="Path to r009_universe_symbols_master.txt")
-    parser.add_argument("--watchlist-file", type=str, default="", help="r008-style watchlist file(s) with code,name per line. Comma-separated multiple paths.")
+    parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "g004_universe_symbols_master.txt"), help="Path to g004_universe_symbols_master.txt")
+    parser.add_argument("--watchlist-file", type=str, default="", help="r004-style watchlist file(s) with code,name per line. Comma-separated multiple paths.")
     parser.add_argument("--watchlist-only", action="store_true", help="Use --watchlist-file as the only symbol source, ignoring --symbols-file.")
     parser.add_argument("--data-root", type=str, default=str(SCRIPT_DIR / "data"), help="Output data root")
     parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
@@ -685,7 +685,7 @@ def load_symbols(symbols_file: Path) -> list[tuple[str, str]]:
 
 
 def _load_watchlist_file(path: Path) -> list[tuple[str, str]]:
-    """Load code,name pairs from an r008-style watchlist (# comment lines skipped)."""
+    """Load code,name pairs from an r004-style watchlist (# comment lines skipped)."""
     pairs: list[tuple[str, str]] = []
     for encoding in ("utf-8-sig", "utf-8", "cp949"):
         try:
@@ -810,7 +810,7 @@ def main() -> None:
     else:
         symbols = load_symbols(symbols_file)
 
-    # Merge extra symbols from --watchlist-file (r008 watchlist)
+    # Merge extra symbols from --watchlist-file (r004 watchlist)
     if args.watchlist_file:
         wl_paths = [p.strip() for p in args.watchlist_file.split(",") if p.strip()]
         for wl_path_str in wl_paths:

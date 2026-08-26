@@ -1,6 +1,21 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-08-25] type=fix owner=claude
+#     summary: 2026-08-25 실매매 로그 분석 결과 필수조건 2-b(직전 매집봉 확인)가 크로스 이후
+#       다운스트림 리젝의 압도적 1위(정규화 기준 1,284건/블록시간 2,385분, 2위인 CHASE_BUY_BB_GAP
+#       986분의 2.4배)로 확인됨 - 09:00부터 정규장 중반 상승장 전환 이후까지 하루 종일 매수가
+#       6건뿐이었던 핵심 원인. 원인은 "그 봉의 저가~고가가 BB중간값 포함 AND 양봉 AND 거래량>
+#       VOL_MA20"을 같은 한 봉에서 동시에 요구하는 3중 AND 조건이 너무 희귀한 조합이라는 점.
+#       (1) PRE_CROSS_ACCUM_LOOKBACK_BARS 5->8봉으로 재확장, (2) 거래량 기준을 "VOL_MA20 초과"에서
+#       "VOL_MA20의 PRE_CROSS_ACCUM_VOL_RATIO_MIN(0.8) 이상"으로 완화(신규 상수) - 2026-08-21에
+#       이미 "직전봉 대비"->"VOL_MA20 대비"로 한 차례 완화했으나 그 후로도 여전히 최대 병목으로
+#       남아있어 추가 완화. CANDLE_GAIN_MIN_PCT도 0.0%->-0.1%로 소폭 완화 - 라이브 폴링 시점의
+#       미세한 틱 노이즈로 정상 돌파 구간에서도 순간적으로 음전(-0.01~-0.2%대)되어 CANDLE_NOT_BULLISH로
+#       리젝되는 사례(669건, 블록시간 586분)를 완화하기 위함.
+#     impact: common
+#     compatibility: breaking (매수 필수조건 2-b/3 통과 기준이 완화되어 매수 빈도가 늘어날 것으로 예상;
+#       r007 --date 20260825 백테스트로 리젝 사유 재분포 확인 필요)
 # - [2026-08-21] type=fix owner=copilot
 #     summary: PRE_CROSS_ACCUM_LOOKBACK_BARS 3->5, 매집봉 거래량 증가 판정 기준을 "직전봉 대비"에서
 #       "VOL_MA20(20봉 평균) 대비"로 변경(r005 Update log 참조). 어제(2026-08-20) 신규 추가된
@@ -123,7 +138,7 @@ Risk profile presets:
 - Preset JSON files live under xgraph/auto_trading/risk_profiles/.
 
 튜닝 가이드:
-- 실전 매매(r006_trade_live_execute.py)의 손절/익절/트레일링스탑/진입필터 등
+- 실전 매매(r003_trade_live_execute.py)의 손절/익절/트레일링스탑/진입필터 등
   "매매 판단"에 직접 영향을 주는 값은 전부 아래 "LIVE TRADING TUNABLE
   PARAMETERS" 섹션에 모여 있다. 실전매매 결과를 보고 값을 튜닝할 때는 이
   섹션만 확인하면 된다.
@@ -139,25 +154,25 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Path / file constants
 # ---------------------------------------------------------------------------
-DEFINE_TODAY_CODE_PATH = "r008_trade_watchlist_today.txt"
+DEFINE_TODAY_CODE_PATH = "r004_trade_watchlist_today.txt"
 DATA_DIR_NAME = "data"
 # ---------------------------------------------------------------------------
-# Feature: R008 watchlist pipeline (scanner -> r008 -> r006 live)
+# Feature: R004 watchlist pipeline (scanner -> r004 -> r003 live)
 # ---------------------------------------------------------------------------
-FEATURE_R008_WATCHLIST = True
-FEATURE_SCAN_EXPORT_TO_R008 = True
+FEATURE_R004_WATCHLIST = True
+FEATURE_SCAN_EXPORT_TO_R004 = True
 FEATURE_WATCHLIST_RESOLVE_SCAN_PICKS = True
 
-R008_WATCHLIST_FILENAME = DEFINE_TODAY_CODE_PATH
+R004_WATCHLIST_FILENAME = DEFINE_TODAY_CODE_PATH
 SCAN_PICKS_LEGACY_FILENAME = "picks.txt"
 SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
 
 
 # =============================================================================
 # LIVE TRADING TUNABLE PARAMETERS
-#   r006_trade_live_execute.py(실전 매매)가 매수/매도/리스크 판단에 직접
+#   r003_trade_live_execute.py(실전 매매)가 매수/매도/리스크 판단에 직접
 #   사용하는 값 모음. 실전매매 결과를 보고 튜닝할 때는 이 섹션만 수정하면 된다.
-#   (r007_trade_simulate_by_date.py도 동일 로직 재현을 위해 이 값들을 그대로 사용)
+#   (g003_trade_simulate_by_date.py도 동일 로직 재현을 위해 이 값들을 그대로 사용)
 # =============================================================================
 
 # --- 1. 손절 (Stop Loss) ----------------------------------------------------
@@ -172,16 +187,27 @@ ATR_STOP_MULTIPLIER = 1.5  # ATR 기반 손절 배수
 # --- 2. 익절 / 트레일링 스탑 (Take Profit / Trailing Stop) ------------------
 TRAILING_STOP_FROM_PEAK = 0.02  # 트레일링 스탑: 고점 대비 되돌림 허용폭 (2%)
 ENABLE_TP_EXTENSION_TRAILING = True  # 익절 후 연장 트레일링 기능 사용 여부
-TP_EXTENSION_TRAIL_FROM_PEAK = 0.006  # 익절 연장 구간 트레일링 폭 (0.4%->0.6%: 너무 타이트하게 익절을 잠가 수익을 조기에 제한하던 문제 완화)
+TP_EXTENSION_TRAIL_FROM_PEAK = 0.010  # 익절 연장 구간 트레일링 폭 (0.4%->0.6%->1.0%: 1차 익절(+3.0%) 이후 잔량 60%를 관리하는 폭이라 -1.0%로 확대)
 ATR_TAKE_PROFIT_MULTIPLIER = 3.0  # ATR 기반 익절 배수
 
-# 익절 3단계 분할청산 (40%/30%/30%, +1.0%/+1.4%/+3.0%) - 기존 TP1(50%@1.0%)+TP2(전량@2.0%) 대체
+# [2026-08-24] 고점봉 바로 다음 확정봉 반전 매도 - TP_EXTENSION_TRAIL_FROM_PEAK(1.0%)만으로는
+# 반응이 느려, 017670 SK텔레콤 2026-08-24 12:40 매매(peak pnl 1.26% -> 실현 0.19%, giveback
+# 1.07%p, 거래세 포함 시 순손실)처럼 고점 바로 다음 3분봉이 이미 음봉으로 꺾였는데도 트레일 폭을
+# 다 기다리다 익절분 대부분을 반납하는 사례가 있었음. 고점을 만든 확정봉의 바로 다음 확정봉이
+# 음봉이면서 고점 대비 이 폭 이상 하락하면 트레일 도달을 기다리지 않고 즉시 매도한다.
+ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT = True
+PEAK_NEXT_BAR_DROP_PCT = 0.005  # 고점 대비 하락폭 (0.5%)
+
+# 익절 단계 분할청산 (40%/60%, +3.0%/트레일링) - 기존 TP1(40%@1.0%)+TP2(30%@1.4%)+잔량(30%) 대체
+# [2026-08-23] 사용자 요청: 급등 구간에서 TP1(+1.0%)이 너무 일찍 40%를 털어 추세를 못 태운다는
+# 피드백에 따라 1차 익절 목표를 +1.0%->+3.0%로 상향. 2차 단계는 STAGED_TP2_RATIO=0으로 비활성화하고
+# 1차 이후 잔량(60%)은 곧바로 TP_EXTENSION_TRAIL_FROM_PEAK(고점대비 -1.0%) 트레일링에 위임한다.
 # False로 설정 시 즉시 기존 2단계 방식으로 롤백된다.
 ENABLE_STAGED_TAKE_PROFIT = True
-STAGED_TP1_PCT = 0.010   # 1차 익절 기준 (+1.0%) - 진입 수량의 40% 청산
+STAGED_TP1_PCT = 0.030   # 1차 익절 기준 (+3.0%, 기존 +1.0%) - 진입 수량의 40% 청산
 STAGED_TP1_RATIO = 0.40
-STAGED_TP2_PCT = 0.014   # 2차 익절 기준 (+1.4%) - 진입 수량의 30% 청산
-STAGED_TP2_RATIO = 0.30
+STAGED_TP2_PCT = 0.014   # 2차 익절 기준값 (STAGED_TP2_RATIO=0으로 비활성화되어 현재 미사용)
+STAGED_TP2_RATIO = 0.00  # 0.30 -> 0.00: 2차 분할청산 비활성화 (1차 이후 잔량은 트레일링으로 일괄 관리)
 STAGED_TP3_PCT = 0.030   # (r006 라이브에서는 더 이상 고정 청산 트리거로 쓰이지 않음 - r007 시뮬레이션 참고용)
 # 1차 익절 목표를 고정 STAGED_TP1_PCT 대신 종목 변동성(ATR)에 연동해 동적으로 산출한다.
 # 목표익절 = max(STAGED_TP1_PCT, (ATR/entry_price) * TP1_ATR_MULTIPLIER)
@@ -268,7 +294,10 @@ MIN_BARS_REQUIRED = 3
 #   257720 실리콘투 09:57 사례처럼 매집 구간에서도 봉 하나하나의 직전봉 대비 거래량은 들쭉날쭉해
 #   정상적인 매집 국면을 놓치는 오탈락이 발생해, 더 안정적인 평균 대비 기준 + 넓은 룩백으로 변경.
 ENABLE_PRE_CROSS_ACCUM_BAR_CHECK = True
-PRE_CROSS_ACCUM_LOOKBACK_BARS = 5
+PRE_CROSS_ACCUM_LOOKBACK_BARS = 8
+# [2026-08-25] 매집봉 거래량 판정을 "VOL_MA20 초과"에서 "VOL_MA20의 이 비율 이상"으로 완화 -
+#   BB중간값 포함+양봉+거래량 조건을 같은 한 봉에서 동시 요구하는 3중 AND라 100% 기준은 너무 희귀함.
+PRE_CROSS_ACCUM_VOL_RATIO_MIN = 0.8
 
 # --- 6. 매수 진입 - 근접교차(Near-cross) / 조기진입 / 가격선행돌파 ------------
 # Near-cross ARM 모드: BB 중단과 MA5 간 최대 허용 갭 / MA5 최소 상승률
@@ -309,9 +338,16 @@ BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 �
 BB_SLOPE_MIN_PCT = -2.0
 BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
 BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5->0.25)
-CANDLE_GAIN_MIN_PCT = 0.0        # 현재봉 양봉 최소 상승률 (%) - 음봉만 차단, 0.00%는 허용 (0.1->0.0)
+CANDLE_GAIN_MIN_PCT = -0.1       # 현재봉 양봉 최소 상승률 (%) - 미세 틱노이즈 허용 (0.1->0.0->-0.1)
 CANDLE_GAIN_MAX_PCT = 0.8        # 현재봉 최대 허용 상승률 (%) - 초과 시 추격 매수 차단
 BB_MID_CHASE_MAX_GAP_PCT = 0.35  # BB 중간선 대비 현재가 최대 허용 갭 (%) - 초과 시 추격 매수 차단 (1.0->0.7)
+# [2026-08-24] uptrend_continuation(크로스 이벤트 없이 추세 지속만으로 진입) 경로 전용 추격 기준.
+# 017670 SK텔레콤 2026-08-24 13:12 반등 사례: uptrend_continuation 조건은 13:17에야 확정됐는데,
+# BB_MID가 후행지표라 그땐 이미 가격이 BB_MID_CHASE_MAX_GAP_PCT(0.35%)보다 멀리 가있어 재진입
+# 자체가 계속 막혔음(그 시간대엔 CHASE_BUY_BB_GAP 리젝만 반복). 이 경로에서는 BB_MID 갭 상한을
+# 넓히는 대신 RSI 과열 여부로 "아직 쫓아가도 되는 건강한 지속 구간"인지를 추가로 검증한다.
+UPTREND_CONT_CHASE_MAX_GAP_PCT = 0.6   # uptrend_continuation 진입 시 BB_MID 갭 상한 (%)
+UPTREND_CONT_CHASE_RSI_MAX = 75.0      # 이 값 이상이면 과열로 보고 차단
 BB_BUY_SCORE_THRESHOLD = 10  # 8->10: 2026-07-20 실매매 로그 분석 결과 score=8(구 임계값) 매수 6건이
   # 전부 손실(합계 -18,975원, 당일 총손실 -21,820원의 87%). score=9 매수 4건도 순손실(-2,295원).
   # score>=10 매수만 순이익 포함(GS +1,400원 익절 등, 순 -550원 vs 조정 전 -21,820원 전체손익).
@@ -488,7 +524,7 @@ ATR_PERIOD = 14
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = False  # NXT 세션 포함 운용 여부
+ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)
@@ -511,7 +547,7 @@ ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP = False
 MORNING_NXT_NEW_ENTRY_CUTOFF = MORNING_NXT_END
 
 # ---------------------------------------------------------------------------
-# Live execution operational parameters (r006_trade_live_execute) - 매매
+# Live execution operational parameters (r003_trade_live_execute) - 매매
 # 판단값이 아닌 시스템 운영(폴링 주기/백오프/재시도 등) 파라미터.
 # ---------------------------------------------------------------------------
 STARTUP_WARMUP_SECONDS = 90
@@ -546,7 +582,7 @@ BUY_ORDER_STALE_WARN_SECONDS = 60
 WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = 300
 
 # ---------------------------------------------------------------------------
-# Simulation parameters (r007_trade_simulate_by_date) - r006 실전 매매에는
+# Simulation parameters (g003_trade_simulate_by_date) - r006 실전 매매에는
 # 적용되지 않는 시뮬레이션 전용 값.
 # ---------------------------------------------------------------------------
 # 초기 시뮬레이션 자본금(KRW)
