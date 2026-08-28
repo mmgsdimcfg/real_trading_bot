@@ -18,6 +18,44 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-28] type=feat owner=claude
+    summary: run_3min_context_pipeline()/HYBRID_3MIN_CONTEXT_GATES 신규 추가 -
+      ENABLE_1MIN_TRIGGER_3MIN_CONTEXT(r001) 하이브리드 경로 전용. 403870 HPSP
+      2026-08-28 실매매 로그 분석 결과, run_buy_condition_pipeline_comment의
+      bb_mid_cross_up 게이트가 3분봉 종가 확정(최대 180초 지연) 시점에만 크로스를
+      인정하다 보니, 크로스가 확정된 그 순간엔 이미 candle_bullish_and_chase_guard의
+      갭 문턱(BB_MID_CHASE_MAX_GAP_PCT 등)을 넘어버려 신호는 났는데(cross_pass=True)
+      매번 CHASE_BUY_BB_GAP/CANDLE_NOT_BULLISH로 반려되는 패턴이 하루 중 2차례(09:09,
+      09:27) 반복 확인됨 - BB_MID가 3분봉 기준 후행지표라는 구조적 한계. 호출측(r003/
+      g003)이 1분봉 자체 기준(check_buy_condition_1min, 1분봉 자신의 open/BB로 크로스+
+      양봉+추격가드를 판정 - 트리거 프레임과 판정 기준 프레임을 일치시켜 "1분봉에서
+      막 크로스했는데 3분봉 open 대비로는 이미 갭 초과" 같은 불일치 재현을 방지)로
+      먼저 트리거를 확인한 뒤, 이 함수로 3분봉 컨텍스트(BB기울기/다운트렌드차단/매집봉/
+      BB상단여유/스토캐스틱/윌리엄스/유동성 + 가점 스코어)만 재검증하는 2단계 구조.
+      BUY_GATE_CONDITIONS/BUY_SCORE_RULES를 그대로 재사용해 판정 로직 드리프트 방지
+      (bb_mid_cross_up/candle_bullish_and_chase_guard 2개만 HYBRID_3MIN_CONTEXT_GATES에서
+      제외 - 1분봉 트리거가 이미 확인한 항목의 중복 판정 방지).
+    impact: common
+    compatibility: backward-compatible (신규 함수 추가만, ENABLE_1MIN_TRIGGER_3MIN_CONTEXT
+      기본값 False라 기존 경로 미사용 시 동작 변화 없음; r007 --date 20260828 --codes
+      403870 백테스트로 검증 필요 - r001 Update log 2026-08-28 참조)
+- [2026-08-26] type=fix owner=claude
+    summary: check_sell_condition()의 price_cross_down(라이브가 BB중심선 하향 돌파) 분기가
+      AUX_REVERSAL_SCORE 분기와 동일한 _sell_support_score를 쓰면서도 훨씬 느슨한 수익 요건을
+      쓰고 있던 불일치 수정. AUX_REVERSAL_SCORE 분기는 score 4/3/2에 각각 pnl>=0.3%/0.8%/1.5%를
+      요구하는데, price_cross_down 분기는 ma5_bb_down_cross_min_pnl(0.0%)만 넘으면 score>=2로
+      즉시 확정 매도였음 - 083650 비에이치아이 2026-08-26 실매매 로그에서 진입 자체가 BB중심선
+      근처 얕은 마진 진입(live=65,900 < bb_mid=65912.5)이었던 탓에 매수 14분 후 자연스러운
+      되돌림만으로 score=4, pnl≈0%가 되어 즉시 매도(LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_4) ->
+      -0.13% 손실 확정된 사례로 발견. pnl<=ma5_bb_down_cross_immediate_pnl(-0.7%) 하드손절
+      분기는 그대로 두고, score 기반(비-하드손절) 확정 매도에는 AUX_REVERSAL_SCORE와 동일한
+      점수별 최소수익 요건(aux_sell_min_pnl_score2/3/4)을 적용 - 미달 시
+      LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_SCORE_N으로 보류.
+    impact: common
+    compatibility: breaking (BB중심선 하향돌파 직후 손익분기점 근처 확정매도 빈도 감소 - 동일
+      신호가 진짜 하락추세로 이어지면 손절액이 더 커질 수 있으나, 얕은 되돌림 노이즈로 인한
+      조기 손절/이익축소는 줄어듦. r003 [SELL HOLD] 로그에 LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_SCORE
+      prefix 추가)
 - [2026-08-25] type=fix owner=claude
     summary: 2026-08-25 실매매 로그 분석(163k줄) 결과 필수조건 2-b(직전 매집봉 확인,
       NO_PRE_CROSS_ACCUM_BAR_LOOKBACK_5)가 크로스 이후 다운스트림 리젝 중 압도적 1위로
@@ -1174,6 +1212,66 @@ def run_buy_condition_pipeline_comment(
     return True, f"{trigger}_SCORE_{score}"
 
 
+# HYBRID_3MIN_CONTEXT_GATES: ENABLE_1MIN_TRIGGER_3MIN_CONTEXT(r001) 전용. 크로스 감지
+# (bb_mid_cross_up)와 캔들/추격가드(candle_bullish_and_chase_guard)는 호출측이 1분봉
+# 자체 기준(check_buy_condition_1min)으로 이미 확인했으므로 제외하고, 나머지 3분봉
+# 컨텍스트 게이트(추세/매집/공간/모멘텀/유동성)만 재사용한다.
+HYBRID_3MIN_CONTEXT_GATES: list[BuyGateCondition] = [
+    gate for gate in BUY_GATE_CONDITIONS
+    if gate.name not in ("bb_mid_cross_up", "candle_bullish_and_chase_guard")
+]
+
+
+def run_3min_context_pipeline(
+    frame: pd.DataFrame,
+    now: pd.Timestamp,
+    live_price: float,
+    cross_info: dict[str, object],
+    config: R76StrategyConfig,
+) -> tuple[bool, str]:
+    """ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 하이브리드 경로의 2단계: 1분봉 트리거(호출측에서
+    이미 확인 완료)가 통과된 뒤, 3분봉 상위 프레임에서 "아직 추세/유동성 컨텍스트가
+    우호적인가"만 재확인한다. bb_mid_cross_up/candle_bullish_and_chase_guard를 제외한
+    HYBRID_3MIN_CONTEXT_GATES + BUY_SCORE_RULES를 run_buy_condition_pipeline_comment와
+    동일하게 재사용해 판정 로직 드리프트를 방지한다(2026-08-28 r002 Update log 참조).
+    """
+    if len(frame) < 2:
+        return False, "HYBRID_3MIN_CTX_INSUFFICIENT_BARS"
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    cur_bb = _num(cur, "BB_MIDDLE")
+    cur_bb_upper = _num(cur, "BB_UPPER")
+    prev_bb = _num(prev, "BB_MIDDLE")
+
+    if any(pd.isna(v) for v in (cur_bb, cur_bb_upper, prev_bb)):
+        return False, "HYBRID_3MIN_CTX_MISSING_INDICATOR"
+
+    ctx = BuyEvalContext(
+        frame=frame, now=now, live_price=live_price, cross_info=cross_info, config=config,
+        cur=cur, prev=prev, cur_bb=cur_bb, cur_bb_upper=cur_bb_upper, prev_bb=prev_bb,
+        bb_slope_pct=_compute_bb_slope_pct(frame),
+    )
+
+    for gate in HYBRID_3MIN_CONTEXT_GATES:
+        passed, ctx, reason = gate.eval_fn(ctx)
+        if not passed:
+            return False, f"HYBRID_3MIN_CTX_{reason}"
+
+    score = sum(rule.eval_fn(ctx) for rule in BUY_SCORE_RULES)
+
+    # 개장 직후 보호는 run_buy_condition_pipeline_comment와 동일하게 유지 - 1분봉
+    # 트리거는 live_cross_up(실시간 돌파)만큼 즉각적이지 않으므로 예외 처리하지 않는다.
+    if now.hour == 9 and now.minute < OPENING_GUARD_MINUTES:
+        if score < OPENING_GUARD_SCORE_THRESHOLD:
+            return False, f"HYBRID_3MIN_CTX_OPENING_GUARD_{now.strftime('%H:%M')}_{score}_LT_{OPENING_GUARD_SCORE_THRESHOLD}"
+
+    if score < config.bb_buy_score_threshold:
+        return False, f"HYBRID_3MIN_CTX_LOW_SCORE_{score}_LT_{config.bb_buy_score_threshold}"
+
+    return True, f"HYBRID_3MIN_CTX_SCORE_{score}"
+
+
 def check_sell_condition(
     frame: pd.DataFrame,
     pnl_pct: float,
@@ -1206,10 +1304,32 @@ def check_sell_condition(
             )
 
         score = _sell_support_score(cur, prev, config)
-        if pnl_pct <= config.ma5_bb_down_cross_immediate_pnl or score >= config.ma5_bb_down_cross_immediate_score:
+        if pnl_pct <= config.ma5_bb_down_cross_immediate_pnl:
+            # 실손실이 하드 임계치까지 커졌으면 점수/수익 요건과 무관하게 즉시 손절.
             if score >= 1:
                 return True, f"LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_{score}"
             return True, "LIVE_PRICE_BB_DOWN_CROSS"
+
+        if score >= config.ma5_bb_down_cross_immediate_score:
+            # [2026-08-26] AUX_REVERSAL_SCORE 분기와 동일한 점수별 최소 수익 요건을 적용한다.
+            # 기존에는 ma5_bb_down_cross_min_pnl(0.0%, 위에서 이미 통과)만 넘으면 score>=2로
+            # 즉시 확정 매도였는데, 같은 _sell_support_score를 쓰는 AUX_REVERSAL_SCORE 분기는
+            # score4/3/2에 각각 0.3%/0.8%/1.5% 이상 실현수익을 요구한다 - 매수 직후 BB중심선
+            # 부근의 얕은 하향돌파(진입 자체가 BB중심선 근처 마진 진입일 때 자연스러운 되돌림)만
+            # 으로도 손익분기점 근처에서 바로 매도되던 문제(083650 비에이치아이 2026-08-26 사례:
+            # 매수 14분 후 pnl≈0%, score=4로 즉시 매도 후 -0.13% 손실 확정)를 이 분기도 동일한
+            # 수익 요건으로 맞춰 방지한다.
+            min_pnl_req = (
+                config.aux_sell_min_pnl_score4 if score >= 4
+                else config.aux_sell_min_pnl_score3 if score == 3
+                else config.aux_sell_min_pnl_score2
+            )
+            if pnl_pct >= min_pnl_req:
+                return True, f"LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_{score}"
+            return False, (
+                f"LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_SCORE_{score}_PNL_{pnl_pct * 100:.2f}%"
+                f"_LT_{min_pnl_req * 100:.2f}%"
+            )
         return False, f"LIVE_PRICE_BB_DOWN_CROSS_WEAK_SCORE_{score}"
 
     score = _sell_support_score(cur, prev, config)

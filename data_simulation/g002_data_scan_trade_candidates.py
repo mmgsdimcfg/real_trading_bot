@@ -7,8 +7,14 @@ Purpose:
 - Export picks used by live trading and simulation.
 
 Run examples:
-- python xgraph/auto_trading/g002_data_scan_trade_candidates.py --date 20260508
-- python xgraph/auto_trading/g002_data_scan_trade_candidates.py --date 20260508 --max-picks 20 --config balanced
+- python g002_data_scan_trade_candidates.py --date 20260508
+- python g002_data_scan_trade_candidates.py --date 20260508 --max-picks 20
+- python g002_data_scan_trade_candidates.py --date 20260508 --data-dir /path/to/data
+- python g002_data_scan_trade_candidates.py --date 20260508 --history-window 5
+- python g002_data_scan_trade_candidates.py --date 20260508 --export-watchlist --for-next-trading-day
+- python g002_data_scan_trade_candidates.py --date 20260508 --write-picks-alias
+  (--config is still accepted for compatibility but "balanced" is now the only preset - see
+  2026-08-27 changelog entry below)
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -17,6 +23,36 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-28] type=feat owner=copilot
+    summary: 실행 시 콘솔에 출력되던 print() 로그를 파일로도 저장하도록 변경 - _TeeStream으로
+      stdout을 콘솔+파일에 동시 기록. 저장 위치는 스캔 결과물(_scan_all.md 등)과 동일한
+      out_dir(data_root/YYYYMMDD, 해당 스캔 대상 날짜 폴더)이며, 파일명도 동일한 _{date}_
+      접두 규칙을 따르는 _{date}_scan.log. out_dir/output_prefix 산출 블록을 scan() 호출보다
+      앞으로 이동해 스캔 중 출력되는 진단 로그까지 전부 파일에 남도록 함.
+    impact: scanner
+    compatibility: backward-compatible (콘솔 출력 내용/순서는 그대로 유지, 파일 저장만 추가)
+- [2026-08-27] type=refactor owner=copilot
+    summary: 사용자 요청으로 ScannerConfig 프로파일을 balanced 단일 구성으로 통합.
+      (1) STRICT_CONFIG/RELAXED_CONFIG/INTRADAY_CONFIG 제거, CONFIG_MAP/DEFAULT_CONFIG/
+      --config 기본값을 balanced로 통일(기존 CLI 기본값은 intraday였음 - 문서화되지 않은
+      채 balanced가 아닌 intraday가 실제 기본 프로파일이었던 점 확인 후 정리).
+      (2) 중복 지표 정리: volume_trend_min_ratio(최근5일/직전5일 거래량비, soft flag 게이트
+      전용) 필드를 ScannerConfig에서 제거 - 이미 배점(22점 만점)에 쓰이던 vol_rel_strength
+      (최근5일/직전20일 거래량비, calc_volume_relative_strength)와 대상 기간만 다를 뿐
+      개념이 겹치고, config 값 자체는 soft flag 임계값 하나에만 쓰여 실효성이 낮았음.
+      volume_declining soft flag는 이제 vol_rel_strength<1.0 기준으로 판정(더 안정적인
+      20일 기준 사용, 별도 config 불필요).
+      (3) 온라인에서 자동매매/스크리닝에 흔히 추천되는 상승추세 확인 지표 2종 신규 추가:
+      RSI(14, Wilder, 로컬 데이터 이력 제약으로 ADX와 동일하게 period=10 사용 - calc_rsi())
+      와 이동평균 완전정배열(주가>MA5>MA20>MA60, ma_full_alignment). RSI는 50~70구간을
+      상승추세 확인 구간으로, 70 초과는 과매수로 보아 점수를 다시 낮추는 곡선 적용(널리
+      권고되는 "골든크로스+RSI 50~70 확인+ADX>20 필터" 조합 중 이미 있던 ADX/MA정렬에
+      RSI와 장기 MA정배열을 보강). 배점표 재조정(합계 100점 기준 유지, 아래 배점 함수
+      docstring 참조).
+    impact: scanner
+    compatibility: breaking (기본 프로파일이 intraday->balanced로 변경되어 동일 명령으로도
+      결과가 달라짐; strict/relaxed/intraday로 --config 지정 시 오류 발생; RSI/MA정배열
+      신규 배점과 배점표 재조정으로 점수 및 최종 picks 구성이 달라질 수 있음)
 - [2026-08-26] type=fix owner=copilot
     summary: _20260825_scan_all.md 검증 중 발견된 "상승추세 미확정" 종목 통과 문제 수정.
       (1) trend_state=="flat"을 down_trend와 동일하게 소프트플래그(-0.7점)에서 하드 배제로
@@ -218,7 +254,6 @@ class ScannerConfig:
     min_up_days_in_5: int           # minimum bullish candles (close > open) in last 5 days
     max_52w_high_ratio: float       # risk-zone threshold if price >= ratio * 52-week high
     max_prev_day_change: float      # exclude if previous day abs return >= this
-    volume_trend_min_ratio: float   # recent 5d avg vol / prior 5d avg vol minimum
     recent_pick_penalty_per_day: float  # score penalty per recent-day repeat
     recent_pick_penalty_lookback_days: int  # number of prior trading days to check
     diversified_pick_pool_mult: int  # top-pool multiplier for diversified sampling
@@ -226,82 +261,30 @@ class ScannerConfig:
     max_picks: int | None
 
 
-STRICT_CONFIG = ScannerConfig(
-    name="strict",
-    price_min=2_000,
-    price_max=1_000_000,
-    atr_ratio_min=0.015,            # 1.5% daily ATR minimum
-    amount_ma20_min=10_000_000_000,  # 100억원/일
-    min_listing_days=15,
-    min_up_days_in_5=3,
-    max_52w_high_ratio=0.90,        # 52주 고가 근접 리스크 구간 시작
-    max_prev_day_change=0.07,       # 전일 7% 이상 급등락 제외
-    volume_trend_min_ratio=1.0,     # 거래량 감소 종목 제외
-    recent_pick_penalty_per_day=3.2,
-    recent_pick_penalty_lookback_days=4,
-    diversified_pick_pool_mult=2,
-    max_picks=None,
-)
-
+# 2026-08-27: strict/relaxed/intraday 프로파일은 제거하고 balanced 단일 구성으로 통합
+# (사용자 요청 - 여러 프로파일을 유지/튜닝하는 대신 하나의 기본값에 집중). 과거 프로파일들의
+# 튜닝 이력은 위 update log에 남아있음.
 BALANCED_CONFIG = ScannerConfig(
     name="balanced",
-    price_min=2_000,
-    price_max=1_000_000,
-    atr_ratio_min=0.008,
-    amount_ma20_min=5_000_000_000,    # 50억원/일
-    min_listing_days=10,
-    min_up_days_in_5=2,
+    price_min=2_000,                # 최소 주가 2천원
+    price_max=1_000_000,             # 최대 주가 100만원
+    atr_ratio_min=0.008,             # 일일 ATR/종가 최소 0.8%
+    amount_ma20_min=20_000_000_000,    # 200억원/일
+    min_listing_days=10,             # 최소 상장(데이터 보유) 거래일수
+    min_up_days_in_5=3,               # 최근 5일 중 최소 양봉 일수
     max_52w_high_ratio=0.98,        # 강세장에서는 신고가 근접 허용폭 확대
-    max_prev_day_change=0.12,
-    volume_trend_min_ratio=1.0,
-    recent_pick_penalty_per_day=3.5,
-    recent_pick_penalty_lookback_days=4,
-    diversified_pick_pool_mult=3,
-    max_picks=50,
-)
-
-RELAXED_CONFIG = ScannerConfig(
-    name="relaxed",
-    price_min=2_000,
-    price_max=1_000_000,
-    atr_ratio_min=0.007,
-    amount_ma20_min=1_000_000_000,    # 10억원/일
-    min_listing_days=5,
-    min_up_days_in_5=1,
-    max_52w_high_ratio=0.97,        # 52주 고가 근접 리스크 구간 시작
-    max_prev_day_change=0.10,
-    volume_trend_min_ratio=0.8,
-    recent_pick_penalty_per_day=2.0,
-    recent_pick_penalty_lookback_days=3,
-    diversified_pick_pool_mult=4,
-    max_picks=20,
-)
-
-INTRADAY_CONFIG = ScannerConfig(
-    name="intraday",
-    price_min=4_000,              # 저가주 제외 (3000->4000, 유동성 부족 차단 강화)
-    price_max=500_000,
-    atr_ratio_min=0.010,          # 일중 1% 이상 변동 필수
-    amount_ma20_min=5_000_000_000, # 20억->50억원/일 (거래대금 기준 강화)
-    min_listing_days=10,          # 5->10거래일 (신뢰할 수 있는 기술적 지표 최소 기간)
-    min_up_days_in_5=3,           # 2->3: 5일 중 3일 이상 양봉 (우상향 필수)
-    max_52w_high_ratio=0.99,      # 52주 신고가 직전까지 허용
-    max_prev_day_change=0.09,     # 전일 12%->9% 이상 급등락 제외
-    volume_trend_min_ratio=1.0,   # 0.9->1.0: 거래량 증가 추세 필수 (감소 종목 배제)
-    recent_pick_penalty_per_day=3.0,
-    recent_pick_penalty_lookback_days=3,
-    diversified_pick_pool_mult=3,
-    max_picks=50,                 # 25->50 (반전 신호 종목 등 후보군 확대)
+    max_prev_day_change=0.20,        # 전일 등락률 20% 이상이면 제외
+    recent_pick_penalty_per_day=3.5,  # 최근 선정 반복 시 하루당 감점폭
+    recent_pick_penalty_lookback_days=4,  # 반복 선정 여부 확인 대상 과거 거래일수
+    diversified_pick_pool_mult=3,     # 분산 샘플링을 위한 상위 후보군 배수(max_picks 대비)
+    max_picks=50,                    # 최종 선정 종목 수 상한
 )
 
 CONFIG_MAP = {
-    "strict": STRICT_CONFIG,
     "balanced": BALANCED_CONFIG,
-    "relaxed": RELAXED_CONFIG,
-    "intraday": INTRADAY_CONFIG,
 }
 
-DEFAULT_CONFIG = INTRADAY_CONFIG
+DEFAULT_CONFIG = BALANCED_CONFIG
 DEFAULT_HISTORY_WINDOW = 0
 DAILY_LOOKBACK = 260  # trading days of history to load per stock
 MIN_REQUIRED_BARS = 1
@@ -310,6 +293,8 @@ SCORE_CUTOFF = 30.0
 LIQUIDITY_RELAX_FACTOR = 0.70
 LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 시장상대 비교와 무관하게 유동성 하드탈락 면제
 LOW_UP_DAYS_TOLERANCE = 1
+SCORE_DOT_SLOTS = 9         # verbose 스캔 로그의 점수 동그라미 고정폭(칸 수) - code_name 정렬용
+SCORE_DOT_EMPTY = "⚫"       # 빈 칸(탈락 전체, 후보의 남는 칸) 채움 아이콘
 FALLBACK_RELAXABLE_FAIL_REASONS = {
     "low_score", "liquidity_below_market_dual",
 }  # fallback may override only these; trend/candle-pattern fail_reasons block rescue
@@ -504,6 +489,24 @@ def calc_adx(daily_df, period=10):
     dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     adx = dx.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
     return adx, plus_di, minus_di
+
+
+def calc_rsi(daily_df, period=10):
+    """일봉 기준 RSI(Wilder's smoothing). ADX와 동일한 이유(2026-07-22 changelog: 로컬
+    데이터가 종목당 약 20봉이라 표준 period=14는 2*period 이중평활 요건상 NaN이 되기 쉬움)로
+    period=10을 기본값으로 사용한다. 이력이 `period` 미만이면 NaN이며, 호출자는 safe_float()
+    으로 마지막 값만 취한다.
+    """
+    close = daily_df["close"]
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    rsi = rsi.where(avg_loss != 0, 100.0)  # avg_loss==0(구간 내내 상승)이면 RSI=100
+    return rsi
 
 
 def safe_float(value):
@@ -841,7 +844,9 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "atr_ratio": None,
         "ma5": None,
         "ma20": None,
+        "ma60": None,
         "ma_gap": None,
+        "ma_full_alignment": False,
         "trend_state": "unknown",
         "vol_ma20": None,
         "amount_ma20": None,
@@ -855,6 +860,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "is_last_bearish": None,
         "close_3d_return": None,
         "adx": None,
+        "rsi": None,
         "relative_strength": None,
         "market": "unknown",
         "liquidity_amount_benchmark": None,
@@ -924,7 +930,14 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # Daily moving averages
     ma5 = safe_float(_check_df["close"].rolling(5, min_periods=1).mean().iloc[-1])
     ma20 = safe_float(_check_df["close"].rolling(20, min_periods=1).mean().iloc[-1])
+    ma60 = safe_float(_check_df["close"].rolling(60, min_periods=1).mean().iloc[-1])
     ma_gap = (ma5 - ma20) if (ma5 is not None and ma20 is not None) else None
+    # 이동평균 완전정배열(주가>MA5>MA20>MA60) - 여러 시간대에 걸친 구조적 상승추세 확인.
+    # 온라인 자동매매 조건에서 흔히 추천되는 지표(정배열/골든크로스)를 반영해 신규 추가.
+    ma_full_alignment = bool(
+        price is not None and ma5 is not None and ma20 is not None and ma60 is not None
+        and price > ma5 > ma20 > ma60
+    )
 
     # Consecutive up days: close > open in last 5 trading days
     last5 = _check_df.tail(5)
@@ -938,6 +951,11 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # ADX(14, daily) - 추세강도 (점수 산정용)
     adx_series, _plus_di_series, _minus_di_series = calc_adx(_check_df)
     adx = safe_float(adx_series.iloc[-1]) if adx_series is not None and not adx_series.empty else None
+
+    # RSI(10, daily) - 상승추세 확인용 (점수 산정용). 50~70구간을 상승추세 확인 구간으로,
+    # 70 초과는 과매수(조정 리스크)로 보아 점수 곡선을 다시 낮춘다(calculate_candidate_score).
+    rsi_series = calc_rsi(_check_df)
+    rsi = safe_float(rsi_series.iloc[-1]) if rsi_series is not None and not rsi_series.empty else None
 
     # RS(20일, 시장대비 상대강도) - market_map/market_index_series가 없거나(pykrx 미설치 등)
     # 데이터가 부족하면 None -> 점수 계산에서 중립(0점) 처리됨.
@@ -1005,7 +1023,9 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "atr_ratio": atr_ratio,
         "ma5": ma5,
         "ma20": ma20,
+        "ma60": ma60,
         "ma_gap": ma_gap,
+        "ma_full_alignment": ma_full_alignment,
         "trend_state": trend_state,
         "vol_ma20": vol_ma20,
         "amount_ma20": amount_ma20,
@@ -1019,6 +1039,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "is_last_bearish": is_last_bearish,
         "close_3d_return": close_3d_return,
         "adx": adx,
+        "rsi": rsi,
         "relative_strength": relative_strength,
     })
 
@@ -1133,10 +1154,18 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     if len(daily_df) >= 5 and up_days_in_5 < min_up_days_required:
         candidate["soft_flags"].append("low_up_days_warning")
 
-    # volume_trend_min_ratio 미달 종목 - 소프트 경고로 완화 (2026-07-22: 하드필터 -> 소프트플래그)
-    # 거래량 감소 추세면 단기 모멘텀상 불리하지만, 즉시 배제 대신 점수 페널티로 반영
-    if vol_trend_ratio is not None and vol_trend_ratio < config.volume_trend_min_ratio:
+    # 거래량 감소 종목 - 소프트 경고 (2026-07-22: 하드필터 -> 소프트플래그).
+    # 2026-08-27: 판정 기준을 vol_rel_strength(최근5일/직전20일, 이미 배점에도 쓰이는 지표)로
+    # 통일 - 기존에 쓰던 vol_trend_ratio(최근5일/직전5일) + 별도 config 임계값은 개념이 겹치는
+    # 중복 지표였음(위 changelog 참조). 1.0 미만(최근 거래량이 직전 20일 평균보다 적음)이면 플래그.
+    if vol_rel_strength is not None and vol_rel_strength < 1.0:
         candidate["soft_flags"].append("volume_declining")
+
+    # RSI 과매수 경고 - 상승추세 확인 구간(50~70)을 넘어선 과열 신호. 점수 곡선에서 이미
+    # 감점되지만(calculate_candidate_score), 다른 소프트플래그와 동일하게 리포트에 노출하고
+    # 타이브레이커 페널티(-0.7)에도 반영한다.
+    if rsi is not None and rsi > 75.0:
+        candidate["soft_flags"].append("rsi_overbought")
 
     # --- Soft flags (warning only, not disqualified) ---
     # (flat_trend은 위에서 하드 필터로 승격됨 - 여기서 중복 추가하지 않음)
@@ -1163,9 +1192,14 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
 
 def calculate_candidate_score(candidate, config):
-    """배점표 (2026-07-22 재설계, 합계 100점):
-    거래량22 + 거래대금20 + ATR18 + RS15 + ADX10 + MA정렬±8 + 3일모멘텀±5 + 가격대2
+    """배점표 (2026-08-27 재조정, 합계 100점):
+    거래량18 + 거래대금18 + ATR16 + RS13 + ADX6 + MA단기정렬±8 + MA완전정배열+6(신규)
+    + RSI10±8(신규) + 3일모멘텀±5 + 가격대2
     + 각종 페널티(전일음봉/52주과열/전일급등/최근반복선정/소프트플래그 개수).
+
+    RSI/MA완전정배열은 온라인에서 널리 추천되는 상승추세 확인 조합(골든크로스/정배열 +
+    RSI 50~70 확인 + ADX로 추세강도 필터)을 보강하기 위해 2026-08-27 추가됨 - 기존 항목
+    (거래량/거래대금/ATR/RS/ADX/MA단기정렬/모멘텀)의 배점을 소폭씩 줄여 합계 100점을 유지.
     """
     price = candidate.get("price")
     atr_ratio = candidate.get("atr_ratio")
@@ -1176,6 +1210,8 @@ def calculate_candidate_score(candidate, config):
     vol_rel_strength = candidate.get("vol_rel_strength")
     relative_strength = candidate.get("relative_strength")
     adx = candidate.get("adx")
+    rsi = candidate.get("rsi")
+    ma_full_alignment = bool(candidate.get("ma_full_alignment"))
     high_52w_ratio = candidate.get("high_52w_ratio")
     near_52w_high_override = bool(candidate.get("near_52w_high_override"))
     prev_day_change = candidate.get("prev_day_change")
@@ -1187,48 +1223,68 @@ def calculate_candidate_score(candidate, config):
 
     score = 0.0
 
-    # 1) 거래량 (max 22): 최근 5일 평균거래량 vs 이전 20일 평균거래량 상대강도.
+    # 1) 거래량 (max 18): 최근 5일 평균거래량 vs 이전 20일 평균거래량 상대강도.
     # 1.0=중립, 0.8 미만은 기여 거의 없음, 1.8 이상에서 포화.
     if vol_rel_strength is not None:
-        score += max(0.0, min(22.0, (vol_rel_strength - 0.8) * 22.0))
+        score += max(0.0, min(18.0, (vol_rel_strength - 0.8) * 18.0))
 
-    # 2) 거래대금 (max 20): 시장/설정 벤치마크 대비 로그스케일.
+    # 2) 거래대금 (max 18): 시장/설정 벤치마크 대비 로그스케일.
     amount_benchmark = candidate.get("liquidity_amount_benchmark")
     if amount_benchmark in (None, 0):
         amount_benchmark = config.amount_ma20_min
     amt_ratio = max(0.0, amount_ma20 / max(1.0, float(amount_benchmark)))
-    score += min(20.0, 10.0 * math.log1p(amt_ratio * 1.6))
+    score += min(18.0, 9.0 * math.log1p(amt_ratio * 1.6))
 
-    # 3) ATR (max 18): 변동성, 문턱값 대비 로그스케일.
+    # 3) ATR (max 16): 변동성, 문턱값 대비 로그스케일.
     atr_ratio_norm = max(0.0, atr_ratio / config.atr_ratio_min)
-    score += min(18.0, 8.2 * math.log1p(atr_ratio_norm * 1.8))
+    score += min(16.0, 7.3 * math.log1p(atr_ratio_norm * 1.8))
 
-    # 4) RS (max 15): 시장(KOSPI/KOSDAQ) 대비 20일 상대강도(%p). 0%p=시장과 동일,
-    # +15%p 이상이면 포화. pykrx 미설치 등으로 계산 불가 시 데이터 부재로 인한 불이익을
-    # 피하기 위해 중립 절반점(7.5)을 부여한다(0점 처리 시 후보가 구조적으로 불리해짐).
+    # 4) RS (max 13): 시장(KOSPI/KOSDAQ) 대비 20일 상대강도(%p). 0%p=시장과 동일,
+    # +13%p 이상이면 포화. pykrx 미설치 등으로 계산 불가 시 데이터 부재로 인한 불이익을
+    # 피하기 위해 중립 절반점(6.5)을 부여한다(0점 처리 시 후보가 구조적으로 불리해짐).
     if relative_strength is not None:
-        score += max(0.0, min(15.0, relative_strength * 1.0))
+        score += max(0.0, min(13.0, relative_strength * 1.0))
     else:
-        score += 7.5
+        score += 6.5
 
-    # 5) ADX (max 10, period=10): 일봉 추세강도. 15 이하는 무추세(기여 0), 40 이상에서 포화.
-    # 이력 부족(2*period 미만)으로 계산 불가 시 중립 절반점(5.0) 부여.
+    # 5) ADX (max 6, period=10): 일봉 추세강도. 15 이하는 무추세(기여 0), 40 이상에서 포화.
+    # 이력 부족(2*period 미만)으로 계산 불가 시 중립 절반점(3.0) 부여.
     if adx is not None:
-        score += max(0.0, min(10.0, (adx - 15.0) * (10.0 / 25.0)))
+        score += max(0.0, min(6.0, (adx - 15.0) * (6.0 / 25.0)))
     else:
-        score += 5.0
+        score += 3.0
 
-    # 6) MA 정렬 (±8): MA5/MA20 비율.
+    # 6) MA 단기정렬 (±8): MA5/MA20 비율.
     if ma5 is not None and ma20 not in (None, 0):
         trend_ratio = (ma5 / ma20) - 1.0
         score += max(-8.0, min(8.0, trend_ratio * 336.0))
 
-    # 7) 3일 모멘텀 (±5): 단기 상승 탄력 평가.
+    # 6b) MA 완전정배열 (0~6, 신규): 주가>MA5>MA20>MA60이면 다중 시간대 상승추세 구조로
+    # 보아 보너스. 국내 자동매매 조건검색식에서 흔히 쓰이는 "정배열" 조건 반영. 페널티는
+    # 없음(미충족 시 0점) - MA단기정렬 항목이 이미 역배열을 감점하므로 중복 페널티 방지.
+    if ma_full_alignment:
+        score += 6.0
+
+    # 7) RSI (0~8, 신규, period=10): 50~70구간을 상승추세 확인 구간으로 최고점(8) 부여,
+    # 50 미만은 선형으로 줄어들어 0에 수렴, 70 초과는 과매수로 보아 다시 감점(90 이상에서
+    # 0으로 수렴). 온라인에서 흔히 권고되는 "RSI 50~70 확인" 조건 반영. 이력 부족으로 계산
+    # 불가 시 중립 절반점(4.0) 부여(ADX/RS와 동일한 관례).
+    if rsi is not None:
+        if rsi < 50.0:
+            score += max(0.0, (rsi / 50.0) * 4.0)
+        elif rsi <= 70.0:
+            score += 4.0 + ((rsi - 50.0) / 20.0) * 4.0
+        else:
+            score += max(0.0, 8.0 - (rsi - 70.0) * 0.4)
+    else:
+        score += 4.0
+
+    # 8) 3일 모멘텀 (±5): 단기 상승 탄력 평가.
     close_3d_return = candidate.get("close_3d_return")
     if close_3d_return is not None:
         score += max(-5.0, min(5.0, close_3d_return * 60))
 
-    # 8) 가격대 선호 (max 2): 거래 편의성 위주 소폭 가점.
+    # 9) 가격대 선호 (max 2): 거래 편의성 위주 소폭 가점.
     if price <= config.price_max:
         pref = 1.0 - min(1.0, max(0.0, (price - config.price_min) / max(1.0, (200_000 - config.price_min))))
         score += 1.0 + (1.0 * pref)
@@ -1392,8 +1448,8 @@ def pick_with_tie_randomization(sorted_rows, max_picks, rng):
 def render_ranked_csv(selected_rows):
     header = (
         "rank,code,name,score,price,atr_ratio,vol_ma20,amount_ma20,"
-        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,"
-        "listing_days,prev_day_change,repeat_recent_days,adx,relative_strength"
+        "trend_state,ma_gap,ma_full_alignment,up_days_in_5,vol_trend_ratio,high_52w_ratio,"
+        "listing_days,prev_day_change,repeat_recent_days,adx,rsi,relative_strength"
     )
     lines = [header]
     for rank, row in enumerate(selected_rows, start=1):
@@ -1408,6 +1464,7 @@ def render_ranked_csv(selected_rows):
             format_metric(row["amount_ma20"], 0).replace(",", ""),
             row["trend_state"],
             f"{row['ma_gap']:.2f}" if row["ma_gap"] is not None else "",
+            "Y" if row.get("ma_full_alignment") else "N",
             str(row.get("up_days_in_5", 0)),
             f"{row['vol_trend_ratio']:.3f}" if row.get("vol_trend_ratio") is not None else "",
             f"{row['high_52w_ratio']:.3f}" if row.get("high_52w_ratio") is not None else "",
@@ -1415,6 +1472,7 @@ def render_ranked_csv(selected_rows):
             f"{row['prev_day_change']:.4f}" if row.get("prev_day_change") is not None else "",
             str(row.get("repeat_recent_days", 0)),
             f"{row['adx']:.1f}" if row.get("adx") is not None else "",
+            f"{row['rsi']:.1f}" if row.get("rsi") is not None else "",
             f"{row['relative_strength']:.2f}" if row.get("relative_strength") is not None else "",
         ]))
     return "\n".join(lines)
@@ -1423,8 +1481,8 @@ def render_ranked_csv(selected_rows):
 def render_all_scan_csv(all_rows):
     header = (
         "rank,code,name,eligible,skip_reason,fail_reasons,soft_flags,score,price,atr_ratio,vol_ma20,amount_ma20,"
-        "trend_state,ma_gap,up_days_in_5,vol_trend_ratio,high_52w_ratio,listing_days,prev_day_change,repeat_recent_days,"
-        "adx,relative_strength"
+        "trend_state,ma_gap,ma_full_alignment,up_days_in_5,vol_trend_ratio,high_52w_ratio,listing_days,prev_day_change,repeat_recent_days,"
+        "adx,rsi,relative_strength"
     )
     lines = [header]
     for rank, row in enumerate(all_rows, start=1):
@@ -1445,6 +1503,7 @@ def render_all_scan_csv(all_rows):
             format_metric(row.get("amount_ma20"), 0).replace(",", "") if row.get("amount_ma20") is not None else "",
             str(row.get("trend_state") or ""),
             f"{row.get('ma_gap'):.2f}" if row.get("ma_gap") is not None else "",
+            "Y" if row.get("ma_full_alignment") else "N",
             str(row.get("up_days_in_5") if row.get("up_days_in_5") is not None else ""),
             f"{row.get('vol_trend_ratio'):.3f}" if row.get("vol_trend_ratio") is not None else "",
             f"{row.get('high_52w_ratio'):.3f}" if row.get("high_52w_ratio") is not None else "",
@@ -1452,6 +1511,7 @@ def render_all_scan_csv(all_rows):
             f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
             str(row.get("repeat_recent_days") if row.get("repeat_recent_days") is not None else ""),
             f"{row.get('adx'):.1f}" if row.get("adx") is not None else "",
+            f"{row.get('rsi'):.1f}" if row.get("rsi") is not None else "",
             f"{row.get('relative_strength'):.2f}" if row.get("relative_strength") is not None else "",
         ]))
     return "\n".join(lines)
@@ -1460,8 +1520,8 @@ def render_all_scan_csv(all_rows):
 def render_all_scan_markdown(all_rows):
     headers = [
         "rank", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
-        "trend_state", "ma_gap", "up_days_in_5", "high_52w_ratio", "listing_days", "prev_day_change", "repeat_recent_days",
-        "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "relative_strength",
+        "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "listing_days", "prev_day_change", "repeat_recent_days",
+        "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "rsi", "relative_strength",
     ]
 
     lines = [
@@ -1483,6 +1543,7 @@ def render_all_scan_markdown(all_rows):
             format_metric(row.get("amount_ma20"), 0).replace(",", "") if row.get("amount_ma20") is not None else "",
             str(row.get("trend_state") or ""),
             f"{row.get('ma_gap'):.2f}" if row.get("ma_gap") is not None else "",
+            "Y" if row.get("ma_full_alignment") else "N",
             str(row.get("up_days_in_5") if row.get("up_days_in_5") is not None else ""),
             f"{row.get('high_52w_ratio'):.3f}" if row.get("high_52w_ratio") is not None else "",
             str(row.get("listing_days") if row.get("listing_days") is not None else ""),
@@ -1494,6 +1555,7 @@ def render_all_scan_markdown(all_rows):
             str(row.get("skip_reason") or ""),
             f"{row.get('vol_trend_ratio'):.3f}" if row.get("vol_trend_ratio") is not None else "",
             f"{row.get('adx'):.1f}" if row.get("adx") is not None else "",
+            f"{row.get('rsi'):.1f}" if row.get("rsi") is not None else "",
             f"{row.get('relative_strength'):.2f}" if row.get("relative_strength") is not None else "",
         ]
         sanitized = [str(value).replace("|", "\\|") for value in values]
@@ -1549,7 +1611,6 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         f"- min up days in 5: {config.min_up_days_in_5}",
         f"- max 52w high ratio: {config.max_52w_high_ratio}",
         f"- max prev day change: {config.max_prev_day_change:.1%}",
-        f"- volume trend min ratio: {config.volume_trend_min_ratio}",
         f"- recent pick penalty/day: {config.recent_pick_penalty_per_day}",
         f"- recent pick lookback days: {config.recent_pick_penalty_lookback_days}",
         f"- diversified pick pool x: {config.diversified_pick_pool_mult}",
@@ -1564,13 +1625,13 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         "",
         "## Ranked Picks",
         "",
-        "| rank | code | name | score | price | ATR/price | vol MA20 | amount MA20 | trend | up/5 | vol trend | 52w pos | listing | repeat(d) |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| rank | code | name | score | price | ATR/price | vol MA20 | amount MA20 | trend | MA정배열 | RSI | up/5 | vol trend | 52w pos | listing | repeat(d) |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, row in enumerate(scan_result["selected_rows"], start=1):
         lines.append(
-            "| {rank} | {code} | {name} | {score:.2f} | {price} | {atr} | {vol} | {amt} | {trend} | {up} | {vtd} | {h52w} | {listing} | {repeat} |".format(
+            "| {rank} | {code} | {name} | {score:.2f} | {price} | {atr} | {vol} | {amt} | {trend} | {align} | {rsi} | {up} | {vtd} | {h52w} | {listing} | {repeat} |".format(
                 rank=rank,
                 code=row["code"],
                 name=row["name"],
@@ -1580,6 +1641,8 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
                 vol=format_metric(row["vol_ma20"], 0),
                 amt=format_metric(row["amount_ma20"], 0),
                 trend=row["trend_state"],
+                align="Y" if row.get("ma_full_alignment") else "N",
+                rsi=f"{row['rsi']:.1f}" if row.get("rsi") is not None else "-",
                 up=row.get("up_days_in_5", "-"),
                 vtd=f"{row['vol_trend_ratio']:.2f}" if row.get("vol_trend_ratio") is not None else "-",
                 h52w=f"{row['high_52w_ratio']:.1%}" if row.get("high_52w_ratio") is not None else "-",
@@ -2008,18 +2071,25 @@ def scan(
         candidates.append(candidate)
 
         if verbose:
+            # 동그라미 아이콘을 SCORE_DOT_SLOTS(9)칸 고정폭으로 표시해 code_name 정렬을 맞춘다.
+            # 후보: score/10(반올림, 최대 9칸) 만큼 등급별 색상으로 채우고 남는 칸은 빈 원.
+            # 탈락: 9칸 모두 빈 원. (2026-08-28)
             if candidate["eligible"]:
-                # score 기반으로 🟢 개수 계산 (10점당 1개, 반올림, 최소 0개)
-                green_dots_count = max(0, round(candidate["score"] / 10.0))
-                green_dots = "🟢" * green_dots_count
-                
-                # 🟢 개수가 0개일 경우 가독성을 위해 공백 한 칸 유지
-                dots_str = f" {green_dots}" if green_dots else ""
-                
-                print(f"[{idx}/{total}] {code}_{name}{dots_str} [후보] (score={candidate['score']:.2f})          ")
+                filled_count = min(SCORE_DOT_SLOTS, max(0, round(candidate["score"] / 10.0)))
+                if filled_count <= 3:
+                    dot_icon = "🔴"
+                elif filled_count <= 5:
+                    dot_icon = "🟡"
+                elif filled_count <= 7:
+                    dot_icon = "🟢"
+                else:
+                    dot_icon = "⚪"
+                dots = dot_icon * filled_count + SCORE_DOT_EMPTY * (SCORE_DOT_SLOTS - filled_count)
+                print(f"[{idx:04d}/{total}] {dots} {code}_{name} (score={candidate['score']:.2f})          ")
             else:
+                dots = SCORE_DOT_EMPTY * SCORE_DOT_SLOTS
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
-                print(f"[{idx}/{total}] {code}_{name} [탈락] ({', '.join(reasons)})          ")
+                print(f"[{idx:04d}/{total}] {dots} {code}_{name} ({', '.join(reasons)})          ")
 
     liquidity_filter_info = apply_market_relative_liquidity_filters(candidates, market_map)
 
@@ -2138,9 +2208,9 @@ def parse_args():
     parser.add_argument("--date", type=str, default=None, help="Base date (YYYYMMDD)")
     parser.add_argument("--data-dir", type=str, default=None, help="Root data folder (default: data/)")
     parser.add_argument(
-        "--config", type=str, default="intraday",
+        "--config", type=str, default="balanced",
         choices=list(CONFIG_MAP.keys()),
-        help="Scanner config preset",
+        help="Scanner config preset (only 'balanced' remains as of 2026-08-27)",
     )
     parser.add_argument("--max-picks", type=int, default=None, help="Override config max_picks")
     parser.add_argument(
@@ -2176,6 +2246,21 @@ def parse_args():
     return parser.parse_args()
 
 
+class _TeeStream:
+    """print() 출력을 콘솔과 로그 파일에 동시에 기록하기 위한 stdout 복제기."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
 if __name__ == "__main__":
     args = parse_args()
 
@@ -2205,6 +2290,31 @@ if __name__ == "__main__":
             print(f"[INFO] {target_date_str}은(는) 거래 없는 날(공휴일)입니다. {adjusted}로 조정합니다.")
             effective_target_date = datetime.strptime(adjusted, "%Y%m%d")
 
+    # Determine output directory (스캔 실행 전에 먼저 정해야 실행 로그도 같은 폴더에 남길 수 있음)
+    if effective_target_date:
+        out_dir = data_root / effective_target_date.strftime("%Y%m%d")
+        out_dir.mkdir(exist_ok=True)
+    else:
+        date_dirs = sorted(
+            d for d in data_root.iterdir()
+            if d.is_dir() and d.name.isdigit() and len(d.name) == 8
+        )
+        out_dir = date_dirs[-1] if date_dirs else data_root
+
+    output_prefix = ""
+    if effective_target_date:
+        output_prefix = effective_target_date.strftime("%Y%m%d")
+    elif out_dir.name.isdigit() and len(out_dir.name) == 8:
+        output_prefix = out_dir.name
+
+    # 실행 로그(print 출력 전체)를 해당 날짜 폴더에 저장 - 다른 산출물(_scan_all.md 등)과
+    # 동일한 _{date}_ 접두 규칙을 따른다.
+    log_filename = f"_{output_prefix}_scan.log" if output_prefix else "_scan.log"
+    log_file_path = out_dir / log_filename
+    log_fp = open(log_file_path, "w", encoding="utf-8", buffering=1)
+    sys.stdout = _TeeStream(sys.__stdout__, log_fp)
+    print(f"[INFO] 실행 로그 저장 위치: {log_file_path}")
+
     stock_list = load_symbols()
     stock_list = filter_stock_list_by_existing_data(stock_list, data_root)
     stock_list = filter_stock_list_by_min_bars(
@@ -2230,23 +2340,6 @@ if __name__ == "__main__":
     comparison_rows = []
     if args.history_window > 0:
         comparison_rows = build_history_comparison(data_root, stock_list, history_window=args.history_window)
-
-    # Determine output directory
-    if effective_target_date:
-        out_dir = data_root / effective_target_date.strftime("%Y%m%d")
-        out_dir.mkdir(exist_ok=True)
-    else:
-        date_dirs = sorted(
-            d for d in data_root.iterdir()
-            if d.is_dir() and d.name.isdigit() and len(d.name) == 8
-        )
-        out_dir = date_dirs[-1] if date_dirs else data_root
-
-    output_prefix = ""
-    if effective_target_date:
-        output_prefix = effective_target_date.strftime("%Y%m%d")
-    elif out_dir.name.isdigit() and len(out_dir.name) == 8:
-        output_prefix = out_dir.name
 
     picks_filename = f"_{output_prefix}_picks.txt" if output_prefix else "_picks.txt"
     ranked_filename = f"_{output_prefix}_ranked.txt" if output_prefix else "_ranked.txt"
@@ -2311,6 +2404,9 @@ if __name__ == "__main__":
             print(pick)
     else:
         print("(없음)")
+
+    sys.stdout = sys.__stdout__
+    log_fp.close()
 
 
 

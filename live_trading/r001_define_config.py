@@ -1,6 +1,34 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-08-28] type=feat owner=claude
+#     summary: BUY_ORDER_REPRICE_AFTER_SECONDS/MAX_ATTEMPTS/MAX_CHASE_PCT 신규 추가 -
+#       place_buy_order()가 매수1호가(최우선 매수호가) 순수 지정가로만 주문을 내다 보니
+#       (매도 정규장은 이미 시장가를 쓰는 것과 비대칭) 방금 돌파한 종목처럼 가격이 계속
+#       올라가는 경우 영원히 미체결로 남는 문제 발견(000720 현대건설 2026-08-28 13:14
+#       사례: 500초 넘게 미체결, [BUY STALE] 경고만 반복되고 실제 조치는 없었음). 10초마다
+#       취소 후 더 공격적인 가격(1차 신선한 매수1호가 -> 2차 매도1호가 -> 최종 시장가)으로
+#       최대 3회 재주문하되, 최초 신호가 대비 0.5%를 넘는 후보가는 추격을 포기하고 취소만
+#       한다(r002 추격매수 방지 게이트와 동일 철학 - 재시도가 그 게이트들을 무력화하지
+#       않도록). 상세 배경/설계는 이 상수 정의부 및 r003 Update log 2026-08-28 참조.
+#     impact: live
+#     compatibility: backward-compatible (미체결 상태에서만 개입, 체결/취소 판정 로직
+#       자체는 그대로 - 다만 place_buy_order()가 내는 지정가 자체는 항상 매수1호가라는
+#       근본 동작은 안 바뀜, 이건 미체결 "이후" 대응만 추가한 것)
+# - [2026-08-28] type=feat owner=claude
+#     summary: ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 신규 추가 - 1분봉 골든크로스를 트리거로,
+#       3분봉(BB기울기/다운트렌드/매집봉/BB상단여유/스토캐스틱/윌리엄스/유동성+가점)을
+#       컨텍스트 필터로 쓰는 하이브리드 3번째 경로. 403870 HPSP 2026-08-28 실매매
+#       로그에서 3분봉 크로스 확정 지연으로 인한 반복 추격매수 반려(09:09, 09:27) 확인 후
+#       추가. 상세 배경/설계는 이 플래그 정의부 및 r002 Update log 2026-08-28 참조.
+#       1차 검증(트리거를 check_buy_condition_1min 그대로 재사용)은 매수 0건으로 실패 -
+#       원인은 순서가 아니라 1분봉 단일봉 크로스 판정(룩백 없음)이었음. HYBRID_1MIN_TRIGGER_*
+#       전용 상수(룩백 3봉 + 완화된 캔들/추격 문턱) 신설 후 2차 검증에서 09:07 매수/09:25
+#       매도 +2.19% 1건 체결 성공(상세는 이 플래그 정의부 참조) - 단 n=1 검증이라 기본값은
+#       False 유지, 다일자/다종목 백테스트로 일반화 확인 후 전환 권장.
+#     impact: common
+#     compatibility: backward-compatible (기본값 False, 기존 경로 동작 변화 없음; 다른
+#       날짜/종목 다건 백테스트로 일반화 여부 확인 전까지 opt-in 유지)
 # - [2026-08-25] type=fix owner=claude
 #     summary: 2026-08-25 실매매 로그 분석 결과 필수조건 2-b(직전 매집봉 확인)가 크로스 이후
 #       다운스트림 리젝의 압도적 1위(정규화 기준 1,284건/블록시간 2,385분, 2위인 CHASE_BUY_BB_GAP
@@ -456,6 +484,57 @@ ENTRY_PREV_HIGH_BREAKOUT_SCORE = 2    # Close > 직전 ENTRY_PREV_HIGH_LOOKBACK_
 ENTRY_VOLUME_ABOVE_MA_SCORE = 2       # Volume > VOL_MA20 (1분봉 기준)
 ENTRY_SCORE_THRESHOLD = 5             # 만점 7점 중 5점 이상 (3분봉이 이미 엄격해 완화적으로 시작)
 
+# --- 12-c. 1분봉 트리거 + 3분봉 컨텍스트 하이브리드 (섹션 12/12-b와 별개 3번째 경로) ---
+# 섹션 12(ENABLE_1MIN_GOLDEN_CROSS_BUY)는 1분봉이 3분봉을 완전히 대체하고, 섹션
+# 12-b(ENABLE_1MIN_ENTRY_SCORE_GATE)는 3분봉 필수조건 통과 "이후"에만 1분봉을 보조로
+# 확인한다 - 즉 3분봉의 bb_mid_cross_up/candle_bullish_and_chase_guard 게이트에서
+# 막히면 1분봉 확인 자체가 실행되지 않는다. 2026-08-28 HPSP(403870) 실매매 로그 분석
+# 결과, BB_MID(3분봉)가 후행지표라 크로스가 "확정"되는 시점엔 이미 가격이 추격매수
+# 갭 문턱(BB_MID_CHASE_MAX_GAP_PCT)을 넘어있어 신호 자체는 났는데(cross_pass=True)
+# 매번 CHASE_BUY_BB_GAP/CANDLE_NOT_BULLISH로 반려되는 패턴이 반복 확인됨(09:09, 09:27
+# 두 차례). 이 플래그가 True면 순서를 뒤집는다: (1) 1분봉 자체 골든크로스+양봉+추격가드
+# (check_buy_condition_1min, 1분봉 자신의 open/BB를 기준점으로 판정 - 트리거 시점과
+# 판정 기준 프레임 불일치 방지)를 트리거로 먼저 확인하고, (2) 통과 시에만 3분봉을
+# 컨텍스트 필터(HYBRID_3MIN_CONTEXT_GATES = BUY_GATE_CONDITIONS 중 bb_mid_cross_up/
+# candle_bullish_and_chase_guard 2개를 제외한 나머지 - BB기울기/다운트렌드차단/매집봉/
+# BB상단여유/스토캐스틱/윌리엄스/유동성 + 가점 스코어)로 재확인한다. 크로스 감지가
+# 최대 2분 빨라져 gap이 작을 때 신호가 뜨므로 추격가드 반려가 줄어들 것으로 기대되나,
+# 1분봉은 3분봉보다 휩쏘(가짜 돌파)에 약해 오탐이 늘 수도 있음.
+# True 활성화 시 ENABLE_1MIN_ENTRY_SCORE_GATE(12-b)는 자동으로 건너뛴다(같은 1분봉
+# 트리거를 이미 확인했으므로 중복 게이트로 과도하게 좁아지는 것을 방지).
+# 2026-08-28 1차 검증(r007 --date 20260828 --codes 403870, check_buy_condition_1min을
+# 트리거로 그대로 재사용): 여전히 매수 0건. 리젝 사유 분석 결과 진짜 병목은 트리거
+# 순서가 아니라 check_buy_condition_1min의 require_fresh_cross가 "바로 이 1분봉"만
+# 인정하는 단일봉 판정이었음(469/507건이 1MIN_NO_BB_MID_GOLDEN_CROSS) - 3분봉의
+# 5봉 룩백+우상향지속 관용도가 1분봉에는 전혀 없었던 것. 실제로 크로스가 잡힌 소수
+# 케이스도 3분봉과 동일한 CANDLE_GAIN_MAX_PCT(0.8%)/BB_MID_CHASE_MAX_GAP_PCT(0.35%)를
+# 1분봉에 그대로 적용하다 보니 HPSP처럼 빠른 종목은 그마저도 초과(0.87~1.67%)해 반려됨.
+# 이에 HYBRID_1MIN_TRIGGER_* 전용 상수(아래)를 신설 - check_buy_condition_1min(섹션12
+# 전용, 원본 그대로 유지)과 분리된 check_buy_condition_1min_hybrid_trigger가 사용한다.
+# 2026-08-28 2차 검증(위 HYBRID_1MIN_TRIGGER_* 완화 적용 후 동일 백테스트 재실행):
+# 09:07 매수(51,325)/09:25 매도(52,450) +2.19%(+10,125 KRW) 1건 체결 성공 - 기존
+# 3분봉 경로/1차 하이브리드 모두 하루 종일 매수 0건이었던 종목에서 최초로 체결됨.
+# 단 단일 종목·단일 일자(n=1) 검증이라 과최적화 위험이 있음 - 기본값은 False로 유지,
+# 다른 날짜/종목 다건 백테스트로 일반화 여부를 추가 확인한 뒤에만 True 전환 권장.
+# 2026-08-28 3차 검증(다른 2개 일자 x 랭킹 상위 3종목, r007 --date 20260826 --codes
+# 047040 001820 388050 / --date 20260827 --codes 403870 069540 237690): 결과 혼재.
+# (1) 20260826 047040: baseline 0건 -> hybrid 1건(13:33 매수 19,393/14:07 SIGNAL_EXIT
+# 매도 19,233, -0.83%/-4,000원 손실) - 신규 체결이지만 손실.
+# (2) 20260827 403870 HPSP: baseline 1건(13:59 매수 50,433/15:20 강제청산 50,500,
+# +0.13%/+600원)을 hybrid가 더 늦은 크로스로 대체(14:07 매수 50,500/15:20 강제청산
+# 50,500, +0.00%) - 진입가가 늦어져 기존 소폭 이익이 손익분기로 악화.
+# (3) 20260828 403870 HPSP: 위 2차 검증 결과(+2.19%/+10,125원, baseline 0건) 유지.
+# 3개 일자 합산 손익은 +6,125원으로 플러스지만, 4건 중 순수 신규 이익 1건/신규 손실
+# 1건/기존 이익 악화 1건으로 방향성이 일관되지 않음 - 표본이 여전히 작고(n=3일,
+# 4건) 결과가 혼재돼 있어 기본값 False 유지. 추가로 검증하려면 (a) 더 많은 일자/
+# 종목으로 표본 확대, (b) 20260827 케이스처럼 "더 늦은 크로스로 대체"되는 원인
+# (HYBRID_3MIN_CTX의 OPENING_GUARD/스코어 재계산 타이밍 차이 추정) 규명 필요.
+ENABLE_1MIN_TRIGGER_3MIN_CONTEXT = False
+HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 3        # 크로스 인정 룩백(3분봉 5봉/15분과 유사한 시간폭)
+HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.3  # 1분봉 자체 틱노이즈가 더 커서 3분봉(-0.1%)보다 완화
+HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 1.8   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화
+HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT = 0.5        # 3분봉(0.35%)보다 소폭 완화 - 트리거를 빨리 잡는 목적과 상충 방지
+
 # 3분봉 가점(_buy_support_score)용 장기 추세 정합성: EMA20 > EMA60이면 상위 추세가
 # 우상향이라는 뜻으로 +2점. EMA_20_PERIOD는 위 1분봉 게이트와 공유(같은 컬럼, 프레임만 다름).
 EMA_60_PERIOD = 60
@@ -578,6 +657,25 @@ LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
 PENDING_BUY_GRACE_SECONDS = 90
 # 매수 미체결 경고 기준 시간(초)
 BUY_ORDER_STALE_WARN_SECONDS = 60
+
+# --- 매수 미체결 재시도(지정가 추격) ---------------------------------------
+# place_buy_order()는 매수1호가(최우선 매수호가)로 순수 지정가 주문을 낸다 - 매도
+# (정규장)는 이미 시장가(01)를 쓰는 것과 비대칭. 방금 돌파 신호가 난 종목은 가격이
+# 계속 오르는 경우가 많아, 그 가격까지 밀려 내려오지 않으면 영원히 미체결로 남는다
+# (2026-08-28 13:14 000720 현대건설 실매매 사례: 500초 넘게 미체결, [BUY STALE]
+# 경고만 반복되고 아무 조치 없었음 - r003 Update log 2026-08-28 참조).
+# BUY_ORDER_REPRICE_AFTER_SECONDS(폴링 주기 ORDER_STATUS_POLL_INTERVAL_SECONDS=15초
+# 단위라 실제로는 다음 폴링 시점에 반영, 10초 정각 보장은 아님)마다 취소 후 더 공격적인
+# 가격으로 재주문한다 - 1차=신선한 매수1호가, 2차=매도1호가(스프레드 crossing으로 체결
+# 보장), 최종(BUY_ORDER_REPRICE_MAX_ATTEMPTS번째)=시장가(정규장 매도가 이미 쓰는 방식과
+# 통일). BUY_ORDER_REPRICE_MAX_CHASE_PCT는 최초 신호가(entry_reference_price) 대비 이
+# 비율을 넘으면 추격을 포기하고 취소만 한다 - r002의 추격매수 방지 게이트(CHASE_BUY_BB_GAP
+# 등)와 같은 철학을 재시도 로직에도 유지하기 위함(무한정 쫓아가서 사면 그 게이트들이
+# 무의미해짐).
+BUY_ORDER_REPRICE_AFTER_SECONDS = 10
+BUY_ORDER_REPRICE_MAX_ATTEMPTS = 3
+BUY_ORDER_REPRICE_MAX_CHASE_PCT = 0.5
+
 # 계좌-감시종목 불일치 로그 출력 최소 간격(초)
 WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = 300
 

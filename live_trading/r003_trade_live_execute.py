@@ -20,6 +20,50 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-28] type=feat owner=claude
+    summary: 매수 미체결 재시도(추격 지정가) 신규 추가 - place_buy_order()는 매수1호가
+      순수 지정가만 쓰고 체결 안 되면 [BUY STALE] 경고만 반복될 뿐 아무 조치가 없었음
+      (000720 현대건설 2026-08-28 13:14 매수 신호 이후 500초 넘게 미체결로 발견).
+      refresh_pending_orders의 "미체결 장기 대기" 분기를 BUY_ORDER_REPRICE_AFTER_SECONDS
+      (10초, r001) 경과 시 _request_buy_reprice() 호출로 교체 - order_rvsecncl(정정취소
+      취소구분)로 기존 주문을 취소하고, pending에 reprice_pending/cancel_inflight 상태를
+      건다. "BUY closed without fill" 분기(취소 확인 지점)도 cancel_inflight면
+      PENDING_BUY_GRACE_SECONDS(90초, 브로커 예상 밖 거부용 유예라 우리가 건 취소엔
+      불필요) 기다리지 않고 즉시 reprice_pending 여부로 분기 - True면
+      _resubmit_repriced_buy_order()로 재주문(1차 신선한 매수1호가/2차 매도1호가/최종
+      시장가, place_buy_order의 has_buy_exposure/쿨다운 검사를 우회하는 전용 경로 -
+      그 검사들은 "새 진입"용이지 "같은 진입 시도 재주문"에는 안 맞음), False면(추격
+      상한 초과로 포기) 그냥 정리. place_buy_order()에 order_org_no(krx_fwdg_ord_orgno,
+      취소/정정에 필수)·entry_reference_price(재주문해도 불변, 추격 상한 계산용)·
+      reprice_attempt/cancel_inflight/reprice_pending 초기값을 pending_orders에 추가.
+      상세 배경은 r001 Update log 2026-08-28 참조.
+    impact: live
+    compatibility: backward-compatible (미체결 상태 처리 경로만 변경, 체결 확인/포지션
+      로직은 그대로; order_rvsecncl은 이 저장소에서 최초로 실사용 - 프로덕션 실행 전
+      모의투자(env_dv=demo)로 취소/재주문 왕복이 실제로 되는지 먼저 확인 권장)
+- [2026-08-28] type=feat owner=claude
+    summary: ENABLE_1MIN_TRIGGER_3MIN_CONTEXT(r001) 배선 추가 - 신규 elif 분기로
+      ENABLE_1MIN_GOLDEN_CROSS_BUY(1분봉 완전대체)와 최종 else(기존 3분봉 단독) 사이에
+      끼워넣음. 1분봉 프레임을 별도로 조회해 check_buy_condition_1min으로 트리거를
+      먼저 확인하고(buy_frame/3분봉은 그대로 유지, ENABLE_1MIN_GOLDEN_CROSS_BUY처럼
+      갈아끼우지 않음), 통과 시에만 r002 run_3min_context_pipeline으로 3분봉 컨텍스트를
+      재확인한다. ENABLE_1MIN_ENTRY_SCORE_GATE(12-b) 조건에 not
+      ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 추가 - 하이브리드 트리거와 목적이 겹치는 이중
+      1분봉 게이트 방지. 배경은 r001/r002 Update log 2026-08-28 참조(403870 HPSP
+      09:09/09:27 반복 CHASE_BUY_BB_GAP 반려 분석).
+    impact: live
+    compatibility: backward-compatible (ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 기본값 False라
+      미사용 시 동작 변화 없음)
+- [2026-08-27] type=fix owner=copilot
+    summary: 시그널 매도 억제 판정(_strong_uptrend)에 가격 기반 보조 조건 추가 - 기존 ADX>28 &
+      +DI>-DI 단일 조건 외에, MA5가 상승 중이고 현재가가 BB_MID 위에 있으면(_price_uptrend)도
+      상승추세로 인정해 STOCH_K_LT_D/SIGNAL_EXIT_MACD_HIST_DOWN_2BARS를 억제한다. 000500
+      가온전선 2026-08-27 09:06 매매 - MACD_HIST가 2봉 연속 하락(146.9->-247.8->-441.7)해
+      -0.81%에 청산됐으나 ADX가 28을 못 넘겨 억제되지 않았고, 매도 직후 한 봉만 눌린 뒤 상승이
+      재개됨. ADX는 후행지표라 추세 초입 눌림목 구간에서 못 잡는 사각지대가 있어 보완.
+    impact: live
+    compatibility: backward-compatible (기존 ADX 조건은 그대로 유지, OR로 조건 추가 -
+      _strong_uptrend가 더 쉽게 True가 되어 신호 매도가 이전보다 더 자주 억제될 수 있음)
 - [2026-08-24] type=feat owner=copilot
     summary: PEAK_NEXT_BAR_BEARISH_EXIT 신규 매도 규칙 추가 - 포지션의 고점(highest_price)이
       갱신될 때마다 그 틱이 속한 확정봉을 pos["peak_bar_time"]으로 기록해두고, 그 바로 다음
@@ -349,6 +393,11 @@ from r001_define_config import (
     EARLY_NEAR_CROSS_MIN_VOLUME,
     ENABLE_1MIN_GOLDEN_CROSS_BUY,
     ENABLE_1MIN_ENTRY_SCORE_GATE,
+    ENABLE_1MIN_TRIGGER_3MIN_CONTEXT,
+    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS,
+    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
+    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_EARLY_NEAR_CROSS_ENTRY,
     ENABLE_NEAR_CROSS_ARM,
@@ -482,6 +531,9 @@ from r001_define_config import (
     ORDER_STATUS_POLL_INTERVAL_SECONDS,
     PENDING_BUY_GRACE_SECONDS,
     BUY_ORDER_STALE_WARN_SECONDS,
+    BUY_ORDER_REPRICE_AFTER_SECONDS,
+    BUY_ORDER_REPRICE_MAX_ATTEMPTS,
+    BUY_ORDER_REPRICE_MAX_CHASE_PCT,
     PENDING_STATUS_BACKOFF_MAX_SECONDS,
     REQUIRE_ADX_RISING,
     REQUIRE_DI_PLUS_DOMINANT,
@@ -503,6 +555,7 @@ from r002_strategy_core_shared import (
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
     check_entry_condition_1min,
+    run_3min_context_pipeline,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
@@ -1056,7 +1109,16 @@ def _extract_order_number(result) -> str:
     value = _extract_order_value(result, ("odno", "ord_no", "order_no"))
     text = str(value).strip() if value is not None else ""
     return text
-    
+
+
+def _extract_order_org_no(result) -> str:
+    """정정취소주문(order_rvsecncl)의 필수 파라미터 krx_fwdg_ord_orgno(한국거래소전송주문
+    조직번호) 추출. order_cash 성공 응답의 output에 KRX_FWDG_ORD_ORGNO로 포함됨."""
+    value = _extract_order_value(result, ("krx_fwdg_ord_orgno", "ord_orgno"))
+    text = str(value).strip() if value is not None else ""
+    return text
+
+
 def _extract_aux_score_from_reason(reason: str) -> int | None:
     m = re.search(r"AUX_REVERSAL_SCORE_(\d+)", str(reason or ""))
     if not m:
@@ -2388,6 +2450,81 @@ def check_buy_condition_1min(frame_1min: pd.DataFrame, require_fresh_cross: bool
     return True, "1MIN_BB_MID_GOLDEN_CROSS"
 
 
+def check_buy_condition_1min_hybrid_trigger(frame_1min: pd.DataFrame) -> tuple[bool, str]:
+    """ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 하이브리드 전용 1분봉 트리거 (check_buy_condition_1min의
+    변형, 섹션 12 원본은 그대로 유지).
+
+    2026-08-28 1차 검증(HYBRID_1MIN_TRIGGER 상수 도입 전)에서 check_buy_condition_1min을
+    그대로 재사용했더니 매수 0건 - 리젝 469/507건이 require_fresh_cross(이 1분봉에서 "막"
+    크로스했을 때만 인정, 룩백 없음)에서 발생. 3분봉 bb_mid_cross_up은 5봉 룩백+우상향
+    지속 예외가 있는데 1분봉엔 그런 관용도가 전혀 없었던 것 - 이 함수는 그 룩백을
+    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS만큼 추가한다(_evaluate_bb_mid_cross의 close_cross
+    N봉 룩백과 동일 패턴: 전환봉 이후 현재까지 BB 위 연속 유지 시 인정). 또한 캔들/추격
+    가드 문턱도 3분봉 값(CANDLE_GAIN_MAX_PCT 등)을 그대로 쓰지 않고 HYBRID_1MIN_TRIGGER_*
+    전용 값을 쓴다 - 1분봉은 3분봉보다 캔들 하나의 시간폭이 짧아 같은 % 문턱이 상대적으로
+    더 쉽게 초과됨(HPSP 1차 검증에서 candle_gain 0.87~1.67%로 3분봉 문턱 0.8% 초과 반복 확인).
+    """
+    if frame_1min is None or len(frame_1min) < 2:
+        return False, "1MIN_INSUFFICIENT_BARS"
+
+    cur = frame_1min.iloc[-1]
+    prev = frame_1min.iloc[-2]
+
+    cur_bb = _num(cur, "BB_MIDDLE")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_close = _num(cur, "close")
+    prev_close = _num(prev, "close")
+    cur_open = _num(cur, "open")
+
+    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
+        return False, "1MIN_MISSING_INDICATOR"
+
+    golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+    if not golden_cross:
+        _found = False
+        for _lb in range(3, min(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS + 2, len(frame_1min)) + 1):
+            _bar_n_close = _num(frame_1min.iloc[-_lb], "close")
+            _bar_n_bb = _num(frame_1min.iloc[-_lb], "BB_MIDDLE")
+            if any(pd.isna(v) for v in (_bar_n_close, _bar_n_bb)) or _bar_n_close > _bar_n_bb:
+                continue  # 이 봉도 BB 위이면 더 이전 탐색 or NaN
+            _all_above = all(
+                not any(pd.isna(v) for v in (
+                    _num(frame_1min.iloc[-_k], "close"), _num(frame_1min.iloc[-_k], "BB_MIDDLE"),
+                ))
+                and _num(frame_1min.iloc[-_k], "close") > _num(frame_1min.iloc[-_k], "BB_MIDDLE")
+                for _k in range(1, _lb)
+            )
+            if _all_above:
+                _found = True
+                break
+        if not _found:
+            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
+
+    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
+    if candle_gain_pct < HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:
+        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:.1f}%"
+    if candle_gain_pct > HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:
+        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:.1f}%"
+
+    if cur_bb > 0:
+        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
+        if bb_gap_pct > HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT:
+            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT:.1f}%"
+
+    vol = _num(cur, "volume")
+    vol_ma = _num(cur, "VOL_MA20")
+    if not any(pd.isna(v) for v in (vol, vol_ma)):
+        if vol_ma < MIN_ENTRY_VOL_MA:
+            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
+        if vol < MIN_ENTRY_VOLUME:
+            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
+        if vol_ma > 0:
+            vol_ratio = vol / vol_ma
+            if vol_ratio < 0.10:
+                return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
+
+    return True, "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
+
 
 # ---------------------------------------------------------------------------
 # Live state persistence (DATA_DIR/live_state/YYYYMMDD.json)
@@ -3034,6 +3171,23 @@ class TradingAPI:
                         or str(status.get("cancel_yn", "")) == "Y"
                         or int(status.get("rejected_qty", 0)) >= int(status.get("order_qty", pending.get("quantity", 0)))
                     ):
+                        # 우리가 _request_buy_reprice로 취소를 요청한 경우(cancel_inflight)는
+                        # 원래 의도한 종결(취소 확인)이므로 PENDING_BUY_GRACE_SECONDS를 기다리지
+                        # 않고 바로 처리한다 - 그 유예는 브로커 쪽에서 예상 못한 거부/취소를
+                        # 상태 API 지연과 혼동하지 않기 위한 것으로, 우리가 건 취소에는 해당 없음.
+                        if pending.get("cancel_inflight"):
+                            if pending.get("reprice_pending"):
+                                self._resubmit_repriced_buy_order(code, pending, now, nxt_tradeable)
+                            else:
+                                self._maybe_log_pending_progress(
+                                    pending,
+                                    f"BUY reprice giveup confirmed | {code} | order_no={pending.get('order_no', '')}",
+                                    "buy_reprice_giveup_confirmed",
+                                )
+                                self.buy_inflight_codes.discard(str(code).zfill(6))
+                                self.pending_orders.pop(str(code).zfill(6), None)
+                            continue
+
                         submitted_at = pending.get("submitted_at")
                         if isinstance(submitted_at, datetime):
                             if (now - submitted_at).total_seconds() < PENDING_BUY_GRACE_SECONDS:
@@ -3047,9 +3201,20 @@ class TradingAPI:
                         self.pending_orders.pop(str(code).zfill(6), None)
                         continue
 
-                    # 미체결 장기 대기 경고
+                    # 미체결 장기 대기 - BUY_ORDER_REPRICE_AFTER_SECONDS 지나면 취소 후
+                    # 더 공격적인 가격으로 재주문 시도(cancel_inflight 아닐 때만 - 이미 취소
+                    # 요청이 진행중이면 확인될 때까지 중복 취소하지 않음). 재시도 소진 후에는
+                    # 기존과 동일하게 경고만 남긴다.
                     _sub_at = pending.get("submitted_at")
                     if (
+                        isinstance(_sub_at, datetime)
+                        and int(status.get("filled_qty", 0)) <= 0
+                        and not pending.get("cancel_inflight")
+                        and int(pending.get("reprice_attempt", 0)) < BUY_ORDER_REPRICE_MAX_ATTEMPTS
+                        and (now - _sub_at).total_seconds() >= BUY_ORDER_REPRICE_AFTER_SECONDS
+                    ):
+                        self._request_buy_reprice(code, pending, now)
+                    elif (
                         isinstance(_sub_at, datetime)
                         and int(status.get("filled_qty", 0)) <= 0
                         and (now - _sub_at).total_seconds() >= BUY_ORDER_STALE_WARN_SECONDS
@@ -3179,6 +3344,178 @@ class TradingAPI:
 
         return max(0, min(qty_by_budget, qty_by_psbl))
 
+    def _request_buy_reprice(self, code: str, pending: dict, now: datetime) -> None:
+        """미체결 매수 지정가 주문을 취소 요청한다. 취소가 확인되면(closed without fill,
+        refresh_pending_orders에서 처리) reprice_pending 여부에 따라 새 가격으로 재주문하거나
+        포기한다. BUY_ORDER_REPRICE_MAX_ATTEMPTS번째 시도이거나 다음 후보가(candidate)가
+        entry_reference_price(최초 신호가) 대비 BUY_ORDER_REPRICE_MAX_CHASE_PCT를 넘으면
+        추격을 포기(취소만 하고 재주문 안 함) - r002 추격매수 방지 게이트와 같은 철학.
+        (r001 Update log 2026-08-28 참조, 000720 현대건설 13:14 미체결 사례로 발견)
+        """
+        norm_code = str(code).zfill(6)
+        order_no = str(pending.get("order_no", ""))
+        order_org_no = str(pending.get("order_org_no", ""))
+        if not order_no or not order_org_no:
+            return  # 취소에 필요한 원주문 식별자를 확보하지 못했으면 재시도 불가 - 그대로 대기
+
+        attempt = int(pending.get("reprice_attempt", 0)) + 1
+        exchange = str(pending.get("exchange", "KRX"))
+        market_div = "NX" if exchange == "NXT" else "J"
+        reference_price = float(pending.get("entry_reference_price") or pending.get("requested_price") or 0.0)
+        is_final_attempt = attempt >= BUY_ORDER_REPRICE_MAX_ATTEMPTS
+
+        # 시장가(마지막 시도)도 체결 예상가는 결국 매도1호가 근방이므로, 추격 상한 검사는
+        # 주문유형과 무관하게 항상 현재 호가로 수행한다 - 그렇지 않으면 마지막 시도에서만
+        # 상한 검사를 건너뛰게 되어 가장 위험한 시장가 주문이 오히려 무방비로 추격매수를
+        # 해버리는 모순이 생긴다(추격 상한을 두는 취지 자체가 무의미해짐).
+        bid_price, ask_price = _fetch_bid_ask_price(norm_code, market_div)
+        candidate = ask_price if attempt >= 2 else bid_price
+        candidate = candidate or bid_price or ask_price
+        if not candidate or candidate <= 0:
+            log(f"  [BUY REPRICE SKIP] {code} | 호가 조회 실패 - 다음 폴링에서 재시도")
+            return
+
+        give_up = False
+        if reference_price > 0:
+            max_price = reference_price * (1 + BUY_ORDER_REPRICE_MAX_CHASE_PCT / 100.0)
+            if candidate > max_price:
+                log(
+                    f"  [BUY REPRICE ABANDON] {code} | candidate={candidate:,.0f} > "
+                    f"max_chase={max_price:,.0f}(ref={reference_price:,.0f}+{BUY_ORDER_REPRICE_MAX_CHASE_PCT:.1f}%) "
+                    f"| 추격 포기, 취소만 진행"
+                )
+                give_up = True
+
+        if is_final_attempt and exchange != "NXT":
+            next_price_mode = "market"
+        else:
+            next_price_mode = "ask" if attempt >= 2 else "bid"
+
+        try:
+            cancel_result = dsf.order_rvsecncl(
+                env_dv=self.env_dv,
+                cano=self.cano,
+                acnt_prdt_cd=self.acnt_prdt_cd,
+                krx_fwdg_ord_orgno=order_org_no,
+                orgn_odno=order_no,
+                ord_dvsn="00",
+                rvse_cncl_dvsn_cd="02",
+                ord_qty=str(int(pending.get("quantity", 0))),
+                ord_unpr="0",
+                qty_all_ord_yn="Y",
+                excg_id_dvsn_cd=exchange,
+            )
+        except Exception as exc:
+            log(f"  [BUY REPRICE CANCEL ERROR] {code} | {exc}")
+            return
+
+        if not _order_succeeded(cancel_result):
+            log(f"  [BUY REPRICE CANCEL FAILED] {code} | {_extract_order_error_detail(cancel_result)}")
+            return
+
+        pending["reprice_attempt"] = attempt
+        pending["cancel_inflight"] = True
+        if give_up:
+            pending["reprice_pending"] = False
+            log(f"  [BUY REPRICE GIVEUP] {code} | attempt={attempt} | 취소 요청 완료, 재주문 없이 포기")
+        else:
+            pending["reprice_pending"] = True
+            pending["reprice_next_mode"] = next_price_mode
+            log(
+                f"  [BUY REPRICE CANCEL] {code} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+                f"next_mode={next_price_mode} | 취소 요청 완료, 확인되는 대로 재주문"
+            )
+
+    def _resubmit_repriced_buy_order(self, code: str, pending: dict, now: datetime, nxt_tradeable: bool) -> None:
+        """_request_buy_reprice가 요청한 취소가 확인된 뒤 새 가격/방식으로 재주문한다.
+        place_buy_order()는 has_buy_exposure/쿨다운 검사가 있어 같은 진입 시도의 재주문에는
+        쓸 수 없으므로(자기 자신의 pending 항목·방금 세팅한 trade_lock에 막힘) 그 검사들을
+        건너뛰는 전용 경로. reference_price(최초 신호가) 등 pending에 보존된 컨텍스트를
+        그대로 이어받는다."""
+        norm_code = str(code).zfill(6)
+        price_mode = str(pending.get("reprice_next_mode", "bid"))
+        qty = int(pending.get("quantity", 0))
+        exchange = str(pending.get("exchange", "KRX"))
+        market_div = "NX" if exchange == "NXT" else "J"
+        code_name = str(pending.get("code_name", ""))
+        buy_detail = str(pending.get("buy_detail", ""))
+        reference_price = float(pending.get("entry_reference_price") or 0.0)
+        attempt = int(pending.get("reprice_attempt", 0))
+
+        # 재주문 직전 잔여 매수 여력 재확인 (취소~재주문 사이 다른 체결/입출금으로 감소했을 수 있음)
+        affordable_qty = self.get_affordable_buy_qty(code, reference_price or 1.0, now, nxt_tradeable)
+        qty = min(qty, int(affordable_qty))
+        if qty <= 0:
+            log(f"  [BUY REPRICE ABORT] {code} | 재주문 여력 부족 - 포기")
+            self.buy_inflight_codes.discard(norm_code)
+            self.pending_orders.pop(norm_code, None)
+            return
+
+        if price_mode == "market" and exchange != "NXT":
+            ord_dvsn, ord_unpr, price_for_log = "01", "0", None
+        else:
+            bid_price, ask_price = _fetch_bid_ask_price(norm_code, market_div)
+            candidate = ask_price if price_mode == "ask" else bid_price
+            candidate = candidate or bid_price or ask_price
+            if not candidate or candidate <= 0:
+                log(f"  [BUY REPRICE SKIP] {code} | 호가 조회 실패 - 다음 폴링에서 재시도")
+                return  # pending 그대로 유지(reprice_pending=True) -> 다음 폴링에서 재시도
+            ord_dvsn, ord_unpr, price_for_log = "00", str(int(round(candidate))), candidate
+
+        if self.dry_run:
+            log(f"DRY_RUN BUY REPRICE | {code} | qty={qty} | mode={price_mode} | price={price_for_log or 0:,.0f}")
+            order_result = {
+                "rt_cd": "0", "odno": "DRYRUN", "avg_pric": ord_unpr, "krx_fwdg_ord_orgno": "DRYRUN",
+            }
+        else:
+            try:
+                order_result = dsf.order_cash(
+                    env_dv=self.env_dv,
+                    ord_dv="buy",
+                    cano=self.cano,
+                    acnt_prdt_cd=self.acnt_prdt_cd,
+                    pdno=code,
+                    ord_dvsn=ord_dvsn,
+                    ord_qty=str(qty),
+                    ord_unpr=ord_unpr,
+                    excg_id_dvsn_cd=exchange,
+                )
+            except Exception as exc:
+                log(f"  [BUY REPRICE RESUBMIT ERROR] {code} | {exc}")
+                return
+
+        if not _order_succeeded(order_result):
+            log(f"  [BUY REPRICE RESUBMIT FAILED] {code} | {_extract_order_error_detail(order_result)}")
+            self.buy_inflight_codes.discard(norm_code)
+            self.pending_orders.pop(norm_code, None)
+            return
+
+        new_order_no = _extract_order_number(order_result)
+        new_order_org_no = _extract_order_org_no(order_result)
+        new_price = _extract_order_price(order_result) or price_for_log or reference_price
+
+        pending.update({
+            "quantity": qty,
+            "submitted_at": now,
+            "requested_price": float(new_price or 0.0),
+            "order_no": new_order_no,
+            "order_org_no": new_order_org_no,
+            "order_time": _extract_order_time(order_result),
+            "cancel_inflight": False,
+            "reprice_pending": False,
+        })
+        pending.pop("last_status_signature", None)
+        detail_suffix = f" | {buy_detail}" if buy_detail else ""
+        code_label = _format_code_label(code, code_name)
+        log(
+            f"  [BUY REPRICE RESUBMIT] {code_label} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+            f"mode={price_mode} | price={new_price or 0:,.0f} | order_no={new_order_no or 'UNKNOWN'}{detail_suffix}"
+        )
+        log_trade(
+            f"BUY REPRICE RESUBMIT | {code_label} | qty={qty} | mode={price_mode} | "
+            f"price={new_price or 0:,.0f} | order_no={new_order_no or 'UNKNOWN'}"
+        )
+
     def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "", pyramid: bool = False) -> bool:
         norm_code = str(code).zfill(6)
         if not pyramid and self.has_buy_exposure(norm_code):
@@ -3232,18 +3569,24 @@ class TradingAPI:
         requested_price = _extract_order_price(order_result) or price
         order_no = _extract_order_number(order_result)
         order_time = _extract_order_time(order_result)
+        order_org_no = _extract_order_org_no(order_result)
         self.pending_orders[norm_code] = {
             "side": "buy",
             "quantity": int(qty),
             "submitted_at": now,
             "session": session,
             "requested_price": float(requested_price),
+            "entry_reference_price": float(requested_price),  # 추격 상한 계산용 원 신호가, 재주문해도 불변
             "exchange": order_spec["exchange"],
             "order_no": order_no,
+            "order_org_no": order_org_no,
             "order_time": order_time,
             "buy_detail": buy_detail,
             "code_name": code_name,
             "pyramid": pyramid,
+            "reprice_attempt": 0,
+            "cancel_inflight": False,
+            "reprice_pending": False,
         }
         self._mark_trade_lock(norm_code, now)
         detail_suffix = f" | {buy_detail}" if buy_detail else ""
@@ -3935,11 +4278,26 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     _sig_buy_time_raw = pos.get("buy_time")
                     _sig_held_seconds = (current_dt - _sig_buy_time_raw).total_seconds() if isinstance(_sig_buy_time_raw, datetime) else 0.0
                     _signal_min_hold_seconds = 600.0  # signal exit min hold: 10 min
-                    _strong_uptrend = (
+                    _adx_uptrend = (
                         not pd.isna(adx_now) and adx_now > 28
                         and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
                         and di_plus_now > di_minus_now
                     )
+                    # ADX 보완: ADX>28 도달 전(추세 초입)에도 가격이 이미 BB_MID 위에서 MA5가
+                    # 상승 중이면 상승추세로 간주해 시그널 매도를 억제한다. 000500 가온전선
+                    # 2026-08-27 09:06 매매 사례 - MACD_HIST 2봉 하락으로 -0.81%에 청산됐으나
+                    # ADX가 28을 못 넘겨 _strong_uptrend가 False였고, 실제로는 매도 직후 한 봉
+                    # 눌림만 있었을 뿐 상승이 재개됨. ADX는 후행지표라 추세 초입 눌림목 구간을
+                    # 못 잡는 경우가 있어, MA5 기울기 + BB_MID 상회를 별도 신호로 추가.
+                    _ma5_now = _num(cur, "MA_5")
+                    _ma5_prev_trend = _num(frame.iloc[-2], "MA_5")
+                    _bb_mid_now = _num(cur, "BB_MIDDLE")
+                    _price_uptrend = (
+                        not any(pd.isna(v) for v in (_ma5_now, _ma5_prev_trend, _bb_mid_now))
+                        and _ma5_now > _ma5_prev_trend
+                        and price > _bb_mid_now
+                    )
+                    _strong_uptrend = _adx_uptrend or _price_uptrend
 
                     # Hard stop-loss: 매수 후 HARD_STOP_MIN_HOLD_SECONDS 경과 후 활성화
                     # (초기 3분은 POST_BUY guard가 담당, 이후 1.2% 하드스탑)
@@ -4121,7 +4479,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > -0.012:
                             log(
                                 f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
-                                f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}% held={_sig_held_seconds:.0f}s"
+                                f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}% held={_sig_held_seconds:.0f}s "
+                                f"uptrend(adx={_adx_uptrend},price={_price_uptrend})"
                             )
                         else:
                             reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"
@@ -4392,6 +4751,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     elif (
                         sell_reason.startswith("AUX_BLOCKED")
                         or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_WEAK_SCORE")
+                        or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_SCORE")
                         or sell_reason.startswith("BOX_RANGE_HOLD")
                     ):
                         log(f"  [SELL HOLD] {code} | {sell_reason}")
@@ -4478,6 +4838,27 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                     f"close={_num(buy_frame.iloc[-1], 'close'):,.0f}"
                                 )
                                 continue
+                    elif ENABLE_1MIN_TRIGGER_3MIN_CONTEXT:
+                        # 하이브리드 경로(r001 Update log 2026-08-28 참조): 1분봉 자체
+                        # 기준(open/BB)으로 트리거를 먼저 확인하고, 통과 시에만 3분봉
+                        # 컨텍스트(추세/매집/유동성)로 재확인한다. buy_frame(3분봉)은
+                        # 그대로 두고 1분봉은 별도로 조회 - ENABLE_1MIN_GOLDEN_CROSS_BUY와
+                        # 달리 판정 프레임을 갈아끼우지 않는다.
+                        frame_1min = _get_or_refresh_1min_frame(
+                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
+                        )
+                        if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
+                            buy_ok, buy_reason = False, "HYBRID_1MIN_FRAME_UNAVAILABLE"
+                        else:
+                            trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(frame_1min)
+                            if not trigger_ok:
+                                buy_ok, buy_reason = False, f"HYBRID_1MIN_TRIGGER_{trigger_reason}"
+                            else:
+                                buy_ok, buy_reason = run_3min_context_pipeline(
+                                    buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
+                                )
+                                if buy_ok:
+                                    buy_reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{buy_reason}"
                     else:
                         buy_ok, buy_reason = check_buy_condition(
                             buy_frame,
@@ -4509,7 +4890,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         )
                         continue
 
-                    if ENABLE_1MIN_ENTRY_SCORE_GATE and not ENABLE_1MIN_GOLDEN_CROSS_BUY:
+                    if (
+                        ENABLE_1MIN_ENTRY_SCORE_GATE
+                        and not ENABLE_1MIN_GOLDEN_CROSS_BUY
+                        and not ENABLE_1MIN_TRIGGER_3MIN_CONTEXT
+                    ):
                         frame_1min_entry = _get_or_refresh_1min_frame(
                             code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
                         )
