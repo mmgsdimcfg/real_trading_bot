@@ -2511,14 +2511,19 @@ def simulate_date(
                 peak_pnl_pct = (pos.highest_price / pos.buy_price) - 1.0 if pos.highest_price > 0 and pos.buy_price > 0 else 0.0
                 giveback = peak_pnl_pct - profit_pct
                 # ATR-based TP/SL targets
+                # ATR은 현재가 스케일의 절대값(원)이므로, 매수 시점 가격(pos.buy_price)에
+                # 그대로 더/빼면 진입 후 가격이 크게 움직인 경우 스케일이 어긋난다.
+                # 반드시 ATR%(=atr_val/현재가)로 정규화한 뒤 buy_price에 상대 비율로 적용한다.
                 atr_val = _num(cur, "ATR")
+                atr_pct = float("nan")
                 atr_tp_pct = float("nan")
                 atr_sl_pct = float("nan")
-                if not pd.isna(atr_val) and atr_val > 0 and pos.buy_price > 0:
-                    atr_tp_price = pos.buy_price + float(atr_val) * ATR_TAKE_PROFIT_MULTIPLIER
-                    atr_sl_price = pos.buy_price - float(atr_val) * ATR_STOP_MULTIPLIER
-                    atr_tp_pct = (atr_tp_price / pos.buy_price) - 1.0
-                    atr_sl_pct = (atr_sl_price / pos.buy_price) - 1.0
+                if not pd.isna(atr_val) and atr_val > 0 and price > 0 and pos.buy_price > 0:
+                    atr_pct = float(atr_val) / price
+                    atr_tp_pct = atr_pct * ATR_TAKE_PROFIT_MULTIPLIER
+                    atr_sl_pct = -atr_pct * ATR_STOP_MULTIPLIER
+                    atr_tp_price = pos.buy_price * (1.0 + atr_tp_pct)
+                    atr_sl_price = pos.buy_price * (1.0 + atr_sl_pct)
 
                 # Signal indicators
                 k_now = _num(cur, "STOCH_K")
@@ -2609,8 +2614,8 @@ def simulate_date(
                     entry_qty = pos.entry_quantity if pos.entry_quantity > 0 else pos.quantity
 
                     _atr_tp1_dynamic_pct = (
-                        (float(atr_val) * TP1_ATR_MULTIPLIER) / pos.buy_price
-                        if not pd.isna(atr_val) and atr_val > 0 and pos.buy_price > 0
+                        atr_pct * TP1_ATR_MULTIPLIER
+                        if not pd.isna(atr_pct)
                         else float("nan")
                     )
                     tp1_target_pct = (

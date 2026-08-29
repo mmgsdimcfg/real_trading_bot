@@ -23,6 +23,30 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-29] type=feat owner=copilot
+    summary: _scan_all.md에 "picked" 컬럼 추가(rank 바로 다음, code 바로 앞) - 최종 선정된
+      50종목(selected_rows)에는 🟢, 그 외는 빈 칸으로 표시해 전체 스캔 결과에서 최종 선정 여부를
+      한눈에 볼 수 있도록 함. scan()에서 selected_rows 확정 직후 row["picked"]=True로 마킹하며,
+      selected_rows/all_rows가 candidates와 동일 dict 객체를 참조하므로 별도 매핑 없이 반영됨.
+    impact: scanner
+    compatibility: backward-compatible (컬럼 추가만, 기존 컬럼 순서/값에는 영향 없음 - 단
+      컬럼 위치가 바뀌므로 위치 기반으로 _scan_all.md를 파싱하는 외부 스크립트가 있다면 헤더
+      이름 기반 파싱으로 바꿔야 함)
+- [2026-08-29] type=fix owner=copilot
+    summary: box_range_no_progress 하드 필터 오탐 완화(사용자가 _20260828_scan_all.md에서
+      "차트/지표가 멀쩡한데 탈락"으로 지적한 88종목 분석 결과 반영). (1) sibling 하드 필터
+      (down_trend/flat_trend/bearish_candle_dominant)와 달리 이 필터만 trend_reversal_detected
+      예외가 없어, 이미 반전 신호로 다른 필터를 통과한 32종목(096770 SK이노베이션/034220
+      LG디스플레이/323410 카카오뱅크 등)까지 예외 없이 탈락시키던 불일치 수정 - 반전 신호가
+      있으면 하드탈락 대신 box_range_no_progress_reversal_override soft flag로 전환.
+      (2) BOX_RANGE_NO_PROGRESS_MIN_RANGE_PCT 0.05->0.08, MIN_NET_PCT 0.02->0.01 조정 -
+      trend_state=up이 이미 확정되고 다른 red flag가 전혀 없는 대형 우량주 56종목(373220
+      LG에너지솔루션/000100 유한양행/018260 삼성에스디에스 등)이 "약간의 등락 + 완만한 순상승"
+      만으로 걸리던 문제 완화. 도입 계기였던 178320 서진시스템 사례(range_pct=16.5%,
+      net_pct=0.26%)는 새 문턱에서도 그대로 하드탈락됨을 확인.
+    impact: scanner
+    compatibility: breaking (박스권 필터로 탈락하던 종목 일부가 새로 통과 - eligible pool 크기와
+      최종 picks 구성이 달라질 수 있음)
 - [2026-08-28] type=feat owner=copilot
     summary: 실행 시 콘솔에 출력되던 print() 로그를 파일로도 저장하도록 변경 - _TeeStream으로
       stdout을 콘솔+파일에 동시 기록. 저장 위치는 스캔 결과물(_scan_all.md 등)과 동일한
@@ -756,9 +780,19 @@ def _is_weak_long_term_downtrend_signal(df, window=20, min_bars=15, slope_pct_pe
 
 
 BOX_RANGE_NO_PROGRESS_WINDOW = 10
-BOX_RANGE_NO_PROGRESS_MIN_NET_PCT = 0.02     # 최근 window거래일 순변동률이 이 미만이면 "무진전"
-BOX_RANGE_NO_PROGRESS_MIN_RANGE_PCT = 0.05   # 이 이상 변동폭이 있어야 "박스권 왕복"으로 판정
+BOX_RANGE_NO_PROGRESS_MIN_NET_PCT = 0.01     # 최근 window거래일 순변동률이 이 미만이면 "무진전"
+                                              # (2026-08-29: 0.02->0.01. 완만하게 우상향 중인
+                                              # 저변동 우량주가 "약간의 등락 + 소폭 순상승"만으로도
+                                              # 걸리던 문제 완화 - 아래 min_range_pct 상향과 함께 조정)
+BOX_RANGE_NO_PROGRESS_MIN_RANGE_PCT = 0.08   # 이 이상 변동폭이 있어야 "박스권 왕복"으로 판정
                                               # (변동폭 자체가 작은 저변동 종목은 low_volatility_atr로 별도 처리)
+                                              # (2026-08-29: 0.05->0.08. 도입 계기였던 178320
+                                              # 서진시스템 사례(range_pct=16.5%)는 여전히 잡히지만,
+                                              # 일반적인 일중 변동폭만으로 걸리던 대형 우량주
+                                              # (LG에너지솔루션/유한양행/삼성에스디에스 등, 최근
+                                              # trend_state=up 확정에 다른 하드필터도 전부 통과했음)
+                                              # 오탐을 줄이기 위해 "왕복" 판정 기준을 원래 취지에
+                                              # 맞게 상향.
 
 
 def _is_box_range_no_progress(
@@ -1076,8 +1110,15 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # [2026-08-26] 박스권 왕복(변동은 있었지만 순진전 없음) 하드 필터 - MA5/MA20 크로스가
     # 우연히 up으로 잡히는 사각지대 보완 (위 flat_trend 배제로도 못 잡는 케이스, 예: 178320
     # 서진시스템 - 최근 10일 급락 후 원래 자리로 회복하며 trend_state=up으로 통과했던 사례)
+    # [2026-08-29] down_trend/flat_trend/bearish_candle_dominant와 달리 이 필터만 반전 신호
+    # 예외가 없어, 이미 trend_reversal_detected로 다른 하드필터를 다 통과한 종목(예: 096770
+    # SK이노베이션, 034220 LG디스플레이, 323410 카카오뱅크 등 32종목, 2026-08-28 스캔 검증)까지
+    # 예외 없이 탈락시키고 있었음 - sibling 필터들과 동일한 예외 패턴 적용.
     if _is_box_range_no_progress(_check_df):
-        candidate["fail_reasons"].append("box_range_no_progress")
+        if trend_reversal_detected:
+            candidate["soft_flags"].append("box_range_no_progress_reversal_override")
+        else:
+            candidate["fail_reasons"].append("box_range_no_progress")
 
     # [2026-08-26] 우하향 캔들 분포 하드 필터 - 연속성과 무관하게 최근 10거래일 캔들의
     # 60% 이상이 음봉이면 배제(반전 신호 있으면 예외). 기존 bearish_2in3d(3일 중 2일)보다
@@ -1519,7 +1560,7 @@ def render_all_scan_csv(all_rows):
 
 def render_all_scan_markdown(all_rows):
     headers = [
-        "rank", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
+        "rank", "picked", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
         "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "listing_days", "prev_day_change", "repeat_recent_days",
         "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "rsi", "relative_strength",
     ]
@@ -1534,6 +1575,7 @@ def render_all_scan_markdown(all_rows):
         soft_flags = "|".join(row.get("soft_flags", []))
         values = [
             str(rank),
+            "🟢" if row.get("picked") else "",
             row.get("code", ""),
             str(row.get("name", "")).replace(",", " "),
             f"{float(row.get('score') or 0.0):.2f}",
@@ -2078,12 +2120,16 @@ def scan(
                 filled_count = min(SCORE_DOT_SLOTS, max(0, round(candidate["score"] / 10.0)))
                 if filled_count <= 3:
                     dot_icon = "🔴"
+                elif filled_count <= 4:
+                    dot_icon = "🟠"                    
                 elif filled_count <= 5:
                     dot_icon = "🟡"
+                elif filled_count <= 6:
+                    dot_icon = "🟢"                    
                 elif filled_count <= 7:
-                    dot_icon = "🟢"
+                    dot_icon = "🔵"
                 else:
-                    dot_icon = "⚪"
+                    dot_icon = "🟣"
                 dots = dot_icon * filled_count + SCORE_DOT_EMPTY * (SCORE_DOT_SLOTS - filled_count)
                 print(f"[{idx:04d}/{total}] {dots} {code}_{name} (score={candidate['score']:.2f})          ")
             else:
@@ -2158,6 +2204,11 @@ def scan(
         key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
         reverse=True,
     )
+
+    # 최종 선정된 종목을 표시해둔다 - selected_rows는 candidates 리스트와 같은 dict 객체를
+    # 참조하므로, 아래 마킹이 all_rows(return_details)/render_all_scan_markdown에도 그대로 반영된다.
+    for row in selected_rows:
+        row["picked"] = True
 
     selected = [f"{row['code']},{row['name']}" for row in selected_rows]
     summary = summarize_candidates(candidates, selected_rows, skipped)
