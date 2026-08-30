@@ -34,6 +34,30 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-29] type=feat owner=copilot
+    summary: g002 스캐너 검토에서 나온 3개 보류 항목(관리종목/거래정지 배제, 업종 분산,
+      시장 레짐/RS)을 위한 KIS Open API 스냅샷 수집 추가. probe_nxt_tradeable()이 이미
+      실사용 중인 dsf.search_stock_info(CTPF1002R, 주식기본조회) 호출 패턴을 그대로 재사용.
+      (1) fetch_stock_basic_info/get_stock_basic_info_cached - 종목별 admn_item_yn(관리종목),
+      tr_stop_yn(거래정지), idx_bztp_lcls/mcls/scls_cd_name(업종 대/중/소분류)를 조회해
+      data_root/_stock_basic_info_cache.json(날짜 폴더가 아닌 최상위, 코드별 fetched_at
+      포함)에 캐시 - 느리게 바뀌는 참조데이터라 BASIC_INFO_CACHE_MAX_AGE_DAYS(30일) 이내면
+      재조회하지 않음.
+      (2) fetch_market_index_daily - dsf.inquire_index_daily_price(국내업종 일자별지수,
+      FHPUP02120000)로 KOSPI(0001)/KOSDAQ(1001) 최근 30거래일 종가를 날짜당 1회(종목당 아님)
+      조회해 output_dir/_market_index.json으로 저장. g002의 RS/시장레짐 계산이 지금까지
+      pykrx(KRX 직접 스크래핑, 이 저장소 밖 환경에서 네트워크 오류로 실패 확인됨)에만 의존하던
+      것을 이미 인증된 KIS 세션으로 대체하기 위함 - g002는 이 스냅샷을 우선 사용하고 없으면
+      기존 pykrx로 폴백(하위호환).
+      *** 미검증: 이번 세션 환경은 KIS Open API 자격증명이 설정돼 있지 않아(kis_devlp.yaml이
+      플레이스홀더 상태) 실제 API 응답으로 검증하지 못했음. 문법 검증과 fetch_52w_high_low/
+      probe_nxt_tradeable의 기존 검증된 패턴을 그대로 재사용했다는 점 외의 보증은 없음 - 실서버
+      최초 실행 시 로그(saved stock basic-info cache / saved market index snapshot 여부와
+      건수)를 확인 필요. 실패해도 항상 빈 값/None 반환으로 폴백하도록 방어했으므로 기존
+      수집 파이프라인 자체가 깨지지는 않음. ***
+    impact: collector
+    compatibility: backward-compatible (신규 API 실패 시 조용히 폴백, 기존 산출물 형식/내용 불변;
+      단 종목당 API 호출이 최초 실행 시 1회, 이후 30일 주기로 추가됨)
 - [2026-08-23] type=fix owner=copilot
     summary: prev_close 계산(_compute_prev_close_from_data 폴백 + 당일 _daily_close.json 생성)이
       "10s 파일의 마지막 행"을 그대로 썼는데, --nxt로 수집한 날은 마지막 행이 정규장 종가(15:30)가
@@ -662,6 +686,120 @@ def fetch_52w_high_low(code: str, env_dv: str) -> dict | None:
     return {"w52_high": w52_high, "w52_low": w52_low}
 
 
+BASIC_INFO_CACHE_MAX_AGE_DAYS = 30  # 관리종목/거래정지/업종은 자주 안 바뀌므로 매일 재조회하지 않음
+
+
+def fetch_stock_basic_info(code: str) -> dict | None:
+    """Fetch 관리종목/거래정지/업종분류 from KIS 주식기본조회(search_stock_info,
+    tr_id CTPF1002R). Reuses the same dsf.search_stock_info call already proven
+    in production by probe_nxt_tradeable() above (NXT 판정에 동일 API 사용 중).
+    Returns None on any failure - caller keeps the previous cached value (if any).
+    """
+    stock_info_fn = getattr(dsf, "search_stock_info", None)
+    if not callable(stock_info_fn):
+        return None
+    try:
+        result = stock_info_fn(prdt_type_cd="300", pdno=code)
+    except Exception as exc:
+        logger.debug("search_stock_info failed for %s: %s", code, exc)
+        return None
+    if result is None or getattr(result, "empty", True):
+        return None
+
+    row = result.iloc[-1]
+    admn_item = _is_truthy_flag(row.get("admn_item_yn"))
+    tr_stop = _is_truthy_flag(row.get("tr_stop_yn"))
+    return {
+        "admn_item_yn": bool(admn_item),
+        "tr_stop_yn": bool(tr_stop),
+        "sector_large": str(row.get("idx_bztp_lcls_cd_name") or "").strip(),
+        "sector_mid": str(row.get("idx_bztp_mcls_cd_name") or "").strip(),
+        "sector_small": str(row.get("idx_bztp_scls_cd_name") or "").strip(),
+    }
+
+
+def _load_basic_info_cache(data_root: Path) -> dict:
+    cache_path = data_root / "_stock_basic_info_cache.json"
+    if not cache_path.exists():
+        return {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.warning("failed to read %s: %s", cache_path, exc)
+        return {}
+
+
+def _save_basic_info_cache(data_root: Path, cache: dict) -> None:
+    cache_path = data_root / "_stock_basic_info_cache.json"
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        logger.info("saved stock basic-info cache (%d codes): %s", len(cache), cache_path)
+    except Exception as exc:
+        logger.warning("failed to write %s: %s", cache_path, exc)
+
+
+def get_stock_basic_info_cached(cache: dict, code: str, target_date: str) -> dict | None:
+    """관리종목/거래정지/업종 - BASIC_INFO_CACHE_MAX_AGE_DAYS 이내에 이미 조회한 종목은
+    API를 다시 호출하지 않고 캐시값을 그대로 재사용한다(느리게 바뀌는 참조성 데이터라
+    2,557종목 전체를 매일 재조회할 필요가 없음 - RS/52주 고저처럼 날짜별로 값이 바뀌는
+    시계열 데이터와는 성격이 다름).
+    """
+    entry = cache.get(code)
+    if entry:
+        fetched_at = entry.get("fetched_at")
+        if fetched_at:
+            try:
+                age_days = (datetime.strptime(target_date, "%Y%m%d") - datetime.strptime(fetched_at, "%Y%m%d")).days
+            except ValueError:
+                age_days = BASIC_INFO_CACHE_MAX_AGE_DAYS + 1
+            if 0 <= age_days <= BASIC_INFO_CACHE_MAX_AGE_DAYS:
+                return entry
+
+    fresh = fetch_stock_basic_info(code)
+    if fresh is None:
+        return entry  # keep stale cache rather than losing the data on a transient API failure
+    fresh["fetched_at"] = target_date
+    cache[code] = fresh
+    return fresh
+
+
+def fetch_market_index_daily(target_date: str, window: int = 30) -> dict:
+    """KOSPI(0001)/KOSDAQ(1001) 최근 `window`거래일 종가 시계열을 KIS
+    국내업종 일자별지수(inquire_index_daily_price, tr_id FHPUP02120000)로 조회.
+    g002의 RS(상대강도) 계산과 시장 레짐 판정이 지금까지 pykrx(KRX 직접 스크래핑)에
+    의존해 네트워크/설치 상태에 따라 조용히 실패하던 것을, 이미 인증된 KIS 세션으로
+    대체하기 위함(2026-08-29). 실패 시 빈 dict 반환 - g002는 기존처럼 pykrx로 폴백한다.
+    """
+    index_fn = getattr(dsf, "inquire_index_daily_price", None)
+    if not callable(index_fn):
+        return {}
+
+    result: dict[str, list] = {}
+    for key, idx_code in (("kospi", "0001"), ("kosdaq", "1001")):
+        try:
+            _df1, df2 = index_fn(
+                fid_period_div_code="D",
+                fid_cond_mrkt_div_code="U",
+                fid_input_iscd=idx_code,
+                fid_input_date_1=target_date,
+            )
+        except Exception as exc:
+            logger.debug("inquire_index_daily_price failed for %s: %s", key, exc)
+            continue
+        if df2 is None or df2.empty or "bstp_nmix_prpr" not in df2.columns:
+            continue
+
+        series_df = df2.copy()
+        if "stck_bsop_date" in series_df.columns:
+            series_df = series_df.sort_values("stck_bsop_date")
+        closes = pd.to_numeric(series_df["bstp_nmix_prpr"], errors="coerce").dropna().tail(window)
+        if len(closes) >= 2:
+            result[key] = closes.tolist()
+    return result
+
+
 def load_symbols(symbols_file: Path) -> list[tuple[str, str]]:
     df = pd.read_csv(symbols_file)
     if "code" not in df.columns:
@@ -853,11 +991,29 @@ def main() -> None:
         if not symbols:
             raise SystemExit(f"No matching symbols from --code: {','.join(sorted(selected_codes))}")
 
+    data_root_path = Path(args.data_root)
+    basic_info_cache = _load_basic_info_cache(data_root_path)
+
     for target_date in target_dates:
-        output_dir = Path(args.data_root) / target_date
+        output_dir = data_root_path / target_date
         output_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info("collect start: date=%s, symbols=%d, include_nxt=%s", target_date, len(symbols), include_nxt)
+
+        # 시장 레짐/RS(상대강도) 계산용 KOSPI/KOSDAQ 일자별 지수 스냅샷 (KIS API, 종목당
+        # 아니라 날짜당 1회만 조회). g002가 이 파일을 우선 사용하고, 없으면 기존 pykrx로 폴백.
+        market_index = fetch_market_index_daily(target_date)
+        if market_index:
+            market_index_path = output_dir / "_market_index.json"
+            with open(market_index_path, "w", encoding="utf-8") as _f:
+                json.dump(market_index, _f, ensure_ascii=False, indent=2)
+            logger.info(
+                "saved market index snapshot (%s): %s",
+                ", ".join(f"{k}={len(v)}d" for k, v in market_index.items()),
+                market_index_path,
+            )
+        else:
+            logger.warning("market index snapshot fetch failed for %s - g002 RS/regime will fall back to pykrx", target_date)
 
         saved_count = 0
         empty_count = 0
@@ -938,6 +1094,11 @@ def main() -> None:
                 if w52:
                     w52_map[code] = w52
 
+                # 관리종목/거래정지/업종 스냅샷 (KIS search_stock_info) - 캐시가 신선하면
+                # API 재호출 없이 재사용(BASIC_INFO_CACHE_MAX_AGE_DAYS). g002가 하드필터
+                # (관리종목/거래정지 배제)와 업종 분산에 사용.
+                get_stock_basic_info_cached(basic_info_cache, code, target_date)
+
                 saved_count += 1
                 saved_symbols.append((code, name))
                 logger.info(
@@ -984,6 +1145,11 @@ def main() -> None:
             with open(w52_path, "w", encoding="utf-8") as _f:
                 json.dump(w52_map, _f, ensure_ascii=False, indent=2)
             logger.info("saved 52w_high_low.json (%d codes): %s", len(w52_map), w52_path)
+
+        # basic_info_cache는 날짜 폴더가 아니라 data_root 최상위에 저장되는 전역 캐시라
+        # (관리종목/거래정지/업종은 날짜별로 바뀌는 데이터가 아님) 매 target_date 처리 후
+        # 갱신분을 바로 반영 - 여러 날짜를 한 번에 돌리다 중간에 중단돼도 유실을 최소화.
+        _save_basic_info_cache(data_root_path, basic_info_cache)
 
         # Save prev_close from prior trading day data (mirrors r006 fetch_prev_close).
         prev_close_map: dict[str, float] = {}
