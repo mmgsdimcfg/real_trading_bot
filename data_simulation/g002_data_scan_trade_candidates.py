@@ -24,6 +24,71 @@ Update log format (append only):
 
 Update log:
 - [2026-08-29] type=feat owner=copilot
+    summary: 앞선 검토에서 데이터 소스 부재로 보류했던 3개 항목(관리종목/거래정지 배제,
+      업종 분산, 시장레짐/RS)을 open-trading-api(한국투자증권 KIS Open API) 기반으로 구현.
+      probe_nxt_tradeable()이 이미 실사용 중인 dsf.search_stock_info 호출 패턴을 g001이
+      재사용해 스냅샷을 만들고, g002는 그 스냅샷만 읽는 기존 w52_high_low 구조를 그대로 따름.
+      (1) load_stock_basic_info() 신규 - g001이 저장하는 data_root/_stock_basic_info_cache.json
+      (관리종목/거래정지/업종, 날짜 폴더 아닌 최상위 - 느리게 바뀌는 참조데이터)을 로드.
+      evaluate_candidate에 basic_info 파라미터 추가, admn_item_yn/tr_stop_yn이 있으면
+      admin_issue_or_halt_excluded 하드 배제(반전예외 없음, 우선주/스팩과 동일 취급),
+      idx_bztp_mcls_cd_name(업종 중분류)을 candidate["sector"]로 저장.
+      (2) load_market_map() - pykrx get_market_ticker_list 네트워크 호출을 제거하고
+      g004_universe_symbols_master.txt에 이미 있던 'market' 컬럼을 직접 읽도록 변경.
+      2026-08-28 스캔 로그에서 이 pykrx 호출이 실제로 매번 "[WARN] 시장 매핑 조회 실패"로
+      빈 매핑을 반환하고 있었음을 확인 - 로컬 파일로 완전히 대체되어 API 의존성 자체가 사라짐.
+      (3) load_market_index_series()에 로컬 스냅샷 우선순위 추가 - g001이
+      dsf.inquire_index_daily_price로 저장하는 data_root/{date}/_market_index.json을 먼저
+      찾고, 없으면 기존 pykrx로 폴백. RS(상대강도)가 그동안 이 세션 환경에서 pykrx 네트워크
+      실패로 전종목 중립 처리되던 문제([WARN] RS 로그로 확인됨, 직전 커밋에서 가시화)를
+      실질적으로 해소할 수 있는 경로 추가.
+      (4) apply_sector_diversification_cap() 신규 - 최종 선정 중 한 업종이
+      SECTOR_CAP_RATIO(기본 30%)를 넘으면 그 업종 최저점 종목을 다른(캡 이하) 업종의 최고점
+      미선정 후보와 교체. sector=None(스냅샷 없음)인 종목은 분산 계산에서 제외(데이터 부재로
+      불리해지지 않도록). scan()에서 fallback 채우기 직후, 최종 정렬 직전에 적용.
+      render_all_scan_markdown에 low_52w_ratio/sector 컬럼 추가로 가시화.
+      *** 미검증: (1)(2)(3)(4) 모두 g001이 만드는 스냅샷 파일의 존재를 전제하는데, 이 세션
+      환경은 KIS Open API 자격증명이 없어(kis_devlp.yaml 플레이스홀더) 실제 스냅샷을 생성해
+      end-to-end로 검증하지 못했음. 대신 (a) g004_universe_symbols_master.txt 실파일로
+      load_market_map() 실행 검증(KOSPI=947/KOSDAQ=1747 정상 매핑), (b) 합성 JSON 스냅샷으로
+      load_stock_basic_info/load_market_index_series 검증, (c) 합성 후보 100개로
+      apply_sector_diversification_cap() 검증(쏠림 40->20/15/15로 수렴, 총원수/중복 없음
+      확인), (d) 스냅샷이 전혀 없는 기존 상태로 전체 스캔 재실행해 회귀 없음 확인 - 이 네
+      가지로 로직 자체는 검증했으나, 실제 KIS API 응답 형식과 완전히 일치하는지는 실서버
+      최초 실행 시 로그(basic-info cache/market index snapshot 저장 여부와 건수) 확인 필요. ***
+    impact: scanner
+    compatibility: backward-compatible (스냅샷 파일이 없으면 전부 기존 동작으로 폴백;
+      스냅샷이 생기면 관리종목/거래정지 종목이 새로 배제되고 업종 쏠림이 완화되어 최종
+      picks 구성이 달라질 수 있음)
+- [2026-08-29] type=fix owner=copilot
+    summary: 사용자 요청으로 "3.검토(불필요/과잉)" + "4.검토(추가 필요)" 항목을 종합 반영.
+      (1) 최종선정 결정성 확보: pick_diversified_top_pool(점수와 무관한 유동성/거래량/ATR
+      가중 랜덤추첨, 적격 45위가 탈락하고 최하위권이 선정되는 스코어 역전 실사례 확인)을
+      제거하고 pick_with_tie_randomization(점수 내림차순, 정확한 동점 구간에서만 랜덤)으로
+      교체. 이제 미사용된 pick_diversified_top_pool/selection_weight 미사용 config
+      필드(diversified_pick_pool_mult)도 함께 제거.
+      (2) 소프트플래그 차등 페널티: *_reversal_override 계열(원래 하드필터였다가 반전신호로
+      소프트 전환된 것)은 순수 정보성 플래그(rsi_overbought 등)보다 리스크가 커 -0.7 대신
+      -1.5로 상향.
+      (3) RS(상대강도, 13점) 계산 실패 시 조용히 전종목 중립 6.5점으로 채워지는 문제를
+      가시화 - market_index_series 로드 실패 시 [WARN] 로그 + scanner_report.md에 RS 상태
+      기록(2026-08-28 스캔 전수조사 결과 relative_strength 2557/2557 전부 공란이었음에도
+      기존엔 드러나지 않았음).
+      (4) 우선주/스팩 하드 배제 신규(_is_preferred_or_spac_name) - g004_universe_symbols_
+      master.txt 전수 검사로 오탐 없음 확인(114건, 삼성전자우/현대차2우B 등). 반전신호
+      예외 없음(본주와 유동성/가격구조가 다른 구조적 문제라 반전과 무관).
+      (5) 52주 저가 대비 위치 신규 활용 - load_w52_high_low()가 이미 로드해오던 w52_low가
+      지금까지 미사용이었음. Minervini Trend Template의 "52주 저가 대비 +30%" 기준을
+      참고해 low_52w_ratio<0.3이면 near_52w_low_unconfirmed 소프트플래그 추가(하드 배제는
+      아직 실사례 부족으로 보류). _scan_all.md에 low_52w_ratio 컬럼도 함께 노출.
+      *** 보류(이번 라운드 미반영): 시장(지수) 레짐 필터·섹터/테마 분산 - 전자는 로컬
+      pykrx 네트워크 의존성 검증이 이 환경에서 불가능했고(RS와 동일 원인으로 실패),
+      후자는 g004_universe_symbols_master.txt에 섹터 컬럼 자체가 없어 데이터 소스 확보가
+      선행되어야 함. 관리종목/거래정지 배제도 동일하게 로컬 데이터 소스 부재로 보류. ***
+    impact: scanner
+    compatibility: breaking (최종 picks 구성이 결정론적으로 바뀌고, 우선주/스팩이 전량
+      배제되며, 소프트플래그 페널티 배점이 달라져 score 및 eligible pool이 달라짐)
+- [2026-08-29] type=feat owner=copilot
     summary: _scan_all.md에 "picked" 컬럼 추가(rank 바로 다음, code 바로 앞) - 최종 선정된
       50종목(selected_rows)에는 🟢, 그 외는 빈 칸으로 표시해 전체 스캔 결과에서 최종 선정 여부를
       한눈에 볼 수 있도록 함. scan()에서 selected_rows 확정 직후 row["picked"]=True로 마킹하며,
@@ -280,7 +345,6 @@ class ScannerConfig:
     max_prev_day_change: float      # exclude if previous day abs return >= this
     recent_pick_penalty_per_day: float  # score penalty per recent-day repeat
     recent_pick_penalty_lookback_days: int  # number of prior trading days to check
-    diversified_pick_pool_mult: int  # top-pool multiplier for diversified sampling
     # Output
     max_picks: int | None
 
@@ -300,7 +364,6 @@ BALANCED_CONFIG = ScannerConfig(
     max_prev_day_change=0.20,        # 전일 등락률 20% 이상이면 제외
     recent_pick_penalty_per_day=3.5,  # 최근 선정 반복 시 하루당 감점폭
     recent_pick_penalty_lookback_days=4,  # 반복 선정 여부 확인 대상 과거 거래일수
-    diversified_pick_pool_mult=3,     # 분산 샘플링을 위한 상위 후보군 배수(max_picks 대비)
     max_picks=50,                    # 최종 선정 종목 수 상한
 )
 
@@ -795,6 +858,27 @@ BOX_RANGE_NO_PROGRESS_MIN_RANGE_PCT = 0.08   # 이 이상 변동폭이 있어야
                                               # 맞게 상향.
 
 
+PREFERRED_STOCK_NAME_RE = re.compile(r".+\d*우[A-Z]?$")
+
+
+def _is_preferred_or_spac_name(name: str) -> bool:
+    """[2026-08-29] 우선주/스팩 종목명 패턴 감지.
+
+    우선주는 KRX 명명 관례상 "회사명+우"(1우선주) 또는 "회사명+숫자+우+영문자"
+    (2우B, 3우C 등 후속 발행분) 형태로 끝나며, 본주 대비 유동성이 낮고 가격 움직임이
+    본주 신호와 어긋날 수 있어 모멘텀 스캐너 대상에서 제외한다(g004_universe_symbols_
+    master.txt 전수 검사 결과 114건 전부 실제 우선주였고 오탐 없음 확인, 예: 삼성전자우/
+    현대차2우B/아모레퍼시픽홀딩스3우C). 스팩(SPAC)은 상장 목적 자체가 다른 회사와의
+    합병이라 일반 모멘텀 매매 대상이 아니므로 이름에 "스팩"이 포함되면 함께 제외.
+    """
+    if not name:
+        return False
+    stripped = name.strip()
+    if "스팩" in stripped:
+        return True
+    return bool(PREFERRED_STOCK_NAME_RE.match(stripped))
+
+
 def _is_box_range_no_progress(
     df,
     window=BOX_RANGE_NO_PROGRESS_WINDOW,
@@ -864,7 +948,7 @@ def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, 
 # Candidate evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None, market_map=None, market_index_series=None):
+def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None, market_map=None, market_index_series=None, basic_info=None):
 
     candidate = {
         "code": code,
@@ -889,6 +973,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "vol_trend_ratio": None,
         "vol_rel_strength": None,
         "high_52w_ratio": None,
+        "low_52w_ratio": None,
+        "sector": None,
         "near_52w_high_override": False,
         "prev_day_change": None,
         "is_last_bearish": None,
@@ -1008,6 +1094,28 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         week52_high = safe_float(_check_df["high"].tail(lookback_52w).max())
     high_52w_ratio = (price / week52_high) if (week52_high is not None and week52_high > 0) else None
 
+    # [2026-08-29] 52-week LOW position: load_w52_high_low()가 w52_low까지 이미 로드해오는데도
+    # 지금까지 어디서도 쓰이지 않고 있었음. Mark Minervini의 잘 알려진 "Trend Template"
+    # 스크리닝 기준 중 하나가 "현재가가 52주 저가 대비 최소 +30% 이상"인데(막 바닥을 찍고
+    # 반등한 지 얼마 안 돼 아직 추세가 검증되지 않은 종목을 걸러내기 위함), 이 스캐너는 그
+    # 신호가 아예 빠져 있었다. 같은 방식(KIS 서버값 우선, 없으면 로컬 일봉 최소값)으로 계산.
+    week52_low = None
+    if w52_info and w52_info.get("w52_low"):
+        week52_low = safe_float(w52_info.get("w52_low"))
+    if week52_low is None:
+        lookback_52w = min(252, len(_check_df))
+        week52_low = safe_float(_check_df["low"].tail(lookback_52w).min())
+    low_52w_ratio = ((price / week52_low) - 1.0) if (week52_low is not None and week52_low > 0) else None
+
+    # [2026-08-29] 업종(섹터) - KIS 주식기본조회(search_stock_info)의 업종 중분류명
+    # (idx_bztp_mcls_cd_name). g001이 아직 이 스냅샷을 만든 적 없으면 basic_info가 None이라
+    # sector=None으로 남고, 섹터 분산 로직은 그 종목을 "분산 대상 아님(제약 없음)"으로 취급한다.
+    sector = None
+    if basic_info:
+        sector = basic_info.get("sector_mid") or basic_info.get("sector_large") or None
+        if sector:
+            sector = str(sector).strip() or None
+
     # Previous day absolute return (gap / surge risk)
     prev_day_change = None
     if len(_check_df) >= 2:
@@ -1068,6 +1176,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "vol_trend_ratio": vol_trend_ratio,
         "vol_rel_strength": vol_rel_strength,
         "high_52w_ratio": high_52w_ratio,
+        "low_52w_ratio": low_52w_ratio,
+        "sector": sector,
         "near_52w_high_override": near_52w_high_override,
         "prev_day_change": prev_day_change,
         "is_last_bearish": is_last_bearish,
@@ -1083,6 +1193,18 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         candidate["fail_reasons"].append("price_floor")
     if price > config.price_max:
         candidate["fail_reasons"].append("price_ceiling")
+
+    # [2026-08-29] 우선주/스팩 구조적 배제 - 추세가 반전되더라도 예외를 둘 성격의 문제가
+    # 아니므로(본주와 다른 유동성/가격구조) 반전신호 예외 없이 항상 하드 배제.
+    if _is_preferred_or_spac_name(name):
+        candidate["fail_reasons"].append("preferred_or_spac_excluded")
+
+    # [2026-08-29] 관리종목/거래정지 구조적 배제 - KIS 주식기본조회(basic_info, g001이
+    # search_stock_info로 스냅샷) 기반. basic_info가 없으면(g001을 이 기능 추가 전 버전으로
+    # 실행했거나 API 조회 실패) 판단 근거가 없으므로 배제하지 않고 통과시킨다(기존 동작 유지).
+    if basic_info:
+        if basic_info.get("admn_item_yn") or basic_info.get("tr_stop_yn"):
+            candidate["fail_reasons"].append("admin_issue_or_halt_excluded")
 
     # (상장일수 기준은 stage 0에서 이미 skip_reason으로 처리됨 - 여기 도달했다면 통과한 것)
 
@@ -1212,6 +1334,11 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # (flat_trend은 위에서 하드 필터로 승격됨 - 여기서 중복 추가하지 않음)
     if high_52w_ratio is not None and high_52w_ratio < 0.4:
         candidate["soft_flags"].append("far_from_52w_high")
+    # [2026-08-29] Minervini Trend Template의 "52주 저가 대비 +30% 이상" 기준 반영 - 막 바닥을
+    # 찍고 반등한 지 얼마 안 돼 아직 상승추세가 충분히 검증되지 않은 종목 경고. 하드 배제는
+    # 아직 근거가 약해 소프트로만 도입(box_range_no_progress처럼 실사례가 쌓이면 하드 승격 검토).
+    if low_52w_ratio is not None and low_52w_ratio < 0.3:
+        candidate["soft_flags"].append("near_52w_low_unconfirmed")
     if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
         if near_52w_high_override:
             candidate["soft_flags"].append("near_52w_high_override")
@@ -1354,7 +1481,14 @@ def calculate_candidate_score(candidate, config):
 
     # 소프트플래그 개수 페널티 (2026-07-22: 3일하락/BB하한/거래량감소 등이 소프트로
     # 편입되며 개수가 늘 수 있어 근소한 차이를 가르는 타이브레이커 역할이 커짐).
-    score -= 0.7 * len(candidate.get("soft_flags", []))
+    # [2026-08-29] *_reversal_override 플래그(원래 down_trend/flat_trend/
+    # bearish_candle_dominant/box_range_no_progress 하드필터에 걸렸어야 했는데 반전신호로
+    # 소프트 전환된 것)는 rsi_overbought/far_from_52w_high 같은 순수 정보성 소프트플래그보다
+    # 리스크가 커 동일한 -0.7점 취급은 과소평가임 - 더 무거운 페널티를 적용해 구분.
+    soft_flags = candidate.get("soft_flags", [])
+    reversal_override_count = sum(1 for flag in soft_flags if flag.endswith("_reversal_override"))
+    plain_soft_count = len(soft_flags) - reversal_override_count
+    score -= 0.7 * plain_soft_count + 1.5 * reversal_override_count
 
     return round(score, 2)
 
@@ -1419,41 +1553,6 @@ def weighted_sample_without_replacement(rows, k, rng):
     return selected
 
 
-def pick_diversified_top_pool(sorted_rows, max_picks, rng, pool_mult=3):
-    """Diversified selection from a top-ranked pool, not only exact-score ties."""
-    if max_picks is None:
-        return list(sorted_rows)
-    if max_picks <= 0 or not sorted_rows:
-        return []
-
-    pool_size = min(len(sorted_rows), max(max_picks, max_picks * max(1, int(pool_mult))))
-    top_pool = list(sorted_rows[:pool_size])
-    if len(top_pool) <= max_picks:
-        return top_pool
-
-    top_score = float(top_pool[0].get("score") or 0.0)
-    base_score = float(top_pool[-1].get("score") or 0.0)
-    span = max(1.0, top_score - base_score)
-
-    pool = list(top_pool)
-    selected = []
-    while pool and len(selected) < max_picks:
-        weights = []
-        for row in pool:
-            score = float(row.get("score") or 0.0)
-            score_boost = 1.0 + ((score - base_score) / span)
-            weights.append(selection_weight(row) * (score_boost ** 1.35))
-        chosen = rng.choices(pool, weights=weights, k=1)[0]
-        selected.append(chosen)
-        pool.remove(chosen)
-
-    selected.sort(
-        key=lambda row: (row["score"], row.get("amount_ma20") or 0.0, row.get("atr_ratio") or 0.0),
-        reverse=True,
-    )
-    return selected
-
-
 def pick_with_tie_randomization(sorted_rows, max_picks, rng):
     """Pick by score rank, but randomize inside same-score buckets."""
     if max_picks is None:
@@ -1483,6 +1582,63 @@ def pick_with_tie_randomization(sorted_rows, max_picks, rng):
         reverse=True,
     )
     return picked
+
+
+SECTOR_CAP_RATIO = 0.3  # 최종 선정 중 한 업종(sector)이 차지할 수 있는 최대 비율
+
+
+def apply_sector_diversification_cap(selected_rows, eligible_rows, max_picks, cap_ratio=SECTOR_CAP_RATIO):
+    """[2026-08-29] 특정 업종 쏠림 완화. 최종 선정(selected_rows) 중 한 업종이
+    max_picks*cap_ratio(기본 30%)를 넘으면, 그 업종에서 가장 점수가 낮은 종목을 선정 밖의
+    다른 업종(캡 이하) 최고 점수 후보와 교체한다. sector 정보가 없는 종목(basic_info 스냅샷이
+    없거나 KIS 조회 실패)은 분산 계산에서 제외 - 데이터 부재를 이유로 불리하게 만들지 않는다.
+    교체할 적절한 후보가 없으면(예: 적격 풀 자체가 한 업종에 쏠려 있음) 그 초과분은 그대로
+    둔다 - 총원수를 줄이거나 빈 자리를 만들지 않는 것이 항상 우선.
+    """
+    if not selected_rows or max_picks is None or max_picks <= 0:
+        return selected_rows
+
+    cap = max(1, math.ceil(max_picks * cap_ratio))
+    selected = list(selected_rows)
+    selected_codes = {row["code"] for row in selected}
+    # eligible_rows는 이미 점수 내림차순 정렬돼 있으므로, 여기서 순서대로 뽑으면 자연히
+    # "해당 업종 캡을 넘기지 않는 선에서 가장 점수 높은 대체 후보"가 된다.
+    replacement_pool = [row for row in eligible_rows if row["code"] not in selected_codes]
+
+    for _ in range(max_picks):  # 안전 상한 - 무한루프 방지
+        sector_members: dict[str, list] = {}
+        for row in selected:
+            sector = row.get("sector")
+            if sector:
+                sector_members.setdefault(sector, []).append(row)
+
+        over_cap = [(sector, rows) for sector, rows in sector_members.items() if len(rows) > cap]
+        if not over_cap:
+            break
+
+        swapped = False
+        for sector, rows in over_cap:
+            worst = min(rows, key=lambda r: (r.get("score") or 0.0))
+            for cand in replacement_pool:
+                cand_sector = cand.get("sector")
+                if cand_sector == sector:
+                    continue
+                if cand_sector and len(sector_members.get(cand_sector, [])) >= cap:
+                    continue
+                selected.remove(worst)
+                selected.append(cand)
+                replacement_pool.remove(cand)
+                replacement_pool.append(worst)
+                if "sector_cap_swapped_in" not in cand["soft_flags"]:
+                    cand["soft_flags"].append("sector_cap_swapped_in")
+                swapped = True
+                break
+            if swapped:
+                break
+        if not swapped:
+            break  # 더 이상 유효한 교체 후보가 없음 - 초과분 유지
+
+    return selected
 
 
 
@@ -1561,7 +1717,7 @@ def render_all_scan_csv(all_rows):
 def render_all_scan_markdown(all_rows):
     headers = [
         "rank", "picked", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
-        "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "listing_days", "prev_day_change", "repeat_recent_days",
+        "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "low_52w_ratio", "sector", "listing_days", "prev_day_change", "repeat_recent_days",
         "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "rsi", "relative_strength",
     ]
 
@@ -1588,6 +1744,8 @@ def render_all_scan_markdown(all_rows):
             "Y" if row.get("ma_full_alignment") else "N",
             str(row.get("up_days_in_5") if row.get("up_days_in_5") is not None else ""),
             f"{row.get('high_52w_ratio'):.3f}" if row.get("high_52w_ratio") is not None else "",
+            f"{row.get('low_52w_ratio'):.3f}" if row.get("low_52w_ratio") is not None else "",
+            str(row.get("sector") or ""),
             str(row.get("listing_days") if row.get("listing_days") is not None else ""),
             f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
             str(row.get("repeat_recent_days") if row.get("repeat_recent_days") is not None else ""),
@@ -1655,7 +1813,6 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         f"- max prev day change: {config.max_prev_day_change:.1%}",
         f"- recent pick penalty/day: {config.recent_pick_penalty_per_day}",
         f"- recent pick lookback days: {config.recent_pick_penalty_lookback_days}",
-        f"- diversified pick pool x: {config.diversified_pick_pool_mult}",
         f"- max picks: {config.max_picks}",
         "",
         "## Summary",
@@ -1664,6 +1821,7 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         f"- eligible pool: {summary['eligible_pool_count']}",
         f"- selected picks: {summary['selected_count']}",
         f"- skipped: {summary['skipped']}",
+        f"- RS(relative strength) data: {'OK' if scan_result.get('rs_data_available') else 'FAILED - all candidates scored with neutral RS (6.5/13)'}",
         "",
         "## Ranked Picks",
         "",
@@ -1867,6 +2025,25 @@ def load_w52_high_low(data_root: Path, target_date_str: str | None) -> dict[str,
     return raw if isinstance(raw, dict) else {}
 
 
+def load_stock_basic_info(data_root: Path) -> dict[str, dict]:
+    """[2026-08-29] g001이 KIS 주식기본조회(search_stock_info)로 저장한
+    data_root/_stock_basic_info_cache.json(관리종목/거래정지/업종, 날짜 폴더가 아닌
+    data_root 최상위 - 느리게 바뀌는 참조데이터라 날짜별 스냅샷이 아니라 코드별 캐시)을
+    읽는다. 파일이 없거나(g001을 아직 이 기능 추가 후 실행한 적이 없음) 손상됐으면 빈
+    dict 반환 - 이 경우 관리종목/거래정지 하드필터와 업종 분산은 비활성화된다(기존처럼
+    통과 처리, 하드 배제하지 않음).
+    """
+    cache_path = data_root / "_stock_basic_info_cache.json"
+    if not cache_path.exists():
+        return {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _pick_market_reference_date(data_root: Path, target_date_str: str | None) -> str | None:
     if target_date_str:
         return find_nearest_trading_date(data_root, target_date_str)
@@ -1879,54 +2056,90 @@ def _pick_market_reference_date(data_root: Path, target_date_str: str | None) ->
 
 
 def load_market_map(data_root: Path, target_date_str: str | None, verbose: bool = True) -> tuple[dict[str, str], str | None]:
-    """Load code->market map (kospi/kosdaq) from pykrx ticker snapshots."""
-    ref_date = _pick_market_reference_date(data_root, target_date_str)
-    if not ref_date:
-        return {}, None
+    """Load code->market map (kospi/kosdaq).
 
-    try:
-        from pykrx import stock  # type: ignore
-    except Exception as exc:
+    [2026-08-29] pykrx 네트워크 조회(get_market_ticker_list) 대신
+    g004_universe_symbols_master.txt의 기존 'market' 컬럼을 그대로 사용하도록 변경.
+    이 파일은 이미 종목별 KOSPI/KOSDAQ 구분을 갖고 있어(load_symbols()가 code/name만
+    읽고 이 컬럼은 그동안 방치돼 있었음) pykrx 없이도 100% 로컬로 해결 가능한 문제였다.
+    RS(load_market_index_series)와 달리 이 항목은 날짜별로 값이 바뀌지 않으므로 스냅샷도
+    불필요 - API 호출 자체가 사라짐. 이 세션 환경에서 실제로 pykrx가 "[WARN] 시장 매핑
+    조회 실패"로 매번 빈 매핑을 반환하고 있었음을 확인한 뒤 적용(2026-08-28 스캔 로그 참조).
+    """
+    ref_date = _pick_market_reference_date(data_root, target_date_str) or target_date_str or "latest"
+    symbols_path = Path("g004_universe_symbols_master.txt")
+    if not symbols_path.exists():
         if verbose:
-            print(f"[WARN] pykrx import 실패로 시장 구분 매핑을 사용하지 않습니다: {exc}")
+            print(f"[WARN] {symbols_path} 없음 - 시장 구분 매핑을 사용하지 않습니다.")
         return {}, ref_date
 
-    parsed = datetime.strptime(ref_date, "%Y%m%d")
-    for offset in range(0, 8):
-        date_str = (parsed - timedelta(days=offset)).strftime("%Y%m%d")
-        try:
-            kospi = set(stock.get_market_ticker_list(date_str, market="KOSPI"))
-            kosdaq = set(stock.get_market_ticker_list(date_str, market="KOSDAQ"))
-        except Exception:
-            continue
-
-        if not kospi and not kosdaq:
-            continue
-
-        market_map: dict[str, str] = {}
-        for code in kospi:
-            market_map[str(code).zfill(6)] = "kospi"
-        for code in kosdaq:
-            market_map[str(code).zfill(6)] = "kosdaq"
-
+    try:
+        df = pd.read_csv(symbols_path)
+    except Exception as exc:
         if verbose:
-            print(
-                f"[INFO] 시장 매핑 로드 완료 ({date_str}) | "
-                f"KOSPI={len(kospi)} KOSDAQ={len(kosdaq)}"
-            )
-        return market_map, date_str
+            print(f"[WARN] {symbols_path} 읽기 실패로 시장 구분 매핑을 사용하지 않습니다: {exc}")
+        return {}, ref_date
+
+    if "code" not in df.columns or "market" not in df.columns:
+        if verbose:
+            print(f"[WARN] {symbols_path}에 'code'/'market' 컬럼이 없어 시장 구분 매핑을 사용하지 않습니다.")
+        return {}, ref_date
+
+    market_map: dict[str, str] = {}
+    for code, market in zip(df["code"].astype(str), df["market"].astype(str)):
+        code6 = code.strip().zfill(6)
+        market_norm = market.strip().lower()
+        if code6 and market_norm in ("kospi", "kosdaq"):
+            market_map[code6] = market_norm
 
     if verbose:
-        print(f"[WARN] 시장 매핑 조회 실패: ref_date={ref_date} (최근 7일 내 유효 데이터 없음)")
-    return {}, ref_date
+        kospi_n = sum(1 for v in market_map.values() if v == "kospi")
+        kosdaq_n = sum(1 for v in market_map.values() if v == "kosdaq")
+        print(f"[INFO] 시장 매핑 로드 완료 (로컬 {symbols_path}) | KOSPI={kospi_n} KOSDAQ={kosdaq_n}")
+    return market_map, ref_date
 
 
-def load_market_index_series(target_date_str: str | None, window: int = 25) -> dict[str, "pd.Series"]:
-    """KOSPI(1001)/KOSDAQ(2001) 지수 종가 시계열 로드 (pykrx). RS(상대강도) 계산용.
-    pykrx가 없거나 조회 실패 시 빈 dict를 반환하며, 이 경우 RS는 점수에 중립(0점) 기여한다.
+def _load_local_market_index_snapshot(data_root: Path, target_date_str: str) -> dict[str, "pd.Series"]:
+    """[2026-08-29] g001이 KIS inquire_index_daily_price로 저장한
+    data_root/{date}/_market_index.json을 읽는다. pykrx보다 우선 사용 - 이미 인증된
+    KIS 세션 기반이라 별도 네트워크 접근성/설치 여부에 좌우되지 않는다(단, g001이 그
+    날짜에 이 기능을 켠 채로 실행됐어야 파일이 존재함 - 없으면 빈 dict 반환, 호출자가
+    pykrx로 폴백).
+    """
+    snapshot_path = data_root / str(target_date_str) / "_market_index.json"
+    if not snapshot_path.exists():
+        return {}
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, "pd.Series"] = {}
+    for key in ("kospi", "kosdaq"):
+        values = raw.get(key)
+        if isinstance(values, list) and len(values) >= 2:
+            result[key] = pd.Series([float(v) for v in values])
+    return result
+
+
+def load_market_index_series(data_root: Path, target_date_str: str | None, window: int = 25) -> dict[str, "pd.Series"]:
+    """KOSPI/KOSDAQ 지수 종가 시계열 로드. RS(상대강도) 계산용.
+
+    [2026-08-29] 우선순위를 KIS 로컬 스냅샷(_market_index.json, g001이 저장) -> pykrx
+    순으로 변경. 이 세션 환경에서 pykrx가 네트워크 오류로 항상 실패하는 것을 확인했고
+    (KRX 서버 직접 스크래핑이라 별도 인증/네트워크 문제에 취약), g001이 이미 인증해 둔
+    KIS 세션으로 동일한 데이터를 대체할 수 있음을 확인해 폴백 체인에 추가했다. 스냅샷도
+    없고 pykrx도 실패하면 빈 dict 반환 - 이 경우 RS는 점수에 중립(0점) 기여한다.
     """
     if not target_date_str:
         return {}
+
+    local = _load_local_market_index_snapshot(data_root, target_date_str)
+    if local:
+        return local
+
     try:
         from pykrx import stock  # type: ignore
     except Exception:
@@ -2080,8 +2293,26 @@ def scan(
         lookback_days=config.recent_pick_penalty_lookback_days,
     )
     market_map, market_ref_date = load_market_map(data_root, target_date_str, verbose=verbose)
-    market_index_series = load_market_index_series(target_date_str)
+    market_index_series = load_market_index_series(data_root, target_date_str)
+    # [2026-08-29] RS(상대강도, 배점 13점 만점) 항목이 pykrx 조회 실패(네트워크/미설치 등) 시
+    # 조용히 전종목 중립 절반점(6.5/13)으로 채워지는 문제를 파악하기 어려웠음(2026-08-28 스캔
+    # 전수조사 결과 relative_strength가 2557/2557 전부 빈 값이었음에도 로그상 드러나지 않았음).
+    # RS가 이번 스캔에서 아예 계산 불가능한 상태임을 즉시 눈에 띄게 경고.
+    rs_data_available = bool(market_index_series)
+    if verbose and not rs_data_available:
+        print(
+            "[WARN] RS(상대강도) 데이터 로드 실패(pykrx 미설치/네트워크 오류 등) - "
+            "이번 스캔은 전종목 RS가 중립 절반점(6.5/13)으로 고정 처리됩니다. "
+            "market_index_series가 비어 있음."
+        )
     w52_map = load_w52_high_low(data_root, target_date_str)
+    basic_info_map = load_stock_basic_info(data_root)
+    if verbose and not basic_info_map:
+        print(
+            "[INFO] 관리종목/거래정지/업종 스냅샷(_stock_basic_info_cache.json) 없음 - "
+            "해당 하드필터/업종 분산은 이번 스캔에서 비활성화됩니다 (g001을 이 기능 추가 이후 "
+            "버전으로 한 번 실행하면 생성됩니다)."
+        )
 
     candidates = []
     skipped = 0
@@ -2107,6 +2338,7 @@ def scan(
             recent_pick_count=recent_repeat_days, daily_hist=daily_hist,
             w52_info=w52_map.get(code),
             market_map=market_map, market_index_series=market_index_series,
+            basic_info=basic_info_map.get(code),
         )
         if recent_repeat_days > 0:
             candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
@@ -2157,11 +2389,18 @@ def scan(
     selection_mode = "strict_eligible"
 
     if config.max_picks is not None:
-        selected_rows = pick_diversified_top_pool(
+        # [2026-08-29] pick_diversified_top_pool -> pick_with_tie_randomization으로 교체.
+        # 기존 방식은 상위 max_picks*pool_mult(=150) 풀 전체(적격 수가 그보다 적으면 사실상
+        # 적격 전원)를 대상으로 "점수 기반 boost x 유동성/거래량/ATR 가중치"로 가중 랜덤 추첨을
+        # 했는데, 이 가중치가 점수와 독립적으로 커서 적격 45위(53.81점)가 탈락하고 적격
+        # 최하위권(37점대)이 선정되는 등 스코어 역전이 실제로 발생함(2026-08-28 스캔 000810
+        # 삼성화재 사례로 확인). "diversified"라는 이름과 달리 섹터/상관관계 분산 효과는 없고
+        # 순수 무작위성만 주입해 재현성/신뢰성을 해치므로, 점수 순으로 결정론적으로 선정하되
+        # 정확히 동점(반올림된 score가 같음)인 경계에서만 무작위로 가르는 방식으로 전환.
+        selected_rows = pick_with_tie_randomization(
             eligible_rows,
             config.max_picks,
             rng,
-            pool_mult=config.diversified_pick_pool_mult,
         )
 
     # Fallback: fill up to max_picks with scorable non-down-trend candidates.
@@ -2199,6 +2438,10 @@ def scan(
                 if "fallback_selected" not in row["soft_flags"]:
                     row["soft_flags"].append("fallback_selected")
 
+    # [2026-08-29] 업종 쏠림 완화 - basic_info 스냅샷(g001)이 없으면 모든 종목의 sector가
+    # None이라 sector_members가 비고, 함수는 아무 것도 바꾸지 않고 그대로 반환한다(무해).
+    selected_rows = apply_sector_diversification_cap(selected_rows, eligible_rows, config.max_picks)
+
     # Final output order: always keep selected rows sorted by score desc.
     selected_rows.sort(
         key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
@@ -2222,6 +2465,7 @@ def scan(
         print(f"평가된 종목: {len(candidates)}")
         print(f"적격 수: {summary['eligible_pool_count']}")
         print(f"최종 선정: {summary['selected_count']}")
+        print(f"RS(상대강도) 데이터: {'정상' if rs_data_available else '실패(전종목 중립 6.5/13 처리됨)'}")
         if liquidity_filter_info.get("enabled"):
             avg_amt = liquidity_filter_info.get("global_amount_avg")
             mkt_counts = liquidity_filter_info.get("market_counts") or {}
@@ -2250,6 +2494,7 @@ def scan(
             "selection_mode": selection_mode,
             "market_ref_date": market_ref_date,
             "liquidity_filter": liquidity_filter_info,
+            "rs_data_available": rs_data_available,
         }
     return selected
 
