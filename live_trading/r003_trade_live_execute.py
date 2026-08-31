@@ -2851,8 +2851,7 @@ class TradingAPI:
         key = str(code).zfill(6)
         until = self.trade_lock_until.get(key)
         return until is not None and now < until
-        entry_time = pos.get("entry_buy_time") or pos.get("buy_time")
-        buy_time = entry_time
+
     def _mark_trade_lock(self, code: str, now: datetime) -> None:
         key = str(code).zfill(6)
         self.trade_lock_until[key] = now + timedelta(minutes=TRADE_COOLDOWN_MINUTES)
@@ -3178,7 +3177,7 @@ class TradingAPI:
                         # 상태 API 지연과 혼동하지 않기 위한 것으로, 우리가 건 취소에는 해당 없음.
                         if pending.get("cancel_inflight"):
                             if pending.get("reprice_pending"):
-                                self._resubmit_repriced_buy_order(code, pending, now, nxt_tradeable)
+                                self._resubmit_repriced_buy_order(code, pending, now, is_nxt_tradeable(code))
                             else:
                                 self._maybe_log_pending_progress(
                                     pending,
