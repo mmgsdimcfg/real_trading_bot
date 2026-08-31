@@ -1379,15 +1379,24 @@ def _entry_score_1min(cur: pd.Series, frame_1min: pd.DataFrame) -> tuple[int, di
 
 
 def check_entry_condition_1min(frame_1min: pd.DataFrame) -> tuple[bool, str]:
-    """3분봉 신호(check_buy_condition) 통과 후 1분봉에서 진입 타이밍을 재검증하는 점수제 게이트.
+    """3분봉 신호(check_buy_condition) 통과 후 1분봉에서 진입 타이밍을 재검증하는 게이트.
 
-    필수조건 없이 EMA9>EMA20 / Close>EMA9 / 직전고점돌파 / 거래량>VOL_MA20 4개를 점수화해
-    ENTRY_SCORE_THRESHOLD 이상이면 통과. r003.ENABLE_1MIN_ENTRY_SCORE_GATE로 켜고 끈다.
+    직전에 확정된(가장 최근 종가) 1분봉이 음봉(close<=open)이면 그 시점의 상승 모멘텀이
+    실린 게 아니므로 즉시 거부한다 (2026-08-31: 033790 사례 - 1분봉/3분봉 모두 음봉인데도
+    EMA9>EMA20/직전고점돌파/거래량 3개 스코어만으로 매수된 오탐 수정).
+    양봉 조건을 통과하면 EMA9>EMA20 / Close>EMA9 / 직전고점돌파 / 거래량>VOL_MA20 4개를
+    점수화해 ENTRY_SCORE_THRESHOLD 이상이면 통과. r003.ENABLE_1MIN_ENTRY_SCORE_GATE로 켜고 끈다.
     """
     if frame_1min is None or len(frame_1min) < ENTRY_PREV_HIGH_LOOKBACK_BARS + 1:
         return False, "1MIN_ENTRY_INSUFFICIENT_BARS"
 
     cur = frame_1min.iloc[-1]
+
+    close_v = _num(cur, "close")
+    open_v = _num(cur, "open")
+    if pd.isna(close_v) or pd.isna(open_v) or close_v <= open_v:
+        return False, "1MIN_ENTRY_BEARISH_CANDLE"
+
     score, _detail = _entry_score_1min(cur, frame_1min)
     if score < ENTRY_SCORE_THRESHOLD:
         return False, f"1MIN_ENTRY_LOW_SCORE_{score}_LT_{ENTRY_SCORE_THRESHOLD}"

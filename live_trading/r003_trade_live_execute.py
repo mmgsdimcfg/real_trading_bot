@@ -444,6 +444,7 @@ from r001_define_config import (
     NO_TREND_EXIT_MIN_PNL,
     ATR_PERIOD,
     ATR_STOP_MULTIPLIER,
+    ATR_STOP_CONFIRM_SECONDS,
     ATR_TAKE_PROFIT_MULTIPLIER,
     OBV_MA_PERIOD,
     POLL_INTERVAL_SECONDS,
@@ -3938,6 +3939,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     post_buy_bb_drop_state: dict[str, dict] = {}
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
+    atr_stop_confirm_state: dict[str, dict] = {}
     # 연속 HARD_STOP 서킷브레이커 상태
     hard_stop_today_codes: set[str] = set()  # 당일 HARD_STOP 발생 종목 (재진입 영구 차단)
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목
@@ -3992,6 +3994,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()
             no_trend_exit_state.clear()
+            atr_stop_confirm_state.clear()
             signal_buy_bar.clear()
             signal_sell_bar.clear()
             trailing_sell_confirm_state.clear()
@@ -4184,6 +4187,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     post_buy_bb_drop_state.pop(code, None)
                     breakeven_fail_state.pop(code, None)
                     no_trend_exit_state.pop(code, None)
+                    atr_stop_confirm_state.pop(code, None)
 
                 if pos is not None and pos.get("quantity", 0) > 0:
                     if not _is_today_buy_position(code, pos, date_str, traded_today):
@@ -4560,6 +4564,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             breakeven_fail_state.pop(code, None)
                             no_trend_exit_state.pop(code, None)
                             trailing_sell_confirm_state.pop(code, None)
+                            atr_stop_confirm_state.pop(code, None)
                             if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_bbdrop, nxt_tradeable, price=price, code_name=name):
                                 log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
                             signal_sell_bar[code] = bar_time
@@ -4593,6 +4598,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             breakeven_fail_state.pop(code, None)
                             no_trend_exit_state.pop(code, None)
                             trailing_sell_confirm_state.pop(code, None)
+                            atr_stop_confirm_state.pop(code, None)
                             if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_breakeven, nxt_tradeable, price=price, code_name=name):
                                 log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | qty={pos['quantity']} price={price:,.0f}")
                             signal_sell_bar[code] = bar_time
@@ -4631,6 +4637,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         breakeven_fail_state.pop(code, None)
                         no_trend_exit_state.pop(code, None)
                         trailing_sell_confirm_state.pop(code, None)
+                        atr_stop_confirm_state.pop(code, None)
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_no_trend, nxt_tradeable, price=price, code_name=name):
                             log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | qty={pos['quantity']} price={price:,.0f}")
                         signal_sell_bar[code] = bar_time
@@ -4638,14 +4645,28 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # ── END NO-TREND TIME EXIT ────────────────────────────────────────
 
                     _held_sl = (current_dt - _buy_time).total_seconds()
-                    if not pd.isna(atr_sl_pct) and _pnl_sl <= atr_sl_pct and _held_sl >= HARD_STOP_MIN_HOLD_SECONDS:
+                    _atr_sl_condition = (
+                        not pd.isna(atr_sl_pct) and _pnl_sl <= atr_sl_pct and _held_sl >= HARD_STOP_MIN_HOLD_SECONDS
+                    )
+                    # 단일 폴링 틱 노이즈로 즉시 손절되는 걸 막기 위해 ATR_STOP_CONFIRM_SECONDS
+                    # 동안 조건이 연속 유지될 때만 실행 (033790 피노 2026-08-31 13:35 사례 참조).
+                    _atr_sl_hold_seconds = update_timed_condition_state(
+                        atr_stop_confirm_state,
+                        code,
+                        _buy_token,
+                        current_dt,
+                        _atr_sl_condition,
+                    )
+                    if _atr_sl_hold_seconds >= ATR_STOP_CONFIRM_SECONDS:
                         reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} "
                             f"bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% "
-                            f"sl_pnl={_pnl_sl*100:.2f}% atr={float(atr_val):.2f} sl={atr_sl_price:,.0f}"
+                            f"sl_pnl={_pnl_sl*100:.2f}% atr={float(atr_val):.2f} sl={atr_sl_price:,.0f} "
+                            f"confirm={_atr_sl_hold_seconds:.0f}s"
                         )
                         trailing_sell_confirm_state.pop(code, None)
+                        atr_stop_confirm_state.pop(code, None)
                         if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
                             log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
                             # ATR_STOP_LOSS도 HARD_STOP_LOSS와 동일하게 당일 재진입 차단/서킷브레이커에 반영한다.

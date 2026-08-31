@@ -362,7 +362,7 @@ BALANCED_CONFIG = ScannerConfig(
     min_up_days_in_5=3,               # 최근 5일 중 최소 양봉 일수
     max_52w_high_ratio=0.98,        # 강세장에서는 신고가 근접 허용폭 확대
     max_prev_day_change=0.20,        # 전일 등락률 20% 이상이면 제외
-    recent_pick_penalty_per_day=3.5,  # 최근 선정 반복 시 하루당 감점폭
+    recent_pick_penalty_per_day=3.0,  # 최근 선정 반복 시 하루당 감점폭 (3일째부터 적용)
     recent_pick_penalty_lookback_days=4,  # 반복 선정 여부 확인 대상 과거 거래일수
     max_picks=50,                    # 최종 선정 종목 수 상한
 )
@@ -1476,8 +1476,9 @@ def calculate_candidate_score(candidate, config):
         score -= min(10.0, 4.0 + (overflow / 0.15) * 6.0)
 
     # 최근 반복 선정 페널티 (과도한 종목 편중 방지).
-    if repeat_recent_days > 0:
-        score -= min(12.0, repeat_recent_days * config.recent_pick_penalty_per_day)
+    # 1~2일 반복은 무페널티, 3일째부터 하루당 3점씩 적용 (3일=-3, 4일=-6, 5일=-9, ...).
+    if repeat_recent_days >= 3:
+        score -= min(12.0, (repeat_recent_days - 2) * config.recent_pick_penalty_per_day)
 
     # 소프트플래그 개수 페널티 (2026-07-22: 3일하락/BB하한/거래량감소 등이 소프트로
     # 편입되며 개수가 늘 수 있어 근소한 차이를 가르는 타이브레이커 역할이 커짐).

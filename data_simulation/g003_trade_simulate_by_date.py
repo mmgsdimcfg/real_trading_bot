@@ -163,6 +163,7 @@ from r001_define_config import (
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
     AFTERNOON_NXT_START,
     ATR_STOP_MULTIPLIER,
+    ATR_STOP_CONFIRM_SECONDS,
     ATR_TAKE_PROFIT_MULTIPLIER,
     ALLOW_REBUY_SAME_CODE,
     HARD_STOP_LOSS_PCT,
@@ -2388,6 +2389,7 @@ def simulate_date(
     post_buy_bb_drop_state: dict[str, dict] = {}
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
+    atr_stop_confirm_state: dict[str, dict] = {}
     trailing_sell_confirm_state: dict[str, dict] = {}
     buy_confirm_state: dict[str, dict] = {}
     gc_confirm_state: dict[str, dict] = {}  # 1분봉 골든크로스 확인봉 대기 상태 (r006 parity)
@@ -2464,6 +2466,7 @@ def simulate_date(
                 post_buy_bb_drop_state.pop(code, None)
                 breakeven_fail_state.pop(code, None)
                 no_trend_exit_state.pop(code, None)
+                atr_stop_confirm_state.pop(code, None)
 
             entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
@@ -2752,6 +2755,7 @@ def simulate_date(
                         breakeven_fail_state.pop(code, None)
                         no_trend_exit_state.pop(code, None)
                         trailing_sell_confirm_state.pop(code, None)
+                        atr_stop_confirm_state.pop(code, None)
                         sim.sell(code, price, ts, reason_bbdrop, session)
                         signal_sell_bar[code] = ts
                         log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | price={price:,.0f}")
@@ -2784,6 +2788,7 @@ def simulate_date(
                     breakeven_fail_state.pop(code, None)
                     no_trend_exit_state.pop(code, None)
                     trailing_sell_confirm_state.pop(code, None)
+                    atr_stop_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_breakeven, session)
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | price={price:,.0f}")
@@ -2820,16 +2825,29 @@ def simulate_date(
                     breakeven_fail_state.pop(code, None)
                     no_trend_exit_state.pop(code, None)
                     trailing_sell_confirm_state.pop(code, None)
+                    atr_stop_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_no_trend, session)
                     signal_sell_bar[code] = ts
                     log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | price={price:,.0f}")
                     continue
                 # -- END NO-TREND TIME EXIT --------------------------------------------------
 
-                # 10. ATR-based stop loss
-                if not pd.isna(atr_sl_pct) and profit_pct <= atr_sl_pct and _held_for_guard >= HARD_STOP_MIN_HOLD_SECONDS:
+                # 10. ATR-based stop loss (단일 틱 노이즈 방지 - ATR_STOP_CONFIRM_SECONDS 동안
+                # 조건이 연속 유지될 때만 실행, r006 2026-08-31 033790 사례와 동일 로직 - 시뮬 fidelity)
+                _atr_sl_condition = (
+                    not pd.isna(atr_sl_pct) and profit_pct <= atr_sl_pct and _held_for_guard >= HARD_STOP_MIN_HOLD_SECONDS
+                )
+                _atr_sl_hold_seconds = update_timed_condition_state(
+                    atr_stop_confirm_state,
+                    code,
+                    pos.buy_time,
+                    ts,
+                    _atr_sl_condition,
+                )
+                if _atr_sl_hold_seconds >= ATR_STOP_CONFIRM_SECONDS:
                     reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
                     trailing_sell_confirm_state.pop(code, None)
+                    atr_stop_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_sl, session)
                     signal_sell_bar[code] = ts
                     log(
