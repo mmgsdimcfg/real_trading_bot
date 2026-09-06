@@ -251,6 +251,14 @@ STOP_LOSS_MIN_HOLD_SECONDS = 600  # 손절 로직이 본격 적용되기 전 최
 HARD_STOP_LOSS_PCT = 0.017  # 하드스탑 손절 기준 (0.8%->1.2%->1.7%: 백테스트 결과 하드스탑 58건 중 63.8%가 손절 후 본전 이상 회복, 34.5%는 +2%까지 회복 - 급락 후 반등을 놓치지 않도록 완화)
 HARD_STOP_MIN_HOLD_SECONDS = 240.0  # 하드스탑 활성화 최소 보유 시간(초) (180->240: 초기 변동성 노이즈에 덜 민감하도록 연장)
 ATR_STOP_MULTIPLIER = 1.5  # ATR 기반 손절 배수
+
+# [2026-09-07] 진입 최소 변동성(ATR%) 필터. 손절/익절(TP1/ATR_STOP_MULTIPLIER)은 ATR을 쓰면서
+# 정작 진입 시점에는 ATR을 전혀 확인하지 않아, ATR이 TP1(STAGED_TP1_PCT=3.0%)에 한참
+# 못 미치는 저변동 종목도 그대로 진입 게이트를 통과했다. 일반적인 변동성 필터 관행(진입 시
+# ATR이 가격 대비 최소 임계치 이상이어야 함)을 참고해, TP1 대비 ATR 비율 최소 하한을 둔다.
+ENABLE_MIN_ENTRY_ATR_FILTER = True
+MIN_ENTRY_ATR_TO_TP1_RATIO = 0.5  # ATR% >= STAGED_TP1_PCT * 0.5 이어야 진입 허용 (TP1까지 도달 가능성 확보)
+
 ATR_STOP_CONFIRM_SECONDS = 20.0  # ATR 손절 조건이 이 시간 이상 연속 유지돼야 실제 매도 (033790 피노
 # 2026-08-31 13:35 사례: sl=7,434 대비 단 한 틱(7,430, 폴링 1회)만 하회하고 다음 폴링(20초 후)엔
 # 이미 7,440으로 회복 - 시장가 즉시 매도 후 몇 분 만에 7,590까지 반등. 순간 틱노이즈로 손절이
@@ -393,9 +401,24 @@ EARLY_NEAR_CROSS_MIN_VOLUME = 800
 EARLY_NEAR_CROSS_MIN_VOL_MA = 500
 EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
 
-# 매수 진입 거래량 MA20 최소치 / 현재봉 거래량 최소치 (저유동성 차단, 공통)
+# 매수 진입 거래량 MA20 최소치 / 현재봉 거래량 최소치 (저유동성 차단, 공통, 3분봉 기준)
 MIN_ENTRY_VOL_MA = 1000
 MIN_ENTRY_VOLUME = 1500
+
+# [2026-09-07] 1분봉 하이브리드 트리거(ENABLE_1MIN_TRIGGER_3MIN_CONTEXT) 전용 유동성 최소치.
+# 1분봉 거래량은 3분봉의 약 1/3 수준인데 check_buy_condition_1min*이 MIN_ENTRY_VOL_MA/
+# MIN_ENTRY_VOLUME(3분봉 기준)을 그대로 재사용해 실질적으로 3분봉 대비 3배 엄격한 차단이
+# 되고 있었다(HYBRID_1MIN_TRIGGER_CANDLE_GAIN_*/BB_GAP_MAX_PCT는 이미 1분봉 전용 값으로
+# 분리돼 있었는데 유동성만 누락). 3분봉 기준값을 시간프레임 비율(1/3)로 환산.
+HYBRID_1MIN_MIN_ENTRY_VOL_MA = 340
+HYBRID_1MIN_MIN_ENTRY_VOLUME = 500
+
+# [2026-09-07] 거래대금(turnover=종가*거래량) 기반 유동성 하한 - MIN_ENTRY_VOLUME(주수)은
+# 가격대별 형평성이 없다(저가주는 쉽게 통과, 고가주는 동일 주수라도 거래대금이 훨씬 큼에도
+# 주수 기준으로는 오히려 불리). 시가총액/가격에 무관한(cap-neutral) 유동성 지표로 거래대금을
+# 추가 하한선으로 병행 적용한다. 이미 존재하던 EARLY_NEAR_CROSS_MIN_TURNOVER_KRW(조기진입
+# 전용, 5백만원)보다 완만한 일반 매수 게이트용 기본값.
+MIN_ENTRY_TURNOVER_KRW = 10_000_000
 
 # 가격 선행 돌파(price-lead breakout) 진입 로직 사용 여부 및 조건
 ENABLE_PRICE_LEAD_BB_BREAKOUT = True
@@ -454,6 +477,16 @@ BB_SQUEEZE_MIN_WIDTH_PCT = 0.0  # BB 폭 최소치(너무 좁은 횡보 구간 �
 
 ADX_MIN_TREND = 15.0  # 20.0 -> 15.0 (ADX 최소값 완화)
 ADX_STRONG_TREND = 40.0
+
+# [2026-09-07] 시그널 매도 억제(_strong_uptrend) 판정에 쓰이던 하드코딩 리터럴을 상수로
+# 분리 - r003 매도 루프(Signal-based full exits)에 600.0/28/-0.012/-0.008이 그대로 박혀
+# 있어 r001만 보면 튜닝이 끝난다는 원칙과 어긋났다. SIGNAL_EXIT_STRONG_TREND_ADX_MIN(28)은
+# ADX_STRONG_TREND(40, 다른 곳에서 쓰이는 "매우 강한 추세" 기준)와 별개의, 시그널 매도
+# 억제 전용 기준값이라 이름을 구분한다.
+SIGNAL_EXIT_MIN_HOLD_SECONDS = 600.0  # 시그널 기반 청산(스토캐스틱/MACD) 최소 보유 시간(초)
+SIGNAL_EXIT_STRONG_TREND_ADX_MIN = 28.0  # 이 값 초과 + DI+>DI- 이면 스토캐스틱 매도신호 억제
+SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN = -0.012  # 이 손익률 초과(덜 손해)면 스토캐스틱 매도신호 억제
+SIGNAL_EXIT_MACD_PNL_MAX = -0.008  # 이 손익률 이하여야 MACD 히스토그램 2봉 하락 매도 발동
 ADX_BUY_MIN = 25.0  # 매수 진입용 ADX 최소값
 REQUIRE_ADX_RISING = True  # 매수 시 ADX가 직전봉 대비 우상향이어야 하는지 여부
 REQUIRE_DI_PLUS_DOMINANT = True  # 매수 시 +DI가 -DI보다 커야 하는지 여부
@@ -461,8 +494,16 @@ REQUIRE_DI_PLUS_DOMINANT = True  # 매수 시 +DI가 -DI보다 커야 하는지 
 MFI_BUY_MIN = 50.0  # 매수 진입용 MFI 최소값
 MFI_OVERBOUGHT_MAX = 80.0  # MFI 과열 상한(이상일 경우 추격 매수 금지)
 
-REQUIRE_OBV_SIGNAL_CROSS = True  # OBV 시그널 골든크로스+돌파 확인 필수 여부
+# [2026-09-07] REQUIRE_OBV_SIGNAL_CROSS는 원래 "필수 게이트"로 설계된 이름이지만
+# 실제로는 어떤 매수 파이프라인에도 배선되어 있지 않았다(값만 있고 소비처가 없는
+# 상태). 거래량 방향 확인(OBV가 OBV_MA를 상향 돌파했는가)은 필수 게이트로 걸면
+# 거래 빈도를 과도하게 줄일 위험이 있어, 대신 BUY_SCORE_RULES 가점 항목으로
+# 구현한다(OBV 상승 확인 시 가점 - 가격 돌파와 거래량 방향이 같이 확인되면 가짜
+# 돌파(fakeout) 가능성이 낮다는 일반적인 거래량 분석 관행 참고). 이 플래그는 이제
+# 해당 가점 항목의 활성화 여부를 제어한다.
+REQUIRE_OBV_SIGNAL_CROSS = True  # OBV 골든크로스+돌파 가점 활성화 여부
 OBV_BREAKOUT_LOOKBACK_BARS = 5  # OBV 돌파 판정에 사용할 과거 봉 개수
+OBV_CONFIRM_SCORE = 2  # OBV가 OBV_MA를 lookback 내에서 상향 돌파했을 때 가점
 
 # 강추세일 때 과열 필터 일부 우회 허용
 ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS = True

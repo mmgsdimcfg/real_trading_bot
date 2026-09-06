@@ -416,7 +416,9 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_down_cross_confirm_seconds=LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS,
     stoch_overbought=STOCH_OVERBOUGHT,
     stop_loss_percent=STOP_LOSS_PERCENT,
-    take_profit_percent=TAKE_PROFIT_PERCENT,
+    # [2026-09-07] r003 라이브와 동일한 이유로 STAGED_TP1_PCT와 일치시킨다 (박스권 홀드
+    # 상한이 실제 1차 익절 기준과 어긋나는 공백 해소). r001 참조.
+    take_profit_percent=STAGED_TP1_PCT,
     enable_box_range_hold_tech_sell=ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     box_range_hold_lookback_bars=BOX_RANGE_HOLD_LOOKBACK_BARS,
     box_range_hold_max_range_pct=BOX_RANGE_HOLD_MAX_RANGE_PCT,

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 """R76 live trading executor - BB middle cross strategy with multi indicators.
 
@@ -297,6 +297,16 @@ from r001_define_config import (
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     ADX_PERIOD,
     ADX_STRONG_TREND,
+    SIGNAL_EXIT_MIN_HOLD_SECONDS,
+    SIGNAL_EXIT_STRONG_TREND_ADX_MIN,
+    SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN,
+    SIGNAL_EXIT_MACD_PNL_MAX,
+    HYBRID_1MIN_MIN_ENTRY_VOL_MA,
+    HYBRID_1MIN_MIN_ENTRY_VOLUME,
+    EMA_TREND_ALIGN_SCORE,
+    REQUIRE_OBV_SIGNAL_CROSS,
+    OBV_BREAKOUT_LOOKBACK_BARS,
+    OBV_CONFIRM_SCORE,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
@@ -339,8 +349,6 @@ from r001_define_config import (
     MACD_SIGNAL_PERIOD,
     MACD_SLOW,
     MAX_ORDER_AMOUNT_KRW,
-    MIN_ENTRY_VOL_MA,
-    MIN_ENTRY_VOLUME,
     MFI_PERIOD,
     MORNING_NXT_END,
     MORNING_NXT_START,
@@ -387,7 +395,6 @@ from r001_define_config import (
     STAGED_TP2_PCT,
     STAGED_TP2_RATIO,
     STAGED_TP3_PCT,
-    TAKE_PROFIT_PERCENT,
     TP_EXTENSION_TRAIL_FROM_PEAK,
     TRADE_COOLDOWN_MINUTES,
     TRAILING_STOP_FROM_PEAK,
@@ -496,7 +503,12 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_down_cross_confirm_seconds=LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS,
     stoch_overbought=STOCH_OVERBOUGHT,
     stop_loss_percent=STOP_LOSS_PERCENT,
-    take_profit_percent=TAKE_PROFIT_PERCENT,
+    # [2026-09-07] config.take_profit_percent는 check_sell_condition의 박스권 홀드
+    # 상한으로만 쓰인다(실제 익절은 ENABLE_STAGED_TAKE_PROFIT 경로가 별도 담당).
+    # 레거시 TAKE_PROFIT_PERCENT(2.5%)를 그대로 쓰면 실제 1차 익절 목표인
+    # STAGED_TP1_PCT(3.0%)와 어긋나 2.5~3.0% 구간에서 박스권 홀드 보호가 빠지는
+    # 공백이 있었다 - 실제 TP1 기준과 일치시킨다.
+    take_profit_percent=STAGED_TP1_PCT,
     enable_box_range_hold_tech_sell=ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     box_range_hold_lookback_bars=BOX_RANGE_HOLD_LOOKBACK_BARS,
     box_range_hold_max_range_pct=BOX_RANGE_HOLD_MAX_RANGE_PCT,
@@ -1848,7 +1860,7 @@ def _buy_reject_detail(
         macd_str = f"MACD>{msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c else f"MACD<={msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) else "nan"
         slope_str = f"{bb_slope:.2f}%" if not pd.isna(bb_slope) else "nan"
         return (
-            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/18 | {snapshot}"
+            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/22 | {snapshot}"
         )
 
     # 기타 / 하위 호환
@@ -1857,7 +1869,7 @@ def _buy_reject_detail(
 
 
 def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | None = None) -> int:
-    """로컬 표시용 점수 계산 (r005 _buy_support_score와 동일 로직, max 18점)."""
+    """로컬 표시용 점수 계산 (r002 BUY_SCORE_RULES와 동일 로직, max 22점 - EMA_TREND_ALIGN_SCORE+OBV_CONFIRM_SCORE 포함)."""
     score = 0
 
     # RSI 구간 점수 (최대 2점)
@@ -1940,6 +1952,31 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
             elif bb_slope_pct >= 0.5:
                 score += 1
 
+    # [2026-09-07] 장기 추세 정합성 (최대 EMA_TREND_ALIGN_SCORE점): 실제 판정 함수
+    # (r002 _score_ema_trend_align)에는 있는데 이 로컬 표시용 함수엔 누락돼 있어,
+    # LOW_SCORE 리젝 로그의 표시 점수(당시 /18)가 실제 판정 점수(/20)와 어긋나는
+    # 원인이었다. 동일 로직으로 추가해 표시-판정 점수를 일치시킨다.
+    ema20_c = _num(cur, "EMA_20")
+    ema60_c = _num(cur, "EMA_60")
+    if not any(pd.isna(v) for v in (ema20_c, ema60_c)) and ema20_c > ema60_c:
+        score += EMA_TREND_ALIGN_SCORE
+
+    # OBV가 OBV_MA를 lookback 내 상향 돌파 (최대 OBV_CONFIRM_SCORE점) - r002
+    # _score_obv_breakout과 동일 로직.
+    if REQUIRE_OBV_SIGNAL_CROSS and frame is not None and len(frame) >= 2 and "OBV" in frame.columns and "OBV_MA" in frame.columns:
+        obv_now = _num(cur, "OBV")
+        obv_ma_now = _num(cur, "OBV_MA")
+        if not pd.isna(obv_now) and not pd.isna(obv_ma_now) and obv_now > obv_ma_now:
+            lookback = min(OBV_BREAKOUT_LOOKBACK_BARS, len(frame) - 1)
+            for back in range(1, lookback + 1):
+                prior_obv = frame["OBV"].iloc[-1 - back]
+                prior_obv_ma = frame["OBV_MA"].iloc[-1 - back]
+                if pd.isna(prior_obv) or pd.isna(prior_obv_ma):
+                    continue
+                if prior_obv <= prior_obv_ma:
+                    score += OBV_CONFIRM_SCORE
+                    break
+
     return score
 
 
@@ -1992,7 +2029,7 @@ def _buy_condition_snapshot(
         f"bb_mid={cur_bb:.1f} bb_upper={cur_bb_upper:.1f} "
         f"bb_slope={bb_slope_pct:.3f}% bb_upper_gap={bb_upper_gap_pct:.2f}% candle_gain={candle_gain_pct:.2f}% "
         f"RSI={rsi_c:.1f} ADX={adx_c:.1f} +DI={di_plus:.1f} -DI={di_minus:.1f} MACD={macd_c:.3f} SIG={msig_c:.3f} "
-        f"vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f} score={support_score}/18"
+        f"vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f} score={support_score}/22"
     )
 
 
@@ -2125,10 +2162,14 @@ def check_buy_condition_1min(frame_1min: pd.DataFrame, require_fresh_cross: bool
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
     if not any(pd.isna(v) for v in (vol, vol_ma)):
-        if vol_ma < MIN_ENTRY_VOL_MA:
-            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
-        if vol < MIN_ENTRY_VOLUME:
-            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
+        # [2026-09-07] 3분봉용 MIN_ENTRY_VOL_MA/MIN_ENTRY_VOLUME을 1분봉에 그대로 적용하면
+        # 1분봉 거래량이 3분봉의 약 1/3이라 실질적으로 3배 엄격한 차단이 된다 (위 캔들/BB갭
+        # 문턱을 HYBRID_1MIN_TRIGGER_*로 따로 뒀던 것과 동일한 이유) - 시간프레임 환산한
+        # HYBRID_1MIN_* 상수를 쓴다.
+        if vol_ma < HYBRID_1MIN_MIN_ENTRY_VOL_MA:
+            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOL_MA}"
+        if vol < HYBRID_1MIN_MIN_ENTRY_VOLUME:
+            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOLUME}"
         if vol_ma > 0:
             vol_ratio = vol / vol_ma
             if vol_ratio < 0.10:
@@ -2201,10 +2242,14 @@ def check_buy_condition_1min_hybrid_trigger(frame_1min: pd.DataFrame) -> tuple[b
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
     if not any(pd.isna(v) for v in (vol, vol_ma)):
-        if vol_ma < MIN_ENTRY_VOL_MA:
-            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
-        if vol < MIN_ENTRY_VOLUME:
-            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
+        # [2026-09-07] 3분봉용 MIN_ENTRY_VOL_MA/MIN_ENTRY_VOLUME을 1분봉에 그대로 적용하면
+        # 1분봉 거래량이 3분봉의 약 1/3이라 실질적으로 3배 엄격한 차단이 된다 (위 캔들/BB갭
+        # 문턱을 HYBRID_1MIN_TRIGGER_*로 따로 뒀던 것과 동일한 이유) - 시간프레임 환산한
+        # HYBRID_1MIN_* 상수를 쓴다.
+        if vol_ma < HYBRID_1MIN_MIN_ENTRY_VOL_MA:
+            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOL_MA}"
+        if vol < HYBRID_1MIN_MIN_ENTRY_VOLUME:
+            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOLUME}"
         if vol_ma > 0:
             vol_ratio = vol / vol_ma
             if vol_ratio < 0.10:
@@ -4194,9 +4239,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # 강한 상승 추세: ADX > 28 이고 +DI > -DI 이면 스토캐스틱 K<D 매도 신호 무시
                     _sig_buy_time_raw = pos.get("buy_time")
                     _sig_held_seconds = (current_dt - _sig_buy_time_raw).total_seconds() if isinstance(_sig_buy_time_raw, datetime) else 0.0
-                    _signal_min_hold_seconds = 600.0  # signal exit min hold: 10 min
+                    _signal_min_hold_seconds = SIGNAL_EXIT_MIN_HOLD_SECONDS  # signal exit min hold
                     _adx_uptrend = (
-                        not pd.isna(adx_now) and adx_now > 28
+                        not pd.isna(adx_now) and adx_now > SIGNAL_EXIT_STRONG_TREND_ADX_MIN
                         and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
                         and di_plus_now > di_minus_now
                     )
@@ -4393,7 +4438,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     # Signal-based full exits
                     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > -0.012:
+                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN:
                             log(
                                 f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
                                 f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}% held={_sig_held_seconds:.0f}s "
@@ -4414,7 +4459,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             and hist_now < hist_prev < hist_prev2
                             and not _strong_uptrend
                             and _sig_held_seconds >= _signal_min_hold_seconds
-                            and pnl_pct <= -0.008):
+                            and pnl_pct <= SIGNAL_EXIT_MACD_PNL_MAX):
                         reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
                         log(
                             f"  [SELL TRIGGER] {code} | {reason_sig_macd} | "
