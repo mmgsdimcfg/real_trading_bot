@@ -281,6 +281,13 @@ from r001_define_config import (
     EARLY_NEAR_CROSS_MIN_VOLUME,
     MIN_ENTRY_VOL_MA,
     MIN_ENTRY_VOLUME,
+    MIN_ENTRY_TURNOVER_KRW,
+    ENABLE_MIN_ENTRY_ATR_FILTER,
+    MIN_ENTRY_ATR_TO_TP1_RATIO,
+    STAGED_TP1_PCT,
+    REQUIRE_OBV_SIGNAL_CROSS,
+    OBV_BREAKOUT_LOOKBACK_BARS,
+    OBV_CONFIRM_SCORE,
     MACD_FAST,
     MACD_SIGNAL_PERIOD,
     MACD_SLOW,
@@ -577,6 +584,35 @@ def _score_bb_mid_slope_strength(ctx: BuyEvalContext) -> int:
     return 0
 
 
+def _score_obv_breakout(ctx: BuyEvalContext) -> int:
+    # [2026-09-07] OBV가 OBV_MA를 최근 OBV_BREAKOUT_LOOKBACK_BARS 내에서 상향 돌파했는지
+    # 확인한다. 가격 돌파와 거래량 누적방향(OBV)이 함께 확인되면 가짜 돌파(fakeout)일
+    # 가능성이 낮다는 거래량 분석의 일반적인 관행을 반영한 가점 - REQUIRE_OBV_SIGNAL_CROSS로
+    # on/off 가능. 이전에는 OBV_MA/OBV가 계산만 되고 매수 판정 어디에도 쓰이지 않았다.
+    if not REQUIRE_OBV_SIGNAL_CROSS:
+        return 0
+    frame = ctx.frame
+    if frame is None or len(frame) < 2:
+        return 0
+    obv = frame["OBV"] if "OBV" in frame.columns else None
+    obv_ma = frame["OBV_MA"] if "OBV_MA" in frame.columns else None
+    if obv is None or obv_ma is None:
+        return 0
+    lookback = min(OBV_BREAKOUT_LOOKBACK_BARS, len(frame) - 1)
+    obv_now = _num(ctx.cur, "OBV")
+    obv_ma_now = _num(ctx.cur, "OBV_MA")
+    if pd.isna(obv_now) or pd.isna(obv_ma_now) or obv_now <= obv_ma_now:
+        return 0
+    for back in range(1, lookback + 1):
+        prior_obv = obv.iloc[-1 - back]
+        prior_obv_ma = obv_ma.iloc[-1 - back]
+        if pd.isna(prior_obv) or pd.isna(prior_obv_ma):
+            continue
+        if prior_obv <= prior_obv_ma:
+            return OBV_CONFIRM_SCORE  # lookback 내에서 OBV가 OBV_MA 아래였다가 지금 위로 돌파
+    return 0
+
+
 BUY_SCORE_RULES: list[BuyScoreRule] = [
     BuyScoreRule("rsi_band", 2, "RSI 구간 점수 (50~65=2점, 45~50/65~70=1점)", (), _score_rsi_band),
     BuyScoreRule("ema_trend_align", EMA_TREND_ALIGN_SCORE, "장기 추세 정합성: EMA20 > EMA60(3분봉) → 상위 추세 우상향", ("EMA_TREND_ALIGN_SCORE",), _score_ema_trend_align),
@@ -588,6 +624,7 @@ BUY_SCORE_RULES: list[BuyScoreRule] = [
     BuyScoreRule("ma5_short_term_up", 1, "MA5 단기 상승: MA5[t] > MA5[t-1]", (), _score_ma5_short_term_up),
     BuyScoreRule("macd_golden_cross", 2, "MACD 골든크로스: MACD > MACD_SIGNAL", (), _score_macd_golden_cross),
     BuyScoreRule("bb_mid_slope_strength", 3, "BB 중앙선 기울기 강도 점수 (>=1.5%=3점, >=1.0%=2점, >=0.5%=1점)", (), _score_bb_mid_slope_strength),
+    BuyScoreRule("obv_breakout", OBV_CONFIRM_SCORE, "OBV가 OBV_MA를 lookback 내 상향 돌파 (거래량 방향 확인, fakeout 방지)", ("REQUIRE_OBV_SIGNAL_CROSS", "OBV_BREAKOUT_LOOKBACK_BARS"), _score_obv_breakout),
 ]
 
 
@@ -1027,6 +1064,15 @@ def _gate_stochastic_buy_signal(ctx: BuyEvalContext) -> tuple[bool, BuyEvalConte
     # 돌파 순간엔 이미 50을 넘어서는 게 정상적인 움직임이라 STOCH_BUY_MAX(50)를
     # 상한으로 쓰면 정상적인 돌파 대부분을 걸러내 버린다. 상한은
     # config.stoch_overbought(진짜 과열 기준, 기본 96)로 완화한다.
+    #
+    # [2026-09-07] 기존에 별도 게이트였던 williams_r_buy_signal을 여기로 통합했다.
+    # WILLIAMS_R_PERIOD == STOCH_K_PERIOD(둘 다 10)로 동일 window의 동일 high/low를
+    # 쓰기 때문에 수학적으로 WILLIAMS_R = STOCH_K - 100이 항상 성립한다(검증 완료) -
+    # "상승 중 & 바닥권탈출~과열직전" 조건은 STOCH_K가 직전봉 대비 상승 중이고
+    # WILLIAMS_BUY_FLOOR/WILLIAMS_OVERBOUGHT_CEIL을 STOCH_K 스케일로 환산한 밴드
+    # 안에 있는지로 완전히 동일하게 표현된다. 서로 다른 두 지표처럼 보였지만 실제로는
+    # 같은 원천 데이터의 재포장이라 게이트 2개를 유지해도 필터링 다양성에 기여하는 바가
+    # 없었다 - 통합하고 남은 게이트 자리는 거래대금/ATR 등 독립적인 정보로 대체한다.
     cur, prev, config = ctx.cur, ctx.prev, ctx.config
     stoch_k = _num(cur, "STOCH_K")
     stoch_d = _num(cur, "STOCH_D")
@@ -1040,22 +1086,31 @@ def _gate_stochastic_buy_signal(ctx: BuyEvalContext) -> tuple[bool, BuyEvalConte
     )
     if not stoch_buy_signal:
         return False, ctx, f"NO_STOCH_BUY_SIGNAL_K_{stoch_k:.1f}_D_{stoch_d:.1f}"
+
+    # WILLIAMS_R = STOCH_K - 100 이므로 WILLIAMS_BUY_FLOOR/CEIL을 STOCH_K 스케일로 환산.
+    stoch_k_floor = WILLIAMS_BUY_FLOOR + 100.0
+    stoch_k_ceil = WILLIAMS_OVERBOUGHT_CEIL + 100.0
+    williams_equiv_ok = stoch_k > stoch_k_prev and stoch_k_floor <= stoch_k <= stoch_k_ceil
+    if not williams_equiv_ok:
+        return False, ctx, f"NO_WILLIAMS_BUY_SIGNAL_R_{stoch_k - 100.0:.1f}"
     return True, ctx, None
 
 
-def _gate_williams_r_buy_signal(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
-    # 윌리엄스 %R 매수신호 (상승 중이면서 과열 상한 밑, 바닥권 탈출 하한 이상)
-    cur, prev = ctx.cur, ctx.prev
-    williams_r = _num(cur, "WILLIAMS_R")
-    williams_r_prev = _num(prev, "WILLIAMS_R")
-    if any(pd.isna(v) for v in (williams_r, williams_r_prev)):
-        return False, ctx, "WILLIAMS_DATA_MISSING"
-    williams_buy_signal = (
-        williams_r > williams_r_prev
-        and WILLIAMS_BUY_FLOOR <= williams_r <= WILLIAMS_OVERBOUGHT_CEIL
-    )
-    if not williams_buy_signal:
-        return False, ctx, f"NO_WILLIAMS_BUY_SIGNAL_R_{williams_r:.1f}"
+def _gate_min_entry_atr_volatility(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
+    # [2026-09-07] 진입 최소 변동성(ATR%) 필터. 손절(ATR_STOP_MULTIPLIER)/1차 익절
+    # (TP1_ATR_MULTIPLIER)은 ATR에 연동돼 있는데 정작 진입 게이트에는 ATR 확인이 전혀
+    # 없어, ATR이 TP1(STAGED_TP1_PCT) 근처에도 못 미치는 저변동 종목이 그대로 진입을
+    # 통과했다. ATR% >= STAGED_TP1_PCT * MIN_ENTRY_ATR_TO_TP1_RATIO 이어야 진입 허용.
+    if not ENABLE_MIN_ENTRY_ATR_FILTER:
+        return True, ctx, None
+    cur, live_price = ctx.cur, ctx.live_price
+    atr_val = _num(cur, "ATR")
+    if pd.isna(atr_val) or not live_price or live_price <= 0:
+        return True, ctx, None  # ATR 미산출 구간(초기 warmup)은 다른 게이트에 판단을 맡김
+    atr_pct = atr_val / float(live_price)
+    min_atr_pct = STAGED_TP1_PCT * MIN_ENTRY_ATR_TO_TP1_RATIO
+    if atr_pct < min_atr_pct:
+        return False, ctx, f"LOW_ENTRY_ATR_{atr_pct*100:.2f}%_LT_{min_atr_pct*100:.2f}%"
     return True, ctx, None
 
 
@@ -1073,6 +1128,15 @@ def _gate_min_liquidity_safety(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContex
             vol_ratio = vol / vol_ma
             if vol_ratio < 0.10:
                 return False, ctx, f"LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
+
+    # [2026-09-07] 거래대금(turnover) 기반 유동성 하한 - 가격대에 무관한(cap-neutral)
+    # 유동성 지표를 병행한다 (참고: turnover 필터는 시가총액/가격대와 무관하게 동일
+    # 기준을 적용할 수 있다는 점이 절대 거래량(주수) 필터 대비 장점으로 꼽힌다).
+    close_v = _num(cur, "close")
+    if not any(pd.isna(v) for v in (vol, close_v)):
+        turnover = close_v * vol
+        if turnover < MIN_ENTRY_TURNOVER_KRW:
+            return False, ctx, f"LOW_TURNOVER_{turnover:,.0f}_LT_{MIN_ENTRY_TURNOVER_KRW:,}"
     return True, ctx, None
 
 
@@ -1116,20 +1180,22 @@ BUY_GATE_CONDITIONS: list[BuyGateCondition] = [
     ),
     BuyGateCondition(
         "stochastic_buy_signal",
-        "스토캐스틱 패스트 매수신호 (%K가 %D 상향돌파, 또는 %K>%D且 진짜 과열 아님)",
-        ("STOCH_BUY_MIN",),
+        "스토캐스틱+윌리엄스%R 통합 매수신호 (%K가 %D 상향돌파, 또는 %K>%D且 진짜 과열 아님 "
+        "+ WILLIAMS_R 환산 밴드 내 상승) - WILLIAMS_R=STOCH_K-100 수학적 등가라 게이트 통합",
+        ("STOCH_BUY_MIN", "WILLIAMS_BUY_FLOOR", "WILLIAMS_OVERBOUGHT_CEIL"),
         _gate_stochastic_buy_signal,
     ),
     BuyGateCondition(
-        "williams_r_buy_signal",
-        "윌리엄스 %R 매수신호 (상승 중 + 바닥권 탈출~과열 직전 구간)",
-        ("WILLIAMS_BUY_FLOOR", "WILLIAMS_OVERBOUGHT_CEIL"),
-        _gate_williams_r_buy_signal,
+        "min_entry_atr_volatility",
+        "진입 최소 변동성 확인 (ATR% >= STAGED_TP1_PCT*MIN_ENTRY_ATR_TO_TP1_RATIO) - "
+        "TP1 도달이 통계적으로 가능한 최소 변동성 종목만 진입",
+        ("ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO"),
+        _gate_min_entry_atr_volatility,
     ),
     BuyGateCondition(
         "min_liquidity_safety",
-        "저유동성 종목 차단 (거래량/거래량MA 절대치 및 비율 최소치)",
-        ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME"),
+        "저유동성 종목 차단 (거래량/거래량MA 절대치 및 비율 최소치 + 거래대금 최소치)",
+        ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW"),
         _gate_min_liquidity_safety,
     ),
 ]
