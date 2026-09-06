@@ -414,12 +414,7 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_cross_confirm_seconds=LIVE_PRICE_CROSS_CONFIRM_SECONDS,
     live_price_down_cross_confirm_polls=LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS,
     live_price_down_cross_confirm_seconds=LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS,
-    require_strict_buy_golden_cross=REQUIRE_STRICT_BUY_GOLDEN_CROSS,
     stoch_overbought=STOCH_OVERBOUGHT,
-    williams_overbought_ceil=WILLIAMS_OVERBOUGHT_CEIL,
-    bb_upper_proximity_max=BB_UPPER_PROXIMITY_MAX,
-    bb_squeeze_min_width_pct=BB_SQUEEZE_MIN_WIDTH_PCT,
-    adx_min_trend=ADX_MIN_TREND,
     stop_loss_percent=STOP_LOSS_PERCENT,
     take_profit_percent=TAKE_PROFIT_PERCENT,
     enable_box_range_hold_tech_sell=ENABLE_BOX_RANGE_HOLD_TECH_SELL,
@@ -432,21 +427,6 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     aux_sell_min_pnl_score2=AUX_SELL_MIN_PNL_SCORE2,
     aux_sell_min_pnl_score3=AUX_SELL_MIN_PNL_SCORE3,
     aux_sell_min_pnl_score4=AUX_SELL_MIN_PNL_SCORE4,
-    stoch_buy_min=STOCH_BUY_MIN,
-    stoch_buy_max=STOCH_BUY_MAX,
-    rsi_buy_min=RSI_BUY_MIN,
-    rsi_buy_max=RSI_BUY_MAX,
-    williams_buy_floor=WILLIAMS_BUY_FLOOR,
-    obv_breakout_lookback_bars=OBV_BREAKOUT_LOOKBACK_BARS,
-    enable_price_lead_bb_breakout=ENABLE_PRICE_LEAD_BB_BREAKOUT,
-    price_lead_breakout_min_score=PRICE_LEAD_BREAKOUT_MIN_SCORE,
-    price_lead_breakout_min_adx=PRICE_LEAD_BREAKOUT_MIN_ADX,
-    price_lead_breakout_allow_overbought=PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
-    enable_strong_trend_overbought_bypass=ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
-    strong_trend_overbought_min_score=STRONG_TREND_OVERBOUGHT_MIN_SCORE,
-    strong_trend_overbought_min_vol_ratio=STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
-    strong_trend_overbought_min_adx=STRONG_TREND_OVERBOUGHT_MIN_ADX,
-    ma5_bb_follow_chase_max_gap_pct=SIM_MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
     bb_buy_score_threshold=BB_BUY_SCORE_THRESHOLD,
 )
 
@@ -1583,7 +1563,6 @@ def check_buy_condition_r76_sim(
         live_price=live_price,
         cross_info=cross_info,
         config=SHARED_R76_CONFIG,
-        volume_ratio_threshold_fn=get_volume_ratio_threshold,
     )
 
     if not ok:

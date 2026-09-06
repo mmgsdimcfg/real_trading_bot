@@ -1,6 +1,46 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-09-06] type=fix owner=claude
+#     summary: UPTREND_CONT_SLOPE_MIN_PCT(-0.05) 신규 추가. 8/17~9/4 로그(사용자 요청 -
+#       매수/매도 조건 세분화 검토) 분석 결과, r002의 _evaluate_bb_mid_cross() uptrend_
+#       continuation(크로스 이벤트 없이 지속 추세만으로 진입 허용하는 경로) 판정이
+#       bb_slope_pct > 0.0을 요구하는데, 이는 필수 게이트 bb_slope_rising이 요구하는
+#       BB_SLOPE_MIN_PCT(-2.0%)보다 훨씬 엄격함 - 대체(보조) 진입 경로가 필수 게이트보다
+#       더 까다로운 역전 상태였음. 실제 196170 알테오젠 2026-08-21 09:33~09:40 사례에서
+#       ADX 80대, +DI>>-DI, MA5 상승 등 나머지 조건은 전부 충족했는데 bb_slope_pct가
+#       BB_MIDDLE의 후행지표 특성상 0 근방(-0.016%~0.071%)에서 노이즈로 진동하는 바람에
+#       09:33에 리젝, 09:36에야 순전히 노이즈 타이밍으로 통과 - 매수 기회가 몇 분 단위로
+#       운에 좌우됨. r002의 하드코딩된 0.0 리터럴을 이 상수로 교체.
+#     impact: common
+#     compatibility: backward-compatible (조건이 소폭 완화되어 uptrend_continuation 경로
+#       진입 빈도가 약간 늘어날 수 있음 - 나머지 7개 필수조건(ADX>=30, DI 우세, 3/5봉 BB
+#       위 유지, MA5 상승 등)은 그대로라 저품질 신호가 크게 늘지는 않을 것으로 판단)
+# - [2026-09-05] type=fix owner=claude
+#     summary: ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES(120) 신규 추가. 8/17~9/4 로그 분석
+#       결과, ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60분)가 실제 가격이 박스권(정체)인지와
+#       무관하게 무조건 탈락시키는 순수 타이머였던 것이 확인됨(사용자는 "박스권 횡보 시
+#       교체"로 이해하고 있었으나 실제로는 박스권 판정 로직 자체가 없었음). 이 기능이 도입된
+#       8/31 이후 실거래 체결이 8/31=1건, 9/1=1건, 9/2=0건, 9/3=1건, 9/4=1건으로 급감(그 이전
+#       8/18~8/28은 일 30~200건대) - 60분 타이머가 아직 박스권을 벗어나 방향성을 만들어가는
+#       중인 종목까지 무차별적으로 backup과 교체해버려 매수 직전 종목이 자주 감시 대상에서
+#       빠진 것으로 추정됨. r003의 _rebalance_active_watchlist()에서 60분 경과 시점부터는
+#       _is_box_range_hold_zone()(기존 매도측 박스권 판정 재사용)으로 실제 정체 여부를
+#       확인해 박스권이 확인된 종목만 교체하고, 아직 방향성이 살아있는 종목은 이 상한(120분)
+#       까지 계속 감시하도록 변경 - 상한은 9/3 backup_pool 고갈 사고 재발 방지용 안전장치.
+#     impact: live
+#     compatibility: backward-compatible (신규 상수만 추가, 실제 판정 변경은 r003 쪽과 짝을
+#       이뤄야 발동)
+# - [2026-08-31] type=feat owner=claude
+#     summary: ACTIVE_WATCHLIST_SIZE(50)/ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60) 신규 추가.
+#       g002 스캐너 선정 종목 수를 50->100으로 확대(같은 날짜 g002 Update log 참조)하면서,
+#       r003 메인 루프가 매 틱 watch_map 전종목을 완전 순차(동시성 없음) API 폴링하는 구조상
+#       종목 수에 선형 비례해 부하가 늘어 틱 주기(10초)를 넘길 위험이 있어, r003에
+#       active_set(실시간 폴링 상한)/backup_pool(대기, 미폴링) 분리를 도입하며 함께 추가.
+#       상세 설계는 r003 Update log 2026-08-31 및 _rebalance_active_watchlist() 참조.
+#     impact: live
+#     compatibility: backward-compatible (신규 상수만 추가, 기존 상수/동작 변화 없음 - 실제
+#       분리 동작은 r003 쪽 변경이 짝을 이뤄야 발동)
 # - [2026-08-28] type=feat owner=claude
 #     summary: BUY_ORDER_REPRICE_AFTER_SECONDS/MAX_ATTEMPTS/MAX_CHASE_PCT 신규 추가 -
 #       place_buy_order()가 매수1호가(최우선 매수호가) 순수 지정가로만 주문을 내다 보니
@@ -381,6 +421,17 @@ BB_MID_CHASE_MAX_GAP_PCT = 0.35  # BB 중간선 대비 현재가 최대 허용 �
 # 넓히는 대신 RSI 과열 여부로 "아직 쫓아가도 되는 건강한 지속 구간"인지를 추가로 검증한다.
 UPTREND_CONT_CHASE_MAX_GAP_PCT = 0.6   # uptrend_continuation 진입 시 BB_MID 갭 상한 (%)
 UPTREND_CONT_CHASE_RSI_MAX = 75.0      # 이 값 이상이면 과열로 보고 차단
+# [2026-09-06] uptrend_continuation 판정 자체의 BB 기울기 조건. 196170 알테오젠 2026-08-21
+# 09:33~09:40 사례: ADX 80~88, +DI>>-DI, MA5 상승 등 나머지 조건은 전부 강한 지속 추세를
+# 가리켰는데 bb_slope_pct가 -0.016%~0.071% 사이에서 미세하게 진동(BB_MIDDLE이 급등을
+# 뒤늦게 따라잡는 후행지표 특성상 기울기가 0 근방에서 노이즈로 흔들림)하는 바람에 09:33에는
+# 엄격한 ">0.0" 기준에 막혀 리젝됐다가 09:36에야 겨우 통과 - 그마저도 순전히 0 근방 노이즈
+# 타이밍 운에 좌우됨. 더 눈에 띄는 점은 이 값(0.0)이 필수 게이트인 bb_slope_rising의
+# BB_SLOPE_MIN_PCT(-2.0%)보다 훨씬 엄격하다는 것 - uptrend_continuation은 필수 게이트를
+# 이미 통과한 지속 추세용 대체 진입 경로인데 그 자체 조건이 필수 게이트보다 더 까다로운
+# 역전 상태였음. 작은 음수 허용치를 둬 노이즈성 미세 하락을 지속 추세 이탈로 오판하지
+# 않도록 함.
+UPTREND_CONT_SLOPE_MIN_PCT = -0.05      # uptrend_continuation 전용 BB 기울기 하한 (%) - 0 근방 노이즈 허용
 BB_BUY_SCORE_THRESHOLD = 10  # 8->10: 2026-07-20 실매매 로그 분석 결과 score=8(구 임계값) 매수 6건이
   # 전부 손실(합계 -18,975원, 당일 총손실 -21,820원의 87%). score=9 매수 4건도 순손실(-2,295원).
   # score>=10 매수만 순이익 포함(GS +1,400원 익절 등, 순 -550원 vs 조정 전 -21,820원 전체손익).
@@ -534,7 +585,7 @@ ENTRY_SCORE_THRESHOLD = 5             # 만점 7점 중 5점 이상 (3분봉이 
 # 4건) 결과가 혼재돼 있어 기본값 False 유지. 추가로 검증하려면 (a) 더 많은 일자/
 # 종목으로 표본 확대, (b) 20260827 케이스처럼 "더 늦은 크로스로 대체"되는 원인
 # (HYBRID_3MIN_CTX의 OPENING_GUARD/스코어 재계산 타이밍 차이 추정) 규명 필요.
-ENABLE_1MIN_TRIGGER_3MIN_CONTEXT = False
+ENABLE_1MIN_TRIGGER_3MIN_CONTEXT = True      # 2026-09-01 바이오니아,비에이치 못 잡아서 False -> True로 변경
 HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 3        # 크로스 인정 룩백(3분봉 5봉/15분과 유사한 시간폭)
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.3  # 1분봉 자체 틱노이즈가 더 커서 3분봉(-0.1%)보다 완화
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 1.8   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화
@@ -608,7 +659,7 @@ ATR_PERIOD = 14
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부
+ENABLE_NXT_SESSION = False  # NXT 세션 포함 운용 여부
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)
@@ -662,6 +713,12 @@ LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
 PENDING_BUY_GRACE_SECONDS = 90
 # 매수 미체결 경고 기준 시간(초)
 BUY_ORDER_STALE_WARN_SECONDS = 60
+# 신규 매수 체크(진입 평가) 시작 초 - 매 분 이 초(들)에만 신규 진입 평가를 시작한다.
+# 메인 루프는 LIVE_PRICE_POLL_INTERVAL_SECONDS(=10초) 간격으로 돌며(00/10/20/.../50초),
+# 이 값들과 정확히 일치하지 않아도 그 다음 폴링 틱에서 스케줄이 지난 것으로 감지해 실행된다
+# (최대 LIVE_PRICE_POLL_INTERVAL_SECONDS초 지연). 매도/청산 감시·시세 갱신 등 다른 루프
+# 동작에는 영향 없음 - 신규 진입 평가(check_buy_condition* 계열) 실행 여부만 이 스케줄을 탄다.
+BUY_CHECK_SECONDS_OF_MINUTE = [3, 18, 33, 48]
 
 # --- 매수 미체결 재시도(지정가 추격) ---------------------------------------
 # place_buy_order()는 매수1호가(최우선 매수호가)로 순수 지정가 주문을 낸다 - 매도
@@ -683,6 +740,18 @@ BUY_ORDER_REPRICE_MAX_CHASE_PCT = 0.5
 
 # 계좌-감시종목 불일치 로그 출력 최소 간격(초)
 WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = 300
+
+# --- active/backup 워치리스트 분리 (2026-08-31) -----------------------------
+# g002 스캐너 선정 종목 수를 50->100으로 확대하면서, r003가 매 틱 전종목을 완전
+# 순차(동시성 없음) API 폴링하는 구조상 부하가 그대로 2배가 되는 걸 막기 위해 도입.
+# watch_map(스캐너 점수 내림차순 100개) 중 상위 ACTIVE_WATCHLIST_SIZE개만 실시간
+# 폴링(active_set)하고 나머지는 backup_pool로 대기(미폴링)시킨다. active_set 종목이
+# 매수 체결(졸업)/HARD_STOP/갭차단/시간초과로 빠지면 backup_pool 선두를 순위 순서대로
+# 승격시켜 채운다 - 보유 포지션은 active_set 소속 여부와 무관하게 항상 폴링 대상에
+# 포함된다(청산 감시가 끊기면 안 되므로).
+ACTIVE_WATCHLIST_SIZE = 50                    # 실시간 감시(active_set) 상한
+ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES = 60    # 이 시간(분) 경과 후부터 박스권(정체) 여부를 확인해 교체를 시작
+ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES = 120  # 박스권이 아니어도 강제로 교체하는 상한(분) - backup_pool 고갈 방지
 
 # ---------------------------------------------------------------------------
 # Simulation parameters (g003_trade_simulate_by_date) - r006 실전 매매에는

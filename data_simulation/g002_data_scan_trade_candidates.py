@@ -23,6 +23,19 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-08-31] type=feat owner=copilot
+    summary: BALANCED_CONFIG.max_picks/MAX_PICKS_LIMIT 50->100 확대. 사용자가 "적격 45위가
+      탈락하고 최하위권이 선정" 같은 스코어 경계 사례 검토 중 하드필터로 탈락하는 종목 중
+      실제로는 괜찮은 추세가 섞여 있다는 문제를 지적, 선정 풀 자체를 넓히기로 결정.
+      단순히 50->100만 하면 r003 실매매 루프가 매 틱 전종목을 완전 순차(동시성 없음) API
+      호출하는 구조라 한 바퀴 소요시간이 선형으로 늘어 틱 주기(10초)를 넘길 위험이 있어,
+      r003에 active_set(실시간 폴링 상한, 기본 50)/backup_pool(대기, 미폴링) 분리를 함께
+      도입(같은 날짜 r003/r001_define_config.py 커밋 참조) - 이 스캐너 변경은 그 짝.
+    impact: scanner/live
+    compatibility: breaking (선정 종목 수가 최대 50->100으로 늘어나 리포트/워치리스트 파일
+      크기가 커짐; r003가 active/backup 분리를 반영하지 않은 구버전이면 100개 전종목을
+      그대로 순차 폴링하게 되어 원래 우려했던 틱 지연 위험이 재현되므로 반드시 r003도
+      함께 갱신해야 함)
 - [2026-08-29] type=feat owner=copilot
     summary: 앞선 검토에서 데이터 소스 부재로 보류했던 3개 항목(관리종목/거래정지 배제,
       업종 분산, 시장레짐/RS)을 open-trading-api(한국투자증권 KIS Open API) 기반으로 구현.
@@ -364,7 +377,10 @@ BALANCED_CONFIG = ScannerConfig(
     max_prev_day_change=0.20,        # 전일 등락률 20% 이상이면 제외
     recent_pick_penalty_per_day=3.0,  # 최근 선정 반복 시 하루당 감점폭 (3일째부터 적용)
     recent_pick_penalty_lookback_days=4,  # 반복 선정 여부 확인 대상 과거 거래일수
-    max_picks=50,                    # 최종 선정 종목 수 상한
+    max_picks=100,                   # 최종 선정 종목 수 상한 (2026-08-31: 50->100, 실매매 쪽
+                                      # active/backup 워치리스트 분리와 짝을 이루는 변경 - r003는
+                                      # 상위 ACTIVE_WATCHLIST_SIZE개만 실시간 폴링하고 나머지는
+                                      # backup_pool로 대기시키므로 API 부하는 그대로 유지됨)
 )
 
 CONFIG_MAP = {
@@ -375,7 +391,8 @@ DEFAULT_CONFIG = BALANCED_CONFIG
 DEFAULT_HISTORY_WINDOW = 0
 DAILY_LOOKBACK = 260  # trading days of history to load per stock
 MIN_REQUIRED_BARS = 1
-MAX_PICKS_LIMIT = 50
+MAX_PICKS_LIMIT = 100  # 2026-08-31: 50->100 (BALANCED_CONFIG.max_picks와 함께 변경 - CLI 파싱 시
+                        # min(config.max_picks, MAX_PICKS_LIMIT)로 강제 클램프되므로 둘 다 바꿔야 함)
 SCORE_CUTOFF = 30.0
 LIQUIDITY_RELAX_FACTOR = 0.70
 LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 시장상대 비교와 무관하게 유동성 하드탈락 면제

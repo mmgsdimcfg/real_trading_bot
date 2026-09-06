@@ -18,6 +18,20 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-06] type=fix owner=claude
+    summary: _evaluate_bb_mid_cross()의 uptrend_continuation(크로스 이벤트 없이 지속
+      추세만으로 진입 허용) 판정에서 bb_slope_pct > 0.0 하드코딩 리터럴을 신규 상수
+      UPTREND_CONT_SLOPE_MIN_PCT(-0.05, r001)로 교체. 8/17~9/4 실매매 로그 분석(사용자
+      요청) 결과, 이 0.0 기준이 필수 게이트 bb_slope_rising의 BB_SLOPE_MIN_PCT(-2.0%)
+      보다 훨씬 엄격해 대체 진입 경로가 필수 게이트보다 더 까다로운 역전 상태였음을 발견.
+      196170 알테오젠 2026-08-21 09:33~09:40 사례: ADX 80대/+DI>>-DI/MA5 상승 등 나머지
+      조건은 전부 강한 지속 추세를 가리켰는데, BB_MIDDLE이 급등을 뒤늦게 따라잡는
+      후행지표 특성상 bb_slope_pct가 0 근방(-0.016%~0.071%)에서 노이즈로 진동해 09:33엔
+      리젝, 09:36에야 순전히 노이즈 타이밍으로 통과 - 진입 여부가 몇 분 단위 운에 좌우됨.
+      나머지 7개 조건(ADX>=30/DI우세/3-5봉 BB위 유지/MA5상승/모멘텀 등)은 그대로 유지.
+    impact: common
+    compatibility: backward-compatible (조건이 소폭 완화되어 uptrend_continuation 경로
+      진입 빈도가 약간 늘어날 수 있음)
 - [2026-08-28] type=feat owner=claude
     summary: run_3min_context_pipeline()/HYBRID_3MIN_CONTEXT_GATES 신규 추가 -
       ENABLE_1MIN_TRIGGER_3MIN_CONTEXT(r001) 하이브리드 경로 전용. 403870 HPSP
@@ -258,6 +272,7 @@ from r001_define_config import (
     BB_MID_CHASE_MAX_GAP_PCT,
     UPTREND_CONT_CHASE_MAX_GAP_PCT,
     UPTREND_CONT_CHASE_RSI_MAX,
+    UPTREND_CONT_SLOPE_MIN_PCT,
     BB_UPPER_GAP_MIN_PCT,
     CANDLE_GAIN_MAX_PCT,
     CANDLE_GAIN_MIN_PCT,
@@ -312,12 +327,7 @@ class R76StrategyConfig:
     live_price_down_cross_confirm_polls: int
     live_price_down_cross_confirm_seconds: float
 
-    require_strict_buy_golden_cross: bool
     stoch_overbought: float
-    williams_overbought_ceil: float
-    bb_upper_proximity_max: float
-    bb_squeeze_min_width_pct: float
-    adx_min_trend: float
 
     stop_loss_percent: float
     take_profit_percent: float
@@ -333,21 +343,6 @@ class R76StrategyConfig:
     aux_sell_min_pnl_score3: float
     aux_sell_min_pnl_score4: float
 
-    stoch_buy_min: float
-    stoch_buy_max: float
-    rsi_buy_min: float
-    rsi_buy_max: float
-    williams_buy_floor: float
-    obv_breakout_lookback_bars: int
-    enable_price_lead_bb_breakout: bool
-    price_lead_breakout_min_score: int
-    price_lead_breakout_min_adx: float
-    price_lead_breakout_allow_overbought: bool
-    enable_strong_trend_overbought_bypass: bool = False
-    strong_trend_overbought_min_score: int = 5
-    strong_trend_overbought_min_vol_ratio: float = 1.5
-    strong_trend_overbought_min_adx: float = 30.0
-    ma5_bb_follow_chase_max_gap_pct: float = 0.01
     bb_buy_score_threshold: int = 8
 
 
@@ -852,7 +847,7 @@ def _evaluate_bb_mid_cross(
             and live_price > cur_bb        # 현재가 BB 중간선 위
             and cur_close > cur_bb         # 현재봉 종가 BB 위
             and cur_close > prev_close     # 현재봉 종가 > 전봉 종가 (상승 모멘텀)
-            and bb_slope_pct > 0.0         # BB 중간선 상승 추세
+            and bb_slope_pct > UPTREND_CONT_SLOPE_MIN_PCT  # BB 중간선 상승 추세 (0 근방 후행지표 노이즈 허용)
             and _adx >= 30.0               # ADX 30 이상 (뚜렷한 추세)
             and _di_plus > _di_minus       # +DI > -DI (상승 방향성 우세)
             and _n_above >= 3              # 최근 5봉 중 3봉 이상 BB 위 유지
@@ -875,7 +870,6 @@ def check_buy_condition(
     live_price: float,
     cross_info: dict[str, object],
     config: R76StrategyConfig,
-    volume_ratio_threshold_fn: Callable[[pd.Timestamp, float], float],
 ) -> tuple[bool, str]:
     return run_buy_condition_pipeline_comment(
         frame=frame,
@@ -883,7 +877,6 @@ def check_buy_condition(
         live_price=live_price,
         cross_info=cross_info,
         config=config,
-        volume_ratio_threshold_fn=volume_ratio_threshold_fn,
     )
 
 
@@ -1148,7 +1141,6 @@ def run_buy_condition_pipeline_comment(
     live_price: float,
     cross_info: dict[str, object],
     config: R76StrategyConfig,
-    volume_ratio_threshold_fn,
 ) -> tuple[bool, str]:
     """BB 중앙선 상승 돌파 전략: BUY_GATE_CONDITIONS(9개 필수조건) 순차 통과 +
     BUY_SCORE_RULES 가점 합계가 config.bb_buy_score_threshold 이상.

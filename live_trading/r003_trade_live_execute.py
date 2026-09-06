@@ -20,6 +20,156 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-05] type=fix owner=claude
+    summary: 8/17~9/4 로그 분석(사용자 요청) 결과 도출. active_set/backup_pool 교체(2026-08-31
+      도입)의 TIME_LIMIT 탈락이 ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60분) 순수 타이머였을 뿐,
+      사용자가 알고 있던 것과 달리 실제 가격이 박스권(정체)인지는 전혀 확인하지 않고 있었음이
+      확인됨. 실거래 체결 건수가 이 기능 도입 이후(8/31~9/4) 일 0~1건으로 급감(그 이전
+      8/18~8/28은 일 30~200건대) - 아직 방향성을 만들어가는 중인 종목까지 60분 타이머만으로
+      무차별 탈락시켜 매수 직전에 감시 대상에서 빠지는 경우가 다수였던 것으로 추정(active=50
+      < watch_map=100이라 탈락한 종목은 최소 한 사이클 뒤에나 재편입됨). _rebalance_active_
+      watchlist()에 frame_cache를 추가로 전달받아, 60분 경과 시점부터는 _is_box_range_hold_
+      zone()(기존 매도측 박스권 판정 재사용, r002)으로 실제 정체 여부를 확인해 박스권이 확인된
+      종목만 TIME_LIMIT으로 교체하고, 아직 박스권이 아닌(방향성이 남아있는) 종목은 신규
+      ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES(120분, r001)까지 계속 감시를 유지하도록 변경.
+      120분 상한은 9/3 backup_pool 고갈 사고(Update log 9/3 참조) 재발을 막기 위한 안전장치로
+      유지. 프레임 미확보 종목은 안전하게 기존과 동일하게 60분에 탈락.
+    impact: live
+    compatibility: backward-compatible (TIME_LIMIT 탈락 판정 기준만 변경 - GRADUATE/HARD_STOP/
+      GAP_BLOCKED 및 backup_pool 재편입 동작은 동일. dropout 로그 reason이 TIME_LIMIT 외에
+      TIME_LIMIT_BOX_.../TIME_LIMIT_HARD로도 나올 수 있음 - _append_watchlist_change_history
+      등 reason 문자열을 직접 파싱하는 외부 도구가 있다면 startswith("TIME_LIMIT") 기준으로
+      갱신 필요)
+- [2026-09-04] type=fix owner=claude
+    summary: 직전 커밋에서 <날짜>_buy_sell.log(flat)를 완전히 제거했는데, 이 파일은 트레이드
+      로거의 실행별(run별) 타임스탬프 파일과 달리 같은 날짜 안에서 r003을 재시작해도
+      계속 누적되는 일별 트레이드 로그로 쓰이고 있음이 확인됨(사용자 지적). 파일 자체는
+      유지하되 저장 위치만 data_simulation/logs/(flat)에서 data_simulation/logs/<날짜>/로
+      이동 - _trade_log_target_paths()가 다시 <날짜>_buy_sell.log를 후보에 포함하되 경로를
+      log_date_dir 하위로 변경. <날짜>_trade_events.log(사용자가 불필요하다고 확인한 파일)는
+      계속 미생성 상태로 둠.
+    impact: live
+    compatibility: backward-compatible (파일명은 동일하게 유지되고 저장 위치만
+      data_simulation/logs/<날짜>/ 하위로 이동 - 이 파일을 flat 경로로 직접 참조하던 외부
+      스크립트가 있다면 경로 갱신 필요)
+- [2026-09-04] type=fix owner=claude
+    summary: 직전 커밋(flat 로그 이중 기록 제거)이 놓친 잔여 중복 파일 3건 추가 수정.
+      _bind_session_trade_log()가 실행 시작 시각으로 data_simulation/logs/(flat)에
+      <timestamp>_r003_trade_live_execute_buy_sell.log를 별도로 다시 만들고 있었고(트레이드
+      로거의 날짜 폴더본과 내용 동일), _trade_log_target_paths()도 data_simulation/logs/
+      <날짜>_buy_sell.log / <날짜>_trade_events.log를 매 트레이드 로그 라인마다 flat
+      폴더에 추가로 미러링하고 있었음 - 셋 다 trade_logger의 날짜 폴더 핸들러가 이미 쓰는
+      내용을 그대로 복제하는 보조 안전장치였을 뿐이라 실사용 가치가 없었음(사용자가 4개
+      flat 파일 중 트레이드 로거가 관리하는 날짜 폴더의 <timestamp>_..._buy_sell.log 한
+      개만 남기고 나머지는 없어도 된다고 확인). _bind_session_trade_log() 삭제(호출부
+      포함) 및 _trade_log_target_paths()를 _LOG_CTX["trade_log"](날짜 폴더 경로) 단일
+      후보만 반환하도록 축소 - log_trade()/_log_trade_block()의 수동 폴백 루프는 이미
+      로거가 관리 중인 경로라 그대로 스킵되어 사실상 무해한 안전장치로만 남음.
+    impact: live
+    compatibility: breaking (data_simulation/logs/(flat) 바로 아래에 buy_sell/trade_events
+      관련 파일이 더 이상 생성되지 않음 - 이 경로를 직접 참조하던 외부 스크립트/모니터링이
+      있다면 갱신 필요)
+- [2026-09-04] type=feat owner=claude
+    summary: 사용자 요청 3건 반영. (1) 현재 매수 감시 중인 종목(active_set)을 스크립트와 같은
+      폴더의 active_watchlist.txt에 "종목코드,종목명" 형식으로 매 틱 기록하는
+      _write_active_watchlist_txt() 신규 도입(기존 ACTIVE_WATCHLIST_STATE_PATH json과 별도로,
+      grep 없이 바로 열어볼 수 있는 텍스트본 요청). (2) _rebalance_active_watchlist()의
+      GRADUATE/DROPOUT/PROMOTE 이벤트를 data_simulation/logs/<날짜>/<날짜>_change_history.txt에
+      타임스탬프와 함께 append하는 _append_watchlist_change_history() 신규 도입 - 감시 대상
+      교체 이력을 날짜별로 추적 가능하게 함. (3) _rotate_logging_for_date()가 메인 로그/거래
+      로그를 flat 폴더(data_simulation/logs/)와 날짜 폴더(data_simulation/logs/<날짜>/)에
+      동일한 내용으로 이중 기록하던 것을 날짜 폴더 전용으로 변경(flat_log_filename/
+      flat_trade_log_filename 제거) - 동일 파일이 두 곳에 중복 저장되던 문제 수정.
+    impact: live
+    compatibility: breaking (main/buy_sell 로그 파일이 더 이상 data_simulation/logs/ 바로
+      아래에는 생성되지 않고 data_simulation/logs/<날짜>/ 하위에만 생성됨 - 이 경로를 직접
+      참조하는 외부 스크립트/모니터링이 있다면 갱신 필요)
+- [2026-09-03] type=fix owner=claude
+    summary: active_set(실시간 감시 상한 50)이 TIME_LIMIT 탈락만으로 서서히 소진되어
+      backup_pool까지 완전히 바닥나면(둘 다 0) 이후 장중 재보충 수단이 전혀 없어 감시
+      종목이 통째로 사라지는 문제 수정. 실사례: 09/03 12:09:50 backup_pool 50개 전량
+      active로 승격(backup=0), 12:49 GRADUATE 1건으로 backup 소진 경고 발생, 13:10:14
+      당시 active 전원이 거의 동시에 편입돼 TIME_LIMIT 타이머도 거의 동시에 만료 ->
+      대체할 backup이 하나도 없어 active_set/backup_pool 모두 0으로 떨어진 채 장 마감까지
+      복구되지 않음(active_watchlist.json active_count=0, backup_count=0). watch_map/
+      active_set/backup_pool이 하루 시작 시 1회만 채워지고 장중 재스캔이 없는 구조라,
+      TIME_LIMIT 탈락 종목을 그냥 버리면 스캐너 100종목 풀이 시간이 지날수록 단조 감소해
+      결국 고갈되는 게 구조적 필연이었음. _rebalance_active_watchlist()에서 TIME_LIMIT
+      사유로 탈락한 종목만 backup_pool 맨 뒤로 재편입하도록 변경(HARD_STOP/GAP_BLOCKED는
+      오늘 재진입 불가 사유이므로 기존대로 영구 제외 유지) - 신호가 없었을 뿐 나쁜 종목이
+      아니므로 아직 안 써본 backup 종목들에 우선권을 준 뒤 순환 재도전하게 함.
+    impact: live
+    compatibility: backward-compatible (TIME_LIMIT 탈락 종목이 이후 backup_pool을 통해
+      다시 active_set에 편입될 수 있음 - 기존엔 영구 제외였음. HARD_STOP/GAP_BLOCKED/
+      GRADUATE 탈락 동작은 변경 없음)
+- [2026-09-02] type=feat owner=claude
+    summary: 현재 실시간 감시 중인 종목(active_set)/대기 중인 종목(backup_pool) 현황을
+      매 틱마다 LIVE_RUNTIME_DIR/active_watchlist.json으로 기록하는 기능 추가 (사용자
+      요청 - 로그 파일을 grep하지 않고도 지금 어떤 종목이 실시간 감시 대상인지 바로 확인
+      가능하게 해달라는 요청). _write_active_watchlist_state() 신규 도입 -
+      _rebalance_active_watchlist() 호출 직후(같은 틱의 최신 active_set/backup_pool
+      반영) 실행. active는 first_active_at(편입 시각) 오름차순 정렬(다음 TIME_LIMIT
+      탈락에 가까운 순서), 각 종목의 code/name/active_since/holding(현재 보유 여부)을
+      포함. backup은 deque 순서(=스캐너 점수 순위) 그대로 code/name만 기록. 임시파일 작성
+      후 os.replace로 교체하는 원자적 쓰기로, 파일을 동시에 읽는 도중 부분 기록이 보이는
+      경우를 방지.
+    impact: live (신규 파일 기록만 추가, 매매 판단 로직 변경 없음)
+    compatibility: backward-compatible
+- [2026-09-02] type=fix owner=claude
+    summary: 계좌 보유 중이지만 오늘 watch_map(스캐너 picks)에는 없는 종목의 로그 표기가
+      "000660_000660"처럼 코드가 이름 자리에 중복 표시되던 문제 수정 (000660 SK하이닉스,
+      005930 삼성전자 사례 - "WARNING: account holdings not in watchlist" 로그로 존재가
+      드러남). 원인: 메인 루프의 name = watch_map.get(code) or code가 watch_map에 없으면
+      바로 code로 폴백했는데, 그 종목이 왜 감시 로그에 나타나는지 자체는 정상 동작 -
+      position_codes(보유 포지션)는 active_set/watch_map 소속과 무관하게 항상
+      iter_codes에 합쳐져 청산 감시가 끊기지 않도록 하는 기존 설계(2026-08-31 ACTIVE/BACKUP
+      SPLIT)이고, 이 종목들은 NOT_TODAY_BUY_POSITION으로 매매 없이 모니터링만 됨(2026-05-24
+      "당일 매수만 거래" 기능). 실제 이름 표시 문제만 수정 - TradingAPI.sync_positions_
+      from_account()가 이미 조회하는 잔고 API(inquire_balance_rlz_pl) 응답에 종목명
+      (prdt_name)이 포함돼 있는데 이를 버리고 있었음. 이제 보유 종목 동기화 시 prdt_name을
+      전역 _SYMBOL_NAME_MAP에 등록하고, 메인 루프 name 폴백을 watch_map -> _SYMBOL_NAME_MAP
+      -> code 순으로 확장. 부수 효과: _PerSymbolFileHandler(종목별 로그 파일)가 코드의
+      _SYMBOL_NAME_MAP 존재 여부로 기록 대상을 판단하므로, watch_map 밖의 보유 종목도 계좌
+      동기화 이후부터는 종목별 로그 파일이 정상 생성됨(이전엔 전혀 기록 안 됐음).
+    impact: live (로그 표기 전용, 매매 판단 로직 변경 없음)
+    compatibility: backward-compatible
+- [2026-09-02] type=fix owner=claude
+    summary: active_set(실시간 감시 상한 50종목, 2026-08-31 도입)의 TIME_LIMIT 탈락 타이머가
+      장전 NXT 세션(08:00~08:50) 대기시간을 그대로 소모하던 문제 수정. 126730 코칩 사례
+      (2026-09-02 08:03:26 active_set 편입 -> 09:03:41 TIME_LIMIT 탈락, 이후 09:07 신호
+      여부와 무관하게 완전히 감시 대상에서 빠짐) 분석 결과, NXT=False 종목은 08:00~08:50
+      구간 내내 can_trade_code_now()가 False라 매수 평가 자체가 불가능한데도
+      ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60분) 카운트는 그대로 흘러, 정규장(09:00)이
+      열리고 불과 3분여 만에 탈락하는 경우가 발생함(당일 로그에서 초기 편입 종목 다수가
+      09:03:41에 동시 탈락). regular_session_watchlist_reset_done 플래그 신규 도입 -
+      정규장 시작(REGULAR_START) 도달 첫 틱에서 그 순간의 active_set 전원의
+      first_active_at을 current_dt로 1회 재설정해, TIME_LIMIT 타이머가 프리마켓 대기시간을
+      제외하고 정규장 실거래 시간부터 60분을 온전히 확보하도록 함. _rebalance_active_watchlist
+      호출 직전에 위치해 같은 틱에서 재설정된 시각 기준으로 탈락 판정이 이뤄짐. 날짜 변경 시
+      다른 일일 상태와 함께 플래그도 리셋.
+    impact: live
+    compatibility: backward-compatible (정규장 시작 시점에 active_set 종목들의 TIME_LIMIT
+      탈락이 최대 60분 더 늦게 발생함 - 프리마켓에 편입된 종목이 정규장에서 더 오래
+      감시되나, HARD_STOP/GAP_BLOCKED/GRADUATE 탈락 사유와 backup_pool 교체 로직 자체는
+      변경 없음)
+- [2026-09-01] type=feat owner=claude
+    summary: 신규 매수 체크(진입 평가) 시작 시각을 벽시계 기준 특정 초(BUY_CHECK_SECONDS_OF_MINUTE,
+      r001, 기본값 [3, 18, 33, 48])로만 실행하도록 변경. 기존에는 메인 루프가
+      LIVE_PRICE_POLL_INTERVAL_SECONDS(10초) 간격으로 돌 때마다(00/10/20/.../50초) 포지션이
+      없는 모든 종목에 대해 매번 신규 진입 평가(check_buy_condition* 계열)를 수행했음.
+      _latest_buy_check_slot() 신규 도입 - 이번 틱 시각 기준 가장 최근에 지난
+      BUY_CHECK_SECONDS_OF_MINUTE 슬롯을 계산하고, 직전에 처리한 슬롯(last_buy_check_slot)과
+      다르면(=새 슬롯이 지났으면) 이번 순회에서만 buy_check_due=True로 신규 진입 평가를
+      수행, 그 외 틱에서는 종목별 else(무포지션) 분기 진입 즉시 continue로 건너뜀. 슬롯
+      시각이 폴링 간격(10초)의 배수가 아니어도(예: 3초) 그 다음 폴링 틱에서 슬롯이 지난
+      것으로 감지되어 실행됨(최대 폴링 간격만큼 지연 가능, _next_aligned_tick과 동일 철학).
+      매도/청산 감시·시세·프레임 갱신·계좌 동기화 등 루프의 나머지 동작은 이 게이트와 무관하게
+      기존과 동일하게 매 틱 실행됨 - 신규 진입 평가 실행 빈도만 변경.
+    impact: live
+    compatibility: breaking (신규 매수 진입 평가가 매 폴링 틱이 아닌 분당 4회(기본값)로만
+      실행됨 - 진입 신호 발생 시점부터 실제 평가까지 최대 15초+폴링 간격 지연 가능;
+      BUY_CHECK_SECONDS_OF_MINUTE를 폴링 간격의 배수 리스트로 설정하면 기존과 동일한 빈도로
+      복원 가능. 매도/손절/트레일링 등 청산 로직은 영향 없음)
 - [2026-08-28] type=feat owner=claude
     summary: 매수 미체결 재시도(추격 지정가) 신규 추가 - place_buy_order()는 매수1호가
       순수 지정가만 쓰고 체결 안 되면 [BUY STALE] 경고만 반복될 뿐 아무 조치가 없었음
@@ -120,222 +270,6 @@ Update log:
     compatibility: breaking (피라미딩 대기 중에도 익절/손절 매도가 즉시 실행됨 - 매도 타이밍이
       빨라지고 수익 반납/손절 지연이 감소하나, 드물게 피라미딩 매수가 매도 이후 체결되어 의도치
       않은 소량 재진입 포지션이 생길 수 있음(기존 손절/익절 로직으로 계속 보호됨))
-- [2026-08-17] type=fix owner=copilot
-    summary: (1) check_buy_condition_1min의 최소 봉 수 요건을 2봉 -> BB_PERIOD(20)봉으로 상향.
-      BB_MIDDLE은 calculate_indicators에서 rolling(window=BB_PERIOD, min_periods=1)로
-      계산되는데, 장 시작 직후 실제 확정봉이 20개 미만인 동안에는 BB_MIDDLE이 사실상 그
-      짧은 구간 평균(5봉 이동평균에 가까운 매우 빠른 선)처럼 움직여, 가격이 이미 "진짜" BB
-      중간선 위에서 유지 중인데도 이 불안정한 초반 평균을 잠깐 뚫기만 해도 가짜 골든크로스로
-      매수가 발생하는 문제가 있었음(사용자 제보: 5일선/20일선 기준으로 매수되는 것처럼 보이는
-      현상의 원인). 1분봉 기준 장 시작 후 약 20분간은 신규 매수 자체가 나가지 않게 됨.
-      (2) 매수 직전 중복 검사였던 BEARISH_BAR 재확인(cur_bar_close<=cur_bar_open) 삭제 -
-      check_buy_condition_1min이 이미 같은 확정봉으로 CANDLE_GAIN_MIN_PCT(0.0%, 음봉만 차단)
-      기준의 양봉 검사를 통과시킨 직후라 100% 중복이었고, 오히려 <=로 더 엄격하게 재검사해
-      "0.00%는 허용"이라는 CANDLE_GAIN_MIN_PCT의 명시된 설계 의도(r003 주석)와 충돌해 보합
-      마감봉을 이유 없이 추가로 막고 있었음. r007에는 애초에 이 재확인이 없어 r006에만 있던
-      불일치이기도 함.
-    impact: live
-    compatibility: breaking (개장 후 약 20분간 신규 매수 지연/차단됨 - 개장 초반 가짜 크로스로
-      인한 저품질 진입은 줄어들지만, 그 구간에 실제로 발생하는 진짜 기회도 함께 놓칠 수 있음)
-- [2026-08-17] type=fix owner=copilot
-    summary: ATR_STOP_LOSS에 최소 보유시간 게이트(HARD_STOP_MIN_HOLD_SECONDS) 추가 - 실매매 로그
-      (logs/20260701~20260724, 85건) 분석 결과 ATR_STOP_LOSS가 전체 매도의 33%(28건)를 차지하면서
-      해당 기간 순손실 -56,307원의 97%(-54,587원)를 차지하는 것으로 확인됨. 다른 모든 보호성 매도
-      (HARD_STOP_LOSS/POST_BUY_BB_DROP/BREAKEVEN_FAIL/NO_TREND_EXIT)는 전부 최소 보유시간이나
-      확인시간 게이트를 갖고 있는데 ATR_STOP_LOSS만 게이트 없이 매수 직후부터 매 폴링마다 즉시
-      평가되고 있어, 진입 직후의 정상 변동성(노이즈)에 반응해 조기 손절되는 경우가 많았음(평균
-      손실폭은 -0.91%로 크지 않으나 발생 빈도가 매우 높았음). 다른 손절 가드와 동일하게
-      HARD_STOP_MIN_HOLD_SECONDS(240초) 경과 후에만 발동하도록 수정 - 매수 직후 240초 이내에는
-      POST_BUY_BB_DROP_GUARD가 보호를 담당하고, 그 이후에는 ATR_STOP_LOSS/HARD_STOP_LOSS가
-      함께 최종 손절선 역할을 하도록 일원화.
-    impact: live
-    compatibility: breaking (ATR 손절 발동이 진입 후 최소 240초 지연됨 - 진입 직후 급락 시 손실폭이
-      기존보다 커질 수 있으나, 정상 변동성에 의한 조기 손절 빈도는 크게 감소할 것으로 예상)
-- [2026-07-25] type=feat owner=copilot
-    summary: 매매 파이프라인 개선 4건 (사용자 제안 분석 후 적용, r003 Update log에 요약).
-      (1) fetch_1min_frame/fetch_3min_frame의 확정봉 판정 시각에 CANDLE_CONFIRM_DELAY_SECONDS(2초)
-      유예를 둠 - 거래소 API의 봉마감 직후 체결데이터 반영 지연으로 인해 미확정 봉을 확정봉으로
-      오인하는 것을 방지. (2) check_buy_condition_1min에 require_fresh_cross 파라미터 추가하고
-      1분봉 골든크로스 매수를 "GC 발생봉 즉시 매수"에서 "GC 발생봉 확인(ARM) -> 다음 1분봉도
-      BB중간값 위 유지 확인 -> 매수"로 변경 (gc_confirm_state 신규, 최대 3분 경과 시 자동 만료).
-      (3) 3단계 분할익절의 3차(기존: +STAGED_TP3_PCT 도달 시 잔량 전체 고정가 청산)를 폐지하고,
-      1·2차(40%@1.0%/30%@1.4%) 완료 후 잔량 30%는 고정 목표가 없이 기존 트레일링 스탑
-      로직(TRAILING_STOP_FROM_PEAK/TP_EXTENSION_TRAIL_FROM_PEAK)에 위임 (Trail 30%). 1차 익절
-      목표도 고정 1.0%에서 max(1.0%, ATR*TP1_ATR_MULTIPLIER/진입가) 동적 목표로 변경, 2차는
-      1차와 동일 간격(+0.4%p) 유지. (4) 피라미딩(불타기) 신규 도입 - 평균단가 대비
-      PYRAMID_TRIGGER_PNL_PCT(+0.5%) 이상이고 MA5/BB중간선/ADX가 모두 직전봉 대비 상승 중이면
-      포지션당 1회 추가매수(place_buy_order에 pyramid 파라미터 신규). 기존 주문체결 파이프라인은
-      "종목당 매수 1회"를 전제로 평단가를 체결가로 덮어쓰고 TP진행상태를 리셋했기 때문에,
-      _confirm_pending_buy/refresh_pending_orders/포지션 메타 영속화 함수들에 pyramid 분기를
-      추가해 기존 평단가·tp1/tp2_done·보유시작시각을 보존하고 브로커 계좌 재동기화(sync_positions_
-      from_account)로 정확한 가중평균 단가를 반영하도록 함. 추가매수 주문이 미체결 대기 중에도
-      기존 보유수량의 손절/익절 감시가 끊기지 않도록 메인루프의 PENDING 게이트도 함께 수정.
-      각 기능은 r003의 ENABLE_PYRAMIDING/ENABLE_STAGED_TAKE_PROFIT 등 플래그로 개별 롤백 가능.
-    impact: live
-    compatibility: breaking (매수 확정 타이밍/봉 확정 판정/익절 3단계 동작이 변경되고, 신규
-      피라미딩 매수가 추가됨; 각 기능은 r003 플래그로 개별 롤백 가능)
-- [2026-07-22] type=fix owner=copilot
-    summary: 보조 거래 로그 파일명(_trade_log_target_paths) 순서를 buy_sell_YYYYMMDD.log/
-      trade_events_YYYYMMDD.log에서 YYYYMMDD_buy_sell.log/YYYYMMDD_trade_events.log로 변경 -
-      날짜가 파일명 뒤가 아닌 앞에 오도록 정렬(다른 로그 파일들과 명명 규칙 통일).
-    impact: live
-    compatibility: breaking (로그 파일명 변경 - 기존 파일명을 참조하는 외부 스크립트/모니터링이
-      있다면 갱신 필요)
-- [2026-07-22] type=feat owner=copilot
-    summary: 개장 초반(개장 후 OPENING_GAP_GATE_WINDOW_MINUTES=5분) 갭/거래량폭발 라이브 게이트
-      신규 도입 (_passes_opening_gap_volume_gate). r002 스캐너는 전일 종가 기준 데이터로 picks를
-      선정하므로 당일 아침 뉴스/해외증시 영향으로 갭상승/갭하락 출발하거나 거래량이 급변하는
-      경우를 반영하지 못하는 한계가 있어(사용자 지적), 신규 매수 직전에 실시간으로 한 번 더
-      검증한다. (1) 개장 후 5분 이내에 시가 갭이 -2%(OPENING_GAP_HARD_FLOOR_PCT) 미만이면
-      해당 종목은 당일 신규매수 자체를 영구 차단(gap_blocked_codes). (2) 갭이 선호구간
-      0~+5%(OPENING_GAP_MIN_PCT~MAX_PCT) 밖이거나 (3) 현재봉 거래량이 VOL_MA20의 1.5배
-      (OPENING_MIN_EARLY_VOLUME_RATIO) 미만이면 이 5분 창 안에서의 매수만 보류(창이 지나면
-      일반 로직으로 복귀). 기존 MAX_BUY_RISE_PCT_FROM_PREV_CLOSE(23%, 과도 급등 차단)와는
-      별개로 개장 초반에만 적용되는 좁은 선호구간 게이트. ENABLE_OPENING_GAP_VOLUME_GATE
-      플래그(r003)로 즉시 롤백 가능.
-    impact: live
-    compatibility: breaking (개장 초반 5분 내 매수가 이전보다 더 자주 보류될 수 있음; 플래그로 롤백 가능)
-- [2026-07-21] type=fix owner=copilot
-    summary: STAGED_TP3_PCT 1.8%->3.0% (r003 변경 반영) - 3단계 익절 중 3차(잔량 전체 청산) 임계값만
-      확장, 1차(+1.0%)/2차(+1.4%)는 유지. 3차 익절 로그 주석 하드코딩 값도 함께 정리.
-    impact: live
-    compatibility: backward-compatible (값만 변경, 로직 동일)
-- [2026-07-21] type=feat owner=copilot
-    summary: (1) 1분봉 BB 중간값 골든크로스 매수 신규 도입 - 매수 판단 타임프레임을 3분봉에서 1분봉으로
-      축소하고, 매수 조건을 "확정된 1분봉 종가가 BB 중간값을 상향 돌파(골든크로스)"로 단순화
-      (check_buy_condition_1min 신규). 기존 3분봉 다중 필터(BB기울기/스코어9~10점/RSI/MACD/Stoch/DI
-      우세/오프닝가드 등)는 신호 확인용으로는 적용하지 않되, 계좌/체결 안전장치(거래량 최소조건
-      MIN_ENTRY_VOL_MA·MIN_ENTRY_VOLUME/캔들 양봉 CANDLE_GAIN_MIN_PCT·MAX_PCT/추격매수 방지
-      BB_MID_CHASE_MAX_GAP_PCT/오더북 씬 체크/전일종가 대비 과열 상승 차단 등)는 그대로 재사용.
-      매도(데드크로스)·손절(HARD_STOP/ATR)은 기존 3분봉 기준 그대로 유지. ENABLE_1MIN_GOLDEN_CROSS_BUY
-      플래그(r003)로 기존 3분봉 파이프라인과 즉시 전환 가능. fetch_1min_frame/frame_cache_1min을
-      3분봉과 병행 유지하며, 매수 판단에 쓰이는 buy_frame/bar_time_for_buy만 1분봉으로 교체하고
-      cross_info(데드크로스 판정)는 기존 3분봉 기준을 그대로 사용해 매도 로직에는 영향 없음.
-      (2) 익절을 3단계 분할청산(진입수량의 40%/30%/30%, +1.0%/+1.4%/+1.8% 계단식)으로 변경 -
-      기존 2단계(50%@+1.0%, 전량@+2.0%)를 대체. 포지션의 최초 진입수량을 entry_quantity로
-      position_meta에 신규 영속화(재시작/계좌동기화 후에도 tp1/tp2/tp3 비중 계산 기준 유지)하고
-      tp1_done/tp2_done/tp3_done을 순차 게이트로 사용. ENABLE_STAGED_TAKE_PROFIT 플래그(r003)로
-      기존 2단계 방식과 즉시 전환 가능.
-    impact: live
-    compatibility: breaking (매수 판단 타임프레임/신호와 익절 단계가 모두 변경됨; 각 플래그로 즉시 롤백 가능)
-- [2026-07-21] type=fix owner=copilot
-    summary: ATR_STOP_LOSS 청산이 당일 재진입 차단(hard_stop_today_codes/HARD_STOP_BLOCK_REENTRY_TODAY)과
-      서킷브레이커(hard_stop_daily_count/HARD_STOP_CIRCUIT_BREAKER_COUNT)에 전혀 반영되지 않던 문제 수정.
-      logs/20260720 실매매 로그 분석 결과 당일 청산 18건 중 11건(손실의 87%)이 ATR_STOP_LOSS였는데
-      이 경로는 hard_stop_today_codes.add()/hard_stop_daily_count 증가를 호출하지 않아, HARD_STOP_LOSS
-      전용으로 설계된 재진입 차단이 사실상 무력화된 상태였음. 그 결과 323410(카카오뱅크)이 하루 3번,
-      119850(지엔씨에너지)/010950(S-Oil)가 각 2번 재매수되어 재진입마다 다시 손실/본전에 그침.
-      ATR_STOP_LOSS 매도 성공 시에도 HARD_STOP_LOSS와 동일하게 hard_stop_today_codes.add() +
-      hard_stop_daily_count 증가 + 서킷브레이커 카운트를 적용하도록 수정.
-    impact: live
-    compatibility: breaking (ATR 손절 종목도 당일 재진입이 차단되어 매매 빈도 감소, 반복 손절 방지 목적)
-- [2026-07-20] type=fix owner=copilot
-    summary: 인트라바(미완성 3분봉) 실시간 진입 프레임이 안전게이트 없이 그대로 매수 판단에
-      쓰이던 문제 수정. ENABLE_INTRABAR_LIVE_ENTRY_FILTER=True일 때 _build_realtime_entry_frame()이
-      아직 끝나지 않은 3분봉의 close를 실시간가로 계속 덮어써 만든 합성봉을 buy_frame으로 교체했는데,
-      이 합성봉이 check_buy_condition() 전체(BB_SLOPE/close_cross/캔들/점수 등)에 그대로 사용되면서
-      "CLOSE_BB_UP_CROSS"(확정 종가 크로스)라는 사유로 기록된 매수가 실제로는 실시간가 변동에
-      반응한 것으로 나타남(003680 한성기업 09:29:49 매수 사례 - 확정된 09:27 3분봉은 크로스가
-      없었는데 매수 시점 로그의 bar_close/bb_mid가 그 순간 실시간가로 재계산된 값과 일치).
-      원래 r003에 이 합성봉을 신뢰할지 판단하는 INTRABAR_MIN_ELAPSED_SECONDS/RSI/MFI/ADX 게이트가
-      정의돼 있었으나 r006 check_buy_condition()이 intrabar_elapsed_seconds를 받기만 하고
-      shared_check_buy_condition()에 전달하지 않아(shared 쪽도 애초에 파라미터가 없음) 실질적으로
-      아무 게이트도 적용되지 않는 죽은 코드였음(사례 당시 RSI=86.7로 INTRABAR_RSI_MAX=70 초과).
-      _passes_intrabar_entry_gate() 신규 도입 - 이 4개 기준을 모두 통과해야 합성봉을 매수 판단에
-      사용하고, 하나라도 실패하면(경과시간 부족 제외) [INTRABAR SKIP] 로그를 남기고 진짜 확정된
-      3분봉으로 폴백하도록 함. 더 이상 쓰이지 않는 intrabar_elapsed_seconds 파라미터는
-      check_buy_condition()에서 제거.
-    impact: live
-    compatibility: backward-compatible (합성봉이 안전 기준을 통과하는 경우에만 계속 사용되고,
-      실패 시 항상 확정 3분봉 기준으로 재평가되므로 신규 진입은 더 보수적으로 바뀔 수 있음)
-- [2026-07-20] type=fix owner=copilot
-    summary: 메인 루프가 "전 종목 처리 완료 + LIVE_PRICE_POLL_INTERVAL_SECONDS초 대기" 방식이라
-      종목 수(약 50개)가 늘수록 실제 주기가 뒤로 밀려 매분 0/20/40초 같은 고정 시각에 맞춰 돌지
-      않던 문제 수정. _next_aligned_tick()/_sleep_until_next_tick() 신규 도입 - 매 루프가
-      항상 벽시계 기준 LIVE_PRICE_POLL_INTERVAL_SECONDS(=20)의 배수 초(0/20/40)에 깨어나도록
-      정렬하고, 직전 처리가 한 틱을 넘겨 지연됐을 경우 그 틱은 건너뛰고 다음 정렬 시각으로
-      넘어가 밀린 틱이 몰아서 실행되지 않게 함. r003의 LIVE_PRICE_POLL_INTERVAL_SECONDS도
-      10->20으로 조정(0/20/40초 3틱 고정 스케줄에 맞춤, r003 Update log 참조).
-    impact: live
-    compatibility: backward-compatible (틱 시각만 벽시계에 정렬되며 매매 판단 로직은 변경 없음)
-- [2026-07-16] type=fix owner=copilot
-    summary: 3분봉 프레임이 매 refresh마다 KIS inquire_time_itemchartprice 응답으로 통째로 교체되어,
-      해당 API가 반환하는 최근 롤링 윈도우(리샘플 후 약 10봉)에 항상 갇혀 있던 문제 수정. 신규 조회
-      결과를 기존 캐시와 병합(원본 OHLCV 기준, 인덱스 중복은 최신값 우선) 후 전체 이력에 대해
-      calculate_indicators()를 재계산하도록 변경 - BB_PERIOD/VOLUME_MA_PERIOD=20 등 20봉 롤링
-      지표가 실제로 20봉 이력을 확보하도록 함(FRAME_CACHE_MAX_BARS=200으로 상한, 일자 변경 시 기존대로
-      초기화). 매수가 장시간 발생하지 않던 사례 조사 중 발견 - 신호 자체가 없던 것(버그 아님)으로
-      확인되었으나, 지표 안정성 개선을 위해 근본 원인을 함께 수정.
-    impact: live
-    compatibility: breaking (지표값이 이전보다 더 많은 이력을 반영하여 계산되므로 크로스/점수 타이밍이
-      달라질 수 있음; 봇 재시작 후 적용됨)
-- [2026-07-16] type=fix owner=copilot
-    summary: 시그널 매도(SIGNAL_EXIT) pnl 억제 기준 완화 - STOCH_K_LT_D -0.8%->-1.2%, MACD_HIST_DOWN_2BARS
-      -0.5%->-0.8%. r007로 D일 picks를 D+1일 데이터에 매매 시뮬레이션한 결과 STOCH_K_LT_D 31건 중 61.3%,
-      MACD_HIST_DOWN_2BARS 59건 중 71.2%가 청산 후 본전 이상으로 회복하는 것으로 나타나, 급락 후 반등을
-      놓치지 않도록 조기청산 기준을 완화함. r003의 HARD_STOP_LOSS_PCT/BREAKEVEN_FAIL_GIVEBACK_PCT/
-      POST_BUY_BB_DROP_PCT 등 관련 손절 파라미터도 동일 배경으로 함께 완화(r003 Update log 참조).
-    impact: live
-    compatibility: breaking (해당 시그널 매도 발동이 더 늦어짐 - 개별 손실폭 확대 가능성 있으나 조기청산
-      기회손실 감소가 목표)
-- [2026-07-02] type=fix owner=copilot
-    summary: (1) 매도 체결 후 포지션정리(positions.pop/traded_today.discard) 판단 기준을 계좌동기화 캐시(current_qty)에서 주문상태 자체의 remaining_qty로 변경 - 161890 사례처럼 sync 지연 시 정상 매도 후에도 당일 재매수가 영구 잠기던 버그 수정. (2) 로컬 표시용 _buy_support_score가 r005의 구(舊) 15점 체계(DI+/- 포함)로 남아있어 실제 게이트 점수(r005, 18점제)와 로그 표시가 어긋나던 문제 수정 - r005와 동일한 18점 체계로 동기화, 로그 라벨 /15->/18
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-26] type=fix owner=copilot
-    summary: BREAKEVEN_FAIL 발동 조건 pnl_pct<0 -> pnl_pct<-0.005 강화(TP1 후 일시 pullback 청산 방지)
-- [2026-06-25] type=fix owner=copilot
-    summary: SIGNAL_EXIT 조기 매도 방지 강화 - _signal_min_hold_seconds 300->600초(10분), STOCH_K_LT_D 억제 pnl 기준 -0.5%->-0.8%, MACD_HIST_DOWN_2BARS에 pnl<=-0.5% 하한 추가
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-28] type=fix owner=copilot
-    summary: 연속 HARD_STOP 서킷브레이커 + 당일 HARD_STOP 종목 재진입 차단
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-18] type=feat owner=copilot
-    summary: 손절(HARD_STOP_LOSS_0.8PCT, ATR_STOP_LOSS) 시 시장가(ord_dvsn=01) 즉시 매도; place_sell_order에 market_order 파라미터 추가. NXT 세션은 지정가 유지.
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-17] type=feat owner=copilot
-    summary: (r005 연동) BB 중간선 최근 4봉(12분) 연속 우하향 시 매수 차단 - BB_MID_DOWNTREND_4BARS 거부 사유 추가.
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-17] type=fix owner=copilot
-    summary: (r005 연동) UPTREND_CONT 진입 경로 추가 - 크로스 없이도 ADX30+/+DI우세/BB위3봉이상이면 매수; 크로스 룩백 5봉 확장.
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-07] type=feat owner=copilot
-    summary: strengthened buy gates with ADX rising+DI dominance, MFI overheat guard, RSI 50-break/50-60 zone, and OBV signal-cross confirmation.
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-06] type=feat owner=copilot
-    summary: added ADX+MFI entry gate and ATR-based variable TP/SL risk model.
-    impact: live
-    compatibility: backward-compatible
-- [2026-06-05] type=fix owner=copilot
-    summary: (한글) BB 중간값 진입 보조조건 변경에 맞춰 리젝트 사유 로그를 PREV_CLOSE_MISSING / LIVE_NOT_ABOVE_PREV_CLOSE_AND_BB_MIDDLE로 상세화.
-    impact: live
-    compatibility: backward-compatible
-- [2026-05-24] type=feat owner=copilot
-    summary: exclude pre-held watchlist positions; trade only same-day buys with data/YYYYMMDD/today_buys.txt persistence.
-    impact: live
-    compatibility: backward-compatible
-- [2026-05-22] type=fix owner=copilot
-    summary: traded_today reserve-before-submit; cooldown keys zfill(6); persist traded_today on buy submit; discard on buy fail.
-    impact: live
-    compatibility: backward-compatible
-- [2026-05-22] type=fix owner=copilot
-    summary: buy_inflight exposure guard + stable trade_events append log (flush trade_logger, main-loop BUY EXECUTED log_trade).
-    impact: live
-    compatibility: backward-compatible
-- [2026-05-22] type=fix owner=copilot
-    summary: live-trading safety fixes (fail-closed market day, strict orders, live state, dry-run, session force close).
-    impact: live
-    compatibility: backward-compatible
-- [2026-05-10] type=docs owner=copilot
-    summary: added standardized file header and expandable update-log format.
-    impact: live
-    compatibility: backward-compatible
 
 Note: This script cannot guarantee profit. Always paper-test before live trading.
 """
@@ -361,8 +295,6 @@ from typing import Optional
 import pandas as pd
 from r001_define_config import (
     ACCOUNT_SYNC_INTERVAL_SECONDS,
-    ADX_BUY_MIN,
-    ADX_MIN_TREND,
     ADX_PERIOD,
     ADX_STRONG_TREND,
     AFTERNOON_NXT_END,
@@ -375,9 +307,7 @@ from r001_define_config import (
     AUX_SELL_MIN_PNL_SCORE4,
     BB_MID_CHASE_MAX_GAP_PCT,
     BB_PERIOD,
-    BB_SQUEEZE_MIN_WIDTH_PCT,
     BB_STD_MULTIPLIER,
-    BB_UPPER_PROXIMITY_MAX,
     BOX_RANGE_HOLD_LOOKBACK_BARS,
     BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT,
     BOX_RANGE_HOLD_MAX_RANGE_PCT,
@@ -385,12 +315,6 @@ from r001_define_config import (
     CANDLE_GAIN_MIN_PCT,
     DATA_DIR_NAME,
     DEFINE_TODAY_CODE_PATH,
-    EARLY_NEAR_CROSS_ALLOWED_END,
-    EARLY_NEAR_CROSS_ALLOWED_START,
-    EARLY_NEAR_CROSS_ALLOW_NXT,
-    EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
-    EARLY_NEAR_CROSS_MIN_VOL_MA,
-    EARLY_NEAR_CROSS_MIN_VOLUME,
     ENABLE_1MIN_GOLDEN_CROSS_BUY,
     ENABLE_1MIN_ENTRY_SCORE_GATE,
     ENABLE_1MIN_TRIGGER_3MIN_CONTEXT,
@@ -399,12 +323,7 @@ from r001_define_config import (
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
-    ENABLE_EARLY_NEAR_CROSS_ENTRY,
-    ENABLE_NEAR_CROSS_ARM,
-    ENABLE_PRICE_LEAD_BB_BREAKOUT,
     ENABLE_STAGED_TAKE_PROFIT,
-    ENABLE_STRICT_MA5_BB_GOLDEN_CROSS,
-    ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
     ENABLE_NXT_SESSION,
     ENABLE_TP_EXTENSION_TRAILING,
     LIVE_PRICE_BB_BUFFER_PCT,
@@ -412,29 +331,19 @@ from r001_define_config import (
     LIVE_PRICE_CROSS_CONFIRM_SECONDS,
     LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS,
     LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS,
-    MA5_BB_DOWN_CROSS_CONFIRM_MIN_SCORE,
     MA5_BB_DOWN_CROSS_IMMEDIATE_PNL,
     MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE,
     MA5_BB_DOWN_CROSS_MIN_PNL,
-    MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
     MA_PERIOD,
     MACD_FAST,
     MACD_SIGNAL_PERIOD,
     MACD_SLOW,
     MAX_ORDER_AMOUNT_KRW,
-    MIN_BARS_REQUIRED,
     MIN_ENTRY_VOL_MA,
     MIN_ENTRY_VOLUME,
-    MFI_BUY_MIN,
     MFI_PERIOD,
     MORNING_NXT_END,
     MORNING_NXT_START,
-    NEAR_CROSS_ARM_EXPIRE_BARS,
-    NEAR_CROSS_ARM_GAP_MAX,
-    NEAR_CROSS_ARM_MA_RISE_MIN,
-    NEAR_CROSS_EARLY_GAP_MAX,
-    NEAR_CROSS_EARLY_MA_RISE_MIN,
-    OBV_BREAKOUT_LOOKBACK_BARS,
     BREAKEVEN_FAIL_ARM_PNL,
     BREAKEVEN_FAIL_CONFIRM_SECONDS,
     BREAKEVEN_FAIL_GIVEBACK_PCT,
@@ -448,24 +357,16 @@ from r001_define_config import (
     ATR_TAKE_PROFIT_MULTIPLIER,
     OBV_MA_PERIOD,
     POLL_INTERVAL_SECONDS,
-    PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
-    PRICE_LEAD_BREAKOUT_MIN_ADX,
-    PRICE_LEAD_BREAKOUT_MIN_SCORE,
     POST_BUY_DROP_CONFIRM_SECONDS,
     REGULAR_END,
     REGULAR_FORCE_EXIT,
     REGULAR_NEW_ENTRY_CUTOFF,
     REGULAR_START,
-    RSI_BUY_MAX,
-    RSI_BUY_MIN,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
     STARTUP_WARMUP_SECONDS,
     POST_BUY_BB_DROP_ARMED_SECONDS,
     POST_BUY_BB_DROP_PCT,
-    POST_BUY_BB_DROP_POLLS,
-    STOP_LOSS_EARLY_PERCENT,
-    STOP_LOSS_MIN_HOLD_SECONDS,
     STOP_LOSS_PERCENT,
     HARD_STOP_LOSS_PCT,
     HARD_STOP_MIN_HOLD_SECONDS,
@@ -476,14 +377,9 @@ from r001_define_config import (
     OPENING_GAP_MAX_PCT,
     OPENING_GAP_HARD_FLOOR_PCT,
     OPENING_MIN_EARLY_VOLUME_RATIO,
-    STOCH_BUY_MAX,
-    STOCH_BUY_MIN,
     STOCH_D_PERIOD,
     STOCH_K_PERIOD,
     STOCH_OVERBOUGHT,
-    STRONG_TREND_OVERBOUGHT_MIN_ADX,
-    STRONG_TREND_OVERBOUGHT_MIN_SCORE,
-    STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
     STAGED_TP1_PCT,
     STAGED_TP1_RATIO,
     ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT,
@@ -496,15 +392,7 @@ from r001_define_config import (
     TRADE_COOLDOWN_MINUTES,
     TRAILING_STOP_FROM_PEAK,
     VOLUME_MA_PERIOD,
-    VOLUME_RATIO_CLOSE,
-    VOLUME_RATIO_FLOOR,
-    VOLUME_RATIO_MIDDAY,
-    VOLUME_RATIO_NXT,
-    VOLUME_RATIO_OPEN,
-    VOLUME_RATIO_STRONG_RELAX,
-    WILLIAMS_BUY_FLOOR,
     WILLIAMS_D_PERIOD,
-    WILLIAMS_OVERBOUGHT_CEIL,
     WILLIAMS_R_PERIOD,
     AUX_SELL_MIN_REALIZED_TARGET_PCT,
     AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
@@ -527,21 +415,20 @@ from r001_define_config import (
     LIVE_STATE_SAVE_INTERVAL_SECONDS,
     MAIN_LOOP_MAX_CONSECUTIVE_ERRORS,
     MARKET_DAY_FAIL_CLOSED,
-    MFI_OVERBOUGHT_MAX,
     MORNING_NXT_NEW_ENTRY_CUTOFF,
     ORDER_STATUS_POLL_INTERVAL_SECONDS,
     PENDING_BUY_GRACE_SECONDS,
     BUY_ORDER_STALE_WARN_SECONDS,
+    BUY_CHECK_SECONDS_OF_MINUTE,
     BUY_ORDER_REPRICE_AFTER_SECONDS,
     BUY_ORDER_REPRICE_MAX_ATTEMPTS,
     BUY_ORDER_REPRICE_MAX_CHASE_PCT,
     PENDING_STATUS_BACKOFF_MAX_SECONDS,
-    REQUIRE_ADX_RISING,
-    REQUIRE_DI_PLUS_DOMINANT,
-    REQUIRE_OBV_SIGNAL_CROSS,
-    RSI_BUY_MOMENTUM_MAX,
     SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
     WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS,
+    ACTIVE_WATCHLIST_SIZE,
+    ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES,
+    ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES,
     HARD_STOP_CIRCUIT_BREAKER_COUNT,
     HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN,
     HARD_STOP_BLOCK_REENTRY_TODAY,
@@ -561,8 +448,7 @@ from r002_strategy_core_shared import (
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
     _evaluate_bb_mid_cross,
-    _near_cross_momentum_flags,
-    _passes_early_near_cross_liquidity,
+    _is_box_range_hold_zone,
 )
 
 current_dir = Path(__file__).resolve().parent
@@ -591,6 +477,8 @@ TODAY_BUYS_FILENAME = "today_buys.txt"
 LIVE_RUNTIME_DIR = DATA_DIR / "live_runtime"
 LIVE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 POSITION_META_PATH = LIVE_RUNTIME_DIR / "position_meta.json"
+ACTIVE_WATCHLIST_STATE_PATH = LIVE_RUNTIME_DIR / "active_watchlist.json"
+ACTIVE_WATCHLIST_TXT_PATH = current_dir / "active_watchlist.txt"
 # Legacy alias (daily traded_today + optional combined state)
 LIVE_STATE_DIR = LIVE_RUNTIME_DIR
 
@@ -606,12 +494,7 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_cross_confirm_seconds=LIVE_PRICE_CROSS_CONFIRM_SECONDS,
     live_price_down_cross_confirm_polls=LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS,
     live_price_down_cross_confirm_seconds=LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS,
-    require_strict_buy_golden_cross=ENABLE_STRICT_MA5_BB_GOLDEN_CROSS,
     stoch_overbought=STOCH_OVERBOUGHT,
-    williams_overbought_ceil=WILLIAMS_OVERBOUGHT_CEIL,
-    bb_upper_proximity_max=BB_UPPER_PROXIMITY_MAX,
-    bb_squeeze_min_width_pct=BB_SQUEEZE_MIN_WIDTH_PCT,
-    adx_min_trend=ADX_MIN_TREND,
     stop_loss_percent=STOP_LOSS_PERCENT,
     take_profit_percent=TAKE_PROFIT_PERCENT,
     enable_box_range_hold_tech_sell=ENABLE_BOX_RANGE_HOLD_TECH_SELL,
@@ -624,21 +507,6 @@ SHARED_R76_CONFIG = R76StrategyConfig(
     aux_sell_min_pnl_score2=AUX_SELL_MIN_PNL_SCORE2,
     aux_sell_min_pnl_score3=AUX_SELL_MIN_PNL_SCORE3,
     aux_sell_min_pnl_score4=AUX_SELL_MIN_PNL_SCORE4,
-    stoch_buy_min=STOCH_BUY_MIN,
-    stoch_buy_max=STOCH_BUY_MAX,
-    rsi_buy_min=RSI_BUY_MIN,
-    rsi_buy_max=RSI_BUY_MAX,
-    williams_buy_floor=WILLIAMS_BUY_FLOOR,
-    obv_breakout_lookback_bars=OBV_BREAKOUT_LOOKBACK_BARS,
-    enable_price_lead_bb_breakout=ENABLE_PRICE_LEAD_BB_BREAKOUT,
-    price_lead_breakout_min_score=PRICE_LEAD_BREAKOUT_MIN_SCORE,
-    price_lead_breakout_min_adx=PRICE_LEAD_BREAKOUT_MIN_ADX,
-    price_lead_breakout_allow_overbought=PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
-    enable_strong_trend_overbought_bypass=ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
-    strong_trend_overbought_min_score=STRONG_TREND_OVERBOUGHT_MIN_SCORE,
-    strong_trend_overbought_min_vol_ratio=STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
-    strong_trend_overbought_min_adx=STRONG_TREND_OVERBOUGHT_MIN_ADX,
-    ma5_bb_follow_chase_max_gap_pct=MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT,
     bb_buy_score_threshold=BB_BUY_SCORE_THRESHOLD,
 )
 
@@ -736,8 +604,6 @@ def _rotate_logging_for_date(date_str: str) -> None:
     log_date_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     script_stem = Path(__file__).stem
-    flat_log_filename = log_dir / f"{timestamp}_{script_stem}.log"
-    flat_trade_log_filename = log_dir / f"{timestamp}_{script_stem}_buy_sell.log"
     log_filename = log_date_dir / f"{timestamp}_{script_stem}.log"
     trade_log_filename = log_date_dir / f"{timestamp}_{script_stem}_buy_sell.log"
 
@@ -753,7 +619,6 @@ def _rotate_logging_for_date(date_str: str) -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler(flat_log_filename, encoding="utf-8"),
             logging.FileHandler(log_filename, encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
@@ -780,12 +645,9 @@ def _rotate_logging_for_date(date_str: str) -> None:
         "%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    _trade_handler = logging.FileHandler(flat_trade_log_filename, encoding="utf-8")
+    _trade_handler = logging.FileHandler(trade_log_filename, encoding="utf-8")
     _trade_handler.setFormatter(_trade_formatter)
     trade_logger.addHandler(_trade_handler)
-    _trade_date_handler = logging.FileHandler(trade_log_filename, encoding="utf-8")
-    _trade_date_handler.setFormatter(_trade_formatter)
-    trade_logger.addHandler(_trade_date_handler)
 
     for h in list(logger.handlers):
         if isinstance(h, _PerSymbolFileHandler):
@@ -814,7 +676,6 @@ def _rotate_logging_for_date(date_str: str) -> None:
             handler.flush()
         except Exception:
             pass
-    _LOG_CTX["flat_trade_log"] = flat_trade_log_filename
     _LOG_CTX["trade_log"] = trade_log_filename
 
 _rotate_logging_for_date(str(_LOG_CTX["date_str"]))
@@ -829,13 +690,11 @@ def log(msg: str) -> None:
 def _trade_log_target_paths() -> list[Path]:
     date_str = str(_LOG_CTX.get("date_str") or datetime.now().strftime("%Y%m%d"))
     candidates: list[Path] = [
-        data_sim_dir / "logs" / f"{date_str}_buy_sell.log",
-        data_sim_dir / "logs" / f"{date_str}_trade_events.log",
+        data_sim_dir / "logs" / date_str / f"{date_str}_buy_sell.log",
     ]
-    for key in ("flat_trade_log", "trade_log", "session_buy_sell_log"):
-        value = _LOG_CTX.get(key)
-        if value:
-            candidates.append(Path(value))
+    value = _LOG_CTX.get("trade_log")
+    if value:
+        candidates.append(Path(value))
     deduped: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -845,13 +704,6 @@ def _trade_log_target_paths() -> list[Path]:
         seen.add(key)
         deduped.append(candidate)
     return deduped
-
-
-def _bind_session_trade_log() -> None:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session_path = data_sim_dir / "logs" / f"{timestamp}_r003_trade_live_execute_buy_sell.log"
-    _LOG_CTX["session_buy_sell_log"] = session_path
-    log_trade(f"SESSION trade log | path={session_path}")
 
 
 def _trade_logger_file_paths() -> set[str]:
@@ -1513,34 +1365,6 @@ def get_session_open_datetime(now: datetime, nxt_tradeable: bool) -> datetime | 
     return None
 
 
-def get_volume_ratio_threshold(now: datetime, adx_val: float) -> float:
-    current_time = now.time()
-
-    if is_nxt_session(now):
-        ratio = VOLUME_RATIO_NXT
-    elif current_time < dt_time(10, 0):
-        ratio = VOLUME_RATIO_OPEN
-    elif current_time < dt_time(14, 30):
-        ratio = VOLUME_RATIO_MIDDAY
-    else:
-        ratio = VOLUME_RATIO_CLOSE
-
-    # 추세가 매우 강하면 거래량 필터 완화
-    if not pd.isna(adx_val) and adx_val >= ADX_STRONG_TREND:
-        ratio = max(VOLUME_RATIO_FLOOR, ratio - VOLUME_RATIO_STRONG_RELAX)
-
-    return ratio
-
-
-def is_early_near_cross_allowed(now: datetime, nxt_tradeable: bool) -> bool:
-    current_time = now.time()
-    if is_regular_session(now):
-        return EARLY_NEAR_CROSS_ALLOWED_START <= current_time <= EARLY_NEAR_CROSS_ALLOWED_END
-    if EARLY_NEAR_CROSS_ALLOW_NXT and is_nxt_session(now) and nxt_tradeable:
-        return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # 이익 실현
 # ---------------------------------------------------------------------------
@@ -1829,6 +1653,23 @@ def _sleep_until_next_tick(scheduled_tick: datetime, interval_seconds: int) -> d
     return next_tick
 
 
+def _latest_buy_check_slot(now: datetime, seconds_of_minute: list[int]) -> datetime:
+    """`now` 시각 기준 가장 최근에 지나간 매수체크 스케줄 슬롯 시각을 반환한다
+    (BUY_CHECK_SECONDS_OF_MINUTE, 예: [3, 18, 33, 48]초). 메인 루프는
+    LIVE_PRICE_POLL_INTERVAL_SECONDS 간격으로만 깨어나므로 이 슬롯 시각과 정확히
+    일치하지 않을 수 있다 - 호출부는 이 반환값이 마지막으로 처리한 슬롯과 달라졌는지
+    비교해 "새 슬롯이 지났는지"만 판단한다(놓친 슬롯을 몰아서 재실행하지 않음)."""
+    seconds_sorted = sorted(s for s in seconds_of_minute if 0 <= s < 60)
+    if not seconds_sorted:
+        return now
+    minute_start = now.replace(second=0, microsecond=0)
+    passed = [minute_start + timedelta(seconds=s) for s in seconds_sorted if minute_start + timedelta(seconds=s) <= now]
+    if passed:
+        return passed[-1]
+    prev_minute_start = minute_start - timedelta(minutes=1)
+    return prev_minute_start + timedelta(seconds=seconds_sorted[-1])
+
+
 def update_live_price_cross_state(
     cross_state: dict[str, dict],
     code: str,
@@ -2100,115 +1941,6 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
                 score += 1
 
     return score
-def _sell_support_score(cur: pd.Series, prev: pd.Series) -> int:
-    score = 0
-
-    k_c = _num(cur, "STOCH_K")
-    d_c = _num(cur, "STOCH_D")
-    k_p = _num(prev, "STOCH_K")
-    d_p = _num(prev, "STOCH_D")
-    if not any(pd.isna(v) for v in (k_c, d_c, k_p, d_p)):
-        if k_p >= d_p and k_c < d_c and k_p >= STOCH_OVERBOUGHT:
-            score += 1
-
-    rsi_c = _num(cur, "RSI")
-    sig_c = _num(cur, "RSI_SIGNAL")
-    rsi_p = _num(prev, "RSI")
-    sig_p = _num(prev, "RSI_SIGNAL")
-    if not any(pd.isna(v) for v in (rsi_c, sig_c, rsi_p, sig_p)):
-        if rsi_p >= sig_p and rsi_c < sig_c:
-            score += 1
-
-    wr_c = _num(cur, "WILLIAMS_R")
-    wd_c = _num(cur, "WILLIAMS_D")
-    wr_p = _num(prev, "WILLIAMS_R")
-    wd_p = _num(prev, "WILLIAMS_D")
-    if not any(pd.isna(v) for v in (wr_c, wd_c, wr_p, wd_p)):
-        if wr_p >= wd_p and wr_c < wd_c:
-            score += 1
-
-    # 4) MACD: 데드크로스(하향 전환)
-    macd_c = _num(cur, "MACD")
-    msig_c = _num(cur, "MACD_SIGNAL")
-    macd_p = _num(prev, "MACD")
-    msig_p = _num(prev, "MACD_SIGNAL")
-    if not any(pd.isna(v) for v in (macd_c, msig_c, macd_p, msig_p)):
-        if macd_p >= msig_p and macd_c < msig_c:
-            score += 1
-
-    # 5) OBV: OBV < OBV_MA 이고 하락 중 (거래량 방향 매도 우위)
-    obv_c = _num(cur, "OBV")
-    obv_ma_c = _num(cur, "OBV_MA")
-    obv_p = _num(prev, "OBV")
-    if not any(pd.isna(v) for v in (obv_c, obv_ma_c, obv_p)):
-        if obv_c < obv_ma_c and obv_c < obv_p:
-            score += 1
-
-    return score
-
-
-def _price_lead_breakout_context(
-    frame: pd.DataFrame,
-    now: datetime,
-    live_price: float,
-    cross_info: dict[str, object],
-) -> dict[str, object]:
-    cur = frame.iloc[-1]
-    prev = frame.iloc[-2]
-
-    prev_close = _num(prev, "close")
-    close_val = _num(cur, "close")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_bb = _num(cur, "BB_MIDDLE")
-    adx_val = _num(cur, "ADX")
-    macd_val = _num(cur, "MACD")
-    macd_sig = _num(cur, "MACD_SIGNAL")
-    hist_val = _num(cur, "MACD_HIST")
-    support_score = _buy_support_score(cur, prev, frame=frame)
-    near_flags = _near_cross_momentum_flags(cur, prev)
-    liquidity_ok, liquidity_reason = _passes_early_near_cross_liquidity(cur)
-
-    current_time = now.time()
-    time_window_ok = (
-        (is_regular_session(now) and EARLY_NEAR_CROSS_ALLOWED_START <= current_time <= EARLY_NEAR_CROSS_ALLOWED_END)
-        or (EARLY_NEAR_CROSS_ALLOW_NXT and is_nxt_session(now))
-    )
-    price_breakout = not any(pd.isna(v) for v in (prev_close, close_val, prev_bb, cur_bb)) and (prev_close <= prev_bb) and (close_val > cur_bb)
-    live_cross_up = cross_info.get("signal") == "cross_up"
-    macd_momentum_ok = not any(pd.isna(v) for v in (macd_val, macd_sig, hist_val)) and macd_val > macd_sig and hist_val > 0
-
-    near_entry_mode = None
-    if time_window_ok and ENABLE_EARLY_NEAR_CROSS_ENTRY and bool(near_flags["can_early"]):
-        near_entry_mode = "EARLY_NEAR_CROSS"
-    elif time_window_ok and ENABLE_NEAR_CROSS_ARM and bool(near_flags["can_arm"]):
-        near_entry_mode = "ARMED_NEAR_CROSS"
-
-    can_enter = (
-        ENABLE_PRICE_LEAD_BB_BREAKOUT
-        and price_breakout
-        and live_cross_up
-        and near_entry_mode is not None
-        and liquidity_ok
-        and support_score >= PRICE_LEAD_BREAKOUT_MIN_SCORE
-        and not pd.isna(adx_val)
-        and adx_val >= PRICE_LEAD_BREAKOUT_MIN_ADX
-        and macd_momentum_ok
-        and live_price > cur_bb
-    )
-
-    return {
-        "can_enter": can_enter,
-        "entry_mode": f"PRICE_LEAD_{near_entry_mode}" if can_enter and near_entry_mode is not None else near_entry_mode,
-        "support_score": support_score,
-        "liquidity_ok": liquidity_ok,
-        "liquidity_reason": liquidity_reason,
-        "price_breakout": price_breakout,
-        "live_cross_up": live_cross_up,
-        "time_window_ok": time_window_ok,
-        "allow_overbought": can_enter and PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
-        "near_flags": near_flags,
-        "adx": adx_val,
-    }
 
 
 def _buy_condition_snapshot(
@@ -2313,51 +2045,6 @@ def _passes_opening_gap_volume_gate(
     return True, "OK"
 
 
-def _extract_score_from_buy_reason(buy_reason: str) -> int | None:
-    m = re.search(r"SCORE_(\d+)", str(buy_reason or ""))
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except (TypeError, ValueError):
-        return None
-
-
-def _passes_loss_pattern_buy_filter(frame: pd.DataFrame, buy_reason: str, live_price: float) -> tuple[bool, str]:
-    """Blocks entry patterns that showed repeated losses in today's live logs.
-
-    Focus: overbought-bypass entries with weak support/momentum.
-    """
-    reason_text = str(buy_reason or "")
-    if "OVERBOUGHT_BYPASS" not in reason_text:
-        return True, "OK"
-
-    score = _extract_score_from_buy_reason(reason_text)
-    if score is not None and score <= 3:
-        return False, f"LOSS_PATTERN_BLOCK_OVERBOUGHT_BYPASS_SCORE_{score}"
-
-    cur = frame.iloc[-1]
-    ma5 = _num(cur, "MA_5")
-    bar_close = _num(cur, "close")
-    bb_mid = _num(cur, "BB_MIDDLE")
-
-    weak_live_vs_ma5 = not pd.isna(ma5) and live_price <= ma5
-    bar_above_or_equal_ma5 = not pd.isna(bar_close) and not pd.isna(ma5) and bar_close >= ma5
-    near_bb_mid = (
-        not pd.isna(bb_mid)
-        and bb_mid > 0
-        and ((live_price / bb_mid) - 1.0) <= 0.005
-    )
-
-    if score is not None and score <= 4 and weak_live_vs_ma5 and bar_above_or_equal_ma5:
-        return False, "LOSS_PATTERN_BLOCK_WEAK_OVERBOUGHT_BYPASS_MA5"
-
-    if score is not None and score <= 4 and weak_live_vs_ma5 and near_bb_mid:
-        return False, "LOSS_PATTERN_BLOCK_WEAK_OVERBOUGHT_BYPASS_BBMID"
-
-    return True, "OK"
-
-
 def check_buy_condition(
     frame: pd.DataFrame,
     now: datetime,
@@ -2370,7 +2057,6 @@ def check_buy_condition(
         live_price=live_price,
         cross_info=cross_info,
         config=SHARED_R76_CONFIG,
-        volume_ratio_threshold_fn=lambda ts, adx_val: get_volume_ratio_threshold(ts.to_pydatetime(), adx_val),
     )
 
 
@@ -2648,12 +2334,201 @@ def _is_stale_live_price_source(price_source: str) -> bool:
     return "stale_live=" in src or src.startswith("bar_close(stale")
 
 
+def _append_watchlist_change_history(current_dt: datetime, lines: list[str]) -> None:
+    if not lines:
+        return
+    date_str = current_dt.strftime("%Y%m%d")
+    history_path = data_sim_dir / "logs" / date_str / f"{date_str}_change_history.txt"
+    try:
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = current_dt.strftime("%Y-%m-%d %H:%M:%S")
+        with open(history_path, "a", encoding="utf-8") as f:
+            for line in lines:
+                f.write(f"{stamp} {line}\n")
+    except Exception as exc:
+        log(f"WARNING: watchlist change history write failed: {exc}")
+
+
 def _log_account_watchlist_mismatch(api, watch_map: dict[str, str]) -> None:
     open_codes = {str(c).zfill(6) for c, p in api.get_open_positions().items() if int(p.get("quantity", 0) or 0) > 0}
     watch_codes = {str(c).zfill(6) for c in watch_map}
     extra = sorted(open_codes - watch_codes)
     if extra:
         log(f"WARNING: account holdings not in watchlist: {', '.join(extra)}")
+
+
+def _rebalance_active_watchlist(
+    current_dt: datetime,
+    api,
+    watch_map: dict[str, str],
+    active_set: set[str],
+    backup_pool: "collections.deque[str]",
+    first_active_at: dict[str, datetime],
+    hard_stop_today_codes: set[str],
+    gap_blocked_codes: set[str],
+    warn_state: dict[str, bool],
+    frame_cache: dict[str, "pd.DataFrame"],
+) -> None:
+    """[2026-08-31] active_set(실시간 폴링 상한, ACTIVE_WATCHLIST_SIZE)과 backup_pool(대기,
+    미폴링) 사이의 교체를 매 틱 처리한다. 이탈 사유:
+    - GRADUATE: 매수 체결/미체결주문/체결대기(api.has_buy_exposure) - 진입후보 역할이
+      끝났으므로 active_set에서는 빠지지만, 청산 감시(TP/SL/트레일링)는 메인 루프의
+      position_codes union이 계속 커버하므로 문제 없다.
+    - HARD_STOP / GAP_BLOCKED: 오늘 더 이상 신규 진입 대상이 될 수 없는 종목.
+    - TIME_LIMIT: ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60분) 경과 후에도 여전히 매수신호가
+      없는 종목. [2026-09-05] 기존엔 이 60분 타이머가 실제 가격이 박스권(정체)인지와 무관하게
+      무조건 탈락시켰는데, 8/17~9/4 로그 분석 결과 이 기능이 도입된 8/31 이후 실거래 체결이
+      일 0~1건으로 급감(그 이전 8/18~8/28은 일 30~200건대)한 것과 시기가 정확히 겹침 - 아직
+      방향성을 만들어가는 중(박스권을 이미 벗어났거나 벗어나는 과정)인 종목까지 순수 타이머로
+      무차별 탈락시켜 backup과 교체해버린 것이 매수 기회 자체를 놓친 원인으로 추정됨. 이제
+      60분 경과 시점부터는 _is_box_range_hold_zone()(기존 매도측 "박스권 보유" 판정과 동일
+      기준 재사용)으로 실제 박스권 여부를 확인해, 박스권이 확인된 종목만 TIME_LIMIT으로
+      교체하고 아직 방향성이 살아있는(박스권이 아닌) 종목은 ACTIVE_WATCHLIST_HARD_TIME_LIMIT_
+      MINUTES(120분, 9/3 backup_pool 고갈 사고 재발 방지용 안전장치)까지 계속 감시를 유지한다.
+      프레임이 없거나(아직 미체결 조회 등) 판정 불가한 경우는 안전하게 기존과 동일하게 60분에
+      탈락시킨다. HARD_STOP/GAP_BLOCKED와 달리 이 종목이 나쁜 게 아니라 그 시점에 신호가 없었을
+      뿐이므로 backup_pool 맨 뒤로 재편입시켜 재도전 기회를 준다(아직 안 써본 다른
+      backup 종목들이 우선권을 가지도록 뒤에 붙인다). [2026-09-03] 이 재편입이 없으면
+      watch_map(스캐너 100개)이 하루 동안 TIME_LIMIT으로만 서서히 소진되어 active_set과
+      backup_pool이 둘 다 0이 되는 사고가 발생한다(장중 재스캔이 없으므로 완전히
+      감시 종목이 사라짐) - 실제 09/03 13:10경 이 현상으로 감시 종목이 전멸했던 것을
+      수정.
+    빠진 자리는 backup_pool 선두(스캐너 점수 순위 순서)부터 채운다. 승격된 종목은 추가
+    확인 API 호출 없이 다음 폴링(이미 iter_codes에 포함되어 정상 진행됨)이 그 역할을 한다.
+    """
+    graduated: list[str] = []
+    dropped: list[tuple[str, str]] = []
+
+    for code in list(active_set):
+        if api.has_buy_exposure(code):
+            active_set.discard(code)
+            first_active_at.pop(code, None)
+            graduated.append(code)
+            continue
+
+        if code in hard_stop_today_codes:
+            reason = "HARD_STOP"
+        elif code in gap_blocked_codes:
+            reason = "GAP_BLOCKED"
+        else:
+            started = first_active_at.get(code, current_dt)
+            elapsed_minutes = (current_dt - started).total_seconds() / 60.0
+            if elapsed_minutes < ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES:
+                continue
+            if elapsed_minutes >= ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES:
+                reason = "TIME_LIMIT_HARD"
+            else:
+                frame = frame_cache.get(code)
+                if frame is None:
+                    reason = "TIME_LIMIT"
+                else:
+                    is_box, box_info = _is_box_range_hold_zone(frame, SHARED_R76_CONFIG)
+                    if not is_box:
+                        continue
+                    reason = f"TIME_LIMIT_BOX_{box_info}"
+
+        active_set.discard(code)
+        first_active_at.pop(code, None)
+        dropped.append((code, reason))
+
+    history_lines: list[str] = []
+    for code in graduated:
+        log(
+            f"[ACTIVE GRADUATE] {code}_{watch_map.get(code, code)} | reason=POSITION_OPENED | "
+            f"active={len(active_set)} backup={len(backup_pool)}"
+        )
+        history_lines.append(f"[GRADUATE] {code}_{watch_map.get(code, code)} | reason=POSITION_OPENED")
+    for code, reason in dropped:
+        if reason.startswith("TIME_LIMIT"):
+            backup_pool.append(code)
+        log(
+            f"[ACTIVE DROPOUT] {code}_{watch_map.get(code, code)} | reason={reason} | "
+            f"active={len(active_set)} backup={len(backup_pool)}"
+        )
+        history_lines.append(f"[DROPOUT] {code}_{watch_map.get(code, code)} | reason={reason}")
+
+    promoted: list[str] = []
+    while len(active_set) < ACTIVE_WATCHLIST_SIZE and backup_pool:
+        code = backup_pool.popleft()
+        active_set.add(code)
+        first_active_at[code] = current_dt
+        promoted.append(code)
+    for code in promoted:
+        log(f"[ACTIVE PROMOTE] {code}_{watch_map.get(code, code)} | active={len(active_set)} backup={len(backup_pool)}")
+        history_lines.append(f"[PROMOTE] {code}_{watch_map.get(code, code)}")
+    _append_watchlist_change_history(current_dt, history_lines)
+
+    if not backup_pool and len(active_set) < ACTIVE_WATCHLIST_SIZE:
+        if not warn_state.get("backup_pool_exhausted_logged"):
+            log(
+                f"WARNING: backup_pool 소진 - active_set이 상한({ACTIVE_WATCHLIST_SIZE}) 밑으로 "
+                f"유지됨 (active={len(active_set)})"
+            )
+            warn_state["backup_pool_exhausted_logged"] = True
+    elif backup_pool and warn_state.get("backup_pool_exhausted_logged"):
+        warn_state["backup_pool_exhausted_logged"] = False
+
+
+def _write_active_watchlist_state(
+    current_dt: datetime,
+    watch_map: dict[str, str],
+    active_set: set[str],
+    backup_pool: "collections.deque[str]",
+    first_active_at: dict[str, datetime],
+    position_codes: set[str],
+) -> None:
+    """[2026-09-02] active_set/backup_pool 현재 상태를 ACTIVE_WATCHLIST_STATE_PATH에
+    매 틱 스냅샷으로 기록한다 - 실행 중인 봇이 지금 실시간으로 어떤 종목을 감시 중인지
+    로그 파일을 grep하지 않고도 바로 확인할 수 있도록 함(사용자 요청). active는
+    active_since(편입 시각) 오름차순 정렬 - 다음 TIME_LIMIT 탈락에 가장 가까운 순서.
+    backup은 deque 순서(=스캐너 점수 순위) 그대로. 임시파일 작성 후 os.replace로 갈아끼워
+    이 파일을 동시에 읽는 중에도 부분 기록이 보이지 않도록 함."""
+    try:
+        active_sorted = sorted(active_set, key=lambda c: first_active_at.get(c, current_dt))
+        payload = {
+            "updated_at": current_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "active_count": len(active_set),
+            "backup_count": len(backup_pool),
+            "active": [
+                {
+                    "code": code,
+                    "name": watch_map.get(code, code),
+                    "active_since": first_active_at.get(code, current_dt).strftime("%Y-%m-%d %H:%M:%S"),
+                    "holding": code in position_codes,
+                }
+                for code in active_sorted
+            ],
+            "backup": [
+                {"code": code, "name": watch_map.get(code, code)}
+                for code in backup_pool
+            ],
+        }
+        tmp_path = ACTIVE_WATCHLIST_STATE_PATH.with_suffix(".json.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, ACTIVE_WATCHLIST_STATE_PATH)
+    except Exception as exc:
+        log(f"WARNING: active watchlist state write failed: {exc}")
+
+
+def _write_active_watchlist_txt(
+    current_dt: datetime,
+    watch_map: dict[str, str],
+    active_set: set[str],
+    first_active_at: dict[str, datetime],
+) -> None:
+    """[2026-09-04] 현재 매수 감시 중인 종목(active_set)을 ACTIVE_WATCHLIST_TXT_PATH(스크립트와
+    같은 폴더의 active_watchlist.txt)에 "종목코드,종목명" 형식으로 매 틱 기록한다(사용자 요청).
+    active_since 오름차순 정렬로 ACTIVE_WATCHLIST_STATE_PATH(json)와 순서를 맞춤."""
+    try:
+        active_sorted = sorted(active_set, key=lambda c: first_active_at.get(c, current_dt))
+        tmp_path = ACTIVE_WATCHLIST_TXT_PATH.with_suffix(".txt.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            for code in active_sorted:
+                f.write(f"{code},{watch_map.get(code, code)}\n")
+        os.replace(tmp_path, ACTIVE_WATCHLIST_TXT_PATH)
+    except Exception as exc:
+        log(f"WARNING: active watchlist txt write failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -2791,6 +2666,10 @@ class TradingAPI:
                 continue
             if qty <= 0 or avg_price <= 0:
                 continue
+
+            holding_name = str(row.get("prdt_name", "") or "").strip()
+            if holding_name and code not in _SYMBOL_NAME_MAP:
+                _SYMBOL_NAME_MAP[code] = holding_name
 
             prev = self.positions.get(code, {})
             persisted = (self.live_state.get("positions_meta") or {}).get(code) or {}
@@ -3843,44 +3722,55 @@ def _shutdown_save_live_state(api: TradingAPI | None) -> None:
 def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool | None = None, watchlist_source: str | None = None) -> None:
     now = datetime.now()
     _ensure_log_date_for(now)
-    print(f"[R006 START] {now:%Y-%m-%d %H:%M:%S} | initializing live executor", flush=True)
-    log("R006 START | initializing live executor")
+    print(f"[R003 START] {now:%Y-%m-%d %H:%M:%S} | initializing live executor", flush=True)
+    log("R003 START | initializing live executor")
 
     try:
-        print("[R006 AUTH] starting ka.auth()", flush=True)
+        print("[R003 AUTH] starting ka.auth()", flush=True)
         ka.auth()
-        print("[R006 AUTH] success", flush=True)
+        print("[R003 AUTH] success", flush=True)
     except Exception as exc:
-        print(f"[R006 AUTH ERROR] {exc}", flush=True)
-        log(f"R006 AUTH ERROR | {exc}")
+        print(f"[R003 AUTH ERROR] {exc}", flush=True)
+        log(f"R003 AUTH ERROR | {exc}")
         return
 
-    _bind_session_trade_log()
     is_open_day, market_day_log = get_market_day_status(now)
-    print(f"[R006 MARKET] {market_day_log}", flush=True)
+    print(f"[R003 MARKET] {market_day_log}", flush=True)
     log(market_day_log)
 
     if not is_open_day:
-        print("[R006 STOP] market closed day", flush=True)
+        print("[R003 STOP] market closed day", flush=True)
         return
 
     watch_file = _resolve_watchlist_file(target_date, watchlist_source=watchlist_source or "auto")
-    print(f"[R006 WATCHLIST FILE] {watch_file}", flush=True)
+    print(f"[R003 WATCHLIST FILE] {watch_file}", flush=True)
     try:
         watch_map = load_today_codes(watch_file)
     except Exception as exc:
-        print(f"[R006 WATCHLIST ERROR] {exc}", flush=True)
+        print(f"[R003 WATCHLIST ERROR] {exc}", flush=True)
         log(f"Failed to load code list: {exc}")
         watch_map = {}
 
     if not watch_map:
-        print("[R006 WATCHLIST] No codes loaded", flush=True)
+        print("[R003 WATCHLIST] No codes loaded", flush=True)
         log("No codes loaded")
         return
 
     print(f"[R003 WATCHLIST] loaded {len(watch_map)} codes", flush=True)
 
     register_symbol_names(watch_map)
+
+    # [2026-08-31] active/backup 워치리스트 분리 - watch_map(g002 점수 내림차순, 최대 100개)
+    # 중 상위 ACTIVE_WATCHLIST_SIZE개만 실시간 폴링(active_set)하고 나머지는 backup_pool로
+    # 대기(미폴링)시킨다. 100개 미만이면 슬라이싱이 그대로 안전하게 축소 동작한다(예: 30개면
+    # active=30, backup=0). 상세 배경은 r001_define_config.py의 ACTIVE_WATCHLIST_SIZE 정의부
+    # 및 g002 Update log 2026-08-31 참조.
+    watch_codes_ordered = list(watch_map.keys())
+    active_set: set[str] = set(watch_codes_ordered[:ACTIVE_WATCHLIST_SIZE])
+    backup_pool: "collections.deque[str]" = collections.deque(watch_codes_ordered[ACTIVE_WATCHLIST_SIZE:])
+    first_active_at: dict[str, datetime] = {code: now for code in active_set}
+    active_watchlist_warn_state: dict[str, bool] = {}
+    log(f"[ACTIVE/BACKUP SPLIT] active={len(active_set)} backup={len(backup_pool)} total={len(watch_map)}")
 
     log(f"[FEATURE_R004_WATCHLIST] Watchlist source: {watch_file}")
 
@@ -3891,7 +3781,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     nxt_map = {code: is_nxt_tradeable(code) for code in watch_map}
     for code, name in watch_map.items():
-#        print(f"[R006 WATCH] {code} | {name} | NXT={nxt_map[code]}", flush=True)
+#        print(f"[R003 WATCH] {code} | {name} | NXT={nxt_map[code]}", flush=True)
         log(f"WATCH | {code} | {name} | NXT={nxt_map[code]}")
 
     log("Strategy: live price cross over buffered BB middle + Stoch/RSI/Williams confirmation")
@@ -3904,6 +3794,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         f"frame refresh every {FRAME_POLL_INTERVAL_SECONDS}s (3min bars) + backfill {FRAME_BACKFILL_SYNC_SECONDS}s | "
         f"buy consecutive confirms={BUY_CONSECUTIVE_CONFIRM_COUNT}"
     )
+    log(f"Buy check schedule: seconds_of_minute={BUY_CHECK_SECONDS_OF_MINUTE} (r001 BUY_CHECK_SECONDS_OF_MINUTE)")
     log(
         f"ATR model: stop={ATR_STOP_MULTIPLIER:.1f}x | tp={ATR_TAKE_PROFIT_MULTIPLIER:.1f}x | "
         f"trail={TRAILING_STOP_FROM_PEAK*100:.1f}%"
@@ -3922,10 +3813,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         "CONFIG BANNER | aux-trigger guard | "
         f"min_target={AUX_SELL_MIN_REALIZED_TARGET_PCT*100:.2f}% "
         f"slippage_buffer={AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT*100:.2f}%"
-    )
-    log(
-        "CONFIG BANNER | price-lead integrated | "
-        f"ENABLE_PRICE_LEAD_BB_BREAKOUT={ENABLE_PRICE_LEAD_BB_BREAKOUT}"
     )
     api = TradingAPI(env_dv=effective_env, dry_run=effective_dry, live_state=live_state)
     _install_shutdown_handlers(api)
@@ -3970,6 +3857,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         )
 
     served_tick = datetime.now()
+    last_buy_check_slot: datetime | None = None
+    regular_session_watchlist_reset_done = False
 
     while True:
         current_dt = datetime.now()
@@ -4008,6 +3897,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             frame_cache_1min.clear()
             frame_last_refresh_at_1min.clear()
             realtime_entry_bar_state.clear()
+            last_buy_check_slot = None
+            regular_session_watchlist_reset_done = False
 
         is_open_day, market_day_log = get_market_day_status(current_dt)
         if not is_open_day:
@@ -4045,7 +3936,25 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)
                 continue
 
-            for code, name in watch_map.items():
+            # [2026-08-31] 이 틱의 실제 순회 대상 = active_set(실시간 감시 상한) ∪ 보유 포지션
+            # 전체. 보유 포지션은 랭크/backup 여부와 무관하게 항상 포함해야 청산 감시(TP/SL/
+            # 트레일링, 이 루프 안에서만 실행됨)가 끊기지 않는다. 정렬은 로그 가독성 유지 목적.
+            position_codes = {
+                str(c).zfill(6) for c, p in api.get_open_positions().items()
+                if int(p.get("quantity", 0) or 0) > 0
+            }
+            iter_codes = sorted(active_set | position_codes)
+
+            # BUY_CHECK_SECONDS_OF_MINUTE(r001, 예: [3, 18, 33, 48]초)에 정의된 슬롯이
+            # 이번 틱에서 처음 지난 경우에만 이번 순회에서 신규 진입 평가를 수행한다.
+            # 매도/청산 감시 등 나머지 루프 동작은 이 게이트와 무관하게 매 틱 실행된다.
+            _buy_check_slot = _latest_buy_check_slot(current_dt, BUY_CHECK_SECONDS_OF_MINUTE)
+            buy_check_due = last_buy_check_slot is None or _buy_check_slot != last_buy_check_slot
+            if buy_check_due:
+                last_buy_check_slot = _buy_check_slot
+
+            for code in iter_codes:
+                name = watch_map.get(code) or _SYMBOL_NAME_MAP.get(code) or code
                 nxt_tradeable = nxt_map.get(code, False)
                 symbol_label = _symbol_log_label(code, name)
                 if not can_trade_code_now(current_dt, nxt_tradeable):
@@ -4783,6 +4692,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                 else:
                     trailing_sell_confirm_state.pop(code, None)
+                    if not buy_check_due:
+                        continue
                     if not is_new_entry_allowed(current_dt, nxt_tradeable):
                         continue
                     session_open_dt = get_session_open_datetime(current_dt, nxt_tradeable)
@@ -4903,16 +4814,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             frame=buy_frame,
                         )
                         log(f"  {symbol_label} [BUY REJECT] | {detail}")
-                        continue
-
-                    pattern_ok, pattern_reason = _passes_loss_pattern_buy_filter(buy_frame, buy_reason, price)
-                    if not pattern_ok:
-                        buy_confirm_state.pop(code, None)
-                        log(
-                            f"  {symbol_label} [BUY REJECT] | {pattern_reason} | "
-                            f"reason={buy_reason} live={price:,.0f} "
-                            f"bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} bar_close={_num(buy_frame.iloc[-1], 'close'):,.0f} ma5={_num(buy_frame.iloc[-1], 'MA_5'):.1f}"
-                        )
                         continue
 
                     if (
@@ -5041,6 +4942,38 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         traded_today.discard(norm_code)
                         api.live_state["traded_today"] = traded_today
                         signal_buy_bar.pop(code, None)
+
+            # [2026-09-02] 정규장 시작(REGULAR_START) 도달 시 active_set의 TIME_LIMIT
+            # 카운트다운을 리셋 - 리셋 전에는 first_active_at이 장전 NXT 세션(08:00~08:50)
+            # 편입 시각이라, NXT=False 종목은 그 구간 내내 can_trade_code_now가 False라
+            # 매수평가 자체가 불가능한데도 ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60분)
+            # 타이머는 그대로 흘러 정규장이 열리자마자 몇 분 만에 TIME_LIMIT으로 탈락하는
+            # 문제가 있었음(126730 코칩 2026-09-02 09:03:41 탈락 사례 - 08:03:26 편입 후
+            # 정규장 진입 3분여 만에 탈락, 이후 09:07 신호 여부와 무관하게 감시 대상에서
+            # 완전히 빠져 매수 평가 자체가 이뤄지지 않음). 정규장 진입 시점 1회만 그 순간의
+            # active_set 전원에 대해 first_active_at을 current_dt로 재설정해, TIME_LIMIT
+            # 타이머가 프리마켓 대기시간을 소모하지 않고 정규장 실거래 시간부터 60분을
+            # 온전히 확보하도록 함.
+            if not regular_session_watchlist_reset_done and is_regular_session(current_dt):
+                _reset_count = len(active_set)
+                for _code in active_set:
+                    first_active_at[_code] = current_dt
+                regular_session_watchlist_reset_done = True
+                log(
+                    f"[ACTIVE WATCHLIST] REGULAR_START 도달 - TIME_LIMIT"
+                    f"({ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES}min) 타이머 리셋"
+                    f"(프리마켓 NXT 대기시간 제외) | reset_count={_reset_count}"
+                )
+
+            _rebalance_active_watchlist(
+                current_dt, api, watch_map, active_set, backup_pool, first_active_at,
+                hard_stop_today_codes, gap_blocked_codes, active_watchlist_warn_state,
+                frame_cache,
+            )
+            _write_active_watchlist_state(
+                current_dt, watch_map, active_set, backup_pool, first_active_at, position_codes,
+            )
+            _write_active_watchlist_txt(current_dt, watch_map, active_set, first_active_at)
 
             api.maybe_persist_live_state_interval(current_dt, current_dt.strftime("%Y%m%d"))
             loop_consecutive_errors = 0
