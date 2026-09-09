@@ -20,6 +20,23 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-09] type=feat owner=claude
+    summary: 라이브 로그 출력 포맷 정리 (사용자 요청). (1) [BUY REJECT] 태그를 [REJECT]로
+      통일(SELL REJECT는 그대로 유지) - 매수 거부 관련 로그가 여러 지점에서 서로 다른
+      부가 사유로 찍히는데 태그가 길어 가독성이 떨어졌음. (2) [INTRABAR SKIP]을
+      {symbol_label} [INTRABAR_SKIP] 순서로 바꿔 [CHECK]/[REJECT]와 동일하게 종목코드_
+      종목명이 태그보다 먼저 오도록 정렬(_symbol_log_label의 고정폭 패딩 덕분에 컬럼이
+      맞춰짐), 태그 자체도 밑줄로 통일. (3) 주 매수조건([REJECT] 중 _buy_reject_detail로
+      찍히는 케이스)에 gate_steps_diagnostic()(r002, 신규) 결과를 "STEPS ..." 로 추가 -
+      실제 활성 모드인 하이브리드 경로(ENABLE_1MIN_TRIGGER_3MIN_CONTEXT)에서는 1분
+      트리거 pass/fail 1개 + 3분 컨텍스트 게이트 7개(HYBRID_3MIN_CONTEXT_GATES) 전체를
+      조기종료 없이 항상 계산해 P/F로 보여주고, 다른 모드(순정 9게이트 파이프라인)에서는
+      BUY_GATE_CONDITIONS 9개 전체를 보여준다 - 리젝된 종목이 어느 게이트에서 막혔는지뿐
+      아니라 나머지 게이트도 통과 상태인지 로그만 보고 바로 진단 가능해짐. 실제 매수
+      판정 로직(buy_ok/buy_reason)에는 전혀 영향 없음 - 표시 전용.
+    impact: live (로그 포맷/내용만 변경, 판정 로직 불변)
+    compatibility: backward-compatible (기존 로그 파싱 스크립트가 "[BUY REJECT]"나
+      "[INTRABAR SKIP]" 문자열을 그대로 grep하고 있다면 새 태그명으로 갱신 필요)
 - [2026-09-05] type=fix owner=claude
     summary: 8/17~9/4 로그 분석(사용자 요청) 결과 도출. active_set/backup_pool 교체(2026-08-31
       도입)의 TIME_LIMIT 탈락이 ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60분) 순수 타이머였을 뿐,
@@ -451,6 +468,8 @@ from r002_strategy_core_shared import (
     check_sell_condition as shared_check_sell_condition,
     check_entry_condition_1min,
     run_3min_context_pipeline,
+    gate_steps_diagnostic,
+    HYBRID_3MIN_CONTEXT_GATES,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
@@ -4086,7 +4105,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         if gate_ok:
                             buy_frame = realtime_frame
                         elif not gate_reason.startswith("INTRABAR_ELAPSED_"):
-                            log(f"  [INTRABAR SKIP] {symbol_label} | {gate_reason} | using confirmed 3min bar instead")
+                            log(f"  {symbol_label} [INTRABAR_SKIP] | {gate_reason} | using confirmed 3min bar instead")
                     except Exception as exc:
                         log(f"  [WARN] {symbol_label} | realtime entry-frame build failed: {exc}")
                         buy_frame = frame
@@ -4746,7 +4765,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         _warmup_elapsed = (current_dt - session_open_dt).total_seconds()
                         if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
                             log(
-                                f"  {symbol_label} [BUY REJECT] | SESSION_OPEN_WARMUP | "
+                                f"  {symbol_label} [REJECT] | SESSION_OPEN_WARMUP | "
                                 f"elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
                                 f"session_open={session_open_dt:%H:%M:%S}"
                             )
@@ -4782,6 +4801,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         log(f"  {symbol_label} [BUY SKIP] | CIRCUIT_BREAKER_ACTIVE until={hard_stop_circuit_breaker_until:%H:%M:%S} count={hard_stop_daily_count}")
                         continue
 
+                    steps_text: str | None = None
                     if ENABLE_1MIN_GOLDEN_CROSS_BUY:
                         armed = gc_confirm_state.get(code)
                         if armed is not None:
@@ -4830,8 +4850,18 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         )
                         if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
                             buy_ok, buy_reason = False, "HYBRID_1MIN_FRAME_UNAVAILABLE"
+                            ctx_steps = gate_steps_diagnostic(
+                                buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
+                                gates=HYBRID_3MIN_CONTEXT_GATES,
+                            )
+                            steps_text = f"1min_trigger(-) {ctx_steps}"
                         else:
                             trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(frame_1min)
+                            ctx_steps = gate_steps_diagnostic(
+                                buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
+                                gates=HYBRID_3MIN_CONTEXT_GATES,
+                            )
+                            steps_text = f"1min_trigger({'P' if trigger_ok else 'F'}) {ctx_steps}"
                             if not trigger_ok:
                                 buy_ok, buy_reason = False, f"HYBRID_1MIN_TRIGGER_{trigger_reason}"
                             else:
@@ -4847,6 +4877,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             price,
                             cross_info,
                         )
+                        steps_text = gate_steps_diagnostic(
+                            buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
+                        )
 
                     if not buy_ok:
                         buy_confirm_state.pop(code, None)
@@ -4858,7 +4891,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             cross_info=cross_info,
                             frame=buy_frame,
                         )
-                        log(f"  {symbol_label} [BUY REJECT] | {detail}")
+                        if steps_text:
+                            detail = f"{detail} | STEPS {steps_text}"
+                        log(f"  {symbol_label} [REJECT] | {detail}")
                         continue
 
                     if (
@@ -4871,12 +4906,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         )
                         if frame_1min_entry is None or frame_1min_entry.empty or len(frame_1min_entry) < 2:
                             buy_confirm_state.pop(code, None)
-                            log(f"  {symbol_label} [BUY REJECT] | 1MIN_FRAME_UNAVAILABLE | (3min_ok={buy_reason})")
+                            log(f"  {symbol_label} [REJECT] | 1MIN_FRAME_UNAVAILABLE | (3min_ok={buy_reason})")
                             continue
                         entry_ok, entry_reason = check_entry_condition_1min(frame_1min_entry)
                         if not entry_ok:
                             buy_confirm_state.pop(code, None)
-                            log(f"  {symbol_label} [BUY REJECT] | {entry_reason} | (3min_ok={buy_reason})")
+                            log(f"  {symbol_label} [REJECT] | {entry_reason} | (3min_ok={buy_reason})")
                             continue
                         buy_reason = f"{buy_reason}+{entry_reason}"
 
@@ -4889,7 +4924,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     ):
                         buy_confirm_state.pop(code, None)
                         log(
-                            f"  {symbol_label} [BUY REJECT] | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
+                            f"  {symbol_label} [REJECT] | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
                             f"{rise_ratio*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
                             f"prev_close={float(prev_close):,.0f} live={price:,.0f}"
                         )
@@ -4902,7 +4937,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         if not gap_ok:
                             buy_confirm_state.pop(code, None)
                             _gap_txt = f"{rise_ratio*100:.2f}%" if rise_ratio is not None else "nan"
-                            log(f"  {symbol_label} [BUY REJECT] | {gap_reason} | gap={_gap_txt} live={price:,.0f}")
+                            log(f"  {symbol_label} [REJECT] | {gap_reason} | gap={_gap_txt} live={price:,.0f}")
                             continue
 
                     confirm_state = buy_confirm_state.get(code)
@@ -4927,12 +4962,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
                     if qty <= 0:
-                        log(f"  {symbol_label} [BUY REJECT] | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
+                        log(f"  {symbol_label} [REJECT] | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
                         continue
 
                     if _is_stale_live_price_source(price_source):
                         log(
-                            f"  {symbol_label} [BUY REJECT] | STALE_LIVE_PRICE | "
+                            f"  {symbol_label} [REJECT] | STALE_LIVE_PRICE | "
                             f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
                         )
                         continue
@@ -4961,7 +4996,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if _ask_total is not None and _bid_total is not None and _bid_total > 0:
                         if _ask_total < _bid_total * 0.5:
                             log(
-                                f"  {symbol_label} [BUY REJECT] | ORDERBOOK_ASK_THIN | "
+                                f"  {symbol_label} [REJECT] | ORDERBOOK_ASK_THIN | "
                                 f"ask={_ask_total:,.0f} bid={_bid_total:,.0f} ratio={_ask_total / _bid_total:.2f}"
                             )
                             traded_today.discard(norm_code)

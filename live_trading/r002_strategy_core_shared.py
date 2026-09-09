@@ -18,6 +18,17 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-09] type=feat owner=claude
+    summary: gate_steps_diagnostic() 신규 추가 - BUY_GATE_CONDITIONS(또는 호출측이 넘긴
+      임의의 gates 리스트, 예: HYBRID_3MIN_CONTEXT_GATES)를 조기종료 없이 전부 평가해
+      "gate_name(P|F)" 문자열로 이어붙여 반환하는 로그 표시 전용 진단 함수(사용자 요청 -
+      r003 [REJECT] 로그에 매수조건 스텝별 pass/fail 요약 추가). run_buy_condition_
+      pipeline_comment/run_3min_context_pipeline과 달리 순차 통과형 short-circuit을
+      하지 않고 모든 게이트를 독립적으로 재평가하므로, 리젝된 종목이 실제로 걸린 게이트
+      외에 나머지 게이트도 통과했는지 한눈에 볼 수 있다. 실제 매수 판정 로직에는 전혀
+      관여하지 않는 순수 진단/로그용 함수(r003 Update log 2026-09-09 참조).
+    impact: live/sim (로그 전용, 판정 로직 변경 없음)
+    compatibility: backward-compatible (신규 함수 추가만, 기존 판정 함수는 그대로 유지)
 - [2026-09-06] type=fix owner=claude
     summary: _evaluate_bb_mid_cross()의 uptrend_continuation(크로스 이벤트 없이 지속
       추세만으로 진입 허용) 판정에서 bb_slope_pct > 0.0 하드코딩 리터럴을 신규 상수
@@ -1328,6 +1339,49 @@ def run_3min_context_pipeline(
         return False, f"HYBRID_3MIN_CTX_LOW_SCORE_{score}_LT_{config.bb_buy_score_threshold}"
 
     return True, f"HYBRID_3MIN_CTX_SCORE_{score}"
+
+
+def gate_steps_diagnostic(
+    frame: pd.DataFrame,
+    now: pd.Timestamp,
+    live_price: float,
+    cross_info: dict[str, object],
+    config: R76StrategyConfig,
+    gates: list[BuyGateCondition] | None = None,
+) -> str:
+    """로그 표시 전용 진단 함수. gates(기본값 BUY_GATE_CONDITIONS) 리스트의 각 게이트를
+    run_buy_condition_pipeline_comment/run_3min_context_pipeline처럼 실제 매수 판정에
+    쓰지 않고, 조기종료 없이 전부 평가해 "gate_name(P|F)" 형태로 이어붙여 반환한다.
+    실제 판정 로직(순차 통과형)에는 전혀 영향을 주지 않는다 - 리젝된 종목이 어느
+    게이트에서 걸렸는지뿐 아니라 나머지 게이트도 통과했는지 한눈에 보기 위함.
+    """
+    gates = gates if gates is not None else BUY_GATE_CONDITIONS
+    if len(frame) < 2:
+        return " ".join(f"{gate.name}(-)" for gate in gates)
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    cur_bb = _num(cur, "BB_MIDDLE")
+    cur_bb_upper = _num(cur, "BB_UPPER")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    if any(pd.isna(v) for v in (cur_bb, cur_bb_upper, prev_bb)):
+        return " ".join(f"{gate.name}(-)" for gate in gates)
+
+    ctx = BuyEvalContext(
+        frame=frame, now=now, live_price=live_price, cross_info=cross_info, config=config,
+        cur=cur, prev=prev, cur_bb=cur_bb, cur_bb_upper=cur_bb_upper, prev_bb=prev_bb,
+        bb_slope_pct=_compute_bb_slope_pct(frame),
+    )
+
+    parts: list[str] = []
+    for gate in gates:
+        try:
+            passed, ctx, _reason = gate.eval_fn(ctx)
+            mark = "P" if passed else "F"
+        except Exception:
+            mark = "-"
+        parts.append(f"{gate.name}({mark})")
+    return " ".join(parts)
 
 
 def check_sell_condition(
