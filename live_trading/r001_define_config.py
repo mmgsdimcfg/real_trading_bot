@@ -1,6 +1,18 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-09-09] type=fix owner=claude
+#     summary: HYBRID_1MIN_TRIGGER_LOOKBACK_BARS 3->8 (사용자 요청 - 452190 한빛레이저
+#       사례). 3분봉은 11:54~11:58에 골든크로스 확정(score 17/22)했는데 12:07~12:30
+#       폭등 구간(4,655->5,160) 전체가 1분 트리거의 1MIN_NO_BB_MID_GOLDEN_CROSS로 100%
+#       리젝됨 - 돌파는 12:07~09에 발생했으나 그 후 가격이 BB중간선 위에서 계속 강하게
+#       올라 "크로스 시점"이 룩백창(3->5봉) 밖으로 벗어나 역설적으로 추세가 강하고
+#       오래갈수록 못 통과하는 구조였음. r003 check_buy_condition_1min_hybrid_trigger의
+#       uptrend_continuation 예외 추가(r003 Update log 2026-09-09 참조)와 별개의 보완책 -
+#       룩백 자체도 넓혀 "완화"는 하되(무한정은 아니고 BB_GAP_CEILING_PCT가 추격 상한 유지)
+#       비교적 흔한 케이스는 uptrend_continuation 예외까지 갈 필요 없이 룩백만으로 해결.
+#     impact: live/sim
+#     compatibility: backward-compatible (룩백 창만 넓어져 매수 빈도가 소폭 늘 수 있음)
 # - [2026-09-06] type=fix owner=claude
 #     summary: UPTREND_CONT_SLOPE_MIN_PCT(-0.05) 신규 추가. 8/17~9/4 로그(사용자 요청 -
 #       매수/매도 조건 세분화 검토) 분석 결과, r002의 _evaluate_bb_mid_cross() uptrend_
@@ -627,7 +639,13 @@ ENTRY_SCORE_THRESHOLD = 5             # 만점 7점 중 5점 이상 (3분봉이 
 # 종목으로 표본 확대, (b) 20260827 케이스처럼 "더 늦은 크로스로 대체"되는 원인
 # (HYBRID_3MIN_CTX의 OPENING_GUARD/스코어 재계산 타이밍 차이 추정) 규명 필요.
 ENABLE_1MIN_TRIGGER_3MIN_CONTEXT = True      # 2026-09-01 바이오니아,비에이치 못 잡아서 False -> True로 변경
-HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 3        # 크로스 인정 룩백(3분봉 5봉/15분과 유사한 시간폭)
+# [2026-09-09] 452190 한빛레이저 사례: 3분봉은 11:54~11:58에 이미 골든크로스 확정(score
+# 17/22)했는데, 12:07~12:30 폭등 구간(4,655->5,160) 전체가 HYBRID_1MIN_TRIGGER_
+# 1MIN_NO_BB_MID_GOLDEN_CROSS로 100% 리젝됨 - 돌파 자체는 12:07~09에 발생했지만 그 후
+# 가격이 BB중간선 위에서 계속 강하게 올라, "크로스 시점"이 룩백창(3->5봉) 밖으로
+# 벗어나 버려 매 폴링마다 크로스가 "없다"고 판정됨(역설적으로 추세가 강하고 오래갈수록
+# 못 통과). 3->8로 완화(그래도 무한정은 아니고, BB_GAP_CEILING_PCT가 추격 상한을 유지).
+HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 8        # 크로스 인정 룩백(3분봉 5봉/15분과 유사한 시간폭)
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.3  # 1분봉 자체 틱노이즈가 더 커서 3분봉(-0.1%)보다 완화
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 1.8   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화
 HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT = 0.5        # 3분봉(0.35%)보다 소폭 완화 - 트리거를 빨리 잡는 목적과 상충 방지

@@ -20,6 +20,25 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-09] type=fix owner=claude
+    summary: check_buy_condition_1min_hybrid_trigger()에 uptrend_continuation 예외
+      추가 (452190 한빛레이저 사례 - 사용자 요청). 3분봉은 11:54~11:58에 골든크로스
+      확정(score 17/22)했는데 12:07~12:30 폭등 구간(4,655->5,160) 전체가 1분 트리거의
+      1MIN_NO_BB_MID_GOLDEN_CROSS로 100% 리젝됨 - 돌파는 12:07~09에 발생했으나 그 후
+      가격이 BB중간선 위에서 계속 강하게 올라 "크로스 시점"이 룩백창 밖으로 벗어나
+      역설적으로 추세가 강하고 오래갈수록 못 통과하는 구조였음(r001 HYBRID_1MIN_TRIGGER_
+      LOOKBACK_BARS 3->8 완화와 별개 대책). 두 경로로 예외 인정: (a) 함수 자체가 1분봉
+      ADX/+DI/-DI/MA5/BB슬로프로 우상향 지속을 판정(_evaluate_bb_mid_cross 재사용,
+      3분 게이트와 동일 공식), (b) 호출측이 3분 컨텍스트에서 이미 uptrend_continuation
+      으로 판정한 신호를 context_uptrend_continuation 파라미터로 전달받아 인정. 두
+      경로 모두 크로스 "발견" 여부만 대체하고 이후 캔들/BB갭/거래량 안전장치는 그대로
+      전부 적용. g003의 동일 로직 복제본(check_buy_condition_1min_hybrid_trigger_sim)도
+      함께 수정(g003 Update log 참조). 합성 데이터 4개 시나리오로 단위 검증 완료 -
+      실제 20260909 데이터 백테스트는 원본 틱 데이터 미수집으로 보류.
+    impact: live/sim
+    compatibility: backward-compatible (기존 신선한 크로스 경로는 그대로 동작, 새
+      예외 경로는 기존에 리젝되던 케이스만 추가로 통과시킴 - 매수 빈도 증가 예상,
+      데이터 확보 후 g003 --date 20260909 --codes 452190 백테스트 재검증 권장)
 - [2026-09-09] type=feat owner=claude
     summary: 라이브 로그 출력 포맷 정리 (사용자 요청). (1) [BUY REJECT] 태그를 [REJECT]로
       통일(SELL REJECT는 그대로 유지) - 매수 거부 관련 로그가 여러 지점에서 서로 다른
@@ -2197,7 +2216,10 @@ def check_buy_condition_1min(frame_1min: pd.DataFrame, require_fresh_cross: bool
     return True, "1MIN_BB_MID_GOLDEN_CROSS"
 
 
-def check_buy_condition_1min_hybrid_trigger(frame_1min: pd.DataFrame) -> tuple[bool, str]:
+def check_buy_condition_1min_hybrid_trigger(
+    frame_1min: pd.DataFrame,
+    context_uptrend_continuation: bool = False,
+) -> tuple[bool, str]:
     """ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 하이브리드 전용 1분봉 트리거 (check_buy_condition_1min의
     변형, 섹션 12 원본은 그대로 유지).
 
@@ -2210,6 +2232,17 @@ def check_buy_condition_1min_hybrid_trigger(frame_1min: pd.DataFrame) -> tuple[b
     가드 문턱도 3분봉 값(CANDLE_GAIN_MAX_PCT 등)을 그대로 쓰지 않고 HYBRID_1MIN_TRIGGER_*
     전용 값을 쓴다 - 1분봉은 3분봉보다 캔들 하나의 시간폭이 짧아 같은 % 문턱이 상대적으로
     더 쉽게 초과됨(HPSP 1차 검증에서 candle_gain 0.87~1.67%로 3분봉 문턱 0.8% 초과 반복 확인).
+
+    [2026-09-09] 452190 한빛레이저 사례: 룩백(3->8봉으로 완화했음에도) 밖에서 돌파한 뒤
+    오래/강하게 지속되는 랠리는 여전히 놓칠 수 있다(룩백은 "완화"일 뿐 무제한이 아님) -
+    3분봉 bb_mid_cross_up 게이트의 uptrend_continuation과 동일한 예외를 추가한다.
+    두 경로:
+    (a) 이 함수 자체가 1분봉 자체 지표(ADX/+DI/-DI/MA5/BB슬로프)로 우상향 지속을 판정
+        (_evaluate_bb_mid_cross 재사용 - 3분 게이트와 동일 공식, 프레임만 1분봉).
+    (b) 호출측이 3분봉 컨텍스트에서 이미 uptrend_continuation으로 판정했으면
+        context_uptrend_continuation=True로 전달 - 그 신호를 그대로 인정한다.
+    두 경로 모두 크로스 "발견" 여부만 대체할 뿐, 이후의 캔들/BB갭/거래량 안전장치는
+    그대로 전부 적용한다.
     """
     if frame_1min is None or len(frame_1min) < 2:
         return False, "1MIN_INSUFFICIENT_BARS"
@@ -2227,6 +2260,7 @@ def check_buy_condition_1min_hybrid_trigger(frame_1min: pd.DataFrame) -> tuple[b
         return False, "1MIN_MISSING_INDICATOR"
 
     golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+    trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
     if not golden_cross:
         _found = False
         for _lb in range(3, min(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS + 2, len(frame_1min)) + 1):
@@ -2244,6 +2278,20 @@ def check_buy_condition_1min_hybrid_trigger(frame_1min: pd.DataFrame) -> tuple[b
             if _all_above:
                 _found = True
                 break
+
+        if not _found:
+            if context_uptrend_continuation:
+                _found = True
+                trigger_reason = "1MIN_UPTREND_CONTINUATION_3MIN_CTX"
+            else:
+                _bb_slope_1min = _compute_bb_slope_pct(frame_1min)
+                _uptrend_eval = _evaluate_bb_mid_cross(
+                    frame_1min, cur, prev, cur_bb, prev_bb, cur_close, _bb_slope_1min, {},
+                )
+                if _uptrend_eval.get("uptrend_continuation"):
+                    _found = True
+                    trigger_reason = "1MIN_UPTREND_CONTINUATION"
+
         if not _found:
             return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
 
@@ -2274,7 +2322,7 @@ def check_buy_condition_1min_hybrid_trigger(frame_1min: pd.DataFrame) -> tuple[b
             if vol_ratio < 0.10:
                 return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
 
-    return True, "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
+    return True, trigger_reason
 
 
 # ---------------------------------------------------------------------------
@@ -4856,7 +4904,26 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             )
                             steps_text = f"1min_trigger(-) {ctx_steps}"
                         else:
-                            trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(frame_1min)
+                            # [2026-09-09] 3분 컨텍스트가 이미 uptrend_continuation으로
+                            # 판정한 상태면 그 신호를 1분 트리거에도 그대로 전달한다 -
+                            # 452190 한빛레이저 사례(1분 트리거가 룩백 밖의 오래/강하게
+                            # 지속된 랠리를 계속 놓침) 대책 중 하나.
+                            _ctx3_cur = buy_frame.iloc[-1]
+                            _ctx3_prev = buy_frame.iloc[-2]
+                            _ctx3_cur_bb = _num(_ctx3_cur, "BB_MIDDLE")
+                            _ctx3_prev_bb = _num(_ctx3_prev, "BB_MIDDLE")
+                            context_uptrend_continuation = False
+                            if not any(pd.isna(v) for v in (_ctx3_cur_bb, _ctx3_prev_bb)):
+                                _ctx3_bb_slope = _compute_bb_slope_pct(buy_frame)
+                                _ctx3_eval = _evaluate_bb_mid_cross(
+                                    buy_frame, _ctx3_cur, _ctx3_prev, _ctx3_cur_bb, _ctx3_prev_bb,
+                                    price, _ctx3_bb_slope, cross_info,
+                                )
+                                context_uptrend_continuation = bool(_ctx3_eval.get("uptrend_continuation"))
+
+                            trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(
+                                frame_1min, context_uptrend_continuation=context_uptrend_continuation,
+                            )
                             ctx_steps = gate_steps_diagnostic(
                                 buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
                                 gates=HYBRID_3MIN_CONTEXT_GATES,
