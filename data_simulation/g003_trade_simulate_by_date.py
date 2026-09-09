@@ -16,6 +16,19 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-09] type=fix owner=claude
+    summary: check_buy_condition_1min_hybrid_trigger_sim()에 r003과 동일한
+      uptrend_continuation 예외 추가 (452190 한빛레이저 사례, r003 Update log 2026-09-09
+      참조) - 룩백 밖에서 돌파해 오래/강하게 지속되는 랠리를 자체 지표(ADX/DI/MA5,
+      _evaluate_bb_mid_cross 재사용) 또는 호출측(simulate_date)이 3분 컨텍스트에서
+      판정한 context_uptrend_continuation 신호로 인정한다. live/sim parity 유지 목적 -
+      r003만 고치고 이 sim 복제본을 그대로 두면 백테스트가 이 랠리 유형을 계속 놓치는
+      것으로 잘못 나와 실제 개선 효과를 검증할 수 없음.
+    impact: sim
+    compatibility: backward-compatible (기존 신선한 크로스 경로는 그대로 동작, 새
+      예외 경로만 기존에 리젝되던 케이스를 추가로 통과시킴 - 하이브리드 경로 매수
+      빈도가 늘어날 수 있음; 원본 틱 데이터 확보 후 --date 20260909 --codes 452190
+      백테스트로 재검증 권장)
 - [2026-08-27] type=fix owner=copilot
     summary: 시그널 매도 억제 판정(_strong_uptrend)에 가격 기반 보조 조건 추가 - r003
       Update log 2026-08-27과 동일(live parity). 기존 ADX>28 & +DI>-DI 조건 외에 MA5 상승 +
@@ -340,6 +353,7 @@ from r002_strategy_core_shared import (
     _near_cross_momentum_flags,
     _passes_early_near_cross_liquidity,
     _compute_bb_slope_pct,
+    _evaluate_bb_mid_cross,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1666,12 +1680,20 @@ def check_buy_condition_1min_sim(frame_1min: pd.DataFrame, require_fresh_cross: 
     return True, "1MIN_BB_MID_GOLDEN_CROSS"
 
 
-def check_buy_condition_1min_hybrid_trigger_sim(frame_1min: pd.DataFrame) -> tuple[bool, str]:
+def check_buy_condition_1min_hybrid_trigger_sim(
+    frame_1min: pd.DataFrame,
+    context_uptrend_continuation: bool = False,
+) -> tuple[bool, str]:
     """ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 하이브리드 전용 1분봉 트리거 sim 대응판 (r003
     check_buy_condition_1min_hybrid_trigger와 동일 로직, r003 Update log 2026-08-28 참조).
     check_buy_condition_1min_sim(require_fresh_cross 단일봉 판정)의 변형 - 크로스 인정을
     HYBRID_1MIN_TRIGGER_LOOKBACK_BARS만큼 룩백하고, 캔들/추격가드 문턱도 3분봉 값이 아닌
     HYBRID_1MIN_TRIGGER_* 전용 값을 쓴다.
+
+    [2026-09-09] r003과 동일하게 uptrend_continuation 예외 포함(452190 한빛레이저 사례,
+    r003 2026-09-09 changelog 참조) - 룩백 밖에서 돌파해 오래/강하게 지속되는 랠리를
+    자체 지표(ADX/DI/MA5, _evaluate_bb_mid_cross 재사용) 또는 호출측이 전달하는 3분
+    컨텍스트 신호(context_uptrend_continuation)로 인정한다.
     """
     if frame_1min is None or len(frame_1min) < 2:
         return False, "1MIN_INSUFFICIENT_BARS"
@@ -1689,6 +1711,7 @@ def check_buy_condition_1min_hybrid_trigger_sim(frame_1min: pd.DataFrame) -> tup
         return False, "1MIN_MISSING_INDICATOR"
 
     golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+    trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
     if not golden_cross:
         _found = False
         for _lb in range(3, min(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS + 2, len(frame_1min)) + 1):
@@ -1706,6 +1729,20 @@ def check_buy_condition_1min_hybrid_trigger_sim(frame_1min: pd.DataFrame) -> tup
             if _all_above:
                 _found = True
                 break
+
+        if not _found:
+            if context_uptrend_continuation:
+                _found = True
+                trigger_reason = "1MIN_UPTREND_CONTINUATION_3MIN_CTX"
+            else:
+                _bb_slope_1min = _compute_bb_slope_pct(frame_1min)
+                _uptrend_eval = _evaluate_bb_mid_cross(
+                    frame_1min, cur, prev, cur_bb, prev_bb, cur_close, _bb_slope_1min, {},
+                )
+                if _uptrend_eval.get("uptrend_continuation"):
+                    _found = True
+                    trigger_reason = "1MIN_UPTREND_CONTINUATION"
+
         if not _found:
             return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
 
@@ -1732,7 +1769,7 @@ def check_buy_condition_1min_hybrid_trigger_sim(frame_1min: pd.DataFrame) -> tup
             if vol_ratio < 0.10:
                 return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
 
-    return True, "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
+    return True, trigger_reason
 
 
 def collect_buy_reject_reasons_r76_sim(
@@ -2993,7 +3030,24 @@ def simulate_date(
                 if buy_available_1min is None:
                     should_buy, reason = False, "HYBRID_1MIN_FRAME_UNAVAILABLE"
                 else:
-                    trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger_sim(buy_available_1min)
+                    # [2026-09-09] r003과 동일 - 3분 컨텍스트가 이미 uptrend_continuation으로
+                    # 판정한 상태면 그 신호를 1분 트리거에도 전달한다 (452190 한빛레이저 사례).
+                    _ctx3_cur = buy_available.iloc[-1]
+                    _ctx3_prev = buy_available.iloc[-2]
+                    _ctx3_cur_bb = _num(_ctx3_cur, "BB_MIDDLE")
+                    _ctx3_prev_bb = _num(_ctx3_prev, "BB_MIDDLE")
+                    context_uptrend_continuation = False
+                    if not any(pd.isna(v) for v in (_ctx3_cur_bb, _ctx3_prev_bb)):
+                        _ctx3_bb_slope = _compute_bb_slope_pct(buy_available)
+                        _ctx3_eval = _evaluate_bb_mid_cross(
+                            buy_available, _ctx3_cur, _ctx3_prev, _ctx3_cur_bb, _ctx3_prev_bb,
+                            price, _ctx3_bb_slope, cross_info,
+                        )
+                        context_uptrend_continuation = bool(_ctx3_eval.get("uptrend_continuation"))
+
+                    trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger_sim(
+                        buy_available_1min, context_uptrend_continuation=context_uptrend_continuation,
+                    )
                     if not trigger_ok:
                         should_buy, reason = False, f"HYBRID_1MIN_TRIGGER_{trigger_reason}"
                     else:
