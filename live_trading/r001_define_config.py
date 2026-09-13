@@ -13,6 +13,65 @@
 #       비교적 흔한 케이스는 uptrend_continuation 예외까지 갈 필요 없이 룩백만으로 해결.
 #     impact: live/sim
 #     compatibility: backward-compatible (룩백 창만 넓어져 매수 빈도가 소폭 늘 수 있음)
+# - [2026-09-08] type=fix owner=claude
+#     summary: PRE_CROSS_ACCUM_VOL_RATIO_MIN 0.8->0.6 (매집봉 판정 거래량 기준을
+#       VOL_MA20의 80%->60%로 완화). 20260908 실매매 로그 분석(사용자 요청) 결과
+#       NO_PRE_CROSS_ACCUM_BAR 리젝이 052690 한전기술 한 종목에서만 46건 발생 - ATR
+#       필터(13건)보다 더 자주 걸렸고, 그중 11:55 케이스는 close_cross=True score=18/22
+#       (당일 최고점수) + vol_ratio=2.13으로 완전히 유효한 확정 크로스였는데도 "BB중간값
+#       포함+양봉+거래량≥VOL_MA20*0.8" 3중 AND 매집봉 조건 하나를 8봉 룩백 내에서
+#       충족 못 해 리젝됨. 매집봉 자체가 없었던 게 아니라 거래량 기준(0.8배)만 근소하게
+#       충족 못한 것으로 보여, 룩백 확대보다 거래량 기준을 완화하는 쪽을 선택.
+#     impact: live/sim (r002 _gate_pre_cross_accumulation_bar, g003도 동일 상수 재사용)
+#     compatibility: backward-compatible (필터 자체는 유지, 통과 폭만 넓어짐 - 매수 빈도
+#       소폭 증가 예상)
+# - [2026-09-08] type=fix owner=claude
+#     summary: MIN_ENTRY_ATR_TO_TP1_RATIO 0.3->0.2 (진입 최소 ATR% 하한 0.90%->0.60%).
+#       20260908 실매매 로그 분석(사용자 요청) 결과 LOW_ENTRY_ATR 매수거부가 하루 100건
+#       발생, 이 중 절대다수(052690 한전기술 score 17/22, vol_ratio 1.96 등 포함)가 나머지
+#       8개 게이트(BB돌파/매집봉/캔들/스토캐스틱 등)와 점수 기준(BB_BUY_SCORE_THRESHOLD=10)
+#       을 모두 충족한 상태였고 오직 ATR 필터에만 걸려 리젝됨 - 즉 "불안정해서 걸러진" 게
+#       아니라 "저변동성 장세에서 정상 신호까지 과도하게 걸러진" 경우가 대부분이었음.
+#       052690은 실제로 이날 ATR이 0.59~0.72% 구간을 오갔고(간헐적으로만 0.9% 상회 -
+#       그 순간에만 매수 2건 체결, 결과 -0.94%/+0.95%로 TP1 3.0% 근처도 못 감), 반면
+#       024060/001820/083650 등 진짜 저변동 종목(ATR 0.23~0.41%)은 새 하한(0.6%)에서도
+#       여전히 차단됨 - 필터 완전 제거가 아니라 임계값만 완화.
+#     impact: live/sim (r002 _gate_min_entry_atr_volatility, g003도 동일 상수 재사용)
+#     compatibility: backward-compatible (필터 자체는 유지, 통과 폭만 넓어짐 - 매수 빈도
+#       증가 예상되므로 며칠 실매매 결과 재확인 권장)
+# - [2026-09-07] type=feat owner=claude
+#     summary: ACTIVE_WATCHLIST_SIZE 50->20, ENABLE_WATCHLIST_ROTATION(신규, 기본 False),
+#       R004_EXPORT_TOP_N(신규, 20) 추가 (사용자 요청). 20260907 실매매 로그 실측 결과
+#       active=50종목 1턴(전체 순회)이 평균 30초 걸렸는데(종목당 0.6초, API 왕복 지연이
+#       지배적이라 서버 연동 구조상 종목당 처리시간 자체는 단축이 어려움 - 진짜 줄이려면
+#       비동기/병렬 폴링으로 아키텍처를 바꿔야 하는데 KIS API 자체의 초당 호출 제한(TPS)에
+#       걸려 효과가 제한적이고 리스크도 커서 이번엔 보류), LIVE_PRICE_POLL_INTERVAL_SECONDS
+#       (10초) 설계 목표의 3배로 밀려 있었음. active_set을 20으로 줄여 1턴을 설계 목표에
+#       가깝게 되돌리는 대신, 그동안 active_set 크기를 지탱하던 backup_pool 로테이션
+#       (TIME_LIMIT 교체) 자체를 ENABLE_WATCHLIST_ROTATION=False로 정지 - active_set이
+#       처음 로드된 상위 20개로 장중 고정된다. g002가 내부적으로 선별하는 후보 수(max_picks,
+#       100)는 그대로 두되 r004로 내보내는 건 R004_EXPORT_TOP_N(20)개로 제한(g002/g005
+#       Update log 참조) - active_set 크기와 r004 export 개수를 일치시켜 backup_pool이
+#       항상 비도록 함.
+#     impact: live
+#     compatibility: breaking (감시 종목 수가 50->20으로 줄어 매수 기회 자체가 줄어들 수
+#       있음 - 대신 종목당 재평가 주기가 30초->~12초로 빨라져 개별 종목의 신호 포착
+#       정확도는 올라감. 로테이션 재활성화가 필요하면 ENABLE_WATCHLIST_ROTATION=True로
+#       되돌리면 기존 동작 그대로 복원됨)
+# - [2026-09-07] type=fix owner=claude
+#     summary: HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR(0.15)/_CEILING_PCT(1.1) 신규
+#       추가. 20260907 실매매 로그 분석(사용자 요청) 결과 388050 지투파워 09:16(정상
+#       골든크로스, 매집봉 미충족으로 리젝) -> 09:18~09:24(눌림으로 크로스 무효화) ->
+#       09:26~09:28(재돌파했으나 BB_MID가 후행지표라 못 따라와 갭 0.84~0.99%가 고정
+#       상한 0.5%를 넘어 CHASE_BUY_BB_GAP로 매 폴링 리젝) 패턴, 025980 아난티 13:45~13:50도
+#       동일 패턴(매집봉/거래량/갭이 서로 다른 시점에 하나씩만 걸려 결국 룩백 만료)으로
+#       확인됨 - 갭 상한이 고정값이라 크로스가 유효하게 지속 중(BB_MID 위 연속 유지)이어도
+#       시간이 지날수록 무조건 리젝 확률만 높아지는 구조적 결함. 크로스 이후 경과봉 수만큼
+#       상한을 소폭(봉당 0.15%p) 완화하되 CEILING_PCT(1.1%)로 무한 완화는 방지.
+#     impact: live/sim (r003 check_buy_condition_1min_hybrid_trigger, g003
+#       check_buy_condition_1min_hybrid_trigger_sim 동시 적용 - 상세는 각 파일 Update log)
+#     compatibility: backward-compatible (경과봉=0, 즉 신선한 크로스는 기존 0.5% 그대로;
+#       경과봉이 있을 때만 상한이 완화되어 매수 빈도가 소폭 늘 수 있음)
 # - [2026-09-06] type=fix owner=claude
 #     summary: UPTREND_CONT_SLOPE_MIN_PCT(-0.05) 신규 추가. 8/17~9/4 로그(사용자 요청 -
 #       매수/매도 조건 세분화 검토) 분석 결과, r002의 _evaluate_bb_mid_cross() uptrend_
@@ -247,6 +306,15 @@ R004_WATCHLIST_FILENAME = DEFINE_TODAY_CODE_PATH
 SCAN_PICKS_LEGACY_FILENAME = "picks.txt"
 SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
 
+# [2026-09-07] g002가 내부적으로 선별/평가하는 후보 수(max_picks)는 그대로 두고,
+# r004로 실제 내보내는(=r003이 감시하는) 종목 수만 상위 N개로 제한.
+# [2026-09-13] 20->100 원복 (사용자 요청) - active_set(50)+backup_pool 로테이션을
+# 되살리려면 r004가 active_set보다 커야 backup 여유가 생김 (g002 MAX_PICKS_LIMIT도
+# 50->100으로 같이 원복, g002 Update log 2026-09-13 참조). g002 max_picks(100)와 같은
+# 값이라 사실상 스캐너가 뽑은 전체 후보를 그대로 r004로 내보내는 것과 동일.
+# picks 리스트는 이미 스캐너 점수 내림차순이므로 앞에서부터 자르면 그대로 상위 N개.
+R004_EXPORT_TOP_N = 100
+
 
 # =============================================================================
 # LIVE TRADING TUNABLE PARAMETERS
@@ -269,7 +337,7 @@ ATR_STOP_MULTIPLIER = 1.5  # ATR 기반 손절 배수
 # 못 미치는 저변동 종목도 그대로 진입 게이트를 통과했다. 일반적인 변동성 필터 관행(진입 시
 # ATR이 가격 대비 최소 임계치 이상이어야 함)을 참고해, TP1 대비 ATR 비율 최소 하한을 둔다.
 ENABLE_MIN_ENTRY_ATR_FILTER = True
-MIN_ENTRY_ATR_TO_TP1_RATIO = 0.5  # ATR% >= STAGED_TP1_PCT * 0.5 이어야 진입 허용 (TP1까지 도달 가능성 확보)
+MIN_ENTRY_ATR_TO_TP1_RATIO = 0.2  # ATR% >= STAGED_TP1_PCT * 0.2 (0.3->0.2) 이어야 진입 허용 - 20260908 로그 분석 결과 0.3(0.90%)이 정상 신호까지 과도 차단(위 Update log 참조)
 
 ATR_STOP_CONFIRM_SECONDS = 20.0  # ATR 손절 조건이 이 시간 이상 연속 유지돼야 실제 매도 (033790 피노
 # 2026-08-31 13:35 사례: sl=7,434 대비 단 한 틱(7,430, 폴링 1회)만 하회하고 다음 폴링(20초 후)엔
@@ -278,7 +346,7 @@ ATR_STOP_CONFIRM_SECONDS = 20.0  # ATR 손절 조건이 이 시간 이상 연속
 # 확인 게이트 추가 - 다만 ATR_STOP은 자본 보호용 최종 방어선이라 확인시간은 최소(20초=폴링 1~2회)로 짧게.
 
 # --- 2. 익절 / 트레일링 스탑 (Take Profit / Trailing Stop) ------------------
-TRAILING_STOP_FROM_PEAK = 0.02  # 트레일링 스탑: 고점 대비 되돌림 허용폭 (2%)
+TRAILING_STOP_FROM_PEAK = 0.012  # 트레일링 스탑: 고점 대비 되돌림 허용폭 (1.2%)
 ENABLE_TP_EXTENSION_TRAILING = True  # 익절 후 연장 트레일링 기능 사용 여부
 TP_EXTENSION_TRAIL_FROM_PEAK = 0.010  # 익절 연장 구간 트레일링 폭 (0.4%->0.6%->1.0%: 1차 익절(+3.0%) 이후 잔량 60%를 관리하는 폭이라 -1.0%로 확대)
 ATR_TAKE_PROFIT_MULTIPLIER = 3.0  # ATR 기반 익절 배수
@@ -390,7 +458,7 @@ ENABLE_PRE_CROSS_ACCUM_BAR_CHECK = True
 PRE_CROSS_ACCUM_LOOKBACK_BARS = 8
 # [2026-08-25] 매집봉 거래량 판정을 "VOL_MA20 초과"에서 "VOL_MA20의 이 비율 이상"으로 완화 -
 #   BB중간값 포함+양봉+거래량 조건을 같은 한 봉에서 동시 요구하는 3중 AND라 100% 기준은 너무 희귀함.
-PRE_CROSS_ACCUM_VOL_RATIO_MIN = 0.8
+PRE_CROSS_ACCUM_VOL_RATIO_MIN = 0.6  # 0.8->0.6: 20260908 로그 분석 결과 0.8도 score=18/22 확정크로스를 리젝시킬 만큼 빡빡함(위 Update log 참조)
 
 # --- 6. 매수 진입 - 근접교차(Near-cross) / 조기진입 / 가격선행돌파 ------------
 # Near-cross ARM 모드: BB 중단과 MA5 간 최대 허용 갭 / MA5 최소 상승률
@@ -650,6 +718,12 @@ HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.3  # 1분봉 자체 틱노이즈가
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 1.8   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화
 HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT = 0.5        # 3분봉(0.35%)보다 소폭 완화 - 트리거를 빨리 잡는 목적과 상충 방지
 
+# [2026-09-07] 크로스가 유효하게 지속(BB_MID 위 연속 유지) 중인데도 BB_MID가 후행지표라
+# 갭이 계속 벌어져 고정 상한(HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT)에 매 폴링 걸리는 문제
+# 완화용 - 크로스 후 경과봉 수 x DECAY만큼 상한을 늘리되 CEILING으로 상한선을 둔다.
+HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR = 0.15
+HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT = 1.1
+
 # 3분봉 가점(_buy_support_score)용 장기 추세 정합성: EMA20 > EMA60이면 상위 추세가
 # 우상향이라는 뜻으로 +2점. EMA_20_PERIOD는 위 1분봉 게이트와 공유(같은 컬럼, 프레임만 다름).
 EMA_60_PERIOD = 60
@@ -718,7 +792,7 @@ ATR_PERIOD = 14
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = False  # NXT 세션 포함 운용 여부
+ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)
@@ -772,12 +846,12 @@ LIVE_STATE_SAVE_INTERVAL_SECONDS = 60
 PENDING_BUY_GRACE_SECONDS = 90
 # 매수 미체결 경고 기준 시간(초)
 BUY_ORDER_STALE_WARN_SECONDS = 60
-# 신규 매수 체크(진입 평가) 시작 초 - 매 분 이 초(들)에만 신규 진입 평가를 시작한다.
-# 메인 루프는 LIVE_PRICE_POLL_INTERVAL_SECONDS(=10초) 간격으로 돌며(00/10/20/.../50초),
-# 이 값들과 정확히 일치하지 않아도 그 다음 폴링 틱에서 스케줄이 지난 것으로 감지해 실행된다
-# (최대 LIVE_PRICE_POLL_INTERVAL_SECONDS초 지연). 매도/청산 감시·시세 갱신 등 다른 루프
-# 동작에는 영향 없음 - 신규 진입 평가(check_buy_condition* 계열) 실행 여부만 이 스케줄을 탄다.
-BUY_CHECK_SECONDS_OF_MINUTE = [3, 18, 33, 48]
+# [2026-09-13] BUY_CHECK_SECONDS_OF_MINUTE(분당 특정 초에만 신규 진입 평가, 2026-09-01
+# 도입) 제거 - 진입 신호 발생 시점부터 실제 평가까지 최대 15초+폴링 간격이 추가로 지연되어
+# 진입 타이밍이 틀어진다는 실매매 피드백에 따라, 신규 진입 평가를 다시 매 폴링 틱
+# (LIVE_PRICE_POLL_INTERVAL_SECONDS 간격, 한 턴 끝나는 즉시 다음 턴 시작)마다 수행하도록
+# 원복. r003 Update log 2026-09-01 항목 참조(당시 "폴링 간격의 배수 리스트로 설정하면
+# 기존과 동일한 빈도로 복원 가능"이라 명시했던 롤백에 해당).
 
 # --- 매수 미체결 재시도(지정가 추격) ---------------------------------------
 # place_buy_order()는 매수1호가(최우선 매수호가)로 순수 지정가 주문을 낸다 - 매도
@@ -808,9 +882,27 @@ WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = 300
 # 매수 체결(졸업)/HARD_STOP/갭차단/시간초과로 빠지면 backup_pool 선두를 순위 순서대로
 # 승격시켜 채운다 - 보유 포지션은 active_set 소속 여부와 무관하게 항상 폴링 대상에
 # 포함된다(청산 감시가 끊기면 안 되므로).
-ACTIVE_WATCHLIST_SIZE = 50                    # 실시간 감시(active_set) 상한
+# [2026-09-07] 50종목 1턴(active_set 전체 순회) 실측 결과 약 30초(종목당 평균 0.6초,
+# API 왕복 지연이 지배적 - 서버 연동 구조상 종목당 처리시간 자체를 줄이기 어려움) -
+# LIVE_PRICE_POLL_INTERVAL_SECONDS(10초) 설계 목표의 3배라는 이유로 한때 active_set을
+# 20으로 줄이고 ENABLE_WATCHLIST_ROTATION=False로 로테이션을 정지했었음.
+# [2026-09-13] 사용자 요청으로 2026-08-31 이전 원래 구조로 완전 원복 - active_set을
+# 다시 50으로, 로테이션도 다시 켠다(아래). r004 export도 100으로 늘려(위 R004_EXPORT_TOP_N
+# 참조) 스캐너 전체 후보(g002 max_picks=100, 같은 날 g002 Update log 참조)를 그대로
+# r004에 반영 - active(50)+backup(50) 여유가 있어야 로테이션이 실제로 교체 대상을
+# 찾을 수 있음. 1턴 소요시간이 다시 ~30초대로 늘어나는 트레이드오프는 사용자가 인지하고
+# 감수하기로 함(신규 진입 평가 자체는 같은 날 BUY_CHECK_SECONDS_OF_MINUTE 제거로 매 턴마다
+# 실행되도록 이미 바꿔둔 상태 - r003 Update log 2026-09-13 참조).
+ACTIVE_WATCHLIST_SIZE = 50                    # 실시간 감시(active_set) 상한 (20->50, 2026-09-13 원복)
 ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES = 60    # 이 시간(분) 경과 후부터 박스권(정체) 여부를 확인해 교체를 시작
 ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES = 120  # 박스권이 아니어도 강제로 교체하는 상한(분) - backup_pool 고갈 방지
+
+# [2026-09-07] active/backup 로테이션(TIME_LIMIT 기반 교체) 자체를 켜고 끄는 스위치.
+# False면 _rebalance_active_watchlist()가 아예 호출되지 않아 active_set이 최초 로드된
+# 상위 ACTIVE_WATCHLIST_SIZE개로 장중 내내 고정된다(교체 없음).
+# [2026-09-13] True로 원복 (사용자 요청) - ACTIVE_WATCHLIST_SIZE(50) < R004_EXPORT_TOP_N(100)
+# 이라 backup_pool에 실제로 교체 후보가 생기므로 로테이션이 다시 의미를 가짐.
+ENABLE_WATCHLIST_ROTATION = True
 
 # ---------------------------------------------------------------------------
 # Simulation parameters (g003_trade_simulate_by_date) - r006 실전 매매에는
