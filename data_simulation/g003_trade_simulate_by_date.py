@@ -29,6 +29,18 @@ Update log:
       예외 경로만 기존에 리젝되던 케이스를 추가로 통과시킴 - 하이브리드 경로 매수
       빈도가 늘어날 수 있음; 원본 틱 데이터 확보 후 --date 20260909 --codes 452190
       백테스트로 재검증 권장)
+- [2026-09-07] type=fix owner=claude
+    summary: check_buy_condition_1min_hybrid_trigger_sim()에 r003 check_buy_condition_1min_
+      hybrid_trigger와 동일한 CHASE_BUY_BB_GAP 경과봉 완화 로직 추가(r003/r001 Update log
+      2026-09-07 참조, 388050/025980 20260907 실매매 로그 분석). 겸사겸사 이 함수가 2026-09-07
+      r003의 HYBRID_1MIN_MIN_ENTRY_VOL_MA/VOLUME(1분봉 전용 유동성 상수) 분리를 반영하지
+      못하고 3분봉 기준 MIN_ENTRY_VOL_MA/VOLUME을 그대로 쓰고 있던 live/sim drift도 함께
+      정정 - 이 상태로는 sim이 live보다 1분봉 유동성 기준을 3배 엄격하게 적용해 하이브리드
+      경로 매수 빈도를 실제보다 과소평가하고 있었음.
+    impact: sim
+    compatibility: backward-compatible (경과봉 있는 크로스의 갭 상한 완화 + 유동성 기준을
+      live와 동일하게 정정 - 하이브리드 경로 매수 빈도가 이전 sim 결과보다 늘어날 수 있음;
+      --date 20260904 백테스트로 리젝 사유 재분포 확인 권장)
 - [2026-08-27] type=fix owner=copilot
     summary: 시그널 매도 억제 판정(_strong_uptrend)에 가격 기반 보조 조건 추가 - r003
       Update log 2026-08-27과 동일(live parity). 기존 ADX>28 & +DI>-DI 조건 외에 MA5 상승 +
@@ -326,6 +338,10 @@ from r001_define_config import (
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
+    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+    HYBRID_1MIN_MIN_ENTRY_VOL_MA,
+    HYBRID_1MIN_MIN_ENTRY_VOLUME,
     ENABLE_STAGED_TAKE_PROFIT,
     STAGED_TP1_PCT,
     STAGED_TP1_RATIO,
@@ -340,6 +356,8 @@ from r001_define_config import (
     OPENING_GAP_MAX_PCT,
     OPENING_GAP_HARD_FLOOR_PCT,
     OPENING_MIN_EARLY_VOLUME_RATIO,
+    BUY_ORDER_REPRICE_AFTER_SECONDS,
+    BUY_ORDER_REPRICE_MAX_CHASE_PCT,
 )
 from r002_strategy_core_shared import (
     R76StrategyConfig,
@@ -421,6 +439,19 @@ SIM_RELAXED_REQUIRE_MA5_BIAS = _env_bool("R76_SIM_RELAXED_REQUIRE_MA5_BIAS", SIM
 SIM_RELAXED_ALLOW_BELOW_BB = _env_bool("R76_SIM_RELAXED_ALLOW_BELOW_BB", SIM_RELAXED_ALLOW_BELOW_BB)
 SIM_RELAXED_ALLOW_FALLING_TREND = _env_bool("R76_SIM_RELAXED_ALLOW_FALLING_TREND", SIM_RELAXED_ALLOW_FALLING_TREND)
 SIMULATE_10S_GRID_DEFAULT = _env_bool("R76_SIMULATE_10S_GRID", SIMULATE_10S_GRID_DEFAULT)
+
+# [2026-09-13] 실험 B(재확인 대기 축소)/C(개장가드 완화)/D(VWAP 필수게이트) 오버라이드는
+# 5일/40종목-일 백테스트 결과 셋 다 baseline보다 손익이 악화되어(-16.6%/-11.4%/-18.8%)
+# 채택하지 않기로 하고 되돌림 - r001 ENABLE_VWAP_MANDATORY_GATE 신규 게이트도 함께 제거
+# (실험 결과는 data_simulation/experiment_results_A_D.md 참조). 실험 A(체결지연 프록시)는
+# 결과가 baseline과 사실상 동일(차이 없음 - 가설 기각이지 유해하지 않음)이라 백테스트
+# 분석 도구로서 남겨둠 - 아래 R76_SIM_EXEC_MODEL 참조.
+
+# [2026-09-13] 실험 A: 체결 공격성/지연비용 추정 프록시. "instant"(기본, 기존 동작
+# 그대로 즉시체결) 또는 "passive_limit_chase"(신규 프록시 - 아래 _simulate_passive_
+# limit_fill() 참조, r003 place_buy_order의 매수1호가 지정가->재호가->시장가전환 체결
+# 구조를 실제 호가창 데이터 없이 raw 10초 저/종가로 근사).
+R76_SIM_EXEC_MODEL = str(os.environ.get("R76_SIM_EXEC_MODEL", "instant")).strip().lower()
 
 SHARED_R76_CONFIG = R76StrategyConfig(
     live_price_bb_buffer_pct=SIM_LIVE_PRICE_BB_BUFFER_PCT,
@@ -1711,6 +1742,7 @@ def check_buy_condition_1min_hybrid_trigger_sim(
         return False, "1MIN_MISSING_INDICATOR"
 
     golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+    bars_since_cross = 0  # 신선한 크로스(golden_cross=True) 기본값 - 경과봉 0, 갭 상한 완화 없음
     trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
     if not golden_cross:
         _found = False
@@ -1728,6 +1760,9 @@ def check_buy_condition_1min_hybrid_trigger_sim(
             )
             if _all_above:
                 _found = True
+                # 실제 돌파봉은 -_lb(미돌파 마지막봉) 바로 다음인 -(_lb-1) - 그 봉부터
+                # cur(-1)까지 경과한 봉 수 = (_lb-1)의 위치 차이 = _lb-2.
+                bars_since_cross = _lb - 2
                 break
 
         if not _found:
@@ -1746,6 +1781,9 @@ def check_buy_condition_1min_hybrid_trigger_sim(
         if not _found:
             return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
 
+        if trigger_reason != "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK":
+            bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
+
     candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
     if candle_gain_pct < HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:
         return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:.1f}%"
@@ -1754,16 +1792,27 @@ def check_buy_condition_1min_hybrid_trigger_sim(
 
     if cur_bb > 0:
         bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
-        if bb_gap_pct > HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT:
-            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT:.1f}%"
+        # [2026-09-07] r003 check_buy_condition_1min_hybrid_trigger와 동일 로직 - 크로스가
+        # BB_MID 위로 계속 유지 중인데도 BB_MID가 후행지표라 갭이 계속 벌어져 고정 상한에
+        # 매 폴링 걸리는 문제 완화. 경과봉 수만큼 상한을 소폭 완화하되 CEILING_PCT로 상한.
+        allowed_gap_pct = min(
+            HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT + bars_since_cross * HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
+            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+        )
+        if bb_gap_pct > allowed_gap_pct:
+            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{allowed_gap_pct:.2f}%"
 
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
     if not any(pd.isna(v) for v in (vol, vol_ma)):
-        if vol_ma < MIN_ENTRY_VOL_MA:
-            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
-        if vol < MIN_ENTRY_VOLUME:
-            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
+        # [2026-09-07] fix: 이 sim 함수가 r003의 2026-09-07 HYBRID_1MIN_MIN_ENTRY_VOL_MA/
+        # VOLUME 분리(1분봉 거래량은 3분봉의 약 1/3이라 3분봉 기준 MIN_ENTRY_VOL_MA/VOLUME을
+        # 그대로 쓰면 실질 3배 엄격해짐)를 반영하지 못하고 3분봉 기준값을 그대로 쓰고 있던
+        # live/sim drift 발견 - r003과 동일한 HYBRID_1MIN_* 상수로 정정.
+        if vol_ma < HYBRID_1MIN_MIN_ENTRY_VOL_MA:
+            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOL_MA}"
+        if vol < HYBRID_1MIN_MIN_ENTRY_VOLUME:
+            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOLUME}"
         if vol_ma > 0:
             vol_ratio = vol / vol_ma
             if vol_ratio < 0.10:
@@ -2045,6 +2094,82 @@ def upsample_price_frame_to_10s(frame: pd.DataFrame) -> pd.DataFrame:
     return out.loc[grid]
 
 
+# ---------------------------------------------------------------------------
+# [2026-09-13] Experiment A - 체결 공격성/지연비용 추정 (execution-delay proxy)
+#
+# 배경: r003(live)의 place_buy_order()는 신호 발생 즉시 체결되지 않는다 - 매수1호가에
+# 패시브 지정가를 걸고(BUY_ORDER_REPRICE_AFTER_SECONDS=10초 후 미체결 시 재호가, 최대
+# BUY_ORDER_REPRICE_MAX_ATTEMPTS=3회, 마지막 시도는 시장가/매도호가로 크로스), 전체
+# 체이스는 최초 신호가 대비 BUY_ORDER_REPRICE_MAX_CHASE_PCT(%, /100 필요 - 0.5=0.5%)
+# 이내로 제한된다. g003은 지금까지 이 과정을 전혀 모델링하지 않고 신호 틱 가격에 즉시
+# 체결(sim.buy)해왔다 - 이번 실험(R76_SIM_EXEC_MODEL=passive_limit_chase)은 그 갭이
+# 실제 손익에 미치는 영향을 근사 추정하기 위한 것이다.
+#
+# *** 중요한 한계(반드시 최종 보고에 명시) ***: 백테스트 데이터에는 실제 호가창(매수/매도
+# 잔량, 매수1호가 등)이 전혀 없다(r002/g003 changelog에 기존부터 문서화된 영구적 데이터
+# 공백). 따라서 "매수1호가에 지정가가 실제로 체결됐을지"를 검증할 방법이 없어, 여기서는
+# RAW(비-ffill) 10초 캔들의 low를 "그 가격에 걸린 매수 대기 주문이 체결됐을지"의 대용치로
+# 쓴다. 이는 근사(proxy)일 뿐 실제 호가창 재현이 아니다 - 정밀한 체결 시뮬레이션으로
+# 오인하지 말 것.
+# ---------------------------------------------------------------------------
+
+def _raw_bar_after(raw_frame: pd.DataFrame | None, after_ts: pd.Timestamp, offset_seconds: float) -> pd.Series | None:
+    """RAW(비-ffill) 프레임에서 after_ts + offset_seconds 시점 이후 가장 가까운 실제
+    OHLC 봉을 반환한다 (원본 소스 캐던스가 정확히 10초 그리드에 맞지 않는 경우를 대비한
+    관용치). 그 시각 이후 데이터가 전혀 없으면(하루 데이터 종료) None을 반환한다 -
+    호출측은 이를 CANCELLED로 처리한다."""
+    if raw_frame is None or raw_frame.empty:
+        return None
+    target_ts = after_ts + pd.Timedelta(seconds=offset_seconds)
+    candidates = raw_frame[raw_frame.index >= target_ts]
+    if candidates.empty:
+        return None
+    return candidates.iloc[0]
+
+
+def _simulate_passive_limit_fill(
+    raw_frame: pd.DataFrame | None,
+    t1: pd.Timestamp,
+    l1: float,
+) -> tuple[str, float | None, pd.Timestamp | None, int, float | None]:
+    """r003 place_buy_order()의 패시브 지정가->재호가->시장가전환 체결 구조를 근사하는
+    프록시 (진짜 호가창 데이터 없음 - 위 모듈 docstring의 한계 설명 참조).
+
+    반환: (status, fill_price, fill_time, delay_s, slippage_pct)
+      status: "FILLED" | "CANCELLED"
+      slippage_pct: (fill_price/l1 - 1)*100, L1 체결(지연 없음)이면 0.0, CANCELLED면 None
+    """
+    reprice_after = float(BUY_ORDER_REPRICE_AFTER_SECONDS)  # r001 상수 재사용 (하드코딩 금지)
+
+    # 1차 시도: t1+10s 시점 RAW 봉의 저가가 최초 신호가(L1) 이하까지 내려왔으면 체결.
+    bar1 = _raw_bar_after(raw_frame, t1, reprice_after)
+    if bar1 is None:
+        return "CANCELLED", None, None, 0, None
+    if float(bar1["low"]) <= l1:
+        fill_time = t1 + pd.Timedelta(seconds=reprice_after)
+        return "FILLED", l1, fill_time, int(reprice_after), 0.0
+
+    # 2차 시도(1회 재호가): 새 지정가 L2 = 1차 봉 종가. t1+20s 시점 봉 저가가 L2 이하면 체결.
+    l2 = float(bar1["close"])
+    t2 = t1 + pd.Timedelta(seconds=reprice_after)
+    bar2 = _raw_bar_after(raw_frame, t2, reprice_after)
+    if bar2 is None:
+        return "CANCELLED", None, None, 0, None
+    if float(bar2["low"]) <= l2:
+        fill_time = t2 + pd.Timedelta(seconds=reprice_after)
+        slippage_pct = (l2 / l1 - 1.0) * 100.0
+        return "FILLED", l2, fill_time, int(reprice_after * 2), slippage_pct
+
+    # 3차(최종) 시도: 시장가/매도호가 크로스 - L3 = 2차 봉 종가. 최초 신호가 대비 상승폭이
+    # BUY_ORDER_REPRICE_MAX_CHASE_PCT(원시 퍼센트값, /100 재나눔 없음) 이내면 체결, 초과면 취소.
+    l3 = float(bar2["close"])
+    chase_pct = (l3 / l1 - 1.0) * 100.0
+    if chase_pct <= BUY_ORDER_REPRICE_MAX_CHASE_PCT:
+        fill_time = t2 + pd.Timedelta(seconds=reprice_after * 2)
+        return "FILLED", l3, fill_time, int(reprice_after * 3), chase_pct
+    return "CANCELLED", None, None, 0, None
+
+
 def _estimate_intrabar_volume_fallback(frame: pd.DataFrame, bar_end: pd.Timestamp, elapsed_seconds: float) -> float:
     """Estimate intrabar 3m volume from the last closed 3m bar to avoid zero-volume lockouts."""
     if frame is None or frame.empty:
@@ -2304,6 +2429,11 @@ def simulate_date(
     frames: dict[str, pd.DataFrame] = {}
     frames_1min: dict[str, pd.DataFrame] = {}
     price_frames: dict[str, pd.DataFrame] = {}
+    # [2026-09-13][실험 A] 진짜 원본(비-ffill) 10초 OHLC 프레임 - price_frames[code]는
+    # simulate_10s_grid=True(기본값)일 때 upsample_price_frame_to_10s()로 ffill되어
+    # 갭 구간의 low/high가 close와 동일값으로 중복되므로, 체결 지연 프록시가 필요로 하는
+    # "진짜 인트라바 저가"에는 쓸 수 없다. 아래 루프에서 upsample 전 raw_df를 그대로 보관.
+    exec_sim_raw_frames: dict[str, pd.DataFrame] = {}
     target_date = datetime.strptime(date_str, "%Y%m%d").date()
     for code in sorted(csv_files):
         # Default path is _10s input. Optional fallback allows legacy files.
@@ -2336,6 +2466,7 @@ def simulate_date(
                 if frame_1min is not None and not frame_1min.empty:
                     frames_1min[code] = frame_1min
         # r006 parity: evaluate live condition every 10s even if source file cadence is 20s/1m.
+        exec_sim_raw_frames[code] = raw_df
         if simulate_10s_grid:
             price_frames[code] = upsample_price_frame_to_10s(raw_df)
         else:
@@ -3091,7 +3222,35 @@ def simulate_date(
                     f"K={_num(cur,'STOCH_K'):.1f} D={_num(cur,'STOCH_D'):.1f} | "
                     f"WR={_num(cur,'WILLIAMS_R'):.1f} WD={_num(cur,'WILLIAMS_D'):.1f}"
                 )
-                if sim.buy(code, selected_names.get(code, code), price, ts, session, reason):
+                if R76_SIM_EXEC_MODEL == "passive_limit_chase":
+                    # [실험 A] 체결가/체결시각을 신호 틱 그대로 쓰지 않고, r003의 패시브
+                    # 지정가/재호가/시장가전환 체결 구조를 근사한 프록시 결과로 대체한다.
+                    # 이 시점 이전(게이트 통과 + BUY_CONSECUTIVE_CONFIRM_COUNT 확인)은
+                    # 전혀 건드리지 않는다 - 실험 A는 여기서부터만 개입한다.
+                    _exec_status, _exec_fill_price, _exec_fill_time, _exec_delay_s, _exec_slippage_pct = (
+                        _simulate_passive_limit_fill(exec_sim_raw_frames.get(code), ts, price)
+                    )
+                    _exec_fill_str = f"{_exec_fill_price:.2f}" if _exec_fill_price is not None else "NA"
+                    _exec_slip_str = f"{_exec_slippage_pct:.4f}" if _exec_slippage_pct is not None else "NA"
+                    log(
+                        f"EXEC_SIM_RESULT code={code} date={date_str} signal_ts={ts:%Y-%m-%d %H:%M:%S} "
+                        f"signal_price={price:.2f} status={_exec_status} fill_price={_exec_fill_str} "
+                        f"delay_s={_exec_delay_s} slippage_pct={_exec_slip_str}"
+                    )
+                    if _exec_status == "FILLED":
+                        if sim.buy(code, selected_names.get(code, code), _exec_fill_price, _exec_fill_time, session, reason):
+                            signal_buy_bar[code] = _exec_fill_time
+                            log(
+                                f"  [BUY EVAL] {code} | OK {reason} | price={_exec_fill_price:,.0f} "
+                                f"(EXEC_SIM delay={_exec_delay_s}s slippage={_exec_slip_str}%)"
+                            )
+                        else:
+                            log_detail(f"  [BUY REJECT] {code_label} | ORDER_REJECTED")
+                    else:
+                        # CANCELLED: 실거래처럼 체결 없이 소멸 - sim.buy 호출 자체를 하지
+                        # 않아 이 신호가 아예 발생하지 않은 것처럼 처리한다(포지션/쿨다운 없음).
+                        log_detail(f"  [BUY REJECT] {code_label} | EXEC_SIM_CANCELLED")
+                elif sim.buy(code, selected_names.get(code, code), price, ts, session, reason):
                     signal_buy_bar[code] = ts
                     log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
                 else:
