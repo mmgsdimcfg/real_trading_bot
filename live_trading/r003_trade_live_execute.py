@@ -20,6 +20,34 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-13] type=fix owner=claude
+    summary: BUY_CHECK_SECONDS_OF_MINUTE(2026-09-01 도입, 분당 [3,18,33,48]초에만 신규
+      진입 평가 실행) 제거 - 사용자가 실매매에서 1분봉/3분봉 매수 타이밍이 계속 틀어진다고
+      지적, 분석 결과 이 게이트가 신호 발생~평가 사이에 최대 15초+폴링 간격의 추가 지연을
+      만들고 있었음이 확인됨(A/B/C/D 실험 중 B=재확인 대기 축소와 별개로, 이 게이트 자체는
+      백테스터(g003)에는 애초에 이식되지 않아 백테스트 성과에는 영향을 준 적이 없었음).
+      _latest_buy_check_slot()/last_buy_check_slot/buy_check_due 전부 제거하고, 신규
+      진입 평가를 원래대로(2026-09-01 이전과 동일하게) 매 폴링 틱(LIVE_PRICE_POLL_
+      INTERVAL_SECONDS 간격 - 한 턴의 종목 순회가 끝나는 즉시 다음 턴이 시작됨)마다
+      active_set 전 종목에 대해 수행하도록 원복. 매도/청산 감시 등 나머지 루프 동작은
+      애초에 이 게이트의 영향을 받지 않았으므로 변경 없음.
+    impact: live
+    compatibility: breaking (신규 진입 평가 빈도가 분당 4회 고정에서 다시 폴링 주기와
+      동일한 빈도로 증가 - 2026-09-01 변경 이전 동작으로 원복. 필요 시 r001에서
+      LIVE_PRICE_POLL_INTERVAL_SECONDS를 늘려 빈도를 다시 낮출 수 있음)
+- [2026-09-11] type=fix owner=claude
+    summary: 종목당 처리 루프에서 보유중이지만 오늘 매수분이 아닌 포지션(NOT_TODAY_
+      BUY_POSITION, 매매 없이 모니터링만 됨)의 [HOLD SKIP] 판정을 루프 최상단(can_trade_
+      code_now 직후)으로 끌어올림 (사용자 요청 - 로그에서 매번 [INTRABAR_SKIP]/[CHECK]가
+      찍힌 뒤에야 [HOLD SKIP]으로 continue되는 것을 보고 불필요하다고 지적). api.
+      get_open_positions()는 인메모리 dict 조회라 비용이 없어 위치를 옮겨도 부작용
+      없음 - HOLD SKIP 대상이면 프레임 리프레시/실시간가 조회/인트라바 게이트/[CHECK]
+      로그를 전부 건너뛰고 즉시 continue. 기존에 포지션 관리 블록 안에 있던 동일 판정은
+      도달 불가능한 중복 코드가 되어 제거.
+    impact: live (로그 출력 순서/빈도만 변경, 매매 판정 로직 불변)
+    compatibility: backward-compatible ([HOLD SKIP] 로그 자체는 그대로 남고 [INTRABAR_SKIP]/
+      [CHECK]가 해당 종목에서 더 이상 찍히지 않음 - 그 두 태그를 이 케이스에서도 기대하고
+      파싱하는 스크립트가 있다면 갱신 필요)
 - [2026-09-09] type=fix owner=claude
     summary: check_buy_condition_1min_hybrid_trigger()에 uptrend_continuation 예외
       추가 (452190 한빛레이저 사례 - 사용자 요청). 3분봉은 11:54~11:58에 골든크로스
@@ -56,6 +84,49 @@ Update log:
     impact: live (로그 포맷/내용만 변경, 판정 로직 불변)
     compatibility: backward-compatible (기존 로그 파싱 스크립트가 "[BUY REJECT]"나
       "[INTRABAR SKIP]" 문자열을 그대로 grep하고 있다면 새 태그명으로 갱신 필요)
+- [2026-09-07] type=feat owner=claude
+    summary: ENABLE_WATCHLIST_ROTATION(r001, 기본 False) 배선 - False면
+      _rebalance_active_watchlist() 호출 자체를 건너뛰어 active_set이 최초 로드된
+      상위 ACTIVE_WATCHLIST_SIZE(50->20으로 함께 축소)개로 장중 내내 고정된다. 같은
+      조건으로 REGULAR_START TIME_LIMIT 타이머 리셋 블록도 함께 건너뜀(로테이션이
+      꺼져있으면 그 타이머는 어차피 안 읽히므로 로그 노이즈만 줄이는 목적). 배경은
+      r001 Update log 2026-09-07 참조(50종목 1턴 30초 실측 - 서버 API 왕복 지연이
+      지배적이라 종목당 처리시간 자체는 줄이기 어려워 active_set 축소 + 로테이션
+      정지로 대응).
+    impact: live
+    compatibility: breaking (ENABLE_WATCHLIST_ROTATION=True로 되돌리면 기존
+      active/backup 교체 동작 그대로 복원됨)
+- [2026-09-07] type=fix owner=claude
+    summary: _rotate_logging_for_date()의 로그 파일명 순서를 {timestamp}_{script_stem}
+      -> {script_stem}_{timestamp}(buy_sell 로그는 {script_stem}_buy_sell_{timestamp})로
+      변경 (사용자 요청) - 같은 날짜 폴더 안에서 파일명만 보고도 어떤 스크립트의 로그인지
+      바로 구분되도록. _trade_log_target_paths()는 _LOG_CTX["trade_log"]를 동적으로 읽으므로
+      별도 수정 불필요.
+    impact: live
+    compatibility: backward-compatible (신규 실행분부터 새 파일명 형식 적용, 기존 로그
+      파일명은 그대로 유지됨 - 별도 마이그레이션 없음)
+- [2026-09-07] type=fix owner=claude
+    summary: check_buy_condition_1min_hybrid_trigger()의 CHASE_BUY_BB_GAP 상한을 고정값
+      (HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT)에서 크로스 후 경과봉 수에 비례해 완화되는
+      값으로 변경 (r001 HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR/_CEILING_PCT 참조).
+      20260907 실매매 로그 분석(사용자 요청) 결과 388050 지투파워 09:16 골든크로스가
+      매집봉 조건으로 리젝된 뒤 09:18~09:24 눌림으로 무효화, 09:26~09:28 재돌파는
+      BB_MID(후행지표)가 못 따라와 갭이 고정 상한 0.5%를 넘어 CHASE_BUY_BB_GAP로 매
+      폴링 리젝된 사례, 025980 아난티 13:45~13:50도 매집봉/거래량/갭이 서로 다른
+      시점에 하나씩만 걸려 결국 룩백 만료된 사례로 확인 - 크로스가 BB_MID 위로 계속
+      유지되고 있다는 것 자체가 유효한 추세 지속의 증거인데도 갭 상한이 고정이라
+      시간이 지날수록 무조건 리젝 확률만 높아지는 구조였음. 크로스 인정 룩백
+      (HYBRID_1MIN_TRIGGER_LOOKBACK_BARS) 안에서 실제 크로스 발생봉까지의 경과봉 수를
+      계산해 상한에 반영 (신선한 크로스=경과봉 0=기존 0.5% 그대로, 경과봉이 늘수록
+      봉당 0.15%p씩 완화, CEILING 1.1%로 상한). g003의 동일 로직 복제본
+      (check_buy_condition_1min_hybrid_trigger_sim)도 함께 수정 - 겸사겸사 그 함수가
+      2026-09-07 HYBRID_1MIN_MIN_ENTRY_VOL_MA/VOLUME 유동성 상수 분리(위 vol_ma 체크
+      부근 주석 참조)를 반영하지 못하고 3분봉 기준 MIN_ENTRY_VOL_MA/VOLUME을 그대로
+      쓰고 있던 기존 drift도 같이 정정함(g003 Update log 참조).
+    impact: live/sim
+    compatibility: backward-compatible (신선한 크로스는 기존과 동일, 경과봉이 있는
+      크로스만 상한이 완화되어 매수 빈도가 소폭 늘 수 있음; g003 --date 20260904
+      백테스트로 리젝 사유 재분포 확인 권장)
 - [2026-09-05] type=fix owner=claude
     summary: 8/17~9/4 로그 분석(사용자 요청) 결과 도출. active_set/backup_pool 교체(2026-08-31
       도입)의 TIME_LIMIT 탈락이 ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES(60분) 순수 타이머였을 뿐,
@@ -368,6 +439,8 @@ from r001_define_config import (
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
+    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_STAGED_TAKE_PROFIT,
     ENABLE_NXT_SESSION,
@@ -462,7 +535,6 @@ from r001_define_config import (
     ORDER_STATUS_POLL_INTERVAL_SECONDS,
     PENDING_BUY_GRACE_SECONDS,
     BUY_ORDER_STALE_WARN_SECONDS,
-    BUY_CHECK_SECONDS_OF_MINUTE,
     BUY_ORDER_REPRICE_AFTER_SECONDS,
     BUY_ORDER_REPRICE_MAX_ATTEMPTS,
     BUY_ORDER_REPRICE_MAX_CHASE_PCT,
@@ -472,6 +544,7 @@ from r001_define_config import (
     ACTIVE_WATCHLIST_SIZE,
     ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES,
     ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES,
+    ENABLE_WATCHLIST_ROTATION,
     HARD_STOP_CIRCUIT_BREAKER_COUNT,
     HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN,
     HARD_STOP_BLOCK_REENTRY_TODAY,
@@ -654,8 +727,8 @@ def _rotate_logging_for_date(date_str: str) -> None:
     log_date_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     script_stem = Path(__file__).stem
-    log_filename = log_date_dir / f"{timestamp}_{script_stem}.log"
-    trade_log_filename = log_date_dir / f"{timestamp}_{script_stem}_buy_sell.log"
+    log_filename = log_date_dir / f"{script_stem}_{timestamp}.log"
+    trade_log_filename = log_date_dir / f"{script_stem}_{timestamp}_buy_sell.log"
 
     root = logging.getLogger()
     for handler in list(root.handlers):
@@ -1703,23 +1776,6 @@ def _sleep_until_next_tick(scheduled_tick: datetime, interval_seconds: int) -> d
     return next_tick
 
 
-def _latest_buy_check_slot(now: datetime, seconds_of_minute: list[int]) -> datetime:
-    """`now` 시각 기준 가장 최근에 지나간 매수체크 스케줄 슬롯 시각을 반환한다
-    (BUY_CHECK_SECONDS_OF_MINUTE, 예: [3, 18, 33, 48]초). 메인 루프는
-    LIVE_PRICE_POLL_INTERVAL_SECONDS 간격으로만 깨어나므로 이 슬롯 시각과 정확히
-    일치하지 않을 수 있다 - 호출부는 이 반환값이 마지막으로 처리한 슬롯과 달라졌는지
-    비교해 "새 슬롯이 지났는지"만 판단한다(놓친 슬롯을 몰아서 재실행하지 않음)."""
-    seconds_sorted = sorted(s for s in seconds_of_minute if 0 <= s < 60)
-    if not seconds_sorted:
-        return now
-    minute_start = now.replace(second=0, microsecond=0)
-    passed = [minute_start + timedelta(seconds=s) for s in seconds_sorted if minute_start + timedelta(seconds=s) <= now]
-    if passed:
-        return passed[-1]
-    prev_minute_start = minute_start - timedelta(minutes=1)
-    return prev_minute_start + timedelta(seconds=seconds_sorted[-1])
-
-
 def update_live_price_cross_state(
     cross_state: dict[str, dict],
     code: str,
@@ -2260,6 +2316,7 @@ def check_buy_condition_1min_hybrid_trigger(
         return False, "1MIN_MISSING_INDICATOR"
 
     golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+    bars_since_cross = 0  # 신선한 크로스(golden_cross=True) 기본값 - 경과봉 0, 갭 상한 완화 없음
     trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
     if not golden_cross:
         _found = False
@@ -2277,6 +2334,9 @@ def check_buy_condition_1min_hybrid_trigger(
             )
             if _all_above:
                 _found = True
+                # 실제 돌파봉은 -_lb(미돌파 마지막봉) 바로 다음인 -(_lb-1) - 그 봉부터
+                # cur(-1)까지 경과한 봉 수 = (_lb-1)의 위치 차이 = _lb-2.
+                bars_since_cross = _lb - 2
                 break
 
         if not _found:
@@ -2295,6 +2355,11 @@ def check_buy_condition_1min_hybrid_trigger(
         if not _found:
             return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
 
+        if trigger_reason != "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK":
+            # 우상향 지속 경로로 인정된 경우 - 정확한 경과봉을 알 수 없으므로 BB갭
+            # 완화도(아래) 최대치를 적용해 추격매수 가드가 과도하게 좁아지지 않게 한다.
+            bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
+
     candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
     if candle_gain_pct < HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:
         return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:.1f}%"
@@ -2303,8 +2368,15 @@ def check_buy_condition_1min_hybrid_trigger(
 
     if cur_bb > 0:
         bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
-        if bb_gap_pct > HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT:
-            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT:.1f}%"
+        # [2026-09-07] 크로스가 BB_MID 위로 계속 유지 중(=유효한 추세 지속)인데도 BB_MID가
+        # 후행지표라 갭이 계속 벌어져 고정 상한에 매 폴링 걸리는 문제 완화 - 크로스 후
+        # 경과봉 수만큼 상한을 소폭 완화하되 CEILING_PCT로 무한 완화는 방지한다.
+        allowed_gap_pct = min(
+            HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT + bars_since_cross * HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
+            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+        )
+        if bb_gap_pct > allowed_gap_pct:
+            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{allowed_gap_pct:.2f}%"
 
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
@@ -3906,7 +3978,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         f"frame refresh every {FRAME_POLL_INTERVAL_SECONDS}s (3min bars) + backfill {FRAME_BACKFILL_SYNC_SECONDS}s | "
         f"buy consecutive confirms={BUY_CONSECUTIVE_CONFIRM_COUNT}"
     )
-    log(f"Buy check schedule: seconds_of_minute={BUY_CHECK_SECONDS_OF_MINUTE} (r001 BUY_CHECK_SECONDS_OF_MINUTE)")
     log(
         f"ATR model: stop={ATR_STOP_MULTIPLIER:.1f}x | tp={ATR_TAKE_PROFIT_MULTIPLIER:.1f}x | "
         f"trail={TRAILING_STOP_FROM_PEAK*100:.1f}%"
@@ -3969,7 +4040,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         )
 
     served_tick = datetime.now()
-    last_buy_check_slot: datetime | None = None
     regular_session_watchlist_reset_done = False
 
     while True:
@@ -4009,7 +4079,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             frame_cache_1min.clear()
             frame_last_refresh_at_1min.clear()
             realtime_entry_bar_state.clear()
-            last_buy_check_slot = None
             regular_session_watchlist_reset_done = False
 
         is_open_day, market_day_log = get_market_day_status(current_dt)
@@ -4057,20 +4126,17 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             }
             iter_codes = sorted(active_set | position_codes)
 
-            # BUY_CHECK_SECONDS_OF_MINUTE(r001, 예: [3, 18, 33, 48]초)에 정의된 슬롯이
-            # 이번 틱에서 처음 지난 경우에만 이번 순회에서 신규 진입 평가를 수행한다.
-            # 매도/청산 감시 등 나머지 루프 동작은 이 게이트와 무관하게 매 틱 실행된다.
-            _buy_check_slot = _latest_buy_check_slot(current_dt, BUY_CHECK_SECONDS_OF_MINUTE)
-            buy_check_due = last_buy_check_slot is None or _buy_check_slot != last_buy_check_slot
-            if buy_check_due:
-                last_buy_check_slot = _buy_check_slot
-
             for code in iter_codes:
                 name = watch_map.get(code) or _SYMBOL_NAME_MAP.get(code) or code
                 nxt_tradeable = nxt_map.get(code, False)
                 symbol_label = _symbol_log_label(code, name)
                 if not can_trade_code_now(current_dt, nxt_tradeable):
                     log(f"  [SKIP] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
+                    continue
+
+                pos = api.get_open_positions().get(code)
+                if pos is not None and pos.get("quantity", 0) > 0 and not _is_today_buy_position(code, pos, date_str, traded_today):
+                    log(f"  {symbol_label} [HOLD SKIP] | NOT_TODAY_BUY_POSITION")
                     continue
 
                 cached_frame = frame_cache.get(code)
@@ -4167,7 +4233,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     float(price),
                     _num(buy_cur, "BB_MIDDLE"),
                 )
-                pos = api.get_open_positions().get(code)
                 pending = api.get_pending_order(code)
 
                 if pending is not None:
@@ -4210,9 +4275,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     atr_stop_confirm_state.pop(code, None)
 
                 if pos is not None and pos.get("quantity", 0) > 0:
-                    if not _is_today_buy_position(code, pos, date_str, traded_today):
-                        log(f"  {symbol_label} [HOLD SKIP] | NOT_TODAY_BUY_POSITION")
-                        continue
                     buy_confirm_state.pop(code, None)
                     entry_price = float(pos["buy_price"])
                     pnl_pct = (price / entry_price) - 1.0
@@ -4804,8 +4866,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                 else:
                     trailing_sell_confirm_state.pop(code, None)
-                    if not buy_check_due:
-                        continue
                     if not is_new_entry_allowed(current_dt, nxt_tradeable):
                         continue
                     session_open_dt = get_session_open_datetime(current_dt, nxt_tradeable)
@@ -5101,22 +5161,23 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             # active_set 전원에 대해 first_active_at을 current_dt로 재설정해, TIME_LIMIT
             # 타이머가 프리마켓 대기시간을 소모하지 않고 정규장 실거래 시간부터 60분을
             # 온전히 확보하도록 함.
-            if not regular_session_watchlist_reset_done and is_regular_session(current_dt):
-                _reset_count = len(active_set)
-                for _code in active_set:
-                    first_active_at[_code] = current_dt
-                regular_session_watchlist_reset_done = True
-                log(
-                    f"[ACTIVE WATCHLIST] REGULAR_START 도달 - TIME_LIMIT"
-                    f"({ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES}min) 타이머 리셋"
-                    f"(프리마켓 NXT 대기시간 제외) | reset_count={_reset_count}"
-                )
+            if ENABLE_WATCHLIST_ROTATION:
+                if not regular_session_watchlist_reset_done and is_regular_session(current_dt):
+                    _reset_count = len(active_set)
+                    for _code in active_set:
+                        first_active_at[_code] = current_dt
+                    regular_session_watchlist_reset_done = True
+                    log(
+                        f"[ACTIVE WATCHLIST] REGULAR_START 도달 - TIME_LIMIT"
+                        f"({ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES}min) 타이머 리셋"
+                        f"(프리마켓 NXT 대기시간 제외) | reset_count={_reset_count}"
+                    )
 
-            _rebalance_active_watchlist(
-                current_dt, api, watch_map, active_set, backup_pool, first_active_at,
-                hard_stop_today_codes, gap_blocked_codes, active_watchlist_warn_state,
-                frame_cache,
-            )
+                _rebalance_active_watchlist(
+                    current_dt, api, watch_map, active_set, backup_pool, first_active_at,
+                    hard_stop_today_codes, gap_blocked_codes, active_watchlist_warn_state,
+                    frame_cache,
+                )
             _write_active_watchlist_state(
                 current_dt, watch_map, active_set, backup_pool, first_active_at, position_codes,
             )
