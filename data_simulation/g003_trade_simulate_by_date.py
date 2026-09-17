@@ -177,7 +177,6 @@ from r001_define_config import (
     ADX_MIN_TREND,
     ADX_PERIOD,
     ADX_STRONG_TREND,
-    MFI_BUY_MIN,
     MFI_OVERBOUGHT_MAX,
     MFI_PERIOD,
     REQUIRE_ADX_RISING,
@@ -198,7 +197,6 @@ from r001_define_config import (
     AUX_SELL_MIN_PNL_SCORE3,
     AUX_SELL_MIN_PNL_SCORE4,
     BB_PERIOD,
-    BB_SQUEEZE_MIN_WIDTH_PCT,
     BB_STD_MULTIPLIER,
     BB_UPPER_PROXIMITY_MAX,
     BOX_RANGE_HOLD_LOOKBACK_BARS,
@@ -206,20 +204,9 @@ from r001_define_config import (
     BOX_RANGE_HOLD_MAX_RANGE_PCT,
     DATA_DIR_NAME,
     DEFINE_TODAY_CODE_PATH,
-    EARLY_NEAR_CROSS_ALLOWED_END,
-    EARLY_NEAR_CROSS_ALLOWED_START,
-    EARLY_NEAR_CROSS_ALLOW_NXT,
-    EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
-    EARLY_NEAR_CROSS_MIN_VOL_MA,
-    EARLY_NEAR_CROSS_MIN_VOLUME,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
-    ENABLE_EARLY_NEAR_CROSS_ENTRY,
-    ENABLE_NEAR_CROSS_ARM,
-    ENABLE_PRICE_LEAD_BB_BREAKOUT,
-    ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS,
     ENABLE_NXT_SESSION,
     ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP,
-    ENABLE_STRICT_MA5_BB_GOLDEN_CROSS as REQUIRE_STRICT_BUY_GOLDEN_CROSS,
     ENABLE_TP_EXTENSION_TRAILING,
     LIVE_PRICE_BB_BUFFER_PCT as SIM_LIVE_PRICE_BB_BUFFER_PCT,
     LIVE_PRICE_CROSS_CONFIRM_POLLS,
@@ -240,23 +227,13 @@ from r001_define_config import (
     MORNING_NXT_END,
     MORNING_NXT_NEW_ENTRY_CUTOFF,
     MORNING_NXT_START,
-    NEAR_CROSS_ARM_EXPIRE_BARS,
-    NEAR_CROSS_ARM_GAP_MAX,
-    NEAR_CROSS_ARM_MA_RISE_MIN,
-    NEAR_CROSS_EARLY_GAP_MAX,
-    NEAR_CROSS_EARLY_MA_RISE_MIN,
     OBV_BREAKOUT_LOOKBACK_BARS,
     OBV_MA_PERIOD,
     POLL_INTERVAL_SECONDS,
-    PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT,
-    PRICE_LEAD_BREAKOUT_MIN_ADX,
-    PRICE_LEAD_BREAKOUT_MIN_SCORE,
     REGULAR_END,
     REGULAR_FORCE_EXIT,
     REGULAR_NEW_ENTRY_CUTOFF,
     REGULAR_START,
-    RSI_BUY_MAX,
-    RSI_BUY_MIN,
     RSI_BUY_MOMENTUM_MAX,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
@@ -272,7 +249,6 @@ from r001_define_config import (
     POST_BUY_BB_DROP_ARMED_SECONDS,
     POST_BUY_DROP_CONFIRM_SECONDS,
     POST_BUY_BB_DROP_PCT,
-    POST_BUY_BB_DROP_POLLS,
     STOP_LOSS_EARLY_PERCENT,
     STOP_LOSS_MIN_HOLD_SECONDS,
     STOP_LOSS_PERCENT,
@@ -281,9 +257,6 @@ from r001_define_config import (
     STOCH_D_PERIOD,
     STOCH_K_PERIOD,
     STOCH_OVERBOUGHT,
-    STRONG_TREND_OVERBOUGHT_MIN_ADX,
-    STRONG_TREND_OVERBOUGHT_MIN_SCORE,
-    STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO,
     TAKE_PROFIT_PERCENT,
     TP_EXTENSION_TRAIL_FROM_PEAK,
     TRADE_COOLDOWN_MINUTES,
@@ -311,7 +284,6 @@ from r001_define_config import (
     INTRABAR_RSI_MAX,
     INTRABAR_RSI_MIN,
     INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS,
-    SAME_DAY_MIN_BARS,
     SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL,
     SIM_CHECK_INTERVAL_SECONDS,
     SIM_INITIAL_CAPITAL,
@@ -323,7 +295,6 @@ from r001_define_config import (
     SIM_RELAXED_SHARED_GATES,
     SIM_RELAXED_VWAP_MAX_UNDER_PCT,
     SIM_WARMUP_PRIOR_MAX_DAYS,
-    SIM_WARMUP_TAIL_BARS,
     SIMULATE_10S_GRID_DEFAULT,
     TECH_SELL_MIN_HOLD_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
@@ -368,8 +339,6 @@ from r002_strategy_core_shared import (
     run_3min_context_pipeline,
     update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
-    _near_cross_momentum_flags,
-    _passes_early_near_cross_liquidity,
     _compute_bb_slope_pct,
     _evaluate_bb_mid_cross,
 )
@@ -952,15 +921,6 @@ def get_volume_ratio_threshold(ts: pd.Timestamp, adx_val: float) -> float:
     return ratio
 
 
-def is_early_near_cross_allowed(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
-    current_time = ts.time()
-    if is_regular_session(ts):
-        return EARLY_NEAR_CROSS_ALLOWED_START <= current_time <= EARLY_NEAR_CROSS_ALLOWED_END
-    if EARLY_NEAR_CROSS_ALLOW_NXT and is_nxt_session(ts) and nxt_tradeable:
-        return True
-    return False
-
-
 def _num(candle: pd.Series, key: str) -> float:
     value = candle.get(key)
     return float(value) if value is not None and not pd.isna(value) else float("nan")
@@ -1510,79 +1470,6 @@ def _simulate_relaxed_shared_gate(
         return False, f"RELAXED_REJECT_VWAP_TOO_LOW_{under_pct*100:.2f}%"
 
     return False, shared_reason
-
-
-def _price_lead_breakout_context_sim(
-    cur: pd.Series,
-    prev: pd.Series,
-    frame: pd.DataFrame,
-    ts: pd.Timestamp,
-    price: float,
-    cross_info: dict,
-    nxt_tradeable: bool,
-) -> dict:
-    """r006 _price_lead_breakout_context() 시뮬레이션 버전."""
-    result = {"can_enter": False, "mode": "", "reason": ""}
-
-    bb_upper = _num(cur, "BB_UPPER")
-    price_breakout = price > bb_upper and not pd.isna(bb_upper)
-    live_cross_up = cross_info.get("live_cross_up", False)
-
-    if not price_breakout and not live_cross_up:
-        result["reason"] = "NO_PRICE_LEAD_SIGNAL"
-        return result
-
-    vol_col = "volume" if "volume" in cur.index else "VOLUME"
-    vol = _num(cur, vol_col) if vol_col in cur.index else float("nan")
-    vol_ma = _num(cur, "VOLUME_MA") if "VOLUME_MA" in cur.index else float("nan")
-    if not pd.isna(vol) and not pd.isna(vol_ma) and vol_ma > 0:
-        if vol < vol_ma * 0.5:
-            result["reason"] = "PRICE_LEAD_LOW_LIQUIDITY"
-            return result
-
-    adx = _num(cur, "ADX")
-    di_plus = _num(cur, "DI_PLUS")
-    di_minus = _num(cur, "DI_MINUS")
-    macd = _num(cur, "MACD")
-    macd_signal = _num(cur, "MACD_SIGNAL")
-    macd_hist = _num(cur, "MACD_HIST")
-
-    adx_ok = not pd.isna(adx) and adx >= PRICE_LEAD_BREAKOUT_MIN_ADX
-    momentum_ok = (
-        not any(pd.isna(v) for v in (macd, macd_signal, macd_hist))
-        and macd > macd_signal
-        and macd_hist > 0
-    )
-
-    near_cross = cross_info.get("near_cross", False)
-    near_cross_armed = cross_info.get("near_cross_armed", False)
-
-    if price_breakout and adx_ok and momentum_ok:
-        result["can_enter"] = True
-        result["mode"] = "PRICE_LEAD_BREAKOUT"
-        result["reason"] = f"PRICE_LEAD_BREAKOUT_ADX{adx:.0f}_MACD{macd_hist:.3f}"
-        return result
-
-    if live_cross_up and adx_ok and momentum_ok:
-        result["can_enter"] = True
-        result["mode"] = "PRICE_LEAD_CROSS_UP"
-        result["reason"] = f"PRICE_LEAD_CROSS_UP_ADX{adx:.0f}_MACD{macd_hist:.3f}"
-        return result
-
-    if near_cross_armed and adx_ok:
-        result["can_enter"] = True
-        result["mode"] = "ARMED_NEAR_CROSS"
-        result["reason"] = f"ARMED_NEAR_CROSS_ADX{adx:.0f}"
-        return result
-
-    if near_cross and adx_ok:
-        result["can_enter"] = True
-        result["mode"] = "EARLY_NEAR_CROSS"
-        result["reason"] = f"EARLY_NEAR_CROSS_ADX{adx:.0f}"
-        return result
-
-    result["reason"] = "PRICE_LEAD_CONDITIONS_NOT_MET"
-    return result
 
 
 def _extract_aux_score_from_reason(reason: str) -> int | None:
@@ -2713,7 +2600,7 @@ def simulate_date(
                     trailing_sell_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_hard_sl, session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | price={price:,.0f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s")
+                    log(f"  [SELL_EXECUTED] {code} | {reason_hard_sl} | price={price:,.0f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s")
                     continue
 
                 # ── PYRAMIDING (불타기): 추세 지속 시 1회 추가 진입 (r006 parity) ──────
@@ -2789,7 +2676,7 @@ def simulate_date(
                                 if STAGED_TP2_RATIO <= 0:
                                     remaining.tp2_done = True
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        log(f"  [SELL_EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
                         continue
 
                     # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
@@ -2803,7 +2690,7 @@ def simulate_date(
                             if remaining is not None:
                                 remaining.tp2_done = True
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={tp2_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        log(f"  [SELL_EXECUTED] {code} | {reason_tp2} | qty={tp2_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
                         continue
 
                     # 3차: 고정 목표가 전량청산 대신, 1/2차 완료 후 잔량(30%)을 트레일링 스탑에 위임 (Trail 30%)
@@ -2819,7 +2706,7 @@ def simulate_date(
                         trailing_sell_confirm_state.pop(code, None)
                         sim.sell(code, price, ts, "TP2_FULL_2.0PCT", session)
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | TP2_FULL_2.0PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        log(f"  [SELL_EXECUTED] {code} | TP2_FULL_2.0PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
                         continue
 
                     # 3. Partial take-profit +1.0% at 50%, one-time
@@ -2831,14 +2718,14 @@ def simulate_date(
                             if remaining is not None:
                                 remaining.tp1_done = True
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        log(f"  [SELL_EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
                         continue
 
                 # 4. Signal exit: Stoch K < D (r006 parity: requires held>=600s and pnl<=-0.8%, unless strong uptrend)
                 if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
                     if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or profit_pct > -0.012:
                         log(
-                            f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
+                            f"  [SELL_SKIP] {code} | STOCH_K_LT_D suppressed | "
                             f"K={k_now:.1f} D={d_now:.1f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s "
                             f"uptrend(adx={_adx_uptrend},price={_price_uptrend})"
                         )
@@ -2846,7 +2733,7 @@ def simulate_date(
                         trailing_sell_confirm_state.pop(code, None)
                         sim.sell(code, price, ts, "SIGNAL_EXIT_STOCH_K_LT_D", session)
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | SIGNAL_EXIT_STOCH_K_LT_D | K={k_now:.1f} D={d_now:.1f} pnl={profit_pct*100:.2f}%")
+                        log(f"  [SELL_EXECUTED] {code} | SIGNAL_EXIT_STOCH_K_LT_D | K={k_now:.1f} D={d_now:.1f} pnl={profit_pct*100:.2f}%")
                         continue
 
                 # 5. Signal exit: MACD histogram declining 2 consecutive bars
@@ -2862,7 +2749,7 @@ def simulate_date(
                     sim.sell(code, price, ts, "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS", session)
                     signal_sell_bar[code] = ts
                     log(
-                        f"  [SELL EXECUTED] {code} | SIGNAL_EXIT_MACD_HIST_DOWN_2BARS | "
+                        f"  [SELL_EXECUTED] {code} | SIGNAL_EXIT_MACD_HIST_DOWN_2BARS | "
                         f"HIST={hist_prev2_v:.3f}->{hist_prev_v:.3f}->{hist_now:.3f} pnl={profit_pct*100:.2f}%"
                     )
                     continue
@@ -2879,7 +2766,7 @@ def simulate_date(
                         trailing_sell_confirm_state.pop(code, None)
                         sim.sell(code, price, ts, reason_atr_tp, session)
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | {reason_atr_tp} | price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        log(f"  [SELL_EXECUTED] {code} | {reason_atr_tp} | price={price:,.0f} pnl={profit_pct*100:.2f}%")
                         continue
 
                 # -- POST-BUY ENTRY DROP GUARD -----------------------------------------------
@@ -2907,7 +2794,7 @@ def simulate_date(
                         atr_stop_confirm_state.pop(code, None)
                         sim.sell(code, price, ts, reason_bbdrop, session)
                         signal_sell_bar[code] = ts
-                        log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | price={price:,.0f}")
+                        log(f"  [SELL_EXECUTED] {code} | {reason_bbdrop} | price={price:,.0f}")
                         continue
                 else:
                     post_buy_bb_drop_state.pop(code, None)
@@ -2940,7 +2827,7 @@ def simulate_date(
                     atr_stop_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_breakeven, session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | price={price:,.0f}")
+                    log(f"  [SELL_EXECUTED] {code} | {reason_breakeven} | price={price:,.0f}")
                     continue
                 # -- END BREAKEVEN FAILURE GUARD ---------------------------------------------
 
@@ -2977,7 +2864,7 @@ def simulate_date(
                     atr_stop_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_no_trend, session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | price={price:,.0f}")
+                    log(f"  [SELL_EXECUTED] {code} | {reason_no_trend} | price={price:,.0f}")
                     continue
                 # -- END NO-TREND TIME EXIT --------------------------------------------------
 
@@ -3000,7 +2887,7 @@ def simulate_date(
                     sim.sell(code, price, ts, reason_sl, session)
                     signal_sell_bar[code] = ts
                     log(
-                        f"  [SELL EXECUTED] {code} | {reason_sl} | "
+                        f"  [SELL_EXECUTED] {code} | {reason_sl} | "
                         f"held={_held_for_guard:.0f}s price={price:,.0f} pnl={profit_pct*100:.2f}% "
                         f"sl_pct={atr_sl_pct*100:.2f}%"
                     )
@@ -3026,7 +2913,7 @@ def simulate_date(
                         if not trailing_condition and pending_state is not None:
                             trailing_sell_confirm_state.pop(code, None)
                             log(
-                                f"  [SELL HOLD CANCEL] {code} | trailing recovered before confirm | "
+                                f"  [SELL_HOLD_CANCEL] {code} | trailing recovered before confirm | "
                                 f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                             )
 
@@ -3040,7 +2927,7 @@ def simulate_date(
                                     "reason": reason_ts,
                                 }
                                 log(
-                                    f"  [SELL HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
+                                    f"  [SELL_HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
                                     f"pnl={current_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                                 )
                                 continue
@@ -3051,7 +2938,7 @@ def simulate_date(
                         sim.sell(code, price, ts, reason_ts, session)
                         signal_sell_bar[code] = ts
                         log(
-                            f"  [SELL EXECUTED] {code} | {reason_ts} | "
+                            f"  [SELL_EXECUTED] {code} | {reason_ts} | "
                             f"price={price:,.0f} pnl={current_pnl_pct*100:.2f}% "
                             f"peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                         )
@@ -3245,16 +3132,16 @@ def simulate_date(
                                 f"(EXEC_SIM delay={_exec_delay_s}s slippage={_exec_slip_str}%)"
                             )
                         else:
-                            log_detail(f"  [BUY REJECT] {code_label} | ORDER_REJECTED")
+                            log_detail(f"  [BUY_REJECT] {code_label} | ORDER_REJECTED")
                     else:
                         # CANCELLED: 실거래처럼 체결 없이 소멸 - sim.buy 호출 자체를 하지
                         # 않아 이 신호가 아예 발생하지 않은 것처럼 처리한다(포지션/쿨다운 없음).
-                        log_detail(f"  [BUY REJECT] {code_label} | EXEC_SIM_CANCELLED")
+                        log_detail(f"  [BUY_REJECT] {code_label} | EXEC_SIM_CANCELLED")
                 elif sim.buy(code, selected_names.get(code, code), price, ts, session, reason):
                     signal_buy_bar[code] = ts
                     log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
                 else:
-                    log_detail(f"  [BUY REJECT] {code_label} | ORDER_REJECTED")
+                    log_detail(f"  [BUY_REJECT] {code_label} | ORDER_REJECTED")
             else:
                 buy_confirm_state.pop(code, None)
                 buy_primary_reject_counter[str(reason)] += 1
@@ -3271,7 +3158,7 @@ def simulate_date(
                         reason,
                     ):
                         buy_reject_counter[str(reject_reason)] += 1
-                log_detail(f"  [BUY REJECT] {code_label} | {reason}")
+                log_detail(f"  [BUY_REJECT] {code_label} | {reason}")
 
 
 
