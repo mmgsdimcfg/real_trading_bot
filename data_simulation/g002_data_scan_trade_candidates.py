@@ -2551,6 +2551,11 @@ def parse_args():
         action="store_true",
         help="Also write data/YYYYMMDD/picks.txt (legacy r003 --date compatibility)",
     )
+    parser.add_argument(
+        "--notify-kakao",
+        action="store_true",
+        help="Send the pick list to KakaoTalk (talk_message '나에게 보내기') via g007_kakao_notify",
+    )
     return parser.parse_args()
 
 
@@ -2712,6 +2717,14 @@ if __name__ == "__main__":
             print(pick)
     else:
         print("(없음)")
+
+    if args.notify_kakao:
+        from g007_kakao_notify import send_watchlist
+
+        if send_watchlist(picks, label):
+            print("[KAKAO] 감시종목 알림 전송 완료")
+        else:
+            print("[KAKAO] 감시종목 알림 전송 실패 (위 로그 참고)")
 
     sys.stdout = sys.__stdout__
     log_fp.close()

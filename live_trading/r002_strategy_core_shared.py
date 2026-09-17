@@ -18,6 +18,71 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-17] type=fix owner=claude
+    summary: 사용자가 "예수금 부족으로 매수가 막힌 경우가 있나" 질의를 계기로 실매매
+      매수 0건이 여러 날 이어지는 것을 발견, 확대 요청("20년차 트레이더 관점에서 현재
+      매수 진입 조건 점검 + 타이트한 조건으로 익절 가능했던 매수를 놓친 경우가 없는지
+      검토/보완")에 따른 로그 분석 기반 수정. 2026-09-14/16/17(전체/근전체 세션, 매수
+      0건) gate_steps_diagnostic STEPS 집계(178,572건) 결과 stochastic_buy_signal이
+      전체 REJECT의 94.6%에서 실패(전체 8개 판정 중 최다) - 특히 "나머지 7개는 전부
+      통과"인 근접리젝(exactly-1-gate-fail, 2,759건)의 50.5%(1,394건)가 이 게이트
+      단독 실패였음. 원인 분리 결과 실패의 상당수가 _gate_stochastic_buy_signal의
+      williams_equiv_ok 조건 중 "stoch_k > stoch_k_prev"(직전 3분봉 대비 %K 상승
+      필수) 단일 틱 요건 - 175330 JB금융지주 2026-09-14 09:09 사례로 실증(RSI/ADX
+      100 포화, %K가 90.0->81.82로 밴드(30~90) 안에서 살짝 눌렸다는 이유만으로 리젝,
+      그 시점 매수 가정 시 09:27까지 20분 내 +4.25% - STAGED_TP1_PCT 3.0% 손절 없이
+      달성). 해당 조건 제거(아래 _gate_stochastic_buy_signal 본문 참조), 밴드 범위
+      체크는 유지. 2026-09-11(부분세션)/09-13(주말 휴장)/09-15(장마감 후 2분만 실행)는
+      코드가 아니라 운영/시장 요인으로 확인되어 이번 분석/수정 대상에서 제외 - 실제
+      코드 귀책 매수 0건 구간은 09-14~09-17(R78, 2026-09-14 STOCH_D_BUY_MIN/
+      DI_SPREAD_MIN_REQUIRED 추가 직후부터)로 특정됨. di_spread_min(근접리젝
+      359건, 13%)도 동일 계열 의심 사례(047040 대우건설/138080 오이솔루션 등 신선한
+      cross_up 신호가 후행 DI스프레드에 막힌 경우) 확인했으나, DI_PLUS/DI_MINUS는
+      hybrid 경로(HYBRID_3MIN_CONTEXT_GATES)에서 cross_eval 컨텍스트가 없어(1분
+      트리거가 크로스를 이미 판정) 안전한 예외 조건을 결합 파이프라인 양쪽에 드리프트
+      없이 걸기 어려워 이번엔 수정 보류 - g003 백테스트로 DI_SPREAD_MIN_REQUIRED
+      완화 여지를 별도 검증 권장(아래 r003 Update log 동일 날짜 참조, 표시 스코어
+      버그도 함께 수정).
+    impact: common (r003 실전/g003 백테스트 공용 - stochastic_buy_signal 통과 기준 완화)
+    compatibility: breaking (매수 판정 결과가 바뀜 - 리젝 감소/매수 빈도 증가 예상,
+      g003 --date 20260914,20260916,20260917 백테스트로 재검증 권장)
+- [2026-09-14] type=feat owner=claude
+    summary: R78(사용자 요청 ①②, 실거래 141건 로그 분석 기반) - 신규 필수 게이트 2개
+      추가. (R78-①) _gate_stochastic_buy_signal에 STOCH_D_BUY_MIN(50.0) 하한 조건
+      추가 - 기존엔 %K만 확인하고 %D 자체엔 하한이 없었음(실거래 분석: %D<50 승률
+      24-33%(n=64) vs 50-80 42%(n=50)). (R78-②) 신규 함수 _gate_di_spread_min +
+      BUY_GATE_CONDITIONS 9번째 항목("di_spread_min") 추가 - DI스프레드(+DI--DI)가
+      DI_SPREAD_MIN_REQUIRED(10.0) 미만이면 매수 차단(실거래 분석: 0-10구간 25.6%
+      (n=39) vs 10-20구간 36.4%(n=33) vs 20+구간 62.5%(n=8, 표본작음), 가장 나쁜
+      구간만 배제하는 보수적 값으로 시작). R77-D의 adx_strength 가점(ADX_DI_SCORE_*)
+      과는 독립적인 별개의 필수조건 - 서로 배타적이지 않음.
+    impact: common (r003 실전/g003 백테스트 공용 - BUY_GATE_CONDITIONS 8개->9개)
+    compatibility: breaking (매수 판정 결과가 바뀜 - 백테스트로 거래빈도/승률
+      트레이드오프 검증 필요, 아래 참조)
+- [2026-09-13] type=refactor owner=claude
+    summary: 사용자가 제시한 R77(전략 개선안 - 코드상으로는 g003/r002 등 기존 파일에
+      적용, 별도 파일 아님) 항목 중 사전검토 결과 문제 없다고 판단된 4건 적용:
+      (R77-A) pre_cross_accumulation_bar 필수 게이트를 삭제하고 동일 판정 로직을
+      가점(+1, PRE_CROSS_ACCUM_SCORE)으로 전환 - 2026-08-25 로그 분석에서 리젝 사유
+      1위(1,284건)였던 과거 이력 근거. (R77-B) volume_up_direction(+1, 직전봉 대비
+      거래량 증가 단순비교) 가점 삭제 - 노이즈성 신호로 판단. (R77-D) adx_strength를
+      "ADX 크기만" 보던 3단계 티어에서 "+DI>-DI 방향성 필수 + ADX/DI스프레드" 기준
+      2~3점 구조로 재설계 - 기존 티어는 하락추세에서도 ADX가 높으면 만점을 줄 수
+      있었음. DI가 2026-06-28에 스코어에서 "이중반영"으로 제거된 이력이 있으나 그건
+      당시 스코어 레벨 중복이었고, 현재 DI 방향 확인은 bb_mid_cross_up 게이트의
+      uptrend_continuation 예외에만 국한돼 live_cross_up/close_cross 경로엔 방향성
+      확인이 전혀 없었던 공백을 메움. (R77-G) BB 상단 여유폭을 ATR로 정규화한 가점
+      (+1/+2, bb_upper_room_atr) 신규 추가 - 기존 bb_upper_gap_min 게이트(고정 0.25%)
+      는 그대로 유지, 그 위에 저변동/고변동 종목 형평성을 보정하는 보너스.
+      R77-C(BB slope 하드컷 -1.5~-2.0)는 검토 결과 이미 BB_SLOPE_MIN_PCT=-2.0으로
+      요청 범위 안이라 코드 변경 없음. R77-E(시간대별 RVOL)/R77-F(시장 대비 상대강도)
+      는 라이브에 필요한 인프라(과거 종목별 시간대 거래량 프로파일, 실시간 지수 시세)가
+      전혀 없어 이번엔 보류 - 별도 스코핑 필요.
+    impact: common (r003 실전/g003 백테스트 공용 - BUY_GATE_CONDITIONS 9개->8개,
+      BUY_SCORE_RULES 11개->12개, 만점 22점->24점 변경. BB_BUY_SCORE_THRESHOLD(10)/
+      OPENING_GUARD_SCORE_THRESHOLD(12)는 그대로 두고 백테스트로 재검증 예정)
+    compatibility: breaking (매수 판정 결과가 바뀔 수 있음 - 5일 백테스트 검증 권장,
+      기존 A-D 실험과 동일 방법론으로 재검증 예정)
 - [2026-09-09] type=feat owner=claude
     summary: gate_steps_diagnostic() 신규 추가 - BUY_GATE_CONDITIONS(또는 호출측이 넘긴
       임의의 gates 리스트, 예: HYBRID_3MIN_CONTEXT_GATES)를 조기종료 없이 전부 평가해
@@ -287,9 +352,6 @@ from r001_define_config import (
     BB_UPPER_GAP_MIN_PCT,
     CANDLE_GAIN_MAX_PCT,
     CANDLE_GAIN_MIN_PCT,
-    EARLY_NEAR_CROSS_MIN_TURNOVER_KRW,
-    EARLY_NEAR_CROSS_MIN_VOL_MA,
-    EARLY_NEAR_CROSS_MIN_VOLUME,
     MIN_ENTRY_VOL_MA,
     MIN_ENTRY_VOLUME,
     MIN_ENTRY_TURNOVER_KRW,
@@ -304,14 +366,11 @@ from r001_define_config import (
     MACD_SLOW,
     MA_PERIOD,
     MFI_PERIOD,
-    NEAR_CROSS_ARM_GAP_MAX,
-    NEAR_CROSS_ARM_MA_RISE_MIN,
-    NEAR_CROSS_EARLY_GAP_MAX,
-    NEAR_CROSS_EARLY_MA_RISE_MIN,
     OBV_MA_PERIOD,
     RSI_PERIOD,
     RSI_SIGNAL_PERIOD,
     STOCH_BUY_MIN,
+    STOCH_D_BUY_MIN,
     STOCH_D_PERIOD,
     STOCH_K_PERIOD,
     VOLUME_MA_PERIOD,
@@ -334,6 +393,13 @@ from r001_define_config import (
     ENTRY_SCORE_THRESHOLD,
     EMA_60_PERIOD,
     EMA_TREND_ALIGN_SCORE,
+    PRE_CROSS_ACCUM_SCORE,
+    ADX_DI_SCORE_MIN_ADX,
+    ADX_DI_SCORE_STRONG_ADX,
+    ADX_DI_SCORE_STRONG_SPREAD,
+    BB_UPPER_ROOM_ATR_TIER1,
+    BB_UPPER_ROOM_ATR_TIER2,
+    DI_SPREAD_MIN_REQUIRED,
 )
 
 
@@ -520,16 +586,23 @@ def _score_volume_ratio(ctx: BuyEvalContext) -> int:
 
 
 def _score_adx_strength(ctx: BuyEvalContext) -> int:
+    # [2026-09-13][R77-D] ADX 크기만으로는 추세 방향을 확인 못한다(하락추세에서도 ADX는
+    # 높을 수 있음) - +DI가 -DI보다 우세할 때만 점수를 주도록 방향성 확인을 추가한다.
+    # DI가 스코어에 쓰인 적이 2026-06-28에 "이중반영"으로 한 번 제거됐으나, 그건 당시
+    # 스코어 레벨에서의 중복이었고 현재 DI 방향 확인은 bb_mid_cross_up 게이트의
+    # uptrend_continuation 예외 경로에만 국한돼 있어 live_cross_up/close_cross 경로는
+    # 방향성 확인이 전혀 없었다 - 그 공백을 메우는 재도입(2~3점 구조, 기존 1점 티어 제거).
     adx_c = _num(ctx.cur, "ADX")
-    if pd.isna(adx_c):
+    di_plus = _num(ctx.cur, "DI_PLUS")
+    di_minus = _num(ctx.cur, "DI_MINUS")
+    if any(pd.isna(v) for v in (adx_c, di_plus, di_minus)):
         return 0
-    if adx_c >= 35.0:
+    if di_plus <= di_minus or adx_c < ADX_DI_SCORE_MIN_ADX:
+        return 0
+    di_spread = di_plus - di_minus
+    if adx_c >= ADX_DI_SCORE_STRONG_ADX and di_spread >= ADX_DI_SCORE_STRONG_SPREAD:
         return 3
-    if adx_c >= 30.0:
-        return 2
-    if adx_c >= 25.0:
-        return 1
-    return 0
+    return 2
 
 
 def _score_vwap_position(ctx: BuyEvalContext) -> int:
@@ -543,15 +616,6 @@ def _score_vwap_position(ctx: BuyEvalContext) -> int:
     if close_v > vwap_v:
         return 1
     return 0
-
-
-def _score_volume_up_direction(ctx: BuyEvalContext) -> int:
-    # 현봉 > 전봉 → 관심 유입 중
-    vol = _num(ctx.cur, "volume")
-    vol_prev = _num(ctx.prev, "volume")
-    if any(pd.isna(v) for v in (vol, vol_prev)) or vol_prev <= 0:
-        return 0
-    return 1 if vol > vol_prev else 0
 
 
 def _score_bb_width_expansion(ctx: BuyEvalContext) -> int:
@@ -624,18 +688,67 @@ def _score_obv_breakout(ctx: BuyEvalContext) -> int:
     return 0
 
 
+def _score_pre_cross_accumulation(ctx: BuyEvalContext) -> int:
+    # [2026-09-13][R77-A] 기존 _gate_pre_cross_accumulation_bar(필수 게이트)를 그대로
+    # 가점으로 전환 - 판정 로직(룩백/거래량비율)은 동일, 실패해도 매수를 막지 않고
+    # 점수만 안 준다.
+    if not ENABLE_PRE_CROSS_ACCUM_BAR_CHECK:
+        return 0
+    frame = ctx.frame
+    for _ofs in range(2, 2 + PRE_CROSS_ACCUM_LOOKBACK_BARS):
+        if _ofs + 1 > len(frame):
+            break
+        _cand = frame.iloc[-_ofs]
+        _cand_open = _num(_cand, "open")
+        _cand_close = _num(_cand, "close")
+        _cand_low = _num(_cand, "low")
+        _cand_high = _num(_cand, "high")
+        _cand_bb = _num(_cand, "BB_MIDDLE")
+        _cand_vol = _num(_cand, "volume")
+        _cand_vol_ma = _num(_cand, "VOL_MA20")
+        if any(pd.isna(v) for v in (
+            _cand_open, _cand_close, _cand_low, _cand_high, _cand_bb, _cand_vol, _cand_vol_ma,
+        )):
+            continue
+        _contains_bb_mid = _cand_low <= _cand_bb <= _cand_high
+        _is_bullish = _cand_close > _cand_open
+        _vol_rising = _cand_vol >= _cand_vol_ma * PRE_CROSS_ACCUM_VOL_RATIO_MIN
+        if _contains_bb_mid and _is_bullish and _vol_rising:
+            return PRE_CROSS_ACCUM_SCORE
+    return 0
+
+
+def _score_bb_upper_room_atr(ctx: BuyEvalContext) -> int:
+    # [2026-09-13][R77-G] BB 상단까지 남은 여유폭을 종목 변동성(ATR)으로 정규화한 가점.
+    # 기존 bb_upper_gap_min 게이트(고정 0.25%)는 필수조건으로 그대로 유지 - 이건 그
+    # 위에 얹는 보너스로, 저변동/고변동 종목에 동일한 고정 %가 다른 의미를 갖는 문제를
+    # 완화한다.
+    bb_upper = _num(ctx.cur, "BB_UPPER")
+    close_v = _num(ctx.cur, "close")
+    atr = _num(ctx.cur, "ATR")
+    if any(pd.isna(v) for v in (bb_upper, close_v, atr)) or close_v <= 0 or atr <= 0:
+        return 0
+    room_atr = (bb_upper - close_v) / atr
+    if room_atr >= BB_UPPER_ROOM_ATR_TIER2:
+        return 2
+    if room_atr >= BB_UPPER_ROOM_ATR_TIER1:
+        return 1
+    return 0
+
+
 BUY_SCORE_RULES: list[BuyScoreRule] = [
     BuyScoreRule("rsi_band", 2, "RSI 구간 점수 (50~65=2점, 45~50/65~70=1점)", (), _score_rsi_band),
     BuyScoreRule("ema_trend_align", EMA_TREND_ALIGN_SCORE, "장기 추세 정합성: EMA20 > EMA60(3분봉) → 상위 추세 우상향", ("EMA_TREND_ALIGN_SCORE",), _score_ema_trend_align),
     BuyScoreRule("volume_ratio", 3, "거래량 비율 점수 (VOL_MA20 대비 >=2.0=3점, >=1.5=2점, >=1.2 또는 >=0.7=1점)", (), _score_volume_ratio),
-    BuyScoreRule("adx_strength", 3, "ADX 추세 강도 점수 (>=35=3점, >=30=2점, >=25=1점)", (), _score_adx_strength),
+    BuyScoreRule("adx_strength", 3, "[R77-D] ADX+DI 방향성 점수 (+DI>-DI 필수: ADX>=30&스프레드>=15=3점, ADX>=25=2점, 그 외 0점)", ("ADX_DI_SCORE_MIN_ADX", "ADX_DI_SCORE_STRONG_ADX", "ADX_DI_SCORE_STRONG_SPREAD"), _score_adx_strength),
     BuyScoreRule("vwap_position", 2, "VWAP 대비 현재가 위치 (VWAP*1.002 초과=2점, VWAP 초과=1점)", (), _score_vwap_position),
-    BuyScoreRule("volume_up_direction", 1, "거래량 증가 방향: 현봉 거래량 > 전봉 거래량", (), _score_volume_up_direction),
     BuyScoreRule("bb_width_expansion", 1, "BB 폭 확장: 스퀴즈 해소 → 추세 발생 초기 신호", (), _score_bb_width_expansion),
     BuyScoreRule("ma5_short_term_up", 1, "MA5 단기 상승: MA5[t] > MA5[t-1]", (), _score_ma5_short_term_up),
     BuyScoreRule("macd_golden_cross", 2, "MACD 골든크로스: MACD > MACD_SIGNAL", (), _score_macd_golden_cross),
     BuyScoreRule("bb_mid_slope_strength", 3, "BB 중앙선 기울기 강도 점수 (>=1.5%=3점, >=1.0%=2점, >=0.5%=1점)", (), _score_bb_mid_slope_strength),
     BuyScoreRule("obv_breakout", OBV_CONFIRM_SCORE, "OBV가 OBV_MA를 lookback 내 상향 돌파 (거래량 방향 확인, fakeout 방지)", ("REQUIRE_OBV_SIGNAL_CROSS", "OBV_BREAKOUT_LOOKBACK_BARS"), _score_obv_breakout),
+    BuyScoreRule("pre_cross_accumulation", PRE_CROSS_ACCUM_SCORE, "[R77-A] 직전 매집봉 존재 (기존 필수게이트를 가점으로 전환)", ("ENABLE_PRE_CROSS_ACCUM_BAR_CHECK", "PRE_CROSS_ACCUM_LOOKBACK_BARS", "PRE_CROSS_ACCUM_VOL_RATIO_MIN"), _score_pre_cross_accumulation),
+    BuyScoreRule("bb_upper_room_atr", 2, "[R77-G] BB상단 여유폭/ATR 정규화 점수 (>=1.5=2점, >=0.8=1점)", ("BB_UPPER_ROOM_ATR_TIER1", "BB_UPPER_ROOM_ATR_TIER2"), _score_bb_upper_room_atr),
 ]
 
 
@@ -969,48 +1082,6 @@ def _gate_bb_mid_cross_up(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, st
     return True, ctx, None
 
 
-def _gate_pre_cross_accumulation_bar(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
-    # 직전 매집봉 확인 (BB중간선 포함 + 양봉 + 거래량 증가). 돌파 직전에 매집(거래량
-    # 증가) 양봉이 있었는지 확인. 직전봉(-2) 1개만 보면 매수 빈도가 크게 줄어들므로,
-    # close_cross 판정과 동일하게 최근 PRE_CROSS_ACCUM_LOOKBACK_BARS개 봉 중
-    # 하나라도 만족하면 통과시켜 빈도 감소를 완화한다. 거래량 증가 판정은 "직전봉
-    # 대비"가 아니라 "VOL_MA20(20봉 평균) 대비"로 본다 - 직전봉 대비는 봉 하나하나의
-    # 잡음에 취약해서(연속 매집 구간에서도 바로 전 봉보다만 작으면 탈락), 실제로는
-    # 평균 대비 거래량이 살아있는 매집봉을 놓치는 사례가 확인됨(257720 실리콘투
-    # 2026-08-21 09:57 사례: 09:48봉 거래량이 직전 09:45봉보다는 줄었지만 VOL_MA20
-    # 대비로는 낮지 않았음).
-    if not ENABLE_PRE_CROSS_ACCUM_BAR_CHECK:
-        return True, ctx, None
-    frame = ctx.frame
-    _accum_ok = False
-    _accum_bars_checked = 0
-    for _ofs in range(2, 2 + PRE_CROSS_ACCUM_LOOKBACK_BARS):
-        if _ofs + 1 > len(frame):
-            break
-        _accum_bars_checked += 1
-        _cand = frame.iloc[-_ofs]
-        _cand_open = _num(_cand, "open")
-        _cand_close = _num(_cand, "close")
-        _cand_low = _num(_cand, "low")
-        _cand_high = _num(_cand, "high")
-        _cand_bb = _num(_cand, "BB_MIDDLE")
-        _cand_vol = _num(_cand, "volume")
-        _cand_vol_ma = _num(_cand, "VOL_MA20")
-        if any(pd.isna(v) for v in (
-            _cand_open, _cand_close, _cand_low, _cand_high, _cand_bb, _cand_vol, _cand_vol_ma,
-        )):
-            continue
-        _contains_bb_mid = _cand_low <= _cand_bb <= _cand_high
-        _is_bullish = _cand_close > _cand_open
-        _vol_rising = _cand_vol >= _cand_vol_ma * PRE_CROSS_ACCUM_VOL_RATIO_MIN
-        if _contains_bb_mid and _is_bullish and _vol_rising:
-            _accum_ok = True
-            break
-    if not _accum_ok:
-        return False, ctx, f"NO_PRE_CROSS_ACCUM_BAR_LOOKBACK_{_accum_bars_checked}"
-    return True, ctx, None
-
-
 def _gate_candle_bullish_and_chase_guard(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
     # 현재 진행중인 3분봉 양봉(+CANDLE_GAIN_MIN_PCT% 이상) 확인 + 추격매수 방지 2건:
     # (1) 현재봉 과도 상승 차단(급등봉 추격), (2) BB 중간선 대비 현재가 갭 과도 차단
@@ -1098,10 +1169,33 @@ def _gate_stochastic_buy_signal(ctx: BuyEvalContext) -> tuple[bool, BuyEvalConte
     if not stoch_buy_signal:
         return False, ctx, f"NO_STOCH_BUY_SIGNAL_K_{stoch_k:.1f}_D_{stoch_d:.1f}"
 
+    # [2026-09-14][사용자 요청①] %D 하한 신규 추가. 실거래 141건 분석: 매수 시점 %D<50
+    # 구간 승률 24-33%(n=64) vs %D 50-80 구간 42%(n=50) - %K만 보고 %D 자체엔 하한이
+    # 없었던 공백을 메운다.
+    if stoch_d < STOCH_D_BUY_MIN:
+        return False, ctx, f"STOCH_D_TOO_LOW_{stoch_d:.1f}_LT_{STOCH_D_BUY_MIN:.1f}"
+
     # WILLIAMS_R = STOCH_K - 100 이므로 WILLIAMS_BUY_FLOOR/CEIL을 STOCH_K 스케일로 환산.
+    # [2026-09-17] "stoch_k > stoch_k_prev"(직전 3분봉 대비 %K가 반드시 더 높아야 함)
+    # 하드 요건을 제거한다. 2026-09-14~17 실매매 로그 분석(사용자 요청 - 예수금 부족 여부
+    # 질의 중 매수 0건이 발견되어 확대 분석) 결과, 이 단일 틱 상승 요건이 gate_steps_
+    # diagnostic 기준 전체 REJECT 스냅샷의 94.6%에서 실패로 찍히고, "나머지 7개 조건은
+    # 전부 통과(근접 리젝, exactly-1-gate-fail)"인 2,759건 중 1,394건(50.5%)의 유일한
+    # 실패 원인으로 확인됨 - 단일 최대 병목. 175330 JB금융지주 2026-09-14 09:09 사례로
+    # 실증: RSI=100/ADX=100/-DI=0.0(포화값, 눌림 없는 강한 상승) 상태에서 %K가 직전봉
+    # 90.0->81.82로 "여전히 30~90 밴드 안"인데도 한 틱 주춤했다는 이유만으로 리젝, 그
+    # 시점(live=31,750) 매수를 가정하면 09:27 고점 33,100까지 20분 내 +4.25% 상승해
+    # STAGED_TP1_PCT(3.0%)를 손절 없이 달성했을 조건이었음(3m 데이터 재생 확인). 이미
+    # golden_cross 또는 (K>D and 밴드 내) + STOCH_D_BUY_MIN 하한을 통과한 뒤에 얹는
+    # 추가 요건이었는데, WILLIAMS_R이 STOCH_K의 완전한 재표현(수학적 항등)이라 이 "상승
+    # 중" 조건은 원래의 %K/%D 신호가 이미 확인한 것 이상의 정보를 주지 않으면서, 강한
+    # 추세가 자연스럽게 만드는 오실레이터 미세 진동에는 취약했다 - BB 기울기(2026-09-06)/
+    # 캔들 양봉(2026-08-25)에서 이미 반복된 "후행/노이즈성 지표에 단일 틱 하드컷을 걸면
+    # 오히려 진짜 강한 추세를 더 못 잡는다" 패턴과 동일. 밴드 범위(floor~ceil) 확인은
+    # 과열/침체 구간 배제 목적이 여전히 유효해 그대로 유지한다.
     stoch_k_floor = WILLIAMS_BUY_FLOOR + 100.0
     stoch_k_ceil = WILLIAMS_OVERBOUGHT_CEIL + 100.0
-    williams_equiv_ok = stoch_k > stoch_k_prev and stoch_k_floor <= stoch_k <= stoch_k_ceil
+    williams_equiv_ok = stoch_k_floor <= stoch_k <= stoch_k_ceil
     if not williams_equiv_ok:
         return False, ctx, f"NO_WILLIAMS_BUY_SIGNAL_R_{stoch_k - 100.0:.1f}"
     return True, ctx, None
@@ -1151,6 +1245,21 @@ def _gate_min_liquidity_safety(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContex
     return True, ctx, None
 
 
+def _gate_di_spread_min(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
+    # [2026-09-14][사용자 요청②] DI스프레드(+DI--DI) 최소치 신규 필수 게이트. 실거래
+    # 141건 분석: 0-10구간 승률 25.6%(n=39), 10-20구간 36.4%(n=33), 20+구간 62.5%
+    # (n=8, 표본 작음) - 스프레드가 음수(-DI 우세, 하락추세)인 경우도 자동으로 걸러진다.
+    # R77-D의 adx_strength 가점(ADX_DI_SCORE_*)과는 별개의 독립 필수조건.
+    di_plus = _num(ctx.cur, "DI_PLUS")
+    di_minus = _num(ctx.cur, "DI_MINUS")
+    if any(pd.isna(v) for v in (di_plus, di_minus)):
+        return False, ctx, "DI_DATA_MISSING"
+    di_spread = di_plus - di_minus
+    if di_spread < DI_SPREAD_MIN_REQUIRED:
+        return False, ctx, f"DI_SPREAD_TOO_SMALL_{di_spread:.1f}_LT_{DI_SPREAD_MIN_REQUIRED:.1f}"
+    return True, ctx, None
+
+
 BUY_GATE_CONDITIONS: list[BuyGateCondition] = [
     BuyGateCondition(
         "bb_slope_rising",
@@ -1171,12 +1280,6 @@ BUY_GATE_CONDITIONS: list[BuyGateCondition] = [
         _gate_bb_mid_cross_up,
     ),
     BuyGateCondition(
-        "pre_cross_accumulation_bar",
-        "직전 매집봉 확인 (BB중간값 포함 + 양봉 + 거래량 VOL_MA20 대비 증가)",
-        ("ENABLE_PRE_CROSS_ACCUM_BAR_CHECK", "PRE_CROSS_ACCUM_LOOKBACK_BARS", "PRE_CROSS_ACCUM_VOL_RATIO_MIN"),
-        _gate_pre_cross_accumulation_bar,
-    ),
-    BuyGateCondition(
         "candle_bullish_and_chase_guard",
         "현재봉 양봉 확인 + 추격매수 방지 (인트라바 급등 차단, BB중간선 갭 차단, uptrend_continuation 전용 RSI/갭 기준)",
         ("CANDLE_GAIN_MIN_PCT", "CANDLE_GAIN_MAX_PCT", "BB_MID_CHASE_MAX_GAP_PCT",
@@ -1192,8 +1295,9 @@ BUY_GATE_CONDITIONS: list[BuyGateCondition] = [
     BuyGateCondition(
         "stochastic_buy_signal",
         "스토캐스틱+윌리엄스%R 통합 매수신호 (%K가 %D 상향돌파, 또는 %K>%D且 진짜 과열 아님 "
-        "+ WILLIAMS_R 환산 밴드 내 상승) - WILLIAMS_R=STOCH_K-100 수학적 등가라 게이트 통합",
-        ("STOCH_BUY_MIN", "WILLIAMS_BUY_FLOOR", "WILLIAMS_OVERBOUGHT_CEIL"),
+        "+ WILLIAMS_R 환산 밴드 내 상승, %D 자체도 STOCH_D_BUY_MIN 이상[R78-①]) - "
+        "WILLIAMS_R=STOCH_K-100 수학적 등가라 게이트 통합",
+        ("STOCH_BUY_MIN", "STOCH_D_BUY_MIN", "WILLIAMS_BUY_FLOOR", "WILLIAMS_OVERBOUGHT_CEIL"),
         _gate_stochastic_buy_signal,
     ),
     BuyGateCondition(
@@ -1208,6 +1312,12 @@ BUY_GATE_CONDITIONS: list[BuyGateCondition] = [
         "저유동성 종목 차단 (거래량/거래량MA 절대치 및 비율 최소치 + 거래대금 최소치)",
         ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW"),
         _gate_min_liquidity_safety,
+    ),
+    BuyGateCondition(
+        "di_spread_min",
+        "[R78-②] DI스프레드(+DI--DI) 최소치 확보 (음수/약한 추세 방향성 배제)",
+        ("DI_SPREAD_MIN_REQUIRED",),
+        _gate_di_spread_min,
     ),
 ]
 
@@ -1610,51 +1720,5 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["OBV_MA"] = out["OBV"].rolling(window=OBV_MA_PERIOD, min_periods=1).mean()
 
     return out
-
-
-def _near_cross_momentum_flags(cur: pd.Series, prev: pd.Series) -> dict[str, float | bool]:
-    """Builds near-cross diagnostics used by both live and sim entry logic."""
-    prev_ma5 = _num(prev, "MA_5")
-    cur_ma5 = _num(cur, "MA_5")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_bb = _num(cur, "BB_MIDDLE")
-
-    if any(pd.isna(v) for v in (prev_ma5, cur_ma5, prev_bb, cur_bb)):
-        return {"can_arm": False, "can_early": False, "gap_ratio": float("nan"), "ma_rise_ratio": float("nan")}
-
-    gap = cur_bb - cur_ma5
-    gap_ratio = gap / max(abs(cur_bb), 1.0)
-    ma_rise_ratio = (cur_ma5 - prev_ma5) / max(abs(prev_ma5), 1.0)
-
-    below_or_equal = cur_ma5 <= cur_bb
-    arm_shape_ok = (prev_ma5 <= prev_bb) and below_or_equal
-
-    can_arm = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_ARM_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_ARM_MA_RISE_MIN)
-    can_early = arm_shape_ok and (gap_ratio >= 0) and (gap_ratio <= NEAR_CROSS_EARLY_GAP_MAX) and (ma_rise_ratio >= NEAR_CROSS_EARLY_MA_RISE_MIN)
-
-    return {
-        "can_arm": can_arm,
-        "can_early": can_early,
-        "gap_ratio": float(gap_ratio),
-        "ma_rise_ratio": float(ma_rise_ratio),
-    }
-
-
-def _passes_early_near_cross_liquidity(cur: pd.Series) -> tuple[bool, str]:
-    """Liquidity guard for ARM/EARLY near-cross entry."""
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    close_v = _num(cur, "close")
-    if any(pd.isna(v) for v in (vol, vol_ma, close_v)):
-        return False, "LIQUIDITY_DATA_NAN"
-
-    turnover = close_v * vol
-    if vol < EARLY_NEAR_CROSS_MIN_VOLUME:
-        return False, f"LOW_ABS_VOLUME_{vol:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOLUME}"
-    if vol_ma < EARLY_NEAR_CROSS_MIN_VOL_MA:
-        return False, f"LOW_VOL_MA_{vol_ma:.0f}_LT_{EARLY_NEAR_CROSS_MIN_VOL_MA}"
-    if turnover < EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:
-        return False, f"LOW_TURNOVER_{turnover:,.0f}_LT_{EARLY_NEAR_CROSS_MIN_TURNOVER_KRW:,}"
-    return True, "OK"
 
 
