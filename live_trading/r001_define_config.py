@@ -1,6 +1,63 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-09-14] type=fix owner=claude
+#     summary: 메인 루프 턴 간격을 LIVE_PRICE_POLL_INTERVAL_SECONDS(10초) 벽시계 정렬
+#       틱(_next_aligned_tick/_sleep_until_next_tick, 00/10/20/.../50초)에서 분리 -
+#       사용자가 실매매 로그(13:19:40 턴 종료 -> 13:19:50 다음 턴 시작)를 보고 한 턴의
+#       종목 순회가 1초도 안 걸려 끝났는데도 다음 정렬 틱까지 최대 10초를 그냥 대기하는
+#       현상을 지적, 즉시 재시작하도록 요청. r003의 턴 종료부(while True 루프 최하단)
+#       가 이제 신규 MAIN_LOOP_MIN_CYCLE_SECONDS만 최소 바닥으로 보장하고 나머지는
+#       그대로 다음 턴을 시작한다(r003 Update log 참조). LIVE_PRICE_POLL_INTERVAL_SECONDS
+#       자체는 삭제하지 않음 - 정규장/NXT 외 유휴 대기, 동시호가 구간 대기 등 "턴을
+#       아예 안 도는" 구간에서는 여전히 이 값으로 폴링한다.
+#     impact: live
+#     compatibility: breaking (활성 종목이 있을 때 신규 진입/청산 재평가 빈도가 종목당
+#       API 왕복시간(관측상 수백 ms) 수준으로 크게 증가 - 이전엔 최소 10초 고정 간격
+#       이었음. 브로커(KIS) API 호출 빈도가 늘어나므로 레이트리밋 여부 관찰 필요,
+#       필요시 MAIN_LOOP_MIN_CYCLE_SECONDS를 올려 다시 늦출 수 있음)
+# - [2026-09-14] type=feat owner=claude
+#     summary: 사용자 요청 ①②(실거래 141건 분석 기반, 2026-09-13 세션에서 도출) -
+#       (①) 신규 필수 게이트 STOCH_D_BUY_MIN=50.0 추가: 실거래 로그에서 매수 시점
+#       %D<50 구간 승률 24-33%(n=64) vs %D 50-80 구간 42%(n=50)로 격차가 뚜렷했음에도
+#       기존 _gate_stochastic_buy_signal은 %K만 확인하고 %D 자체엔 하한이 전혀 없었음.
+#       (②) 신규 필수 게이트 DI_SPREAD_MIN_REQUIRED=10.0 추가: DI스프레드(+DI--DI)
+#       0-10구간 25.6%(n=39) vs 10-20구간 36.4%(n=33) vs 20+구간 62.5%(n=8, 표본작음)
+#       - 가장 나쁜 0-10구간만 확실히 배제하는 보수적 임계치로 시작(백테스트로 재검증
+#       후 필요시 상향 예정). 기존 R77-D의 ADX_DI_SCORE_*(가점, adx_strength 룰)는
+#       그대로 유지 - 이건 별도의 필수 게이트로 얹는 것이라 서로 배타적이지 않음.
+#     impact: common (r003 실전/g003 백테스트 공용 - BUY_GATE_CONDITIONS 8개->10개
+#       (①은 기존 stochastic_buy_signal 게이트 내부에 조건 추가, ②는 신규 게이트 1개))
+#     compatibility: breaking (매수 판정 결과가 바뀜 - 진입 승인율이 낮아질 것으로 예상,
+#       백테스트로 거래빈도/승률 트레이드오프 검증 필요)
+# - [2026-09-13] type=refactor owner=claude
+#     summary: "dead config 정리"(사용자 요청) - 코드 전체(r002/r003/g001~g003) 실제
+#       호출부를 grep으로 검증해 완전히 도달 불가능하거나 참조되지 않는 설정 31개 삭제.
+#       (1) 근접교차 ARM/Early + 가격선행돌파 클러스터(ENABLE_NEAR_CROSS_ARM,
+#       NEAR_CROSS_ARM_GAP_MAX/MA_RISE_MIN/EXPIRE_BARS, ENABLE_EARLY_NEAR_CROSS_ENTRY,
+#       NEAR_CROSS_EARLY_GAP_MAX/MA_RISE_MIN, EARLY_NEAR_CROSS_ALLOWED_START/END/
+#       ALLOW_NXT/MIN_VOLUME/MIN_VOL_MA/MIN_TURNOVER_KRW, ENABLE_PRICE_LEAD_BB_BREAKOUT,
+#       PRICE_LEAD_BREAKOUT_MIN_SCORE/MIN_ADX/ALLOW_OVERBOUGHT) - 이 값들을 쓰는 함수
+#       (r002._near_cross_momentum_flags/_passes_early_near_cross_liquidity,
+#       g003.is_early_near_cross_allowed/_price_lead_breakout_context_sim)가 코드
+#       어디서도 호출되지 않아 함수 자체를 통째로 삭제. (2) 강추세 과열우회 클러스터
+#       (ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS, STRONG_TREND_OVERBOUGHT_MIN_ADX/
+#       MIN_SCORE/MIN_VOL_RATIO) - 도입만 되고 실제 배선된 적 없음. (3) 단독 항목:
+#       BB_SQUEEZE_MIN_WIDTH_PCT/ENABLE_STRICT_MA5_BB_GOLDEN_CROSS/MFI_BUY_MIN/
+#       POST_BUY_BB_DROP_POLLS/RSI_BUY_MIN/RSI_BUY_MAX/SAME_DAY_MIN_BARS/
+#       SIM_WARMUP_TAIL_BARS/STAGED_TP3_PCT(r003 임포트만 되고 미사용) - 옛 구현이
+#       현재의 BuyScoreRule/BuyGateCondition 객체 구조로 리팩터링되며 남은 잔재.
+#       (4) R004_EXPORT_TOP_N - 이름/주석상 "r004 export를 상위 N개로 제한"한다고
+#       설명돼 있었으나 실제 export 호출부(g002_data_scan_trade_candidates.py)가 이
+#       상수를 전혀 참조하지 않아 한 번도 동작한 적 없는 죽은 설정이었음(발견 계기:
+#       오늘 앞서 이 값을 20->100으로 바꿨던 변경이 실제로는 아무 효과가 없었고,
+#       같은 날의 g002 max_picks 50->100 변경이 진짜 원인이었음을 재검증 중 확인).
+#       risk_profiles/*.json에서 이름으로 참조하는 STOP_LOSS_EARLY_PERCENT/
+#       STOP_LOSS_MIN_HOLD_SECONDS는 소스코드 grep만으로는 죽은 것처럼 보이지만
+#       실제로는 살아있어 삭제 대상에서 제외(교차검증으로 확인).
+#     impact: common (live/sim 양쪽에서 삭제, 동작 변화 없음 - 전부 도달 불가능하거나
+#       미배선 상태였음)
+#     compatibility: backward-compatible (죽은 코드 제거만, 실행 경로/판정 로직 변화 없음)
 # - [2026-09-09] type=fix owner=claude
 #     summary: HYBRID_1MIN_TRIGGER_LOOKBACK_BARS 3->8 (사용자 요청 - 452190 한빛레이저
 #       사례). 3분봉은 11:54~11:58에 골든크로스 확정(score 17/22)했는데 12:07~12:30
@@ -306,14 +363,14 @@ R004_WATCHLIST_FILENAME = DEFINE_TODAY_CODE_PATH
 SCAN_PICKS_LEGACY_FILENAME = "picks.txt"
 SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
 
-# [2026-09-07] g002가 내부적으로 선별/평가하는 후보 수(max_picks)는 그대로 두고,
-# r004로 실제 내보내는(=r003이 감시하는) 종목 수만 상위 N개로 제한.
-# [2026-09-13] 20->100 원복 (사용자 요청) - active_set(50)+backup_pool 로테이션을
-# 되살리려면 r004가 active_set보다 커야 backup 여유가 생김 (g002 MAX_PICKS_LIMIT도
-# 50->100으로 같이 원복, g002 Update log 2026-09-13 참조). g002 max_picks(100)와 같은
-# 값이라 사실상 스캐너가 뽑은 전체 후보를 그대로 r004로 내보내는 것과 동일.
-# picks 리스트는 이미 스캐너 점수 내림차순이므로 앞에서부터 자르면 그대로 상위 N개.
-R004_EXPORT_TOP_N = 100
+# [2026-09-13] R004_EXPORT_TOP_N 삭제 ("dead config 정리" 중 발견) - g002가 실제로
+# export_picks_to_r004()를 호출하는 지점(g002_data_scan_trade_candidates.py)에서
+# 이 상수를 전혀 참조하지 않아, r004에는 항상 max_picks(스캐너 내부 후보 수 상한)
+# 전체가 그대로 나갔음(이름/주석은 "상위 N개로 제한"이라고 설명하고 있었지만 실제
+# 배선이 안 돼 있던 죽은 설정). 같은 날 ACTIVE_WATCHLIST_SIZE(50)/g002 max_picks(100)
+# 원복이 의도한 대로 동작한 건 이 상수 때문이 아니라 max_picks 자체를 50->100으로
+# 늘려서였음 - 별도 export 제한이 필요하면 g002 호출부에 picks[:N] 슬라이싱을
+# 새로 추가해야 한다.
 
 
 # =============================================================================
@@ -369,7 +426,6 @@ STAGED_TP1_PCT = 0.030   # 1차 익절 기준 (+3.0%, 기존 +1.0%) - 진입 수
 STAGED_TP1_RATIO = 0.40
 STAGED_TP2_PCT = 0.014   # 2차 익절 기준값 (STAGED_TP2_RATIO=0으로 비활성화되어 현재 미사용)
 STAGED_TP2_RATIO = 0.00  # 0.30 -> 0.00: 2차 분할청산 비활성화 (1차 이후 잔량은 트레일링으로 일괄 관리)
-STAGED_TP3_PCT = 0.030   # (r006 라이브에서는 더 이상 고정 청산 트리거로 쓰이지 않음 - r007 시뮬레이션 참고용)
 # 1차 익절 목표를 고정 STAGED_TP1_PCT 대신 종목 변동성(ATR)에 연동해 동적으로 산출한다.
 # 목표익절 = max(STAGED_TP1_PCT, (ATR/entry_price) * TP1_ATR_MULTIPLIER)
 TP1_ATR_MULTIPLIER = 1.2
@@ -380,7 +436,6 @@ TP1_ATR_MULTIPLIER = 1.2
 # 매수 직후 급락 방지: 매수 후 일정 시간 동안 현재가가 매수가 대비
 # POST_BUY_BB_DROP_PCT 이상 낮은 상태가 POST_BUY_DROP_CONFIRM_SECONDS 동안
 # 유지되면 손절 이전에 조기 매도한다.
-POST_BUY_BB_DROP_POLLS = 6  # 레거시 로그/호환용 값
 POST_BUY_BB_DROP_PCT = 0.014  # 매수가 대비 이탈 임계치 (-1.0%->-1.4%: 백테스트 결과 12건 중 83.3%가 본전 이상 회복, 58.3%는 +2%까지 회복(평균 최대회복 +4.17%) - 매수직후 정상 노이즈 조기청산 완화)
 POST_BUY_BB_DROP_ARMED_SECONDS = 180.0  # 매수 후 가드 활성 구간 (3분, 하드스탑 활성 전까지)
 POST_BUY_DROP_CONFIRM_SECONDS = 90.0  # 급락 지속 확인 시간 (60초->90초)
@@ -432,8 +487,6 @@ LIVE_PRICE_CROSS_CONFIRM_SECONDS = 10  # 20 -> 10 (보다 빠른 진입 확인)
 # 하향 크로스 확정에 필요한 연속 관측 횟수 / 최소 유지 시간(초)
 LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1
 LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS = 0
-# 효과: 라이브 가격 크로스만으로도 진입 가능 (False -> 완화)
-ENABLE_STRICT_MA5_BB_GOLDEN_CROSS = False  # True -> False
 # 추격매수 방지: 전일 종가 대비 현재가 상승률이 임계치 이상이면 매수 차단
 MAX_BUY_RISE_PCT_FROM_PREV_CLOSE = 0.23  # 23%
 # 추격매수 방지: 실시간 BB 상향 크로스 없이(신호 없음) MA5/BB 후행 진입 시
@@ -460,27 +513,10 @@ PRE_CROSS_ACCUM_LOOKBACK_BARS = 8
 #   BB중간값 포함+양봉+거래량 조건을 같은 한 봉에서 동시 요구하는 3중 AND라 100% 기준은 너무 희귀함.
 PRE_CROSS_ACCUM_VOL_RATIO_MIN = 0.6  # 0.8->0.6: 20260908 로그 분석 결과 0.8도 score=18/22 확정크로스를 리젝시킬 만큼 빡빡함(위 Update log 참조)
 
-# --- 6. 매수 진입 - 근접교차(Near-cross) / 조기진입 / 가격선행돌파 ------------
-# Near-cross ARM 모드: BB 중단과 MA5 간 최대 허용 갭 / MA5 최소 상승률
-ENABLE_NEAR_CROSS_ARM = True
-NEAR_CROSS_ARM_GAP_MAX = 0.0045
-NEAR_CROSS_ARM_MA_RISE_MIN = 0.0006
-# ARM 상태가 유효한 최대 봉 수
-NEAR_CROSS_ARM_EXPIRE_BARS = 2
-
-# Early near-cross 모드: BB 중단과 MA5 간 최대 허용 갭 / MA5 최소 상승률
-ENABLE_EARLY_NEAR_CROSS_ENTRY = True
-NEAR_CROSS_EARLY_GAP_MAX = 0.0045
-NEAR_CROSS_EARLY_MA_RISE_MIN = 0.0010
-# early near-cross 진입 허용 시작/종료 시각, NXT 세션 허용 여부
-EARLY_NEAR_CROSS_ALLOWED_START = dt_time(9, 0)
-EARLY_NEAR_CROSS_ALLOWED_END = dt_time(11, 30)
-EARLY_NEAR_CROSS_ALLOW_NXT = False
-# early near-cross 절대 거래량 최소치 / 거래량 MA 최소치 / 최소 거래대금(KRW)
-EARLY_NEAR_CROSS_MIN_VOLUME = 800
-EARLY_NEAR_CROSS_MIN_VOL_MA = 500
-EARLY_NEAR_CROSS_MIN_TURNOVER_KRW = 5_000_000
-
+# [2026-09-13] 근접교차(Near-cross ARM/Early)/가격선행돌파 절 전체 삭제(사용자 요청
+# "dead config 정리") - 관련 함수(_near_cross_momentum_flags, _passes_early_near_cross_
+# liquidity, is_early_near_cross_allowed, _price_lead_breakout_context_sim)가 코드
+# 전체에서 실제로 호출되는 곳이 전혀 없어(호출부 grep 0건) 완전히 도달 불가능한 코드였음.
 # 매수 진입 거래량 MA20 최소치 / 현재봉 거래량 최소치 (저유동성 차단, 공통, 3분봉 기준)
 MIN_ENTRY_VOL_MA = 1000
 MIN_ENTRY_VOLUME = 1500
@@ -499,12 +535,6 @@ HYBRID_1MIN_MIN_ENTRY_VOLUME = 500
 # 추가 하한선으로 병행 적용한다. 이미 존재하던 EARLY_NEAR_CROSS_MIN_TURNOVER_KRW(조기진입
 # 전용, 5백만원)보다 완만한 일반 매수 게이트용 기본값.
 MIN_ENTRY_TURNOVER_KRW = 10_000_000
-
-# 가격 선행 돌파(price-lead breakout) 진입 로직 사용 여부 및 조건
-ENABLE_PRICE_LEAD_BB_BREAKOUT = True
-PRICE_LEAD_BREAKOUT_MIN_SCORE = 3  # 최소 보조지표 점수
-PRICE_LEAD_BREAKOUT_MIN_ADX = 25.0  # 최소 ADX
-PRICE_LEAD_BREAKOUT_ALLOW_OVERBOUGHT = True  # 과열 상태에서도 허용 여부
 
 # BB 중앙선 상승 돌파 전략 파라미터 (BB slope break cross strategy)
 BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 약 1시간)
@@ -547,13 +577,11 @@ OPENING_GUARD_SCORE_THRESHOLD = 12  # 개장 직후 요구 최소 점수 (일반
 STOCH_OVERBOUGHT = 96.0  # 85.0 -> 92.0 -> 96.0 (과열 차단 기준 완화)
 STOCH_BUY_MIN = 20.0  # 매수 스토캐스틱 K 하한
 STOCH_BUY_MAX = 50.0  # 매수 스토캐스틱 K 상한
-RSI_BUY_MIN = 50.0  # 매수 RSI 하한
-RSI_BUY_MAX = 70.0  # 매수 RSI 상한
+STOCH_D_BUY_MIN = 50.0  # [2026-09-14][사용자 요청①] 매수 스토캐스틱 %D 하한 신규 추가 (실거래 분석: %D<50 승률 24-33%(n=64) vs 50-80 42%(n=50))
 RSI_BUY_MOMENTUM_MAX = 60.0  # RSI 모멘텀 허용 상한(기본: 50~60 구간 유지)
 WILLIAMS_BUY_FLOOR = -70.0  # 매수 허용 Williams %R 하한
 WILLIAMS_OVERBOUGHT_CEIL = -10  # -20 -> -10 (Williams R 완화)
 BB_UPPER_PROXIMITY_MAX = 1.05  # 0.85 -> 1.05 (BB 상단에서 충분히 진입 허용)
-BB_SQUEEZE_MIN_WIDTH_PCT = 0.0  # BB 폭 최소치(너무 좁은 횡보 구간 배제)
 
 ADX_MIN_TREND = 15.0  # 20.0 -> 15.0 (ADX 최소값 완화)
 ADX_STRONG_TREND = 40.0
@@ -571,7 +599,6 @@ ADX_BUY_MIN = 25.0  # 매수 진입용 ADX 최소값
 REQUIRE_ADX_RISING = True  # 매수 시 ADX가 직전봉 대비 우상향이어야 하는지 여부
 REQUIRE_DI_PLUS_DOMINANT = True  # 매수 시 +DI가 -DI보다 커야 하는지 여부
 
-MFI_BUY_MIN = 50.0  # 매수 진입용 MFI 최소값
 MFI_OVERBOUGHT_MAX = 80.0  # MFI 과열 상한(이상일 경우 추격 매수 금지)
 
 # [2026-09-07] REQUIRE_OBV_SIGNAL_CROSS는 원래 "필수 게이트"로 설계된 이름이지만
@@ -584,12 +611,6 @@ MFI_OVERBOUGHT_MAX = 80.0  # MFI 과열 상한(이상일 경우 추격 매수 �
 REQUIRE_OBV_SIGNAL_CROSS = True  # OBV 골든크로스+돌파 가점 활성화 여부
 OBV_BREAKOUT_LOOKBACK_BARS = 5  # OBV 돌파 판정에 사용할 과거 봉 개수
 OBV_CONFIRM_SCORE = 2  # OBV가 OBV_MA를 lookback 내에서 상향 돌파했을 때 가점
-
-# 강추세일 때 과열 필터 일부 우회 허용
-ENABLE_STRONG_TREND_OVERBOUGHT_BYPASS = True
-STRONG_TREND_OVERBOUGHT_MIN_SCORE = 2  # 과열 우회 허용 최소 보조지표 점수
-STRONG_TREND_OVERBOUGHT_MIN_VOL_RATIO = 1.00  # 과열 우회 허용 최소 거래량 비율
-STRONG_TREND_OVERBOUGHT_MIN_ADX = 15.0  # 과열 우회 허용 최소 ADX
 
 # --- 8. 거래량 필터 ----------------------------------------------------------
 VOLUME_RATIO_OPEN = 0.75  # 0.40 -> 0.75 (개장 초반 저거래량 종목 진입 차단 강화)
@@ -729,6 +750,33 @@ HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT = 1.1
 EMA_60_PERIOD = 60
 EMA_TREND_ALIGN_SCORE = 2             # EMA20 > EMA60 (3분봉 기준)
 
+# [2026-09-13][R77-A] pre_cross_accumulation_bar를 필수 게이트에서 가점으로 전환
+# (사용자 요청) - 이 조건 하나가 2026-08-25 로그 분석에서 리젝 사유 1위(1,284건,
+# 2,385분 차단, 2위 대비 2.4배)였던 이력이 있어, 필수조건 대신 가점으로 완화한다.
+# 판정 로직(룩백/거래량비율)은 그대로 유지, 통과/실패가 매수 자체를 막지 않고
+# 점수에만 반영되도록 변경.
+PRE_CROSS_ACCUM_SCORE = 1
+
+# [2026-09-13][R77-D] ADX 추세강도 점수를 "크기만" 보던 것에서 DI(+/-) 방향성도
+# 함께 확인하도록 재구성 (사용자 요청) - ADX는 하락추세에서도 높게 나올 수 있어
+# 크기만으로는 방향을 확인 못함. +DI가 -DI보다 우세하지 않으면 0점, 우세해도
+# ADX/DI스프레드가 약하면 2점, 둘 다 강하면 3점 (2~3점 구조, 기존 1점 티어 제거).
+ADX_DI_SCORE_MIN_ADX = 25.0            # 이 미만이면 DI 우세해도 0점
+ADX_DI_SCORE_STRONG_ADX = 30.0         # 이 이상 + 스프레드 조건 충족 시 3점
+ADX_DI_SCORE_STRONG_SPREAD = 15.0      # DI_PLUS - DI_MINUS 최소치 (3점 조건)
+
+# [2026-09-13][R77-G] BB 상단까지 남은 여유폭을 종목 변동성(ATR) 대비로 정규화한
+# 가점 신규 추가 (사용자 요청) - 기존 bb_upper_gap_min 게이트(고정 0.25%)는 필수조건
+# 으로 그대로 유지하고, 이건 그 위에 얹는 보너스: 저변동 종목의 0.3% 여유와
+# 고변동 종목의 0.3% 여유는 의미가 다르므로 ATR 배수로 환산해 평가한다.
+BB_UPPER_ROOM_ATR_TIER1 = 0.8          # room/ATR >= 이 값이면 1점
+BB_UPPER_ROOM_ATR_TIER2 = 1.5          # room/ATR >= 이 값이면 2점
+
+# [2026-09-14][사용자 요청②] DI스프레드(+DI--DI) 최소치 신규 필수 게이트. 실거래 분석:
+# 0-10구간 승률 25.6%(n=39), 10-20구간 36.4%(n=33), 20+구간 62.5%(n=8, 표본 작음) -
+# 가장 나쁜 구간만 배제하는 보수적 값으로 시작, 위 ADX_DI_SCORE_*(가점)와는 별개.
+DI_SPREAD_MIN_REQUIRED = 10.0
+
 # --- 13. 개장 초반 갭/거래량폭발 라이브 게이트 (Opening gap/volume live gate) -------
 # r002 스캐너는 전일 종가 기준 데이터로 랭킹을 매기므로, 당일 아침 뉴스/해외증시
 # 영향으로 갭상승/갭하락 출발하거나 거래량이 급변하는 경우를 반영하지 못한다.
@@ -821,8 +869,14 @@ MORNING_NXT_NEW_ENTRY_CUTOFF = MORNING_NXT_END
 STARTUP_WARMUP_SECONDS = 90
 # 메인 루프 폴링 간격(초)
 POLL_INTERVAL_SECONDS = 10  # 15 -> 10 (더 빠른 대응)
-# 실시간 현재가 재조회 간격(초) - 매분 00/10/20/30/40/50초 등 이 값의 배수 시각에 맞춰 폴링(r006 참고)
+# 실시간 현재가 재조회 간격(초) - [2026-09-14] 활성 종목 순회 턴에는 더 이상 쓰이지 않음
+# (MAIN_LOOP_MIN_CYCLE_SECONDS로 대체). 정규장/NXT 외 유휴 대기, 동시호가 구간 대기 등
+# 턴 자체를 돌지 않는 구간의 폴링 간격으로만 남아있음(r003 참고).
 LIVE_PRICE_POLL_INTERVAL_SECONDS = 10  # 20->10 원복: 사용자 확인 결과 기존 10초 유지가 맞음
+# [2026-09-14] 메인 루프 턴 최소 간격(초) - 활성 종목이 없어 순회가 즉시 끝나는 경우에도
+# 계좌/미체결 동기화 API를 무한정 스팸하지 않도록 하는 안전 바닥값. 사용자 요청(턴 종료
+# 즉시 다음 턴 시작)에 따라 기존 LIVE_PRICE_POLL_INTERVAL_SECONDS 고정 대기를 대체.
+MAIN_LOOP_MIN_CYCLE_SECONDS = 1
 # 계좌/체결 상태 동기화 주기(초)
 ACCOUNT_SYNC_INTERVAL_SECONDS = 90
 # 3분봉 프레임 갱신 주기(초)
@@ -912,14 +966,10 @@ ENABLE_WATCHLIST_ROTATION = True
 SIM_INITIAL_CAPITAL = 5_000_000
 # 매도 완료 후 재진입 허용 여부
 SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL = True
-# 웜업용 tail 봉 개수
-SIM_WARMUP_TAIL_BARS = 160
 # 웜업 이전 데이터 최대 조회일수
 SIM_WARMUP_PRIOR_MAX_DAYS = 20
 # 기술적 매도 최소 보유 시간(초)
 TECH_SELL_MIN_HOLD_SECONDS = 300
-# 당일 최소 처리 봉 수
-SAME_DAY_MIN_BARS = 10
 # 시뮬레이션 내부 체크 간격(초)
 SIM_CHECK_INTERVAL_SECONDS = 10
 # 10초 그리드 시뮬레이션 기본값

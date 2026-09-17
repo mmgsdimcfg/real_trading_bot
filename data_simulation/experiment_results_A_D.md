@@ -14,26 +14,26 @@ Backtest sweep over 5 recent trading days x top-8-ranked-by-score codes each (40
 
 | Variant | Total signals attempted | Trades taken | Wins | Losses | Win rate | Total PnL (KRW) |
 |---|---:|---:|---:|---:|---:|---:|
-| Baseline (변경 없음) | 56 | 66 | 35 | 31 | 53.0% | +171,248 |
-| A - 체결 공격성/지연비용 추정 (실행 프록시) | 56 | 66 | 35 | 31 | 53.0% | +171,103 |
-| B - 재확인 대기 축소 (CONFIRM_COUNT=1) | 65 | 73 | 37 | 36 | 50.7% | +142,798 |
-| C - 개장 가드 완화 (OPENING_GUARD_MINUTES=0) | 57 | 66 | 34 | 32 | 51.5% | +151,640 |
-| D - VWAP 필수 게이트화 | 53 | 61 | 31 | 30 | 50.8% | +139,010 |
+| Baseline (변경 없음) | 115 | 127 | 62 | 65 | 48.8% | +173,838 |
+| A - 체결 공격성/지연비용 추정 (실행 프록시) | 115 | 127 | 62 | 65 | 48.8% | +173,293 |
+| B - 재확인 대기 축소 (CONFIRM_COUNT=1) | 0 | 0 | 0 | 0 | 0.0% | +0 |
+| C - 개장 가드 완화 (OPENING_GUARD_MINUTES=0) | 0 | 0 | 0 | 0 | 0.0% | +0 |
+| D - VWAP 필수 게이트화 | 0 | 0 | 0 | 0 | 0.0% | +0 |
 
 ## Experiment A detail: fill vs cancel, slippage
 
-- FILLED signals: 56
+- FILLED signals: 115
 - CANCELLED signals (chase exceeded BUY_ORDER_REPRICE_MAX_CHASE_PCT, or data ran out): 0
 - Fill rate: 100.0%
 - No FILLED-with-delay (L2/L3) trades observed - all fills were immediate (L1, delay_s=10).
 
 ## Interpretation
 
-- **Baseline**: 66 trades, 53.0% win rate, +171,248 KRW total PnL across 56 attempted signals - reference point for all deltas below.
-- **A (execution-delay proxy)**: 100.0% of attempted signals FILLED (0 of 56 CANCELLED because the reprice chase exceeded BUY_ORDER_REPRICE_MAX_CHASE_PCT or the day's data ran out), trades taken 66 (+0 vs baseline), PnL +171,103 KRW (-145 vs baseline) - this is the key number for the hypothesis that passive-order execution delay costs real money: a high cancel rate and/or clearly negative average slippage would support it, while a high fill rate with near-zero slippage would refute it.
-- **B (confirm-count=1)**: signals attempted 65 (+9), trades 73 (+7), win rate 50.7% (-2.3pp), PnL +142,798 KRW (-28,450 vs baseline) - acting on the first confirmation instead of waiting for a second should fire earlier/more often; whether that helps or hurts PnL here indicates whether the second confirmation bar was filtering out false signals or just adding costly delay.
-- **C (opening guard disabled)**: signals attempted 57 (+1), trades 66 (+0), win rate 51.5% (-1.5pp), PnL +151,640 KRW (-19,608 vs baseline) - removes the stricter score>=12 requirement in the first 15 minutes after 09:00, so more early-session entries should qualify; the PnL delta shows whether that stricter opening-window filter was protective or just overly conservative.
-- **D (VWAP mandatory gate)**: signals attempted 53 (-3), trades 61 (-5), win rate 50.8% (-2.2pp), PnL +139,010 KRW (-32,238 vs baseline) - promoting VWAP from a +1/+2 bonus-score component to a hard mandatory gate should reject some signals that previously passed on other score components alone; fewer trades with a higher win rate would support making VWAP mandatory, fewer trades with a similar or lower win rate would not.
+- **Baseline**: 127 trades, 48.8% win rate, +173,838 KRW total PnL across 115 attempted signals - reference point for all deltas below.
+- **A (execution-delay proxy)**: 100.0% of attempted signals FILLED (0 of 115 CANCELLED because the reprice chase exceeded BUY_ORDER_REPRICE_MAX_CHASE_PCT or the day's data ran out), trades taken 127 (+0 vs baseline), PnL +173,293 KRW (-545 vs baseline) - this is the key number for the hypothesis that passive-order execution delay costs real money: a high cancel rate and/or clearly negative average slippage would support it, while a high fill rate with near-zero slippage would refute it.
+- **B (confirm-count=1)**: signals attempted 0 (-115), trades 0 (-127), win rate 0.0% (-48.8pp), PnL +0 KRW (-173,838 vs baseline) - acting on the first confirmation instead of waiting for a second should fire earlier/more often; whether that helps or hurts PnL here indicates whether the second confirmation bar was filtering out false signals or just adding costly delay.
+- **C (opening guard disabled)**: signals attempted 0 (-115), trades 0 (-127), win rate 0.0% (-48.8pp), PnL +0 KRW (-173,838 vs baseline) - removes the stricter score>=12 requirement in the first 15 minutes after 09:00, so more early-session entries should qualify; the PnL delta shows whether that stricter opening-window filter was protective or just overly conservative.
+- **D (VWAP mandatory gate)**: signals attempted 0 (-115), trades 0 (-127), win rate 0.0% (-48.8pp), PnL +0 KRW (-173,838 vs baseline) - promoting VWAP from a +1/+2 bonus-score component to a hard mandatory gate should reject some signals that previously passed on other score components alone; fewer trades with a higher win rate would support making VWAP mandatory, fewer trades with a similar or lower win rate would not.
 
 ## Code changes (file:line ranges)
 

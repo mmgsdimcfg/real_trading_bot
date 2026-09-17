@@ -20,6 +20,61 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-17] type=fix owner=claude
+    summary: 매수 0건 로그 분석(r002 Update log 2026-09-17 참조, 사용자 요청 "20년차
+      트레이더 관점 매수조건 점검") 중 발견한 표시 전용 버그 수정. _buy_condition_
+      snapshot()의 "score=X/22"와 _buy_reject_detail() LOW_SCORE 분기의 "total=X/22"가
+      전부 이 파일 로컬 _buy_support_score()(r002 BUY_SCORE_RULES를 손으로 복제한
+      2026-09-07 당시 버전)를 쓰고 있었는데, 2026-09-13 R77 리팩터가 r002에만 반영되고
+      이 복제본엔 반영되지 않아 드리프트됨 - 이미 삭제된 volume_up_direction(+1) 가점을
+      여전히 더하고, 신규 pre_cross_accumulation(+1)/bb_upper_room_atr(최대 +2) 가점은
+      누락, 분모도 실제 24점 만점을 22로 표시. 즉 2026-09-13 이후 CHECK/REJECT 로그에
+      찍힌 모든 점수 표시가 실제 매수 판정(run_3min_context_pipeline이 쓰는 r002 실제
+      BUY_SCORE_RULES 합계)과 달랐음 - 판정 로직 자체는 항상 올바른 함수를 썼으므로 실제
+      매수/거부 결과에는 영향 없었고, 사람이 로그를 읽고 진단할 때만 오도했다(이번
+      분석에서도 로그의 "score=X/22"를 신뢰하지 않고 소스코드로 직접 재검증해서 발견).
+      로컬 재구현을 지우고 r002._buy_support_score를 그대로 import해 위임하도록 변경,
+      "/22" 하드코딩 2곳을 BUY_SCORE_RULES에서 동적으로 계산한 BUY_SCORE_MAX(현재 24)로
+      교체 - 앞으로 BUY_SCORE_RULES가 바뀌어도 표시가 다시 드리프트되지 않는다. 이제
+      쓰이지 않게 된 EMA_TREND_ALIGN_SCORE/REQUIRE_OBV_SIGNAL_CROSS/
+      OBV_BREAKOUT_LOOKBACK_BARS/OBV_CONFIRM_SCORE import도 함께 제거(죽은 코드).
+    impact: live (로그 표시값만 변경, 실제 매수/거부 판정 로직은 원래도 항상 정확한
+      r002 함수를 썼으므로 불변)
+    compatibility: backward-compatible (로그에 찍히는 점수 숫자와 만점 표기만 정확해짐 -
+      이 숫자를 파싱해 특정 값과 비교하는 외부 스크립트가 있다면 만점이 22->24로 바뀐 점
+      확인 필요)
+- [2026-09-14] type=fix owner=claude
+    summary: 메인 루프 턴 종료 후 대기 로직을 LIVE_PRICE_POLL_INTERVAL_SECONDS(10초)
+      벽시계 정렬 틱(_sleep_until_next_tick) 방식에서 즉시 재시작 방식으로 변경 - 사용자가
+      실매매 로그(예: 13:19:40경 한 턴의 종목 순회가 1초 미만으로 끝났는데 다음 종목
+      CHECK 로그가 13:19:50에야 찍힘)를 보고, 턴 처리 자체는 빨리 끝나는데도 다음
+      00/10/.../50초 정렬 틱까지 최대 10초를 그냥 대기하는 것을 지적하며 턴 종료 즉시
+      다음 턴을 시작하도록 요청. run() 최하단(while True 루프 끝)의
+      `served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)`
+      를 제거하고, 이번 턴 시작 시각(current_dt) 기준 경과시간이 신규
+      MAIN_LOOP_MIN_CYCLE_SECONDS(r001, 1초)에 못 미칠 때만 그 차이만큼만 대기하도록
+      변경 - 활성 종목이 있으면 사실상 종목별 API 왕복시간(수백 ms)만큼만 지나면 바로
+      다음 턴이 시작되고, 활성 종목이 0개라 턴이 즉시 끝나는 경우에만 계좌/미체결 동기화
+      API 스팸을 막는 안전 바닥으로 최소 간격이 적용됨. 정규장/NXT 외 유휴 대기 및
+      동시호가 구간 대기(4109줄/4129줄, `continue`로 되돌아가는 두 지점)는 "턴을 아예
+      돌지 않는" 경우라 기존 LIVE_PRICE_POLL_INTERVAL_SECONDS 정렬 틱 방식 그대로 유지.
+    impact: live
+    compatibility: breaking (활성 종목이 있을 때 신규 진입/청산 재평가 빈도가 종목당
+      API 왕복시간 수준으로 크게 증가 - 이전엔 최소 10초 고정 간격이었음. 브로커(KIS)
+      API 호출 빈도가 늘어나므로 실매매에서 레이트리밋/오류 발생 여부 관찰 필요)
+- [2026-09-13] type=refactor owner=claude
+    summary: 로그 출력 포맷 재정리 (사용자 요청, 실제 로그 파일 라인 기준). 종목별 폴링
+      루프 태그(CHECK/REJECT/SKIP/PENDING/BUY HOLD, 그리고 INTRABAR_SKIP->BAR_SKIP로
+      개명)를 전부 "[태그(8자 고정폭)] {symbol_label} | detail" 순서로 통일 - 이전엔
+      SKIP/PENDING은 태그가 먼저, CHECK/REJECT/BUY HOLD/INTRABAR_SKIP은 종목이 먼저
+      오는 등 태그별로 순서가 제각각이었음. log_trade()의 공용 [TRADE] 래퍼 태그도
+      동일하게 8자 고정폭([TRADE   ])으로 맞추고, BUY REPRICE RESUBMIT 로그 1건을
+      예시로 삼아 메시지 내용도 "{symbol_label} | 이벤트 설명 | ..." 순서로 재구성
+      (기존 code(name) 괄호 표기 대신 다른 태그들과 동일한 _symbol_log_label 사용) -
+      다른 log_trade() 호출부(BUY pending/SELL EXECUTED 등)는 메시지 구조가 제각각이라
+      이번엔 손대지 않음, 필요시 후속 작업.
+    impact: live
+    compatibility: backward-compatible (로그 표시 형식만 변경, 판정/실행 로직 무관)
 - [2026-09-13] type=fix owner=claude
     summary: BUY_CHECK_SECONDS_OF_MINUTE(2026-09-01 도입, 분당 [3,18,33,48]초에만 신규
       진입 평가 실행) 제거 - 사용자가 실매매에서 1분봉/3분봉 매수 타이밍이 계속 틀어진다고
@@ -410,10 +465,6 @@ from r001_define_config import (
     SIGNAL_EXIT_MACD_PNL_MAX,
     HYBRID_1MIN_MIN_ENTRY_VOL_MA,
     HYBRID_1MIN_MIN_ENTRY_VOLUME,
-    EMA_TREND_ALIGN_SCORE,
-    REQUIRE_OBV_SIGNAL_CROSS,
-    OBV_BREAKOUT_LOOKBACK_BARS,
-    OBV_CONFIRM_SCORE,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
@@ -503,7 +554,6 @@ from r001_define_config import (
     PEAK_NEXT_BAR_DROP_PCT,
     STAGED_TP2_PCT,
     STAGED_TP2_RATIO,
-    STAGED_TP3_PCT,
     TP_EXTENSION_TRAIL_FROM_PEAK,
     TRADE_COOLDOWN_MINUTES,
     TRAILING_STOP_FROM_PEAK,
@@ -530,6 +580,7 @@ from r001_define_config import (
     LIVE_PRICE_STALE_TTL_SECONDS,
     LIVE_STATE_SAVE_INTERVAL_SECONDS,
     MAIN_LOOP_MAX_CONSECUTIVE_ERRORS,
+    MAIN_LOOP_MIN_CYCLE_SECONDS,
     MARKET_DAY_FAIL_CLOSED,
     MORNING_NXT_NEW_ENTRY_CUTOFF,
     ORDER_STATUS_POLL_INTERVAL_SECONDS,
@@ -567,7 +618,11 @@ from r002_strategy_core_shared import (
     _compute_bb_slope_pct,
     _evaluate_bb_mid_cross,
     _is_box_range_hold_zone,
+    _buy_support_score as _shared_buy_support_score,
+    BUY_SCORE_RULES,
 )
+
+BUY_SCORE_MAX = sum(rule.max_score for rule in BUY_SCORE_RULES)
 
 current_dir = Path(__file__).resolve().parent
 data_sim_dir = current_dir.parent / "data_simulation"
@@ -864,7 +919,7 @@ def log_trade(msg: str) -> None:
             handler.flush()
         except Exception:
             pass
-    log(f"[TRADE] {msg}")
+    log(f"[TRADE   ] {msg}")
 
 
 def _log_trade_block(lines: list[str], event_time: datetime | None = None, mirror_main_log: bool = False) -> None:
@@ -1954,7 +2009,7 @@ def _buy_reject_detail(
         macd_str = f"MACD>{msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c else f"MACD<={msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) else "nan"
         slope_str = f"{bb_slope:.2f}%" if not pd.isna(bb_slope) else "nan"
         return (
-            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/22 | {snapshot}"
+            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/{BUY_SCORE_MAX} | {snapshot}"
         )
 
     # 기타 / 하위 호환
@@ -1963,115 +2018,22 @@ def _buy_reject_detail(
 
 
 def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | None = None) -> int:
-    """로컬 표시용 점수 계산 (r002 BUY_SCORE_RULES와 동일 로직, max 22점 - EMA_TREND_ALIGN_SCORE+OBV_CONFIRM_SCORE 포함)."""
-    score = 0
+    """로그 표시용 점수 계산 - r002._buy_support_score(실제 매수 판정이 쓰는 BUY_SCORE_RULES
+    그 자체)에 위임한다.
 
-    # RSI 구간 점수 (최대 2점)
-    rsi_c = _num(cur, "RSI")
-    if not pd.isna(rsi_c):
-        if 50.0 <= rsi_c <= 65.0:
-            score += 2
-        elif 45.0 <= rsi_c < 50.0 or 65.0 < rsi_c <= 70.0:
-            score += 1
-
-    # 거래량 비율 점수 (최대 3점)
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        vol_ratio = vol / vol_ma
-        if vol_ratio >= 2.0:
-            score += 3
-        elif vol_ratio >= 1.5:
-            score += 2
-        elif vol_ratio >= 1.2:
-            score += 1
-        elif vol_ratio >= 0.7:
-            score += 1
-
-    # ADX 추세 강도 점수 (최대 3점)
-    adx_c = _num(cur, "ADX")
-    if not pd.isna(adx_c):
-        if adx_c >= 35.0:
-            score += 3
-        elif adx_c >= 30.0:
-            score += 2
-        elif adx_c >= 25.0:
-            score += 1
-
-    # VWAP 대비 현재가 위치 (최대 2점): 현재가 > VWAP → 기관 평균 매수가 상회
-    vwap_v = _num(cur, "VWAP")
-    close_v = _num(cur, "close")
-    if not any(pd.isna(v) for v in (vwap_v, close_v)) and vwap_v > 0:
-        if close_v > vwap_v * 1.002:
-            score += 2
-        elif close_v > vwap_v:
-            score += 1
-
-    # 거래량 증가 방향 (최대 1점): 현봉 > 전봉 → 관심 유입 중
-    vol_prev = _num(prev, "volume")
-    if not any(pd.isna(v) for v in (vol, vol_prev)) and vol_prev > 0:
-        if vol > vol_prev:
-            score += 1
-
-    # BB 폭 확장 (최대 1점): 스퀴즈 해소 → 추세 발생 초기 신호
-    bb_upper_c = _num(cur, "BB_UPPER")
-    bb_lower_c = _num(cur, "BB_LOWER")
-    bb_upper_p = _num(prev, "BB_UPPER")
-    bb_lower_p = _num(prev, "BB_LOWER")
-    if not any(pd.isna(v) for v in (bb_upper_c, bb_lower_c, bb_upper_p, bb_lower_p)):
-        if (bb_upper_c - bb_lower_c) > (bb_upper_p - bb_lower_p):
-            score += 1
-
-    # MA5 단기 상승 (최대 1점): MA5[t] > MA5[t-1] → 단기 추세 유지
-    ma5_c = _num(cur, "MA_5")
-    ma5_p = _num(prev, "MA_5")
-    if not any(pd.isna(v) for v in (ma5_c, ma5_p)) and ma5_p > 0:
-        if ma5_c > ma5_p:
-            score += 1
-
-    # MACD 골든크로스 점수 (최대 2점)
-    macd_c = _num(cur, "MACD")
-    msig_c = _num(cur, "MACD_SIGNAL")
-    if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c:
-        score += 2
-
-    # BB 중앙선 기울기 강도 점수 (최대 3점)
-    if frame is not None:
-        bb_slope_pct = _compute_bb_slope_pct(frame)
-        if not pd.isna(bb_slope_pct):
-            if bb_slope_pct >= 1.5:
-                score += 3
-            elif bb_slope_pct >= 1.0:
-                score += 2
-            elif bb_slope_pct >= 0.5:
-                score += 1
-
-    # [2026-09-07] 장기 추세 정합성 (최대 EMA_TREND_ALIGN_SCORE점): 실제 판정 함수
-    # (r002 _score_ema_trend_align)에는 있는데 이 로컬 표시용 함수엔 누락돼 있어,
-    # LOW_SCORE 리젝 로그의 표시 점수(당시 /18)가 실제 판정 점수(/20)와 어긋나는
-    # 원인이었다. 동일 로직으로 추가해 표시-판정 점수를 일치시킨다.
-    ema20_c = _num(cur, "EMA_20")
-    ema60_c = _num(cur, "EMA_60")
-    if not any(pd.isna(v) for v in (ema20_c, ema60_c)) and ema20_c > ema60_c:
-        score += EMA_TREND_ALIGN_SCORE
-
-    # OBV가 OBV_MA를 lookback 내 상향 돌파 (최대 OBV_CONFIRM_SCORE점) - r002
-    # _score_obv_breakout과 동일 로직.
-    if REQUIRE_OBV_SIGNAL_CROSS and frame is not None and len(frame) >= 2 and "OBV" in frame.columns and "OBV_MA" in frame.columns:
-        obv_now = _num(cur, "OBV")
-        obv_ma_now = _num(cur, "OBV_MA")
-        if not pd.isna(obv_now) and not pd.isna(obv_ma_now) and obv_now > obv_ma_now:
-            lookback = min(OBV_BREAKOUT_LOOKBACK_BARS, len(frame) - 1)
-            for back in range(1, lookback + 1):
-                prior_obv = frame["OBV"].iloc[-1 - back]
-                prior_obv_ma = frame["OBV_MA"].iloc[-1 - back]
-                if pd.isna(prior_obv) or pd.isna(prior_obv_ma):
-                    continue
-                if prior_obv <= prior_obv_ma:
-                    score += OBV_CONFIRM_SCORE
-                    break
-
-    return score
+    [2026-09-17] 이 함수는 원래 r002의 BUY_SCORE_RULES를 손으로 복제한 별도 구현이었는데,
+    2026-09-13 R77 리팩터(pre_cross_accumulation을 가점으로 전환, bb_upper_room_atr 신규
+    추가, volume_up_direction 가점 삭제)가 r002에만 반영되고 이 로컬 복제본엔 반영되지
+    않아 드리프트가 발생했다 - 사용자 요청으로 진행한 매수 0건 로그 분석 중 발견(CHECK/
+    REJECT 로그의 "score=X/22"가 2026-09-13 이후 전부 실제 판정 점수와 다른 값을 표시하고
+    있었음: 이미 삭제된 volume_up_direction(+1)을 여전히 더하고, 신규 pre_cross_
+    accumulation(+1)/bb_upper_room_atr(+2)는 누락). 2026-08-24에 close_cross 스냅샷에서
+    겪은 것과 동일한 계열의 버그(표시용 재구현이 실제 판정 로직과 따로 놀다 어긋남) -
+    이번엔 재구현 대신 실제 판정 함수를 그대로 재사용해 원천적으로 드리프트를 차단한다.
+    """
+    if frame is None:
+        return -1
+    return _shared_buy_support_score(cur, prev, frame, SHARED_R76_CONFIG)
 
 
 def _buy_condition_snapshot(
@@ -2123,7 +2085,7 @@ def _buy_condition_snapshot(
         f"bb_mid={cur_bb:.1f} bb_upper={cur_bb_upper:.1f} "
         f"bb_slope={bb_slope_pct:.3f}% bb_upper_gap={bb_upper_gap_pct:.2f}% candle_gain={candle_gain_pct:.2f}% "
         f"RSI={rsi_c:.1f} ADX={adx_c:.1f} +DI={di_plus:.1f} -DI={di_minus:.1f} MACD={macd_c:.3f} SIG={msig_c:.3f} "
-        f"vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f} score={support_score}/22"
+        f"vol={vol:,.0f} vol_ma={vol_ma:,.0f} vol_ratio={vol_ratio:.4f} score={support_score}/{BUY_SCORE_MAX}"
     )
 
 
@@ -3575,7 +3537,7 @@ class TradingAPI:
             f"mode={price_mode} | price={new_price or 0:,.0f} | order_no={new_order_no or 'UNKNOWN'}{detail_suffix}"
         )
         log_trade(
-            f"BUY REPRICE RESUBMIT | {code_label} | qty={qty} | mode={price_mode} | "
+            f"{_symbol_log_label(code, code_name)} | BUY REPRICE RESUBMIT | qty={qty} | mode={price_mode} | "
             f"price={new_price or 0:,.0f} | order_no={new_order_no or 'UNKNOWN'}"
         )
 
@@ -3974,7 +3936,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         f"confirm polls={LIVE_PRICE_CROSS_CONFIRM_POLLS} | confirm seconds={LIVE_PRICE_CROSS_CONFIRM_SECONDS}"
     )
     log(
-        f"Polling: live={LIVE_PRICE_POLL_INTERVAL_SECONDS}s | "
+        f"Polling: turn restarts immediately (min_cycle={MAIN_LOOP_MIN_CYCLE_SECONDS}s floor) | "
+        f"idle/session-gap wait={LIVE_PRICE_POLL_INTERVAL_SECONDS}s | "
         f"frame refresh every {FRAME_POLL_INTERVAL_SECONDS}s (3min bars) + backfill {FRAME_BACKFILL_SYNC_SECONDS}s | "
         f"buy consecutive confirms={BUY_CONSECUTIVE_CONFIRM_COUNT}"
     )
@@ -4131,7 +4094,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 nxt_tradeable = nxt_map.get(code, False)
                 symbol_label = _symbol_log_label(code, name)
                 if not can_trade_code_now(current_dt, nxt_tradeable):
-                    log(f"  [SKIP] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
+                    log(f"  [SKIP    ] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
                     continue
 
                 pos = api.get_open_positions().get(code)
@@ -4157,10 +4120,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         frame = merged_frame
 
                 if frame is None:
-                    log(f"  [SKIP] {symbol_label} | frame=None (fetch failed)")
+                    log(f"  [SKIP    ] {symbol_label} | frame=None (fetch failed)")
                     continue
                 if len(frame) < INDICATOR_WARMUP_BARS:
-                    log(f"  [SKIP] {symbol_label} | bars={len(frame)} < INDICATOR_WARMUP_BARS={INDICATOR_WARMUP_BARS}")
+                    log(f"  [SKIP    ] {symbol_label} | bars={len(frame)} < INDICATOR_WARMUP_BARS={INDICATOR_WARMUP_BARS}")
                     continue
 
                 bar_time = frame.index[-1]
@@ -4219,7 +4182,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         if gate_ok:
                             buy_frame = realtime_frame
                         elif not gate_reason.startswith("INTRABAR_ELAPSED_"):
-                            log(f"  {symbol_label} [INTRABAR_SKIP] | {gate_reason} | using confirmed 3min bar instead")
+                            log(f"  [BAR_SKIP] {symbol_label} | {gate_reason} | using confirmed 3min bar instead")
                     except Exception as exc:
                         log(f"  [WARN] {symbol_label} | realtime entry-frame build failed: {exc}")
                         buy_frame = frame
@@ -4245,7 +4208,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         and int(pos.get("quantity", 0) or 0) > 0
                     )
                     log(
-                        f"  [PENDING] {symbol_label} | side={pending_side} qty={pending_qty} "
+                        f"  [PENDING ] {symbol_label} | side={pending_side} qty={pending_qty} "
                         f"submitted={pending_time:%H:%M:%S} | order_no={pending.get('order_no', '') or 'UNKNOWN'}"
                         + (" | PYRAMID_ADD_IN_FLIGHT - position monitoring continues" if is_pyramid_pending else "")
                     )
@@ -4255,7 +4218,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # 계속 진행한다 (아래 포지션 관리 블록으로 그대로 진입).
 
                 log(
-                    f"  {symbol_label} [CHECK] | bars={len(frame)} live={price:,.0f}  bar_close={float(cur['close']):,.0f} | "
+                    f"  [CHECK   ] {symbol_label} | bars={len(frame)} live={price:,.0f}  bar_close={float(cur['close']):,.0f} | "
                     f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
                     f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                     f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
@@ -4360,7 +4323,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     k_now = _num(cur, "STOCH_K")
                     d_now = _num(cur, "STOCH_D")
                     hist_now = _num(cur, "MACD_HIST")
-                    hist_prev = _num(frame.iloc[-2], "MACD_HIST")
+                    hist_prev = _num(frame.iloc[-2], "MACD_HIST") if len(frame) >= 2 else float("nan")
                     hist_prev2 = _num(frame.iloc[-3], "MACD_HIST") if len(frame) >= 3 else float("nan")
                     adx_now = _num(cur, "ADX")
                     di_plus_now = _num(cur, "DI_PLUS")
@@ -4381,7 +4344,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # 눌림만 있었을 뿐 상승이 재개됨. ADX는 후행지표라 추세 초입 눌림목 구간을
                     # 못 잡는 경우가 있어, MA5 기울기 + BB_MID 상회를 별도 신호로 추가.
                     _ma5_now = _num(cur, "MA_5")
-                    _ma5_prev_trend = _num(frame.iloc[-2], "MA_5")
+                    _ma5_prev_trend = _num(frame.iloc[-2], "MA_5") if len(frame) >= 2 else float("nan")
                     _bb_mid_now = _num(cur, "BB_MIDDLE")
                     _price_uptrend = (
                         not any(pd.isna(v) for v in (_ma5_now, _ma5_prev_trend, _bb_mid_now))
@@ -4422,7 +4385,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         and not api.has_pending_order(str(code).zfill(6))
                         and pnl_pct >= PYRAMID_TRIGGER_PNL_PCT
                     ):
-                        _prev_pyr = frame.iloc[-2]
+                        _prev_pyr = frame.iloc[-2] if len(frame) >= 2 else cur
                         _ma5_cur_pyr = _num(cur, "MA_5")
                         _ma5_prev_pyr = _num(_prev_pyr, "MA_5")
                         _bb_mid_cur_pyr = _num(cur, "BB_MIDDLE")
@@ -4825,7 +4788,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if signal_sell_bar.get(code) == bar_time:
                         continue
 
-                    prev_bar = frame.iloc[-2]
+                    # [2026-09-16] frame이 세션 오픈 직후 1개 봉만 가진 경우(INDICATOR_WARMUP_BARS=1
+                    # 라 여기까지 도달 가능) iloc[-2]가 "single positional indexer is out-of-bounds"로
+                    # 터짐(MAIN LOOP ERROR 20연속 -> max_consecutive_errors 셧다운, 2026-09-16 08:01/09:01
+                    # 가온전선/현대약품 사례). 직전 봉이 없으면 현재 봉으로 대체.
+                    prev_bar = frame.iloc[-2] if len(frame) >= 2 else cur
                     sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, price, cross_info)
                     if sell_ok:
                         aux_score = _extract_aux_score_from_reason(sell_reason)
@@ -4873,7 +4840,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         _warmup_elapsed = (current_dt - session_open_dt).total_seconds()
                         if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
                             log(
-                                f"  {symbol_label} [REJECT] | SESSION_OPEN_WARMUP | "
+                                f"  [REJECT  ] {symbol_label} | SESSION_OPEN_WARMUP | "
                                 f"elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
                                 f"session_open={session_open_dt:%H:%M:%S}"
                             )
@@ -4895,7 +4862,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if signal_buy_bar.get(code) == bar_time_for_buy:
                         continue
 
-                    prev_bar = buy_frame.iloc[-2]
+                    # [2026-09-16] buy_frame이 1개 봉만 가진 경우(세션 오픈 후 ~90~180s 구간,
+                    # STARTUP_WARMUP_SECONDS(90s)는 지났지만 두번째 3분봉은 아직 미확정) iloc[-2]가
+                    # out-of-bounds로 터져 MAIN LOOP가 20연속 에러로 셧다운되는 문제(2026-09-16
+                    # 08:01 가온전선, 09:01 현대약품 사례). 직전 봉이 없으면 현재 봉으로 대체.
+                    prev_bar = buy_frame.iloc[-2] if len(buy_frame) >= 2 else buy_frame.iloc[-1]
                     norm_code = str(code).zfill(6)
                     if api.has_buy_exposure(norm_code):
                         log(f"  {symbol_label} [BUY SKIP] | ALREADY_TRADED_TODAY_UNTIL_SELL")
@@ -4926,7 +4897,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         if armed is not None and armed.get("gc_bar_time") == bar_time_for_buy:
                             # 골든크로스 발생봉과 같은 봉 - 다음 봉 마감까지 대기
                             log(
-                                f"  {symbol_label} [BUY HOLD] | reason=WAIT_NEXT_BAR_CONFIRM | "
+                                f"  [BUY HOLD] {symbol_label} | reason=WAIT_NEXT_BAR_CONFIRM | "
                                 f"gc_bar={armed['gc_bar_time']:%H:%M:%S}"
                             )
                             continue
@@ -4942,7 +4913,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             if buy_ok:
                                 gc_confirm_state[code] = {"gc_bar_time": bar_time_for_buy}
                                 log(
-                                    f"  {symbol_label} [BUY HOLD] | reason=GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR | "
+                                    f"  [BUY HOLD] {symbol_label} | reason=GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR | "
                                     f"gc_bar={bar_time_for_buy:%H:%M:%S} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} "
                                     f"close={_num(buy_frame.iloc[-1], 'close'):,.0f}"
                                 )
@@ -4969,7 +4940,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             # 452190 한빛레이저 사례(1분 트리거가 룩백 밖의 오래/강하게
                             # 지속된 랠리를 계속 놓침) 대책 중 하나.
                             _ctx3_cur = buy_frame.iloc[-1]
-                            _ctx3_prev = buy_frame.iloc[-2]
+                            _ctx3_prev = buy_frame.iloc[-2] if len(buy_frame) >= 2 else _ctx3_cur
                             _ctx3_cur_bb = _num(_ctx3_cur, "BB_MIDDLE")
                             _ctx3_prev_bb = _num(_ctx3_prev, "BB_MIDDLE")
                             context_uptrend_continuation = False
@@ -5020,7 +4991,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         )
                         if steps_text:
                             detail = f"{detail} | STEPS {steps_text}"
-                        log(f"  {symbol_label} [REJECT] | {detail}")
+                        log(f"  [REJECT  ] {symbol_label} | {detail}")
                         continue
 
                     if (
@@ -5033,12 +5004,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         )
                         if frame_1min_entry is None or frame_1min_entry.empty or len(frame_1min_entry) < 2:
                             buy_confirm_state.pop(code, None)
-                            log(f"  {symbol_label} [REJECT] | 1MIN_FRAME_UNAVAILABLE | (3min_ok={buy_reason})")
+                            log(f"  [REJECT  ] {symbol_label} | 1MIN_FRAME_UNAVAILABLE | (3min_ok={buy_reason})")
                             continue
                         entry_ok, entry_reason = check_entry_condition_1min(frame_1min_entry)
                         if not entry_ok:
                             buy_confirm_state.pop(code, None)
-                            log(f"  {symbol_label} [REJECT] | {entry_reason} | (3min_ok={buy_reason})")
+                            log(f"  [REJECT  ] {symbol_label} | {entry_reason} | (3min_ok={buy_reason})")
                             continue
                         buy_reason = f"{buy_reason}+{entry_reason}"
 
@@ -5051,7 +5022,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     ):
                         buy_confirm_state.pop(code, None)
                         log(
-                            f"  {symbol_label} [REJECT] | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
+                            f"  [REJECT  ] {symbol_label} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
                             f"{rise_ratio*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
                             f"prev_close={float(prev_close):,.0f} live={price:,.0f}"
                         )
@@ -5064,7 +5035,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         if not gap_ok:
                             buy_confirm_state.pop(code, None)
                             _gap_txt = f"{rise_ratio*100:.2f}%" if rise_ratio is not None else "nan"
-                            log(f"  {symbol_label} [REJECT] | {gap_reason} | gap={_gap_txt} live={price:,.0f}")
+                            log(f"  [REJECT  ] {symbol_label} | {gap_reason} | gap={_gap_txt} live={price:,.0f}")
                             continue
 
                     confirm_state = buy_confirm_state.get(code)
@@ -5081,7 +5052,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     buy_confirm_state[code] = {"confirmed_at": current_dt, "count": confirm_count, "bar_time": bar_time_for_buy}
                     if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
                         log(
-                                f"  {symbol_label} [BUY HOLD] | reason=WAIT_NEXT_POLL_CONFIRM | "
+                                f"  [BUY HOLD] {symbol_label} | reason=WAIT_NEXT_POLL_CONFIRM | "
                                 f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
                                 f"live={price:,.0f} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} bar={bar_time_for_buy:%H:%M:%S}"
                         )
@@ -5089,12 +5060,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
                     qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
                     if qty <= 0:
-                        log(f"  {symbol_label} [REJECT] | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
+                        log(f"  [REJECT  ] {symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
                         continue
 
                     if _is_stale_live_price_source(price_source):
                         log(
-                            f"  {symbol_label} [REJECT] | STALE_LIVE_PRICE | "
+                            f"  [REJECT  ] {symbol_label} | STALE_LIVE_PRICE | "
                             f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
                         )
                         continue
@@ -5123,7 +5094,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     if _ask_total is not None and _bid_total is not None and _bid_total > 0:
                         if _ask_total < _bid_total * 0.5:
                             log(
-                                f"  {symbol_label} [REJECT] | ORDERBOOK_ASK_THIN | "
+                                f"  [REJECT  ] {symbol_label} | ORDERBOOK_ASK_THIN | "
                                 f"ask={_ask_total:,.0f} bid={_bid_total:,.0f} ratio={_ask_total / _bid_total:.2f}"
                             )
                             traded_today.discard(norm_code)
@@ -5205,7 +5176,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 log("MAIN LOOP STOP | reason=max_consecutive_errors")
                 break
 
-        served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)
+        # [2026-09-14] 턴 종료 즉시 다음 턴 시작 (사용자 요청) - 이전엔 여기서
+        # _sleep_until_next_tick으로 다음 10초 정렬 틱까지 대기했으나, 턴 처리 자체는
+        # 보통 1초 미만이라 매번 최대 10초의 불필요한 유휴 시간이 발생했음. 활성 종목이
+        # 0개라 턴이 사실상 즉시 끝나는 경우에만 계좌/미체결 동기화 API를 스팸하지
+        # 않도록 최소 간격(MAIN_LOOP_MIN_CYCLE_SECONDS)만 바닥으로 보장.
+        turn_elapsed_seconds = (datetime.now() - current_dt).total_seconds()
+        if turn_elapsed_seconds < MAIN_LOOP_MIN_CYCLE_SECONDS:
+            time.sleep(MAIN_LOOP_MIN_CYCLE_SECONDS - turn_elapsed_seconds)
 
 
 if __name__ == "__main__":
