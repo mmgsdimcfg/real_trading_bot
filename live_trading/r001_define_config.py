@@ -1,6 +1,55 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-09-18] type=fix owner=claude
+#     summary: 사용자 요청("오늘 매수 3건, 익절 가능했던 매수를 놓친 경우 점검") -
+#       20260918 REJECT 로그 46,385건 분석 결과 score 15/24 이상 고품질 신호가 반려된
+#       종목 41개 중 상당수(000500 가온전선 +22.7%/043260 성호전자 +21.3%/456010
+#       아이씨티케이 +20.7%/024840 KBI메탈 +16.0% 등, 반려 시점 대비 당일 고점 기준)가
+#       CHASE_BUY_BB_GAP 하나로 수렴 - HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT(1.1%)가
+#       uptrend_continuation 경로(추세 지속이 다른 지표로 이미 검증된 경우)에도 동일하게
+#       적용되면서, 1분봉 BB중간선이 급등을 못 따라가는 날엔 갭이 영구히 상한을 넘어
+#       남은 장중 내내 진입이 막히는 구조적 결함 확인(2026-09-07에 경과봉 decay는
+#       도입했으나 상한 자체는 그대로였음). 신규 상수 HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_
+#       UPTREND_PCT(2.2%) 추가 - uptrend_continuation 경로에서만 상한을 완화하고, 신선한
+#       크로스 경로는 기존 1.1%를 그대로 유지해 저품질 스파이크 추격은 계속 차단한다.
+#       r003 check_buy_condition_1min_hybrid_trigger/g003 _sim 동시 반영, g003
+#       --date 20260918 백테스트로 검증 후 라이브 반영 예정(r003/g003 Update log 참조).
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: backward-compatible (신선한 크로스 경로는 기존과 동일, uptrend_
+#       continuation 경로에서만 갭 상한이 완화되어 그 경로의 매수 빈도가 늘어날 수 있음)
+# - [2026-09-18] type=fix owner=claude
+#     summary: 사용자가 183300 코미코 실매매 사례(08:27:28 매수 신호/주문 제출 ->
+#       08:28:29 최종 체결, 61초 소요)를 보고 "매수는 걸었는데 체결이 늦은 것 아니냐"고
+#       질의, 로그 분석 결과 신호/주문 자체는 제때(08:27:26봉 확정 직후) 나갔지만 체결
+#       확인 경로가 느렸던 것으로 확인됨: (1) 08:27:28 지정가(매수1호가 30,450) 제출 ->
+#       (2) 다음 ORDER_STATUS_POLL_INTERVAL_SECONDS(15초) 폴링(08:27:47, 19초 경과)에서야
+#       미체결 확인 + BUY_ORDER_REPRICE_AFTER_SECONDS(10초) 초과로 재주문(취소) 트리거 ->
+#       (3) 다시 다음 15초 폴링(08:28:09)에서야 취소 확인 + 재주문(매수1호가 30,600) ->
+#       (4) 다시 다음 15초 폴링(08:28:29)에서야 체결 확인. 즉 취소확인/재주문/체결확인
+#       3단계가 전부 refresh_pending_orders()의 전역 15초 폴링 간격에 순차적으로 걸려
+#       누적 지연됨(2026-09-14에 메인 루프 자체는 즉시 재시작하도록 바꿨으나 미체결
+#       주문 상태 폴링은 별도 타이머라 그 개선 혜택을 못 받고 있었음). 미결 주문 개수는
+#       보통 0~1건이라(활성 종목 50개를 매턴 조회하는 현재가 폴링과 달리) KIS TPS 여유가
+#       있다고 보고 15->5초로 단축 - 3단계 누적 지연이 최대 약 45초 이내로 줄어든다.
+#       추가로 BUY_ORDER_REPRICE_AFTER_SECONDS 주석의 "폴링 주기 15초" 표현을 갱신.
+#     impact: live (r003 refresh_pending_orders 폴링 간격만 변경, 판정 로직 불변)
+#     compatibility: breaking (미결 주문 상태 조회 API 호출 빈도가 최대 3배 증가 -
+#       실매매에서 KIS 레이트리밋/오류 발생 여부 관찰 권장, 문제 시 5->10 등으로 조정)
+# - [2026-09-18] type=feat owner=claude
+#     summary: 사용자 요청 - 신규 진입 매수 1건을 시장가/지정가 두 조각으로 분할 제출.
+#       위 183300 코미코 사례처럼 매수1호가 지정가 전량이 급등을 따라가지 못해 체결까지
+#       61초 걸리는 경우를 완화하기 위해, 수량의 BUY_SPLIT_MARKET_RATIO(50%)는 즉시
+#       체결(시장가, NXT는 시장가 미지원이라 매도1호가 크로싱으로 대체)로 진입 타이밍을
+#       확보하고 나머지는 기존과 동일하게 매수1호가 지정가(+추격 재주문)로 평균 매수가를
+#       낮춘다. 수량이 1주뿐이면 분할해도 지정가 쪽에 남는 게 없어 무의미하므로 그대로
+#       전량 시장가 1건으로 즉시 매수(r003 place_buy_order 참조). 피라미딩(불타기)
+#       추가매수는 이번 변경 대상에서 제외 - 기존과 동일하게 매수1호가 지정가 단일
+#       주문 유지.
+#     impact: live (r003 place_buy_order/refresh_pending_orders - 신규 진입 매수만
+#       해당, 피라미딩/매도는 불변)
+#     compatibility: breaking (신규 진입 시 브로커 주문이 1건->최대 2건으로 늘어남,
+#       평균 체결가/체결 속도가 달라짐 - 실매매로 체결가 개선 여부 확인 권장)
 # - [2026-09-14] type=fix owner=claude
 #     summary: 메인 루프 턴 간격을 LIVE_PRICE_POLL_INTERVAL_SECONDS(10초) 벽시계 정렬
 #       틱(_next_aligned_tick/_sleep_until_next_tick, 00/10/20/.../50초)에서 분리 -
@@ -625,8 +674,15 @@ ENABLE_INTRABAR_LIVE_ENTRY_FILTER = True
 INTRABAR_MIN_ELAPSED_SECONDS = 90.0
 INTRABAR_MFI_MIN = 50.0
 INTRABAR_MFI_MAX = 75.0
-INTRABAR_RSI_MIN = 50.0
-INTRABAR_RSI_MAX = 70.0
+# [2026-09-18] 사용자 요청 - 기본 구간 50~70을 45~65로 낮추고(이미 확정봉 대비 소폭
+# 완화), 65 초과 구간은 무조건 거부하지 않고 65~75(INTRABAR_RSI_EXT_MAX)까지 조건부
+# 허용 구간을 신설한다 - RSI/MACD 상승 + 거래량(VOL_MA20 상회) + BB중간선 위 4개
+# 확인 조건을 전부 만족할 때만 통과(_passes_intrabar_entry_gate 참조). 이미 강하게
+# 상승 중인 종목의 인트라바 RSI가 65~70대에서 자주 걸려 확정봉으로 폴백되는 사례
+# (20260918 000500 가온전선 등) 분석 후 조정 - 75 초과는 여전히 무조건 거부.
+INTRABAR_RSI_MIN = 45.0
+INTRABAR_RSI_MAX = 65.0
+INTRABAR_RSI_EXT_MAX = 75.0
 INTRABAR_ADX_MIN = 20.0
 
 # --- 10. 리스크 서킷브레이커 / 재진입 & 안전장치 -----------------------------
@@ -643,6 +699,12 @@ MARKET_DAY_FAIL_CLOSED = True
 
 # --- 11. 주문/자금 관리 -------------------------------------------------------
 MAX_ORDER_AMOUNT_KRW = 500_000  # 1회 매수 주문 최대 금액(KRW)
+
+# [2026-09-18] 신규 진입 매수 분할 - 절반은 즉시 체결(시장가), 절반은 매수1호가
+# 지정가(+기존 추격 재주문)로 낸다. 수량이 1주뿐이면 분할하지 않고 전량 시장가로
+# 즉시 매수한다(r003 place_buy_order 참조, r001 Update log 2026-09-18 참조).
+ENABLE_BUY_SPLIT_MARKET_LIMIT = True
+BUY_SPLIT_MARKET_RATIO = 0.5  # 시장가 즉시체결 비중 (나머지는 매수1호가 지정가)
 
 # --- 11-b. 피라미딩(불타기) - 추세 지속 시 1회 추가 진입 ----------------------
 # 평균단가 대비 PYRAMID_TRIGGER_PNL_PCT 이상 이익이고 MA5/BB중간선/ADX가 모두
@@ -744,6 +806,19 @@ HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT = 0.5        # 3분봉(0.35%)보다 소폭 �
 # 완화용 - 크로스 후 경과봉 수 x DECAY만큼 상한을 늘리되 CEILING으로 상한선을 둔다.
 HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR = 0.15
 HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT = 1.1
+
+# [2026-09-18] CEILING_PCT(1.1%)가 신선한 크로스 오남용 방지용으로는 적절하지만,
+# uptrend_continuation 경로(호출측 3분 컨텍스트 또는 자체 ADX/DI/MA5 판정으로 상승추세
+# 지속이 이미 별도 확인된 경우)에도 동일하게 적용되면서, 하루 20%+ 급등하는 종목처럼
+# 1분봉 BB중간선(후행 SMA)이 가격을 아예 못 따라가는 날엔 갭이 2~3%대로 영구히 벌어져
+# 남은 장중 내내 진입 자체가 막히는 사례가 확인됨(20260918 로그 분석 - 000500 가온전선
+# +22.7%/043260 성호전자 +21.3%/024840 KBI메탈 +16.0% 등 score 20+/24 고품질 신호가
+# CHASE_BUY_BB_GAP에 반복 반려, 그 중 028050 삼성E&A는 09:11 score=20으로 반려된 뒤
+# 09:34 score=13으로 신호 품질이 식고 나서야 다른 경로로 겨우 진입). uptrend_continuation
+# 경로는 신선한 크로스와 달리 다른 지표들로 추세 지속이 이미 검증된 상태이므로, 이
+# 경로에서만 상한을 완화한다 - 신선한 크로스 경로의 상한(위 CEILING_PCT)은 그대로 유지해
+# 저품질 스파이크 추격은 계속 차단한다.
+HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT = 2.2
 
 # 3분봉 가점(_buy_support_score)용 장기 추세 정합성: EMA20 > EMA60이면 상위 추세가
 # 우상향이라는 뜻으로 +2점. EMA_20_PERIOD는 위 1분봉 게이트와 공유(같은 컬럼, 프레임만 다름).
@@ -883,8 +958,11 @@ ACCOUNT_SYNC_INTERVAL_SECONDS = 90
 FRAME_POLL_INTERVAL_SECONDS = 20
 # 시작 시 과거 바 백필 동기화 범위(초)
 FRAME_BACKFILL_SYNC_SECONDS = 600
-# 주문 상태 폴링 간격(초)
-ORDER_STATUS_POLL_INTERVAL_SECONDS = 15
+# 주문 상태 폴링 간격(초) - [2026-09-18] 15->5: 미결 매수 재주문(취소확인/재주문/
+# 체결확인)이 전부 이 간격에 순차적으로 걸려 누적 지연되는 문제 확인(183300 코미코
+# 08:27:28 제출->08:28:29 체결, 61초 사례), r001 Update log 2026-09-18 참조. 미결
+# 주문은 보통 0~1건이라 현재가 폴링(활성종목 전체)만큼의 TPS 부담은 없음.
+ORDER_STATUS_POLL_INTERVAL_SECONDS = 5
 # 현재가 조회 backoff 초기값(초) / 최대값(초)
 LIVE_PRICE_BACKOFF_BASE_SECONDS = 5
 LIVE_PRICE_BACKOFF_MAX_SECONDS = 60
@@ -913,7 +991,7 @@ BUY_ORDER_STALE_WARN_SECONDS = 60
 # 계속 오르는 경우가 많아, 그 가격까지 밀려 내려오지 않으면 영원히 미체결로 남는다
 # (2026-08-28 13:14 000720 현대건설 실매매 사례: 500초 넘게 미체결, [BUY STALE]
 # 경고만 반복되고 아무 조치 없었음 - r003 Update log 2026-08-28 참조).
-# BUY_ORDER_REPRICE_AFTER_SECONDS(폴링 주기 ORDER_STATUS_POLL_INTERVAL_SECONDS=15초
+# BUY_ORDER_REPRICE_AFTER_SECONDS(폴링 주기 ORDER_STATUS_POLL_INTERVAL_SECONDS=5초
 # 단위라 실제로는 다음 폴링 시점에 반영, 10초 정각 보장은 아님)마다 취소 후 더 공격적인
 # 가격으로 재주문한다 - 1차=신선한 매수1호가, 2차=매도1호가(스프레드 crossing으로 체결
 # 보장), 최종(BUY_ORDER_REPRICE_MAX_ATTEMPTS번째)=시장가(정규장 매도가 이미 쓰는 방식과
