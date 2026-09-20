@@ -16,6 +16,18 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-18] type=fix owner=claude
+    summary: check_buy_condition_1min_hybrid_trigger_sim()에 r003과 동일한
+      uptrend_continuation 경로 전용 BB갭 상한 완화 추가 (r003/r001 Update log
+      2026-09-18 참조 - 20260918 실매매 로그 분석에서 CHASE_BUY_BB_GAP 고정 상한(1.1%)이
+      추세 지속이 이미 검증된 경로에도 동일 적용되어 급등일에 영구 진입차단으로 이어짐을
+      발견). trigger_reason이 1MIN_UPTREND_CONTINUATION_3MIN_CTX/1MIN_UPTREND_
+      CONTINUATION일 때만 HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT(2.2%)를 쓰고,
+      신선한 크로스 경로는 기존 CEILING_PCT(1.1%)를 유지. live/sim parity 유지 목적 -
+      r003만 고치고 이 sim 복제본을 그대로 두면 백테스트로 개선 효과를 검증할 수 없음.
+    impact: sim
+    compatibility: breaking (uptrend_continuation 경로의 매수 판정 결과가 바뀜 - 해당
+      경로 매수 빈도가 늘어날 것으로 예상, --date 20260918 백테스트로 재검증 권장)
 - [2026-09-09] type=fix owner=claude
     summary: check_buy_condition_1min_hybrid_trigger_sim()에 r003과 동일한
       uptrend_continuation 예외 추가 (452190 한빛레이저 사례, r003 Update log 2026-09-09
@@ -311,6 +323,7 @@ from r001_define_config import (
     HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
     HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT,
     HYBRID_1MIN_MIN_ENTRY_VOL_MA,
     HYBRID_1MIN_MIN_ENTRY_VOLUME,
     ENABLE_STAGED_TAKE_PROFIT,
@@ -1682,9 +1695,18 @@ def check_buy_condition_1min_hybrid_trigger_sim(
         # [2026-09-07] r003 check_buy_condition_1min_hybrid_trigger와 동일 로직 - 크로스가
         # BB_MID 위로 계속 유지 중인데도 BB_MID가 후행지표라 갭이 계속 벌어져 고정 상한에
         # 매 폴링 걸리는 문제 완화. 경과봉 수만큼 상한을 소폭 완화하되 CEILING_PCT로 상한.
+        # [2026-09-18] r003과 동일하게 uptrend_continuation 경로만 CEILING_UPTREND_PCT로
+        # 완화 (r003/r001 Update log 2026-09-18 참조) - live/sim parity 유지.
+        is_uptrend_continuation = trigger_reason in (
+            "1MIN_UPTREND_CONTINUATION_3MIN_CTX", "1MIN_UPTREND_CONTINUATION",
+        )
+        gap_ceiling_pct = (
+            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT if is_uptrend_continuation
+            else HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT
+        )
         allowed_gap_pct = min(
             HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT + bars_since_cross * HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
-            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+            gap_ceiling_pct,
         )
         if bb_gap_pct > allowed_gap_pct:
             return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{allowed_gap_pct:.2f}%"

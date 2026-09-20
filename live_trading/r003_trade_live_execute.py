@@ -20,6 +20,94 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-18] type=feat owner=claude
+    summary: 사용자 요청 - _passes_intrabar_entry_gate()의 RSI 밴드를 50~70에서 45~65
+      (INTRABAR_RSI_MIN/MAX, r001)로 낮추고, 65 초과~75(신규 INTRABAR_RSI_EXT_MAX)
+      구간은 무조건 INTRABAR_RSI_..._OUT_OF로 거부(확정 3분봉 폴백)하는 대신 조건부
+      허용 경로를 신설했다: RSI가 직전봉 대비 상승 중 + MACD가 직전봉 대비 상승 중 +
+      거래량이 VOL_MA20을 상회 + 종가가 BB중간선 위, 4개 조건을 전부 만족해야
+      통과("INTRABAR_RSI_{rsi}_EXT_COND_NOT_MET"으로 실패 사유 구분). 거래량 조건은
+      "거래량증가"를 직전봉 대비 단순 비교가 아니라 VOL_MA20 대비로 해석했다 - 이
+      저장소에 직전봉 대비 거래량 비교를 노이즈성 신호로 보고 폐기한 선례가 있음
+      (R77-B, volume_up_direction 가점 삭제, r002 Update log 2026-09-13 참조).
+      20260918 000500 가온전선 사례(14:23~14:25 RSI 72.9~79.6로 반복 BAR_SKIP, 그
+      시간대 실제로는 강상승 지속 중)를 계기로 요청됨. 75 초과는 기존과 동일하게
+      무조건 거부.
+    impact: live (_passes_intrabar_entry_gate만 해당 - 인트라바 프레임을 신뢰할지
+      여부만 바뀌고, 최종 매수 판정 게이트/점수 로직 자체는 불변)
+    compatibility: breaking (RSI 45~65는 기존보다 넓어 통과가 늘고, 65~75는 4조건
+      충족 시에만 통과 - 순효과는 g003 백테스트로 확인 필요. 45 미만~50 구간은
+      기존엔 거부였다가 이번에 새로 허용되는 점도 주의)
+- [2026-09-18] type=fix owner=claude
+    summary: 사용자 요청 - [REJECT] 로그가 콘솔에 GATES/STEPS 진단 블록까지 전부 찍혀
+      너무 길어지는 문제 완화. 신규 Formatter _ConsoleTruncateRejectFormatter를 콘솔용
+      StreamHandler에만 setFormatter로 덮어씌워, 메시지에 "[REJECT"가 있으면 " | GATES"
+      이전까지만(reason + _buy_reject_detail이 reason에 붙이는 짧은 수치, 예:
+      BB_SLOPE_NOT_RISING_-2.07% | bb_mid=... bb_slope=...%)만 남기고 그 뒤(GATES
+      스냅샷 + STEPS 게이트별 pass/fail 요약)는 잘라낸다. FileHandler/
+      _PerSymbolFileHandler는 이 Formatter를 쓰지 않아(각자 basicConfig 공용
+      Formatter를 그대로 유지) 파일에는 전체 내용이 그대로 남는다 - 로그 분석(REJECT
+      사유 상세 확인)은 파일 기준으로 계속 가능.
+    impact: live (콘솔 출력만 변경 - 파일 로그/판정 로직 전부 불변)
+    compatibility: backward-compatible (로그 내용/파일 위치 변화 없음, 콘솔 가독성만 개선)
+- [2026-09-18] type=fix owner=claude
+    summary: 사용자 요청 - [CHECK] 로그가 종목 순회마다 찍혀 콘솔이 CHECK 줄로 도배되는
+      문제 완화. _rotate_logging_for_date()가 붙이는 콘솔 StreamHandler(sys.stdout)에만
+      신규 필터 _SuppressConsoleCheckLogs를 추가해 메시지에 "[CHECK"가 포함된 로그를
+      콘솔 출력에서만 제외 - FileHandler(메인 로그 파일)와 _PerSymbolFileHandler(종목별
+      txt)는 그대로 전부 기록되므로 사후 로그 분석에는 영향 없음. FileHandler가
+      StreamHandler의 서브클래스라 isinstance()로는 콘솔 핸들러만 골라낼 수 없어
+      type() 정확 비교로 구분.
+    impact: live (콘솔 출력만 변경 - 파일 로그/판정 로직 전부 불변)
+    compatibility: backward-compatible (로그 내용/파일 위치 변화 없음, 콘솔 가독성만 개선)
+- [2026-09-18] type=fix owner=claude
+    summary: 사용자 요청("오늘 매수 3건, 익절 가능했던 매수를 놓친 경우 점검") -
+      20260918 REJECT 로그 분석 결과 score 15/24 이상 고품질 신호가 CHASE_BUY_BB_GAP
+      하나로 반복 반려된 종목 다수(000500 가온전선 +22.7%/043260 성호전자 +21.3%/
+      024840 KBI메탈 +16.0% 등, 반려 시점 대비 당일 고점) 확인. check_buy_condition_
+      1min_hybrid_trigger()의 BB갭 상한(HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT=1.1%)이
+      uptrend_continuation 경로(trigger_reason이 1MIN_UPTREND_CONTINUATION_3MIN_CTX
+      또는 1MIN_UPTREND_CONTINUATION - 추세 지속이 다른 지표로 이미 검증된 경우)에도
+      신선한 크로스와 동일하게 적용되고 있었음 - 1분봉 BB중간선(후행 SMA)이 급등을
+      못 따라가는 날엔 갭이 영구히 이 상한을 넘어 남은 장중 내내 진입이 막히는 구조
+      (028050 삼성E&A는 09:11 score=20으로 이 사유 반려 후 09:34 score=13으로 신호가
+      식고 나서야 다른 경로로 겨우 진입). uptrend_continuation 경로에서만 신규 상수
+      HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT(2.2%, r001)를 쓰도록 분기 추가 -
+      신선한 크로스 경로는 기존 1.1%를 그대로 유지.
+    impact: common (r003 실전/g003 check_buy_condition_1min_hybrid_trigger_sim 동시
+      반영 - live/sim parity 유지)
+    compatibility: breaking (uptrend_continuation 경로의 매수 판정 결과가 바뀜 - 그
+      경로의 매수 빈도가 늘어날 것으로 예상, g003 --date 20260918 백테스트로 검증
+      권장, 라이브 반영 전 사용자 승인 필요)
+- [2026-09-18] type=fix owner=claude
+    summary: 사용자가 183300 코미코 실매매 사례(08:27:28 매수 신호/주문 제출 -> 08:28:29
+      최종 체결, 61초 소요)를 보고 매수 체결이 늦은 것 아니냐고 질의, 로그 분석 결과
+      신호/주문 자체는 제때 나갔지만(08:27:26봉 확정 직후 제출) 체결 확인 경로가 느렸던
+      것으로 확인됨 - refresh_pending_orders()가 ORDER_STATUS_POLL_INTERVAL_SECONDS(당시
+      15초) 전역 타이머로 스로틀되어 있어, 미체결 재주문 사이클의 (1)미체결 확인+취소
+      트리거 (2)취소 확인+재주문 (3)체결 확인 3단계가 전부 이 15초 간격에 순차적으로
+      걸려 누적 지연됨(2026-09-14에 메인 루프 자체 재시작은 즉시화했지만 미결 주문 상태
+      폴링은 별도 타이머라 그 개선 혜택을 못 받고 있었음, r001 Update log 2026-09-18
+      참조). ORDER_STATUS_POLL_INTERVAL_SECONDS를 5초로 단축.
+    impact: live (refresh_pending_orders 폴링 간격만 변경, 판정 로직 불변)
+    compatibility: breaking (미결 주문 상태 조회 API 호출 빈도 최대 3배 증가 - KIS
+      레이트리밋 여부 관찰 권장)
+- [2026-09-18] type=feat owner=claude
+    summary: 사용자 요청 - place_buy_order()의 신규 진입 매수(피라미딩 제외)를 시장가
+      leg + 매수1호가 지정가 leg 두 조각(각각 BUY_SPLIT_MARKET_RATIO=50%)으로 분할
+      제출한다. 시장가 leg는 KRX 정규장은 실제 시장가(ord_dvsn=01), NXT는 시장가
+      미지원이라 기존 관례(place_sell_order/재주문 최종단계와 동일)대로 매도1호가
+      크로싱 지정가로 대체 - 급등 추격 중에도 즉시 체결 가능성을 확보한다. 지정가 leg는
+      기존과 동일하게 매수1호가에서 시작해 BUY_ORDER_REPRICE_AFTER_SECONDS 경과 시
+      추격 재주문(bid->ask->market) 한다 - 평균 매수가를 낮추는 역할. 두 leg는
+      pending_orders[code]["legs"]에 독립 추적되고(_refresh_split_buy_legs가 처리)
+      모두 종결돼야 _confirm_pending_buy를 합산 1회 호출한다. 수량이 1주뿐이면 분할해도
+      지정가 쪽에 남는 수량이 없어 무의미하므로 분할하지 않고 전량 시장가 1건으로
+      즉시 매수한다. 한쪽 leg 제출이 실패해도 다른 leg만으로 정상 진행(legs 1개 -> 기존
+      단일주문 경로로 자연 축소).
+    impact: live (신규 진입 매수만 해당 - 피라미딩 추가매수/매도 로직은 불변)
+    compatibility: breaking (신규 진입 시 브로커 주문이 1건->최대 2건으로 증가, 평균
+      체결가/체결 속도가 달라짐 - 실매매로 체결가 개선 여부 확인 권장)
 - [2026-09-17] type=fix owner=claude
     summary: 매수 0건 로그 분석(r002 Update log 2026-09-17 참조, 사용자 요청 "20년차
       트레이더 관점 매수조건 점검") 중 발견한 표시 전용 버그 수정. _buy_condition_
@@ -492,6 +580,7 @@ from r001_define_config import (
     HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
     HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_STAGED_TAKE_PROFIT,
     ENABLE_NXT_SESSION,
@@ -509,6 +598,8 @@ from r001_define_config import (
     MACD_SIGNAL_PERIOD,
     MACD_SLOW,
     MAX_ORDER_AMOUNT_KRW,
+    ENABLE_BUY_SPLIT_MARKET_LIMIT,
+    BUY_SPLIT_MARKET_RATIO,
     MFI_PERIOD,
     MORNING_NXT_END,
     MORNING_NXT_START,
@@ -574,6 +665,7 @@ from r001_define_config import (
     INTRABAR_MIN_ELAPSED_SECONDS,
     INTRABAR_RSI_MAX,
     INTRABAR_RSI_MIN,
+    INTRABAR_RSI_EXT_MAX,
     LIVE_PRICE_BACKOFF_BASE_SECONDS,
     LIVE_PRICE_BACKOFF_MAX_SECONDS,
     LIVE_PRICE_POLL_INTERVAL_SECONDS,
@@ -703,6 +795,29 @@ class _SuppressLibLogs(logging.Filter):
 
 _suppress_filter = _SuppressLibLogs()
 
+class _SuppressConsoleCheckLogs(logging.Filter):
+    """[CHECK] 로그는 파일에는 남기되 콘솔(stdout)에는 찍지 않는다 (사용자 요청 -
+    종목 순회마다 찍혀 콘솔이 CHECK 줄로만 채워지는 문제). 이 필터는 콘솔용
+    StreamHandler에만 붙이고 FileHandler에는 붙이지 않는다."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "[CHECK" not in record.getMessage()
+
+_console_check_filter = _SuppressConsoleCheckLogs()
+
+class _ConsoleTruncateRejectFormatter(logging.Formatter):
+    """[REJECT] 로그는 콘솔에는 reason(및 그에 딸린 짧은 수치, _buy_reject_detail
+    참조)까지만 보여주고, 그 뒤의 GATES/STEPS 진단 블록은 생략한다 (사용자 요청 -
+    콘솔이 REJECT 상세로 도배되는 문제). 이 포매터는 콘솔용 StreamHandler에만 붙이고
+    FileHandler/_PerSymbolFileHandler는 별도 Formatter를 그대로 쓰므로 파일에는
+    _buy_reject_detail이 반환한 전체 내용이 그대로 남는다."""
+    def format(self, record: logging.LogRecord) -> str:
+        formatted = super().format(record)
+        if "[REJECT" in formatted:
+            cut = formatted.find(" | GATES")
+            if cut != -1:
+                return formatted[:cut]
+        return formatted
+
 _LOG_CTX: dict[str, object] = {"date_str": datetime.now().strftime("%Y%m%d")}
 
 import threading
@@ -809,6 +924,14 @@ def _rotate_logging_for_date(date_str: str) -> None:
     for _handler in logging.getLogger().handlers:
         if not any(isinstance(f, _SuppressLibLogs) for f in getattr(_handler, "filters", [])):
             _handler.addFilter(_suppress_filter)
+        # type()을 정확히 비교 - FileHandler는 StreamHandler의 서브클래스라
+        # isinstance(h, StreamHandler)로는 콘솔 핸들러만 골라낼 수 없다.
+        if type(_handler) is logging.StreamHandler:
+            if not any(isinstance(f, _SuppressConsoleCheckLogs) for f in getattr(_handler, "filters", [])):
+                _handler.addFilter(_console_check_filter)
+            # FileHandler는 basicConfig가 준 공용 Formatter를 그대로 쓰고(전체 내용
+            # 보존), 콘솔 StreamHandler만 별도 인스턴스로 덮어써 REJECT를 잘라 보여준다.
+            _handler.setFormatter(_ConsoleTruncateRejectFormatter("%(asctime)s [%(levelname)s] %(message)s"))
 
     trade_logger = logging.getLogger("trade_events")
     trade_logger.setLevel(logging.INFO)
@@ -1907,15 +2030,42 @@ def _passes_intrabar_entry_gate(frame: pd.DataFrame, elapsed_seconds: float) -> 
     """미완성(인트라바) 3분봉을 매수 판단에 신뢰해도 되는지 여부.
     r003의 INTRABAR_MIN_ELAPSED_SECONDS/RSI/MFI/ADX 기준을 모두 통과해야 True.
     실패 시 호출자는 반드시 진짜 확정된 3분봉으로 폴백해야 한다 - 그렇지 않으면 실시간가
-    변동이 확정 종가 크로스(CLOSE_BB_UP_CROSS)로 오인되어 매수될 수 있다."""
+    변동이 확정 종가 크로스(CLOSE_BB_UP_CROSS)로 오인되어 매수될 수 있다.
+
+    RSI는 [2026-09-18]부터 2단계: INTRABAR_RSI_MIN~MAX(45~65)는 무조건 통과, MAX 초과
+    ~INTRABAR_RSI_EXT_MAX(65~75)는 RSI/MACD 상승 + 거래량 VOL_MA20 상회 + BB중간선
+    위 4조건을 전부 만족해야 통과, EXT_MAX 초과는 무조건 거부."""
     if elapsed_seconds < INTRABAR_MIN_ELAPSED_SECONDS:
         return False, f"INTRABAR_ELAPSED_{elapsed_seconds:.0f}s_LT_{INTRABAR_MIN_ELAPSED_SECONDS:.0f}s"
     if frame is None or frame.empty:
         return False, "INTRABAR_FRAME_EMPTY"
     cur = frame.iloc[-1]
     rsi = _num(cur, "RSI")
-    if pd.isna(rsi) or not (INTRABAR_RSI_MIN <= rsi <= INTRABAR_RSI_MAX):
-        return False, f"INTRABAR_RSI_{rsi:.1f}_OUT_OF_{INTRABAR_RSI_MIN:.0f}-{INTRABAR_RSI_MAX:.0f}"
+    if pd.isna(rsi) or rsi < INTRABAR_RSI_MIN or rsi > INTRABAR_RSI_EXT_MAX:
+        return False, f"INTRABAR_RSI_{rsi:.1f}_OUT_OF_{INTRABAR_RSI_MIN:.0f}-{INTRABAR_RSI_EXT_MAX:.0f}"
+    if rsi > INTRABAR_RSI_MAX:
+        # [2026-09-18] 65~75 확장 구간(사용자 요청) - 이미 강하게 상승 중인 종목의
+        # 인트라바 RSI가 기본 상한(65)을 넘었다고 무조건 거부하지 않고, RSI/MACD가
+        # 실제로 계속 오르고 있고(직전봉 대비) 거래량도 VOL_MA20을 웃돌며 가격이
+        # BB중간선 위인 경우에만 인트라바 데이터를 신뢰한다 - 4개 모두 충족해야 통과.
+        if len(frame) < 2:
+            return False, f"INTRABAR_RSI_{rsi:.1f}_EXT_COND_NOT_MET"
+        prev = frame.iloc[-2]
+        prev_rsi = _num(prev, "RSI")
+        cur_macd = _num(cur, "MACD")
+        prev_macd = _num(prev, "MACD")
+        vol = _num(cur, "volume")
+        vol_ma = _num(cur, "VOL_MA20")
+        cur_close = _num(cur, "close")
+        cur_bb_mid = _num(cur, "BB_MIDDLE")
+        ext_ok = (
+            not pd.isna(prev_rsi) and rsi > prev_rsi
+            and not any(pd.isna(v) for v in (cur_macd, prev_macd)) and cur_macd > prev_macd
+            and not any(pd.isna(v) for v in (vol, vol_ma)) and vol > vol_ma
+            and not any(pd.isna(v) for v in (cur_close, cur_bb_mid)) and cur_close > cur_bb_mid
+        )
+        if not ext_ok:
+            return False, f"INTRABAR_RSI_{rsi:.1f}_EXT_COND_NOT_MET"
     mfi = _num(cur, "MFI")
     if pd.isna(mfi) or not (INTRABAR_MFI_MIN <= mfi <= INTRABAR_MFI_MAX):
         return False, f"INTRABAR_MFI_{mfi:.1f}_OUT_OF_{INTRABAR_MFI_MIN:.0f}-{INTRABAR_MFI_MAX:.0f}"
@@ -2333,9 +2483,20 @@ def check_buy_condition_1min_hybrid_trigger(
         # [2026-09-07] 크로스가 BB_MID 위로 계속 유지 중(=유효한 추세 지속)인데도 BB_MID가
         # 후행지표라 갭이 계속 벌어져 고정 상한에 매 폴링 걸리는 문제 완화 - 크로스 후
         # 경과봉 수만큼 상한을 소폭 완화하되 CEILING_PCT로 무한 완화는 방지한다.
+        # [2026-09-18] uptrend_continuation 경로(추세 지속이 다른 지표로 이미 검증된
+        # 경우)는 신선한 크로스보다 높은 CEILING_UPTREND_PCT를 쓴다 - 1분봉 BB중간선이
+        # 급등을 못 따라가는 날(20260918 000500/043260 등 분석)엔 고정 1.1% 상한이
+        # 영구 차단으로 이어졌음(20260918 r001 Update log 참조).
+        is_uptrend_continuation = trigger_reason in (
+            "1MIN_UPTREND_CONTINUATION_3MIN_CTX", "1MIN_UPTREND_CONTINUATION",
+        )
+        gap_ceiling_pct = (
+            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT if is_uptrend_continuation
+            else HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT
+        )
         allowed_gap_pct = min(
             HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT + bars_since_cross * HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
-            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+            gap_ceiling_pct,
         )
         if bb_gap_pct > allowed_gap_pct:
             return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{allowed_gap_pct:.2f}%"
@@ -3125,6 +3286,14 @@ class TradingAPI:
                 continue
 
             side = str(pending.get("side", ""))
+
+            # [2026-09-18] 시장가+지정가 분할 매수(place_buy_order 참조)는 leg마다
+            # 별도 order_no를 가지므로 아래 단일-주문 전용 로직(order_no 1개 기준)을
+            # 타지 않고 전용 처리기로 위임한다.
+            if side == "buy" and pending.get("legs"):
+                self._refresh_split_buy_legs(code, pending, now)
+                continue
+
             pos = self.positions.get(code)
             status = self._fetch_today_order_status(code, side, now, str(pending.get("order_no", "")))
 
@@ -3369,6 +3538,261 @@ class TradingAPI:
 
         return max(0, min(qty_by_budget, qty_by_psbl))
 
+    def _refresh_split_buy_legs(self, code: str, pending: dict, now: datetime) -> None:
+        """시장가+지정가로 분할 제출된 신규 진입 매수(place_buy_order 참조)의 leg별
+        체결/재주문을 처리한다. 각 leg는 order_no가 서로 달라 독립적으로 상태를
+        조회해야 하므로, 단일 order_no를 가정하는 refresh_pending_orders의 일반
+        buy 경로 대신 이 전용 처리기를 탄다. 두 leg가 모두 종결(체결/취소/거부)되면
+        합산 결과로 _confirm_pending_buy를 한 번만 호출한다."""
+        legs = pending.get("legs") or []
+        nxt_tradeable_cache: bool | None = None
+
+        for leg in legs:
+            if leg.get("done"):
+                continue
+            order_no = str(leg.get("order_no", ""))
+            if not order_no:
+                leg["done"] = True
+                continue
+
+            status = self._fetch_today_order_status(code, "buy", now, order_no)
+            if status is None:
+                continue  # 다음 폴링에서 재시도
+
+            leg["last_status"] = status
+            filled_qty = int(status.get("filled_qty", 0))
+            remaining_qty = int(status.get("remaining_qty", 0))
+            rejected_qty = int(status.get("rejected_qty", 0))
+            order_qty = int(status.get("order_qty", leg.get("quantity", 0)))
+            cancel_yn = str(status.get("cancel_yn", ""))
+            terminal = remaining_qty <= 0 or cancel_yn == "Y" or rejected_qty >= order_qty
+
+            if leg.get("cancel_inflight"):
+                # 우리가 _request_leg_reprice로 취소를 요청한 leg - 확인되는 대로
+                # 재주문하거나(reprice_pending) 포기(giveup)하고 leg를 종결시킨다.
+                if terminal:
+                    if leg.get("reprice_pending"):
+                        if nxt_tradeable_cache is None:
+                            nxt_tradeable_cache = is_nxt_tradeable(code)
+                        self._resubmit_leg(code, leg, now, nxt_tradeable_cache)
+                    else:
+                        leg["done"] = True
+                continue
+
+            if terminal:
+                if (
+                    filled_qty <= 0
+                    and not leg.get("is_market_order")
+                    and isinstance(leg.get("submitted_at"), datetime)
+                    and (now - leg["submitted_at"]).total_seconds() < PENDING_BUY_GRACE_SECONDS
+                ):
+                    continue  # 브로커 상태 API 지연 가능성 - grace 기간 내엔 종결 처리 보류
+                leg["done"] = True
+                self._maybe_log_pending_progress(
+                    leg,
+                    f"  BUY leg closed | {code} | role={leg.get('role')} | filled={filled_qty}/{order_qty}",
+                    f"leg_closed:{filled_qty}:{order_qty}",
+                )
+                continue
+
+            if leg.get("is_market_order"):
+                # 시장가는 재주문 대상이 아님(이미 최우선 가격) - 정상적으로는 즉시
+                # 체결/거부로 terminal이 되므로, 오래 pending이면 경고만 남긴다.
+                submitted_at = leg.get("submitted_at")
+                if (
+                    isinstance(submitted_at, datetime)
+                    and (now - submitted_at).total_seconds() >= BUY_ORDER_STALE_WARN_SECONDS
+                ):
+                    log(
+                        f"  [BUY LEG STALE] {code} | role=market | "
+                        f"{int((now - submitted_at).total_seconds())}s 미체결 대기중 | 시장가인데 미체결 - 확인 필요"
+                    )
+                self._maybe_log_pending_progress(
+                    leg,
+                    f"  BUY leg pending | {code} | role=market | filled={filled_qty}/{order_qty}",
+                    f"leg_pending:{filled_qty}:{order_qty}",
+                )
+                continue
+
+            submitted_at = leg.get("submitted_at")
+            if (
+                isinstance(submitted_at, datetime)
+                and filled_qty <= 0
+                and int(leg.get("reprice_attempt", 0)) < BUY_ORDER_REPRICE_MAX_ATTEMPTS
+                and (now - submitted_at).total_seconds() >= BUY_ORDER_REPRICE_AFTER_SECONDS
+            ):
+                self._request_leg_reprice(code, leg, now)
+            else:
+                self._maybe_log_pending_progress(
+                    leg,
+                    f"  BUY leg pending | {code} | role={leg.get('role')} | filled={filled_qty}/{order_qty}",
+                    f"leg_pending:{filled_qty}:{order_qty}",
+                )
+
+        if not all(leg.get("done") for leg in legs):
+            return
+
+        total_requested = sum(int(leg.get("quantity", 0)) for leg in legs)
+        total_filled = sum(int((leg.get("last_status") or {}).get("filled_qty", 0)) for leg in legs)
+        norm_code = str(code).zfill(6)
+
+        if total_filled <= 0:
+            self._maybe_log_pending_progress(
+                pending,
+                f"BUY closed without fill | {code} | 분할매수 두 leg 모두 미체결로 종결",
+                "split_buy_closed_without_fill",
+            )
+            self.buy_inflight_codes.discard(norm_code)
+            self.pending_orders.pop(norm_code, None)
+            return
+
+        pos = self.positions.get(code)
+        if pos is None:
+            return  # 계좌 동기화 반영 전 - 다음 폴링에서 재시도
+
+        fill_amount = sum(
+            int((leg.get("last_status") or {}).get("filled_qty", 0))
+            * float((leg.get("last_status") or {}).get("avg_price", 0.0) or leg.get("requested_price", 0.0))
+            for leg in legs
+        )
+        avg_price = fill_amount / total_filled if total_filled > 0 else 0.0
+        pending["quantity"] = total_requested
+        self._confirm_pending_buy(code, pending, pos, {"filled_qty": total_filled, "avg_price": avg_price})
+
+    def _request_leg_reprice(self, code: str, leg: dict, now: datetime) -> None:
+        """분할매수 지정가 leg의 미체결 재주문 요청. 취소만 하고, 확인되면(다음 폴링에서
+        _refresh_split_buy_legs가 처리) reprice_pending 여부에 따라 재주문하거나 포기한다.
+        단일주문 경로의 _request_buy_reprice와 동일한 정책(추격상한/bid->ask->market
+        단계)을 leg 단위로 독립 적용한다."""
+        norm_code = str(code).zfill(6)
+        order_no = str(leg.get("order_no", ""))
+        order_org_no = str(leg.get("order_org_no", ""))
+        if not order_no or not order_org_no:
+            return
+
+        attempt = int(leg.get("reprice_attempt", 0)) + 1
+        exchange = str(leg.get("exchange", "KRX"))
+        market_div = "NX" if exchange == "NXT" else "J"
+        reference_price = float(leg.get("entry_reference_price") or leg.get("requested_price") or 0.0)
+        is_final_attempt = attempt >= BUY_ORDER_REPRICE_MAX_ATTEMPTS
+
+        bid_price, ask_price = _fetch_bid_ask_price(norm_code, market_div)
+        candidate = ask_price if attempt >= 2 else bid_price
+        candidate = candidate or bid_price or ask_price
+        if not candidate or candidate <= 0:
+            log(f"  [BUY REPRICE SKIP] {code} | leg={leg.get('role')} | 호가 조회 실패 - 다음 폴링에서 재시도")
+            return
+
+        give_up = False
+        if reference_price > 0:
+            max_price = reference_price * (1 + BUY_ORDER_REPRICE_MAX_CHASE_PCT / 100.0)
+            if candidate > max_price:
+                log(
+                    f"  [BUY REPRICE ABANDON] {code} | leg={leg.get('role')} | candidate={candidate:,.0f} > "
+                    f"max_chase={max_price:,.0f}(ref={reference_price:,.0f}+{BUY_ORDER_REPRICE_MAX_CHASE_PCT:.1f}%) "
+                    f"| 추격 포기, 취소만 진행"
+                )
+                give_up = True
+
+        if is_final_attempt and exchange != "NXT":
+            next_price_mode = "market"
+        else:
+            next_price_mode = "ask" if attempt >= 2 else "bid"
+
+        try:
+            cancel_result = dsf.order_rvsecncl(
+                env_dv=self.env_dv,
+                cano=self.cano,
+                acnt_prdt_cd=self.acnt_prdt_cd,
+                krx_fwdg_ord_orgno=order_org_no,
+                orgn_odno=order_no,
+                ord_dvsn="00",
+                rvse_cncl_dvsn_cd="02",
+                ord_qty=str(int(leg.get("quantity", 0))),
+                ord_unpr="0",
+                qty_all_ord_yn="Y",
+                excg_id_dvsn_cd=exchange,
+            )
+        except Exception as exc:
+            log(f"  [BUY REPRICE CANCEL ERROR] {code} | leg={leg.get('role')} | {exc}")
+            return
+
+        if not _order_succeeded(cancel_result):
+            log(f"  [BUY REPRICE CANCEL FAILED] {code} | leg={leg.get('role')} | {_extract_order_error_detail(cancel_result)}")
+            return
+
+        leg["reprice_attempt"] = attempt
+        leg["cancel_inflight"] = True
+        if give_up:
+            leg["reprice_pending"] = False
+            log(f"  [BUY REPRICE GIVEUP] {code} | leg={leg.get('role')} | attempt={attempt} | 취소 요청 완료, 재주문 없이 포기")
+        else:
+            leg["reprice_pending"] = True
+            leg["reprice_next_mode"] = next_price_mode
+            log(
+                f"  [BUY REPRICE CANCEL] {code} | leg={leg.get('role')} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+                f"next_mode={next_price_mode} | 취소 요청 완료, 확인되는 대로 재주문"
+            )
+
+    def _resubmit_leg(self, code: str, leg: dict, now: datetime, nxt_tradeable: bool) -> None:
+        """_request_leg_reprice가 요청한 취소가 확인된 뒤 새 가격/방식으로 leg를 재주문한다.
+        단일주문 경로의 _resubmit_repriced_buy_order와 동일하되, 실패해도 pending_orders
+        전체를 정리하지 않고 이 leg만 done 처리한다(다른 leg는 독립적으로 계속 진행)."""
+        norm_code = str(code).zfill(6)
+        price_mode = str(leg.get("reprice_next_mode", "bid"))
+        qty = int(leg.get("quantity", 0))
+        exchange = str(leg.get("exchange", "KRX"))
+        market_div = "NX" if exchange == "NXT" else "J"
+        reference_price = float(leg.get("entry_reference_price") or 0.0)
+        attempt = int(leg.get("reprice_attempt", 0))
+
+        affordable_qty = self.get_affordable_buy_qty(code, reference_price or 1.0, now, nxt_tradeable)
+        qty = min(qty, int(affordable_qty))
+        if qty <= 0:
+            log(f"  [BUY REPRICE ABORT] {code} | leg={leg.get('role')} | 재주문 여력 부족 - 포기")
+            leg["done"] = True
+            return
+
+        if price_mode == "market" and exchange != "NXT":
+            ord_dvsn, ord_unpr, price_for_log = "01", "0", None
+        else:
+            bid_price, ask_price = _fetch_bid_ask_price(norm_code, market_div)
+            candidate = ask_price if price_mode == "ask" else bid_price
+            candidate = candidate or bid_price or ask_price
+            if not candidate or candidate <= 0:
+                log(f"  [BUY REPRICE SKIP] {code} | leg={leg.get('role')} | 호가 조회 실패 - 다음 폴링에서 재시도")
+                return  # leg 그대로 유지(reprice_pending=True) -> 다음 폴링에서 재시도
+            ord_dvsn, ord_unpr, price_for_log = "00", str(int(round(candidate))), candidate
+
+        order_result = self._submit_buy_order_cash(code, qty, ord_dvsn, ord_unpr, exchange, price_for_log or 0.0)
+        if order_result is None or not _order_succeeded(order_result):
+            detail = _extract_order_error_detail(order_result) if order_result is not None else "SUBMIT_EXCEPTION"
+            log(f"  [BUY REPRICE RESUBMIT FAILED] {code} | leg={leg.get('role')} | {detail}")
+            leg["done"] = True
+            return
+
+        new_price = float(_extract_order_price(order_result) or price_for_log or reference_price)
+        leg.update({
+            "quantity": qty,
+            "submitted_at": now,
+            "requested_price": new_price,
+            "order_no": _extract_order_number(order_result),
+            "order_org_no": _extract_order_org_no(order_result),
+            "order_time": _extract_order_time(order_result),
+            "cancel_inflight": False,
+            "reprice_pending": False,
+        })
+        leg.pop("last_status_signature", None)
+        leg.pop("last_status", None)
+        log(
+            f"  [BUY REPRICE RESUBMIT] {code} | leg={leg.get('role')} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+            f"mode={price_mode} | price={new_price:,.0f} | order_no={leg['order_no'] or 'UNKNOWN'}"
+        )
+        log_trade(
+            f"{_symbol_log_label(code, str(leg.get('code_name', '')))} | BUY REPRICE RESUBMIT | qty={qty} | "
+            f"leg={leg.get('role')} | mode={price_mode} | price={new_price:,.0f} | order_no={leg['order_no'] or 'UNKNOWN'}"
+        )
+
     def _request_buy_reprice(self, code: str, pending: dict, now: datetime) -> None:
         """미체결 매수 지정가 주문을 취소 요청한다. 취소가 확인되면(closed without fill,
         refresh_pending_orders에서 처리) reprice_pending 여부에 따라 새 가격으로 재주문하거나
@@ -3541,6 +3965,28 @@ class TradingAPI:
             f"price={new_price or 0:,.0f} | order_no={new_order_no or 'UNKNOWN'}"
         )
 
+    def _submit_buy_order_cash(self, code: str, qty: int, ord_dvsn: str, ord_unpr: str, exchange: str, log_price: float) -> dict | None:
+        """매수 주문 제출(시장가/지정가 공용, place_buy_order/_resubmit_leg에서 재사용).
+        dry_run이면 가짜 체결 응답을 반환. 예외 발생 시 None(호출측이 'BUY error' 로그)."""
+        if self.dry_run:
+            log(f"DRY_RUN BUY | {code} | qty={qty} | ord_dvsn={ord_dvsn} | price={log_price:,.0f} | exch={exchange}")
+            return {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": str(int(round(log_price)))}
+        try:
+            return dsf.order_cash(
+                env_dv=self.env_dv,
+                ord_dv="buy",
+                cano=self.cano,
+                acnt_prdt_cd=self.acnt_prdt_cd,
+                pdno=code,
+                ord_dvsn=ord_dvsn,
+                ord_qty=str(qty),
+                ord_unpr=ord_unpr,
+                excg_id_dvsn_cd=exchange,
+            )
+        except Exception as exc:
+            log(f"BUY error | {code} | {exc}")
+            return None
+
     def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "", pyramid: bool = False) -> bool:
         norm_code = str(code).zfill(6)
         if not pyramid and self.has_buy_exposure(norm_code):
@@ -3559,79 +4005,112 @@ class TradingAPI:
         if order_spec is None:
             return False
 
-        market_div = "NX" if order_spec["exchange"] == "NXT" else "J"
-        bid_price, _ = _fetch_bid_ask_price(norm_code, market_div)
+        exchange = order_spec["exchange"]
+        market_div = "NX" if exchange == "NXT" else "J"
+        bid_price, ask_price = _fetch_bid_ask_price(norm_code, market_div)
         limit_price = int(round(bid_price)) if (bid_price and bid_price > 0) else int(round(price))
-        ord_dvsn = "00"  # 매수1호가 지정가 주문
-        ord_unpr = str(limit_price)
-        self.buy_inflight_codes.add(norm_code)
-        if self.dry_run:
-            log(f"DRY_RUN BUY | {code} | qty={qty} | price={price:,.0f} | session={session} | exch={order_spec['exchange']}")
-            order_result = {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": str(int(round(price)))}
+        cross_price = int(round(ask_price)) if (ask_price and ask_price > 0) else limit_price
+
+        # [2026-09-18] 신규 진입(비-피라미딩) 매수를 시장가 leg(즉시체결)+매수1호가
+        # 지정가 leg(추격재주문)로 분할한다 - 183300 코미코 사례(지정가 전량이 급등을
+        # 못 따라가 체결까지 61초)처럼 느린 체결을 완화(r001/r003 Update log 2026-09-18
+        # 참조). 수량이 1주뿐이면 분할해도 지정가 쪽에 남는 게 없어 무의미하므로 그대로
+        # 시장가 1건으로 즉시 매수. 피라미딩은 기존과 동일하게 매수1호가 지정가 단일 주문.
+        if pyramid or not ENABLE_BUY_SPLIT_MARKET_LIMIT or qty < 2:
+            role = "market" if (not pyramid and qty <= 1 and ENABLE_BUY_SPLIT_MARKET_LIMIT) else "limit"
+            legs_spec = [(role, qty)]
         else:
-            try:
-                order_result = dsf.order_cash(
-                    env_dv=self.env_dv,
-                    ord_dv="buy",
-                    cano=self.cano,
-                    acnt_prdt_cd=self.acnt_prdt_cd,
-                    pdno=code,
-                    ord_dvsn=ord_dvsn,
-                    ord_qty=str(qty),
-                    ord_unpr=ord_unpr,
-                    excg_id_dvsn_cd=order_spec["exchange"],
-                )
-            except Exception as exc:
-                self.buy_inflight_codes.discard(norm_code)
-                log(f"BUY error | {code} | {exc}")
-                return False
-        if not _order_succeeded(order_result):
+            market_qty = int(round(qty * BUY_SPLIT_MARKET_RATIO))
+            market_qty = max(1, min(market_qty, qty - 1))
+            legs_spec = [("market", market_qty), ("limit", qty - market_qty)]
+
+        self.buy_inflight_codes.add(norm_code)
+        legs: list[dict] = []
+        for role, leg_qty in legs_spec:
+            if leg_qty <= 0:
+                continue
+            if role == "market" and exchange != "NXT":
+                ord_dvsn, ord_unpr, log_price, is_market_order = "01", "0", price, True
+            elif role == "market":
+                # NXT는 시장가 미지원 취급(기존 매도/재주문 정책과 동일) - 매도1호가
+                # 크로싱 지정가로 즉시체결에 가깝게 낸다.
+                ord_dvsn, ord_unpr, log_price, is_market_order = "00", str(cross_price), cross_price, False
+            else:
+                ord_dvsn, ord_unpr, log_price, is_market_order = "00", str(limit_price), limit_price, False
+
+            order_result = self._submit_buy_order_cash(code, leg_qty, ord_dvsn, ord_unpr, exchange, log_price)
+            if order_result is None:
+                continue
+            if not _order_succeeded(order_result):
+                error_detail = _extract_order_error_detail(order_result)
+                log(f"BUY failed | {code} | qty={leg_qty} | role={role} | {error_detail}")
+                continue
+
+            requested_price = float(_extract_order_price(order_result) or log_price)
+            leg = {
+                "role": role,
+                "quantity": int(leg_qty),
+                "order_no": _extract_order_number(order_result),
+                "order_org_no": _extract_order_org_no(order_result),
+                "order_time": _extract_order_time(order_result),
+                "requested_price": requested_price,
+                "entry_reference_price": requested_price,
+                "exchange": exchange,
+                "code_name": code_name,
+                "submitted_at": now,
+                "reprice_attempt": 0,
+                "cancel_inflight": False,
+                "reprice_pending": False,
+                "is_market_order": is_market_order,
+                "done": False,
+            }
+            legs.append(leg)
+            detail_suffix = f" | {buy_detail}" if buy_detail else ""
+            role_suffix = f" | role={role}" if len(legs_spec) > 1 else ""
+            code_label = _format_code_label(code, code_name)
+            log(
+                f"BUY submitted | {code_label} | qty={leg_qty} | requested={requested_price:,.0f}{role_suffix} | "
+                f"session={session} | exch={exchange} | order_no={leg['order_no'] or 'UNKNOWN'}{detail_suffix}"
+            )
+            log_trade(
+                f"BUY submitted | {code_label} | qty={leg_qty} | requested={requested_price:,.0f}{role_suffix} | "
+                f"session={session} | exch={exchange} | order_no={leg['order_no'] or 'UNKNOWN'}{detail_suffix}"
+            )
+            _log_trade_event_banner(
+                event="BUY SUBMITTED",
+                code=code,
+                qty=int(leg_qty),
+                price=requested_price,
+                detail=f"{buy_detail}{role_suffix}" if buy_detail else role_suffix.strip(" |"),
+                code_name=code_name,
+            )
+
+        if not legs:
             self.buy_inflight_codes.discard(norm_code)
-            error_detail = _extract_order_error_detail(order_result)
-            log(f"BUY failed | {code} | qty={qty} | {error_detail}")
             return False
 
-        requested_price = _extract_order_price(order_result) or price
-        order_no = _extract_order_number(order_result)
-        order_time = _extract_order_time(order_result)
-        order_org_no = _extract_order_org_no(order_result)
+        total_qty = sum(leg["quantity"] for leg in legs)
+        primary_price = legs[0]["requested_price"]
         self.pending_orders[norm_code] = {
             "side": "buy",
-            "quantity": int(qty),
+            "quantity": total_qty,
             "submitted_at": now,
             "session": session,
-            "requested_price": float(requested_price),
-            "entry_reference_price": float(requested_price),  # 추격 상한 계산용 원 신호가, 재주문해도 불변
-            "exchange": order_spec["exchange"],
-            "order_no": order_no,
-            "order_org_no": order_org_no,
-            "order_time": order_time,
+            "requested_price": primary_price,
+            "entry_reference_price": primary_price,  # 추격 상한 계산용 원 신호가, 재주문해도 불변
+            "exchange": exchange,
+            "order_no": legs[0]["order_no"],
+            "order_org_no": legs[0]["order_org_no"],
+            "order_time": legs[0]["order_time"],
             "buy_detail": buy_detail,
             "code_name": code_name,
             "pyramid": pyramid,
             "reprice_attempt": 0,
             "cancel_inflight": False,
             "reprice_pending": False,
+            "legs": legs if len(legs) > 1 else None,
         }
         self._mark_trade_lock(norm_code, now)
-        detail_suffix = f" | {buy_detail}" if buy_detail else ""
-        code_label = _format_code_label(code, code_name)
-        log(
-            f"BUY submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
-            f"session={session} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}{detail_suffix}"
-        )
-        log_trade(
-            f"BUY submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
-            f"session={session} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}{detail_suffix}"
-        )
-        _log_trade_event_banner(
-            event="BUY SUBMITTED",
-            code=code,
-            qty=int(qty),
-            price=float(requested_price),
-            detail=buy_detail,
-            code_name=code_name,
-        )
         traded = self.live_state.setdefault("traded_today", set())
         traded.add(norm_code)
         self.persist_live_state()
