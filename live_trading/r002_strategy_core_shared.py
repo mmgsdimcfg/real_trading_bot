@@ -18,6 +18,60 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-23] type=fix owner=claude
+    summary: 사용자 요청(204620 글로벌텍스프리 2026-09-23 09:33 매도 지연 사례 - "매수/매도 컨셉 재검토" 전체
+      분석 중 재발견 + Codex 검토) - check_sell_condition()의 price_cross_down 분기에서 즉시손절
+      (ma5_bb_down_cross_immediate_pnl, 기본 -0.7%) 체크가 min_pnl(0.0%) 차단보다 뒤에 있어 영원히 도달
+      불가능하던 죽은 코드를 수정 - 즉시손절 체크를 먼저 수행하도록 순서를 바꿨다. 이 문제 자체는
+      2026-09-21 세션에서 이미 발견/기록됐지만(project 메모 참조) 그때는 고치지 않고 넘어갔던 것.
+      pnl<=-0.7% 구간에서만 동작이 바뀐다(기존: 항상 BLOCKED_PNL로 반려 -> 신규: 즉시 손절, score>=1이면
+      LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_{score} 아니면 LIVE_PRICE_BB_DOWN_CROSS). pnl>=0.0% 구간(기존
+      BLOCKED_PNL/AUX 점수별 최소수익 요건)은 전부 동일 - 경계값(0%, -0.5%, -0.69%, -0.70%, -0.71%, -2%)
+      단위 테스트로 확인. g003은 이 함수를 shared_check_sell_condition으로 직접 import해 쓰므로(g003
+      check_sell_condition_r76_sim) 별도 수정 없이 동일하게 반영된다 - PaperStrategyTracker(BASIC_CROSS/
+      MULTI_FILTER 비교 전용)의 로컬 check_sell_condition은 다른 함수라 영향 없음.
+    impact: common (r003 실전/g003 백테스트 공용, _020_shared_reversal_sell을 통해 라이브 매도 경로에 반영)
+    compatibility: breaking (pnl<=-0.7% + BB중심선 하향돌파 live cross_down 신호가 겹치는 순간에만 매도
+      빈도가 늘어남 - 이전에는 이 조합에서 절대 매도되지 않았음)
+- [2026-09-21] type=refactor owner=claude
+    summary: r003 매수 조건을 번호 붙은 조건 객체(r005_buy_conditions)로 분리하면서 run_3min_context_pipeline의
+      앞/뒤 단계를 공용 함수 build_context_eval(봉 수/지표 준비 + BuyEvalContext 생성)과
+      evaluate_context_score(가점 합산 + 개장 직후 보호 + 임계값)로 추출. run_3min_context_pipeline은 시그니처/
+      결과(통과 여부, 사유 문자열)가 그대로라 g003 등 기존 호출자는 영향 없음(분리 전후 프레임 대량 비교로 확인).
+    impact: common (r003 실전/g003 백테스트 공용)
+    compatibility: backward-compatible
+- [2026-09-21] type=feat owner=claude
+    summary: 1차 익절 상한 + 급등 사다리 익절용 공용 함수 4개 추가(r003 실전/g003 백테스트가 같은 함수를 호출해
+      복사본 드리프트 방지). compute_staged_tp1_target_pct(TP1 목표를 ATR 익절선=트레일 무장선으로 상한),
+      update_recent_price_samples(종목별 최근 (시각,가격) 표본 갱신), detect_price_surge(60초 내 최저가 대비
+      상승폭 >= max(절대 하한, ATR% x 배수) + BB 상단 돌파/거래량 확인), next_surge_ladder_action(TP1 체결가
+      기준 +2%/+4% 사다리의 다음 단계와 수량 결정; TP2 미실행 상태에서 +4% 갭이면 TP2+TP3 합산 잔량 전량).
+      모두 순수 함수(설정은 인자로 받음)라 r001을 import하지 않는다. 상세 배경은 r001 Update log 참조.
+    impact: common (r003 실전/g003 백테스트 공용)
+    compatibility: backward-compatible (신규 함수 추가만, 기존 함수 변경 없음)
+- [2026-09-20] type=refactor owner=claude
+    summary: 사용자 결정(죽은 코드 삭제 / r002로 이동 / 같은 날 재매수 허용 / 거래량 하한 통일 /
+      bb_mid_downtrend_block은 별도 전략 변경) 반영.
+      (1) r003/g003에 따로 있던 하이브리드 1분봉 트리거(check_buy_condition_1min_hybrid_trigger,
+      g003 _sim 복사본)와 개장 갭/거래량 게이트(passes_opening_gap_volume_gate, g003 _sim 복사본)를
+      이 파일의 공용 함수로 통합 - 실전/백테스트가 같은 코드를 호출해 복사본 드리프트(2026-09-07/
+      09-09/09-18에 반복 발생)를 원천 차단. 옮기기 전 HEAD의 r003/g003 복사본 3벌과 신규 함수를
+      실제 1분봉(3일 x 12종목 9,294건)/그리드(2,268건)로 비교해 불일치 0건 확인.
+      (2) 죽은 코드 삭제: check_entry_condition_1min/_entry_score_1min(1분봉 Entry Score 게이트 전용)과
+      EMA_9 컬럼(그 함수만 사용). 3분봉 단독 파이프라인(check_buy_condition/
+      run_buy_condition_pipeline_comment)과 BUY_GATE_CONDITIONS는 g003의 전략 비교 트래커
+      (MULTI_FILTER)가 쓰므로 유지.
+      (3) 거래량 하한 통일: 트리거에서 1분봉 전용 하한(340/500/비율 0.10)을 삭제하고 3분봉
+      min_liquidity_safety를 유일한 하한으로 함(전략 변경).
+      (4) bb_mid_downtrend_block은 r001 ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK(기본 True=현행 유지)로
+      별도 스위치화 - 최근 라이브 5거래일 단독 차단 0건이지만 다른 게이트가 논리적으로 포함하지는
+      않아(Codex 검토) 끄는 결정은 백테스트/섀도 검증 뒤로 분리.
+      (5) _score_volume_ratio의 결과가 같은 중복 분기(>=1.2 -> 1점, >=0.7 -> 1점) 병합(40,014개
+      입력 변경 전후 비교 불일치 0건).
+    impact: common (r003 실전/g003 백테스트 공용)
+    compatibility: (1)(2)(4)(5) backward-compatible / (3) breaking - 1분봉 하한만 막고 3분봉 하한은
+      통과하던 틱이 이제 트리거를 통과한다(최근 라이브 5거래일 기준 점수 단계 도달 217틱, 그 뒤
+      점수 10점/2회 연속 확인이 다시 걸러냄)
 - [2026-09-17] type=fix owner=claude
     summary: 사용자가 "예수금 부족으로 매수가 막힌 경우가 있나" 질의를 계기로 실매매
       매수 0건이 여러 날 이어지는 것을 발견, 확대 요청("20년차 트레이더 관점에서 현재
@@ -334,6 +388,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 import pandas as pd
@@ -383,14 +438,7 @@ from r001_define_config import (
     ENABLE_PRE_CROSS_ACCUM_BAR_CHECK,
     PRE_CROSS_ACCUM_LOOKBACK_BARS,
     PRE_CROSS_ACCUM_VOL_RATIO_MIN,
-    EMA_9_PERIOD,
     EMA_20_PERIOD,
-    ENTRY_PREV_HIGH_LOOKBACK_BARS,
-    ENTRY_EMA_CROSS_SCORE,
-    ENTRY_CLOSE_ABOVE_EMA9_SCORE,
-    ENTRY_PREV_HIGH_BREAKOUT_SCORE,
-    ENTRY_VOLUME_ABOVE_MA_SCORE,
-    ENTRY_SCORE_THRESHOLD,
     EMA_60_PERIOD,
     EMA_TREND_ALIGN_SCORE,
     PRE_CROSS_ACCUM_SCORE,
@@ -400,6 +448,19 @@ from r001_define_config import (
     BB_UPPER_ROOM_ATR_TIER1,
     BB_UPPER_ROOM_ATR_TIER2,
     DI_SPREAD_MIN_REQUIRED,
+    ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK,
+    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS,
+    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
+    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
+    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
+    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT,
+    OPENING_GAP_GATE_WINDOW_MINUTES,
+    OPENING_GAP_MIN_PCT,
+    OPENING_GAP_MAX_PCT,
+    OPENING_GAP_HARD_FLOOR_PCT,
+    OPENING_MIN_EARLY_VOLUME_RATIO,
 )
 
 
@@ -462,6 +523,144 @@ def update_timed_condition_state(
     except Exception:
         state["start"] = ts
         return 0.0
+
+
+def compute_staged_tp1_target_pct(
+    atr_pct: float,
+    atr_tp_pct: float,
+    *,
+    staged_tp1_pct: float,
+    tp1_atr_multiplier: float,
+    cap_at_atr_tp: bool,
+) -> tuple[float, float]:
+    """1차 분할익절 목표(소수, 0.03=+3%)와 그 ATR 동적 성분(로그용)을 반환한다.
+
+    기본 목표 = max(staged_tp1_pct, ATR% x tp1_atr_multiplier). cap_at_atr_tp=True면 ATR 익절선
+    (atr_tp_pct = ATR% x ATR_TAKE_PROFIT_MULTIPLIER = TP_EXTENSION 트레일 무장선)을 상한으로 두어,
+    TP1이 트레일 무장보다 늦어져 1차 분할 없이 트레일 전량 매도로 넘어가는 것을 막는다(ATR%>2.5%
+    고변동 종목은 ATR 동적 목표가 이미 무장선보다 낮아 상한이 걸리지 않는다). ATR을 모르면(NaN)
+    staged_tp1_pct 그대로. 반환: (tp1_target_pct, atr_based_pct) - ATR 미상이면 atr_based_pct는 NaN.
+    """
+    atr_based_pct = atr_pct * tp1_atr_multiplier if not pd.isna(atr_pct) else float("nan")
+    target = max(staged_tp1_pct, atr_based_pct) if not pd.isna(atr_based_pct) else staged_tp1_pct
+    if cap_at_atr_tp and not pd.isna(atr_tp_pct) and atr_tp_pct > 0:
+        target = min(target, atr_tp_pct)
+    return target, atr_based_pct
+
+
+def update_recent_price_samples(
+    samples_by_code: dict[str, list[tuple[object, float]]],
+    code: str,
+    ts: object,
+    price: float,
+    keep_seconds: float,
+) -> list[tuple[object, float]]:
+    """종목별 최근 (시각, 가격) 표본에 현재 틱을 추가하고 keep_seconds보다 오래된 표본은 버린다.
+
+    표본은 프로세스 메모리에만 있다(재시작하면 비어서 시작 -> 표본이 쌓일 때까지 급등 판정은 False로
+    보수적으로 동작). 정렬된(오래된 것 먼저) 표본 리스트를 반환한다.
+    """
+    samples = samples_by_code.get(code) or []
+    if price is not None and price > 0:
+        samples.append((ts, float(price)))
+    try:
+        samples = [(t, p) for (t, p) in samples if (ts - t).total_seconds() <= keep_seconds]
+    except Exception:
+        samples = [(ts, float(price))] if price is not None and price > 0 else []
+    samples_by_code[code] = samples
+    return samples
+
+
+def detect_price_surge(
+    samples: list[tuple[object, float]],
+    now: object,
+    price: float,
+    atr_pct: float,
+    bb_upper: float,
+    volume: float,
+    vol_ma: float,
+    *,
+    lookback_seconds: float,
+    speed_min_pct: float,
+    speed_atr_mult: float,
+    volume_ratio_min: float,
+    min_confirms: int,
+) -> tuple[bool, str]:
+    """급등 여부와 판정 근거 문자열(로그용)을 반환한다.
+
+    급등 = (속도, 필수) 최근 lookback_seconds 내 최저가 대비 현재가 상승폭이
+           max(speed_min_pct, ATR% x speed_atr_mult) 이상
+         + (확인) BB 상단 돌파(현재가 > BB_UPPER), 봉 거래량 >= VOL_MA20 x volume_ratio_min 중
+           min_confirms개 이상 충족.
+    속도 기준을 ATR%로 정규화해, 평소 잘 흔들리는 종목의 정상 변동을 급등으로 오인하지 않게 한다.
+    표본이 2개 미만이면(재시작 직후 등) 판정 불가로 False.
+    """
+    if price is None or price <= 0:
+        return False, "NO_PRICE"
+    window: list[float] = []
+    for t, p in samples:
+        try:
+            if 0.0 <= (now - t).total_seconds() <= lookback_seconds and p > 0:
+                window.append(float(p))
+        except Exception:
+            continue
+    if len(window) < 2:
+        return False, f"NO_SAMPLES(n={len(window)})"
+
+    low = min(window)
+    speed = price / low - 1.0
+    speed_need = max(speed_min_pct, speed_atr_mult * atr_pct) if not pd.isna(atr_pct) else speed_min_pct
+    speed_ok = speed >= speed_need
+    bb_ok = (not pd.isna(bb_upper)) and bb_upper > 0 and price > bb_upper
+    vol_ratio = (
+        volume / vol_ma
+        if (not pd.isna(volume) and not pd.isna(vol_ma) and vol_ma > 0)
+        else float("nan")
+    )
+    vol_ok = (not pd.isna(vol_ratio)) and vol_ratio >= volume_ratio_min
+    confirms = int(bb_ok) + int(vol_ok)
+    is_surge = speed_ok and confirms >= min_confirms
+    detail = (
+        f"speed={speed*100:.2f}%(need>={speed_need*100:.2f}%,low={low:,.0f},{lookback_seconds:.0f}s,n={len(window)}) "
+        f"bb_break={bb_ok}(bb_up={bb_upper:,.0f}) "
+        f"vol_ratio={vol_ratio:.2f}(need>={volume_ratio_min:.2f}) confirms={confirms}/{min_confirms}"
+    )
+    return is_surge, detail
+
+
+def next_surge_ladder_action(
+    price: float,
+    base_price: float,
+    remaining_qty: int,
+    entry_qty: int,
+    tp2_done: bool,
+    tp3_done: bool,
+    *,
+    tp2_pct: float,
+    tp3_pct: float,
+    tp2_ratio: float,
+) -> tuple[str, int, float] | None:
+    """급등 사다리 익절의 다음 실행 단계를 결정한다. 실행할 단계가 없으면 None.
+
+    base_price는 1차 익절 체결가. 반환: ("TP2"|"TP3", 매도수량, 그 단계 목표가) - 한 번에 한 단계만.
+    - TP3: price >= base x (1+tp3_pct) 이면 잔량 전량. TP2가 아직이어도 TP2+TP3를 합쳐 이 틱에 잔량
+      전량을 청산한다(급등이 한 틱에 +4%를 넘어도, 부분 매도 뒤 쿨다운으로 TP3가 밀려 놓치지 않도록).
+      호출측은 TP3 실행 시 tp2_done/tp3_done을 모두 True로 둔다.
+    - TP2: price >= base x (1+tp2_pct) 이면 진입수량 x tp2_ratio(최소 1주)를 매도하되 TP3용 1주는
+      남긴다. 잔량이 1주뿐이라 나눌 수 없으면 TP2는 건너뛰고 TP3(또는 트레일)가 처리한다.
+    """
+    if base_price <= 0 or remaining_qty <= 0 or (tp2_done and tp3_done):
+        return None
+    tp2_price = base_price * (1.0 + tp2_pct)
+    tp3_price = base_price * (1.0 + tp3_pct)
+    if (not tp3_done) and price >= tp3_price:
+        return "TP3", int(remaining_qty), tp3_price
+    if (not tp2_done) and price >= tp2_price:
+        base_qty = entry_qty if entry_qty > 0 else remaining_qty
+        qty = min(max(1, int(round(base_qty * tp2_ratio))), int(remaining_qty) - 1)
+        if qty >= 1:
+            return "TP2", qty, tp2_price
+    return None
 
 
 def _compute_bb_slope_pct(frame: pd.DataFrame, lookback: int = BB_SLOPE_LOOKBACK_BARS) -> float:
@@ -578,8 +777,6 @@ def _score_volume_ratio(ctx: BuyEvalContext) -> int:
         return 3
     if vol_ratio >= 1.5:
         return 2
-    if vol_ratio >= 1.2:
-        return 1
     if vol_ratio >= 0.7:
         return 1
     return 0
@@ -739,7 +936,7 @@ def _score_bb_upper_room_atr(ctx: BuyEvalContext) -> int:
 BUY_SCORE_RULES: list[BuyScoreRule] = [
     BuyScoreRule("rsi_band", 2, "RSI 구간 점수 (50~65=2점, 45~50/65~70=1점)", (), _score_rsi_band),
     BuyScoreRule("ema_trend_align", EMA_TREND_ALIGN_SCORE, "장기 추세 정합성: EMA20 > EMA60(3분봉) → 상위 추세 우상향", ("EMA_TREND_ALIGN_SCORE",), _score_ema_trend_align),
-    BuyScoreRule("volume_ratio", 3, "거래량 비율 점수 (VOL_MA20 대비 >=2.0=3점, >=1.5=2점, >=1.2 또는 >=0.7=1점)", (), _score_volume_ratio),
+    BuyScoreRule("volume_ratio", 3, "거래량 비율 점수 (VOL_MA20 대비 >=2.0=3점, >=1.5=2점, >=0.7=1점)", (), _score_volume_ratio),
     BuyScoreRule("adx_strength", 3, "[R77-D] ADX+DI 방향성 점수 (+DI>-DI 필수: ADX>=30&스프레드>=15=3점, ADX>=25=2점, 그 외 0점)", ("ADX_DI_SCORE_MIN_ADX", "ADX_DI_SCORE_STRONG_ADX", "ADX_DI_SCORE_STRONG_SPREAD"), _score_adx_strength),
     BuyScoreRule("vwap_position", 2, "VWAP 대비 현재가 위치 (VWAP*1.002 초과=2점, VWAP 초과=1점)", (), _score_vwap_position),
     BuyScoreRule("bb_width_expansion", 1, "BB 폭 확장: 스퀴즈 해소 → 추세 발생 초기 신호", (), _score_bb_width_expansion),
@@ -1395,10 +1592,71 @@ def run_buy_condition_pipeline_comment(
 # (bb_mid_cross_up)와 캔들/추격가드(candle_bullish_and_chase_guard)는 호출측이 1분봉
 # 자체 기준(check_buy_condition_1min)으로 이미 확인했으므로 제외하고, 나머지 3분봉
 # 컨텍스트 게이트(추세/매집/공간/모멘텀/유동성)만 재사용한다.
+# [2026-09-20] bb_mid_downtrend_block은 r001 ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK(기본 True=포함)로
+# 별도 전략 변경 스위치를 둔다 - 최근 라이브 5거래일 단독 차단 0건이었지만 다른 게이트가 논리적으로
+# 포함하지는 않아(Codex 검토) 기본 동작은 그대로 두고 백테스트/섀도 검증 후 판단하도록 분리했다.
+_HYBRID_EXCLUDED_GATE_NAMES = ("bb_mid_cross_up", "candle_bullish_and_chase_guard") + (
+    () if ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK else ("bb_mid_downtrend_block",)
+)
 HYBRID_3MIN_CONTEXT_GATES: list[BuyGateCondition] = [
     gate for gate in BUY_GATE_CONDITIONS
-    if gate.name not in ("bb_mid_cross_up", "candle_bullish_and_chase_guard")
+    if gate.name not in _HYBRID_EXCLUDED_GATE_NAMES
 ]
+
+
+def build_context_eval(
+    frame: pd.DataFrame,
+    now: pd.Timestamp,
+    live_price: float,
+    cross_info: dict[str, object],
+    config: R76StrategyConfig,
+) -> tuple[BuyEvalContext | None, str]:
+    """3분봉 컨텍스트 판정 준비 단계: 봉 수/지표 산출 여부를 확인하고 BuyEvalContext를 만든다.
+
+    run_3min_context_pipeline(g003 포함 기존 호출자)과 r005_buy_conditions(_009)가 같은 구현을 쓰도록
+    run_3min_context_pipeline의 앞부분을 그대로 추출한 것이다(2026-09-21, 동작 불변). 준비가 안 됐으면
+    (None, 사유), 됐으면 (BuyEvalContext, "")를 반환한다."""
+    if len(frame) < 2:
+        return None, "HYBRID_3MIN_CTX_INSUFFICIENT_BARS"
+
+    cur = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    cur_bb = _num(cur, "BB_MIDDLE")
+    cur_bb_upper = _num(cur, "BB_UPPER")
+    prev_bb = _num(prev, "BB_MIDDLE")
+
+    if any(pd.isna(v) for v in (cur_bb, cur_bb_upper, prev_bb)):
+        return None, "HYBRID_3MIN_CTX_MISSING_INDICATOR"
+
+    ctx = BuyEvalContext(
+        frame=frame, now=now, live_price=live_price, cross_info=cross_info, config=config,
+        cur=cur, prev=prev, cur_bb=cur_bb, cur_bb_upper=cur_bb_upper, prev_bb=prev_bb,
+        bb_slope_pct=_compute_bb_slope_pct(frame),
+    )
+    return ctx, ""
+
+
+def evaluate_context_score(
+    ctx: BuyEvalContext,
+    now: pd.Timestamp,
+    config: R76StrategyConfig,
+) -> tuple[bool, str]:
+    """3분봉 컨텍스트 판정 마무리 단계: 가점 합산 + 개장 직후 보호 + 최종 점수 임계값.
+
+    run_3min_context_pipeline의 뒷부분을 그대로 추출한 것(2026-09-21, 동작 불변) - r005_buy_conditions
+    (_017)와 공유한다."""
+    score = sum(rule.eval_fn(ctx) for rule in BUY_SCORE_RULES)
+
+    # 개장 직후 보호는 run_buy_condition_pipeline_comment와 동일하게 유지 - 1분봉
+    # 트리거는 live_cross_up(실시간 돌파)만큼 즉각적이지 않으므로 예외 처리하지 않는다.
+    if now.hour == 9 and now.minute < OPENING_GUARD_MINUTES:
+        if score < OPENING_GUARD_SCORE_THRESHOLD:
+            return False, f"HYBRID_3MIN_CTX_OPENING_GUARD_{now.strftime('%H:%M')}_{score}_LT_{OPENING_GUARD_SCORE_THRESHOLD}"
+
+    if score < config.bb_buy_score_threshold:
+        return False, f"HYBRID_3MIN_CTX_LOW_SCORE_{score}_LT_{config.bb_buy_score_threshold}"
+
+    return True, f"HYBRID_3MIN_CTX_SCORE_{score}"
 
 
 def run_3min_context_pipeline(
@@ -1413,42 +1671,241 @@ def run_3min_context_pipeline(
     우호적인가"만 재확인한다. bb_mid_cross_up/candle_bullish_and_chase_guard를 제외한
     HYBRID_3MIN_CONTEXT_GATES + BUY_SCORE_RULES를 run_buy_condition_pipeline_comment와
     동일하게 재사용해 판정 로직 드리프트를 방지한다(2026-08-28 r002 Update log 참조).
+
+    [2026-09-21] 준비 단계(build_context_eval)와 점수 단계(evaluate_context_score)를 공용 함수로
+    분리했다 - r005_buy_conditions가 같은 두 함수를 쓰며 게이트는 번호 붙은 조건으로 하나씩 평가한다.
+    결과(통과 여부/사유 문자열)는 분리 전과 동일하다.
     """
-    if len(frame) < 2:
-        return False, "HYBRID_3MIN_CTX_INSUFFICIENT_BARS"
-
-    cur = frame.iloc[-1]
-    prev = frame.iloc[-2]
-    cur_bb = _num(cur, "BB_MIDDLE")
-    cur_bb_upper = _num(cur, "BB_UPPER")
-    prev_bb = _num(prev, "BB_MIDDLE")
-
-    if any(pd.isna(v) for v in (cur_bb, cur_bb_upper, prev_bb)):
-        return False, "HYBRID_3MIN_CTX_MISSING_INDICATOR"
-
-    ctx = BuyEvalContext(
-        frame=frame, now=now, live_price=live_price, cross_info=cross_info, config=config,
-        cur=cur, prev=prev, cur_bb=cur_bb, cur_bb_upper=cur_bb_upper, prev_bb=prev_bb,
-        bb_slope_pct=_compute_bb_slope_pct(frame),
-    )
+    ctx, reason = build_context_eval(frame, now, live_price, cross_info, config)
+    if ctx is None:
+        return False, reason
 
     for gate in HYBRID_3MIN_CONTEXT_GATES:
         passed, ctx, reason = gate.eval_fn(ctx)
         if not passed:
             return False, f"HYBRID_3MIN_CTX_{reason}"
 
-    score = sum(rule.eval_fn(ctx) for rule in BUY_SCORE_RULES)
+    return evaluate_context_score(ctx, now, config)
 
-    # 개장 직후 보호는 run_buy_condition_pipeline_comment와 동일하게 유지 - 1분봉
-    # 트리거는 live_cross_up(실시간 돌파)만큼 즉각적이지 않으므로 예외 처리하지 않는다.
-    if now.hour == 9 and now.minute < OPENING_GUARD_MINUTES:
-        if score < OPENING_GUARD_SCORE_THRESHOLD:
-            return False, f"HYBRID_3MIN_CTX_OPENING_GUARD_{now.strftime('%H:%M')}_{score}_LT_{OPENING_GUARD_SCORE_THRESHOLD}"
 
-    if score < config.bb_buy_score_threshold:
-        return False, f"HYBRID_3MIN_CTX_LOW_SCORE_{score}_LT_{config.bb_buy_score_threshold}"
+def check_buy_condition_1min_hybrid_trigger(
+    frame_1min: pd.DataFrame,
+    context_uptrend_continuation: bool = False,
+) -> tuple[bool, str]:
+    """하이브리드 매수 경로(1분봉 트리거 -> 3분봉 컨텍스트)의 1단계 1분봉 트리거 - r003 실전/g003
+    백테스트 공용(2026-09-20 r003/g003에 따로 있던 복사본을 여기로 통합. 이 함수의 원형이던
+    check_buy_condition_1min 1분봉 단독 경로는 같은 날 삭제됨).
 
-    return True, f"HYBRID_3MIN_CTX_SCORE_{score}"
+    2026-08-28 1차 검증(HYBRID_1MIN_TRIGGER 상수 도입 전)에서 check_buy_condition_1min을
+    그대로 재사용했더니 매수 0건 - 리젝 469/507건이 require_fresh_cross(이 1분봉에서 "막"
+    크로스했을 때만 인정, 룩백 없음)에서 발생. 3분봉 bb_mid_cross_up은 5봉 룩백+우상향
+    지속 예외가 있는데 1분봉엔 그런 관용도가 전혀 없었던 것 - 이 함수는 그 룩백을
+    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS만큼 추가한다(_evaluate_bb_mid_cross의 close_cross
+    N봉 룩백과 동일 패턴: 전환봉 이후 현재까지 BB 위 연속 유지 시 인정). 또한 캔들/추격
+    가드 문턱도 3분봉 값(CANDLE_GAIN_MAX_PCT 등)을 그대로 쓰지 않고 HYBRID_1MIN_TRIGGER_*
+    전용 값을 쓴다 - 1분봉은 3분봉보다 캔들 하나의 시간폭이 짧아 같은 % 문턱이 상대적으로
+    더 쉽게 초과됨(HPSP 1차 검증에서 candle_gain 0.87~1.67%로 3분봉 문턱 0.8% 초과 반복 확인).
+
+    [2026-09-09] 452190 한빛레이저 사례: 룩백(3->8봉으로 완화했음에도) 밖에서 돌파한 뒤
+    오래/강하게 지속되는 랠리는 여전히 놓칠 수 있다(룩백은 "완화"일 뿐 무제한이 아님) -
+    3분봉 bb_mid_cross_up 게이트의 uptrend_continuation과 동일한 예외를 추가한다.
+    두 경로:
+    (a) 이 함수 자체가 1분봉 자체 지표(ADX/+DI/-DI/MA5/BB슬로프)로 우상향 지속을 판정
+        (_evaluate_bb_mid_cross 재사용 - 3분 게이트와 동일 공식, 프레임만 1분봉).
+    (b) 호출측이 3분봉 컨텍스트에서 이미 uptrend_continuation으로 판정했으면
+        context_uptrend_continuation=True로 전달 - 그 신호를 그대로 인정한다.
+    두 경로 모두 크로스 "발견" 여부만 대체할 뿐, 이후의 캔들/BB갭 안전장치는 그대로
+    전부 적용한다(거래량 하한은 3분봉 컨텍스트 min_liquidity_safety가 단독 담당).
+    """
+    if frame_1min is None or len(frame_1min) < 2:
+        return False, "1MIN_INSUFFICIENT_BARS"
+
+    cur = frame_1min.iloc[-1]
+    prev = frame_1min.iloc[-2]
+
+    cur_bb = _num(cur, "BB_MIDDLE")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_close = _num(cur, "close")
+    prev_close = _num(prev, "close")
+    cur_open = _num(cur, "open")
+
+    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
+        return False, "1MIN_MISSING_INDICATOR"
+
+    golden_cross = prev_close <= prev_bb and cur_close > cur_bb
+    bars_since_cross = 0  # 신선한 크로스(golden_cross=True) 기본값 - 경과봉 0, 갭 상한 완화 없음
+    trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
+    if not golden_cross:
+        _found = False
+        for _lb in range(3, min(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS + 2, len(frame_1min)) + 1):
+            _bar_n_close = _num(frame_1min.iloc[-_lb], "close")
+            _bar_n_bb = _num(frame_1min.iloc[-_lb], "BB_MIDDLE")
+            if any(pd.isna(v) for v in (_bar_n_close, _bar_n_bb)) or _bar_n_close > _bar_n_bb:
+                continue  # 이 봉도 BB 위이면 더 이전 탐색 or NaN
+            _all_above = all(
+                not any(pd.isna(v) for v in (
+                    _num(frame_1min.iloc[-_k], "close"), _num(frame_1min.iloc[-_k], "BB_MIDDLE"),
+                ))
+                and _num(frame_1min.iloc[-_k], "close") > _num(frame_1min.iloc[-_k], "BB_MIDDLE")
+                for _k in range(1, _lb)
+            )
+            if _all_above:
+                _found = True
+                # 실제 돌파봉은 -_lb(미돌파 마지막봉) 바로 다음인 -(_lb-1) - 그 봉부터
+                # cur(-1)까지 경과한 봉 수 = (_lb-1)의 위치 차이 = _lb-2.
+                bars_since_cross = _lb - 2
+                break
+
+        if not _found:
+            if context_uptrend_continuation:
+                _found = True
+                trigger_reason = "1MIN_UPTREND_CONTINUATION_3MIN_CTX"
+            else:
+                _bb_slope_1min = _compute_bb_slope_pct(frame_1min)
+                _uptrend_eval = _evaluate_bb_mid_cross(
+                    frame_1min, cur, prev, cur_bb, prev_bb, cur_close, _bb_slope_1min, {},
+                )
+                if _uptrend_eval.get("uptrend_continuation"):
+                    _found = True
+                    trigger_reason = "1MIN_UPTREND_CONTINUATION"
+
+        if not _found:
+            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
+
+        if trigger_reason != "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK":
+            # 우상향 지속 경로로 인정된 경우 - 정확한 경과봉을 알 수 없으므로 BB갭
+            # 완화도(아래) 최대치를 적용해 추격매수 가드가 과도하게 좁아지지 않게 한다.
+            bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
+
+    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
+    if candle_gain_pct < HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:
+        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:.1f}%"
+    if candle_gain_pct > HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:
+        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:.1f}%"
+
+    if cur_bb > 0:
+        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
+        # [2026-09-07] 크로스가 BB_MID 위로 계속 유지 중(=유효한 추세 지속)인데도 BB_MID가
+        # 후행지표라 갭이 계속 벌어져 고정 상한에 매 폴링 걸리는 문제 완화 - 크로스 후
+        # 경과봉 수만큼 상한을 소폭 완화하되 CEILING_PCT로 무한 완화는 방지한다.
+        # [2026-09-18] uptrend_continuation 경로(추세 지속이 다른 지표로 이미 검증된
+        # 경우)는 신선한 크로스보다 높은 CEILING_UPTREND_PCT를 쓴다 - 1분봉 BB중간선이
+        # 급등을 못 따라가는 날(20260918 000500/043260 등 분석)엔 고정 1.1% 상한이
+        # 영구 차단으로 이어졌음(20260918 r001 Update log 참조).
+        is_uptrend_continuation = trigger_reason in (
+            "1MIN_UPTREND_CONTINUATION_3MIN_CTX", "1MIN_UPTREND_CONTINUATION",
+        )
+        gap_ceiling_pct = (
+            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT if is_uptrend_continuation
+            else HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT
+        )
+        allowed_gap_pct = min(
+            HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT + bars_since_cross * HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
+            gap_ceiling_pct,
+        )
+        if bb_gap_pct > allowed_gap_pct:
+            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{allowed_gap_pct:.2f}%"
+
+    # [2026-09-20] 거래량/유동성 하한 통일: 여기(1분봉)에 있던 시간프레임 환산 복사본
+    # (HYBRID_1MIN_MIN_ENTRY_VOL_MA/VOLUME 340/500, 비율 0.10)을 삭제하고, 3분봉 컨텍스트의
+    # min_liquidity_safety 게이트(MIN_ENTRY_VOL_MA/MIN_ENTRY_VOLUME/MIN_ENTRY_TURNOVER_KRW)를
+    # 유일한 하한으로 쓴다. 최근 라이브 5거래일(0914~0918)에서 1분봉 하한이 막았지만 3분봉
+    # 하한은 통과한 틱이 12,070건이고, 그중 나머지 3분봉 게이트까지 전부 통과해 점수 단계에
+    # 도달했을 틱은 217건(그 뒤 점수 10점/2회 연속 확인이 다시 걸러냄).
+    return True, trigger_reason
+
+
+def check_1min_dead_cross(
+    frame_1min: pd.DataFrame,
+    lookback_bars: int,
+) -> tuple[bool, str, int]:
+    """1분봉 BB중심선 데드크로스(하향 이탈) 판정 - check_buy_condition_1min_hybrid_trigger의 골든크로스
+    감지 로직을 그대로 대칭 반전한 것(신선한 크로스 OR N봉 룩백 + 그 이후 계속 BB 아래 유지 확인).
+
+    [2026-09-23] 사용자 요청("매수/매도 컨셉 재검토", 204620 글로벌텍스프리 사례) + Codex 설계검토 - 매도측에
+    매수측 1분봉 트리거와 대칭되는 조건이 없다는 지적에 대한 응답. r006 _011_hybrid_1min_dead_cross_exit가
+    이 함수를 호출한다. 매수측과 달리 캔들/BB갭 추격가드는 넣지 않는다 - 매도는 "빨리 자르는" 게 목적이라
+    추격 방지 로직이 오히려 반대 효과(청산 지연)를 낸다.
+
+    반환: (감지 여부, 사유 문자열, 크로스 이후 경과 봉 수 - 신선한 크로스는 0)
+    """
+    if frame_1min is None or len(frame_1min) < 2:
+        return False, "1MIN_INSUFFICIENT_BARS", 0
+
+    cur = frame_1min.iloc[-1]
+    prev = frame_1min.iloc[-2]
+    cur_bb = _num(cur, "BB_MIDDLE")
+    prev_bb = _num(prev, "BB_MIDDLE")
+    cur_close = _num(cur, "close")
+    prev_close = _num(prev, "close")
+    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close)):
+        return False, "1MIN_MISSING_INDICATOR", 0
+
+    dead_cross = prev_close >= prev_bb and cur_close < cur_bb
+    if dead_cross:
+        return True, "1MIN_BB_MID_DEAD_CROSS", 0
+
+    for lb in range(2, min(lookback_bars + 1, len(frame_1min)) + 1):
+        bar_close = _num(frame_1min.iloc[-lb], "close")
+        bar_bb = _num(frame_1min.iloc[-lb], "BB_MIDDLE")
+        if any(pd.isna(v) for v in (bar_close, bar_bb)) or bar_close < bar_bb:
+            continue  # 이 봉이 여전히 BB 아래(또는 NaN)이면 아직 크로스 지점(BB 위였던 마지막 봉)을 못 찾은 것 - 더 이전 탐색
+        all_below = all(
+            not any(pd.isna(v) for v in (
+                _num(frame_1min.iloc[-k], "close"), _num(frame_1min.iloc[-k], "BB_MIDDLE"),
+            ))
+            and _num(frame_1min.iloc[-k], "close") < _num(frame_1min.iloc[-k], "BB_MIDDLE")
+            for k in range(1, lb)
+        )
+        if all_below:
+            return True, "1MIN_BB_MID_DEAD_CROSS_LOOKBACK", lb - 2
+
+    return False, "1MIN_NO_BB_MID_DEAD_CROSS", 0
+
+
+def passes_opening_gap_volume_gate(
+    code: str,
+    current_dt: datetime,
+    session_open_dt: datetime | None,
+    gap_pct: float | None,
+    buy_frame: pd.DataFrame,
+    gap_blocked_codes: set[str],
+) -> tuple[bool, str]:
+    """개장 초반 갭/거래량폭발 게이트 - r003 실전/g003 백테스트 공용(2026-09-20 통합).
+
+    개장 초반 갭/거래량폭발 게이트.
+
+    r002 스캐너는 전일 종가 기준 데이터라 당일 시가 갭이나 초반 거래량 급변을
+    반영하지 못한다. 개장 후 OPENING_GAP_GATE_WINDOW_MINUTES 이내에만 적용되며,
+    심한 갭하락(OPENING_GAP_HARD_FLOOR_PCT 미만)은 당일 재검사 없이 영구 차단한다.
+    """
+    norm_code = str(code).zfill(6)
+    if norm_code in gap_blocked_codes:
+        return False, "OPENING_GAP_BLOCKED_TODAY"
+
+    if session_open_dt is None or gap_pct is None:
+        return True, "OK"
+
+    elapsed = (current_dt - session_open_dt).total_seconds()
+    if elapsed < 0 or elapsed > OPENING_GAP_GATE_WINDOW_MINUTES * 60:
+        return True, "OK"  # 게이트 적용 윈도우 밖이면 통과 (일반 로직으로 복귀)
+
+    if gap_pct < OPENING_GAP_HARD_FLOOR_PCT:
+        gap_blocked_codes.add(norm_code)
+        return False, f"OPENING_GAP_DOWN_BLOCKED_{gap_pct*100:.2f}%"
+
+    if not (OPENING_GAP_MIN_PCT <= gap_pct <= OPENING_GAP_MAX_PCT):
+        return False, f"OPENING_GAP_OUT_OF_RANGE_{gap_pct*100:.2f}%"
+
+    cur_row = buy_frame.iloc[-1] if buy_frame is not None and not buy_frame.empty else None
+    vol = _num(cur_row, "volume") if cur_row is not None else float("nan")
+    vol_ma = _num(cur_row, "VOL_MA20") if cur_row is not None else float("nan")
+    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
+        vol_ratio = vol / vol_ma
+        if vol_ratio < OPENING_MIN_EARLY_VOLUME_RATIO:
+            return False, f"OPENING_VOLUME_INSUFFICIENT_{vol_ratio:.2f}x"
+
+    return True, "OK"
 
 
 def gate_steps_diagnostic(
@@ -1519,18 +1976,25 @@ def check_sell_condition(
         and live_price < cur_bb
     )
     if price_cross_down:
-        if pnl_pct < config.ma5_bb_down_cross_min_pnl:
-            return False, (
-                f"LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_PNL_{pnl_pct * 100:.2f}%"
-                f"_LT_{config.ma5_bb_down_cross_min_pnl * 100:.2f}%"
-            )
-
         score = _sell_support_score(cur, prev, config)
+        # [2026-09-23] 즉시손절(ma5_bb_down_cross_immediate_pnl, 기본 -0.7%) 체크를 min_pnl(0.0%) 차단보다
+        # 먼저 수행한다. immediate_pnl이 항상 min_pnl보다 더 마이너스라, 순서가 반대였던 기존 코드는 pnl<0.0%
+        # 이면 바로 위에서 False를 반환해버려 이 즉시손절 분기가 영원히 도달 불가능했다(2026-09-21 세션에서
+        # 발견/기록만 되고 방치된 죽은 코드 - 204620 글로벌텍스프리 2026-09-23 09:33 매도 지연 사례 분석 중
+        # 재확인, Codex 검토로 fix 순서 확정). pnl>=0.0% 구간의 기존 동작(BLOCKED_PNL/점수별 최소수익 요건)은
+        # 그대로 유지 - 이 재정렬은 pnl<=-0.7% 구간에서만 동작을 바꾼다(기존: 항상 BLOCKED_PNL로 반려 ->
+        # 신규: 즉시 손절).
         if pnl_pct <= config.ma5_bb_down_cross_immediate_pnl:
             # 실손실이 하드 임계치까지 커졌으면 점수/수익 요건과 무관하게 즉시 손절.
             if score >= 1:
                 return True, f"LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_{score}"
             return True, "LIVE_PRICE_BB_DOWN_CROSS"
+
+        if pnl_pct < config.ma5_bb_down_cross_min_pnl:
+            return False, (
+                f"LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_PNL_{pnl_pct * 100:.2f}%"
+                f"_LT_{config.ma5_bb_down_cross_min_pnl * 100:.2f}%"
+            )
 
         if score >= config.ma5_bb_down_cross_immediate_score:
             # [2026-08-26] AUX_REVERSAL_SCORE 분기와 동일한 점수별 최소 수익 요건을 적용한다.
@@ -1569,62 +2033,6 @@ def check_sell_condition(
     return False, f"AUX_BLOCKED_SCORE_{score}_PNL_{pnl_pct * 100:.2f}%_LT_{min_pnl_req * 100:.2f}%"
 
 
-def _entry_score_1min(cur: pd.Series, frame_1min: pd.DataFrame) -> tuple[int, dict[str, bool]]:
-    score = 0
-    detail: dict[str, bool] = {}
-
-    ema9 = _num(cur, "EMA_9")
-    ema20 = _num(cur, "EMA_20")
-    if not any(pd.isna(v) for v in (ema9, ema20)) and ema9 > ema20:
-        score += ENTRY_EMA_CROSS_SCORE
-        detail["ema_cross"] = True
-
-    close_v = _num(cur, "close")
-    if not any(pd.isna(v) for v in (close_v, ema9)) and close_v > ema9:
-        score += ENTRY_CLOSE_ABOVE_EMA9_SCORE
-        detail["close_above_ema9"] = True
-
-    if len(frame_1min) > ENTRY_PREV_HIGH_LOOKBACK_BARS:
-        prior = frame_1min.iloc[-(ENTRY_PREV_HIGH_LOOKBACK_BARS + 1):-1]
-        prior_high = pd.to_numeric(prior["high"], errors="coerce").max()
-        if not pd.isna(prior_high) and not pd.isna(close_v) and close_v > prior_high:
-            score += ENTRY_PREV_HIGH_BREAKOUT_SCORE
-            detail["prev_high_breakout"] = True
-
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol > vol_ma:
-        score += ENTRY_VOLUME_ABOVE_MA_SCORE
-        detail["volume_above_ma"] = True
-
-    return score, detail
-
-
-def check_entry_condition_1min(frame_1min: pd.DataFrame) -> tuple[bool, str]:
-    """3분봉 신호(check_buy_condition) 통과 후 1분봉에서 진입 타이밍을 재검증하는 게이트.
-
-    직전에 확정된(가장 최근 종가) 1분봉이 음봉(close<=open)이면 그 시점의 상승 모멘텀이
-    실린 게 아니므로 즉시 거부한다 (2026-08-31: 033790 사례 - 1분봉/3분봉 모두 음봉인데도
-    EMA9>EMA20/직전고점돌파/거래량 3개 스코어만으로 매수된 오탐 수정).
-    양봉 조건을 통과하면 EMA9>EMA20 / Close>EMA9 / 직전고점돌파 / 거래량>VOL_MA20 4개를
-    점수화해 ENTRY_SCORE_THRESHOLD 이상이면 통과. r003.ENABLE_1MIN_ENTRY_SCORE_GATE로 켜고 끈다.
-    """
-    if frame_1min is None or len(frame_1min) < ENTRY_PREV_HIGH_LOOKBACK_BARS + 1:
-        return False, "1MIN_ENTRY_INSUFFICIENT_BARS"
-
-    cur = frame_1min.iloc[-1]
-
-    close_v = _num(cur, "close")
-    open_v = _num(cur, "open")
-    if pd.isna(close_v) or pd.isna(open_v) or close_v <= open_v:
-        return False, "1MIN_ENTRY_BEARISH_CANDLE"
-
-    score, _detail = _entry_score_1min(cur, frame_1min)
-    if score < ENTRY_SCORE_THRESHOLD:
-        return False, f"1MIN_ENTRY_LOW_SCORE_{score}_LT_{ENTRY_SCORE_THRESHOLD}"
-    return True, f"1MIN_ENTRY_SCORE_{score}"
-
-
 # ---------------------------------------------------------------------------
 # Shared indicator calculation (used by r006 and r007)
 # ---------------------------------------------------------------------------
@@ -1637,7 +2045,6 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
     out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
 
-    out["EMA_9"] = out["close"].ewm(span=EMA_9_PERIOD, adjust=False).mean()
     out["EMA_20"] = out["close"].ewm(span=EMA_20_PERIOD, adjust=False).mean()
     out["EMA_60"] = out["close"].ewm(span=EMA_60_PERIOD, adjust=False).mean()
 
