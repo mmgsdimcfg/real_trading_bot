@@ -23,6 +23,24 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-23] type=fix owner=claude
+    summary: 사용자 요청("종목선정 조건 재검토 - 중복/불필요/말도안되는 조건 및 누락된 좋은 조건을
+      커뮤니티 공개 기준으로 분석, codex 재검토") + Codex 설계검토. 이번 라운드는 Codex가 "낮은
+      리스크로 바로 할 수 있는 것"으로 확정한 항목만 반영하고, 근거(백테스트/실API검증)가 더
+      필요한 항목은 의도적으로 보류함(하단 "보류" 참조 - 사용자에게 별도 보고).
+      (1) calculate_candidate_score()의 "9) 가격대 선호"(±2점, 저가주 가점) 제거 - 다른 배점
+      항목과 달리 도입 근거(특정 스캔 사례/백테스트)가 changelog에 없고, 국내외 모멘텀 스크리닝
+      커뮤니티 기준에서도 "명목가가 낮을수록 좋다"는 근거를 찾지 못함(한국 시장은 액면분할로
+      가격대가 임의적). 만점 100->98로 소폭 하향(SCORE_CUTOFF=30 대비 영향 미미).
+      (2) 상장주식수(lstg_stqty)/시가총액(market_cap) 정보성 컬럼 추가 - g001이 이미 매일 호출
+      중인 search_stock_info(CTPF1002R) 응답의 기존 미사용 필드(lstg_stqt)를 추출(신규 API 호출
+      없음). g002 candidate dict/render_all_scan_markdown에 노출하되 점수에는 반영하지 않음
+      (Codex: 상장주식수는 자사주/전략적보유 포함이라 진짜 유동주식의 부정확한 근사치이고
+      거래대금/ATR 항목과 겹칠 수 있어, 실제 예측력을 검증하기 전엔 배점하지 않는 게 안전).
+    impact: scanner
+    compatibility: backward-compatible (배점 2점 제거는 픽 구성에 미미한 영향 가능, 정보성
+      컬럼 추가는 순수 추가라 기존 동작 불변; basic_info에 lstg_stqty가 없는 구버전 캐시는
+      market_cap이 그냥 공란으로 표시됨)
 - [2026-09-13] type=fix owner=claude
     summary: max_picks/MAX_PICKS_LIMIT 50->100 (사용자 요청 - r003 active/backup 워치리스트
       로테이션 복원). 2026-09-07에 r003 ACTIVE_WATCHLIST_SIZE를 50->20으로 줄이면서
@@ -987,6 +1005,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "high_52w_ratio": None,
         "low_52w_ratio": None,
         "sector": None,
+        "lstg_stqty": None,
+        "market_cap": None,
         "near_52w_high_override": False,
         "prev_day_change": None,
         "is_last_bearish": None,
@@ -1128,6 +1148,11 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         if sector:
             sector = str(sector).strip() or None
 
+    # [2026-09-23] 상장주식수/시가총액 - 정보성 컬럼만(점수 미반영, 이 파일 changelog 참조).
+    # g001 fetch_stock_basic_info()가 없거나(구버전 캐시) API 실패 시 None으로 남는다.
+    lstg_stqty = safe_float((basic_info or {}).get("lstg_stqty"))
+    market_cap = (price * lstg_stqty) if (lstg_stqty is not None and lstg_stqty > 0) else None
+
     # Previous day absolute return (gap / surge risk)
     prev_day_change = None
     if len(_check_df) >= 2:
@@ -1190,6 +1215,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "high_52w_ratio": high_52w_ratio,
         "low_52w_ratio": low_52w_ratio,
         "sector": sector,
+        "lstg_stqty": lstg_stqty,
+        "market_cap": market_cap,
         "near_52w_high_override": near_52w_high_override,
         "prev_day_change": prev_day_change,
         "is_last_bearish": is_last_bearish,
@@ -1372,14 +1399,15 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
 
 def calculate_candidate_score(candidate, config):
-    """배점표 (2026-08-27 재조정, 합계 100점):
-    거래량18 + 거래대금18 + ATR16 + RS13 + ADX6 + MA단기정렬±8 + MA완전정배열+6(신규)
-    + RSI10±8(신규) + 3일모멘텀±5 + 가격대2
+    """배점표 (2026-09-23 기준, 만점 98점):
+    거래량18 + 거래대금18 + ATR16 + RS13 + ADX6 + MA단기정렬±8 + MA완전정배열+6
+    + RSI10±8 + 3일모멘텀±5
     + 각종 페널티(전일음봉/52주과열/전일급등/최근반복선정/소프트플래그 개수).
 
     RSI/MA완전정배열은 온라인에서 널리 추천되는 상승추세 확인 조합(골든크로스/정배열 +
-    RSI 50~70 확인 + ADX로 추세강도 필터)을 보강하기 위해 2026-08-27 추가됨 - 기존 항목
-    (거래량/거래대금/ATR/RS/ADX/MA단기정렬/모멘텀)의 배점을 소폭씩 줄여 합계 100점을 유지.
+    RSI 50~70 확인 + ADX로 추세강도 필터)을 보강하기 위해 2026-08-27 추가됨.
+    [2026-09-23] 기존 "가격대 선호"(±2) 항목은 근거 부족으로 제거(파일 상단 changelog 참조) -
+    만점이 100->98로 소폭 줄었으나 SCORE_CUTOFF(30)/기존 픽 구성에 미치는 영향은 미미함.
     """
     price = candidate.get("price")
     atr_ratio = candidate.get("atr_ratio")
@@ -1464,10 +1492,12 @@ def calculate_candidate_score(candidate, config):
     if close_3d_return is not None:
         score += max(-5.0, min(5.0, close_3d_return * 60))
 
-    # 9) 가격대 선호 (max 2): 거래 편의성 위주 소폭 가점.
-    if price <= config.price_max:
-        pref = 1.0 - min(1.0, max(0.0, (price - config.price_min) / max(1.0, (200_000 - config.price_min))))
-        score += 1.0 + (1.0 * pref)
+    # [2026-09-23 제거] 기존 9) 가격대 선호(max 2, 저가주에 소폭 가점)는 어떤 특정 스캔 사례로
+    # 도입됐는지 changelog에 근거가 없고(다른 배점 항목은 전부 특정 사례/백테스트를 인용함),
+    # 국내외 모멘텀/데이트레이딩 커뮤니티 스크리닝 기준에서도 "명목가가 낮을수록 좋다"는 근거를
+    # 찾지 못했다(한국 시장은 액면분할로 가격대가 임의적 - 미국 저가주 스크리닝과 다른 맥락).
+    # 배점 2/100으로 영향은 작았지만 Codex 재검토도 "실행제약이 명시적으로 있는 게 아니면 제거,
+    # 필요하면 점수가 아니라 계좌 자본/최소 주문단위 기준의 명시적 자격조건으로 분리" 권고 - 제거.
 
     # --- 각종 페널티 ---
     # 전일 음봉 (단기매매에서는 전일 조정이 진입 기회일 수 있으므로 -4로 완화).
@@ -1729,7 +1759,7 @@ def render_all_scan_csv(all_rows):
 def render_all_scan_markdown(all_rows):
     headers = [
         "rank", "picked", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
-        "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "low_52w_ratio", "sector", "listing_days", "prev_day_change", "repeat_recent_days",
+        "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "low_52w_ratio", "sector", "market_cap", "listing_days", "prev_day_change", "repeat_recent_days",
         "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "rsi", "relative_strength",
     ]
 
@@ -1758,6 +1788,7 @@ def render_all_scan_markdown(all_rows):
             f"{row.get('high_52w_ratio'):.3f}" if row.get("high_52w_ratio") is not None else "",
             f"{row.get('low_52w_ratio'):.3f}" if row.get("low_52w_ratio") is not None else "",
             str(row.get("sector") or ""),
+            format_metric(row.get("market_cap"), 0).replace(",", "") if row.get("market_cap") is not None else "",
             str(row.get("listing_days") if row.get("listing_days") is not None else ""),
             f"{row.get('prev_day_change'):.4f}" if row.get("prev_day_change") is not None else "",
             str(row.get("repeat_recent_days") if row.get("repeat_recent_days") is not None else ""),

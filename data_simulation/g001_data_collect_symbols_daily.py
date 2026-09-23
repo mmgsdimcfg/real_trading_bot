@@ -34,6 +34,23 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-23] type=feat owner=claude
+    summary: 사용자 요청("g002 종목선정 조건 재검토, 좋은 조건 누락 시 g001에 데이터 추가") +
+      Codex 설계검토 - fetch_stock_basic_info()가 이미 매일 호출 중인 search_stock_info(CTPF1002R,
+      관리종목/거래정지/업종 조회용)의 동일 응답에서 lstg_stqt(상장주수) 필드를 추가로 추출해
+      캐시에 저장 (신규 API 호출 없음, 기존 응답의 미사용 필드였음 - KIS Open API SDK
+      examples_llm/domestic_stock/search_stock_info/chk_search_stock_info.py로 필드명 확인).
+      g002가 price*lstg_stqt로 시가총액을 계산해 정보성 컬럼으로만 노출(점수 미반영 - Codex
+      권고: 상장주수는 자사주/전략적보유 포함이라 진짜 유동주식(float)의 부정확한 근사치이고,
+      거래대금/ATR와 겹칠 수 있어 실제 예측력 검증 전엔 배점하지 않는 게 안전).
+    impact: collector
+    compatibility: backward-compatible (기존 admn_item_yn/tr_stop_yn/sector 필드는 그대로,
+      lstg_stqt 필드가 캐시 JSON에 추가됨 - 없어도(구버전 캐시) None으로 폴백)
+    추가 수정(같은 날): get_stock_basic_info_cached()의 30일 캐시 재사용 로직이 fetched_at
+      나이만 보고 스키마 변경을 감지 못해, 실제 캐시 파일(_stock_basic_info_cache.json)의
+      2,557종목 중 다수(2026-09-14 조회, 9일 전)가 lstg_stqty 필드 추가 이전에 저장된 채로
+      "신선함" 판정을 받아 최대 30일간 lstg_stqty 없이 재사용될 뻔한 문제 발견+수정 -
+      "lstg_stqty" 키 자체가 없는(구버전) 항목은 나이 무관 1회 강제 재조회하도록 변경.
 - [2026-08-29] type=feat owner=copilot
     summary: g002 스캐너 검토에서 나온 3개 보류 항목(관리종목/거래정지 배제, 업종 분산,
       시장 레짐/RS)을 위한 KIS Open API 스냅샷 수집 추가. probe_nxt_tradeable()이 이미
@@ -709,12 +726,23 @@ def fetch_stock_basic_info(code: str) -> dict | None:
     row = result.iloc[-1]
     admn_item = _is_truthy_flag(row.get("admn_item_yn"))
     tr_stop = _is_truthy_flag(row.get("tr_stop_yn"))
+    # [2026-09-23] lstg_stqt(상장주수) - 같은 응답의 기존 미사용 필드. 시가총액(price*lstg_stqt)
+    # 정보성 표시용으로만 g002에서 사용 - 상장주식수는 자사주/전략적보유를 포함해 실제 유동주식
+    # (float)의 부정확한 근사치이므로 점수에는 반영하지 않는다(g002 changelog 참조).
+    lstg_stqty = None
+    raw_lstg = row.get("lstg_stqt")
+    if raw_lstg not in (None, ""):
+        try:
+            lstg_stqty = int(float(raw_lstg))
+        except (TypeError, ValueError):
+            lstg_stqty = None
     return {
         "admn_item_yn": bool(admn_item),
         "tr_stop_yn": bool(tr_stop),
         "sector_large": str(row.get("idx_bztp_lcls_cd_name") or "").strip(),
         "sector_mid": str(row.get("idx_bztp_mcls_cd_name") or "").strip(),
         "sector_small": str(row.get("idx_bztp_scls_cd_name") or "").strip(),
+        "lstg_stqty": lstg_stqty,
     }
 
 
@@ -748,14 +776,23 @@ def get_stock_basic_info_cached(cache: dict, code: str, target_date: str) -> dic
     """
     entry = cache.get(code)
     if entry:
-        fetched_at = entry.get("fetched_at")
-        if fetched_at:
-            try:
-                age_days = (datetime.strptime(target_date, "%Y%m%d") - datetime.strptime(fetched_at, "%Y%m%d")).days
-            except ValueError:
-                age_days = BASIC_INFO_CACHE_MAX_AGE_DAYS + 1
-            if 0 <= age_days <= BASIC_INFO_CACHE_MAX_AGE_DAYS:
-                return entry
+        # [2026-09-23] 스키마 마이그레이션: lstg_stqty(상장주수) 필드가 오늘 새로 추가됐는데,
+        # 이 캐시는 코드별 fetched_at 기준 30일 이내면 API를 재호출하지 않고 그대로 반환한다.
+        # 실제 캐시 파일을 확인해보니 2,557종목 중 다수가 2026-09-14에 조회돼(9일 전, 30일
+        # 이내) "신선"하다고 판정될 상태 - 필드 추가 이전에 저장된 이 항목들은 나이가
+        # 30일을 넘기 전까지 lstg_stqty 없이 계속 재사용되어 market_cap이 몇 주간 공란으로
+        # 남는다. 신규 필드 키 자체가 없는(구버전 스키마) 항목은 나이와 무관하게 1회 강제
+        # 재조회해 채운다 - lstg_stqty 키가 일단 생기면(값이 None이어도) 이후로는 정상적으로
+        # 30일 캐시가 적용된다.
+        if "lstg_stqty" in entry:
+            fetched_at = entry.get("fetched_at")
+            if fetched_at:
+                try:
+                    age_days = (datetime.strptime(target_date, "%Y%m%d") - datetime.strptime(fetched_at, "%Y%m%d")).days
+                except ValueError:
+                    age_days = BASIC_INFO_CACHE_MAX_AGE_DAYS + 1
+                if 0 <= age_days <= BASIC_INFO_CACHE_MAX_AGE_DAYS:
+                    return entry
 
     fresh = fetch_stock_basic_info(code)
     if fresh is None:
