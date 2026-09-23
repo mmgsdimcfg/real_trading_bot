@@ -20,6 +20,90 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-23] type=feat owner=claude
+    summary: 사용자 요청("매수/매도 컨셉 재검토" 4단계 적용) + Codex 설계검토 - r006 신규
+      _012_peak_retracement_guard에 맞춰 peak_retrace_guard_state dict 배선(선언/SellState 주입/날짜변경
+      clear()/포지션청산 시 pop()). 매도측 조건 번호가 다시 한 칸씩 밀려 "_004, _018" RiskState 공유
+      주석도 "_004, _019"로 갱신. 상세는 r001/r006 Update log 2026-09-23 참조.
+    impact: live
+    compatibility: backward-compatible (배선만 추가, 판정 로직은 r006/r002에 있음)
+- [2026-09-23] type=feat owner=claude
+    summary: 사용자 요청("매수/매도 컨셉 재검토" 3단계 적용) + Codex 설계검토 - r006 신규
+      _011_hybrid_1min_dead_cross_exit에 맞춰 hybrid_1min_dead_cross_state dict 배선(선언/SellState
+      주입/날짜변경 clear()/포지션청산 시 pop()) + SellServices에 get_frame_1min 추가(buy_services와
+      동일한 _get_or_refresh_1min_frame 캐시 재사용). 매도측 조건 번호가 한 칸씩 밀려 "_004, _017"
+      RiskState 공유 주석도 "_004, _018"로 갱신. 상세는 r001/r006 Update log 2026-09-23 참조.
+    impact: live
+    compatibility: backward-compatible (배선만 추가, 판정 로직은 r006/r002에 있음)
+- [2026-09-23] type=feat owner=claude
+    summary: 사용자 요청("매수/매도 컨셉 재검토" + Codex 설계검토) - r005 _008_hybrid_1min_trigger의 신규
+      진입 이벤트 유효기한(HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS)에 맞춰 buy_trigger_age_state dict를
+      신설(선언/BuyState 주입/날짜변경 clear()/포지션보유전환 및 매수체결 시 pop()) - buy_confirm_state와
+      동일한 배선 패턴. 상세는 r001/r005 Update log 2026-09-23 참조.
+    impact: live
+    compatibility: backward-compatible (배선만 추가, 판정 로직 변경은 r005/r002에 있음)
+- [2026-09-23] type=fix owner=claude
+    summary: 사용자 요청(119850 지엔씨에너지 2026-09-23 09:02 하드손절 직후 반등 사례 + Codex 검토) - r006
+      _004_hard_stop_loss에 확인창(HARD_STOP_CONFIRM_SECONDS) 추가에 맞춰 이 파일에 hard_stop_confirm_state
+      dict를 신설(선언/SellState 주입/날짜변경 clear()/포지션청산 시 pop()) - 다른 확인창 상태
+      (atr_stop_confirm_state 등)와 동일한 배선 패턴. 상세는 r001/r006 Update log 2026-09-23 참조.
+    impact: live
+    compatibility: backward-compatible (배선만 추가, 판정 로직 변경은 r006에 있음)
+- [2026-09-21] type=refactor owner=claude
+    summary: 사용자 요청 - run()의 신규 매수 판정(약 200줄)과 보유 종목 매도/포지션 관리(약 680줄) 인라인 블록을
+      번호 붙은 조건 객체와 메인 함수로 분리(동작 불변). 매수 = r005_buy_conditions(_001~_023,
+      check_buy_conditions), 매도 = r006_sell_conditions(_001~_020, evaluate_sell_conditions). 두 모듈은 브로커를
+      import하지 않고 이 파일의 함수(BuyServices/SellServices)와 TradingAPI(ctx.api)를 주입받는다. run()의
+      재바인딩 지역변수 hard_stop_circuit_breaker_until/hard_stop_daily_count는 run() 수명 동안 하나인
+      RiskState(r005) 인스턴스로 바뀌었고 날짜 변경 시 risk.reset()으로 초기화한다. 로그 문구/순서, 주문·API
+      호출 시점, 상태 변경은 기존과 같다(원본 인라인 텍스트와 새 구조를 같은 시나리오/가짜 API로 돌려 로그·API
+      호출·상태를 비교하는 차등 테스트로 확인). 리팩터링으로 쓰지 않게 된 r001/r002 import 54개 삭제(pyflakes).
+      알려진 기존 동작(이번에 미변경, 별도 결정 필요): (1) _020 연속 확인창 20초 < 정규장 종목당 평가주기 ~22초라
+      2회 연속 확인이 거의 성립하지 않음 -> [2026-09-22] 45초 + 같은 3분봉 + 가격 이탈 <=0.3%로 완화 적용(r001
+      Update log 2026-09-22 참조), (2) 확인 상태는 _021/_022/_023 거절과 주문 실패 때 지워지지 않음,
+      (3) hard_stop_daily_count는 "연속"이 아니라 하루 누적 횟수. 상세는 r005 _020 docstring 참조.
+    impact: live
+    compatibility: backward-compatible
+- [2026-09-21] type=fix owner=claude
+    summary: 사용자 요청(r001 Update log 2026-09-21 참조). (1) 1차 익절 목표를 r002 compute_staged_tp1_target_pct로
+      계산(ATR 익절선 상한) - 023160 태광 2026-09-21 09:01 전량 일괄 매도(고점 +2.79%, 트레일이 TP1보다 먼저 무장)
+      재발 방지. (2) 급등 사다리 익절 - 1차 익절 시점에 detect_price_surge로 급등이면 pos["surge_ladder"]=
+      {base(TP1 체결가), tp2_done, tp3_done}를 세우고, next_surge_ladder_action으로 +2%(진입수량 30%)/+4%(잔량 전량)
+      순차 익절(reason TP2_/TP3_SURGE_LADDER_..., TP1에는 _SURGE 접미사). 종목별 최근 가격 표본은 run()의
+      recent_price_samples(메모리 전용), TP1 체결가는 TradingAPI.last_sell_fill_price(_confirm_pending_sell 기록)에서
+      읽고 체결 확인 전이면 트리거 시점 현재가로 대체. surge_ladder는 재시작/계좌 동기화에도 유지되도록 live_state
+      저장·복원 6개 경로(_serialize_live_state/load_live_state/_apply_persisted_position_meta/_record_position_meta/
+      sync_positions_from_account/신규 매수 체결 시 초기화)에 추가하고 _sanitize_surge_ladder로 검증. 사다리 가동 중엔
+      기존 TP2(STAGED_TP2_RATIO>0)와 TP3_TRAIL_ARMED 로그를 건너뜀. 사다리 TP3(잔량 전량)는 포지션이 닫히므로
+      _record_position_meta를 호출하지 않는다(닫힌 포지션 메타 부활 방지).
+      주의(기존 동작, 이번에 미변경): place_sell_order는 모든 매도 후 TRADE_COOLDOWN_MINUTES(3분)간 같은 종목의
+      후속 매도를 막는다 - TP1 직후 3분간 사다리/트레일/손절 주문이 지연됨(플래그는 주문 성공 시에만 세워지므로
+      사다리는 쿨다운이 풀린 뒤 다음 틱에 재시도됨).
+    impact: live
+    compatibility: breaking (r001 두 플래그 ENABLE_TP1_CAP_AT_ATR_TP/ENABLE_SURGE_LADDER_TP=False로 즉시 롤백)
+- [2026-09-20] type=refactor owner=claude
+    summary: 불필요 코드 정리 + 사용자 결정 반영(r002/r001/g003 Update log 2026-09-20 참조).
+      (1) 미사용 import 22개(inspect, datetime.time as dt_time, typing.Optional, r001 상수 19개),
+      미사용 지역변수 2개(code_label, intrabar_elapsed_seconds), 어디서도 호출하지 않는 함수 2개
+      (load_today_buy_codes, is_open_trading_day) 삭제(pyflakes 기준, 동작 불변).
+      (2) 죽은 매수 경로 삭제 - 하이브리드가 유일한 신규 매수 경로: 1분봉 골든크로스 단독
+      (ENABLE_1MIN_GOLDEN_CROSS_BUY) 분기와 gc_confirm_state, 1분봉 Entry Score 게이트
+      (ENABLE_1MIN_ENTRY_SCORE_GATE - 하이브리드가 켜져 있으면 도달 불가였음), 3분봉 단독 else 분기,
+      check_buy_condition_1min/check_buy_condition 래퍼, bar_time_for_buy 별칭(=bar_time), 관련 r001
+      플래그 import. _buy_reject_detail의 3분봉 단독 사유 상세 분기(BB_SLOPE_NOT_RISING/
+      NO_BB_MID_CROSS_UP/CANDLE_NOT_BULLISH/BB_UPPER_GAP_TOO_SMALL/LOW_VOLUME_RATIO/LOW_SCORE)도
+      삭제 - 하이브리드 사유는 항상 "HYBRID_"로 시작해 한 번도 걸리지 않았으므로 로그 출력 불변.
+      (3) check_buy_condition_1min_hybrid_trigger/_passes_opening_gap_volume_gate를 r002 공용 함수
+      (check_buy_condition_1min_hybrid_trigger/passes_opening_gap_volume_gate)로 이동.
+      (4) 같은 날 재매수 허용(사용자 결정): ALLOW_REBUY_SAME_CODE는 실전이 읽은 적 없는 죽은
+      설정이라 import/정의를 삭제 - 기존 동작 그대로(보유/주문중, 쿨다운 3분, HARD_STOP 재진입
+      차단만 적용). 단, _rebalance_active_watchlist가 매수 체결 종목을 active_set에서 졸업시키고
+      청산 뒤에도 되돌리지 않아 실전에서는 그날 재평가 자체가 안 된다(g003은 재진입 허용) -
+      재매수를 실제로 가능하게 하는 변경은 하지 않았고 별도 결정 사항으로 남김.
+      (5) 거래량 하한 통일: 1분봉 트리거의 전용 하한(HYBRID_1MIN_MIN_ENTRY_*)을 삭제하고 3분봉
+      min_liquidity_safety만 사용(전략 변경, r002 Update log 참조).
+    impact: live ((1)~(4) 로직 불변 / (5) 하이브리드 트리거 통과 조건 완화)
+    compatibility: (1)~(4) backward-compatible / (5) breaking - 매수 신호 빈도가 소폭 늘 수 있음
 - [2026-09-18] type=feat owner=claude
     summary: 사용자 요청 - _passes_intrabar_entry_gate()의 RSI 밴드를 50~70에서 45~65
       (INTRABAR_RSI_MIN/MAX, r001)로 낮추고, 65 초과~75(신규 INTRABAR_RSI_EXT_MAX)
@@ -532,59 +616,31 @@ import collections
 import json
 import os
 import signal
-import inspect
 import logging
 import re
 import sys
 import time
 import unicodedata
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 from r001_define_config import (
     ACCOUNT_SYNC_INTERVAL_SECONDS,
-    ADX_PERIOD,
-    ADX_STRONG_TREND,
-    SIGNAL_EXIT_MIN_HOLD_SECONDS,
-    SIGNAL_EXIT_STRONG_TREND_ADX_MIN,
-    SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN,
-    SIGNAL_EXIT_MACD_PNL_MAX,
-    HYBRID_1MIN_MIN_ENTRY_VOL_MA,
-    HYBRID_1MIN_MIN_ENTRY_VOLUME,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
     AFTERNOON_NXT_START,
-    ALLOW_REBUY_SAME_CODE,
     AUX_SELL_MIN_PNL_SCORE2,
     AUX_SELL_MIN_PNL_SCORE3,
     AUX_SELL_MIN_PNL_SCORE4,
-    BB_MID_CHASE_MAX_GAP_PCT,
-    BB_PERIOD,
-    BB_STD_MULTIPLIER,
     BOX_RANGE_HOLD_LOOKBACK_BARS,
     BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT,
     BOX_RANGE_HOLD_MAX_RANGE_PCT,
-    CANDLE_GAIN_MAX_PCT,
-    CANDLE_GAIN_MIN_PCT,
     DATA_DIR_NAME,
     DEFINE_TODAY_CODE_PATH,
-    ENABLE_1MIN_GOLDEN_CROSS_BUY,
-    ENABLE_1MIN_ENTRY_SCORE_GATE,
-    ENABLE_1MIN_TRIGGER_3MIN_CONTEXT,
-    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS,
-    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
-    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
-    HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
-    HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
-    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
-    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
-    ENABLE_STAGED_TAKE_PROFIT,
     ENABLE_NXT_SESSION,
-    ENABLE_TP_EXTENSION_TRAILING,
     LIVE_PRICE_BB_BUFFER_PCT,
     LIVE_PRICE_CROSS_CONFIRM_POLLS,
     LIVE_PRICE_CROSS_CONFIRM_SECONDS,
@@ -593,64 +649,23 @@ from r001_define_config import (
     MA5_BB_DOWN_CROSS_IMMEDIATE_PNL,
     MA5_BB_DOWN_CROSS_IMMEDIATE_SCORE,
     MA5_BB_DOWN_CROSS_MIN_PNL,
-    MA_PERIOD,
-    MACD_FAST,
-    MACD_SIGNAL_PERIOD,
-    MACD_SLOW,
     MAX_ORDER_AMOUNT_KRW,
     ENABLE_BUY_SPLIT_MARKET_LIMIT,
     BUY_SPLIT_MARKET_RATIO,
-    MFI_PERIOD,
     MORNING_NXT_END,
     MORNING_NXT_START,
-    BREAKEVEN_FAIL_ARM_PNL,
-    BREAKEVEN_FAIL_CONFIRM_SECONDS,
-    BREAKEVEN_FAIL_GIVEBACK_PCT,
-    NO_TREND_EXIT_ARM_SECONDS,
-    NO_TREND_EXIT_CONFIRM_SECONDS,
-    NO_TREND_EXIT_MAX_PEAK_PNL,
-    NO_TREND_EXIT_MIN_PNL,
-    ATR_PERIOD,
     ATR_STOP_MULTIPLIER,
-    ATR_STOP_CONFIRM_SECONDS,
     ATR_TAKE_PROFIT_MULTIPLIER,
-    OBV_MA_PERIOD,
-    POLL_INTERVAL_SECONDS,
-    POST_BUY_DROP_CONFIRM_SECONDS,
     REGULAR_END,
     REGULAR_FORCE_EXIT,
     REGULAR_NEW_ENTRY_CUTOFF,
     REGULAR_START,
-    RSI_PERIOD,
-    RSI_SIGNAL_PERIOD,
     STARTUP_WARMUP_SECONDS,
-    POST_BUY_BB_DROP_ARMED_SECONDS,
-    POST_BUY_BB_DROP_PCT,
     STOP_LOSS_PERCENT,
-    HARD_STOP_LOSS_PCT,
-    HARD_STOP_MIN_HOLD_SECONDS,
-    MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
-    ENABLE_OPENING_GAP_VOLUME_GATE,
-    OPENING_GAP_GATE_WINDOW_MINUTES,
-    OPENING_GAP_MIN_PCT,
-    OPENING_GAP_MAX_PCT,
-    OPENING_GAP_HARD_FLOOR_PCT,
-    OPENING_MIN_EARLY_VOLUME_RATIO,
-    STOCH_D_PERIOD,
-    STOCH_K_PERIOD,
     STOCH_OVERBOUGHT,
     STAGED_TP1_PCT,
-    STAGED_TP1_RATIO,
-    ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT,
-    PEAK_NEXT_BAR_DROP_PCT,
-    STAGED_TP2_PCT,
-    STAGED_TP2_RATIO,
-    TP_EXTENSION_TRAIL_FROM_PEAK,
     TRADE_COOLDOWN_MINUTES,
     TRAILING_STOP_FROM_PEAK,
-    VOLUME_MA_PERIOD,
-    WILLIAMS_D_PERIOD,
-    WILLIAMS_R_PERIOD,
     AUX_SELL_MIN_REALIZED_TARGET_PCT,
     AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
     BB_BUY_SCORE_THRESHOLD,
@@ -688,24 +703,12 @@ from r001_define_config import (
     ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES,
     ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES,
     ENABLE_WATCHLIST_ROTATION,
-    HARD_STOP_CIRCUIT_BREAKER_COUNT,
-    HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN,
-    HARD_STOP_BLOCK_REENTRY_TODAY,
     CANDLE_CONFIRM_DELAY_SECONDS,
-    TP1_ATR_MULTIPLIER,
-    ENABLE_PYRAMIDING,
-    PYRAMID_TRIGGER_PNL_PCT,
 )
 from r002_strategy_core_shared import (
     R76StrategyConfig,
     calculate_indicators,
-    check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
-    check_entry_condition_1min,
-    run_3min_context_pipeline,
-    gate_steps_diagnostic,
-    HYBRID_3MIN_CONTEXT_GATES,
-    update_timed_condition_state,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
     _evaluate_bb_mid_cross,
@@ -713,6 +716,9 @@ from r002_strategy_core_shared import (
     _buy_support_score as _shared_buy_support_score,
     BUY_SCORE_RULES,
 )
+
+from r005_buy_conditions import BuyContext, BuyServices, BuyState, RiskState, check_buy_conditions
+from r006_sell_conditions import SellContext, SellServices, SellState, evaluate_sell_conditions
 
 BUY_SCORE_MAX = sum(rule.max_score for rule in BUY_SCORE_RULES)
 
@@ -1128,25 +1134,6 @@ def _today_buys_file_path(date_str: str) -> Path:
     return DATA_DIR / date_str / TODAY_BUYS_FILENAME
 
 
-def load_today_buy_codes(date_str: str) -> set[str]:
-    path = _today_buys_file_path(date_str)
-    if not path.exists():
-        return set()
-
-    codes: set[str] = set()
-    try:
-        for line in _load_text_lines(path):
-            if line.startswith("#"):
-                continue
-            code = line.split(",", 1)[0].strip()
-            if code:
-                codes.add(str(code).zfill(6))
-    except Exception as exc:
-        log(f"WARNING: today-buy file load failed ({path}): {exc}")
-        return set()
-    return codes
-
-
 def save_today_buy_codes(date_str: str, codes: set[str]) -> None:
     path = _today_buys_file_path(date_str)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1547,11 +1534,6 @@ def get_market_day_status(now: datetime) -> tuple[bool, str]:
     return result
 
 
-def is_open_trading_day(now: datetime) -> bool:
-    is_open, _ = get_market_day_status(now)
-    return is_open
-
-
 def is_regular_session(now: datetime) -> bool:
     return REGULAR_START <= now.time() <= REGULAR_END
 
@@ -1902,7 +1884,7 @@ def _get_or_refresh_1min_frame(
     frame_cache_1min: dict[str, pd.DataFrame],
     frame_last_refresh_at_1min: dict[str, datetime],
 ) -> pd.DataFrame | None:
-    """1분봉 캐시 조회/갱신 공용 헬퍼 (ENABLE_1MIN_GOLDEN_CROSS_BUY 및 ENABLE_1MIN_ENTRY_SCORE_GATE 겸용)."""
+    """1분봉 캐시 조회/갱신 헬퍼 (하이브리드 1분봉 트리거용)."""
     cached_frame_1min = frame_cache_1min.get(code)
     last_frame_refresh_1min = frame_last_refresh_at_1min.get(code)
     frame_1min = cached_frame_1min
@@ -2108,61 +2090,13 @@ def _buy_reject_detail(
     cross_info: dict | None = None,
     frame: pd.DataFrame | None = None,
 ) -> str:
-    """Returns reject reason + indicator context for every reject type."""
+    """리젝 사유 + 지표 스냅샷. 하이브리드 경로의 사유(HYBRID_1MIN_TRIGGER_*/HYBRID_3MIN_CTX_*)는 값이
+    이미 사유 문자열에 들어 있어 스냅샷만 덧붙인다.
+
+    [2026-09-20] 3분봉 단독 경로(삭제됨)의 사유(BB_SLOPE_NOT_RISING/NO_BB_MID_CROSS_UP/CANDLE_NOT_
+    BULLISH/BB_UPPER_GAP_TOO_SMALL/LOW_VOLUME_RATIO/LOW_SCORE)별 상세 분기를 삭제했다 - 하이브리드
+    사유는 항상 "HYBRID_"로 시작해 이 분기들에 한 번도 걸리지 않았다(로그 출력 불변)."""
     snapshot = _buy_condition_snapshot(cur, prev, live_price=live_price, cross_info=cross_info, frame=frame)
-
-    # 새 전략 필수조건 거부 사유 (이유 문자열에 이미 값 포함)
-    if buy_reason.startswith("BB_SLOPE_NOT_RISING"):
-        bb_slope = _compute_bb_slope_pct(frame) if frame is not None else float("nan")
-        cur_bb = _num(cur, "BB_MIDDLE")
-        return f"{buy_reason} | bb_mid={cur_bb:.1f} bb_slope={bb_slope:.3f}% | {snapshot}"
-
-    if buy_reason == "NO_BB_MID_CROSS_UP":
-        prev_bb = _num(prev, "BB_MIDDLE")
-        cur_bb = _num(cur, "BB_MIDDLE")
-        prev_close = _num(prev, "close")
-        cur_close = _num(cur, "close")
-        live_txt = f"{live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "nan"
-        return (
-            f"{buy_reason} | live={live_txt} close={cur_close:.0f} bb_mid={cur_bb:.1f} | "
-            f"prev_close={prev_close:.0f} prev_bb_mid={prev_bb:.1f} | signal={cross_info.get('signal') if cross_info else None} | {snapshot}"
-        )
-
-    if buy_reason.startswith("CANDLE_NOT_BULLISH"):
-        cur_open = _num(cur, "open")
-        live_txt = f"{live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "nan"
-        return f"{buy_reason} | live={live_txt} open={cur_open:.0f} | {snapshot}"
-
-    if buy_reason.startswith("BB_UPPER_GAP_TOO_SMALL"):
-        bb_upper = _num(cur, "BB_UPPER")
-        live_txt = f"{live_price:,.0f}" if live_price is not None and pd.notna(live_price) else "nan"
-        return f"{buy_reason} | live={live_txt} bb_upper={bb_upper:.1f} | {snapshot}"
-
-    if buy_reason.startswith("LOW_VOLUME_RATIO"):
-        return f"{buy_reason} | {snapshot}"
-
-    if buy_reason.startswith("LOW_SCORE"):
-        # 새 15점 채점 방식 상세 분석
-        rsi_c = _num(cur, "RSI")
-        vol = _num(cur, "volume"); vol_ma = _num(cur, "VOL_MA20")
-        vol_ratio = vol / vol_ma if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0 else float("nan")
-        adx_c = _num(cur, "ADX")
-        di_plus = _num(cur, "DI_PLUS"); di_minus = _num(cur, "DI_MINUS")
-        macd_c = _num(cur, "MACD"); msig_c = _num(cur, "MACD_SIGNAL")
-        bb_slope = _compute_bb_slope_pct(frame) if frame is not None else float("nan")
-        score = _buy_support_score(cur, prev, frame)
-
-        rsi_str = f"{rsi_c:.1f}" if not pd.isna(rsi_c) else "nan"
-        vol_str = f"{vol_ratio:.2f}x" if not pd.isna(vol_ratio) else "nan"
-        adx_str = f"{adx_c:.1f}" if not pd.isna(adx_c) else "nan"
-        di_str = f"+DI={di_plus:.1f}>-DI={di_minus:.1f}" if not any(pd.isna(v) for v in (di_plus, di_minus)) else "nan"
-        macd_str = f"MACD>{msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) and macd_c > msig_c else f"MACD<={msig_c:.3f}" if not any(pd.isna(v) for v in (macd_c, msig_c)) else "nan"
-        slope_str = f"{bb_slope:.2f}%" if not pd.isna(bb_slope) else "nan"
-        return (
-            f"{buy_reason} | RSI={rsi_str} VOL={vol_str} ADX={adx_str} {di_str} {macd_str} BB_SLOPE={slope_str} total={score}/{BUY_SCORE_MAX} | {snapshot}"
-        )
-
-    # 기타 / 하위 호환
     return f"{buy_reason} | {snapshot}"
 
 
@@ -2245,64 +2179,6 @@ def _rise_from_prev_close(live_price: float, prev_close: float) -> float | None:
     return (float(live_price) / float(prev_close)) - 1.0
 
 
-def _passes_opening_gap_volume_gate(
-    code: str,
-    current_dt: datetime,
-    session_open_dt: datetime | None,
-    gap_pct: float | None,
-    buy_frame: pd.DataFrame,
-    gap_blocked_codes: set[str],
-) -> tuple[bool, str]:
-    """개장 초반 갭/거래량폭발 라이브 게이트.
-
-    r002 스캐너는 전일 종가 기준 데이터라 당일 시가 갭이나 초반 거래량 급변을
-    반영하지 못한다. 개장 후 OPENING_GAP_GATE_WINDOW_MINUTES 이내에만 적용되며,
-    심한 갭하락(OPENING_GAP_HARD_FLOOR_PCT 미만)은 당일 재검사 없이 영구 차단한다.
-    """
-    norm_code = str(code).zfill(6)
-    if norm_code in gap_blocked_codes:
-        return False, "OPENING_GAP_BLOCKED_TODAY"
-
-    if session_open_dt is None or gap_pct is None:
-        return True, "OK"
-
-    elapsed = (current_dt - session_open_dt).total_seconds()
-    if elapsed < 0 or elapsed > OPENING_GAP_GATE_WINDOW_MINUTES * 60:
-        return True, "OK"  # 게이트 적용 윈도우 밖이면 통과 (일반 로직으로 복귀)
-
-    if gap_pct < OPENING_GAP_HARD_FLOOR_PCT:
-        gap_blocked_codes.add(norm_code)
-        return False, f"OPENING_GAP_DOWN_BLOCKED_{gap_pct*100:.2f}%"
-
-    if not (OPENING_GAP_MIN_PCT <= gap_pct <= OPENING_GAP_MAX_PCT):
-        return False, f"OPENING_GAP_OUT_OF_RANGE_{gap_pct*100:.2f}%"
-
-    cur_row = buy_frame.iloc[-1] if buy_frame is not None and not buy_frame.empty else None
-    vol = _num(cur_row, "volume") if cur_row is not None else float("nan")
-    vol_ma = _num(cur_row, "VOL_MA20") if cur_row is not None else float("nan")
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        vol_ratio = vol / vol_ma
-        if vol_ratio < OPENING_MIN_EARLY_VOLUME_RATIO:
-            return False, f"OPENING_VOLUME_INSUFFICIENT_{vol_ratio:.2f}x"
-
-    return True, "OK"
-
-
-def check_buy_condition(
-    frame: pd.DataFrame,
-    now: datetime,
-    live_price: float,
-    cross_info: dict[str, object],
-) -> tuple[bool, str]:
-    return shared_check_buy_condition(
-        frame=frame,
-        now=pd.Timestamp(now),
-        live_price=live_price,
-        cross_info=cross_info,
-        config=SHARED_R76_CONFIG,
-    )
-
-
 def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float, cross_info: dict[str, object]) -> tuple[bool, str]:
     return shared_check_sell_condition(
         frame=frame,
@@ -2313,219 +2189,33 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float,
     )
 
 
-def check_buy_condition_1min(frame_1min: pd.DataFrame, require_fresh_cross: bool = True) -> tuple[bool, str]:
-    """1분봉 BB 중간값 골든크로스 매수 조건 (단순화 컨셉).
-
-    확정된 1분봉 종가가 BB 중간값을 상향 돌파하면 매수 신호로 본다.
-    기존 3분봉 다중 필터(BB기울기/스코어/RSI/MACD/Stoch/DI 등)는 적용하지 않고,
-    계좌/체결 안전장치(거래량 최소조건/캔들 양봉/추격매수 방지)만 재사용한다.
-
-    require_fresh_cross=True(기본): 직전봉<=BB중간값, 현재봉>BB중간값(골든크로스가
-    발생한 바로 그 봉)만 통과시킨다.
-    require_fresh_cross=False: 골든크로스 확인봉(다음 1분봉) 판정용 - 크로스가 이전
-    봉에서 이미 발생했더라도 현재봉 종가가 BB중간값 위에 유지되고만 있으면 통과시킨다.
-    나머지 안전장치 필터(양봉/추격매수/거래량)는 두 모드 모두 동일하게 적용된다.
-
-    BB_MIDDLE은 calculate_indicators가 rolling(window=BB_PERIOD, min_periods=1)로
-    계산하는 성장형(growing-window) 평균이다 - 이는 실제 HTS/MTS가 분봉 차트에
-    볼린저밴드를 그리는 방식과 동일하다(2026-08-24 MTS 실측으로 확인, r005 Update log
-    2026-08-24 참조). 최소 봉 수는 prev/cur 두 봉만 있으면 된다.
-    """
-    if frame_1min is None or len(frame_1min) < 2:
-        return False, "1MIN_INSUFFICIENT_BARS"
-
-    cur = frame_1min.iloc[-1]
-    prev = frame_1min.iloc[-2]
-
-    cur_bb = _num(cur, "BB_MIDDLE")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_close = _num(cur, "close")
-    prev_close = _num(prev, "close")
-    cur_open = _num(cur, "open")
-
-    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
-        return False, "1MIN_MISSING_INDICATOR"
-
-    if require_fresh_cross:
-        golden_cross = prev_close <= prev_bb and cur_close > cur_bb
-        if not golden_cross:
-            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
-    else:
-        if not (cur_close > cur_bb):
-            return False, "1MIN_CONFIRM_LOST_BB_MID"
-
-    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
-    if candle_gain_pct < CANDLE_GAIN_MIN_PCT:
-        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{CANDLE_GAIN_MIN_PCT:.1f}%"
-    if candle_gain_pct > CANDLE_GAIN_MAX_PCT:
-        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{CANDLE_GAIN_MAX_PCT:.1f}%"
-
-    if cur_bb > 0:
-        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
-        if bb_gap_pct > BB_MID_CHASE_MAX_GAP_PCT:
-            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{BB_MID_CHASE_MAX_GAP_PCT:.1f}%"
-
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    if not any(pd.isna(v) for v in (vol, vol_ma)):
-        # [2026-09-07] 3분봉용 MIN_ENTRY_VOL_MA/MIN_ENTRY_VOLUME을 1분봉에 그대로 적용하면
-        # 1분봉 거래량이 3분봉의 약 1/3이라 실질적으로 3배 엄격한 차단이 된다 (위 캔들/BB갭
-        # 문턱을 HYBRID_1MIN_TRIGGER_*로 따로 뒀던 것과 동일한 이유) - 시간프레임 환산한
-        # HYBRID_1MIN_* 상수를 쓴다.
-        if vol_ma < HYBRID_1MIN_MIN_ENTRY_VOL_MA:
-            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOL_MA}"
-        if vol < HYBRID_1MIN_MIN_ENTRY_VOLUME:
-            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOLUME}"
-        if vol_ma > 0:
-            vol_ratio = vol / vol_ma
-            if vol_ratio < 0.10:
-                return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
-
-    return True, "1MIN_BB_MID_GOLDEN_CROSS"
-
-
-def check_buy_condition_1min_hybrid_trigger(
-    frame_1min: pd.DataFrame,
-    context_uptrend_continuation: bool = False,
-) -> tuple[bool, str]:
-    """ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 하이브리드 전용 1분봉 트리거 (check_buy_condition_1min의
-    변형, 섹션 12 원본은 그대로 유지).
-
-    2026-08-28 1차 검증(HYBRID_1MIN_TRIGGER 상수 도입 전)에서 check_buy_condition_1min을
-    그대로 재사용했더니 매수 0건 - 리젝 469/507건이 require_fresh_cross(이 1분봉에서 "막"
-    크로스했을 때만 인정, 룩백 없음)에서 발생. 3분봉 bb_mid_cross_up은 5봉 룩백+우상향
-    지속 예외가 있는데 1분봉엔 그런 관용도가 전혀 없었던 것 - 이 함수는 그 룩백을
-    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS만큼 추가한다(_evaluate_bb_mid_cross의 close_cross
-    N봉 룩백과 동일 패턴: 전환봉 이후 현재까지 BB 위 연속 유지 시 인정). 또한 캔들/추격
-    가드 문턱도 3분봉 값(CANDLE_GAIN_MAX_PCT 등)을 그대로 쓰지 않고 HYBRID_1MIN_TRIGGER_*
-    전용 값을 쓴다 - 1분봉은 3분봉보다 캔들 하나의 시간폭이 짧아 같은 % 문턱이 상대적으로
-    더 쉽게 초과됨(HPSP 1차 검증에서 candle_gain 0.87~1.67%로 3분봉 문턱 0.8% 초과 반복 확인).
-
-    [2026-09-09] 452190 한빛레이저 사례: 룩백(3->8봉으로 완화했음에도) 밖에서 돌파한 뒤
-    오래/강하게 지속되는 랠리는 여전히 놓칠 수 있다(룩백은 "완화"일 뿐 무제한이 아님) -
-    3분봉 bb_mid_cross_up 게이트의 uptrend_continuation과 동일한 예외를 추가한다.
-    두 경로:
-    (a) 이 함수 자체가 1분봉 자체 지표(ADX/+DI/-DI/MA5/BB슬로프)로 우상향 지속을 판정
-        (_evaluate_bb_mid_cross 재사용 - 3분 게이트와 동일 공식, 프레임만 1분봉).
-    (b) 호출측이 3분봉 컨텍스트에서 이미 uptrend_continuation으로 판정했으면
-        context_uptrend_continuation=True로 전달 - 그 신호를 그대로 인정한다.
-    두 경로 모두 크로스 "발견" 여부만 대체할 뿐, 이후의 캔들/BB갭/거래량 안전장치는
-    그대로 전부 적용한다.
-    """
-    if frame_1min is None or len(frame_1min) < 2:
-        return False, "1MIN_INSUFFICIENT_BARS"
-
-    cur = frame_1min.iloc[-1]
-    prev = frame_1min.iloc[-2]
-
-    cur_bb = _num(cur, "BB_MIDDLE")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_close = _num(cur, "close")
-    prev_close = _num(prev, "close")
-    cur_open = _num(cur, "open")
-
-    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
-        return False, "1MIN_MISSING_INDICATOR"
-
-    golden_cross = prev_close <= prev_bb and cur_close > cur_bb
-    bars_since_cross = 0  # 신선한 크로스(golden_cross=True) 기본값 - 경과봉 0, 갭 상한 완화 없음
-    trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
-    if not golden_cross:
-        _found = False
-        for _lb in range(3, min(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS + 2, len(frame_1min)) + 1):
-            _bar_n_close = _num(frame_1min.iloc[-_lb], "close")
-            _bar_n_bb = _num(frame_1min.iloc[-_lb], "BB_MIDDLE")
-            if any(pd.isna(v) for v in (_bar_n_close, _bar_n_bb)) or _bar_n_close > _bar_n_bb:
-                continue  # 이 봉도 BB 위이면 더 이전 탐색 or NaN
-            _all_above = all(
-                not any(pd.isna(v) for v in (
-                    _num(frame_1min.iloc[-_k], "close"), _num(frame_1min.iloc[-_k], "BB_MIDDLE"),
-                ))
-                and _num(frame_1min.iloc[-_k], "close") > _num(frame_1min.iloc[-_k], "BB_MIDDLE")
-                for _k in range(1, _lb)
-            )
-            if _all_above:
-                _found = True
-                # 실제 돌파봉은 -_lb(미돌파 마지막봉) 바로 다음인 -(_lb-1) - 그 봉부터
-                # cur(-1)까지 경과한 봉 수 = (_lb-1)의 위치 차이 = _lb-2.
-                bars_since_cross = _lb - 2
-                break
-
-        if not _found:
-            if context_uptrend_continuation:
-                _found = True
-                trigger_reason = "1MIN_UPTREND_CONTINUATION_3MIN_CTX"
-            else:
-                _bb_slope_1min = _compute_bb_slope_pct(frame_1min)
-                _uptrend_eval = _evaluate_bb_mid_cross(
-                    frame_1min, cur, prev, cur_bb, prev_bb, cur_close, _bb_slope_1min, {},
-                )
-                if _uptrend_eval.get("uptrend_continuation"):
-                    _found = True
-                    trigger_reason = "1MIN_UPTREND_CONTINUATION"
-
-        if not _found:
-            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
-
-        if trigger_reason != "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK":
-            # 우상향 지속 경로로 인정된 경우 - 정확한 경과봉을 알 수 없으므로 BB갭
-            # 완화도(아래) 최대치를 적용해 추격매수 가드가 과도하게 좁아지지 않게 한다.
-            bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
-
-    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
-    if candle_gain_pct < HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:
-        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:.1f}%"
-    if candle_gain_pct > HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:
-        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:.1f}%"
-
-    if cur_bb > 0:
-        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
-        # [2026-09-07] 크로스가 BB_MID 위로 계속 유지 중(=유효한 추세 지속)인데도 BB_MID가
-        # 후행지표라 갭이 계속 벌어져 고정 상한에 매 폴링 걸리는 문제 완화 - 크로스 후
-        # 경과봉 수만큼 상한을 소폭 완화하되 CEILING_PCT로 무한 완화는 방지한다.
-        # [2026-09-18] uptrend_continuation 경로(추세 지속이 다른 지표로 이미 검증된
-        # 경우)는 신선한 크로스보다 높은 CEILING_UPTREND_PCT를 쓴다 - 1분봉 BB중간선이
-        # 급등을 못 따라가는 날(20260918 000500/043260 등 분석)엔 고정 1.1% 상한이
-        # 영구 차단으로 이어졌음(20260918 r001 Update log 참조).
-        is_uptrend_continuation = trigger_reason in (
-            "1MIN_UPTREND_CONTINUATION_3MIN_CTX", "1MIN_UPTREND_CONTINUATION",
-        )
-        gap_ceiling_pct = (
-            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT if is_uptrend_continuation
-            else HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT
-        )
-        allowed_gap_pct = min(
-            HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT + bars_since_cross * HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
-            gap_ceiling_pct,
-        )
-        if bb_gap_pct > allowed_gap_pct:
-            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{allowed_gap_pct:.2f}%"
-
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    if not any(pd.isna(v) for v in (vol, vol_ma)):
-        # [2026-09-07] 3분봉용 MIN_ENTRY_VOL_MA/MIN_ENTRY_VOLUME을 1분봉에 그대로 적용하면
-        # 1분봉 거래량이 3분봉의 약 1/3이라 실질적으로 3배 엄격한 차단이 된다 (위 캔들/BB갭
-        # 문턱을 HYBRID_1MIN_TRIGGER_*로 따로 뒀던 것과 동일한 이유) - 시간프레임 환산한
-        # HYBRID_1MIN_* 상수를 쓴다.
-        if vol_ma < HYBRID_1MIN_MIN_ENTRY_VOL_MA:
-            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOL_MA}"
-        if vol < HYBRID_1MIN_MIN_ENTRY_VOLUME:
-            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOLUME}"
-        if vol_ma > 0:
-            vol_ratio = vol / vol_ma
-            if vol_ratio < 0.10:
-                return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
-
-    return True, trigger_reason
-
-
 # ---------------------------------------------------------------------------
 # Live state persistence (DATA_DIR/live_state/YYYYMMDD.json)
 # ---------------------------------------------------------------------------
 
 def _live_state_path(date_str: str) -> Path:
     return LIVE_STATE_DIR / f"{date_str}.json"
+
+
+def _sanitize_surge_ladder(raw: object) -> dict | None:
+    """포지션 pos["surge_ladder"](급등 사다리 익절 상태)를 정규화한다. 사다리가 없거나 값이 깨졌으면 None.
+
+    형식: {"base": 1차 익절 체결가(float, >0), "tp2_done": bool, "tp3_done": bool}. live_state JSON 저장/
+    복원, 계좌 동기화(sync_positions_from_account)로 pos dict가 새로 만들어지는 경로 모두에서 같은 검증을 쓴다.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        base = float(raw.get("base", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not (base > 0.0):
+        return None
+    return {
+        "base": base,
+        "tp2_done": bool(raw.get("tp2_done", False)),
+        "tp3_done": bool(raw.get("tp3_done", False)),
+    }
 
 
 def _serialize_live_state(live_state: dict) -> dict:
@@ -2557,6 +2247,7 @@ def _serialize_live_state(live_state: dict) -> dict:
             "tp2_done": bool(meta.get("tp2_done", False)),
             "tp3_done": bool(meta.get("tp3_done", False)),
             "pyramid_done": bool(meta.get("pyramid_done", False)),
+            "surge_ladder": _sanitize_surge_ladder(meta.get("surge_ladder")),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded}
@@ -2601,6 +2292,7 @@ def load_live_state(date_str: str) -> dict:
             "tp2_done": bool((meta or {}).get("tp2_done", False)),
             "tp3_done": bool((meta or {}).get("tp3_done", False)),
             "pyramid_done": bool((meta or {}).get("pyramid_done", False)),
+            "surge_ladder": _sanitize_surge_ladder((meta or {}).get("surge_ladder")),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded}
@@ -2857,6 +2549,9 @@ class TradingAPI:
         self.buy_inflight_codes: set[str] = set()
         self.startup_position_codes: set[str] = set()
         self.trade_lock_until: dict[str, datetime] = {}
+        # 종목별 가장 최근 매도 체결가(_confirm_pending_sell 기록). 1차 익절 체결가를 급등 사다리 기준가로
+        # 쓰기 위한 용도이며 메모리 전용(재시작 시 사다리 기준가는 live_state의 surge_ladder에서 복원).
+        self.last_sell_fill_price: dict[str, float] = {}
         self._last_sync_at: datetime | None = None
         self._last_pending_poll_at: datetime | None = None
         self._last_live_state_save_at: datetime | None = None
@@ -2892,6 +2587,7 @@ class TradingAPI:
             pos["tp2_done"] = bool(meta.get("tp2_done", pos.get("tp2_done", False)))
             pos["tp3_done"] = bool(meta.get("tp3_done", pos.get("tp3_done", False)))
             pos["pyramid_done"] = bool(meta.get("pyramid_done", pos.get("pyramid_done", False)))
+            pos["surge_ladder"] = _sanitize_surge_ladder(meta.get("surge_ladder") or pos.get("surge_ladder"))
 
     def _record_position_meta(self, code: str, pos: dict) -> None:
         meta_map = self.live_state.setdefault("positions_meta", {})
@@ -2905,6 +2601,7 @@ class TradingAPI:
             "tp2_done": bool(pos.get("tp2_done", False)),
             "tp3_done": bool(pos.get("tp3_done", False)),
             "pyramid_done": bool(pos.get("pyramid_done", False)),
+            "surge_ladder": _sanitize_surge_ladder(pos.get("surge_ladder")),
         }
 
     def _sync_live_state_from_positions(self) -> None:
@@ -3006,6 +2703,7 @@ class TradingAPI:
                 "tp2_done": bool(prev.get("tp2_done", persisted.get("tp2_done", False))),
                 "tp3_done": bool(prev.get("tp3_done", persisted.get("tp3_done", False))),
                 "pyramid_done": bool(prev.get("pyramid_done", persisted.get("pyramid_done", False))),
+                "surge_ladder": _sanitize_surge_ladder(prev.get("surge_ladder") or persisted.get("surge_ladder")),
             }
             self._record_position_meta(code, updated[code])
 
@@ -3195,6 +2893,7 @@ class TradingAPI:
         pos["tp1_done"] = False
         pos["tp2_done"] = False
         pos["tp3_done"] = False
+        pos["surge_ladder"] = None
         pos["entry_quantity"] = max(int(pos.get("entry_quantity", 0) or 0), filled_qty)
         if fill_price > 0:
             pos["buy_price"] = fill_price
@@ -3202,7 +2901,6 @@ class TradingAPI:
             pos["highest_price"] = max(float(pos.get("highest_price", fill_price)), float(pos["current_price"]), fill_price)
 
         code_name = str(pending.get("code_name", ""))
-        code_label = _format_code_label(code, code_name)
         compact_code_label = f"{code}_{code_name}" if code_name else code
         event_time = datetime.now()
         buy_time_label = _format_trade_time_label(pending.get("submitted_at"))
@@ -3228,6 +2926,8 @@ class TradingAPI:
         filled_qty = int(status.get("filled_qty", requested_qty)) if status else requested_qty
         avg_price = float(status.get("avg_price", 0.0)) if status else 0.0
         fill_price = avg_price if avg_price > 0 else float(pending.get("requested_price", 0.0))
+        if fill_price > 0:
+            self.last_sell_fill_price[str(code).zfill(6)] = fill_price
         buy_price = float(pending.get("buy_price", 0.0))
         pnl_pct = ((fill_price / buy_price) - 1.0) * 100.0 if buy_price > 0 and fill_price > 0 else float("nan")
         profit_amount = (fill_price - buy_price) * filled_qty if buy_price > 0 and fill_price > 0 and filled_qty > 0 else float("nan")
@@ -4445,17 +4145,23 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
     trailing_sell_confirm_state: dict[str, dict[str, object]] = {}
+    # 급등 판정(detect_price_surge)용 종목별 최근 (시각, 현재가) 표본 - 보유 중인 종목만 쌓고 청산 시 비운다.
+    recent_price_samples: dict[str, list[tuple[datetime, float]]] = {}
     buy_confirm_state: dict[str, dict[str, object]] = {}
-    gc_confirm_state: dict[str, dict[str, object]] = {}  # 1분봉 골든크로스 확인봉 대기 상태
+    buy_trigger_age_state: dict[str, dict[str, object]] = {}  # [2026-09-23] _008 트리거 유효기한 상태
     post_buy_bb_drop_state: dict[str, dict] = {}
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
     atr_stop_confirm_state: dict[str, dict] = {}
+    hard_stop_confirm_state: dict[str, dict] = {}  # [2026-09-23] _004 하드손절 확인창 상태
+    hybrid_1min_dead_cross_state: dict[str, dict] = {}  # [2026-09-23] _011 1분봉 데드크로스 확인창 상태
+    peak_retrace_guard_state: dict[str, dict] = {}  # [2026-09-23] _012 고점대비 익절가드 확인창 상태
     # 연속 HARD_STOP 서킷브레이커 상태
     hard_stop_today_codes: set[str] = set()  # 당일 HARD_STOP 발생 종목 (재진입 영구 차단)
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목
-    hard_stop_circuit_breaker_until: datetime | None = None  # 서킷브레이커 해제 시각
-    hard_stop_daily_count: int = 0  # 당일 HARD_STOP 누적 횟수
+    # 당일 손절 누적 횟수/서킷브레이커 해제 시각 - 매수(_007)/매도(_004, _019) 조건이 같은 인스턴스를 공유한다
+    # (2026-09-23: 매도측 신규 _011/_012 삽입으로 옛 _017 atr_stop_loss가 _019로 밀림)
+    risk = RiskState()
     live_price_cross_state: dict[str, dict] = {}
     live_price_cache: dict[str, float] = {}
     live_price_cache_at: dict[str, datetime] = {}
@@ -4467,6 +4173,49 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     frame_last_refresh_at_1min: dict[str, datetime] = {}
     realtime_entry_bar_state: dict[str, dict[str, object]] = {}
     liquidation_state: dict = {}
+    # 번호 붙은 매수/매도 조건 모듈(r005/r006)에 주입하는 상태 컨테이너/함수 묶음. 컨테이너는 날짜 변경 시
+    # .clear()만 하므로(재바인딩 없음) 한 번 만들어 계속 쓴다. traded_today는 틱마다 재바인딩되므로 종목 순회
+    # 안에서 BuyState를 새로 만든다.
+    sell_state = SellState(
+        recent_price_samples=recent_price_samples,
+        trailing_sell_confirm_state=trailing_sell_confirm_state,
+        post_buy_bb_drop_state=post_buy_bb_drop_state,
+        breakeven_fail_state=breakeven_fail_state,
+        no_trend_exit_state=no_trend_exit_state,
+        atr_stop_confirm_state=atr_stop_confirm_state,
+        hard_stop_confirm_state=hard_stop_confirm_state,
+        hybrid_1min_dead_cross_state=hybrid_1min_dead_cross_state,
+        peak_retrace_guard_state=peak_retrace_guard_state,
+        signal_sell_bar=signal_sell_bar,
+        hard_stop_today_codes=hard_stop_today_codes,
+    )
+    sell_services = SellServices(
+        log=log,
+        is_stale_live_price_source=_is_stale_live_price_source,
+        sanitize_surge_ladder=_sanitize_surge_ladder,
+        extract_aux_score_from_reason=_extract_aux_score_from_reason,
+        aux_min_pnl_for_score=_aux_min_pnl_for_score,
+        check_sell_condition=check_sell_condition,
+        classify_buy_session=classify_buy_session,
+        get_frame_1min=lambda _code, _dt, _nxt: _get_or_refresh_1min_frame(
+            _code, _dt, _nxt, frame_cache_1min, frame_last_refresh_at_1min,
+        ),
+    )
+    buy_services = BuyServices(
+        log=log,
+        is_new_entry_allowed=is_new_entry_allowed,
+        get_session_open_datetime=get_session_open_datetime,
+        get_frame_1min=lambda _code, _dt, _nxt: _get_or_refresh_1min_frame(
+            _code, _dt, _nxt, frame_cache_1min, frame_last_refresh_at_1min,
+        ),
+        fetch_prev_close=fetch_prev_close,
+        rise_from_prev_close=_rise_from_prev_close,
+        is_stale_live_price_source=_is_stale_live_price_source,
+        classify_buy_session=classify_buy_session,
+        get_order_spec=get_order_spec,
+        fetch_orderbook_totals=_fetch_orderbook_totals,
+        format_reject_detail=_buy_reject_detail,
+    )
     current_trade_date = now.date()
     loop_consecutive_errors = 0
     last_watchlist_mismatch_log_at: datetime | None = None
@@ -4501,16 +4250,19 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             # 날짜 변경: 서킷브레이커 상태 초기화
             hard_stop_today_codes.clear()
             gap_blocked_codes.clear()
-            hard_stop_circuit_breaker_until = None
-            hard_stop_daily_count = 0
+            risk.reset()
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()
             no_trend_exit_state.clear()
             atr_stop_confirm_state.clear()
+            hard_stop_confirm_state.clear()
+            hybrid_1min_dead_cross_state.clear()
+            peak_retrace_guard_state.clear()
             signal_buy_bar.clear()
             signal_sell_bar.clear()
             trailing_sell_confirm_state.clear()
             buy_confirm_state.clear()
+            buy_trigger_age_state.clear()
             live_price_cross_state.clear()
             live_price_cache.clear()
             live_price_cache_at.clear()
@@ -4646,7 +4398,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         price_source = f"bar_close(stale_live={age_text})"
 
                 buy_frame = frame
-                intrabar_elapsed_seconds = max(0.0, (pd.Timestamp(current_dt) - pd.Timestamp(current_dt).floor("3min")).total_seconds())
                 if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:
                     try:
                         realtime_frame, realtime_elapsed = _build_realtime_entry_frame(
@@ -4657,7 +4408,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             realtime_entry_bar_state,
                         )
                         gate_ok, gate_reason = _passes_intrabar_entry_gate(realtime_frame, realtime_elapsed)
-                        intrabar_elapsed_seconds = realtime_elapsed
                         if gate_ok:
                             buy_frame = realtime_frame
                         elif not gate_reason.startswith("INTRABAR_ELAPSED_"):
@@ -4711,894 +4461,67 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 )
 
                 if pos is None or pos.get("quantity", 0) <= 0:
+                    recent_price_samples.pop(code, None)
                     post_buy_bb_drop_state.pop(code, None)
                     breakeven_fail_state.pop(code, None)
                     no_trend_exit_state.pop(code, None)
                     atr_stop_confirm_state.pop(code, None)
+                    hard_stop_confirm_state.pop(code, None)
+                    hybrid_1min_dead_cross_state.pop(code, None)
+                    peak_retrace_guard_state.pop(code, None)
 
                 if pos is not None and pos.get("quantity", 0) > 0:
+                    # 보유 종목: 번호 붙은 매도/포지션 관리 조건(r006_sell_conditions)을 순서대로 평가한다.
+                    # 조건이 이 종목의 이번 틱 처리를 끝내면(주문 시도/보류) 평가가 거기서 멈춘다.
                     buy_confirm_state.pop(code, None)
-                    entry_price = float(pos["buy_price"])
-                    pnl_pct = (price / entry_price) - 1.0
-                    is_startup_position = str(code).zfill(6) in api.startup_position_codes
-                    if _is_stale_live_price_source(price_source):
-                        log(
-                            f"  {symbol_label} [SELL REJECT] | STALE_LIVE_PRICE | "
-                            f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
-                        )
-                        continue
-
-                    # 저가(bar low)가 현재가보다 낮으면 손절 판정에 우선 반영
-                    # 확정봉 low를 직접 섞으면 현재가가 회복된 상태에서도 오손절이 날 수 있어
-                    # 실시간 손절은 현재가 기준으로 판정한다.
-                    _bar_low = float(cur["low"]) if "low" in cur.index and not pd.isna(cur["low"]) else float("nan")
-                    atr_val = _num(cur, "ATR")
-                    # ATR은 현재가 스케일의 절대값(원)이므로, 매수 시점 가격(entry_price)에
-                    # 그대로 더/빼면 진입 후 가격이 크게 움직인 경우 스케일이 어긋난다.
-                    # 반드시 ATR%(=atr_val/현재가)로 정규화한 뒤 entry_price에 상대 비율로 적용한다.
-                    atr_pct = float("nan")
-                    atr_tp_price = float("nan")
-                    atr_sl_price = float("nan")
-                    atr_tp_pct = float("nan")
-                    atr_sl_pct = float("nan")
-                    if not pd.isna(atr_val) and atr_val > 0 and price > 0 and entry_price > 0:
-                        atr_pct = float(atr_val) / price
-                        atr_tp_pct = atr_pct * ATR_TAKE_PROFIT_MULTIPLIER
-                        atr_sl_pct = -atr_pct * ATR_STOP_MULTIPLIER
-                        atr_tp_price = entry_price * (1.0 + atr_tp_pct)
-                        atr_sl_price = entry_price * (1.0 + atr_sl_pct)
-                    _sl_price = price
-                    _pnl_sl = (_sl_price / entry_price) - 1.0
-
-                    pos["current_price"] = price
-                    _prev_highest_price = float(pos.get("highest_price", 0.0) or 0.0)
-                    pos["highest_price"] = max(_prev_highest_price, price)
-                    highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
-                    if highest_price > _prev_highest_price:
-                        # 이 틱에서 신고점을 찍었다 - 그 신고점이 속한 확정봉을 "고점봉"으로 기록해둔다
-                        # (PEAK_NEXT_BAR_BEARISH_EXIT에서 "고점봉 바로 다음 확정봉" 판정에 사용).
-                        pos["peak_bar_time"] = bar_time
-                    peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
-                    profit_giveback = peak_pnl_pct - pnl_pct
-
-                    # ── PEAK NEXT-BAR BEARISH REVERSAL EXIT ─────────────────────────────
-                    # 고점봉 바로 다음 확정봉이 음봉이면서 고점 대비 PEAK_NEXT_BAR_DROP_PCT
-                    # 이상 하락하면 TP_EXTENSION_TRAIL(고점 대비 -1.0%) 도달을 기다리지 않고
-                    # 즉시 매도. 017670 SK텔레콤 2026-08-24 12:40 매매(peak pnl 1.26% -> 실현
-                    # 0.19%, giveback 1.07%p - 거래세 포함 시 순손실)처럼, 고점 바로 다음 3분봉이
-                    # 이미 확정적으로 꺾였는데도 1.0% 트레일 폭을 다 기다리다 익절분 대부분을
-                    # 반납하는 사례가 있었음(r003 Update log 2026-08-24 참조). ATR_TP 도달
-                    # 이후(peak_pnl_pct>=atr_tp_pct)에만 작동 - 매수 직후 초반 노이즈는
-                    # POST_BUY_BB_DROP_GUARD/ATR_STOP_LOSS가 별도로 담당.
-                    if (
-                        ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT
-                        and not pd.isna(atr_tp_pct)
-                        and peak_pnl_pct >= atr_tp_pct
-                        and pos.get("peak_bar_time") is not None
-                        and bar_time > pos["peak_bar_time"]
-                        and pos.get("peak_next_bar_checked") != pos["peak_bar_time"]
-                    ):
-                        pos["peak_next_bar_checked"] = pos["peak_bar_time"]
-                        _cur_open_pb = _num(cur, "open")
-                        _cur_close_pb = _num(cur, "close")
-                        if not any(pd.isna(v) for v in (_cur_open_pb, _cur_close_pb)) and highest_price > 0:
-                            _drop_from_peak_pct = (highest_price - _cur_close_pb) / highest_price
-                            if _cur_close_pb < _cur_open_pb and _drop_from_peak_pct >= PEAK_NEXT_BAR_DROP_PCT:
-                                reason_pb = f"PEAK_NEXT_BAR_BEARISH_{PEAK_NEXT_BAR_DROP_PCT*100:.1f}pct"
-                                log(
-                                    f"  [SELL TRIGGER] {code} | {reason_pb} | "
-                                    f"peak={highest_price:,.0f}({pos['peak_bar_time']:%H:%M:%S}) "
-                                    f"next_bar={bar_time:%H:%M:%S} open={_cur_open_pb:,.0f} close={_cur_close_pb:,.0f} "
-                                    f"drop={_drop_from_peak_pct*100:.2f}% pnl={pnl_pct*100:.2f}%"
-                                )
-                                trailing_sell_confirm_state.pop(code, None)
-                                if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_pb, nxt_tradeable, price=price, code_name=name, market_order=True):
-                                    log(f"  [SELL EXECUTED] {code} | {reason_pb} | qty={pos['quantity']} price={price:,.0f}")
-                                signal_sell_bar[code] = bar_time
-                                continue
-                    # ── END PEAK NEXT-BAR BEARISH REVERSAL EXIT ─────────────────────────
-
-                    # ── Aggressive Exit Plan (+1/+2, signal exits, -0.8% SL) ───────
-                    k_now = _num(cur, "STOCH_K")
-                    d_now = _num(cur, "STOCH_D")
-                    hist_now = _num(cur, "MACD_HIST")
-                    hist_prev = _num(frame.iloc[-2], "MACD_HIST") if len(frame) >= 2 else float("nan")
-                    hist_prev2 = _num(frame.iloc[-3], "MACD_HIST") if len(frame) >= 3 else float("nan")
-                    adx_now = _num(cur, "ADX")
-                    di_plus_now = _num(cur, "DI_PLUS")
-                    di_minus_now = _num(cur, "DI_MINUS")
-                    # 강한 상승 추세: ADX > 28 이고 +DI > -DI 이면 스토캐스틱 K<D 매도 신호 무시
-                    _sig_buy_time_raw = pos.get("buy_time")
-                    _sig_held_seconds = (current_dt - _sig_buy_time_raw).total_seconds() if isinstance(_sig_buy_time_raw, datetime) else 0.0
-                    _signal_min_hold_seconds = SIGNAL_EXIT_MIN_HOLD_SECONDS  # signal exit min hold
-                    _adx_uptrend = (
-                        not pd.isna(adx_now) and adx_now > SIGNAL_EXIT_STRONG_TREND_ADX_MIN
-                        and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
-                        and di_plus_now > di_minus_now
-                    )
-                    # ADX 보완: ADX>28 도달 전(추세 초입)에도 가격이 이미 BB_MID 위에서 MA5가
-                    # 상승 중이면 상승추세로 간주해 시그널 매도를 억제한다. 000500 가온전선
-                    # 2026-08-27 09:06 매매 사례 - MACD_HIST 2봉 하락으로 -0.81%에 청산됐으나
-                    # ADX가 28을 못 넘겨 _strong_uptrend가 False였고, 실제로는 매도 직후 한 봉
-                    # 눌림만 있었을 뿐 상승이 재개됨. ADX는 후행지표라 추세 초입 눌림목 구간을
-                    # 못 잡는 경우가 있어, MA5 기울기 + BB_MID 상회를 별도 신호로 추가.
-                    _ma5_now = _num(cur, "MA_5")
-                    _ma5_prev_trend = _num(frame.iloc[-2], "MA_5") if len(frame) >= 2 else float("nan")
-                    _bb_mid_now = _num(cur, "BB_MIDDLE")
-                    _price_uptrend = (
-                        not any(pd.isna(v) for v in (_ma5_now, _ma5_prev_trend, _bb_mid_now))
-                        and _ma5_now > _ma5_prev_trend
-                        and price > _bb_mid_now
-                    )
-                    _strong_uptrend = _adx_uptrend or _price_uptrend
-
-                    # Hard stop-loss: 매수 후 HARD_STOP_MIN_HOLD_SECONDS 경과 후 활성화
-                    # (초기 3분은 POST_BUY guard가 담당, 이후 1.2% 하드스탑)
-                    _held_for_hard_sl = (
-                        (current_dt - pos["buy_time"]).total_seconds()
-                        if isinstance(pos.get("buy_time"), datetime) else 9999.0
-                    )
-                    if pnl_pct <= -HARD_STOP_LOSS_PCT and _held_for_hard_sl >= HARD_STOP_MIN_HOLD_SECONDS:
-                        reason_hard_sl = f"HARD_STOP_LOSS_{HARD_STOP_LOSS_PCT*100:.1f}PCT"
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_hard_sl} | "
-                            f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% "
-                            f"held={_held_for_hard_sl:.0f}s"
-                        )
-                        trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_hard_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
-                            log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | qty={pos['quantity']} price={price:,.0f}")
-                            # 서킷브레이커: HARD_STOP 누적 및 당일 재진입 차단 등록
-                            hard_stop_today_codes.add(str(code).zfill(6))
-                            hard_stop_daily_count += 1
-                            if hard_stop_daily_count >= HARD_STOP_CIRCUIT_BREAKER_COUNT:
-                                hard_stop_circuit_breaker_until = current_dt + timedelta(minutes=HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN)
-                                log(f"  [CIRCUIT_BREAKER] HARD_STOP {hard_stop_daily_count}회 발생 → 신규 매수 {HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN}분 차단 until {hard_stop_circuit_breaker_until:%H:%M:%S}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-
-                    # ── PYRAMIDING (불타기): 추세 지속 시 1회 추가 진입 ──────────────────
-                    if (
-                        ENABLE_PYRAMIDING
-                        and not bool(pos.get("pyramid_done", False))
-                        and not api.has_pending_order(str(code).zfill(6))
-                        and pnl_pct >= PYRAMID_TRIGGER_PNL_PCT
-                    ):
-                        _prev_pyr = frame.iloc[-2] if len(frame) >= 2 else cur
-                        _ma5_cur_pyr = _num(cur, "MA_5")
-                        _ma5_prev_pyr = _num(_prev_pyr, "MA_5")
-                        _bb_mid_cur_pyr = _num(cur, "BB_MIDDLE")
-                        _bb_mid_prev_pyr = _num(_prev_pyr, "BB_MIDDLE")
-                        _adx_cur_pyr = _num(cur, "ADX")
-                        _adx_prev_pyr = _num(_prev_pyr, "ADX")
-                        _pyramid_ok = (
-                            not any(
-                                pd.isna(v) for v in (
-                                    _ma5_cur_pyr, _ma5_prev_pyr, _bb_mid_cur_pyr,
-                                    _bb_mid_prev_pyr, _adx_cur_pyr, _adx_prev_pyr,
-                                )
-                            )
-                            and _ma5_cur_pyr > _ma5_prev_pyr
-                            and _bb_mid_cur_pyr > _bb_mid_prev_pyr
-                            and _adx_cur_pyr > _adx_prev_pyr
-                        )
-                        if _pyramid_ok:
-                            pyr_qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
-                            if pyr_qty > 0:
-                                pyr_session = classify_buy_session(current_dt)
-                                reason_pyr = f"PYRAMID_2ND_ENTRY_PNL_{pnl_pct*100:.2f}PCT"
-                                log(
-                                    f"  [BUY TRIGGER] {code} | {reason_pyr} | "
-                                    f"add_qty={pyr_qty} price={price:,.0f} avg_entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% | "
-                                    f"MA5={_ma5_prev_pyr:.1f}->{_ma5_cur_pyr:.1f} BB_MID={_bb_mid_prev_pyr:.1f}->{_bb_mid_cur_pyr:.1f} "
-                                    f"ADX={_adx_prev_pyr:.1f}->{_adx_cur_pyr:.1f}"
-                                )
-                                pos["pyramid_done"] = True
-                                if api.place_buy_order(
-                                    code, price, pyr_qty, current_dt, nxt_tradeable, pyr_session,
-                                    buy_detail=reason_pyr, code_name=name, pyramid=True,
-                                ):
-                                    api._record_position_meta(code, pos)
-                                    api.persist_live_state(date_str=date_str)
-                                else:
-                                    pos["pyramid_done"] = False
-                                continue
-                    # ── END PYRAMIDING ───────────────────────────────────────────────────
-
-                    if ENABLE_STAGED_TAKE_PROFIT:
-                        entry_qty = int(pos.get("entry_quantity", 0) or 0)
-                        if entry_qty <= 0:
-                            entry_qty = int(pos["quantity"])
-
-                        # 1차 익절 목표를 종목 변동성(ATR)에 연동해 동적으로 산출한다.
-                        # 목표 = max(고정 STAGED_TP1_PCT, ATR*TP1_ATR_MULTIPLIER/진입가). 2차는
-                        # 기존 1차-2차 간격(STAGED_TP2_PCT - STAGED_TP1_PCT)만큼 그 위에 얹는다.
-                        _atr_tp1_dynamic_pct = (
-                            atr_pct * TP1_ATR_MULTIPLIER
-                            if not pd.isna(atr_pct)
-                            else float("nan")
-                        )
-                        tp1_target_pct = (
-                            max(STAGED_TP1_PCT, _atr_tp1_dynamic_pct)
-                            if not pd.isna(_atr_tp1_dynamic_pct) else STAGED_TP1_PCT
-                        )
-                        tp2_target_pct = tp1_target_pct + (STAGED_TP2_PCT - STAGED_TP1_PCT)
-
-                        # 1차 익절: entry_qty의 STAGED_TP1_RATIO(40%), tp1_target_pct(동적, 기본 1.0%) 도달 시
-                        if (not bool(pos.get("tp1_done", False))) and pnl_pct >= tp1_target_pct:
-                            tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
-                            tp1_qty = min(tp1_qty, int(pos["quantity"]))
-                            reason_tp1 = f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{tp1_target_pct*100:.2f}PCT"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_tp1} | "
-                                f"qty={tp1_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}% "
-                                f"target={tp1_target_pct*100:.2f}% (atr_based={_atr_tp1_dynamic_pct*100:.2f}%)"
-                            )
-                            if api.place_sell_order(code, tp1_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
-                                pos["tp1_done"] = True
-                                pos["entry_quantity"] = entry_qty
-                                if STAGED_TP2_RATIO <= 0:
-                                    pos["tp2_done"] = True
-                                api._record_position_meta(code, pos)
-                                api.persist_live_state(date_str=date_str)
-                                log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-
-                        # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
-                        # STAGED_TP2_RATIO<=0이면 2차 단계 자체를 건너뛴다 (1차 이후 잔량은 트레일링 위임).
-                        if STAGED_TP2_RATIO > 0 and bool(pos.get("tp1_done", False)) and (not bool(pos.get("tp2_done", False))) and pnl_pct >= tp2_target_pct:
-                            tp2_qty = max(1, int(round(entry_qty * STAGED_TP2_RATIO)))
-                            tp2_qty = min(tp2_qty, int(pos["quantity"]))
-                            reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{tp2_target_pct*100:.2f}PCT"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_tp2} | "
-                                f"qty={tp2_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
-                            )
-                            if api.place_sell_order(code, tp2_qty, current_dt, reason_tp2, nxt_tradeable, price=price, code_name=name):
-                                pos["tp2_done"] = True
-                                api._record_position_meta(code, pos)
-                                api.persist_live_state(date_str=date_str)
-                                log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={tp2_qty} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-
-                        # 3차: 고정 목표가 전량청산 대신, 1/2차 완료 후 잔량(30%)을 트레일링 스탑에
-                        # 위임한다(Trail 30%). 여기서는 sell 주문을 내지 않고 로그만 1회 남긴 뒤
-                        # 아래 시그널 청산/트레일링 스탑 로직으로 자연스럽게 이어지도록 둔다.
-                        if (
-                            bool(pos.get("tp1_done", False))
-                            and bool(pos.get("tp2_done", False))
-                            and not bool(pos.get("tp3_trail_armed", False))
-                        ):
-                            pos["tp3_trail_armed"] = True
-                            log(
-                                f"  [TP3_TRAIL_ARMED] {code} | 1,2차 익절 완료 - 잔량 {int(pos['quantity'])}주 "
-                                f"고정청산 없이 트레일링 스탑에 위임 | price={price:,.0f} pnl={pnl_pct*100:.2f}%"
-                            )
-                    else:
-                        # +2.0% full take profit
-                        if pnl_pct >= 0.020:
-                            reason_tp2 = "TP2_FULL_2.0PCT"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_tp2} | "
-                                f"price={price:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}%"
-                            )
-                            trailing_sell_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp2, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-
-                        # +1.0% one-time 50% partial take profit
-                        if (not bool(pos.get("tp1_done", False))) and pnl_pct >= 0.010:
-                            partial_qty = max(1, int(int(pos["quantity"]) * 0.5))
-                            partial_qty = min(partial_qty, int(pos["quantity"]))
-                            reason_tp1 = "TP1_PARTIAL_50PCT_1.0PCT"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_tp1} | "
-                                f"qty={partial_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={pnl_pct*100:.2f}%"
-                            )
-                            if api.place_sell_order(code, partial_qty, current_dt, reason_tp1, nxt_tradeable, price=price, code_name=name):
-                                pos["tp1_done"] = True
-                                api._record_position_meta(code, pos)
-                                api.persist_live_state(date_str=date_str)
-                                log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={partial_qty} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-
-                    # Signal-based full exits
-                    if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                        if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or pnl_pct > SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN:
-                            log(
-                                f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
-                                f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}% held={_sig_held_seconds:.0f}s "
-                                f"uptrend(adx={_adx_uptrend},price={_price_uptrend})"
-                            )
-                        else:
-                            reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_sig_kd} | "
-                                f"K={k_now:.1f} D={d_now:.1f} pnl={pnl_pct*100:.2f}%"
-                            )
-                            trailing_sell_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sig_kd, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-                    if (not any(pd.isna(v) for v in (hist_now, hist_prev, hist_prev2))
-                            and hist_now < hist_prev < hist_prev2
-                            and not _strong_uptrend
-                            and _sig_held_seconds >= _signal_min_hold_seconds
-                            and pnl_pct <= SIGNAL_EXIT_MACD_PNL_MAX):
-                        reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_sig_macd} | "
-                            f"HIST={hist_prev2:.3f}->{hist_prev:.3f}->{hist_now:.3f} pnl={pnl_pct*100:.2f}%"
-                        )
-                        trailing_sell_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sig_macd, nxt_tradeable, price=price, code_name=name):
-                            log(f"  [SELL EXECUTED] {code} | {reason_sig_macd} | qty={pos['quantity']} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-
-                    if not pd.isna(atr_tp_pct) and pnl_pct >= atr_tp_pct:
-                        if ENABLE_TP_EXTENSION_TRAILING:
-                            # TP 도달 시 즉시 익절 대신 고점 트레일링 모드로 전환
-                            log(
-                                f"  [TP_EXTENSION] {code} | pnl={pnl_pct*100:.2f}% >= ATR_TP {atr_tp_pct*100:.2f}% | "
-                                f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
-                                f"price={price:,.0f} peak={highest_price:,.0f} atr={float(atr_val):.2f}"
-                            )
-                        else:
-                            reason_tp = f"ATR_TAKE_PROFIT_{ATR_TAKE_PROFIT_MULTIPLIER:.1f}x"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={entry_price:,.0f} "
-                                f"pnl={pnl_pct*100:.2f}% atr={float(atr_val):.2f} tp={atr_tp_price:,.0f}"
-                            )
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_tp, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-
-                    # ── POST-BUY ENTRY DROP GUARD ─────────────────────────────────────
-                    _buy_time_raw = pos.get("buy_time")
-                    _buy_time = _buy_time_raw if isinstance(_buy_time_raw, datetime) else current_dt
-                    _buy_token = _buy_time_raw if isinstance(_buy_time_raw, datetime) else (
-                        f"unknown_buy_time:{code}:{pos.get('entry_price', 0)}:{int(pos.get('quantity', 0))}"
-                    )
-                    _held_for_guard = (current_dt - _buy_time).total_seconds()
-                    if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
-                        _drop_hold_seconds = update_timed_condition_state(
-                            post_buy_bb_drop_state,
-                            code,
-                            _buy_token,
-                            current_dt,
-                            price < entry_price * (1.0 - POST_BUY_BB_DROP_PCT),
-                        )
-                        if _drop_hold_seconds >= POST_BUY_DROP_CONFIRM_SECONDS:
-                            _drop_pct_guard = (price / entry_price - 1.0) * 100.0
-                            reason_bbdrop = f"POST_BUY_ENTRY_DROP_{POST_BUY_BB_DROP_PCT*100:.1f}pct_{POST_BUY_DROP_CONFIRM_SECONDS:.0f}s"
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
-                                f"held={_held_for_guard:.0f}s price={price:,.0f} entry={entry_price:,.0f} "
-                                f"drop={_drop_pct_guard:.2f}% hold={_drop_hold_seconds:.0f}s pnl={pnl_pct*100:.2f}%"
-                            )
-                            post_buy_bb_drop_state.pop(code, None)
-                            breakeven_fail_state.pop(code, None)
-                            no_trend_exit_state.pop(code, None)
-                            trailing_sell_confirm_state.pop(code, None)
-                            atr_stop_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_bbdrop, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-                    else:
-                        post_buy_bb_drop_state.pop(code, None)
-                    # ── END POST-BUY ENTRY DROP GUARD ─────────────────────────────────
-
-                    # ── BREAKEVEN FAILURE GUARD ────────────────────────────────────────
-                    if not is_startup_position:
-                        _breakeven_hold_seconds = update_timed_condition_state(
-                            breakeven_fail_state,
-                            code,
-                            _buy_token,
-                            current_dt,
-                            peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
-                            and pnl_pct < -0.005
-                            and profit_giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT,
-                        )
-                        if _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:
-                            reason_breakeven = (
-                                f"BREAKEVEN_FAIL_peak{BREAKEVEN_FAIL_ARM_PNL*100:.1f}_"
-                                f"giveback{BREAKEVEN_FAIL_GIVEBACK_PCT*100:.2f}_{BREAKEVEN_FAIL_CONFIRM_SECONDS:.0f}s"
-                            )
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_breakeven} | held={_held_for_guard:.0f}s "
-                                f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} "
-                                f"peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
-                            )
-                            post_buy_bb_drop_state.pop(code, None)
-                            breakeven_fail_state.pop(code, None)
-                            no_trend_exit_state.pop(code, None)
-                            trailing_sell_confirm_state.pop(code, None)
-                            atr_stop_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_breakeven, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-                    else:
-                        breakeven_fail_state.pop(code, None)
-                    # ── END BREAKEVEN FAILURE GUARD ───────────────────────────────────
-
-                    # ── NO-TREND TIME EXIT ────────────────────────────────────────────
-                    _bb_mid_guard = _num(cur, "BB_MIDDLE")
-                    _no_trend_condition = (
-                        _held_for_guard >= NO_TREND_EXIT_ARM_SECONDS
-                        and peak_pnl_pct <= NO_TREND_EXIT_MAX_PEAK_PNL
-                        and pnl_pct <= NO_TREND_EXIT_MIN_PNL
-                        and _bb_mid_guard > 0
-                        and price < _bb_mid_guard
-                    )
-                    _no_trend_hold_seconds = update_timed_condition_state(
-                        no_trend_exit_state,
-                        code,
-                        _buy_token,
-                        current_dt,
-                        _no_trend_condition,
-                    )
-                    if _no_trend_hold_seconds >= NO_TREND_EXIT_CONFIRM_SECONDS:
-                        reason_no_trend = (
-                            f"NO_TREND_EXIT_{NO_TREND_EXIT_ARM_SECONDS/60:.0f}m_"
-                            f"peakLT{NO_TREND_EXIT_MAX_PEAK_PNL*100:.1f}_{NO_TREND_EXIT_CONFIRM_SECONDS:.0f}s"
-                        )
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_no_trend} | held={_held_for_guard:.0f}s "
-                            f"price={price:,.0f} bb_mid={_bb_mid_guard:,.1f} pnl={pnl_pct*100:.2f}% "
-                            f"peak_pnl={peak_pnl_pct*100:.2f}% hold={_no_trend_hold_seconds:.0f}s"
-                        )
-                        post_buy_bb_drop_state.pop(code, None)
-                        breakeven_fail_state.pop(code, None)
-                        no_trend_exit_state.pop(code, None)
-                        trailing_sell_confirm_state.pop(code, None)
-                        atr_stop_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_no_trend, nxt_tradeable, price=price, code_name=name):
-                            log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | qty={pos['quantity']} price={price:,.0f}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-                    # ── END NO-TREND TIME EXIT ────────────────────────────────────────
-
-                    _held_sl = (current_dt - _buy_time).total_seconds()
-                    _atr_sl_condition = (
-                        not pd.isna(atr_sl_pct) and _pnl_sl <= atr_sl_pct and _held_sl >= HARD_STOP_MIN_HOLD_SECONDS
-                    )
-                    # 단일 폴링 틱 노이즈로 즉시 손절되는 걸 막기 위해 ATR_STOP_CONFIRM_SECONDS
-                    # 동안 조건이 연속 유지될 때만 실행 (033790 피노 2026-08-31 13:35 사례 참조).
-                    _atr_sl_hold_seconds = update_timed_condition_state(
-                        atr_stop_confirm_state,
-                        code,
-                        _buy_token,
-                        current_dt,
-                        _atr_sl_condition,
-                    )
-                    if _atr_sl_hold_seconds >= ATR_STOP_CONFIRM_SECONDS:
-                        reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
-                        log(
-                            f"  [SELL TRIGGER] {code} | {reason_sl} | held={_held_sl:.0f}s price={price:,.0f} "
-                            f"bar_low={_bar_low:,.0f} entry={entry_price:,.0f} pnl={pnl_pct*100:.2f}% "
-                            f"sl_pnl={_pnl_sl*100:.2f}% atr={float(atr_val):.2f} sl={atr_sl_price:,.0f} "
-                            f"confirm={_atr_sl_hold_seconds:.0f}s"
-                        )
-                        trailing_sell_confirm_state.pop(code, None)
-                        atr_stop_confirm_state.pop(code, None)
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_sl, nxt_tradeable, price=price, code_name=name, market_order=True):
-                            log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
-                            # ATR_STOP_LOSS도 HARD_STOP_LOSS와 동일하게 당일 재진입 차단/서킷브레이커에 반영한다.
-                            # (2026-07-20 로그 분석: 당일 손실의 87%가 ATR_STOP_LOSS였는데 이 카운터는
-                            # HARD_STOP_LOSS만 추적해 카카오뱅크/지엔씨에너지/S-Oil이 같은 날 손절 직후
-                            # 재매수되어 또 손실이 반복됨.)
-                            hard_stop_today_codes.add(str(code).zfill(6))
-                            hard_stop_daily_count += 1
-                            if hard_stop_daily_count >= HARD_STOP_CIRCUIT_BREAKER_COUNT:
-                                hard_stop_circuit_breaker_until = current_dt + timedelta(minutes=HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN)
-                                log(f"  [CIRCUIT_BREAKER] STOP_LOSS(ATR/HARD) {hard_stop_daily_count}\ud68c \ubc1c\uc0dd \u2192 \uc2e0\uaddc \ub9e4\uc218 {HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN}\ubd84 \ucc28\ub2e8 until {hard_stop_circuit_breaker_until:%H:%M:%S}")
-                        signal_sell_bar[code] = bar_time
-                        continue
-
-                    if highest_price > 0 and entry_price > 0:
-                        # Entry-anchored trailing stop:
-                        # 1) First, peak must move into profit zone.
-                        # 2) Then, sell only if profit retraces by trailing width.
-                        # 3) Never trigger trailing stop while current pnl is non-positive.
-                        # TP 도달 구간(peak >= TP)에서 이익이 1% 이내로 줄면 트레일링 적용
-                        current_pnl_pct = (price / entry_price) - 1.0
-                        profit_giveback = peak_pnl_pct - current_pnl_pct
-                        if ENABLE_TP_EXTENSION_TRAILING and (
-                            bool(pos.get("tp1_done", False))
-                            or (not pd.isna(atr_tp_pct) and peak_pnl_pct >= atr_tp_pct)
-                        ):
-                            trail_threshold = TP_EXTENSION_TRAIL_FROM_PEAK
-                            reason_ts = f"TP_EXTENSION_TRAIL_{TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%"
-                        else:
-                            trail_threshold = TRAILING_STOP_FROM_PEAK
-                            reason_ts = f"TRAILING_STOP_GIVEBACK_{TRAILING_STOP_FROM_PEAK*100:.1f}%"
-                        trailing_condition = peak_pnl_pct > 0 and current_pnl_pct > 0 and profit_giveback >= trail_threshold
-
-                        pending_state = trailing_sell_confirm_state.get(code)
-                        if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
-                            # Clear pending if retrace condition has recovered.
-                            if not trailing_condition and pending_state is not None:
-                                trailing_sell_confirm_state.pop(code, None)
-                                log(
-                                    f"  [SELL HOLD CANCEL] {code} | trailing recovered before confirm | "
-                                    f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
-                                )
-
-                        if trailing_condition:
-                            if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
-                                # First hit: defer to next 3-minute bar confirmation.
-                                if pending_state is None:
-                                    trailing_sell_confirm_state[code] = {
-                                        "trigger_bar_time": bar_time,
-                                        "triggered_at": current_dt,
-                                        "reason": reason_ts,
-                                    }
-                                    log(
-                                        f"  [SELL HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
-                                        f"bar={bar_time:%H:%M:%S} pnl={current_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
-                                    )
-                                    continue
-
-                                # Still same bar: keep waiting.
-                                if pending_state.get("trigger_bar_time") == bar_time:
-                                    continue
-
-                            log(
-                                f"  [SELL TRIGGER] {code} | {reason_ts} | "
-                                f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} | "
-                                f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
-                            )
-                            trailing_sell_confirm_state.pop(code, None)
-                            if api.place_sell_order(code, int(pos["quantity"]), current_dt, reason_ts, nxt_tradeable, price=price, code_name=name):
-                                log(f"  [SELL EXECUTED] {code} | {reason_ts} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                            continue
-
-                    if signal_sell_bar.get(code) == bar_time:
-                        continue
-
-                    # [2026-09-16] frame이 세션 오픈 직후 1개 봉만 가진 경우(INDICATOR_WARMUP_BARS=1
-                    # 라 여기까지 도달 가능) iloc[-2]가 "single positional indexer is out-of-bounds"로
-                    # 터짐(MAIN LOOP ERROR 20연속 -> max_consecutive_errors 셧다운, 2026-09-16 08:01/09:01
-                    # 가온전선/현대약품 사례). 직전 봉이 없으면 현재 봉으로 대체.
-                    prev_bar = frame.iloc[-2] if len(frame) >= 2 else cur
-                    sell_ok, sell_reason = check_sell_condition(frame, pnl_pct, price, cross_info)
-                    if sell_ok:
-                        aux_score = _extract_aux_score_from_reason(sell_reason)
-                        if aux_score is not None:
-                            aux_base_min = _aux_min_pnl_for_score(aux_score)
-                            if aux_base_min is not None:
-                                aux_required_pnl = max(
-                                    AUX_SELL_MIN_REALIZED_TARGET_PCT,
-                                    aux_base_min + AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
-                                )
-                                if pnl_pct < aux_required_pnl:
-                                    log(
-                                        f"  [SELL HOLD] {code} | AUX_TRIGGER_BUFFER_BLOCK "
-                                        f"score={aux_score} pnl={pnl_pct*100:.2f}% "
-                                        f"required>={aux_required_pnl*100:.2f}% "
-                                        f"(base={aux_base_min*100:.2f}%+buffer={AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT*100:.2f}%)"
-                                    )
-                                    continue
-                        if api.place_sell_order(code, int(pos["quantity"]), current_dt, sell_reason, nxt_tradeable, price=price, code_name=name):
-                            log(
-                                f"  [SELL EVAL] {code} | OK {sell_reason} | {current_dt:%H:%M:%S} | "
-                                f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
-                                f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
-                                f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
-                                f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(cur, 'WILLIAMS_R'):.1f} WD={_num(cur, 'WILLIAMS_D'):.1f} | "
-                                f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} | "
-                                f"ADX={_num(cur, 'ADX'):.1f} | pnl={pnl_pct*100:.2f}% peak={highest_price:,.0f}"
-                            )
-                            log(f"  [SELL EXECUTED] {code} | {sell_reason} | qty={pos['quantity']} price={price:,.0f}")
-                            signal_sell_bar[code] = bar_time
-                    elif (
-                        sell_reason.startswith("AUX_BLOCKED")
-                        or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_WEAK_SCORE")
-                        or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_SCORE")
-                        or sell_reason.startswith("BOX_RANGE_HOLD")
-                    ):
-                        log(f"  [SELL HOLD] {code} | {sell_reason}")
-
+                    buy_trigger_age_state.pop(code, None)
+                    evaluate_sell_conditions(SellContext(
+                        code=code, name=name, symbol_label=symbol_label, current_dt=current_dt,
+                        nxt_tradeable=nxt_tradeable, pos=pos, price=price, price_source=price_source,
+                        frame=frame, cur=cur, bar_time=bar_time, cross_info=cross_info, date_str=date_str,
+                        api=api, state=sell_state, risk=risk, services=sell_services,
+                    ))
                 else:
+                    # 신규 진입: 번호 붙은 매수 조건(r005_buy_conditions)을 순서대로 평가한다. 하이브리드 매수 경로가
+                    # 유일한 신규 매수 경로다(2026-09-20 1분봉 골든크로스 단독/1분봉 Entry Score/3분봉 단독 경로 삭제):
+                    # 1분봉 트리거 -> 3분봉 컨텍스트 -> 주문 직전 안전장치 순서.
                     trailing_sell_confirm_state.pop(code, None)
-                    if not is_new_entry_allowed(current_dt, nxt_tradeable):
-                        continue
-                    session_open_dt = get_session_open_datetime(current_dt, nxt_tradeable)
-                    if session_open_dt is not None:
-                        _warmup_elapsed = (current_dt - session_open_dt).total_seconds()
-                        if _warmup_elapsed < STARTUP_WARMUP_SECONDS:
+                    buy_ctx = BuyContext(
+                        code=code, symbol_label=symbol_label, current_dt=current_dt, nxt_tradeable=nxt_tradeable,
+                        price=price, price_source=price_source, bar_time=bar_time, buy_frame=buy_frame,
+                        cross_info=cross_info, config=SHARED_R76_CONFIG, api=api,
+                        state=BuyState(
+                            buy_confirm_state=buy_confirm_state, buy_trigger_age_state=buy_trigger_age_state,
+                            signal_buy_bar=signal_buy_bar,
+                            hard_stop_today_codes=hard_stop_today_codes, gap_blocked_codes=gap_blocked_codes,
+                            traded_today=traded_today,
+                        ),
+                        risk=risk, services=buy_services,
+                    )
+                    if check_buy_conditions(buy_ctx).approved:
+                        # 모든 조건 통과 - _023이 traded_today/signal_buy_bar를 '예약'해 둔 상태다.
+                        buy_reason, prev_bar, qty = buy_ctx.buy_reason, buy_ctx.prev_bar, buy_ctx.qty
+                        session, buy_detail, norm_code = buy_ctx.session, buy_ctx.buy_detail, buy_ctx.norm_code
+                        if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                             log(
-                                f"  [REJECT  ] {symbol_label} | SESSION_OPEN_WARMUP | "
-                                f"elapsed={_warmup_elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
-                                f"session_open={session_open_dt:%H:%M:%S}"
+                                f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
+                                f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} | "
+                                f"RSI={_num(buy_frame.iloc[-1], 'RSI'):.1f} SIG={_num(buy_frame.iloc[-1], 'RSI_SIGNAL'):.1f} | "
+                                f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(buy_frame.iloc[-1], 'STOCH_K'):.1f} D={_num(buy_frame.iloc[-1], 'STOCH_D'):.1f} | "
+                                f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(buy_frame.iloc[-1], 'WILLIAMS_R'):.1f} WD={_num(buy_frame.iloc[-1], 'WILLIAMS_D'):.1f} | "
+                                f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(buy_frame.iloc[-1], 'MACD'):.2f} SIG={_num(buy_frame.iloc[-1], 'MACD_SIGNAL'):.2f} | "
+                                f"ADX={_num(buy_frame.iloc[-1], 'ADX'):.1f} +DI={_num(buy_frame.iloc[-1], 'DI_PLUS'):.1f} -DI={_num(buy_frame.iloc[-1], 'DI_MINUS'):.1f} | "
+                                f"VOL={_num(buy_frame.iloc[-1], 'volume'):,.0f} VOLMA={_num(buy_frame.iloc[-1], 'VOL_MA20'):,.0f} | "
+                                f"VWAP={_num(buy_frame.iloc[-1], 'VWAP'):,.0f} OBV={_num(buy_frame.iloc[-1], 'OBV'):,.0f} OBVMA={_num(buy_frame.iloc[-1], 'OBV_MA'):,.0f}"
                             )
-                            continue
-                    if api._in_cooldown(code, current_dt):
-                        continue
-
-                    bar_time_for_buy = bar_time
-                    if ENABLE_1MIN_GOLDEN_CROSS_BUY:
-                        frame_1min = _get_or_refresh_1min_frame(
-                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
-                        )
-                        if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
-                            log(f"  {symbol_label} [BUY SKIP] | 1MIN_FRAME_UNAVAILABLE")
-                            continue
-                        buy_frame = frame_1min
-                        bar_time_for_buy = frame_1min.index[-1]
-
-                    if signal_buy_bar.get(code) == bar_time_for_buy:
-                        continue
-
-                    # [2026-09-16] buy_frame이 1개 봉만 가진 경우(세션 오픈 후 ~90~180s 구간,
-                    # STARTUP_WARMUP_SECONDS(90s)는 지났지만 두번째 3분봉은 아직 미확정) iloc[-2]가
-                    # out-of-bounds로 터져 MAIN LOOP가 20연속 에러로 셧다운되는 문제(2026-09-16
-                    # 08:01 가온전선, 09:01 현대약품 사례). 직전 봉이 없으면 현재 봉으로 대체.
-                    prev_bar = buy_frame.iloc[-2] if len(buy_frame) >= 2 else buy_frame.iloc[-1]
-                    norm_code = str(code).zfill(6)
-                    if api.has_buy_exposure(norm_code):
-                        log(f"  {symbol_label} [BUY SKIP] | ALREADY_TRADED_TODAY_UNTIL_SELL")
-                        continue
-                    # 당일 HARD_STOP 발생 종목 재진입 차단
-                    if HARD_STOP_BLOCK_REENTRY_TODAY and norm_code in hard_stop_today_codes:
-                        log(f"  {symbol_label} [BUY SKIP] | HARD_STOP_REENTRY_BLOCKED_TODAY")
-                        continue
-                    # 연속 HARD_STOP 서킷브레이커 활성 시 신규 매수 차단
-                    if hard_stop_circuit_breaker_until is not None and current_dt < hard_stop_circuit_breaker_until:
-                        log(f"  {symbol_label} [BUY SKIP] | CIRCUIT_BREAKER_ACTIVE until={hard_stop_circuit_breaker_until:%H:%M:%S} count={hard_stop_daily_count}")
-                        continue
-
-                    steps_text: str | None = None
-                    if ENABLE_1MIN_GOLDEN_CROSS_BUY:
-                        armed = gc_confirm_state.get(code)
-                        if armed is not None:
-                            _armed_bar = armed.get("gc_bar_time")
-                            _stale = (
-                                not isinstance(_armed_bar, pd.Timestamp)
-                                or not isinstance(bar_time_for_buy, pd.Timestamp)
-                                or (bar_time_for_buy - _armed_bar) > pd.Timedelta(minutes=3)
-                            )
-                            if _stale:
-                                gc_confirm_state.pop(code, None)
-                                armed = None
-
-                        if armed is not None and armed.get("gc_bar_time") == bar_time_for_buy:
-                            # 골든크로스 발생봉과 같은 봉 - 다음 봉 마감까지 대기
-                            log(
-                                f"  [BUY HOLD] {symbol_label} | reason=WAIT_NEXT_BAR_CONFIRM | "
-                                f"gc_bar={armed['gc_bar_time']:%H:%M:%S}"
-                            )
-                            continue
-
-                        if armed is not None:
-                            # 새 봉 마감 - 골든크로스 확인봉 판정 (BB중간값 위 유지 여부만 재검사)
-                            gc_confirm_state.pop(code, None)
-                            buy_ok, buy_reason = check_buy_condition_1min(buy_frame, require_fresh_cross=False)
-                            if buy_ok:
-                                buy_reason = f"{buy_reason}_CONFIRMED_NEXT_BAR"
+                            log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
+                            buy_confirm_state.pop(code, None)
+                            buy_trigger_age_state.pop(code, None)
+                            log("=" * 110)
                         else:
-                            buy_ok, buy_reason = check_buy_condition_1min(buy_frame)
-                            if buy_ok:
-                                gc_confirm_state[code] = {"gc_bar_time": bar_time_for_buy}
-                                log(
-                                    f"  [BUY HOLD] {symbol_label} | reason=GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR | "
-                                    f"gc_bar={bar_time_for_buy:%H:%M:%S} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} "
-                                    f"close={_num(buy_frame.iloc[-1], 'close'):,.0f}"
-                                )
-                                continue
-                    elif ENABLE_1MIN_TRIGGER_3MIN_CONTEXT:
-                        # 하이브리드 경로(r001 Update log 2026-08-28 참조): 1분봉 자체
-                        # 기준(open/BB)으로 트리거를 먼저 확인하고, 통과 시에만 3분봉
-                        # 컨텍스트(추세/매집/유동성)로 재확인한다. buy_frame(3분봉)은
-                        # 그대로 두고 1분봉은 별도로 조회 - ENABLE_1MIN_GOLDEN_CROSS_BUY와
-                        # 달리 판정 프레임을 갈아끼우지 않는다.
-                        frame_1min = _get_or_refresh_1min_frame(
-                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
-                        )
-                        if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
-                            buy_ok, buy_reason = False, "HYBRID_1MIN_FRAME_UNAVAILABLE"
-                            ctx_steps = gate_steps_diagnostic(
-                                buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
-                                gates=HYBRID_3MIN_CONTEXT_GATES,
-                            )
-                            steps_text = f"1min_trigger(-) {ctx_steps}"
-                        else:
-                            # [2026-09-09] 3분 컨텍스트가 이미 uptrend_continuation으로
-                            # 판정한 상태면 그 신호를 1분 트리거에도 그대로 전달한다 -
-                            # 452190 한빛레이저 사례(1분 트리거가 룩백 밖의 오래/강하게
-                            # 지속된 랠리를 계속 놓침) 대책 중 하나.
-                            _ctx3_cur = buy_frame.iloc[-1]
-                            _ctx3_prev = buy_frame.iloc[-2] if len(buy_frame) >= 2 else _ctx3_cur
-                            _ctx3_cur_bb = _num(_ctx3_cur, "BB_MIDDLE")
-                            _ctx3_prev_bb = _num(_ctx3_prev, "BB_MIDDLE")
-                            context_uptrend_continuation = False
-                            if not any(pd.isna(v) for v in (_ctx3_cur_bb, _ctx3_prev_bb)):
-                                _ctx3_bb_slope = _compute_bb_slope_pct(buy_frame)
-                                _ctx3_eval = _evaluate_bb_mid_cross(
-                                    buy_frame, _ctx3_cur, _ctx3_prev, _ctx3_cur_bb, _ctx3_prev_bb,
-                                    price, _ctx3_bb_slope, cross_info,
-                                )
-                                context_uptrend_continuation = bool(_ctx3_eval.get("uptrend_continuation"))
-
-                            trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(
-                                frame_1min, context_uptrend_continuation=context_uptrend_continuation,
-                            )
-                            ctx_steps = gate_steps_diagnostic(
-                                buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
-                                gates=HYBRID_3MIN_CONTEXT_GATES,
-                            )
-                            steps_text = f"1min_trigger({'P' if trigger_ok else 'F'}) {ctx_steps}"
-                            if not trigger_ok:
-                                buy_ok, buy_reason = False, f"HYBRID_1MIN_TRIGGER_{trigger_reason}"
-                            else:
-                                buy_ok, buy_reason = run_3min_context_pipeline(
-                                    buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
-                                )
-                                if buy_ok:
-                                    buy_reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{buy_reason}"
-                    else:
-                        buy_ok, buy_reason = check_buy_condition(
-                            buy_frame,
-                            current_dt,
-                            price,
-                            cross_info,
-                        )
-                        steps_text = gate_steps_diagnostic(
-                            buy_frame, current_dt, price, cross_info, SHARED_R76_CONFIG,
-                        )
-
-                    if not buy_ok:
-                        buy_confirm_state.pop(code, None)
-                        detail = _buy_reject_detail(
-                            buy_reason,
-                            buy_frame.iloc[-1],
-                            prev_bar,
-                            live_price=price,
-                            cross_info=cross_info,
-                            frame=buy_frame,
-                        )
-                        if steps_text:
-                            detail = f"{detail} | STEPS {steps_text}"
-                        log(f"  [REJECT  ] {symbol_label} | {detail}")
-                        continue
-
-                    if (
-                        ENABLE_1MIN_ENTRY_SCORE_GATE
-                        and not ENABLE_1MIN_GOLDEN_CROSS_BUY
-                        and not ENABLE_1MIN_TRIGGER_3MIN_CONTEXT
-                    ):
-                        frame_1min_entry = _get_or_refresh_1min_frame(
-                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
-                        )
-                        if frame_1min_entry is None or frame_1min_entry.empty or len(frame_1min_entry) < 2:
-                            buy_confirm_state.pop(code, None)
-                            log(f"  [REJECT  ] {symbol_label} | 1MIN_FRAME_UNAVAILABLE | (3min_ok={buy_reason})")
-                            continue
-                        entry_ok, entry_reason = check_entry_condition_1min(frame_1min_entry)
-                        if not entry_ok:
-                            buy_confirm_state.pop(code, None)
-                            log(f"  [REJECT  ] {symbol_label} | {entry_reason} | (3min_ok={buy_reason})")
-                            continue
-                        buy_reason = f"{buy_reason}+{entry_reason}"
-
-                    prev_close = fetch_prev_close(code, current_dt, nxt_tradeable)
-                    rise_ratio = _rise_from_prev_close(price, float(prev_close or 0.0))
-                    if (
-                        MAX_BUY_RISE_PCT_FROM_PREV_CLOSE > 0
-                        and rise_ratio is not None
-                        and rise_ratio >= MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
-                    ):
-                        buy_confirm_state.pop(code, None)
-                        log(
-                            f"  [REJECT  ] {symbol_label} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
-                            f"{rise_ratio*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
-                            f"prev_close={float(prev_close):,.0f} live={price:,.0f}"
-                        )
-                        continue
-
-                    if ENABLE_OPENING_GAP_VOLUME_GATE:
-                        gap_ok, gap_reason = _passes_opening_gap_volume_gate(
-                            code, current_dt, session_open_dt, rise_ratio, buy_frame, gap_blocked_codes,
-                        )
-                        if not gap_ok:
-                            buy_confirm_state.pop(code, None)
-                            _gap_txt = f"{rise_ratio*100:.2f}%" if rise_ratio is not None else "nan"
-                            log(f"  [REJECT  ] {symbol_label} | {gap_reason} | gap={_gap_txt} live={price:,.0f}")
-                            continue
-
-                    confirm_state = buy_confirm_state.get(code)
-                    _last_confirmed = confirm_state.get("confirmed_at") if confirm_state else None
-                    _elapsed = (
-                        (current_dt - _last_confirmed).total_seconds()
-                        if isinstance(_last_confirmed, datetime) else None
-                    )
-                    if _elapsed is None or _elapsed > POLL_INTERVAL_SECONDS * 2:
-                        confirm_count = 1
-                    else:
-                        confirm_count = int(confirm_state.get("count", 0)) + 1
-
-                    buy_confirm_state[code] = {"confirmed_at": current_dt, "count": confirm_count, "bar_time": bar_time_for_buy}
-                    if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
-                        log(
-                                f"  [BUY HOLD] {symbol_label} | reason=WAIT_NEXT_POLL_CONFIRM | "
-                                f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
-                                f"live={price:,.0f} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} bar={bar_time_for_buy:%H:%M:%S}"
-                        )
-                        continue
-
-                    qty = api.get_affordable_buy_qty(code, price, current_dt, nxt_tradeable)
-                    if qty <= 0:
-                        log(f"  [REJECT  ] {symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={price:,.0f}")
-                        continue
-
-                    if _is_stale_live_price_source(price_source):
-                        log(
-                            f"  [REJECT  ] {symbol_label} | STALE_LIVE_PRICE | "
-                            f"source={price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
-                        )
-                        continue
-
-                    session = classify_buy_session(current_dt)
-                    latest_vol = _num(buy_frame.iloc[-1], "volume")
-                    latest_vol_ma = _num(buy_frame.iloc[-1], "VOL_MA20")
-                    latest_vol_ratio = (
-                        latest_vol / latest_vol_ma
-                        if not any(pd.isna(v) for v in (latest_vol, latest_vol_ma)) and latest_vol_ma > 0
-                        else float("nan")
-                    )
-                    buy_detail = (
-                        f"reason={buy_reason} signal={cross_info.get('signal')} "
-                        f"live={price:,.0f} bb_mid={_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} "
-                        f"bar_close={_num(buy_frame.iloc[-1], 'close'):,.0f} ma5={_num(buy_frame.iloc[-1], 'MA_5'):.1f} "
-                        f"VOL={latest_vol:,.0f} VOLMA={latest_vol_ma:,.0f} vol_ratio={latest_vol_ratio:.4f}"
-                    )
-                    traded_today.add(norm_code)
-                    api.live_state["traded_today"] = traded_today
-                    signal_buy_bar[code] = bar_time_for_buy
-
-                    _ob_spec = get_order_spec(current_dt, nxt_tradeable)
-                    _ob_mkt = "NX" if (_ob_spec and _ob_spec.get("exchange") == "NXT") else "J"
-                    _ask_total, _bid_total = _fetch_orderbook_totals(norm_code, _ob_mkt)
-                    if _ask_total is not None and _bid_total is not None and _bid_total > 0:
-                        if _ask_total < _bid_total * 0.5:
-                            log(
-                                f"  [REJECT  ] {symbol_label} | ORDERBOOK_ASK_THIN | "
-                                f"ask={_ask_total:,.0f} bid={_bid_total:,.0f} ratio={_ask_total / _bid_total:.2f}"
-                            )
                             traded_today.discard(norm_code)
                             api.live_state["traded_today"] = traded_today
                             signal_buy_bar.pop(code, None)
-                            continue
-                    if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
-                        log(
-                            f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
-                            f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} | "
-                            f"RSI={_num(buy_frame.iloc[-1], 'RSI'):.1f} SIG={_num(buy_frame.iloc[-1], 'RSI_SIGNAL'):.1f} | "
-                            f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(buy_frame.iloc[-1], 'STOCH_K'):.1f} D={_num(buy_frame.iloc[-1], 'STOCH_D'):.1f} | "
-                            f"WR={_num(prev_bar, 'WILLIAMS_R'):.1f}->{_num(buy_frame.iloc[-1], 'WILLIAMS_R'):.1f} WD={_num(buy_frame.iloc[-1], 'WILLIAMS_D'):.1f} | "
-                            f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(buy_frame.iloc[-1], 'MACD'):.2f} SIG={_num(buy_frame.iloc[-1], 'MACD_SIGNAL'):.2f} | "
-                            f"ADX={_num(buy_frame.iloc[-1], 'ADX'):.1f} +DI={_num(buy_frame.iloc[-1], 'DI_PLUS'):.1f} -DI={_num(buy_frame.iloc[-1], 'DI_MINUS'):.1f} | "
-                            f"VOL={_num(buy_frame.iloc[-1], 'volume'):,.0f} VOLMA={_num(buy_frame.iloc[-1], 'VOL_MA20'):,.0f} | "
-                            f"VWAP={_num(buy_frame.iloc[-1], 'VWAP'):,.0f} OBV={_num(buy_frame.iloc[-1], 'OBV'):,.0f} OBVMA={_num(buy_frame.iloc[-1], 'OBV_MA'):,.0f}"
-                        )
-                        log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
-                        buy_confirm_state.pop(code, None)
-                        log("=" * 110)
-                    else:
-                        traded_today.discard(norm_code)
-                        api.live_state["traded_today"] = traded_today
-                        signal_buy_bar.pop(code, None)
 
             # [2026-09-02] 정규장 시작(REGULAR_START) 도달 시 active_set의 TIME_LIMIT
             # 카운트다운을 리셋 - 리셋 전에는 first_active_at이 장전 NXT 세션(08:00~08:50)

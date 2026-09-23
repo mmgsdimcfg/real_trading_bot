@@ -1,6 +1,97 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-09-23] type=feat owner=claude
+#     summary: 사용자 요청("매수/매도 컨셉 재검토" 4단계 적용 - "급등 후 꺾이면 고점 대비 -0.8%서 익절")
+#       + Codex 설계검토 - r006에 신규 _012_peak_retracement_guard 추가. TP1(+3.0%)/ATR익절선 도달 전
+#       구간(현재 무보호)에서 고점 대비 되돌림이 문턱(ATR% 기반, 하한 0.8%) 이상이면 남은 이익을 지킨다.
+#       신규 상수 ENABLE_PEAK_RETRACE_GUARD/PEAK_RETRACE_GUARD_ARM_PNL/_MIN_PCT/_ATR_MULT/
+#       _CONFIRM_SECONDS. 매도 조건 번호 _012~_021이 _013~_022로 다시 한 칸씩 밀림(로직 무변경).
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (익절 빈도 증가 - TP1 미도달 구간에서 더 일찍 이익 실현. 롤백:
+#       ENABLE_PEAK_RETRACE_GUARD=False)
+# - [2026-09-23] type=feat owner=claude
+#     summary: 사용자 요청("매수/매도 컨셉 재검토" 3~4단계 적용) + Codex 설계검토 - r006에 신규
+#       _011_hybrid_1min_dead_cross_exit 추가(매수측 1분봉 골든크로스와 대칭되는 매도 조건, 1분봉 BB중심선
+#       데드크로스 + 손실구간 수익요건 없이 즉시청산/수익구간 BB기울기 추가확인 + 확인창). 신규 상수
+#       ENABLE_HYBRID_1MIN_DEADCROSS_EXIT/HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS/_MIN_HOLD_SECONDS/
+#       _CONFIRM_SECONDS/_LOSS_EXIT_PNL_MAX. 매도 조건 번호 _011~_020이 _012~_021로 한 칸씩 밀림(기존
+#       조건 로직은 무변경, 이름/번호만 이동) - r003의 "_004, _017 RiskState 공유" 주석도 "_004, _018"로
+#       갱신. r006/buy_condition_flow.txt 순서표 갱신.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (매도 빈도 증가 - 이전에 늦은 시그널 청산/하드손절까지 버티던 손실 포지션이
+#       더 일찍 청산됨. 롤백: ENABLE_HYBRID_1MIN_DEADCROSS_EXIT=False)
+# - [2026-09-23] type=feat owner=claude
+#     summary: 사용자 요청(204620 글로벌텍스프리 2026-09-23 09:17 매수 지연 사례 - "매수/매도 컨셉
+#       재검토" 중 발견 + Codex 설계검토) - 신규 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS(300초=5분, 탐색적
+#       값) 추가. 1분봉 골든크로스는 유효한데 3분봉 컨텍스트 게이트가 못 따라와 대기만 길어지다가, 뒤늦게
+#       게이트가 맞아떨어진 시점엔 이미 가격이 추격매수 구간까지 오른 사례(204620: 09:04 트리거 유효 ->
+#       09:17 실제 매수, 13분 지연) 대응. Codex가 제안한 "진입 이벤트에 유효기한을 두자"는 아이디어를
+#       구현 - r005 _008_hybrid_1min_trigger에서 update_timed_condition_state()로 1분봉 트리거가
+#       "계속 유효" 상태로 지속된 시간을 추적, 초과 시 HYBRID_1MIN_TRIGGER_EXPIRED로 반려한다(r002
+#       check_buy_condition_1min_hybrid_trigger 자체는 무변경, r005/g003 양쪽에서 동일 로직 사용).
+#       <=0이면 비활성(기존과 동일). 아직 백테스트로 최적값을 검증하지 않았다 - 실거래 관찰 필요.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (1분봉 트리거가 이 시간 이상 대기 상태로 지속된 뒤 매수하던 케이스가
+#       이제 거부됨 - 매수 빈도 감소 방향. 롤백: HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS=0.0)
+# - [2026-09-23] type=fix owner=claude
+#     summary: 사용자 요청(119850 지엔씨에너지 2026-09-23 09:02 하드손절 직후 반등 사례 분석 + Codex 검토) -
+#       HARD_STOP_LOSS(_004, r006)가 20개 매도조건 중 유일하게 확인창(디바운스) 없이 단일 폴링 틱에서 즉시
+#       시장가 전량매도됨을 발견(ATR_STOP_LOSS/POST_BUY_DROP/BREAKEVEN_FAIL/NO_TREND_EXIT은 전부 확인창 보유).
+#       119850 건: 09:02:10 -1.27% -> 09:02:31 -2.00%로 21초 폴링 간격에 임계값을 그냥 통과해 확인 없이 즉시
+#       발동, 체결가는 시장가 슬리피지로 -2.18%. 신규 HARD_STOP_CONFIRM_SECONDS(10초) 추가 - ATR_STOP_LOSS와
+#       동일한 update_timed_condition_state() 헬퍼 재사용. Codex 검토 결과 반영: 이 확인창은 "손실 상한 유지"가
+#       아니라 "일시적 휩쏘 방지 vs 지속 하락 시 확인 시간만큼 손실 확대"의 트레이드오프임 - 무료 개선이 아님을
+#       명시. g003도 동일 로직(r006 parity) 반영해 백테스트 정합성 유지(PaperStrategyTracker의 별도
+#       STOP_LOSS_PERCENT 비교용 경로는 이 변경과 무관 - MULTI_FILTER/BASIC_CROSS 비교 전용, 실제 백테스트
+#       경로 아님을 Codex 검토로 확인).
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (하드손절이 최소 10초 확인 후 발동 - 지속 하락 시 이전보다 다소 늦게/낮은
+#       가격에 체결될 수 있음. 롤백: HARD_STOP_CONFIRM_SECONDS=0.0)
+# - [2026-09-22] type=tuning owner=claude
+#     summary: 사용자 요청("완화 검토안 적용") - 20260921 매수 2건 분석(analysis_20260921_missed_buys.md)에서 도출한
+#       완화 3건 적용. (1) 연속 매수 확인창(r005 _020): BUY_CONFIRM_MAX_GAP_SECONDS 20->45초 + 같은 3분봉 유지
+#       (신규 BUY_CONFIRM_REQUIRE_SAME_BAR) + 직전 통과 대비 가격 이탈 <=0.3%(신규 BUY_CONFIRM_MAX_PRICE_DRIFT_PCT).
+#       정규장 종목당 평가주기(중앙 22초)가 20초 창보다 길어 2회 연속 확인이 5일 425건 중 2건만 성립했고, 제안 규칙은
+#       425건 중 342건이 통과. (2) STOCH_D_BUY_MIN 50->40 (K>D & 40<=D<50 근접실패 n=82, TP36.6%/SL32.9%).
+#       (3) HYBRID_1MIN_TRIGGER_LOOKBACK_BARS 8->12 (새로 통과 n=59, TP39.0%/SL28.8%). (2)(3)은 5일 소표본·사후
+#       라벨 탐색 결과라 표본외 검증 전 잠정 적용이다. 확인창 3개 상수는 r003 실전 전용(g003은 확인을 연속 횟수로만
+#       셈), STOCH_D/룩백은 r002 공용이라 g003 백테스트에도 함께 반영된다.
+#     impact: common (r003 실전/g003 백테스트 공용, 확인창은 실전만)
+#     compatibility: breaking (매수 빈도 증가. 롤백: BUY_CONFIRM_MAX_GAP_SECONDS=20, BUY_CONFIRM_REQUIRE_SAME_BAR=False,
+#       BUY_CONFIRM_MAX_PRICE_DRIFT_PCT=0.0, STOCH_D_BUY_MIN=50.0, HYBRID_1MIN_TRIGGER_LOOKBACK_BARS=8)
+# - [2026-09-21] type=refactor owner=claude
+#     summary: 사용자 요청 - r003 매수/매도 조건을 번호 붙은 조건 객체(r005_buy_conditions/r006_sell_conditions)와
+#       메인 함수로 분리(동작 불변 리팩터링). 이 파일은 신규 상수 BUY_CONFIRM_MAX_GAP_SECONDS만 추가 -
+#       r003이 하드코딩하던 "연속 매수 확인" 간격 상한(POLL_INTERVAL_SECONDS*2)을 이름 붙여 노출한 것이며
+#       값은 기존과 같은 20초라 동작 변화 없음. (참고: 20260921 로그 분석에서 정규장 종목당 평가주기가
+#       중앙 22초라 이 20초 창이 사실상 성립하지 않는 것이 확인됨 - 값 변경은 전략 변경이라 이번엔
+#       바꾸지 않음. r003 Update log 2026-09-21 참조)
+#     impact: live (r003/r005)
+#     compatibility: backward-compatible
+# - [2026-09-21] type=fix owner=claude
+#     summary: 사용자 요청 2건. (1) 023160 태광 2026-09-21 09:01 전량 일괄 매도 원인 수정 - 트레일(TP_EXTENSION)은
+#       peak >= ATR 익절선(3xATR%, 태광 +1.91%)에서 무장하는데 1차 분할익절(TP1)은 max(+3.0%, 1.2xATR%)라서
+#       ATR% < 1.0% 종목은 트레일이 TP1보다 먼저 무장된다. 태광은 고점 +2.79%(TP1 +3.0% 미달)에서 -1.0% 되돌림이
+#       나오자 TP1 없이 18주 전량이 트레일로 매도됨. 신규 ENABLE_TP1_CAP_AT_ATR_TP(기본 True): TP1 목표를 ATR
+#       익절선으로 상한 처리해 TP1이 트레일 무장보다 늦지 않게 함(ATR%>2.5% 고변동 종목의 ATR 동적 목표는 그대로).
+#       (2) 급등 감지 + 사다리 익절 신설 - ENABLE_SURGE_LADDER_TP(기본 True)와 SURGE_* 상수 9개. 1차 익절 시점에
+#       급등(60초 내 최저가 대비 상승폭 >= max(0.8%, 1.5xATR%) + BB 상단 돌파/봉 거래량 1.5배 중 1개 이상)이면
+#       잔량을 TP1 체결가 +2%(진입수량 30%)/+4%(잔량 전량)에서 순차 익절, 트레일/손절은 병행. 급등이 아니면 기존
+#       (TP1 후 잔량 전량 트레일 위임)과 동일. 공용 함수는 r002, 적용은 r003 실전/g003 백테스트.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (저변동성 종목의 1차 익절이 앞당겨지고 급등 시 잔량 청산 방식이 바뀜; 두 플래그를
+#       False로 두면 즉시 이전 동작으로 롤백)
+# - [2026-09-20] type=refactor owner=claude
+#     summary: 사용자 결정 반영(r002/r003 Update log 2026-09-20 참조). 하이브리드가 유일한 매수 경로가
+#       되어 ENABLE_1MIN_GOLDEN_CROSS_BUY/ENABLE_1MIN_ENTRY_SCORE_GATE/ENABLE_1MIN_TRIGGER_3MIN_CONTEXT
+#       플래그와 전용 상수(ENTRY_*, EMA_9_PERIOD) 삭제. 같은 날 재매수 허용(사용자 결정) - 실전이 읽은
+#       적 없는 ALLOW_REBUY_SAME_CODE와 g003 전용 SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL 삭제.
+#       거래량 하한 통일 - HYBRID_1MIN_MIN_ENTRY_VOL_MA/VOLUME 삭제(MIN_ENTRY_VOL_MA/VOLUME/
+#       TURNOVER_KRW 하나만 사용). 신규 ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK(기본 True=현행 유지) -
+#       bb_mid_downtrend_block 게이트를 끄는 결정은 별도 전략 변경으로 분리.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (거래량 하한 통일로 하이브리드 트리거 통과 조건이 소폭 완화됨, 그 외 불변)
 # - [2026-09-18] type=fix owner=claude
 #     summary: 사용자 요청("오늘 매수 3건, 익절 가능했던 매수를 놓친 경우 점검") -
 #       20260918 REJECT 로그 46,385건 분석 결과 score 15/24 이상 고품질 신호가 반려된
@@ -436,6 +527,10 @@ STOP_LOSS_EARLY_PERCENT = -0.020  # 보유 초기 구간에서 사용하는 완�
 STOP_LOSS_MIN_HOLD_SECONDS = 600  # 손절 로직이 본격 적용되기 전 최소 보유 시간(초)
 HARD_STOP_LOSS_PCT = 0.017  # 하드스탑 손절 기준 (0.8%->1.2%->1.7%: 백테스트 결과 하드스탑 58건 중 63.8%가 손절 후 본전 이상 회복, 34.5%는 +2%까지 회복 - 급락 후 반등을 놓치지 않도록 완화)
 HARD_STOP_MIN_HOLD_SECONDS = 240.0  # 하드스탑 활성화 최소 보유 시간(초) (180->240: 초기 변동성 노이즈에 덜 민감하도록 연장)
+# [2026-09-23] 단일 폴링 틱 노이즈로 즉시 손절되는 걸 막기 위한 확인창(ATR_STOP_LOSS와 동일 헬퍼/취지,
+# 119850 2026-09-23 09:02 사례+Codex 검토). 0 이하면 기존과 동일(즉시 발동, 디바운스 없음)으로 되돌아간다 -
+# 지속 하락 시 확인 시간만큼 체결가가 더 나빠질 수 있는 트레이드오프이므로 손실 상한이 아니라 트리거 지연임에 유의.
+HARD_STOP_CONFIRM_SECONDS = 10.0
 ATR_STOP_MULTIPLIER = 1.5  # ATR 기반 손절 배수
 
 # [2026-09-07] 진입 최소 변동성(ATR%) 필터. 손절/익절(TP1/ATR_STOP_MULTIPLIER)은 ATR을 쓰면서
@@ -478,6 +573,31 @@ STAGED_TP2_RATIO = 0.00  # 0.30 -> 0.00: 2차 분할청산 비활성화 (1차 �
 # 1차 익절 목표를 고정 STAGED_TP1_PCT 대신 종목 변동성(ATR)에 연동해 동적으로 산출한다.
 # 목표익절 = max(STAGED_TP1_PCT, (ATR/entry_price) * TP1_ATR_MULTIPLIER)
 TP1_ATR_MULTIPLIER = 1.2
+# [2026-09-21] 1차 익절 목표 상한 = ATR 익절선(ATR% x ATR_TAKE_PROFIT_MULTIPLIER, 곧 TP_EXTENSION 트레일
+# 무장선). 트레일은 peak >= ATR 익절선(3xATR%)에서 무장하는데, TP1이 +3.0% 고정 하한이면 ATR% < 1.0%
+# 종목은 트레일이 TP1보다 먼저 무장되어 1차 분할 없이 트레일이 전량 매도한다(023160 태광 2026-09-21:
+# 고점 +2.79% < TP1 +3.0%, 트레일 무장 +1.91% -> 18주 전량 매도). 목표 =
+# min(max(STAGED_TP1_PCT, ATR%*TP1_ATR_MULTIPLIER), ATR%*ATR_TAKE_PROFIT_MULTIPLIER) 로 두어 TP1이 트레일
+# 무장보다 늦어지지 않게 한다(ATR%>2.5% 고변동 종목은 기존 ATR 동적 목표가 그대로 유지됨).
+# False면 기존 max(STAGED_TP1_PCT, ATR%*TP1_ATR_MULTIPLIER)로 즉시 롤백.
+ENABLE_TP1_CAP_AT_ATR_TP = True
+# [2026-09-21] 급등 감지 + 사다리 익절: 1차 익절 시점에 급등 중이면 잔량을 TP1 체결가 기준 +2%/+4%에서 순서대로
+# 추가 익절한다(추세를 더 태우기 위해 잔량 전량을 트레일에만 맡기지 않음). 급등 여부는 TP1 시점에 1회 판정.
+# 급등 = (속도) 최근 SURGE_LOOKBACK_SECONDS 내 최저가 대비 상승폭 >= max(SURGE_SPEED_MIN_PCT,
+#        ATR% x SURGE_SPEED_ATR_MULT) 이면서, (확인) BB 상단 돌파 / 봉 거래량 >= VOL_MA20 x
+#        SURGE_VOLUME_RATIO_MIN 중 SURGE_MIN_CONFIRMS개 이상.
+# 사다리: TP2 = TP1 체결가 x (1+SURGE_TP2_PCT)에서 진입수량의 SURGE_TP2_RATIO, TP3 = x (1+SURGE_TP3_PCT)에서
+# 잔량 전량. 트레일링 스탑/손절은 그대로 병행(사다리 사이에서 되돌림이 나오면 트레일이 잔량을 청산).
+# False면 급등 판정/사다리 자체가 비활성화되어 기존(TP1 후 잔량 전량 트레일 위임) 동작과 동일.
+ENABLE_SURGE_LADDER_TP = True
+SURGE_LOOKBACK_SECONDS = 60.0   # 급등 속도 측정 구간(초) - 라이브 틱 약 10초 간격이라 구간당 5~6표본
+SURGE_SPEED_MIN_PCT = 0.008     # 구간 내 최저가 대비 상승폭 절대 하한 (+0.8%)
+SURGE_SPEED_ATR_MULT = 1.5      # 상승폭 >= ATR% x 1.5 (변동성 정규화: 원래 잘 흔들리는 종목의 노이즈를 급등으로 오인하지 않음)
+SURGE_VOLUME_RATIO_MIN = 1.5    # 확인 신호: 최근 확정봉 거래량 / VOL_MA20 >= 1.5
+SURGE_MIN_CONFIRMS = 1          # 속도 외 확인 신호(BB 상단 돌파, 거래량 급증) 최소 충족 개수 (0~2)
+SURGE_TP2_PCT = 0.02            # 사다리 2단계: TP1 체결가 대비 +2%
+SURGE_TP3_PCT = 0.04            # 사다리 3단계: TP1 체결가 대비 +4% (잔량 전량)
+SURGE_TP2_RATIO = 0.30          # 2단계 청산 수량 = 진입수량 x 30% (TP1 40% + 30% + 3단계 잔량 30%)
 # 3차 익절(잔량 처리) 방식: 고정 목표가 청산 대신, 1/2차 완료 후 잔량을 트레일링 스탑에 위임한다.
 # (기존 TRAILING_STOP_FROM_PEAK / TP_EXTENSION_TRAIL_FROM_PEAK 로직을 그대로 재사용)
 
@@ -570,13 +690,10 @@ PRE_CROSS_ACCUM_VOL_RATIO_MIN = 0.6  # 0.8->0.6: 20260908 로그 분석 결과 0
 MIN_ENTRY_VOL_MA = 1000
 MIN_ENTRY_VOLUME = 1500
 
-# [2026-09-07] 1분봉 하이브리드 트리거(ENABLE_1MIN_TRIGGER_3MIN_CONTEXT) 전용 유동성 최소치.
-# 1분봉 거래량은 3분봉의 약 1/3 수준인데 check_buy_condition_1min*이 MIN_ENTRY_VOL_MA/
-# MIN_ENTRY_VOLUME(3분봉 기준)을 그대로 재사용해 실질적으로 3분봉 대비 3배 엄격한 차단이
-# 되고 있었다(HYBRID_1MIN_TRIGGER_CANDLE_GAIN_*/BB_GAP_MAX_PCT는 이미 1분봉 전용 값으로
-# 분리돼 있었는데 유동성만 누락). 3분봉 기준값을 시간프레임 비율(1/3)로 환산.
-HYBRID_1MIN_MIN_ENTRY_VOL_MA = 340
-HYBRID_1MIN_MIN_ENTRY_VOLUME = 500
+# [2026-09-20] 1분봉 하이브리드 트리거 전용 유동성 최소치(HYBRID_1MIN_MIN_ENTRY_VOL_MA=340/
+# HYBRID_1MIN_MIN_ENTRY_VOLUME=500 - 위 3분봉 기준값을 1/3로 환산한 복사본)를 삭제했다.
+# 거래량/유동성 하한은 위 MIN_ENTRY_VOL_MA/MIN_ENTRY_VOLUME/MIN_ENTRY_TURNOVER_KRW(3분봉
+# min_liquidity_safety 게이트) 하나로 통일한다.
 
 # [2026-09-07] 거래대금(turnover=종가*거래량) 기반 유동성 하한 - MIN_ENTRY_VOLUME(주수)은
 # 가격대별 형평성이 없다(저가주는 쉽게 통과, 고가주는 동일 주수라도 거래대금이 훨씬 큼에도
@@ -592,6 +709,13 @@ BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 �
 # 가격/스토캐스틱/윌리엄스%R이 이미 반전된 뒤에도 한동안 매수를 막는 경우가 있어 -0.7%->-2.0%로 완화.
 BB_SLOPE_MIN_PCT = -2.0
 BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
+# [2026-09-20] 하이브리드 경로(HYBRID_3MIN_CONTEXT_GATES)에서 bb_mid_downtrend_block 게이트를 쓸지 여부.
+# True = 현재 동작 유지. False로 바꾸면 이 게이트가 빠져 진입이 완화된다 - 별도 전략 변경으로 다룬다:
+# 최근 라이브 5거래일 단독 차단 0건, g003 20260916~18 x 랭킹 상위 8종목(24 종목-일)에서 게이트
+# ON/OFF 거래가 완전히 동일했지만 다른 게이트가 논리적으로 포함하지는 않으므로(Codex 검토) 표본이
+# 이 정도로는 켜둔 채 유지하고, 바꾸려면 더 많은 일자 백테스트/섀도 검증 후 결정. 비하이브리드
+# 3분봉 단독 경로(g003 비교 트래커)에는 영향 없음.
+ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK = True
 BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5->0.25)
 CANDLE_GAIN_MIN_PCT = -0.1       # 현재봉 양봉 최소 상승률 (%) - 미세 틱노이즈 허용 (0.1->0.0->-0.1)
 CANDLE_GAIN_MAX_PCT = 0.8        # 현재봉 최대 허용 상승률 (%) - 초과 시 추격 매수 차단
@@ -626,7 +750,7 @@ OPENING_GUARD_SCORE_THRESHOLD = 12  # 개장 직후 요구 최소 점수 (일반
 STOCH_OVERBOUGHT = 96.0  # 85.0 -> 92.0 -> 96.0 (과열 차단 기준 완화)
 STOCH_BUY_MIN = 20.0  # 매수 스토캐스틱 K 하한
 STOCH_BUY_MAX = 50.0  # 매수 스토캐스틱 K 상한
-STOCH_D_BUY_MIN = 50.0  # [2026-09-14][사용자 요청①] 매수 스토캐스틱 %D 하한 신규 추가 (실거래 분석: %D<50 승률 24-33%(n=64) vs 50-80 42%(n=50))
+STOCH_D_BUY_MIN = 40.0  # [2026-09-14][사용자 요청①] 매수 스토캐스틱 %D 하한 신규 추가 (실거래 분석: %D<50 승률 24-33%(n=64) vs 50-80 42%(n=50)); [2026-09-22] 50->40 잠정 완화(K>D & 40<=D<50 근접실패 n=82, TP36.6%/SL32.9%, 5일 소표본 - 표본외 검증 필요, 롤백=50.0)
 RSI_BUY_MOMENTUM_MAX = 60.0  # RSI 모멘텀 허용 상한(기본: 50~60 구간 유지)
 WILLIAMS_BUY_FLOOR = -70.0  # 매수 허용 Williams %R 하한
 WILLIAMS_OVERBOUGHT_CEIL = -10  # -20 -> -10 (Williams R 완화)
@@ -691,8 +815,13 @@ HARD_STOP_CIRCUIT_BREAKER_COUNT = 3      # 연속 HARD_STOP 발생 횟수 임계
 HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN = 60  # 서킷브레이커 발동 시 신규 매수 차단 시간(분)
 # 당일 HARD_STOP_LOSS 발생 종목 재진입 차단 여부 (같은 날 같은 종목 손절 후 재매수 금지)
 HARD_STOP_BLOCK_REENTRY_TODAY = True
-# 당일 같은 종목 재매수 허용 여부 / 동일 종목 재진입 쿨다운(분)
-ALLOW_REBUY_SAME_CODE = False
+# 같은 날 같은 종목 재매수를 막는 명시적 규칙은 두지 않는다(2026-09-20 사용자 결정 - 종전
+# ALLOW_REBUY_SAME_CODE=False는 실전이 읽은 적 없는 죽은 설정이라 삭제). 재진입 제어는
+# has_buy_exposure(보유/주문중)/TRADE_COOLDOWN_MINUTES/HARD_STOP_BLOCK_REENTRY_TODAY뿐이다.
+# 주의: 실전은 매수 체결 종목을 감시목록에서 졸업(GRADUATE)시키고 청산 뒤에도 되돌리지 않으므로
+# (r003 _rebalance_active_watchlist) 그날은 다시 평가되지 않는다 - g003은 재진입을 허용해 둘이
+# 다르다. 재매수를 실전에서 실제로 가능하게 하려면 졸업/재편입 정책을 따로 바꿔야 한다.
+# 동일 종목 재진입 쿨다운(분):
 TRADE_COOLDOWN_MINUTES = 3
 # 시장일 확인 실패 시 보수적으로 비거래 처리
 MARKET_DAY_FAIL_CLOSED = True
@@ -713,36 +842,11 @@ BUY_SPLIT_MARKET_RATIO = 0.5  # 시장가 즉시체결 비중 (나머지는 매�
 ENABLE_PYRAMIDING = False  # 2026-08-20: 보유중 종목 중복 재매수 방지 위해 비활성화
 PYRAMID_TRIGGER_PNL_PCT = 0.005  # 평균단가 대비 +0.5%
 
-# --- 12. 1분봉 BB 중간값 골든크로스 매수 (단순화 진입 컨셉) -------------------
-# 매수 판단 타임프레임을 3분봉에서 1분봉으로 축소하고, 매수 조건을 "확정된 1분봉
-# 종가가 BB 중간값을 상향 돌파(골든크로스)"로 단순화한다. 기존 3분봉 다중 필터
-# (BB기울기/스코어 임계값/RSI/MACD/Stoch/DI 등)는 신호 확인용으로는 적용하지 않되,
-# 계좌/체결 안전장치(거래량 최소조건 MIN_ENTRY_VOL_MA·MIN_ENTRY_VOLUME/캔들 양봉
-# CANDLE_GAIN_MIN_PCT·MAX_PCT/추격매수 방지 BB_MID_CHASE_MAX_GAP_PCT/오더북 확인 등)는
-# 그대로 재사용한다. 매도(데드크로스)/손절 조건은 기존 3분봉 기준 그대로 유지된다.
-# False로 설정 시 즉시 기존 3분봉 다중필터 매수 파이프라인으로 롤백된다.
-# 2026-08-17: 사용자 요청으로 3분봉 다중필터 경로로 되돌림(False) - 원래 설계 의도가
-# "3분봉 BB 중앙선 골든크로스 시점에 스토캐스틱 패스트/윌리엄스 %R 매수신호까지 확인"
-# 이었는데, 1분봉 골든크로스 경로는 스토캐스틱/윌리엄스를 전혀 보지 않아 이 의도와
-# 어긋났음(r005 Update log 참조. run_buy_condition_pipeline_comment에 스토캐스틱/
-# 윌리엄스 %R 필수조건 신규 추가).
-ENABLE_1MIN_GOLDEN_CROSS_BUY = False
-
-# --- 12-b. 1분봉 Entry Score 게이트 (3분봉 신호 확인 후 진입 타이밍 재검증) --------
-# 위 섹션(12)과는 별개다. 섹션 12는 3분봉 다중필터를 완전히 대체하는 단독 경로이고,
-# 이 게이트는 기존 3분봉 다중필터(run_buy_condition_pipeline_comment)가 통과된
-# 이후에 "지금이 실제로 들어갈 타이밍인가"를 1분봉에서 한 번 더 점수제로 확인하는
-# 추가 단계다. EMA9/EMA20/직전고점돌파/거래량을 점수화해 ENTRY_SCORE_THRESHOLD
-# 이상이면 통과. False로 설정 시 기존처럼 3분봉 통과만으로 즉시 매수한다.
-ENABLE_1MIN_ENTRY_SCORE_GATE = True
-EMA_9_PERIOD = 9
-EMA_20_PERIOD = 20
-ENTRY_PREV_HIGH_LOOKBACK_BARS = 10    # "직전 고점" 판정 룩백(1분봉 기준 10분, 현재봉 제외)
-ENTRY_EMA_CROSS_SCORE = 2             # EMA9 > EMA20
-ENTRY_CLOSE_ABOVE_EMA9_SCORE = 1      # Close > EMA9
-ENTRY_PREV_HIGH_BREAKOUT_SCORE = 2    # Close > 직전 ENTRY_PREV_HIGH_LOOKBACK_BARS봉 고점
-ENTRY_VOLUME_ABOVE_MA_SCORE = 2       # Volume > VOL_MA20 (1분봉 기준)
-ENTRY_SCORE_THRESHOLD = 5             # 만점 7점 중 5점 이상 (3분봉이 이미 엄격해 완화적으로 시작)
+# --- 12. (삭제됨 2026-09-20) 1분봉 골든크로스 단독 매수 / 1분봉 Entry Score 게이트 ---
+# 하이브리드(아래 12-c: 1분봉 트리거 + 3분봉 컨텍스트)가 유일한 매수 경로가 되면서 두 경로를 켜고
+# 끄던 플래그(ENABLE_1MIN_GOLDEN_CROSS_BUY/ENABLE_1MIN_ENTRY_SCORE_GATE)와 전용 상수(ENTRY_*,
+# EMA_9_PERIOD)를 삭제했다 - 도입/검증 이력은 git history 참조.
+EMA_20_PERIOD = 20   # calculate_indicators의 EMA_20(3분봉 ema_trend_align 가점)이 사용
 
 # --- 12-c. 1분봉 트리거 + 3분봉 컨텍스트 하이브리드 (섹션 12/12-b와 별개 3번째 경로) ---
 # 섹션 12(ENABLE_1MIN_GOLDEN_CROSS_BUY)는 1분봉이 3분봉을 완전히 대체하고, 섹션
@@ -789,15 +893,18 @@ ENTRY_SCORE_THRESHOLD = 5             # 만점 7점 중 5점 이상 (3분봉이 
 # 4건) 결과가 혼재돼 있어 기본값 False 유지. 추가로 검증하려면 (a) 더 많은 일자/
 # 종목으로 표본 확대, (b) 20260827 케이스처럼 "더 늦은 크로스로 대체"되는 원인
 # (HYBRID_3MIN_CTX의 OPENING_GUARD/스코어 재계산 타이밍 차이 추정) 규명 필요.
-ENABLE_1MIN_TRIGGER_3MIN_CONTEXT = True      # 2026-09-01 바이오니아,비에이치 못 잡아서 False -> True로 변경
+# [2026-09-20] 하이브리드가 유일한 매수 경로가 되어 ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 플래그를 삭제했다
+# (위 이력의 "기본값 False 유지" 등은 도입 당시 기준 기록).
 # [2026-09-09] 452190 한빛레이저 사례: 3분봉은 11:54~11:58에 이미 골든크로스 확정(score
 # 17/22)했는데, 12:07~12:30 폭등 구간(4,655->5,160) 전체가 HYBRID_1MIN_TRIGGER_
 # 1MIN_NO_BB_MID_GOLDEN_CROSS로 100% 리젝됨 - 돌파 자체는 12:07~09에 발생했지만 그 후
 # 가격이 BB중간선 위에서 계속 강하게 올라, "크로스 시점"이 룩백창(3->5봉) 밖으로
 # 벗어나 버려 매 폴링마다 크로스가 "없다"고 판정됨(역설적으로 추세가 강하고 오래갈수록
 # 못 통과). 3->8로 완화(그래도 무한정은 아니고, BB_GAP_CEILING_PCT가 추격 상한을 유지).
-HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 8        # 크로스 인정 룩백(3분봉 5봉/15분과 유사한 시간폭)
-HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.3  # 1분봉 자체 틱노이즈가 더 커서 3분봉(-0.1%)보다 완화
+# [2026-09-22] 8->12 잠정 완화(20260921 분석: 새로 통과 n=59, TP39.0%/SL28.8%, 5일 소표본 - 표본외 검증 필요, 롤백=8).
+# 추격 상한은 그대로(HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT가 경과봉 수와 무관하게 상한).
+HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 12       # 크로스 인정 룩백(1분봉 12봉 = 12분 = 3분봉 4봉)
+HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.4  # 1분봉 자체 틱노이즈가 더 커서 3분봉(-0.1%)보다 완화
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 1.8   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화
 HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT = 0.5        # 3분봉(0.35%)보다 소폭 완화 - 트리거를 빨리 잡는 목적과 상충 방지
 
@@ -819,6 +926,45 @@ HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT = 1.1
 # 경로에서만 상한을 완화한다 - 신선한 크로스 경로의 상한(위 CEILING_PCT)은 그대로 유지해
 # 저품질 스파이크 추격은 계속 차단한다.
 HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT = 2.2
+
+# [2026-09-23] 사용자 요청(204620 글로벌텍스프리 2026-09-23 09:17 매수 - 1분봉 골든크로스는 09:04에
+# 이미 유효했는데 3분봉 컨텍스트 게이트(stochastic_buy_signal/bb_upper_gap_min)가 계속 막아 실제 매수가
+# 13분 뒤, 가격이 이미 그 구간 상단 근처로 오른 뒤에야 체결된 사례 + Codex 설계검토) - 1분봉 트리거가
+# "계속 유효한 채로 대기" 상태로 이 시간(초) 이상 지속되면(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS의 12봉
+# 룩백과 별개로, 3분봉 컨텍스트가 못 따라와 대기만 길어지는 경우를 겨냥) 매수를 포기한다 - 게이트가
+# 뒤늦게 전부 맞아떨어져도 그땐 이미 추격매수가 된 경우가 많다는 진단(Codex 동의). <=0이면 비활성(기존과
+# 동일). 아직 백테스트로 정확한 값을 검증하지 않은 탐색적 상수 - 실거래 관찰 후 조정 필요.
+HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS = 300.0   # 5분
+
+# [2026-09-23] 사용자 요청("매수/매도 컨셉 재검토") + Codex 설계검토 - r006 _011_hybrid_1min_dead_cross_exit.
+# 매수측 1분봉 골든크로스 트리거와 대칭되는 매도 조건. Codex의 5가지 권고를 반영:
+# (1) 신선한 크로스 또는 룩백+연속유지(check_1min_dead_cross, r002) - 매수측과 동일 패턴이나 룩백은 더
+#     짧게(빠른 반응 목적, 매수 12봉보다 좁힘). (2) 최소 보유시간(MIN_HOLD_SECONDS)으로 매수 직후 노이즈
+#     방지 - 이 구간은 _015_post_buy_entry_drop_guard가 별도 담당. (3) 손실 구간은 수익 요건 없이 즉시
+#     청산(LOSS_EXIT_PNL_MAX) - _021_shared_reversal_sell(AUX_REVERSAL_SCORE)의 "손실 포지션을 절대
+#     청산 못 하는" 구조적 결함(2026-09-23 컨셉 재검토 메모 참조)을 이 조건으로 해결한다. (4) 손실이
+#     아직 그 정도가 아니면(수익 중이거나 얕은 손실) BB중심선 자체 기울기(1분봉)도 꺾였는지 추가 확인 -
+#     정상 상승추세 눌림목에서의 오매도(휩쏘) 방지. (5) 확인창(CONFIRM_SECONDS)으로 단일 틱 노이즈 방지 -
+#     HARD_STOP_CONFIRM_SECONDS/ATR_STOP_CONFIRM_SECONDS와 동일 패턴.
+# ENABLE 플래그로 명확한 킬스위치를 둔다(다른 상수처럼 <=0 암묵적 비활성보다 이 조건은 영향이 커서 명시적으로).
+ENABLE_HYBRID_1MIN_DEADCROSS_EXIT = True
+HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS = 5          # 매수측(12봉)보다 좁힘 - 손절/추세이탈 반응은 빠르게
+HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS = 60.0    # 매수 직후 최소 유예(초) - 기존 시그널 청산군(600초)보다 훨씬 짧음
+HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS = 15.0     # 노이즈 방지 확인창(초) - HARD_STOP(10s)~ATR_STOP(20s) 사이
+HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX = -0.003  # -0.3%: 이 손익 이하면 수익요건 없이 즉시 청산
+
+# [2026-09-23] 사용자 요청("급등 후 꺾이면 고점 대비 -0.8%서 익절") + Codex 설계검토 - r006
+# _012_peak_retracement_guard. TP1(STAGED_TP1_PCT=3.0%)/ATR익절선 도달 전 구간은 현재 아무 보호장치가
+# 없다(그 밑에서 피크를 찍고 반납해도 하드손절/시그널청산까지 아무 것도 안 잡음) - 이 공백을 메운다.
+# 주의: 이 파일의 BREAKEVEN_FAIL_GIVEBACK_PCT 이력(0.8%->2.0%->2.8%로 점진 완화, 백테스트 근거: 92.9%가
+# 본전 이상 회복)은 고정 0.8% 되돌림처럼 좁은 문턱이 정상적인 되돌림도 조기청산할 위험을 보여준다 -
+# Codex 권고대로 ATR% 기반으로 문턱을 정해(고정 MIN_PCT는 하한선일 뿐) 변동성 큰 종목은 자동으로 문턱이
+# 넓어지게 한다. 아직 백테스트로 정확한 값을 검증하지 않은 탐색적 구현 - 실거래 관찰 후 조정 필요.
+ENABLE_PEAK_RETRACE_GUARD = True
+PEAK_RETRACE_GUARD_ARM_PNL = 0.010        # +1.0% 이상 찍어야 활성화 (BREAKEVEN_FAIL_ARM_PNL과 동일)
+PEAK_RETRACE_GUARD_MIN_PCT = 0.008        # 0.8%: 문턱 하한(사용자 요청값 그대로, ATR가 이보다 작을 때 하한 역할)
+PEAK_RETRACE_GUARD_ATR_MULT = 1.0         # 문턱 = max(MIN_PCT, ATR% x 이 배수)
+PEAK_RETRACE_GUARD_CONFIRM_SECONDS = 30.0  # 노이즈 방지 확인창(초)
 
 # 3분봉 가점(_buy_support_score)용 장기 추세 정합성: EMA20 > EMA60이면 상위 추세가
 # 우상향이라는 뜻으로 +2점. EMA_20_PERIOD는 위 1분봉 게이트와 공유(같은 컬럼, 프레임만 다름).
@@ -944,6 +1090,17 @@ MORNING_NXT_NEW_ENTRY_CUTOFF = MORNING_NXT_END
 STARTUP_WARMUP_SECONDS = 90
 # 메인 루프 폴링 간격(초)
 POLL_INTERVAL_SECONDS = 10  # 15 -> 10 (더 빠른 대응)
+# 연속 매수 확인(BUY_CONSECUTIVE_CONFIRM_COUNT) 사이 허용 간격 상한(초) - 이보다 오래 벌어지면 확인 횟수를
+# 1로 되돌린다. [2026-09-21] r003에 POLL_INTERVAL_SECONDS * 2로 하드코딩돼 있던 값을 이름 붙여 노출(20초).
+# [2026-09-22] 20->45초: 정규장 활성 50종목의 종목당 평가주기가 중앙 약 22초라 20초 창에서는 2회 연속 확인이
+# 5일 425건 중 2건만 성립했다(20260921 분석). 창이 넓어진 만큼 아래 두 조건으로 낡은 신호의 확인을 막는다.
+# 롤백=20.
+BUY_CONFIRM_MAX_GAP_SECONDS = 45
+# 연속 확인의 두 통과가 같은 3분봉(r005 ctx.bar_time 동일)이어야 한다. False면 봉이 바뀌어도 확인 유지(이전 동작).
+BUY_CONFIRM_REQUIRE_SAME_BAR = True
+# 연속 확인 두 통과 사이 실시간가 이탈 상한(%, 직전 통과 시점 실시간가 대비 절대값). 초과하면 확인 횟수를 1로 되돌린다.
+# 0 이하면 검사 안 함(이전 동작). 5일 두 통과 사이 이탈은 중앙 0.09%, p90 0.32%였다.
+BUY_CONFIRM_MAX_PRICE_DRIFT_PCT = 0.3
 # 실시간 현재가 재조회 간격(초) - [2026-09-14] 활성 종목 순회 턴에는 더 이상 쓰이지 않음
 # (MAIN_LOOP_MIN_CYCLE_SECONDS로 대체). 정규장/NXT 외 유휴 대기, 동시호가 구간 대기 등
 # 턴 자체를 돌지 않는 구간의 폴링 간격으로만 남아있음(r003 참고).
@@ -1042,8 +1199,6 @@ ENABLE_WATCHLIST_ROTATION = True
 # ---------------------------------------------------------------------------
 # 초기 시뮬레이션 자본금(KRW)
 SIM_INITIAL_CAPITAL = 5_000_000
-# 매도 완료 후 재진입 허용 여부
-SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL = True
 # 웜업 이전 데이터 최대 조회일수
 SIM_WARMUP_PRIOR_MAX_DAYS = 20
 # 기술적 매도 최소 보유 시간(초)
