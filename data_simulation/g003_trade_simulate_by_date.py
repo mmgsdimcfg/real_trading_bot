@@ -16,6 +16,51 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-23] type=feat owner=claude
+    summary: r006 Update log 2026-09-23 parity - 신규 _012_peak_retracement_guard(TP1/ATR익절선 도달 전
+      구간의 고점대비 되돌림 익절가드)를 이 파일의 메인 시뮬레이션 루프에도 반영("3.6. Peak retracement
+      guard", dead-cross exit 이후 / 시그널청산 이전 배치 - r006과 동일 우선순위). 기존에 계산돼 있던
+      peak_pnl_pct/giveback/atr_pct/atr_tp_pct 지역변수를 그대로 재사용.
+    impact: sim (live parity)
+    compatibility: breaking (ENABLE_PEAK_RETRACE_GUARD=False면 기존과 동일)
+- [2026-09-23] type=feat owner=claude
+    summary: r006 Update log 2026-09-23 parity - 신규 _011_hybrid_1min_dead_cross_exit(매수측 1분봉
+      골든크로스와 대칭되는 매도 조건)을 이 파일의 메인 시뮬레이션 루프에도 동일하게 반영("3.5.
+      Hybrid 1min BB-mid dead-cross exit", TP 분할익절 블록 이후 / 시그널청산(STOCH_K_LT_D) 이전에 배치 -
+      r006과 동일 우선순위). check_1min_dead_cross(r002)/update_timed_condition_state 재사용.
+    impact: sim (live parity)
+    compatibility: breaking (ENABLE_HYBRID_1MIN_DEADCROSS_EXIT=False면 기존과 동일)
+- [2026-09-23] type=fix owner=claude
+    summary: r006 Update log 2026-09-23 parity - _004_hard_stop_loss에 추가된 HARD_STOP_CONFIRM_SECONDS
+      확인창을 이 파일의 하드스탑 블록에도 동일하게 반영(update_timed_condition_state, ATR_STOP_LOSS와
+      같은 패턴). PaperStrategyTracker(MULTI_FILTER/BASIC_CROSS 비교 전용, on_bar의 별도 STOP_LOSS_PERCENT
+      체크)는 메인 백테스트 경로가 아니라서 건드리지 않음(Codex 검토로 두 경로가 서로 다름을 확인).
+    impact: sim (live parity)
+    compatibility: breaking (HARD_STOP_CONFIRM_SECONDS<=0이면 기존과 동일)
+- [2026-09-21] type=fix owner=claude
+    summary: r003/r001/r002 Update log 2026-09-21 반영(live parity). 1차 익절 목표를 r002 공용 함수
+      compute_staged_tp1_target_pct로 계산하고(ATR 익절선 상한), 급등 감지(detect_price_surge) + 사다리 익절
+      (next_surge_ladder_action)을 SimPosition.surge_ladder/recent_price_samples로 동일하게 구현. 1차 익절 시점마다
+      [SURGE_CHECK] 로그로 급등 판정 근거를 남기고 사다리 가동 시 [SURGE_LADDER_ARMED]를 남긴다.
+      검증: g003 --date 20260908/20260909/20260910 + 실전 로그 재현 단위 테스트(태광 09:01:40 틱). 알려진 차이(기존):
+      Simulator.sell은 전량 청산일 때만 쿨다운을 걸어(부분 매도 미적용) 라이브(모든 매도 후 3분)보다 TP1 직후
+      사다리/트레일이 즉시 나감 - 백테스트가 사다리 실행 시점을 라이브보다 다소 낙관적으로 잡을 수 있음.
+    impact: sim
+    compatibility: backward-compatible (r001 플래그 False면 이전 동작과 동일)
+- [2026-09-20] type=refactor owner=claude
+    summary: 사용자 결정 반영(r002/r003/r001 Update log 2026-09-20 참조). (1) 하이브리드 1분봉
+      트리거/개장 갭 게이트 복사본(check_buy_condition_1min_hybrid_trigger_sim,
+      _passes_opening_gap_volume_gate_sim)을 삭제하고 r002 공용 함수를 직접 호출 - live/sim 드리프트
+      원천 차단. (2) 죽은 경로 삭제: 1분봉 골든크로스 단독(check_buy_condition_1min_sim,
+      gc_confirm_state)/1분봉 Entry Score 게이트/3분봉 단독 매수 분기 - 메인 매수 판정은 하이브리드
+      단일 경로(PaperStrategyTracker 비교 트래커는 별도 기능이라 그대로). (3) 같은 날 재매수 허용:
+      ALLOW_REBUY_SAME_CODE/SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL 가드와 completed_codes 삭제
+      (SIM_ALLOW_REENTRY_...가 True라 원래도 동작하지 않던 가드 - 시뮬레이터는 쿨다운 뒤 같은
+      종목을 다시 매수하지만 실전은 매수 체결 종목을 감시목록에서 졸업시켜 재평가하지 않는다). (4) 거래량 하한 통일로 하이브리드
+      트리거의 1분봉 전용 하한이 사라짐(r002).
+    impact: sim ((1)~(3) 동작 불변 - HEAD 대비 20260916/20260918 백테스트 거래 동일 확인 /
+      (4) 하이브리드 트리거 통과 조건 완화)
+    compatibility: (1)~(3) backward-compatible / (4) breaking
 - [2026-09-18] type=fix owner=claude
     summary: check_buy_condition_1min_hybrid_trigger_sim()에 r003과 동일한
       uptrend_continuation 경로 전용 BB갭 상한 완화 추가 (r003/r001 Update log
@@ -201,9 +246,20 @@ from r001_define_config import (
     ATR_STOP_MULTIPLIER,
     ATR_STOP_CONFIRM_SECONDS,
     ATR_TAKE_PROFIT_MULTIPLIER,
-    ALLOW_REBUY_SAME_CODE,
     HARD_STOP_LOSS_PCT,
     HARD_STOP_MIN_HOLD_SECONDS,
+    HARD_STOP_CONFIRM_SECONDS,
+    HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS,
+    ENABLE_HYBRID_1MIN_DEADCROSS_EXIT,
+    HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
+    HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS,
+    HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS,
+    HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX,
+    ENABLE_PEAK_RETRACE_GUARD,
+    PEAK_RETRACE_GUARD_ARM_PNL,
+    PEAK_RETRACE_GUARD_MIN_PCT,
+    PEAK_RETRACE_GUARD_ATR_MULT,
+    PEAK_RETRACE_GUARD_CONFIRM_SECONDS,
     BUY_CONSECUTIVE_CONFIRM_COUNT,
     AUX_SELL_MIN_PNL_SCORE2,
     AUX_SELL_MIN_PNL_SCORE3,
@@ -296,7 +352,6 @@ from r001_define_config import (
     INTRABAR_RSI_MAX,
     INTRABAR_RSI_MIN,
     INTRABAR_VOLUME_FALLBACK_MIN_PROGRESS,
-    SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL,
     SIM_CHECK_INTERVAL_SECONDS,
     SIM_INITIAL_CAPITAL,
     SIM_RELAXED_ALLOW_BELOW_BB,
@@ -310,36 +365,25 @@ from r001_define_config import (
     SIMULATE_10S_GRID_DEFAULT,
     TECH_SELL_MIN_HOLD_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
-    CANDLE_GAIN_MAX_PCT,
-    BB_MID_CHASE_MAX_GAP_PCT,
-    MIN_ENTRY_VOL_MA,
-    MIN_ENTRY_VOLUME,
-    ENABLE_1MIN_GOLDEN_CROSS_BUY,
-    ENABLE_1MIN_ENTRY_SCORE_GATE,
-    ENABLE_1MIN_TRIGGER_3MIN_CONTEXT,
-    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS,
-    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
-    HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
-    HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
-    HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
-    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
-    HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT,
-    HYBRID_1MIN_MIN_ENTRY_VOL_MA,
-    HYBRID_1MIN_MIN_ENTRY_VOLUME,
     ENABLE_STAGED_TAKE_PROFIT,
     STAGED_TP1_PCT,
     STAGED_TP1_RATIO,
     STAGED_TP2_PCT,
     STAGED_TP2_RATIO,
     TP1_ATR_MULTIPLIER,
+    ENABLE_TP1_CAP_AT_ATR_TP,
+    ENABLE_SURGE_LADDER_TP,
+    SURGE_LOOKBACK_SECONDS,
+    SURGE_SPEED_MIN_PCT,
+    SURGE_SPEED_ATR_MULT,
+    SURGE_VOLUME_RATIO_MIN,
+    SURGE_MIN_CONFIRMS,
+    SURGE_TP2_PCT,
+    SURGE_TP3_PCT,
+    SURGE_TP2_RATIO,
     ENABLE_PYRAMIDING,
     PYRAMID_TRIGGER_PNL_PCT,
     ENABLE_OPENING_GAP_VOLUME_GATE,
-    OPENING_GAP_GATE_WINDOW_MINUTES,
-    OPENING_GAP_MIN_PCT,
-    OPENING_GAP_MAX_PCT,
-    OPENING_GAP_HARD_FLOOR_PCT,
-    OPENING_MIN_EARLY_VOLUME_RATIO,
     BUY_ORDER_REPRICE_AFTER_SECONDS,
     BUY_ORDER_REPRICE_MAX_CHASE_PCT,
 )
@@ -348,9 +392,15 @@ from r002_strategy_core_shared import (
     calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
-    check_entry_condition_1min,
+    check_buy_condition_1min_hybrid_trigger,
+    check_1min_dead_cross,
+    passes_opening_gap_volume_gate,
     run_3min_context_pipeline,
     update_timed_condition_state,
+    compute_staged_tp1_target_pct,
+    update_recent_price_samples,
+    detect_price_surge,
+    next_surge_ladder_action,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
     _evaluate_bb_mid_cross,
@@ -868,44 +918,6 @@ def get_session_open_timestamp(ts: pd.Timestamp, nxt_tradeable: bool) -> pd.Time
     return None
 
 
-def _passes_opening_gap_volume_gate_sim(
-    code: str,
-    ts: pd.Timestamp,
-    session_open_ts: pd.Timestamp | None,
-    gap_pct: float | None,
-    buy_frame: pd.DataFrame,
-    gap_blocked_codes: set[str],
-) -> tuple[bool, str]:
-    """r006 _passes_opening_gap_volume_gate 이식 (동일 파라미터/판정 순서)."""
-    norm_code = str(code).zfill(6)
-    if norm_code in gap_blocked_codes:
-        return False, "OPENING_GAP_BLOCKED_TODAY"
-
-    if session_open_ts is None or gap_pct is None:
-        return True, "OK"
-
-    elapsed = (ts - session_open_ts).total_seconds()
-    if elapsed < 0 or elapsed > OPENING_GAP_GATE_WINDOW_MINUTES * 60:
-        return True, "OK"
-
-    if gap_pct < OPENING_GAP_HARD_FLOOR_PCT:
-        gap_blocked_codes.add(norm_code)
-        return False, f"OPENING_GAP_DOWN_BLOCKED_{gap_pct*100:.2f}%"
-
-    if not (OPENING_GAP_MIN_PCT <= gap_pct <= OPENING_GAP_MAX_PCT):
-        return False, f"OPENING_GAP_OUT_OF_RANGE_{gap_pct*100:.2f}%"
-
-    cur_row = buy_frame.iloc[-1] if buy_frame is not None and not buy_frame.empty else None
-    vol = _num(cur_row, "volume") if cur_row is not None else float("nan")
-    vol_ma = _num(cur_row, "VOL_MA20") if cur_row is not None else float("nan")
-    if not any(pd.isna(v) for v in (vol, vol_ma)) and vol_ma > 0:
-        vol_ratio = vol / vol_ma
-        if vol_ratio < OPENING_MIN_EARLY_VOLUME_RATIO:
-            return False, f"OPENING_VOLUME_INSUFFICIENT_{vol_ratio:.2f}x"
-
-    return True, "OK"
-
-
 def is_startup_warmup_active(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     if STARTUP_WARMUP_SECONDS <= 0:
         return False
@@ -1364,8 +1376,6 @@ class PaperStrategyTracker:
 
         if not entry_allowed:
             return
-        if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in self.traded_today:
-            return
 
         if self.mode == "basic":
             buy_ok, reason = check_buy_condition_basic(frame)
@@ -1550,186 +1560,6 @@ def check_buy_condition_r76_sim(
     return ok, reason
 
 
-def check_buy_condition_1min_sim(frame_1min: pd.DataFrame, require_fresh_cross: bool = True) -> tuple[bool, str]:
-    """1분봉 BB 중간값 골든크로스 매수 조건 (r006 check_buy_condition_1min 시뮬레이션 대응판).
-
-    require_fresh_cross=True(기본): 직전봉<=BB중간값, 현재봉>BB중간값(골든크로스가
-    발생한 바로 그 봉)만 통과시킨다.
-    require_fresh_cross=False: 골든크로스 확인봉(다음 1분봉) 판정용 - 크로스가 이전
-    봉에서 이미 발생했더라도 현재봉 종가가 BB중간값 위에 유지되고만 있으면 통과시킨다.
-
-    r006 check_buy_condition_1min과 동일하게 최소 봉 수는 prev/cur 두 봉만 있으면 된다
-    (2026-08-24: BB_MIDDLE의 성장형 평균이 실제 HTS/MTS 렌더링과 동일함을 MTS 실측으로
-    확인, r005 Update log 2026-08-24 참조 - BB_PERIOD 미만 구간 전면 차단 가드를 되돌림).
-    """
-    if frame_1min is None or len(frame_1min) < 2:
-        return False, "1MIN_INSUFFICIENT_BARS"
-
-    cur = frame_1min.iloc[-1]
-    prev = frame_1min.iloc[-2]
-
-    cur_bb = _num(cur, "BB_MIDDLE")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_close = _num(cur, "close")
-    prev_close = _num(prev, "close")
-    cur_open = _num(cur, "open")
-
-    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
-        return False, "1MIN_MISSING_INDICATOR"
-
-    if require_fresh_cross:
-        golden_cross = prev_close <= prev_bb and cur_close > cur_bb
-        if not golden_cross:
-            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
-    else:
-        if not (cur_close > cur_bb):
-            return False, "1MIN_CONFIRM_LOST_BB_MID"
-
-    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
-    if candle_gain_pct < CANDLE_GAIN_MIN_PCT:
-        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{CANDLE_GAIN_MIN_PCT:.1f}%"
-    if candle_gain_pct > CANDLE_GAIN_MAX_PCT:
-        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{CANDLE_GAIN_MAX_PCT:.1f}%"
-
-    if cur_bb > 0:
-        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
-        if bb_gap_pct > BB_MID_CHASE_MAX_GAP_PCT:
-            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{BB_MID_CHASE_MAX_GAP_PCT:.1f}%"
-
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    if not any(pd.isna(v) for v in (vol, vol_ma)):
-        if vol_ma < MIN_ENTRY_VOL_MA:
-            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
-        if vol < MIN_ENTRY_VOLUME:
-            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
-        if vol_ma > 0:
-            vol_ratio = vol / vol_ma
-            if vol_ratio < 0.10:
-                return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
-
-    return True, "1MIN_BB_MID_GOLDEN_CROSS"
-
-
-def check_buy_condition_1min_hybrid_trigger_sim(
-    frame_1min: pd.DataFrame,
-    context_uptrend_continuation: bool = False,
-) -> tuple[bool, str]:
-    """ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 하이브리드 전용 1분봉 트리거 sim 대응판 (r003
-    check_buy_condition_1min_hybrid_trigger와 동일 로직, r003 Update log 2026-08-28 참조).
-    check_buy_condition_1min_sim(require_fresh_cross 단일봉 판정)의 변형 - 크로스 인정을
-    HYBRID_1MIN_TRIGGER_LOOKBACK_BARS만큼 룩백하고, 캔들/추격가드 문턱도 3분봉 값이 아닌
-    HYBRID_1MIN_TRIGGER_* 전용 값을 쓴다.
-
-    [2026-09-09] r003과 동일하게 uptrend_continuation 예외 포함(452190 한빛레이저 사례,
-    r003 2026-09-09 changelog 참조) - 룩백 밖에서 돌파해 오래/강하게 지속되는 랠리를
-    자체 지표(ADX/DI/MA5, _evaluate_bb_mid_cross 재사용) 또는 호출측이 전달하는 3분
-    컨텍스트 신호(context_uptrend_continuation)로 인정한다.
-    """
-    if frame_1min is None or len(frame_1min) < 2:
-        return False, "1MIN_INSUFFICIENT_BARS"
-
-    cur = frame_1min.iloc[-1]
-    prev = frame_1min.iloc[-2]
-
-    cur_bb = _num(cur, "BB_MIDDLE")
-    prev_bb = _num(prev, "BB_MIDDLE")
-    cur_close = _num(cur, "close")
-    prev_close = _num(prev, "close")
-    cur_open = _num(cur, "open")
-
-    if any(pd.isna(v) for v in (cur_bb, prev_bb, cur_close, prev_close, cur_open)) or cur_open <= 0:
-        return False, "1MIN_MISSING_INDICATOR"
-
-    golden_cross = prev_close <= prev_bb and cur_close > cur_bb
-    bars_since_cross = 0  # 신선한 크로스(golden_cross=True) 기본값 - 경과봉 0, 갭 상한 완화 없음
-    trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
-    if not golden_cross:
-        _found = False
-        for _lb in range(3, min(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS + 2, len(frame_1min)) + 1):
-            _bar_n_close = _num(frame_1min.iloc[-_lb], "close")
-            _bar_n_bb = _num(frame_1min.iloc[-_lb], "BB_MIDDLE")
-            if any(pd.isna(v) for v in (_bar_n_close, _bar_n_bb)) or _bar_n_close > _bar_n_bb:
-                continue
-            _all_above = all(
-                not any(pd.isna(v) for v in (
-                    _num(frame_1min.iloc[-_k], "close"), _num(frame_1min.iloc[-_k], "BB_MIDDLE"),
-                ))
-                and _num(frame_1min.iloc[-_k], "close") > _num(frame_1min.iloc[-_k], "BB_MIDDLE")
-                for _k in range(1, _lb)
-            )
-            if _all_above:
-                _found = True
-                # 실제 돌파봉은 -_lb(미돌파 마지막봉) 바로 다음인 -(_lb-1) - 그 봉부터
-                # cur(-1)까지 경과한 봉 수 = (_lb-1)의 위치 차이 = _lb-2.
-                bars_since_cross = _lb - 2
-                break
-
-        if not _found:
-            if context_uptrend_continuation:
-                _found = True
-                trigger_reason = "1MIN_UPTREND_CONTINUATION_3MIN_CTX"
-            else:
-                _bb_slope_1min = _compute_bb_slope_pct(frame_1min)
-                _uptrend_eval = _evaluate_bb_mid_cross(
-                    frame_1min, cur, prev, cur_bb, prev_bb, cur_close, _bb_slope_1min, {},
-                )
-                if _uptrend_eval.get("uptrend_continuation"):
-                    _found = True
-                    trigger_reason = "1MIN_UPTREND_CONTINUATION"
-
-        if not _found:
-            return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
-
-        if trigger_reason != "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK":
-            bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
-
-    candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
-    if candle_gain_pct < HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:
-        return False, f"1MIN_CANDLE_NOT_BULLISH_{candle_gain_pct:.2f}%_LT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:.1f}%"
-    if candle_gain_pct > HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:
-        return False, f"1MIN_CHASE_BUY_INTRABAR_{candle_gain_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT:.1f}%"
-
-    if cur_bb > 0:
-        bb_gap_pct = (cur_close - cur_bb) / cur_bb * 100.0
-        # [2026-09-07] r003 check_buy_condition_1min_hybrid_trigger와 동일 로직 - 크로스가
-        # BB_MID 위로 계속 유지 중인데도 BB_MID가 후행지표라 갭이 계속 벌어져 고정 상한에
-        # 매 폴링 걸리는 문제 완화. 경과봉 수만큼 상한을 소폭 완화하되 CEILING_PCT로 상한.
-        # [2026-09-18] r003과 동일하게 uptrend_continuation 경로만 CEILING_UPTREND_PCT로
-        # 완화 (r003/r001 Update log 2026-09-18 참조) - live/sim parity 유지.
-        is_uptrend_continuation = trigger_reason in (
-            "1MIN_UPTREND_CONTINUATION_3MIN_CTX", "1MIN_UPTREND_CONTINUATION",
-        )
-        gap_ceiling_pct = (
-            HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT if is_uptrend_continuation
-            else HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT
-        )
-        allowed_gap_pct = min(
-            HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT + bars_since_cross * HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
-            gap_ceiling_pct,
-        )
-        if bb_gap_pct > allowed_gap_pct:
-            return False, f"1MIN_CHASE_BUY_BB_GAP_{bb_gap_pct:.2f}%_GT_{allowed_gap_pct:.2f}%"
-
-    vol = _num(cur, "volume")
-    vol_ma = _num(cur, "VOL_MA20")
-    if not any(pd.isna(v) for v in (vol, vol_ma)):
-        # [2026-09-07] fix: 이 sim 함수가 r003의 2026-09-07 HYBRID_1MIN_MIN_ENTRY_VOL_MA/
-        # VOLUME 분리(1분봉 거래량은 3분봉의 약 1/3이라 3분봉 기준 MIN_ENTRY_VOL_MA/VOLUME을
-        # 그대로 쓰면 실질 3배 엄격해짐)를 반영하지 못하고 3분봉 기준값을 그대로 쓰고 있던
-        # live/sim drift 발견 - r003과 동일한 HYBRID_1MIN_* 상수로 정정.
-        if vol_ma < HYBRID_1MIN_MIN_ENTRY_VOL_MA:
-            return False, f"1MIN_LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOL_MA}"
-        if vol < HYBRID_1MIN_MIN_ENTRY_VOLUME:
-            return False, f"1MIN_LOW_ABS_VOLUME_{vol:.0f}_LT_{HYBRID_1MIN_MIN_ENTRY_VOLUME}"
-        if vol_ma > 0:
-            vol_ratio = vol / vol_ma
-            if vol_ratio < 0.10:
-                return False, f"1MIN_LOW_VOLUME_RATIO_{vol_ratio:.4f}_LT_0.10"
-
-    return True, trigger_reason
-
-
 def collect_buy_reject_reasons_r76_sim(
     frame: pd.DataFrame,
     ts: pd.Timestamp,
@@ -1876,6 +1706,8 @@ class SimPosition:
         self.tp1_done: bool = False
         self.tp2_done: bool = False
         self.tp3_trail_armed: bool = False
+        # 급등 사다리 익절 상태(r003 pos["surge_ladder"] 대응): {"base": TP1 체결가, "tp2_done": bool, "tp3_done": bool} 또는 None
+        self.surge_ladder: dict | None = None
         self.pyramid_done: bool = False
         self.entry_quantity: int = quantity
 
@@ -1887,7 +1719,6 @@ class Simulator:
         self.positions: dict[str, SimPosition] = {}
         self.trade_log: list[TradeRecord] = []
         self.cooldown_until: dict[str, pd.Timestamp] = {}
-        self.completed_codes: set[str] = set()
 
     def in_cooldown(self, code: str, now: pd.Timestamp) -> bool:
         until = self.cooldown_until.get(code)
@@ -1898,8 +1729,6 @@ class Simulator:
 
     def buy(self, code: str, name: str, price: float, now: pd.Timestamp, session: str, reason: str) -> bool:
         if self.in_cooldown(code, now) or price <= 0 or code in self.positions:
-            return False
-        if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in self.completed_codes:
             return False
 
         qty = int(MAX_ORDER_AMOUNT_KRW / price)
@@ -1961,7 +1790,6 @@ class Simulator:
         log(f"  {rec}")
         if sell_qty >= pos.quantity:
             del self.positions[code]
-            self.completed_codes.add(code)
             self.set_cooldown(code, now)
         else:
             pos.quantity -= sell_qty
@@ -2367,13 +2195,12 @@ def simulate_date(
             log(f"Skipped {code}: failed to build simulation frame")
             continue
         frames[code] = frame
-        # r006 parity: 1분봉 골든크로스 매수 파이프라인 / 1분봉 Entry Score 게이트용 1분봉 프레임 병행 구축.
-        if ENABLE_1MIN_GOLDEN_CROSS_BUY or ENABLE_1MIN_ENTRY_SCORE_GATE or ENABLE_1MIN_TRIGGER_3MIN_CONTEXT:
-            strategy_df_1min = normalize_to_strategy_bars_1min(raw_df)
-            if strategy_df_1min is not None and not strategy_df_1min.empty:
-                frame_1min = calculate_indicators(strategy_df_1min)
-                if frame_1min is not None and not frame_1min.empty:
-                    frames_1min[code] = frame_1min
+        # r003 parity: 하이브리드 1분봉 트리거용 1분봉 프레임 병행 구축.
+        strategy_df_1min = normalize_to_strategy_bars_1min(raw_df)
+        if strategy_df_1min is not None and not strategy_df_1min.empty:
+            frame_1min = calculate_indicators(strategy_df_1min)
+            if frame_1min is not None and not frame_1min.empty:
+                frames_1min[code] = frame_1min
         # r006 parity: evaluate live condition every 10s even if source file cadence is 20s/1m.
         exec_sim_raw_frames[code] = raw_df
         if simulate_10s_grid:
@@ -2448,9 +2275,14 @@ def simulate_date(
     breakeven_fail_state: dict[str, dict] = {}
     no_trend_exit_state: dict[str, dict] = {}
     atr_stop_confirm_state: dict[str, dict] = {}
+    hard_stop_confirm_state: dict[str, dict] = {}  # [2026-09-23] r006 _004 확인창 parity
+    hybrid_1min_dead_cross_state: dict[str, dict] = {}  # [2026-09-23] r006 _011 확인창 parity
+    peak_retrace_guard_state: dict[str, dict] = {}  # [2026-09-23] r006 _012 확인창 parity
     trailing_sell_confirm_state: dict[str, dict] = {}
+    # 급등 판정(detect_price_surge)용 종목별 최근 (시각, 가격) 표본 (r003 recent_price_samples 대응)
+    recent_price_samples: dict[str, list[tuple[pd.Timestamp, float]]] = {}
     buy_confirm_state: dict[str, dict] = {}
-    gc_confirm_state: dict[str, dict] = {}  # 1분봉 골든크로스 확인봉 대기 상태 (r006 parity)
+    buy_trigger_age_state: dict[str, dict] = {}  # [2026-09-23] r005 _008 parity: 트리거 유효기한 상태
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목 (r006 parity)
     buy_primary_reject_counter: collections.Counter[str] = collections.Counter()
@@ -2502,12 +2334,11 @@ def simulate_date(
             buy_available, intrabar_elapsed_seconds = _build_realtime_entry_frame_sim(available, ts, price)
 
             buy_available_1min: pd.DataFrame | None = None
-            if ENABLE_1MIN_GOLDEN_CROSS_BUY or ENABLE_1MIN_ENTRY_SCORE_GATE or ENABLE_1MIN_TRIGGER_3MIN_CONTEXT:
-                _frame_1min_full = frames_1min.get(code)
-                if _frame_1min_full is not None and not _frame_1min_full.empty:
-                    _avail_1min = _frame_1min_full[_frame_1min_full.index <= ts]
-                    if len(_avail_1min) >= 2:
-                        buy_available_1min = _avail_1min
+            _frame_1min_full = frames_1min.get(code)
+            if _frame_1min_full is not None and not _frame_1min_full.empty:
+                _avail_1min = _frame_1min_full[_frame_1min_full.index <= ts]
+                if len(_avail_1min) >= 2:
+                    buy_available_1min = _avail_1min
 
             cur = buy_available.iloc[-1]
             session = classify_buy_session(ts)
@@ -2521,10 +2352,14 @@ def simulate_date(
             pos = sim.positions.get(code)
 
             if pos is None:
+                recent_price_samples.pop(code, None)
                 post_buy_bb_drop_state.pop(code, None)
                 breakeven_fail_state.pop(code, None)
                 no_trend_exit_state.pop(code, None)
                 atr_stop_confirm_state.pop(code, None)
+                hard_stop_confirm_state.pop(code, None)
+                hybrid_1min_dead_cross_state.pop(code, None)
+                peak_retrace_guard_state.pop(code, None)
 
             entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
@@ -2540,10 +2375,10 @@ def simulate_date(
                         f"{_rise*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
                         f"prev_close={_pc:,.0f} price={price:,.0f}"
                     )
-            # r006 parity: opening-window gap/volume live gate (_passes_opening_gap_volume_gate).
+            # r003 parity: opening-window gap/volume gate (r002 passes_opening_gap_volume_gate 공용).
             if entry_allowed and pos is None and ENABLE_OPENING_GAP_VOLUME_GATE:
                 _session_open_ts = get_session_open_timestamp(ts, nxt_tradeable)
-                _gap_ok, _gap_reason = _passes_opening_gap_volume_gate_sim(
+                _gap_ok, _gap_reason = passes_opening_gap_volume_gate(
                     code, ts, _session_open_ts, _rise, buy_available, gap_blocked_codes,
                 )
                 if not _gap_ok:
@@ -2568,6 +2403,8 @@ def simulate_date(
 
             if pos is not None:
                 profit_pct = price / pos.buy_price - 1.0
+                if ENABLE_SURGE_LADDER_TP:
+                    update_recent_price_samples(recent_price_samples, code, ts, price, SURGE_LOOKBACK_SECONDS * 2.0)
                 pos.highest_price = max(pos.highest_price, price)
                 peak_pnl_pct = (pos.highest_price / pos.buy_price) - 1.0 if pos.highest_price > 0 and pos.buy_price > 0 else 0.0
                 giveback = peak_pnl_pct - profit_pct
@@ -2617,12 +2454,27 @@ def simulate_date(
 
                 # 1. Hard stop-loss: r006 parity - config-driven HARD_STOP_LOSS_PCT gated by HARD_STOP_MIN_HOLD_SECONDS
                 # (was hardcoded -0.8% with no min-hold gate here, drifted from live)
-                if profit_pct <= -HARD_STOP_LOSS_PCT and _sig_held_seconds >= HARD_STOP_MIN_HOLD_SECONDS:
+                # [2026-09-23] r006 _004 parity: HARD_STOP_CONFIRM_SECONDS 확인창 추가 (119850 지엔씨에너지
+                # 2026-09-23 09:02 사례 + Codex 검토, r001 Update log 참조). HARD_STOP_CONFIRM_SECONDS<=0이면
+                # 기존과 동일(즉시 발동).
+                _hard_sl_condition = profit_pct <= -HARD_STOP_LOSS_PCT and _sig_held_seconds >= HARD_STOP_MIN_HOLD_SECONDS
+                _hard_sl_hold_seconds = update_timed_condition_state(
+                    hard_stop_confirm_state,
+                    code,
+                    pos.buy_time,
+                    ts,
+                    _hard_sl_condition,
+                )
+                # _hard_sl_condition도 함께 확인 - update_timed_condition_state는 조건 False/막 True 첫 틱
+                # 모두 0.0을 반환하므로 HARD_STOP_CONFIRM_SECONDS<=0(롤백값)에서 조건 False에도 발동하는
+                # 버그가 됨(2026-09-23 old/new 비교 백테스트 중 발견 - pnl 0% 근처 즉시매도로 드러남).
+                if _hard_sl_condition and _hard_sl_hold_seconds >= HARD_STOP_CONFIRM_SECONDS:
                     reason_hard_sl = f"HARD_STOP_LOSS_{HARD_STOP_LOSS_PCT*100:.1f}PCT"
                     trailing_sell_confirm_state.pop(code, None)
+                    hard_stop_confirm_state.pop(code, None)
                     sim.sell(code, price, ts, reason_hard_sl, session)
                     signal_sell_bar[code] = ts
-                    log(f"  [SELL_EXECUTED] {code} | {reason_hard_sl} | price={price:,.0f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s")
+                    log(f"  [SELL_EXECUTED] {code} | {reason_hard_sl} | price={price:,.0f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s confirm={_hard_sl_hold_seconds:.0f}s")
                     continue
 
                 # ── PYRAMIDING (불타기): 추세 지속 시 1회 추가 진입 (r006 parity) ──────
@@ -2674,14 +2526,14 @@ def simulate_date(
                 if ENABLE_STAGED_TAKE_PROFIT:
                     entry_qty = pos.entry_quantity if pos.entry_quantity > 0 else pos.quantity
 
-                    _atr_tp1_dynamic_pct = (
-                        atr_pct * TP1_ATR_MULTIPLIER
-                        if not pd.isna(atr_pct)
-                        else float("nan")
-                    )
-                    tp1_target_pct = (
-                        max(STAGED_TP1_PCT, _atr_tp1_dynamic_pct)
-                        if not pd.isna(_atr_tp1_dynamic_pct) else STAGED_TP1_PCT
+                    # r003 parity: max(STAGED_TP1_PCT, ATR%*TP1_ATR_MULTIPLIER)를 ATR 익절선(트레일 무장선)으로
+                    # 상한 처리(r002 compute_staged_tp1_target_pct 공용, r001 ENABLE_TP1_CAP_AT_ATR_TP 참조).
+                    tp1_target_pct, _atr_tp1_dynamic_pct = compute_staged_tp1_target_pct(
+                        atr_pct,
+                        atr_tp_pct,
+                        staged_tp1_pct=STAGED_TP1_PCT,
+                        tp1_atr_multiplier=TP1_ATR_MULTIPLIER,
+                        cap_at_atr_tp=ENABLE_TP1_CAP_AT_ATR_TP,
                     )
                     tp2_target_pct = tp1_target_pct + (STAGED_TP2_PCT - STAGED_TP1_PCT)
 
@@ -2689,7 +2541,30 @@ def simulate_date(
                     if (not pos.tp1_done) and profit_pct >= tp1_target_pct:
                         tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
                         tp1_qty = min(tp1_qty, pos.quantity)
-                        reason_tp1 = f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{tp1_target_pct*100:.2f}PCT"
+                        # r003 parity: 급등 여부는 1차 익절 시점에 판정, 급등이면 잔량 사다리 익절 가동
+                        _surge_now = False
+                        _surge_detail = ""
+                        if ENABLE_SURGE_LADDER_TP:
+                            _surge_now, _surge_detail = detect_price_surge(
+                                recent_price_samples.get(code, []),
+                                ts,
+                                price,
+                                atr_pct,
+                                _num(cur, "BB_UPPER"),
+                                _num(cur, "volume"),
+                                _num(cur, "VOL_MA20"),
+                                lookback_seconds=SURGE_LOOKBACK_SECONDS,
+                                speed_min_pct=SURGE_SPEED_MIN_PCT,
+                                speed_atr_mult=SURGE_SPEED_ATR_MULT,
+                                volume_ratio_min=SURGE_VOLUME_RATIO_MIN,
+                                min_confirms=SURGE_MIN_CONFIRMS,
+                            )
+                        reason_tp1 = (
+                            f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{tp1_target_pct*100:.2f}PCT"
+                            + ("_SURGE" if _surge_now else "")
+                        )
+                        if ENABLE_SURGE_LADDER_TP:
+                            log(f"  [SURGE_CHECK] {code} | surge={_surge_now} [{_surge_detail}] | atr_tp={atr_tp_pct*100:.2f}% tp1_target={tp1_target_pct*100:.2f}%")
                         if sim.sell(code, price, ts, reason_tp1, session, qty=tp1_qty):
                             remaining = sim.positions.get(code)
                             if remaining is not None:
@@ -2697,13 +2572,52 @@ def simulate_date(
                                 remaining.entry_quantity = entry_qty
                                 if STAGED_TP2_RATIO <= 0:
                                     remaining.tp2_done = True
+                                if _surge_now:
+                                    # 시뮬레이터는 슬리피지 없이 price로 체결하므로 TP1 체결가 = price
+                                    remaining.surge_ladder = {"base": float(price), "tp2_done": False, "tp3_done": False}
+                                    log(
+                                        f"  [SURGE_LADDER_ARMED] {code} | base={price:,.0f} "
+                                        f"TP2={price*(1.0+SURGE_TP2_PCT):,.0f}(+{SURGE_TP2_PCT*100:.1f}%) "
+                                        f"TP3={price*(1.0+SURGE_TP3_PCT):,.0f}(+{SURGE_TP3_PCT*100:.1f}%)"
+                                    )
                         signal_sell_bar[code] = ts
                         log(f"  [SELL_EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
                         continue
 
+                    # ── SURGE LADDER (r003 parity): 급등 중 1차 익절을 한 포지션의 잔량 사다리 익절 ──
+                    _surge_ladder = pos.surge_ladder if ENABLE_SURGE_LADDER_TP else None
+                    if _surge_ladder is not None and pos.tp1_done:
+                        _ladder_step = next_surge_ladder_action(
+                            price,
+                            float(_surge_ladder["base"]),
+                            pos.quantity,
+                            entry_qty,
+                            bool(_surge_ladder["tp2_done"]),
+                            bool(_surge_ladder["tp3_done"]),
+                            tp2_pct=SURGE_TP2_PCT,
+                            tp3_pct=SURGE_TP3_PCT,
+                            tp2_ratio=SURGE_TP2_RATIO,
+                        )
+                        if _ladder_step is not None:
+                            _rung, _rung_qty, _rung_target = _ladder_step
+                            _rung_pct = SURGE_TP2_PCT if _rung == "TP2" else SURGE_TP3_PCT
+                            reason_ladder = f"{_rung}_SURGE_LADDER_{_rung_pct*100:.1f}PCT_OF_TP1"
+                            if sim.sell(code, price, ts, reason_ladder, session, qty=_rung_qty):
+                                _surge_ladder["tp2_done"] = True
+                                if _rung == "TP3":
+                                    _surge_ladder["tp3_done"] = True
+                            signal_sell_bar[code] = ts
+                            log(
+                                f"  [SELL_EXECUTED] {code} | {reason_ladder} | qty={_rung_qty} price={price:,.0f} "
+                                f"target={_rung_target:,.0f} (tp1_base={float(_surge_ladder['base']):,.0f}) pnl={profit_pct*100:.2f}%"
+                            )
+                            continue
+                    # ── END SURGE LADDER ──────────────────────────────────────────────
+
                     # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
                     # STAGED_TP2_RATIO<=0이면 2차 단계 자체를 건너뛴다 (1차 이후 잔량은 트레일링 위임).
-                    if STAGED_TP2_RATIO > 0 and pos.tp1_done and (not pos.tp2_done) and profit_pct >= tp2_target_pct:
+                    # 급등 사다리가 가동 중이면(_surge_ladder) 사다리가 2차 이후를 담당하므로 건너뛴다.
+                    if STAGED_TP2_RATIO > 0 and _surge_ladder is None and pos.tp1_done and (not pos.tp2_done) and profit_pct >= tp2_target_pct:
                         tp2_qty = max(1, int(round(entry_qty * STAGED_TP2_RATIO)))
                         tp2_qty = min(tp2_qty, pos.quantity)
                         reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{tp2_target_pct*100:.2f}PCT"
@@ -2716,7 +2630,7 @@ def simulate_date(
                         continue
 
                     # 3차: 고정 목표가 전량청산 대신, 1/2차 완료 후 잔량(30%)을 트레일링 스탑에 위임 (Trail 30%)
-                    if pos.tp1_done and pos.tp2_done and not pos.tp3_trail_armed:
+                    if pos.tp1_done and pos.tp2_done and _surge_ladder is None and not pos.tp3_trail_armed:
                         pos.tp3_trail_armed = True
                         log(
                             f"  [TP3_TRAIL_ARMED] {code} | 1,2차 익절 완료 - 잔량 {pos.quantity}주 "
@@ -2742,6 +2656,82 @@ def simulate_date(
                         signal_sell_bar[code] = ts
                         log(f"  [SELL_EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
                         continue
+
+                # 3.5. Hybrid 1min BB-mid dead-cross exit (r006 _011 parity, 2026-09-23) - 매수측
+                # _008_hybrid_1min_trigger의 대칭 매도판. 손실구간(<=LOSS_EXIT_PNL_MAX)은 즉시, 그 외는
+                # 1분봉 BB중심선 기울기가 꺾였는지 추가 확인(정상 눌림목 보호). r001/r006 Update log 참조.
+                if ENABLE_HYBRID_1MIN_DEADCROSS_EXIT and _sig_held_seconds >= HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS:
+                    _dc_found, _dc_reason, _dc_bars = check_1min_dead_cross(
+                        buy_available_1min, HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
+                    )
+                    if not _dc_found:
+                        hybrid_1min_dead_cross_state.pop(code, None)
+                    else:
+                        _dc_is_loss = profit_pct <= HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX
+                        _dc_bb_slope_1min = float("nan")
+                        _dc_ok = True
+                        if not _dc_is_loss:
+                            _dc_bb_slope_1min = _compute_bb_slope_pct(buy_available_1min)
+                            if pd.isna(_dc_bb_slope_1min) or _dc_bb_slope_1min > 0:
+                                hybrid_1min_dead_cross_state.pop(code, None)
+                                _dc_ok = False
+                        if _dc_ok:
+                            _dc_hold_seconds = update_timed_condition_state(
+                                hybrid_1min_dead_cross_state, code, pos.buy_time, ts, True,
+                            )
+                            if _dc_hold_seconds >= HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS:
+                                _dc_kind = "LOSS" if _dc_is_loss else "TREND_FLIP"
+                                reason_dc = f"HYBRID_1MIN_DEAD_CROSS_{_dc_kind}_{_dc_reason}"
+                                trailing_sell_confirm_state.pop(code, None)
+                                hybrid_1min_dead_cross_state.pop(code, None)
+                                sim.sell(code, price, ts, reason_dc, session)
+                                signal_sell_bar[code] = ts
+                                log(
+                                    f"  [SELL_EXECUTED] {code} | {reason_dc} | price={price:,.0f} "
+                                    f"pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s "
+                                    f"bars_since_cross={_dc_bars} bb_slope_1min={_dc_bb_slope_1min:.3f}% "
+                                    f"confirm={_dc_hold_seconds:.0f}s"
+                                )
+                                continue
+
+                # 3.6. Peak retracement guard (r006 _012 parity, 2026-09-23) - TP1/ATR익절선 도달 전
+                # 구간의 고점대비 되돌림 익절가드. r001/r006 Update log 참조.
+                if (
+                    ENABLE_PEAK_RETRACE_GUARD
+                    and not pos.tp1_done
+                    and not (not pd.isna(atr_tp_pct) and peak_pnl_pct >= atr_tp_pct)
+                    and profit_pct > 0
+                    and peak_pnl_pct >= PEAK_RETRACE_GUARD_ARM_PNL
+                ):
+                    _prg_threshold = max(
+                        PEAK_RETRACE_GUARD_MIN_PCT,
+                        (atr_pct * PEAK_RETRACE_GUARD_ATR_MULT) if not pd.isna(atr_pct) else 0.0,
+                    )
+                    _prg_condition = giveback >= _prg_threshold
+                    _prg_hold_seconds = update_timed_condition_state(
+                        peak_retrace_guard_state, code, pos.buy_time, ts, _prg_condition,
+                    )
+                    # _prg_condition도 함께 확인 - CONFIRM_SECONDS<=0에서 조건 False에도 발동하는 잠재 버그
+                    # 방지 (r006 2026-09-23 parity fix, _004_hard_stop_loss와 동일 패턴).
+                    if _prg_condition and _prg_hold_seconds >= PEAK_RETRACE_GUARD_CONFIRM_SECONDS:
+                        reason_prg = f"PEAK_RETRACE_GUARD_{_prg_threshold*100:.2f}pct"
+                        trailing_sell_confirm_state.pop(code, None)
+                        peak_retrace_guard_state.pop(code, None)
+                        sim.sell(code, price, ts, reason_prg, session)
+                        signal_sell_bar[code] = ts
+                        log(
+                            f"  [SELL_EXECUTED] {code} | {reason_prg} | price={price:,.0f} "
+                            f"pnl={profit_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={giveback*100:.2f}% "
+                            f"atr_pct={(atr_pct*100 if not pd.isna(atr_pct) else float('nan')):.2f}% "
+                            f"confirm={_prg_hold_seconds:.0f}s"
+                        )
+                        continue
+                elif ENABLE_PEAK_RETRACE_GUARD:
+                    # [2026-09-23, Codex 재검토, r006 parity] 위 4개 자격조건 중 하나라도 깨지면(TP1 완료/
+                    # ATR익절선 도달/pnl<=0/peak<ARM) 진행 중이던 확인창도 함께 지운다 - 안 지우면 자격을
+                    # 잃었다 되찾는 사이 이전 타이머가 그대로 이어져 실제로는 불연속인 되돌림 구간에서도
+                    # CONFIRM_SECONDS를 즉시 만족해버릴 수 있다.
+                    peak_retrace_guard_state.pop(code, None)
 
                 # 4. Signal exit: Stoch K < D (r006 parity: requires held>=600s and pnl<=-0.8%, unless strong uptrend)
                 if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
@@ -2794,14 +2784,16 @@ def simulate_date(
                 # -- POST-BUY ENTRY DROP GUARD -----------------------------------------------
                 _held_for_guard = (ts - pos.buy_time).total_seconds()
                 if _held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
+                    _drop_condition = price < pos.buy_price * (1.0 - POST_BUY_BB_DROP_PCT)
                     _drop_hold_seconds = update_timed_condition_state(
                         post_buy_bb_drop_state,
                         code,
                         pos.buy_time,
                         ts,
-                        price < pos.buy_price * (1.0 - POST_BUY_BB_DROP_PCT),
+                        _drop_condition,
                     )
-                    if _drop_hold_seconds >= POST_BUY_DROP_CONFIRM_SECONDS:
+                    # _drop_condition도 함께 확인 - r006 2026-09-23 parity fix (_004_hard_stop_loss와 동일 패턴).
+                    if _drop_condition and _drop_hold_seconds >= POST_BUY_DROP_CONFIRM_SECONDS:
                         _drop_pct_guard = (price / pos.buy_price - 1.0) * 100.0
                         reason_bbdrop = f"POST_BUY_ENTRY_DROP_{POST_BUY_BB_DROP_PCT*100:.1f}pct_{POST_BUY_DROP_CONFIRM_SECONDS:.0f}s"
                         log(
@@ -2823,16 +2815,20 @@ def simulate_date(
                 # -- END POST-BUY ENTRY DROP GUARD -------------------------------------------
 
                 # -- BREAKEVEN FAILURE GUARD -------------------------------------------------
+                _breakeven_condition = (
+                    peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
+                    and profit_pct < 0
+                    and giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT
+                )
                 _breakeven_hold_seconds = update_timed_condition_state(
                     breakeven_fail_state,
                     code,
                     pos.buy_time,
                     ts,
-                    peak_pnl_pct >= BREAKEVEN_FAIL_ARM_PNL
-                    and profit_pct < 0
-                    and giveback >= BREAKEVEN_FAIL_GIVEBACK_PCT,
+                    _breakeven_condition,
                 )
-                if _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:
+                # _breakeven_condition도 함께 확인 - r006 2026-09-23 parity fix (_004_hard_stop_loss와 동일 패턴).
+                if _breakeven_condition and _breakeven_hold_seconds >= BREAKEVEN_FAIL_CONFIRM_SECONDS:
                     reason_breakeven = (
                         f"BREAKEVEN_FAIL_peak{BREAKEVEN_FAIL_ARM_PNL*100:.1f}_"
                         f"giveback{BREAKEVEN_FAIL_GIVEBACK_PCT*100:.2f}_{BREAKEVEN_FAIL_CONFIRM_SECONDS:.0f}s"
@@ -2869,7 +2865,8 @@ def simulate_date(
                     ts,
                     _no_trend_condition,
                 )
-                if _no_trend_hold_seconds >= NO_TREND_EXIT_CONFIRM_SECONDS:
+                # _no_trend_condition도 함께 확인 - r006 2026-09-23 parity fix (_004_hard_stop_loss와 동일 패턴).
+                if _no_trend_condition and _no_trend_hold_seconds >= NO_TREND_EXIT_CONFIRM_SECONDS:
                     reason_no_trend = (
                         f"NO_TREND_EXIT_{NO_TREND_EXIT_ARM_SECONDS/60:.0f}m_"
                         f"peakLT{NO_TREND_EXIT_MAX_PEAK_PNL*100:.1f}_{NO_TREND_EXIT_CONFIRM_SECONDS:.0f}s"
@@ -2902,7 +2899,9 @@ def simulate_date(
                     ts,
                     _atr_sl_condition,
                 )
-                if _atr_sl_hold_seconds >= ATR_STOP_CONFIRM_SECONDS:
+                # _atr_sl_condition도 함께 확인(방어적) - 위 하드스탑과 동일한 이유(ATR_STOP_CONFIRM_SECONDS
+                # 는 평소 20.0이라 드러나지 않지만 0으로 설정 시 조건 False에도 발동하는 잠재 버그였음)
+                if _atr_sl_condition and _atr_sl_hold_seconds >= ATR_STOP_CONFIRM_SECONDS:
                     reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
                     trailing_sell_confirm_state.pop(code, None)
                     atr_stop_confirm_state.pop(code, None)
@@ -3014,7 +3013,7 @@ def simulate_date(
                     continue
             if ENABLE_OPENING_GAP_VOLUME_GATE:
                 _session_open_ts2 = get_session_open_timestamp(ts, nxt_tradeable)
-                _gap_ok2, _gap_reason2 = _passes_opening_gap_volume_gate_sim(
+                _gap_ok2, _gap_reason2 = passes_opening_gap_volume_gate(
                     code, ts, _session_open_ts2, _rise2, buy_available, gap_blocked_codes,
                 )
                 if not _gap_ok2:
@@ -3023,107 +3022,67 @@ def simulate_date(
                     continue
             if sim.in_cooldown(code, ts):
                 continue
-            if (not ALLOW_REBUY_SAME_CODE) and (not SIM_ALLOW_REENTRY_AFTER_COMPLETED_SELL) and code in sim.completed_codes:
-                continue
             if signal_buy_bar.get(code) == ts:
                 continue
 
-            is_1min_gc_reason = False
-            if ENABLE_1MIN_GOLDEN_CROSS_BUY:
-                is_1min_gc_reason = True
-                if buy_available_1min is None:
-                    should_buy, reason = False, "1MIN_FRAME_UNAVAILABLE"
-                else:
-                    bar_time_for_buy = buy_available_1min.index[-1]
-                    armed = gc_confirm_state.get(code)
-                    if armed is not None:
-                        _armed_bar = armed.get("gc_bar_time")
-                        _stale = (
-                            not isinstance(_armed_bar, pd.Timestamp)
-                            or (bar_time_for_buy - _armed_bar) > pd.Timedelta(minutes=3)
-                        )
-                        if _stale:
-                            gc_confirm_state.pop(code, None)
-                            armed = None
-
-                    if armed is not None and armed.get("gc_bar_time") == bar_time_for_buy:
-                        # 골든크로스 발생봉과 같은 봉 - 다음 봉 마감까지 대기
-                        should_buy, reason = False, "1MIN_WAIT_NEXT_BAR_CONFIRM"
-                    elif armed is not None:
-                        # 새 봉 마감 - 골든크로스 확인봉 판정 (BB중간값 위 유지 여부만 재검사)
-                        gc_confirm_state.pop(code, None)
-                        should_buy, reason = check_buy_condition_1min_sim(buy_available_1min, require_fresh_cross=False)
-                        if should_buy:
-                            reason = f"{reason}_CONFIRMED_NEXT_BAR"
-                    else:
-                        should_buy, reason = check_buy_condition_1min_sim(buy_available_1min)
-                        if should_buy:
-                            gc_confirm_state[code] = {"gc_bar_time": bar_time_for_buy}
-                            log_detail(
-                                f"  [BUY HOLD] {code} | GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR | "
-                                f"gc_bar={bar_time_for_buy:%H:%M:%S}"
-                            )
-                            should_buy, reason = False, "1MIN_GOLDEN_CROSS_ARMED_WAIT_CONFIRM_BAR"
-            elif ENABLE_1MIN_TRIGGER_3MIN_CONTEXT:
-                # 하이브리드 경로(r001/r002 Update log 2026-08-28 참조): 1분봉 자체
-                # 기준으로 트리거를 먼저 확인하고, 통과 시에만 3분봉 컨텍스트로 재확인.
-                if buy_available_1min is None:
-                    should_buy, reason = False, "HYBRID_1MIN_FRAME_UNAVAILABLE"
-                else:
-                    # [2026-09-09] r003과 동일 - 3분 컨텍스트가 이미 uptrend_continuation으로
-                    # 판정한 상태면 그 신호를 1분 트리거에도 전달한다 (452190 한빛레이저 사례).
-                    _ctx3_cur = buy_available.iloc[-1]
-                    _ctx3_prev = buy_available.iloc[-2]
-                    _ctx3_cur_bb = _num(_ctx3_cur, "BB_MIDDLE")
-                    _ctx3_prev_bb = _num(_ctx3_prev, "BB_MIDDLE")
-                    context_uptrend_continuation = False
-                    if not any(pd.isna(v) for v in (_ctx3_cur_bb, _ctx3_prev_bb)):
-                        _ctx3_bb_slope = _compute_bb_slope_pct(buy_available)
-                        _ctx3_eval = _evaluate_bb_mid_cross(
-                            buy_available, _ctx3_cur, _ctx3_prev, _ctx3_cur_bb, _ctx3_prev_bb,
-                            price, _ctx3_bb_slope, cross_info,
-                        )
-                        context_uptrend_continuation = bool(_ctx3_eval.get("uptrend_continuation"))
-
-                    trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger_sim(
-                        buy_available_1min, context_uptrend_continuation=context_uptrend_continuation,
-                    )
-                    if not trigger_ok:
-                        should_buy, reason = False, f"HYBRID_1MIN_TRIGGER_{trigger_reason}"
-                    else:
-                        should_buy, reason = run_3min_context_pipeline(
-                            buy_available, ts, price, cross_info, SHARED_R76_CONFIG,
-                        )
-                        if should_buy:
-                            reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{reason}"
+            # 하이브리드 매수 경로(r003과 동일 - r001/r002 Update log 2026-08-28 참조) - 유일한 신규 매수
+            # 경로다(2026-09-20 1분봉 골든크로스 단독/1분봉 Entry Score/3분봉 단독 경로 삭제): 1분봉
+            # 자체 기준으로 트리거를 먼저 확인하고, 통과 시에만 3분봉 컨텍스트로 재확인한다.
+            if buy_available_1min is None:
+                should_buy, reason = False, "HYBRID_1MIN_FRAME_UNAVAILABLE"
             else:
-                should_buy, reason = check_buy_condition_r76_sim(
-                    buy_available,
-                    ts,
-                    price,
-                    cross_info,
-                    intrabar_elapsed_seconds=intrabar_elapsed_seconds,
+                # [2026-09-09] r003과 동일 - 3분 컨텍스트가 이미 uptrend_continuation으로
+                # 판정한 상태면 그 신호를 1분 트리거에도 전달한다 (452190 한빛레이저 사례).
+                _ctx3_cur = buy_available.iloc[-1]
+                _ctx3_prev = buy_available.iloc[-2]
+                _ctx3_cur_bb = _num(_ctx3_cur, "BB_MIDDLE")
+                _ctx3_prev_bb = _num(_ctx3_prev, "BB_MIDDLE")
+                context_uptrend_continuation = False
+                if not any(pd.isna(v) for v in (_ctx3_cur_bb, _ctx3_prev_bb)):
+                    _ctx3_bb_slope = _compute_bb_slope_pct(buy_available)
+                    _ctx3_eval = _evaluate_bb_mid_cross(
+                        buy_available, _ctx3_cur, _ctx3_prev, _ctx3_cur_bb, _ctx3_prev_bb,
+                        price, _ctx3_bb_slope, cross_info,
+                    )
+                    context_uptrend_continuation = bool(_ctx3_eval.get("uptrend_continuation"))
+
+                trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(
+                    buy_available_1min, context_uptrend_continuation=context_uptrend_continuation,
                 )
-                if should_buy and ENABLE_1MIN_ENTRY_SCORE_GATE:
-                    if buy_available_1min is None or len(buy_available_1min) < 2:
-                        should_buy, reason = False, "1MIN_FRAME_UNAVAILABLE"
-                    else:
-                        entry_ok, entry_reason = check_entry_condition_1min(buy_available_1min)
-                        if not entry_ok:
-                            should_buy, reason = False, entry_reason
-                        else:
-                            reason = f"{reason}+{entry_reason}"
+                # [2026-09-23] r005 _008 parity: 1분봉 트리거가 "계속 유효" 상태로 지속된 시간을 재서
+                # HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려(204620 글로벌텍스프리 사례,
+                # r001/r005 Update log 참조). <=0이면 비활성.
+                _trigger_age_seconds = update_timed_condition_state(
+                    buy_trigger_age_state, code, "1min_trigger", ts, trigger_ok,
+                )
+                if not trigger_ok:
+                    should_buy, reason = False, f"HYBRID_1MIN_TRIGGER_{trigger_reason}"
+                elif (
+                    HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS > 0
+                    and _trigger_age_seconds > HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS
+                ):
+                    should_buy, reason = False, (
+                        f"HYBRID_1MIN_TRIGGER_EXPIRED_{_trigger_age_seconds:.0f}s_"
+                        f"GT_{HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS:.0f}s"
+                    )
+                else:
+                    should_buy, reason = run_3min_context_pipeline(
+                        buy_available, ts, price, cross_info, SHARED_R76_CONFIG,
+                    )
+                    if should_buy:
+                        reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{reason}"
 
             if should_buy:
                 _confirm_state = buy_confirm_state.setdefault(code, {"count": 0, "first_ts": ts})
                 _confirm_state["count"] += 1
                 if _confirm_state["count"] < BUY_CONSECUTIVE_CONFIRM_COUNT:
                     log(
-                        f"  [BUY HOLD] {code} | consecutive confirm {_confirm_state["count"]}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
+                        f"  [BUY HOLD] {code} | consecutive confirm {_confirm_state['count']}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
                         f"price={price:,.0f}"
                     )
                     continue
                 buy_confirm_state.pop(code, None)
+                buy_trigger_age_state.pop(code, None)
                 log(
                     f"  [BUY SIGNAL] {code} | {ts:%H:%M} | {reason} | "
                     f"MA5={_num(cur,'MA_5'):.1f} BB_MID={_num(cur,'BB_MIDDLE'):.1f} | "
@@ -3167,19 +3126,14 @@ def simulate_date(
             else:
                 buy_confirm_state.pop(code, None)
                 buy_primary_reject_counter[str(reason)] += 1
-                if is_1min_gc_reason:
-                    # 1분봉 GC 경로는 3분봉 다중필터 진단(collect_buy_reject_reasons_r76_sim)과
-                    # 무관하므로 주 사유만 카운트한다.
-                    buy_reject_counter[str(reason)] += 1
-                else:
-                    for reject_reason in collect_buy_reject_reasons_r76_sim(
-                        buy_available,
-                        ts,
-                        price,
-                        cross_info,
-                        reason,
-                    ):
-                        buy_reject_counter[str(reject_reason)] += 1
+                for reject_reason in collect_buy_reject_reasons_r76_sim(
+                    buy_available,
+                    ts,
+                    price,
+                    cross_info,
+                    reason,
+                ):
+                    buy_reject_counter[str(reject_reason)] += 1
                 log_detail(f"  [BUY_REJECT] {code_label} | {reason}")
 
 
