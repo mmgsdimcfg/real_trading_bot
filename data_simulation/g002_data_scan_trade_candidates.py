@@ -23,6 +23,32 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-27] type=fix owner=claude
+    summary: 사용자 요청("ranked 종목 절반 이상이 기대한 종목이 아님 - 점수화 검토, 이전 ranked
+      종목과 선정 이후 주가흐름 분석 포함, codex 조건체크 후 최종 수정, ranked 50개 제한").
+      검증: 2026-08-12~09-22 27거래일 _scan_all.md/_ranked.txt(59,730 채점행) + 선정 이후 D+1~D+5
+      일봉(날짜폴더 daily.csv 합본) 결합. (a) 실제 ranked 1~50위: D+1 평균 -0.21%/승률 42.5%/
+      D+3 -0.42%, 같은 날 유동성 유니버스(거래대금20일평균>=100억) D+1 -0.01%/45.7% - 선정이
+      방향성에서 유니버스보다 나빴고(27일 중 11일만 초과), 장중 시가대비 고가폭(4.2% vs 3.2%)만
+      컸음. (b) 적격풀 내 점수 5분위: 점수가 높을수록 D+1/D+3/D+5 수익률이 단조 악화(최하위
+      +0.46%/+0.71%, 최상위 -0.12%/-0.49%). (c) 일별 순위IC(적격풀): score D+1 -0.07(t=-3.1),
+      D+5 -0.10(t=-4.0); MA20이격/20일수익률/RSI/ADX/전일등락/MA5-MA20 모두 음(-), 전반
+      (08-12~09-01)·후반(09-02~09-22) 양쪽 동일 부호. ATR/거래대금은 방향성 중립, 장중고가폭 IC
+      +0.27. (d) RS(13점)는 3,872 적격행 중 1건만 값 존재, MA완전정배열(6점)은 2건만 Y - g001이
+      서버 일봉을 20봉만 저장(lookback_days=20)해서 RS(21봉 필요)/MA60(60봉 필요)이 사실상 항상
+      상수였던 죽은 항목. 결론: 점수가 "이미 오른(과열) 종목"을 가점하고 있어 선정 후 되밀림이
+      잦았음. 변경: calculate_candidate_score에서 RS/ADX/MA단기정렬/MA완전정배열/3일모멘텀 가점
+      제거, 거래량상대강도 18->10, RSI 최고점 구간 50~70 -> 40~60, 과열 페널티 신규(MA20 이격
+      >8%, 20일 상승률 >25%, 전일 >+8% 급등), SCORE_CUTOFF 30->15(만점 98->60 재보정),
+      max_picks/MAX_PICKS_LIMIT 100->50. evaluate_candidate에 prev_day_return/close_ma20_ratio/
+      ret_20d 필드 추가(_scan_all.md에도 노출). 재현(27일, 적격풀에서 일별 상위50): D+1 -0.18%
+      ->+0.01%, 승률 42.6->47.0%, 급락비율(D+1<-2% 또는 시가대비종가<-3%) 40.5->34.2%, D+5
+      -0.41->+0.36%; 대가로 시가대비 고가폭 4.21->3.30%(변동성 큰 과열주가 빠짐). 전후반 모두
+      같은 방향. 기존 상위50과 평균 21종목만 겹침.
+      한계: 27거래일 단일 구간, 일봉 기준(실제 봇 진입/청산 체결은 미반영) - 운영 중 재검증 필요.
+    impact: scanner (live watchlist 구성 변경)
+    compatibility: breaking (점수 척도/적격 컷오프/선정 수 변경; _ranked.txt 컬럼은 불변,
+      _scan_all.md는 컬럼 추가)
 - [2026-09-23] type=fix owner=claude
     summary: 사용자 요청("종목선정 조건 재검토 - 중복/불필요/말도안되는 조건 및 누락된 좋은 조건을
       커뮤니티 공개 기준으로 분석, codex 재검토") + Codex 설계검토. 이번 라운드는 Codex가 "낮은
@@ -391,10 +417,11 @@ BALANCED_CONFIG = ScannerConfig(
     max_prev_day_change=0.20,        # 전일 등락률 20% 이상이면 제외
     recent_pick_penalty_per_day=3.0,  # 최근 선정 반복 시 하루당 감점폭 (3일째부터 적용)
     recent_pick_penalty_lookback_days=4,  # 반복 선정 여부 확인 대상 과거 거래일수
-    max_picks=100,                   # 최종 선정 종목 수 상한 (50->100, 2026-09-13: active/backup
-                                      # 워치리스트 로테이션 복원(r001 ACTIVE_WATCHLIST_SIZE/
-                                      # ENABLE_WATCHLIST_ROTATION 참조)에 필요한 backup_pool
-                                      # 확보를 위해 2026-08-31 이전 값으로 되돌림
+    max_picks=50,                    # 최종 선정 종목 수 상한 (100->50, 2026-09-27 사용자 요청:
+                                      # ranked 선별은 50개로 제한. 2026-09-13의 50->100은 r003
+                                      # active/backup 로테이션용 backup_pool 확보 목적이었음 -
+                                      # 50이면 ACTIVE_WATCHLIST_SIZE(50)와 같아 backup_pool이 비므로
+                                      # 로테이션 교체는 사실상 발생하지 않음)
 )
 
 CONFIG_MAP = {
@@ -405,8 +432,11 @@ DEFAULT_CONFIG = BALANCED_CONFIG
 DEFAULT_HISTORY_WINDOW = 0
 DAILY_LOOKBACK = 260  # trading days of history to load per stock
 MIN_REQUIRED_BARS = 1
-MAX_PICKS_LIMIT = 100  # 50->100, 2026-09-13 (위 max_picks 참조)
-SCORE_CUTOFF = 30.0
+MAX_PICKS_LIMIT = 50  # 100->50, 2026-09-27 (위 max_picks 참조)
+SCORE_CUTOFF = 15.0  # 30->15, 2026-09-27: 배점 재구성(만점 98->60)으로 점수 분포가 약 15점 아래로
+                     # 이동 - 과거 27거래일 재현 결과 30 유지 시 적격 풀이 143->59종목/일로 급감(13일은
+                     # 50개 미만), 15면 약 131종목/일로 기존 풀 크기 유지. 역할은 종전과 동일하게
+                     # "극단적 저유동성/저변동성/과열" 종목만 거르는 바닥선.
 LIQUIDITY_RELAX_FACTOR = 0.70
 LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 시장상대 비교와 무관하게 유동성 하드탈락 면제
 LOW_UP_DAYS_TOLERANCE = 1
@@ -1011,6 +1041,9 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "prev_day_change": None,
         "is_last_bearish": None,
         "close_3d_return": None,
+        "prev_day_return": None,
+        "close_ma20_ratio": None,
+        "ret_20d": None,
         "adx": None,
         "rsi": None,
         "relative_strength": None,
@@ -1155,10 +1188,23 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
     # Previous day absolute return (gap / surge risk)
     prev_day_change = None
+    prev_day_return = None  # [2026-09-27] 부호 있는 전일 등락률 - 전일 급등 추격 페널티용
     if len(_check_df) >= 2:
         prev_close = safe_float(_check_df["close"].iloc[-2])
         if prev_close is not None and prev_close > 0:
-            prev_day_change = abs(price - prev_close) / prev_close
+            prev_day_return = (price - prev_close) / prev_close
+            prev_day_change = abs(prev_day_return)
+
+    # [2026-09-27] 과열(이격) 지표 - calculate_candidate_score의 과열 페널티용.
+    # close_ma20_ratio: 현재가/MA20 - 1. ret_20d: 가용 이력(서버 일봉은 g001이 20봉만 저장하므로
+    # 실질 19거래일) 첫 종가 대비 수익률 - calc_relative_strength(21봉 필요)와 달리 20봉에서도 계산됨.
+    close_ma20_ratio = ((price / ma20) - 1.0) if (ma20 is not None and ma20 > 0) else None
+    ret_20d = None
+    _closes = _check_df["close"].dropna()
+    if len(_closes) >= 10:
+        _c_first = safe_float(_closes.iloc[-min(21, len(_closes))])
+        if _c_first is not None and _c_first > 0:
+            ret_20d = (price / _c_first) - 1.0
 
     ma5_series = _check_df["close"].rolling(5, min_periods=1).mean()
     ma5_slope_3d = None
@@ -1221,6 +1267,9 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "prev_day_change": prev_day_change,
         "is_last_bearish": is_last_bearish,
         "close_3d_return": close_3d_return,
+        "prev_day_return": prev_day_return,
+        "close_ma20_ratio": close_ma20_ratio,
+        "ret_20d": ret_20d,
         "adx": adx,
         "rsi": rsi,
         "relative_strength": relative_strength,
@@ -1399,30 +1448,33 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
 
 def calculate_candidate_score(candidate, config):
-    """배점표 (2026-09-23 기준, 만점 98점):
-    거래량18 + 거래대금18 + ATR16 + RS13 + ADX6 + MA단기정렬±8 + MA완전정배열+6
-    + RSI10±8 + 3일모멘텀±5
-    + 각종 페널티(전일음봉/52주과열/전일급등/최근반복선정/소프트플래그 개수).
+    """배점표 (2026-09-27 기준, 가점 만점 60점):
+    거래대금18 + ATR16 + 거래량상대강도10 + RSI(40~60 최고)8
+    - 과열 페널티(MA20 이격 최대12 + 20일 상승률 최대8 + 전일 급등 최대6)
+    - 기존 페널티(전일음봉/52주과열/전일급등락/최근반복선정/소프트플래그 개수).
 
-    RSI/MA완전정배열은 온라인에서 널리 추천되는 상승추세 확인 조합(골든크로스/정배열 +
-    RSI 50~70 확인 + ADX로 추세강도 필터)을 보강하기 위해 2026-08-27 추가됨.
-    [2026-09-23] 기존 "가격대 선호"(±2) 항목은 근거 부족으로 제거(파일 상단 changelog 참조) -
-    만점이 100->98로 소폭 줄었으나 SCORE_CUTOFF(30)/기존 픽 구성에 미치는 영향은 미미함.
+    [2026-09-27 재구성 근거 - 파일 상단 changelog 참조] 과거 27거래일(2026-08-12~09-22)
+    ranked/scan_all 기록과 선정 이후 D+1~D+5 일봉을 결합해 검증한 결과, 모멘텀/추세 가점
+    항목(RS, ADX, MA5/MA20 정렬, 3일 모멘텀, RSI 50~70 최고점)이 모두 이후 수익률과 음(-)의
+    상관(일별 순위IC, 전후반 기간 모두 동일 부호)이었고, 종합 점수 자체도 음(-)이었다
+    (적격풀 내 IC: D+1 -0.07, D+3 -0.09, D+5 -0.10). 반면 ATR/거래대금은 방향성 중립이면서
+    장중 기회(시가 대비 고가폭)와 양(+)의 상관. 그래서 "이미 많이 오른 종목" 가점을 없애고
+    유동성/변동성 기반으로 선정하되 과열 이격은 감점하도록 바꿨다. RS(13)와 MA완전정배열(6)은
+    g001 서버 일봉이 20봉뿐이라(RS는 21봉, MA60은 60봉 필요) 사실상 항상 상수(RS=중립 6.5,
+    정배열=0)였던 죽은 항목이기도 했다(정보성 컬럼으로는 계속 계산/노출).
     """
     price = candidate.get("price")
     atr_ratio = candidate.get("atr_ratio")
     vol_ma20 = candidate.get("vol_ma20")
     amount_ma20 = candidate.get("amount_ma20")
-    ma5 = candidate.get("ma5")
-    ma20 = candidate.get("ma20")
     vol_rel_strength = candidate.get("vol_rel_strength")
-    relative_strength = candidate.get("relative_strength")
-    adx = candidate.get("adx")
     rsi = candidate.get("rsi")
-    ma_full_alignment = bool(candidate.get("ma_full_alignment"))
     high_52w_ratio = candidate.get("high_52w_ratio")
     near_52w_high_override = bool(candidate.get("near_52w_high_override"))
     prev_day_change = candidate.get("prev_day_change")
+    prev_day_return = candidate.get("prev_day_return")
+    close_ma20_ratio = candidate.get("close_ma20_ratio")
+    ret_20d = candidate.get("ret_20d")
     repeat_recent_days = int(candidate.get("repeat_recent_days") or 0)
     is_last_bearish = bool(candidate.get("is_last_bearish"))
 
@@ -1431,10 +1483,10 @@ def calculate_candidate_score(candidate, config):
 
     score = 0.0
 
-    # 1) 거래량 (max 18): 최근 5일 평균거래량 vs 이전 20일 평균거래량 상대강도.
-    # 1.0=중립, 0.8 미만은 기여 거의 없음, 1.8 이상에서 포화.
+    # 1) 거래량 (max 10, 18->10 2026-09-27): 최근 5일 평균거래량 vs 이전 20일 평균거래량 상대강도.
+    # 장중 변동폭과는 양(+)의 상관이나 이후 수익률과는 약한 음(-)의 상관이라 비중 축소.
     if vol_rel_strength is not None:
-        score += max(0.0, min(18.0, (vol_rel_strength - 0.8) * 18.0))
+        score += max(0.0, min(10.0, (vol_rel_strength - 0.8) * 18.0))
 
     # 2) 거래대금 (max 18): 시장/설정 벤치마크 대비 로그스케일.
     amount_benchmark = candidate.get("liquidity_amount_benchmark")
@@ -1447,50 +1499,22 @@ def calculate_candidate_score(candidate, config):
     atr_ratio_norm = max(0.0, atr_ratio / config.atr_ratio_min)
     score += min(16.0, 7.3 * math.log1p(atr_ratio_norm * 1.8))
 
-    # 4) RS (max 13): 시장(KOSPI/KOSDAQ) 대비 20일 상대강도(%p). 0%p=시장과 동일,
-    # +13%p 이상이면 포화. pykrx 미설치 등으로 계산 불가 시 데이터 부재로 인한 불이익을
-    # 피하기 위해 중립 절반점(6.5)을 부여한다(0점 처리 시 후보가 구조적으로 불리해짐).
-    if relative_strength is not None:
-        score += max(0.0, min(13.0, relative_strength * 1.0))
-    else:
-        score += 6.5
+    # [2026-09-27 제거] 4) RS(13) / 5) ADX(6) / 6) MA단기정렬(±8) / 6b) MA완전정배열(+6) /
+    # 8) 3일 모멘텀(±5) - 전부 이후 수익률과 음(-)의 상관(docstring 참조). 추세 확인은
+    # 하드필터(down_trend/flat_trend/linreg 등)가 이미 담당하므로 점수에서 중복 가점하지 않는다.
 
-    # 5) ADX (max 6, period=10): 일봉 추세강도. 15 이하는 무추세(기여 0), 40 이상에서 포화.
-    # 이력 부족(2*period 미만)으로 계산 불가 시 중립 절반점(3.0) 부여.
-    if adx is not None:
-        score += max(0.0, min(6.0, (adx - 15.0) * (6.0 / 25.0)))
-    else:
-        score += 3.0
-
-    # 6) MA 단기정렬 (±8): MA5/MA20 비율.
-    if ma5 is not None and ma20 not in (None, 0):
-        trend_ratio = (ma5 / ma20) - 1.0
-        score += max(-8.0, min(8.0, trend_ratio * 336.0))
-
-    # 6b) MA 완전정배열 (0~6, 신규): 주가>MA5>MA20>MA60이면 다중 시간대 상승추세 구조로
-    # 보아 보너스. 국내 자동매매 조건검색식에서 흔히 쓰이는 "정배열" 조건 반영. 페널티는
-    # 없음(미충족 시 0점) - MA단기정렬 항목이 이미 역배열을 감점하므로 중복 페널티 방지.
-    if ma_full_alignment:
-        score += 6.0
-
-    # 7) RSI (0~8, 신규, period=10): 50~70구간을 상승추세 확인 구간으로 최고점(8) 부여,
-    # 50 미만은 선형으로 줄어들어 0에 수렴, 70 초과는 과매수로 보아 다시 감점(90 이상에서
-    # 0으로 수렴). 온라인에서 흔히 권고되는 "RSI 50~70 확인" 조건 반영. 이력 부족으로 계산
-    # 불가 시 중립 절반점(4.0) 부여(ADX/RS와 동일한 관례).
+    # 4) RSI (0~8, period=10): 40~60을 최고점(8)으로 - 상승추세 내 과열 전 구간. 60 초과는
+    # 선형 감점(80에서 0), 40 미만은 20에서 0으로 감소. 계산 불가 시 중립 절반점(4.0).
+    # (기존 50~70 최고점 곡선은 RSI 상위 구간일수록 이후 수익률이 나빠 과열 추격을 가점했음)
     if rsi is not None:
-        if rsi < 50.0:
-            score += max(0.0, (rsi / 50.0) * 4.0)
-        elif rsi <= 70.0:
-            score += 4.0 + ((rsi - 50.0) / 20.0) * 4.0
+        if rsi < 40.0:
+            score += max(0.0, (rsi - 20.0) / 20.0 * 8.0)
+        elif rsi <= 60.0:
+            score += 8.0
         else:
-            score += max(0.0, 8.0 - (rsi - 70.0) * 0.4)
+            score += max(0.0, 8.0 - (rsi - 60.0) * 0.4)
     else:
         score += 4.0
-
-    # 8) 3일 모멘텀 (±5): 단기 상승 탄력 평가.
-    close_3d_return = candidate.get("close_3d_return")
-    if close_3d_return is not None:
-        score += max(-5.0, min(5.0, close_3d_return * 60))
 
     # [2026-09-23 제거] 기존 9) 가격대 선호(max 2, 저가주에 소폭 가점)는 어떤 특정 스캔 사례로
     # 도입됐는지 changelog에 근거가 없고(다른 배점 항목은 전부 특정 사례/백테스트를 인용함),
@@ -1498,6 +1522,17 @@ def calculate_candidate_score(candidate, config):
     # 찾지 못했다(한국 시장은 액면분할로 가격대가 임의적 - 미국 저가주 스크리닝과 다른 맥락).
     # 배점 2/100으로 영향은 작았지만 Codex 재검토도 "실행제약이 명시적으로 있는 게 아니면 제거,
     # 필요하면 점수가 아니라 계좌 자본/최소 주문단위 기준의 명시적 자격조건으로 분리" 권고 - 제거.
+
+    # --- 과열 페널티 (2026-09-27 신규) ---
+    # MA20 이격 +8% 초과부터 감점, +30%에서 최대 -12.
+    if close_ma20_ratio is not None and close_ma20_ratio > 0.08:
+        score -= min(12.0, (close_ma20_ratio - 0.08) / 0.22 * 12.0)
+    # 20일 상승률 +25% 초과부터 감점, +75%에서 최대 -8.
+    if ret_20d is not None and ret_20d > 0.25:
+        score -= min(8.0, (ret_20d - 0.25) / 0.50 * 8.0)
+    # 전일 +8% 초과 급등 추격 감점, +20%에서 최대 -6 (아래 |등락|>=20% 갭리스크 페널티와 별개).
+    if prev_day_return is not None and prev_day_return > 0.08:
+        score -= min(6.0, (prev_day_return - 0.08) / 0.12 * 6.0)
 
     # --- 각종 페널티 ---
     # 전일 음봉 (단기매매에서는 전일 조정이 진입 기회일 수 있으므로 -4로 완화).
@@ -1761,6 +1796,7 @@ def render_all_scan_markdown(all_rows):
         "rank", "picked", "code", "name", "score", "price", "atr_ratio", "vol_ma20", "amount_ma20",
         "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "low_52w_ratio", "sector", "market_cap", "listing_days", "prev_day_change", "repeat_recent_days",
         "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "rsi", "relative_strength",
+        "prev_day_return", "close_ma20_ratio", "ret_20d",
     ]
 
     lines = [
@@ -1800,6 +1836,9 @@ def render_all_scan_markdown(all_rows):
             f"{row.get('adx'):.1f}" if row.get("adx") is not None else "",
             f"{row.get('rsi'):.1f}" if row.get("rsi") is not None else "",
             f"{row.get('relative_strength'):.2f}" if row.get("relative_strength") is not None else "",
+            f"{row.get('prev_day_return'):.4f}" if row.get("prev_day_return") is not None else "",
+            f"{row.get('close_ma20_ratio'):.4f}" if row.get("close_ma20_ratio") is not None else "",
+            f"{row.get('ret_20d'):.4f}" if row.get("ret_20d") is not None else "",
         ]
         sanitized = [str(value).replace("|", "\\|") for value in values]
         lines.append("| " + " | ".join(sanitized) + " |")
@@ -2389,19 +2428,23 @@ def scan(
 
         if verbose:
             # 동그라미 아이콘을 SCORE_DOT_SLOTS(9)칸 고정폭으로 표시해 code_name 정렬을 맞춘다.
-            # 후보: score/10(반올림, 최대 9칸) 만큼 등급별 색상으로 채우고 남는 칸은 빈 원.
+            # 후보: score/5(반올림, 최대 9칸) 만큼 점수 구간별 색상으로 채우고 남는 칸은 빈 원.
             # 탈락: 9칸 모두 빈 원. (2026-08-28)
+            # [2026-09-27] 배점 재구성(만점 60, 실제 적격 분포 약 15~42)에 맞춰 1칸=10점->5점,
+            # 색상 기준을 칸 수 -> 점수 구간(20/25/30/35/40)으로 변경. 기존 1칸=10점이면 적격
+            # 종목이 2~4칸(🟠🟡🟢)에만 몰려 구분이 안 됐다.
             if candidate["eligible"]:
-                filled_count = min(SCORE_DOT_SLOTS, max(0, round(candidate["score"] / 10.0)))
-                if filled_count <= 3:
+                score = candidate["score"]
+                filled_count = min(SCORE_DOT_SLOTS, max(0, round(score / 5.0)))
+                if score < 20:
                     dot_icon = "🔴"
-                elif filled_count <= 4:
-                    dot_icon = "🟠"                    
-                elif filled_count <= 5:
+                elif score < 25:
+                    dot_icon = "🟠"
+                elif score < 30:
                     dot_icon = "🟡"
-                elif filled_count <= 6:
-                    dot_icon = "🟢"                    
-                elif filled_count <= 7:
+                elif score < 35:
+                    dot_icon = "🟢"
+                elif score < 40:
                     dot_icon = "🔵"
                 else:
                     dot_icon = "🟣"
