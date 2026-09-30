@@ -16,6 +16,15 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-29] type=fix owner=claude
+    summary: r003 REENTRY_MODE parity - 종전 g003은 매도 후 TRADE_COOLDOWN_MINUTES만 지나면 같은 종목을
+      무제한 재매수해 실전(졸업 종목 당일 재평가 없음)보다 과대 매매했다. 이제 당일 이미 매수했던 종목의
+      BUY SIGNAL은 REENTRY_MODE에 따라 off=차단([REENTRY BLOCK]), shadow=주문 없이 [REENTRY SHADOW] 기록 +
+      한도 소진, live=REENTRY_MAX_PER_CODE회까지 실제 매수. HARD_STOP/ATR_STOP_LOSS로 청산된 종목은
+      HARD_STOP_BLOCK_REENTRY_TODAY(r005 _006)와 동일하게 재진입 차단(종전 g003에는 이 차단 자체가 없었음).
+    impact: sim (live parity)
+    compatibility: breaking (재진입 매매가 사라져 과거 백테스트 결과와 거래 수/손익이 달라짐 -
+      REENTRY_MODE="live" + REENTRY_MAX_PER_CODE 큰 값이면 종전에 가까움)
 - [2026-09-23] type=feat owner=claude
     summary: r006 Update log 2026-09-23 parity - 신규 _012_peak_retracement_guard(TP1/ATR익절선 도달 전
       구간의 고점대비 되돌림 익절가드)를 이 파일의 메인 시뮬레이션 루프에도 반영("3.6. Peak retracement
@@ -247,6 +256,9 @@ from r001_define_config import (
     ATR_STOP_CONFIRM_SECONDS,
     ATR_TAKE_PROFIT_MULTIPLIER,
     HARD_STOP_LOSS_PCT,
+    HARD_STOP_BLOCK_REENTRY_TODAY,
+    REENTRY_MODE,
+    REENTRY_MAX_PER_CODE,
     HARD_STOP_MIN_HOLD_SECONDS,
     HARD_STOP_CONFIRM_SECONDS,
     HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS,
@@ -2283,6 +2295,7 @@ def simulate_date(
     recent_price_samples: dict[str, list[tuple[pd.Timestamp, float]]] = {}
     buy_confirm_state: dict[str, dict] = {}
     buy_trigger_age_state: dict[str, dict] = {}  # [2026-09-23] r005 _008 parity: 트리거 유효기한 상태
+    reentry_used: dict[str, int] = {}  # [2026-09-29] r003 REENTRY_MODE parity: 종목별 재진입 사용횟수
     sim_live_cross_state: dict[str, dict] = {}   # tracks live-price/BB-middle cross state per symbol
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목 (r006 parity)
     buy_primary_reject_counter: collections.Counter[str] = collections.Counter()
@@ -3083,6 +3096,31 @@ def simulate_date(
                     continue
                 buy_confirm_state.pop(code, None)
                 buy_trigger_age_state.pop(code, None)
+                # [2026-09-29] r003 REENTRY_MODE parity: 당일 이미 매수했던 종목의 재매수 판정. 종전 g003은
+                # 쿨다운만 지나면 무제한 재진입해 실전(졸업 후 재평가 없음)보다 과대 매매했다.
+                # HARD_STOP/ATR 손절 종목은 r005 _006(HARD_STOP_BLOCK_REENTRY_TODAY)과 동일하게 차단.
+                _prior_buys = sum(1 for _r in sim.trade_log if _r.code == code and _r.action == "BUY")
+                _is_reentry = _prior_buys >= 1
+                if _is_reentry:
+                    _hard_stopped = HARD_STOP_BLOCK_REENTRY_TODAY and any(
+                        _r.code == code and _r.action == "SELL"
+                        and (str(_r.reason).startswith("HARD_STOP") or str(_r.reason).startswith("ATR_STOP_LOSS"))
+                        for _r in sim.trade_log
+                    )
+                    _used = reentry_used.get(code, 0)
+                    if REENTRY_MODE not in ("shadow", "live") or _used >= REENTRY_MAX_PER_CODE or _hard_stopped:
+                        log_detail(
+                            f"  [REENTRY BLOCK] {code} | mode={REENTRY_MODE} used={_used}/{REENTRY_MAX_PER_CODE} "
+                            f"hard_stopped={_hard_stopped}"
+                        )
+                        continue
+                    if REENTRY_MODE == "shadow":
+                        # 가상 보유를 추적하지 않으므로 첫 재진입 신호 1회만 기록(r003 shadow와 동일하게 한도 소진).
+                        reentry_used[code] = max(_used + 1, REENTRY_MAX_PER_CODE)
+                        sim.set_cooldown(code, ts)
+                        signal_buy_bar[code] = ts
+                        log(f"  [REENTRY SHADOW] {code} | {ts:%H:%M} | would BUY price={price:,.0f} | {reason}")
+                        continue
                 log(
                     f"  [BUY SIGNAL] {code} | {ts:%H:%M} | {reason} | "
                     f"MA5={_num(cur,'MA_5'):.1f} BB_MID={_num(cur,'BB_MIDDLE'):.1f} | "
@@ -3108,6 +3146,8 @@ def simulate_date(
                     if _exec_status == "FILLED":
                         if sim.buy(code, selected_names.get(code, code), _exec_fill_price, _exec_fill_time, session, reason):
                             signal_buy_bar[code] = _exec_fill_time
+                            if _is_reentry:
+                                reentry_used[code] = reentry_used.get(code, 0) + 1
                             log(
                                 f"  [BUY EVAL] {code} | OK {reason} | price={_exec_fill_price:,.0f} "
                                 f"(EXEC_SIM delay={_exec_delay_s}s slippage={_exec_slip_str}%)"
@@ -3120,6 +3160,8 @@ def simulate_date(
                         log_detail(f"  [BUY_REJECT] {code_label} | EXEC_SIM_CANCELLED")
                 elif sim.buy(code, selected_names.get(code, code), price, ts, session, reason):
                     signal_buy_bar[code] = ts
+                    if _is_reentry:
+                        reentry_used[code] = reentry_used.get(code, 0) + 1
                     log(f"  [BUY EVAL] {code} | OK {reason} | price={price:,.0f}")
                 else:
                     log_detail(f"  [BUY_REJECT] {code_label} | ORDER_REJECTED")
