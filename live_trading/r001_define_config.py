@@ -1,6 +1,16 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-09-29] type=feat owner=claude
+#     summary: 사용자 요청(20260929 매매 전건 손절 + 손절 후 반등 종목 재매수 불가 분석, "재진입 관찰 모드
+#       추가해서 주문 로직에 반영") - 신규 REENTRY_MODE("off"|"shadow"|"live", 기본 "shadow")와
+#       REENTRY_MAX_PER_CODE(1) 추가. 근거: 실전은 매수 체결 종목을 감시목록에서 졸업시키고 청산 후에도
+#       되돌리지 않아 당일 재매수가 구조적으로 불가능했음(0929 HPSP 매도 후 +8.1%, 피에스케이/후성/서진시스템
+#       +2~3.5% 반등). 반면 g003 재진입 3일 검증(0923/0928/0929, n=29)은 평균 +0.04%/건(0929만 +, 나머지 두
+#       날 -), 종목당 1회 한정 -0.01%(n=14)로 우위 미입증 -> 기본값은 주문 없는 관찰 모드. 5거래일 이상
+#       [REENTRY SHADOW] 로그로 live 전환 여부 판단. 기존 "재매수 불가" 주석을 REENTRY_MODE 안내로 교체.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: backward-compatible (shadow는 주문 없음; 롤백: REENTRY_MODE="off")
 # - [2026-09-23] type=feat owner=claude
 #     summary: 사용자 요청("매수/매도 컨셉 재검토" 4단계 적용 - "급등 후 꺾이면 고점 대비 -0.8%서 익절")
 #       + Codex 설계검토 - r006에 신규 _012_peak_retracement_guard 추가. TP1(+3.0%)/ATR익절선 도달 전
@@ -818,11 +828,24 @@ HARD_STOP_BLOCK_REENTRY_TODAY = True
 # 같은 날 같은 종목 재매수를 막는 명시적 규칙은 두지 않는다(2026-09-20 사용자 결정 - 종전
 # ALLOW_REBUY_SAME_CODE=False는 실전이 읽은 적 없는 죽은 설정이라 삭제). 재진입 제어는
 # has_buy_exposure(보유/주문중)/TRADE_COOLDOWN_MINUTES/HARD_STOP_BLOCK_REENTRY_TODAY뿐이다.
-# 주의: 실전은 매수 체결 종목을 감시목록에서 졸업(GRADUATE)시키고 청산 뒤에도 되돌리지 않으므로
-# (r003 _rebalance_active_watchlist) 그날은 다시 평가되지 않는다 - g003은 재진입을 허용해 둘이
-# 다르다. 재매수를 실전에서 실제로 가능하게 하려면 졸업/재편입 정책을 따로 바꿔야 한다.
+# [2026-09-29] 졸업(GRADUATE) 종목의 청산 후 재편입은 아래 REENTRY_MODE가 제어한다(r003/g003 공통).
 # 동일 종목 재진입 쿨다운(분):
 TRADE_COOLDOWN_MINUTES = 3
+# [2026-09-29] 당일 청산 종목 재진입 모드 (사용자 요청 - 20260929 손절 후 반등 종목(HPSP +8%/피에스케이/
+# 후성/서진시스템) 재매수 불가 분석). 청산이 끝난(보유/미체결 0) 졸업 종목을 active_set에 되돌려 다시
+# 매수 평가를 받게 한다(r003 _rebalance_active_watchlist). 모드:
+#   "off"    - 종전과 동일(졸업 종목은 당일 재평가 안 함)
+#   "shadow" - 재평가는 하되 모든 매수 조건 통과 시 주문 대신 [REENTRY SHADOW] 로그만 남긴다(관찰 모드).
+#              3일(0923/0928/0929) g003 재진입 성과가 평균 +0.04%(n=29, 0929만 +, 나머지 두 날 -)로 우위가
+#              입증되지 않아 기본값은 관찰 모드 - 5거래일 이상 로그를 모아 live 전환 여부를 판단한다.
+#   "live"   - 실제 재매수 주문. 종목당 REENTRY_MAX_PER_CODE회까지.
+# HARD_STOP 종목은 모드와 무관하게 기존 HARD_STOP_BLOCK_REENTRY_TODAY(_006)가 계속 차단한다.
+REENTRY_MODE = "shadow"
+REENTRY_MAX_PER_CODE = 1   # 종목당 당일 재진입(=두 번째 이후 매수) 최대 횟수 (live/shadow 공통 재편입 한도)
+# 한도는 '재진입 주문 시도' 기준(live: place_buy_order 접수 성공 시, shadow: 신호 1회 기록 시 소진) - 미체결
+# 취소로 끝난 재진입 주문도 1회로 센다(보수적). shadow는 가상 보유를 추적하지 않아 첫 재진입 신호 1회만 기록한다.
+# 재진입 판정 = 봇이 당일 매수 예약(traded_today)했고 실제 보유수량>0이 관측된 뒤 전량 청산된 종목. 상태는
+# live_state["reentry"]에 저장돼 재시작 후에도 유지된다(r003 _serialize_reentry_state).
 # 시장일 확인 실패 시 보수적으로 비거래 처리
 MARKET_DAY_FAIL_CLOSED = True
 

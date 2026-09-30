@@ -20,6 +20,21 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-09-29] type=feat owner=claude
+    summary: 사용자 요청(20260929 전건 손절 후 반등 종목 재매수 불가 분석 - HPSP 매도 후 +8% 등) + Codex 1차
+      검토 반영 - 당일 청산 종목 재진입(REENTRY_MODE) 배선. _rebalance_active_watchlist가 졸업(GRADUATE) 종목을
+      reentry_state에 기록하고, 전량 청산(has_buy_exposure=False) + HARD_STOP/GAP_BLOCKED 아님 + 사용횟수 <
+      REENTRY_MAX_PER_CODE이면 active_set에 즉시 되돌린다([ACTIVE REENTER], change_history [REENTER]).
+      재진입 판정 = 봇의 당일 매수 예약(traded_today) AND 실제 보유수량>0 관측(filled) - 수동/전일 보유 청산,
+      미체결 취소로 끝난 첫 주문은 일반 후보로 복귀. 매수 승인 후 재진입이면 shadow 모드는 주문 없이
+      [REENTRY SHADOW] would BUY 로그(buy_sell 로그 포함)만 남기고 한도를 소진(가상보유 미추적 - 첫 신호 1회만),
+      _023의 traded_today 예약은 되돌림. live 모드는 실제 주문 후 [REENTRY LIVE] 기록. reentry_state는
+      live_state["reentry"]로 저장/복원(_serialize_reentry_state) - 재시작 시 이미 졸업했던 종목은 최초
+      active_set/backup_pool에서 빼서 재편입 경로를 거치게 함(안 빼면 shadow/한도를 우회한 실재매수 위험).
+      _rebalance_active_watchlist에 선택 인자 reentry_state 추가(생략 시 기존 동작).
+    impact: live
+    compatibility: backward-compatible (REENTRY_MODE="off"면 종전과 동일; 기본 "shadow"는 주문 없이 로그만 추가.
+      주의: 재편입 시 ACTIVE_WATCHLIST_SIZE를 당일 청산 종목 수만큼 일시 초과할 수 있음)
 - [2026-09-23] type=feat owner=claude
     summary: 사용자 요청("매수/매도 컨셉 재검토" 4단계 적용) + Codex 설계검토 - r006 신규
       _012_peak_retracement_guard에 맞춰 peak_retrace_guard_state dict 배선(선언/SellState 주입/날짜변경
@@ -665,6 +680,8 @@ from r001_define_config import (
     STOCH_OVERBOUGHT,
     STAGED_TP1_PCT,
     TRADE_COOLDOWN_MINUTES,
+    REENTRY_MODE,
+    REENTRY_MAX_PER_CODE,
     TRAILING_STOP_FROM_PEAK,
     AUX_SELL_MIN_REALIZED_TARGET_PCT,
     AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
@@ -2250,18 +2267,37 @@ def _serialize_live_state(live_state: dict) -> dict:
             "surge_ladder": _sanitize_surge_ladder(meta.get("surge_ladder")),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
-    return {"positions_meta": positions_meta, "traded_today": traded}
+    return {"positions_meta": positions_meta, "traded_today": traded,
+            "reentry": _serialize_reentry_state(live_state.get("reentry"))}
+
+
+def _serialize_reentry_state(raw) -> dict:
+    """[2026-09-29] REENTRY 상태(졸업/재편입/사용횟수)를 JSON 안전 형태로. 재시작 후에도 당일 재진입 한도와
+    '봇이 이미 산 종목' 분류가 유지되도록 live_state에 함께 저장한다(traded_today는 전량 매도 시 지워지므로
+    그것만으로는 재시작 후 복원이 안 된다)."""
+    out: dict[str, dict] = {}
+    for code, st in (raw or {}).items():
+        if not isinstance(st, dict):
+            continue
+        out[str(code).zfill(6)] = {
+            "used": int(st.get("used", 0) or 0),
+            "graduated": bool(st.get("graduated", False)),
+            "readded": bool(st.get("readded", False)),
+            "bot": bool(st.get("bot", False)),
+            "filled": bool(st.get("filled", False)),
+        }
+    return out
 
 
 def load_live_state(date_str: str) -> dict:
     path = _live_state_path(date_str)
     if not path.exists():
-        return {"date": date_str, "positions_meta": {}, "traded_today": set()}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         log(f"WARNING: live state load failed ({path}): {exc}")
-        return {"date": date_str, "positions_meta": {}, "traded_today": set()}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}}
 
     positions_meta: dict[str, dict] = {}
     for code, meta in (raw.get("positions_meta") or {}).items():
@@ -2295,7 +2331,8 @@ def load_live_state(date_str: str) -> dict:
             "surge_ladder": _sanitize_surge_ladder((meta or {}).get("surge_ladder")),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
-    return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded}
+    return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded,
+            "reentry": _serialize_reentry_state(raw.get("reentry"))}
 
 
 def save_live_state(live_state: dict, date_str: str | None = None) -> None:
@@ -2367,6 +2404,7 @@ def _rebalance_active_watchlist(
     gap_blocked_codes: set[str],
     warn_state: dict[str, bool],
     frame_cache: dict[str, "pd.DataFrame"],
+    reentry_state: dict[str, dict] | None = None,
 ) -> None:
     """[2026-08-31] active_set(실시간 폴링 상한, ACTIVE_WATCHLIST_SIZE)과 backup_pool(대기,
     미폴링) 사이의 교체를 매 틱 처리한다. 이탈 사유:
@@ -2394,15 +2432,53 @@ def _rebalance_active_watchlist(
       수정.
     빠진 자리는 backup_pool 선두(스캐너 점수 순위 순서)부터 채운다. 승격된 종목은 추가
     확인 API 호출 없이 다음 폴링(이미 iter_codes에 포함되어 정상 진행됨)이 그 역할을 한다.
+
+    [2026-09-29] REENTRY: 졸업 종목은 reentry_state에 기록해 두고, 청산이 끝나(has_buy_exposure=False)
+    HARD_STOP/GAP_BLOCKED가 아니며 재진입 사용횟수(used)가 REENTRY_MAX_PER_CODE 미만이면
+    REENTRY_MODE("shadow"/"live")일 때 active_set에 바로 되돌린다(REENTER). ACTIVE_WATCHLIST_SIZE를
+    잠시 넘을 수 있으나 당일 청산 종목 수로 제한된다. 재진입(=shadow/한도 적용 대상) 여부는
+    bot(졸업 당시 봇의 당일 매수 예약 traded_today에 있었음) AND filled(졸업 후 실제 보유수량>0을 관측) -
+    수동/전일 보유 청산, 또는 미체결 취소로 끝난 첫 주문은 일반 후보로 되돌린다(Codex 1차 검토 반영).
     """
     graduated: list[str] = []
     dropped: list[tuple[str, str]] = []
+    reentered: list[str] = []
+
+    if reentry_state is not None:
+        for code, st in reentry_state.items():
+            if not st.get("graduated") or code in active_set:
+                continue
+            _pos = api.positions.get(code) if hasattr(api, "positions") else None
+            if _pos is not None and int(_pos.get("quantity", 0) or 0) > 0:
+                st["filled"] = True
+            if REENTRY_MODE not in ("shadow", "live"):
+                continue
+            if api.has_buy_exposure(code):
+                continue
+            if code in hard_stop_today_codes or code in gap_blocked_codes:
+                continue
+            if int(st.get("used", 0)) >= REENTRY_MAX_PER_CODE:
+                continue
+            st["graduated"] = False
+            st["readded"] = True
+            active_set.add(code)
+            first_active_at[code] = current_dt
+            reentered.append(code)
 
     for code in list(active_set):
         if api.has_buy_exposure(code):
             active_set.discard(code)
             first_active_at.pop(code, None)
             graduated.append(code)
+            if reentry_state is not None:
+                traded_today = api.live_state.get("traded_today") or set()
+                st = reentry_state.setdefault(code, {"used": 0})
+                st["graduated"] = True
+                st["readded"] = False
+                st["bot"] = bool(st.get("bot")) or code in traded_today
+                _pos = api.positions.get(code) if hasattr(api, "positions") else None
+                if _pos is not None and int(_pos.get("quantity", 0) or 0) > 0:
+                    st["filled"] = True
             continue
 
         if code in hard_stop_today_codes:
@@ -2431,6 +2507,14 @@ def _rebalance_active_watchlist(
         dropped.append((code, reason))
 
     history_lines: list[str] = []
+    for code in reentered:
+        st = reentry_state[code]
+        log(
+            f"[ACTIVE REENTER] {code}_{watch_map.get(code, code)} | mode={REENTRY_MODE} "
+            f"bot={st.get('bot')} filled={st.get('filled')} used={st.get('used', 0)}/{REENTRY_MAX_PER_CODE} | "
+            f"active={len(active_set)} backup={len(backup_pool)}"
+        )
+        history_lines.append(f"[REENTER] {code}_{watch_map.get(code, code)} | mode={REENTRY_MODE}")
     for code in graduated:
         log(
             f"[ACTIVE GRADUATE] {code}_{watch_map.get(code, code)} | reason=POSITION_OPENED | "
@@ -4159,6 +4243,20 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     # 연속 HARD_STOP 서킷브레이커 상태
     hard_stop_today_codes: set[str] = set()  # 당일 HARD_STOP 발생 종목 (재진입 영구 차단)
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목
+    # [2026-09-29] 졸업/재편입/재진입 사용횟수 (REENTRY_MODE) - live_state["reentry"]를 그대로 참조해 주기
+    # 저장(persist_live_state)에 함께 실리고 재시작 시 복원된다.
+    reentry_state: dict[str, dict] = api.live_state.setdefault("reentry", {})
+    # 재시작 복원: 이미 졸업(봇 매수)했던 종목은 최초 active_set에서 빼서 재편입 경로(REENTRY_MODE/한도)를 거치게
+    # 한다 - 안 빼면 일반 후보로 평가돼 shadow/한도를 우회한 실제 재매수가 나갈 수 있다(Codex 1차 검토 HIGH).
+    for _rc, _rst in reentry_state.items():
+        if _rst.get("graduated") or _rst.get("readded"):
+            _rst["graduated"], _rst["readded"] = True, False
+            active_set.discard(_rc)
+            first_active_at.pop(_rc, None)
+            if _rc in backup_pool:
+                backup_pool.remove(_rc)
+    if reentry_state:
+        log(f"REENTRY state restored | codes={sorted(reentry_state)} mode={REENTRY_MODE}")
     # 당일 손절 누적 횟수/서킷브레이커 해제 시각 - 매수(_007)/매도(_004, _019) 조건이 같은 인스턴스를 공유한다
     # (2026-09-23: 매도측 신규 _011/_012 삽입으로 옛 _017 atr_stop_loss가 _019로 밀림)
     risk = RiskState()
@@ -4250,6 +4348,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             # 날짜 변경: 서킷브레이커 상태 초기화
             hard_stop_today_codes.clear()
             gap_blocked_codes.clear()
+            reentry_state = api.live_state.setdefault("reentry", {})  # 새 날짜 live_state 기준으로 재바인딩
             risk.reset()
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()
@@ -4502,6 +4601,31 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         # 모든 조건 통과 - _023이 traded_today/signal_buy_bar를 '예약'해 둔 상태다.
                         buy_reason, prev_bar, qty = buy_ctx.buy_reason, buy_ctx.prev_bar, buy_ctx.qty
                         session, buy_detail, norm_code = buy_ctx.session, buy_ctx.buy_detail, buy_ctx.norm_code
+                        _re_st = reentry_state.get(code)
+                        _is_reentry = bool(_re_st and _re_st.get("readded") and _re_st.get("bot") and _re_st.get("filled"))
+                        if _is_reentry and REENTRY_MODE == "shadow":
+                            # [2026-09-29] 관찰 모드: 주문 없이 '재매수했을 신호'만 기록한다. 가상 보유/청산을
+                            # 추적하지 않으므로 종목당 첫 재진입 신호 1회만 기록하고 한도를 소진시킨다(Codex 1차
+                            # 검토 E-1: 한도>=2에서 같은 상승구간 반복 신호를 별개 재진입으로 세는 문제 방지).
+                            # _023이 걸어 둔 traded_today 예약은 실제 주문이 없으니 되돌린다(전량 매도 시 이미
+                            # 지워졌던 상태로 복귀).
+                            _re_st["used"] = max(int(_re_st.get("used", 0)) + 1, REENTRY_MAX_PER_CODE)
+                            traded_today.discard(norm_code)
+                            api.live_state["traded_today"] = traded_today
+                            _re_st["readded"] = False
+                            _re_st["graduated"] = True
+                            active_set.discard(code)
+                            first_active_at.pop(code, None)
+                            buy_confirm_state.pop(code, None)
+                            buy_trigger_age_state.pop(code, None)
+                            api._mark_trade_lock(code, current_dt)
+                            _shadow_msg = (
+                                f"[REENTRY SHADOW] {code}({name}) | would BUY qty={qty} price={price:,.0f} "
+                                f"session={session} used={_re_st['used']}/{REENTRY_MAX_PER_CODE} | reason={buy_reason}"
+                            )
+                            log(f"  {_shadow_msg}")
+                            log_trade(_shadow_msg)
+                            continue
                         if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                             log(
                                 f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
@@ -4515,6 +4639,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                 f"VWAP={_num(buy_frame.iloc[-1], 'VWAP'):,.0f} OBV={_num(buy_frame.iloc[-1], 'OBV'):,.0f} OBVMA={_num(buy_frame.iloc[-1], 'OBV_MA'):,.0f}"
                             )
                             log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
+                            if _is_reentry:
+                                _re_st["used"] = int(_re_st.get("used", 0)) + 1
+                                _re_st["readded"] = False
+                                log_trade(
+                                    f"[REENTRY LIVE] {code}({name}) | BUY qty={qty} price={price:,.0f} "
+                                    f"used={_re_st['used']}/{REENTRY_MAX_PER_CODE} | reason={buy_reason}"
+                                )
                             buy_confirm_state.pop(code, None)
                             buy_trigger_age_state.pop(code, None)
                             log("=" * 110)
@@ -4549,7 +4680,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 _rebalance_active_watchlist(
                     current_dt, api, watch_map, active_set, backup_pool, first_active_at,
                     hard_stop_today_codes, gap_blocked_codes, active_watchlist_warn_state,
-                    frame_cache,
+                    frame_cache, reentry_state,
                 )
             _write_active_watchlist_state(
                 current_dt, watch_map, active_set, backup_pool, first_active_at, position_codes,
