@@ -16,6 +16,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-05] type=feat owner=claude
+    summary: r003 parity (r001 Update log 2026-10-05) - ENABLE_NXT_SESSION=True면 15:20 정규장 청산에서 NXT 가능 종목을
+      건너뛰고 AFTERNOON_NXT_FORCE_EXIT(19:59:58) 이후 첫 시뮬 틱의 현재가로 청산. NXT 불가 종목은 15:20 청산 유지.
+    impact: sim (live parity)
+    compatibility: breaking (NXT 운용 시 NXT 가능 종목 청산 시각 이동)
 - [2026-10-04] type=feat owner=claude
     summary: r001/r002/r003/r005 Update log 2026-10-04 parity - (1) is_new_entry_allowed에 점심 구간 신규 매수
       금지(r002 is_midday_no_entry_time) 반영, (2) 신규 매수 직전에 r002 anti_chase_day_gate(당일 시가/VWAP
@@ -2055,6 +2060,9 @@ def run_scheduled_liquidations(
         for code in list(sim.positions.keys()):
             pos = sim.positions.get(code)
             if pos is None:
+                continue
+            if ENABLE_NXT_SESSION and bool(nxt_tradeable_fn(code)):
+                # [2026-10-05] r003 parity: NXT 운용 시 NXT 가능 종목은 19:59:58 NXT 청산으로 넘긴다.
                 continue
             price = get_latest_price_up_to(price_frames[code], ts)
             if price is None:

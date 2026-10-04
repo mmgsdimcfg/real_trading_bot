@@ -20,6 +20,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-05] type=feat owner=claude
+    summary: 사용자 요청("NXT 장 운용 여부에 따라 강제 청산 연동") - run_scheduled_liquidations: ENABLE_NXT_SESSION=True면
+      15:20 정규장 청산에서 NXT 가능 종목을 건너뛰고([REGULAR CLOSE DEFER]) 19:59:58(AFTERNOON_NXT_FORCE_EXIT)에
+      새로 조회한 현재가 지정가로 1번만 청산(place_sell_order limit_price, 재주문/정정 없음). NXT 불가 종목은 15:20 청산 유지.
+      메인 루프는 청산 15초 전(AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS)부터 종목 감시를 멈추고 청산 시각까지 sleep 후 주문.
+      ENABLE_NXT_SESSION=False면 종전과 동일(15:20 정규장 청산).
+    impact: live (r003)
+    compatibility: breaking (NXT 운용 시 당일 청산 시각 이동)
 - [2026-10-04] type=feat owner=claude
     summary: 사용자 요청(전체 매매내역/감시 로그 기반 조건 재검토) - (1) is_new_entry_allowed가 정규장
       점심 구간(r002 is_midday_no_entry_time, r001 ENABLE_MIDDAY_NO_ENTRY 11:30~13:00)에 False를 돌려
@@ -659,6 +667,7 @@ from r001_define_config import (
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
+    AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
     AFTERNOON_NXT_START,
     AUX_SELL_MIN_PNL_SCORE2,
@@ -4018,7 +4027,8 @@ class TradingAPI:
         self.persist_live_state()
         return True
 
-    def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "", market_order: bool = False) -> bool:
+    def place_sell_order(self, code: str, qty: int, now: datetime, reason: str, nxt_tradeable: bool, price: float | None = None, code_name: str = "", market_order: bool = False, limit_price: float | None = None) -> bool:
+        """limit_price: NXT 지정가를 매도1호가 대신 이 값으로 고정(19:59:58 NXT 당일 청산 - 현재가 1회 주문)."""
         self.sync_positions_from_account(force=False)
         pos = self.positions.get(code)
         if not pos or pos.get("quantity", 0) <= 0:
@@ -4047,10 +4057,13 @@ class TradingAPI:
             ord_dvsn = "01"  # 시장가
             ord_unpr = "0"
         else:
-            _, ask_price = _fetch_bid_ask_price(norm_code, market_div)
-            limit_price = int(round(ask_price)) if (ask_price and ask_price > 0) else int(round(current_price))
+            if limit_price is not None and limit_price > 0:
+                ord_limit = int(round(limit_price))
+            else:
+                _, ask_price = _fetch_bid_ask_price(norm_code, market_div)
+                ord_limit = int(round(ask_price)) if (ask_price and ask_price > 0) else int(round(current_price))
             ord_dvsn = "00"  # 지정가
-            ord_unpr = str(limit_price)
+            ord_unpr = str(ord_limit)
 
         if self.dry_run:
             log(f"DRY_RUN SELL | {code} | qty={qty} | reason={reason} | exch={order_spec['exchange']}")
@@ -4133,6 +4146,10 @@ def run_scheduled_liquidations(
             if not _is_today_buy_position(code, pos, date_str, today_buy_codes):
                 log(f"  [REGULAR CLOSE SKIP] {code} | NOT_TODAY_BUY_POSITION")
                 continue
+            if ENABLE_NXT_SESSION and nxt_map.get(code, False):
+                # [2026-10-05] NXT 운용 시 NXT 가능 종목은 19:59:58 NXT 청산(현재가 1회)으로 넘긴다.
+                log(f"  [REGULAR CLOSE DEFER] {code} | NXT_SESSION_CLOSE_AT {AFTERNOON_NXT_FORCE_EXIT:%H:%M:%S}")
+                continue
             if api.has_pending_order(code):
                 log(f"  [REGULAR CLOSE SKIP] {code} | pending_order_active")
                 continue
@@ -4166,7 +4183,13 @@ def run_scheduled_liquidations(
                 log(f"  [NXT CLOSE HOLD] {code} | NXT_NOT_TRADABLE")
                 continue
 
-            price = float(pos.get("current_price") or pos["buy_price"])
+            # [2026-10-05] 청산 시점 현재가를 새로 조회(실패 시 계좌 평가가) - 이 가격 지정가로 1번만 주문
+            live_px = None
+            try:
+                live_px = fetch_live_price(code, current_dt, True)
+            except Exception as exc:
+                log(f"  [NXT CLOSE] {code} | live price fetch failed: {exc}")
+            price = float(live_px or pos.get("current_price") or pos["buy_price"])
             buy_price = float(pos.get("buy_price") or 0)
             if buy_price <= 0 or price <= 0:
                 log(f"  [NXT CLOSE HOLD] {code} | INVALID_PRICE | price={price:,.0f} buy={buy_price:,.0f}")
@@ -4179,8 +4202,23 @@ def run_scheduled_liquidations(
                 continue
 
             api.trade_lock_until.pop(code, None)
-            api.place_sell_order(code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
+            log(
+                f"  [NXT CLOSE] {code} | ONE_SHOT_LIMIT_AT_CURRENT | price={price:,.0f} "
+                f"src={'live' if live_px else 'account'} qty={int(pos['quantity'])}"
+            )
+            api.place_sell_order(
+                code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False),
+                price=price, code_name=watch_map.get(code, ""), limit_price=price,
+            )
 
+
+def _nxt_force_exit_prep_reached(now: datetime, state: dict) -> bool:
+    """[2026-10-05] NXT 당일 청산(19:59:58) 직전 대기 구간인가 - 아직 청산 전이고 청산 시각
+    AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS초 전 이후면 True."""
+    if not ENABLE_NXT_SESSION or state.get("done_1959"):
+        return False
+    target = datetime.combine(now.date(), AFTERNOON_NXT_FORCE_EXIT)
+    return target - timedelta(seconds=AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS) <= now < target
 
 
 _SHUTDOWN_API: TradingAPI | None = None
@@ -4525,6 +4563,19 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             api.live_state["traded_today"] = traded_today
             run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
 
+            # [2026-10-05] NXT 당일 청산 직전: 종목별 감시를 멈추고 19:59:58까지 대기한 뒤 바로 청산 주문.
+            if _nxt_force_exit_prep_reached(current_dt, liquidation_state):
+                _target_dt = datetime.combine(current_dt.date(), AFTERNOON_NXT_FORCE_EXIT)
+                _wait = (_target_dt - datetime.now()).total_seconds()
+                log(f"[NXT CLOSE] waiting {max(0.0, _wait):.1f}s until {AFTERNOON_NXT_FORCE_EXIT:%H:%M:%S}")
+                if _wait > 0:
+                    time.sleep(_wait)
+                current_dt = datetime.now()
+                api.sync_positions_from_account(force=True)
+                api.refresh_pending_orders(current_dt)
+                run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
+                continue
+
             # 15:20~15:30 정규장 마감 구간은 종목별 매도 체크 건너뛰고
             # 동시호가 예약 청산 로직(당일 매수 + 수익 구간)만 실행한다.
             if is_regular_call_auction(current_dt):
@@ -4550,6 +4601,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                               nxt_map.get(_gc, False), gapdip_state)
 
             for code in iter_codes:
+                if _nxt_force_exit_prep_reached(datetime.now(), liquidation_state):
+                    break  # [2026-10-05] NXT 당일 청산 대기 구간 진입 - 다음 턴에서 대기 후 청산
                 name = watch_map.get(code) or _SYMBOL_NAME_MAP.get(code) or code
                 nxt_tradeable = nxt_map.get(code, False)
                 symbol_label = _symbol_log_label(code, name)

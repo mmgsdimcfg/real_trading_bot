@@ -1,6 +1,14 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-05] type=feat owner=claude
+#     summary: 사용자 요청("NXT 장 운용 여부에 따라 강제 청산 연동") - ENABLE_NXT_SESSION=True면 당일 매수 포지션 중
+#       NXT 거래 가능 종목은 15:20 정규장 청산을 건너뛰고 19:59:58(AFTERNOON_NXT_FORCE_EXIT, 20:00 - 주문지연 2초)에
+#       현재가 지정가로 1번만 청산. NXT 불가 종목은 15:20 정규장 청산 유지(NXT에서 팔 수 없으므로).
+#       False면 종전대로 15:20 정규장 청산. 신규 AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS(15초): 청산 직전 감시 루프 정지/대기.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (NXT 운용 시 NXT 가능 종목 당일 청산이 15:20 -> 19:59:58로 이동. 롤백:
+#       r003/g003 run_scheduled_liquidations의 NXT defer 분기 제거 + AFTERNOON_NXT_FORCE_EXIT=dt_time(19, 59))
 # - [2026-10-04] type=feat owner=claude
 #     summary: 사용자 요청("data 폴더 전체 매매내역/감시 로그 기반 매수·매도·손절 조건 검토") - 실매매 188건
 #       (0818~1002, 승률 30%, 순손익 -52,118원)과 34거래일 1분봉 패널(전일 picks 기준, 약 2,500 종목-일)
@@ -1176,8 +1184,14 @@ AFTERNOON_NXT_START = dt_time(15, 30)
 AFTERNOON_NXT_END = dt_time(20, 0)
 # 신규 진입 허용 종료 시각(오후 NXT)
 AFTERNOON_NXT_NEW_ENTRY_CUTOFF = dt_time(19, 59)
-# 강제 청산 시작 시각(오후 NXT)
-AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59)
+# 강제 청산 시각(오후 NXT) - [2026-10-05] ENABLE_NXT_SESSION=True면 당일 매수 포지션 중 NXT 거래 가능 종목은
+# 15:20 정규장 청산을 건너뛰고 이 시각에 현재가 지정가로 1번만 청산 주문(재주문/정정 없음). 20:00 마감 기준
+# 주문 지연 2초를 감안해 19:59:58. NXT 불가 종목은 NXT 운용 여부와 무관하게 15:20 정규장 청산.
+# ENABLE_NXT_SESSION=False면 종전대로 15:20 정규장 청산만 수행.
+AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59, 58)
+# 위 청산 시각 N초 전부터는 종목별 감시 루프를 멈추고 청산 시각까지 대기 - 턴 처리가 길어져 청산 시각을
+# 놓치는 것(다음 턴 시작이 20:00 이후)을 막는다. 신규 매수는 이미 19:59에 마감된 구간.
+AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS = 15
 # 세션 종료 컷오프에서 전량 청산 강제 여부
 SESSION_FORCE_CLOSE_ALL_AT_CUTOFF = True
 # 세션 종료 홀드 예외 허용 여부
