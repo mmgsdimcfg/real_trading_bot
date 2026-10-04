@@ -8,7 +8,7 @@ Overview
   the same point, with the same text, as the old inline code did.
 - The numeric logic of the 1-min trigger and of the 3-min context gates stays in r002 (shared with the g003
   backtester); the `_008`..`_017` conditions only delegate to it. The refactor itself changed no threshold.
-- [2026-09-22] `_020` now also requires the same 3-min bar and a bounded price drift between the two consecutive
+- [2026-09-22] `_021`(당시 `_020`) now also requires the same 3-min bar and a bounded price drift between the two consecutive
   passes, and its gap window is 45 s (r001 BUY_CONFIRM_MAX_GAP_SECONDS / _REQUIRE_SAME_BAR / _MAX_PRICE_DRIFT_PCT).
   That is the only behavior change in this file since the refactor.
 - No broker imports: everything that talks to the broker / clock is injected through `BuyServices` and `ctx.api`, so the
@@ -33,20 +33,29 @@ Order (stage)                                     Old r003 inline block
             _016 di_spread_min
             _017 context score threshold          run_3min_context_pipeline (suffix)
   PRE_ORDER _018 excessive rise from prev close   MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
-            _019 opening gap / volume gate        passes_opening_gap_volume_gate
-            _020 consecutive poll confirm         BUY_CONSECUTIVE_CONFIRM_COUNT
-            _021 affordable buy qty               api.get_affordable_buy_qty
-            _022 fresh live price                 _is_stale_live_price_source
-            _023 order-book ask not thin          _fetch_orderbook_totals (+ reservation, see docstring)
+            _019 anti-chase day extension         (2026-10-04 신규) 당일 시가/VWAP 대비 과열 차단
+            _020 opening gap / volume gate        passes_opening_gap_volume_gate
+            _021 consecutive poll confirm         BUY_CONSECUTIVE_CONFIRM_COUNT
+            _022 affordable buy qty               api.get_affordable_buy_qty
+            _023 fresh live price                 _is_stale_live_price_source
+            _024 order-book ask not thin          _fetch_orderbook_totals (+ reservation, see docstring)
 
 Behavior notes kept from the old inline code (do not "fix" them here - they are strategy decisions):
-- _001~_004 rejects are silent and do NOT clear the confirm state; _008~_019 rejects clear it; _021/_022/_023 rejects and
+- _001~_004 rejects are silent and do NOT clear the confirm state; _008~_020 rejects clear it; _022/_023/_024 rejects and
   a failed order do NOT clear it.
-- _020 rewrites the confirm state on every pass, also once the count is >= BUY_CONSECUTIVE_CONFIRM_COUNT.
-- The 1-min frame fetch (_008), prev-close fetch (_018), buying-power query (_021) and order-book query (_023) are
-  API calls: they run only when reached, in this order.
+- _021 rewrites the confirm state on every pass, also once the count is >= BUY_CONSECUTIVE_CONFIRM_COUNT.
+- The 1-min frame fetch (_008), prev-close fetch (_018), day open/VWAP quote (_019), buying-power query (_022) and
+  order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-10-04] type=feat owner=claude
+    summary: 사용자 요청(전체 매매내역/감시 로그 기반 조건 재검토) - 신규 _019_anti_chase_day_extension:
+      전일종가 체크(_018) 직후, 당일 시가/VWAP(BuyServices.fetch_day_ref_prices, KIS 현재가 시세) 대비
+      과열이면 반려(r002 anti_chase_day_gate, r001 ENABLE_ANTI_CHASE_DAY_GATE). 기존 _019~_023은 _020~_024로
+      한 칸씩 밀림(로직 무변경). 점심 구간 신규 매수 금지는 _001(r003 is_new_entry_allowed)에서 처리.
+      r001 Update log 2026-10-04 참조.
+    impact: live (r003), g003도 같은 r002 함수로 동일 판정
+    compatibility: breaking (롤백: r001 ENABLE_ANTI_CHASE_DAY_GATE=False)
 - [2026-09-23] type=feat owner=claude
     summary: 사용자 요청("매수/매도 컨셉 재검토", 204620 글로벌텍스프리 09:17 매수 지연 사례) + Codex
       설계검토 - _008_hybrid_1min_trigger에 진입 이벤트 유효기한 추가. update_timed_condition_state()로
@@ -73,7 +82,10 @@ from typing import Any, Callable
 import pandas as pd
 
 from r001_define_config import (
+    ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT,
+    ANTI_CHASE_MAX_VWAP_GAP_PCT,
     BUY_CONFIRM_MAX_GAP_SECONDS,
+    ENABLE_ANTI_CHASE_DAY_GATE,
     BUY_CONFIRM_MAX_PRICE_DRIFT_PCT,
     BUY_CONFIRM_REQUIRE_SAME_BAR,
     BUY_CONSECUTIVE_CONFIRM_COUNT,
@@ -89,6 +101,7 @@ from r002_strategy_core_shared import (
     _compute_bb_slope_pct,
     _evaluate_bb_mid_cross,
     _num,
+    anti_chase_day_gate,
     build_context_eval,
     check_buy_condition_1min_hybrid_trigger,
     evaluate_context_score,
@@ -140,6 +153,7 @@ class BuyServices:
     get_frame_1min: Callable[[str, datetime, bool], pd.DataFrame | None]
     fetch_prev_close: Callable[[str, datetime, bool], float | None]
     rise_from_prev_close: Callable[[float, float], float | None]
+    fetch_day_ref_prices: Callable[[str, datetime, bool], tuple[float | None, float | None]]
     is_stale_live_price_source: Callable[[str], bool]
     classify_buy_session: Callable[[datetime], str]
     get_order_spec: Callable[[datetime, bool], dict | None]
@@ -175,6 +189,8 @@ class BuyContext:
     buy_reason: str = ""
     prev_close: float | None = None
     rise_ratio: float | None = None
+    day_open: float | None = None
+    day_vwap: float | None = None
     qty: int = 0
     session: str = ""
     buy_detail: str = ""
@@ -205,7 +221,7 @@ class BuyCondition:
 
 @dataclass(frozen=True)
 class BuyDecision:
-    """approved=True면 모든 조건 통과(이때 _023의 예약이 남아 있음 - r003이 주문 후 실패 시 해제).
+    """approved=True면 모든 조건 통과(이때 _024의 예약이 남아 있음 - r003이 주문 후 실패 시 해제).
     approved=False면 failed가 처음 통과하지 못한 조건."""
 
     approved: bool
@@ -437,7 +453,33 @@ def _018_excessive_rise_from_prev_close(ctx: BuyContext) -> bool:
     return True
 
 
-def _019_opening_gap_volume_gate(ctx: BuyContext) -> bool:
+def _019_anti_chase_day_extension(ctx: BuyContext) -> bool:
+    """[2026-10-04] 당일 시가/VWAP 대비 이미 크게 오른 종목은 신규 매수하지 않는다(r002 anti_chase_day_gate).
+    플래그가 꺼져 있거나(임계값 둘 다 <=0 포함) 정규장이 아니면 시세 조회(API)도 하지 않는다."""
+    if not ENABLE_ANTI_CHASE_DAY_GATE or (
+        ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT <= 0 and ANTI_CHASE_MAX_VWAP_GAP_PCT <= 0
+    ):
+        return True
+    # 정규장 진입에만 적용(NXT 세션의 시가/VWAP 기준은 미검증 - r001 주석 참조).
+    if ctx.services.classify_buy_session(ctx.current_dt) != "regular":
+        return True
+    ctx.day_open, ctx.day_vwap = ctx.services.fetch_day_ref_prices(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+    if ctx.day_open is None or ctx.day_vwap is None:
+        ctx.log(
+            f"  [ANTI_CHASE] {ctx.symbol_label} | REF_MISSING(fail-open) | "
+            f"open={ctx.day_open} vwap={ctx.day_vwap} live={ctx.price:,.0f}"
+        )
+    ok, reason = anti_chase_day_gate(ctx.price, ctx.day_open, ctx.day_vwap)
+    if not ok:
+        ctx.state.buy_confirm_state.pop(ctx.code, None)
+        open_txt = f"{ctx.day_open:,.0f}" if ctx.day_open else "nan"
+        vwap_txt = f"{ctx.day_vwap:,.1f}" if ctx.day_vwap else "nan"
+        ctx.log(f"  [REJECT  ] {ctx.symbol_label} | {reason} | open={open_txt} vwap={vwap_txt} live={ctx.price:,.0f}")
+        return False
+    return True
+
+
+def _020_opening_gap_volume_gate(ctx: BuyContext) -> bool:
     if not ENABLE_OPENING_GAP_VOLUME_GATE:
         return True
     # passes_opening_gap_volume_gate는 심한 갭하락 종목을 gap_blocked_codes에 추가할 수 있다.
@@ -453,7 +495,7 @@ def _019_opening_gap_volume_gate(ctx: BuyContext) -> bool:
     return True
 
 
-def _020_consecutive_poll_confirm(ctx: BuyContext) -> bool:
+def _021_consecutive_poll_confirm(ctx: BuyContext) -> bool:
     """연속 BUY_CONSECUTIVE_CONFIRM_COUNT회 통과 확인. 이 지점에 도달할 때마다(결과와 무관) 상태를 갱신한다.
 
     직전 통과와 아래 중 하나라도 어긋나면 횟수를 1로 되돌리고 이번 통과를 새 기준으로 삼는다:
@@ -504,7 +546,7 @@ def _020_consecutive_poll_confirm(ctx: BuyContext) -> bool:
     return True
 
 
-def _021_affordable_buy_qty(ctx: BuyContext) -> bool:
+def _022_affordable_buy_qty(ctx: BuyContext) -> bool:
     ctx.qty = ctx.api.get_affordable_buy_qty(ctx.code, ctx.price, ctx.current_dt, ctx.nxt_tradeable)
     if ctx.qty <= 0:
         ctx.log(f"  [REJECT  ] {ctx.symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={ctx.price:,.0f}")
@@ -512,7 +554,7 @@ def _021_affordable_buy_qty(ctx: BuyContext) -> bool:
     return True
 
 
-def _022_fresh_live_price(ctx: BuyContext) -> bool:
+def _023_fresh_live_price(ctx: BuyContext) -> bool:
     if ctx.services.is_stale_live_price_source(ctx.price_source):
         ctx.log(
             f"  [REJECT  ] {ctx.symbol_label} | STALE_LIVE_PRICE | "
@@ -522,7 +564,7 @@ def _022_fresh_live_price(ctx: BuyContext) -> bool:
     return True
 
 
-def _023_orderbook_ask_not_thin(ctx: BuyContext) -> bool:
+def _024_orderbook_ask_not_thin(ctx: BuyContext) -> bool:
     """세션/매수 상세(buy_detail)를 만들고 신규 매수를 '예약'(traded_today/signal_buy_bar)한 뒤 호가를 조회한다.
     통과하면 예약이 남는다 - r003이 이어서 place_buy_order를 호출하고 실패하면 예약을 해제한다. 매도잔량이
     얇아 거절할 때는 여기서 예약을 해제한다(확인 상태는 지우지 않음 - 기존 동작)."""
@@ -598,7 +640,7 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  "BB 중심선 최근 N봉 연속 하락이면 차단(가격이 이미 돌파했으면 해제). ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK=False면 건너뜀",
                  ("BB_MID_DOWNTREND_BARS", "ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK"), _011_bb_mid_downtrend_block),
     BuyCondition(12, "_012_bb_upper_gap_min", "CONTEXT", "BB 상단 여유",
-                 "BB 상단까지 남은 폭 >= BB_UPPER_GAP_MIN_PCT", ("BB_UPPER_GAP_MIN_PCT",), _012_bb_upper_gap_min),
+                 "BB 상단까지 남은 폭 >= BB_UPPER_GAP_MIN_PCT (호가 1틱% 구간별 BB_UPPER_GAP_MIN_PCT_BY_TICK)", ("BB_UPPER_GAP_MIN_PCT", "BB_UPPER_GAP_MIN_PCT_BY_TICK"), _012_bb_upper_gap_min),
     BuyCondition(13, "_013_stochastic_buy_signal", "CONTEXT", "스토캐스틱(+윌리엄스) 매수신호",
                  "%K>%D(골든크로스 포함) + %D>=STOCH_D_BUY_MIN + %K 30~90 밴드",
                  ("STOCH_BUY_MIN", "STOCH_D_BUY_MIN", "WILLIAMS_BUY_FLOOR", "WILLIAMS_OVERBOUGHT_CEIL"), _013_stochastic_buy_signal),
@@ -614,21 +656,26 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     BuyCondition(18, "_018_excessive_rise_from_prev_close", "PRE_ORDER", "전일 종가 대비 과도 상승",
                  "전일 종가 대비 상승률 < MAX_BUY_RISE_PCT_FROM_PREV_CLOSE (API: 전일 종가 조회)",
                  ("MAX_BUY_RISE_PCT_FROM_PREV_CLOSE",), _018_excessive_rise_from_prev_close),
-    BuyCondition(19, "_019_opening_gap_volume_gate", "PRE_ORDER", "개장 초반 갭/거래량 게이트",
+    BuyCondition(19, "_019_anti_chase_day_extension", "PRE_ORDER", "당일 과열(추격) 차단",
+                 "현재가 >= 당일시가 x (1+ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT%) 또는 >= 당일VWAP x (1+ANTI_CHASE_MAX_VWAP_GAP_PCT%)면 차단 "
+                 "(API: 현재가 시세 stck_oprc/wghn_avrg_stck_prc, 조회 실패 시 통과)",
+                 ("ENABLE_ANTI_CHASE_DAY_GATE", "ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT", "ANTI_CHASE_MAX_VWAP_GAP_PCT"),
+                 _019_anti_chase_day_extension),
+    BuyCondition(20, "_020_opening_gap_volume_gate", "PRE_ORDER", "개장 초반 갭/거래량 게이트",
                  "개장 후 5분 이내: 갭 범위 + 거래량 폭발 확인, 큰 갭하락은 당일 영구 차단",
                  ("ENABLE_OPENING_GAP_VOLUME_GATE", "OPENING_GAP_GATE_WINDOW_MINUTES", "OPENING_GAP_MIN_PCT", "OPENING_GAP_MAX_PCT",
-                  "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _019_opening_gap_volume_gate),
-    BuyCondition(20, "_020_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
+                  "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _020_opening_gap_volume_gate),
+    BuyCondition(21, "_021_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
                  "모든 조건이 연속 BUY_CONSECUTIVE_CONFIRM_COUNT회 통과해야 매수 - 직전 통과와 간격 BUY_CONFIRM_MAX_GAP_SECONDS 이내, "
                  "같은 3분봉(BUY_CONFIRM_REQUIRE_SAME_BAR), 실시간가 이탈 BUY_CONFIRM_MAX_PRICE_DRIFT_PCT 이내여야 연속으로 인정",
                  ("BUY_CONSECUTIVE_CONFIRM_COUNT", "BUY_CONFIRM_MAX_GAP_SECONDS", "BUY_CONFIRM_REQUIRE_SAME_BAR",
-                  "BUY_CONFIRM_MAX_PRICE_DRIFT_PCT", "POLL_INTERVAL_SECONDS"), _020_consecutive_poll_confirm),
-    BuyCondition(21, "_021_affordable_buy_qty", "PRE_ORDER", "매수 가능 수량",
-                 "예수금/1회 주문 한도로 1주 이상 살 수 있는가 (API: 계좌 조회)", ("MAX_ORDER_AMOUNT_KRW",), _021_affordable_buy_qty),
-    BuyCondition(22, "_022_fresh_live_price", "PRE_ORDER", "신선한 현재가",
-                 "현재가가 stale 캐시/봉 종가 대체값이 아닌가", ("LIVE_PRICE_STALE_TTL_SECONDS",), _022_fresh_live_price),
-    BuyCondition(23, "_023_orderbook_ask_not_thin", "PRE_ORDER", "호가 잔량 확인",
-                 "매도호가 총잔량 >= 매수호가 총잔량 x 0.5 (API: 호가 조회). 통과 시 매수 예약 상태로 남음", (), _023_orderbook_ask_not_thin),
+                  "BUY_CONFIRM_MAX_PRICE_DRIFT_PCT", "POLL_INTERVAL_SECONDS"), _021_consecutive_poll_confirm),
+    BuyCondition(22, "_022_affordable_buy_qty", "PRE_ORDER", "매수 가능 수량",
+                 "예수금/1회 주문 한도로 1주 이상 살 수 있는가 (API: 계좌 조회)", ("MAX_ORDER_AMOUNT_KRW",), _022_affordable_buy_qty),
+    BuyCondition(23, "_023_fresh_live_price", "PRE_ORDER", "신선한 현재가",
+                 "현재가가 stale 캐시/봉 종가 대체값이 아닌가", ("LIVE_PRICE_STALE_TTL_SECONDS",), _023_fresh_live_price),
+    BuyCondition(24, "_024_orderbook_ask_not_thin", "PRE_ORDER", "호가 잔량 확인",
+                 "매도호가 총잔량 >= 매수호가 총잔량 x 0.5 (API: 호가 조회). 통과 시 매수 예약 상태로 남음", (), _024_orderbook_ask_not_thin),
 )
 
 # r002에 3분 컨텍스트 게이트가 추가/삭제되면 위 번호 목록도 함께 고치도록 import 시점에 바로 실패시킨다.
