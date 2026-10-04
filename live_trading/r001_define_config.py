@@ -1,6 +1,40 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-04] type=feat owner=claude
+#     summary: 사용자 요청("data 폴더 전체 매매내역/감시 로그 기반 매수·매도·손절 조건 검토") - 실매매 188건
+#       (0818~1002, 승률 30%, 순손익 -52,118원)과 34거래일 1분봉 패널(전일 picks 기준, 약 2,500 종목-일)
+#       분석 결과 반영. (1) 신규 ENABLE_ANTI_CHASE_DAY_GATE: 당일 시가 대비 +8% 이상 또는 당일 VWAP 대비
+#       +3% 이상이면 신규 매수 차단 - 실매매 중 이 구간(+ 점심창) 39건이 승률 15%/평균 -0.68%로 손실의
+#       대부분, 패널 30분 후 수익률도 시가+8%↑ -0.42%, VWAP+3%↑ -0.29%(학습/검증 구간 모두 음수).
+#       (2) 신규 ENABLE_MIDDAY_NO_ENTRY: 11:30~13:00 신규 매수 금지(보유 종목 매도는 그대로) - 실매매
+#       11:30~13:00 진입 27건 승률 13%/-40,813원, 이 시간대 30분 평균 변동폭 ~0.55%로 왕복 비용(0.23%)
+#       대비 기대 이동폭이 작다.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (매수 빈도 감소. 롤백: 두 플래그 False)
+# - [2026-10-04] type=feat owner=claude
+#     summary: 사용자 요청("기대수익이 순이익이 되도록" -> 승인된 진행 순서) - (1) ENABLE_REGULAR_ENTRY_WINDOW
+#       (09:30~11:00에만 정규장 신규 매수, 기본 False - g003 A/B 확인 후 결정), (2) GAPDIP_MODE="shadow"
+#       갭하락 반등 후보 전략 관찰 로그(주문 없음). 실매매 체결 슬리피지는 매수 평균 0.00%, 매도 중앙값 0.04%로
+#       작아 비용의 대부분은 거래세 - 거래 수 감소/진입 질 개선이 핵심.
+#     impact: live (r003) - GAPDIP는 로그와 시세조회(종목당 하루 2회)만 추가
+#     compatibility: backward-compatible (ENTRY_WINDOW 기본 OFF, GAPDIP는 주문 없음. 롤백: GAPDIP_MODE="off")
+# - [2026-10-02] type=feat owner=claude
+#     summary: 사용자 요청(069540 빛과전자 20261002 재매수 미발생 분석 후 "재진입 설정 되도록 수정") -
+#       REENTRY_MODE "shadow" -> "live". 당일 봇이 매수/전량 청산한 종목이 매수 조건을 다시 모두 통과하면
+#       실제 재매수 주문을 낸다(종목당 REENTRY_MAX_PER_CODE=1회, HARD_STOP 종목은 계속 차단).
+#       참고: shadow 관찰 기간(0930~1002) [REENTRY SHADOW] 신호는 6건뿐이라 재진입 우위는 아직 미검증.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (당일 재매수 주문 발생. 롤백: REENTRY_MODE="shadow" 또는 "off")
+# - [2026-10-02] type=feat owner=claude
+#     summary: 사용자 요청(069540 빛과전자 20261002 13:13 재매수 미발생 분석 후 "호가 1틱의 폭에 따라 BB 상단
+#       여유 조건을 분리해서 적용") - 신규 BB_UPPER_GAP_MIN_PCT_BY_TICK 추가. 1틱이 현재가의 0.10% 이상인
+#       종목은 BB 상단 여유 최소치를 0.25% -> 0.20%로 완화(r002 _gate_bb_upper_gap_min). 저변동 구간에서
+#       중간선->상단 거리가 2틱 안팎이라 0.25% 조건이 돌파 순간 구조적으로 불충족되던 문제 대응.
+#       백테스트 미검증 값(탐색적) - 해당 사례도 ATR(0.2%<0.6%) 게이트가 함께 막고 있어 이 변경만으로는
+#       매수되지 않았음.
+#     impact: common (r003 실전/g003 백테스트 공용)
+#     compatibility: breaking (1틱 >= 0.10% 종목의 매수 빈도 소폭 증가. 롤백: BB_UPPER_GAP_MIN_PCT_BY_TICK=())
 # - [2026-09-29] type=feat owner=claude
 #     summary: 사용자 요청(20260929 매매 전건 손절 + 손절 후 반등 종목 재매수 불가 분석, "재진입 관찰 모드
 #       추가해서 주문 로직에 반영") - 신규 REENTRY_MODE("off"|"shadow"|"live", 기본 "shadow")와
@@ -668,6 +702,14 @@ LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1
 LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS = 0
 # 추격매수 방지: 전일 종가 대비 현재가 상승률이 임계치 이상이면 매수 차단
 MAX_BUY_RISE_PCT_FROM_PREV_CLOSE = 0.23  # 23%
+# [2026-10-04] 당일 과열(추격) 차단 - 진입 직전 KIS 현재가 시세(inquire_price)의 당일 시가(stck_oprc)와
+# 당일 가중평균가(wghn_avrg_stck_prc = VWAP) 기준. 34거래일 1분봉 분석: 1~30분 구간은 평균회귀가 우세해서
+# (10분 수익률/BB 위치/RSI/스토캐스틱 모두 30분 후 수익률과 음의 상관, 일별 t=-5~-9) 당일 이미 크게 오른
+# 종목을 돌파로 따라 사는 진입이 가장 큰 손실원이었다. 값 조회 실패 시에는 차단하지 않는다(fail-open, 로그 남김).
+# 정규장(KRX) 진입에만 적용 - NXT 세션의 시가/VWAP 의미는 연구 데이터(정규장)와 달라 검증 전까지 미적용.
+ENABLE_ANTI_CHASE_DAY_GATE = True
+ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT = 8.0   # 현재가/당일시가-1 >= 8% 이면 차단 (<=0 비활성)
+ANTI_CHASE_MAX_VWAP_GAP_PCT = 3.0         # 현재가/당일VWAP-1 >= 3% 이면 차단 (<=0 비활성)
 # 추격매수 방지: 실시간 BB 상향 크로스 없이(신호 없음) MA5/BB 후행 진입 시
 # 현재가가 BB 중심선 대비 과도하게 이격되면 매수 차단
 MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when price is within 0.2% of BB middle
@@ -727,6 +769,15 @@ BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분�
 # 3분봉 단독 경로(g003 비교 트래커)에는 영향 없음.
 ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK = True
 BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5->0.25)
+# [2026-10-02] 호가 1틱 폭(1틱/현재가 %)별 BB 상단 여유 최소치 분리 적용. (1틱% 하한, 상단 여유 최소 %)를
+# 1틱%가 큰 구간부터 나열 - 현재가의 1틱%가 하한 이상인 첫 구간 값을 쓰고, 어느 구간에도 안 걸리면
+# BB_UPPER_GAP_MIN_PCT. 근거: 069540 빛과전자 20261002 오후(4,265원, 1틱 5원=0.117%)는 BB 폭이 ~0.45%라
+# 중간선->상단 거리가 원래 ~0.23%였고, 중간선 돌파 시점엔 상단 여유 0.25%가 구조적으로 불가능했다.
+# 빈 튜플 ()이면 비활성(종전과 동일 - 롤백).
+BB_UPPER_GAP_MIN_PCT_BY_TICK = (
+    (0.10, 0.20),  # 1틱 >= 0.10% 가격대 (2,000~5,000 / 5,000~10,000 / 20,000~50,000 / 50,000~100,000 /
+                   # 200,000~500,000 / 500,000~1,000,000원) -> 0.20%
+)
 CANDLE_GAIN_MIN_PCT = -0.1       # 현재봉 양봉 최소 상승률 (%) - 미세 틱노이즈 허용 (0.1->0.0->-0.1)
 CANDLE_GAIN_MAX_PCT = 0.8        # 현재봉 최대 허용 상승률 (%) - 초과 시 추격 매수 차단
 BB_MID_CHASE_MAX_GAP_PCT = 0.35  # BB 중간선 대비 현재가 최대 허용 갭 (%) - 초과 시 추격 매수 차단 (1.0->0.7)
@@ -840,7 +891,7 @@ TRADE_COOLDOWN_MINUTES = 3
 #              입증되지 않아 기본값은 관찰 모드 - 5거래일 이상 로그를 모아 live 전환 여부를 판단한다.
 #   "live"   - 실제 재매수 주문. 종목당 REENTRY_MAX_PER_CODE회까지.
 # HARD_STOP 종목은 모드와 무관하게 기존 HARD_STOP_BLOCK_REENTRY_TODAY(_006)가 계속 차단한다.
-REENTRY_MODE = "shadow"
+REENTRY_MODE = "live"  # [2026-10-02] 사용자 요청으로 shadow -> live 전환 (롤백: "shadow" 또는 "off")
 REENTRY_MAX_PER_CODE = 1   # 종목당 당일 재진입(=두 번째 이후 매수) 최대 횟수 (live/shadow 공통 재편입 한도)
 # 한도는 '재진입 주문 시도' 기준(live: place_buy_order 접수 성공 시, shadow: 신호 1회 기록 시 소진) - 미체결
 # 취소로 끝난 재진입 주문도 1회로 센다(보수적). shadow는 가상 보유를 추적하지 않아 첫 재진입 신호 1회만 기록한다.
@@ -1091,6 +1142,34 @@ REGULAR_START = dt_time(9, 0)
 REGULAR_END = dt_time(15, 30)
 # 신규 진입 허용 종료 시각(정규장)
 REGULAR_NEW_ENTRY_CUTOFF = dt_time(15, 20)
+# [2026-10-04] 정규장 점심 구간 신규 매수 금지(보유 종목 청산/매도 판단은 그대로 수행). 근거는 Update log
+# 2026-10-04 참조 - 이 구간은 30분 평균 변동폭이 작아(~0.55%) 수수료+세금(왕복 약 0.23%)을 넘기 어렵다.
+ENABLE_MIDDAY_NO_ENTRY = True
+MIDDAY_NO_ENTRY_START = dt_time(11, 30)
+MIDDAY_NO_ENTRY_END = dt_time(13, 0)      # 이 시각부터 다시 허용 (START <= t < END 차단)
+# [2026-10-04] 정규장 신규 진입 허용 시간창(START <= t < END 에서만 신규 매수, 보유 종목 매도는 무관).
+# 근거(실매매 188건, 비용 0.23% 포함): 추격차단 통과분 중 09:30~11:00 진입 74건 비용전 +0.12%/순 -0.11%,
+# 11:00 이후 52건 순 -0.57%(15일 중 이익일 0), 09:00~09:30 38건 순 -0.38%. 거래 수 자체가 비용(건당 0.23%)
+# 이라 근거 없는 시간대 진입을 줄이는 목적. 1분봉 전체 패널에서는 시간대 효과가 이만큼 뚜렷하지 않아 g003
+# A/B 확인 전까지 기본 False (사용자 승인 2026-10-04: A/B 변형으로 검증 후 반영).
+ENABLE_REGULAR_ENTRY_WINDOW = False
+REGULAR_ENTRY_WINDOW_START = dt_time(9, 30)
+REGULAR_ENTRY_WINDOW_END = dt_time(11, 0)
+# [2026-10-04] 갭하락 반등(GAPDIP) 후보 전략 - 관찰(shadow) 전용, 실제 주문 없음. 34거래일 1분봉 분석에서 유일하게
+# 비용 차감 후 플러스였던 진입(전일종가 대비 시가 갭 <= -1% 이고 09:05~09:45 사이 현재가가 당일 시가 대비
+# -1% 이하로 밀린 종목을 종목당 하루 1회 매수, +2% 익절 / -2% 손절 / 15:19 청산 -> 369건 순 +0.19%/건, 승률 59%)
+# 이지만 상위 3일을 빼면 +0.01%로 불안정해 실주문 전에 실시간 로그로 표본을 쌓는다([GAPDIP SHADOW] ENTRY/EXIT).
+# "off" | "shadow" (live 경로는 아직 없음 - 검증 후 별도 구현)
+GAPDIP_MODE = "shadow"
+GAPDIP_GAP_MAX_PCT = -1.0          # 시가/전일종가-1 <= 이 값(%)인 종목만
+GAPDIP_DAY_RET_MAX_PCT = -1.0      # 현재가/당일시가-1 <= 이 값(%)이면 진입
+GAPDIP_WINDOW_START = dt_time(9, 5)
+GAPDIP_WINDOW_END = dt_time(9, 45)  # START <= t < END 에서만 진입 판정
+GAPDIP_TP_PCT = 2.0
+GAPDIP_SL_PCT = 2.0
+GAPDIP_EXIT_TIME = dt_time(15, 19)  # 미청산 시 이 시각 이후 첫 틱에 종가 청산으로 기록
+GAPDIP_COST_PCT = 0.23              # 로그용 왕복 비용 가정(거래세 0.20% + 수수료)
+# (Codex 1차 검토: 근거 구간은 11:30~13:00뿐이라 13:30까지 넓힐 근거 없음 -> 13:00)
 # 강제 청산 시작 시각(정규장)
 REGULAR_FORCE_EXIT = dt_time(15, 20)
 AFTERNOON_NXT_START = dt_time(15, 30)

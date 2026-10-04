@@ -16,6 +16,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-04] type=feat owner=claude
+    summary: r001/r002/r003/r005 Update log 2026-10-04 parity - (1) is_new_entry_allowed에 점심 구간 신규 매수
+      금지(r002 is_midday_no_entry_time) 반영, (2) 신규 매수 직전에 r002 anti_chase_day_gate(당일 시가/VWAP
+      대비 과열 차단) 적용. 실전은 KIS 현재가 시세(stck_oprc/wghn_avrg_stck_prc)를 쓰고 g003은 당일 09:00
+      이후 1분봉(10초 파일의 :00 행 = 실제 1분봉, 종료시각 라벨)으로 시가와 close x volume VWAP을 근사한다.
+    impact: sim (live parity)
+    compatibility: breaking (매수 빈도 감소. 롤백: r001 ENABLE_MIDDAY_NO_ENTRY/ENABLE_ANTI_CHASE_DAY_GATE=False)
 - [2026-09-29] type=fix owner=claude
     summary: r003 REENTRY_MODE parity - 종전 g003은 매도 후 TRADE_COOLDOWN_MINUTES만 지나면 같은 종목을
       무제한 재매수해 실전(졸업 종목 당일 재평가 없음)보다 과대 매매했다. 이제 당일 이미 매수했던 종목의
@@ -401,6 +408,8 @@ from r001_define_config import (
 )
 from r002_strategy_core_shared import (
     R76StrategyConfig,
+    anti_chase_day_gate,
+    is_regular_new_entry_blocked_time,
     calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
     check_sell_condition as shared_check_sell_condition,
@@ -896,13 +905,45 @@ def can_trade_code_now(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     return False
 
 
+def _build_day_ref_frame(raw_df: pd.DataFrame) -> pd.DataFrame | None:
+    """정규장 실제 1분봉(10초 파일의 :00 행, 분 시작 라벨)을 종료시각 라벨로 바꿔 시가/누적 VWAP 열을 만든다."""
+    try:
+        m = raw_df[(raw_df.index.second == 0)]
+        m = m[(m.index.time >= REGULAR_START) & (m.index.time < REGULAR_END)]
+        if m.empty:
+            return None
+        out = pd.DataFrame(index=m.index + pd.Timedelta(minutes=1))
+        vol = pd.to_numeric(m["volume"], errors="coerce").fillna(0.0).to_numpy()
+        close = pd.to_numeric(m["close"], errors="coerce").to_numpy()
+        out["day_open"] = float(m["open"].iloc[0])
+        cum_v = vol.cumsum()
+        cum_pv = (close * vol).cumsum()
+        out["vwap"] = [pv / v if v > 0 else float("nan") for pv, v in zip(cum_pv, cum_v)]
+        return out
+    except Exception:
+        return None
+
+
+def _day_refs_at(ref: pd.DataFrame | None, ts: pd.Timestamp) -> tuple[float | None, float | None]:
+    """ts 시점까지 확정된 1분봉 기준 (당일 시가, VWAP). 없으면 None (게이트 fail-open)."""
+    if ref is None or ref.empty:
+        return None, None
+    pos = ref.index.searchsorted(ts, side="right")
+    if pos <= 0:
+        return None, None
+    row = ref.iloc[pos - 1]
+    vwap = float(row["vwap"])
+    return float(row["day_open"]), (vwap if vwap == vwap and vwap > 0 else None)
+
+
 def is_new_entry_allowed(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     """NXT 가능여부에 따라 매수 허용 시간 결정.
     - 정규장(09:00-15:20): 모든 종목
     - NXT 시간(08:00-08:50, 15:30-19:59): NXT 가능 종목만
     """
     if is_regular_session(ts):
-        return ts.time() < REGULAR_NEW_ENTRY_CUTOFF
+        # [2026-10-04] r003 parity: 점심 구간/진입 허용창 밖 신규 매수 금지
+        return ts.time() < REGULAR_NEW_ENTRY_CUTOFF and not is_regular_new_entry_blocked_time(ts.time())
     if not ENABLE_NXT_SESSION:
         return False
     current_time = ts.time()
@@ -2178,6 +2219,7 @@ def simulate_date(
     frames: dict[str, pd.DataFrame] = {}
     frames_1min: dict[str, pd.DataFrame] = {}
     price_frames: dict[str, pd.DataFrame] = {}
+    day_ref_frames: dict[str, pd.DataFrame | None] = {}
     # [2026-09-13][실험 A] 진짜 원본(비-ffill) 10초 OHLC 프레임 - price_frames[code]는
     # simulate_10s_grid=True(기본값)일 때 upsample_price_frame_to_10s()로 ffill되어
     # 갭 구간의 low/high가 close와 동일값으로 중복되므로, 체결 지연 프록시가 필요로 하는
@@ -2213,6 +2255,8 @@ def simulate_date(
             frame_1min = calculate_indicators(strategy_df_1min)
             if frame_1min is not None and not frame_1min.empty:
                 frames_1min[code] = frame_1min
+        # [2026-10-04] r005 _019_anti_chase_day_extension parity: 당일 시가/VWAP 근사용 정규장 1분봉.
+        day_ref_frames[code] = _build_day_ref_frame(raw_df)
         # r006 parity: evaluate live condition every 10s even if source file cadence is 20s/1m.
         exec_sim_raw_frames[code] = raw_df
         if simulate_10s_grid:
@@ -3036,6 +3080,19 @@ def simulate_date(
             if sim.in_cooldown(code, ts):
                 continue
             if signal_buy_bar.get(code) == ts:
+                continue
+            # [2026-10-04] r005 _019_anti_chase_day_extension parity (당일 시가/VWAP 대비 과열 차단)
+            # 정규장 진입에만 적용(r005 _019와 동일 - NXT 세션은 미적용)
+            if classify_buy_session(ts) == "regular":
+                _day_open, _day_vwap = _day_refs_at(day_ref_frames.get(code), ts)
+                _ac_ok, _ac_reason = anti_chase_day_gate(price, _day_open, _day_vwap)
+            else:
+                _day_open, _day_vwap, _ac_ok, _ac_reason = None, None, True, None
+            if not _ac_ok:
+                log_detail(
+                    f"  [ENTRY BLOCK] {code} | {_ac_reason} | open={_day_open or float('nan'):,.0f} "
+                    f"vwap={_day_vwap or float('nan'):,.1f} price={price:,.0f}"
+                )
                 continue
 
             # 하이브리드 매수 경로(r003과 동일 - r001/r002 Update log 2026-08-28 참조) - 유일한 신규 매수

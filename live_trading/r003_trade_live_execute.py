@@ -20,6 +20,21 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-04] type=feat owner=claude
+    summary: 사용자 요청(전체 매매내역/감시 로그 기반 조건 재검토) - (1) is_new_entry_allowed가 정규장
+      점심 구간(r002 is_midday_no_entry_time, r001 ENABLE_MIDDAY_NO_ENTRY 11:30~13:00)에 False를 돌려
+      신규 매수만 막는다(매도/청산 로직은 이 함수를 쓰지 않음). (2) 신규 fetch_day_ref_prices()
+      (KRX inquire_price의 stck_oprc/wghn_avrg_stck_prc, 읽기 전용, 15초 캐시)를 BuyServices.fetch_day_ref_prices로 주입 -
+      r005 _019_anti_chase_day_extension이 사용. r001 Update log 2026-10-04 참조.
+    impact: live (r003)
+    compatibility: breaking (매수 빈도 감소. 롤백: r001 ENABLE_MIDDAY_NO_ENTRY/ENABLE_ANTI_CHASE_DAY_GATE=False)
+- [2026-10-04] type=feat owner=claude
+    summary: 갭하락 반등 관찰 모드(r001 GAPDIP_MODE="shadow") - run_gapdip_shadow()가 r002 gapdip_shadow_step으로
+      종목당 1회 가상 진입/청산을 [GAPDIP SHADOW] ENTRY/EXIT 로그(buy_sell 로그 포함)로 남긴다. 주문 없음.
+      상태는 live_state["gapdip_shadow"]로 저장/복원, 감시목록에서 빠진 가상 보유 종목도 청산까지 시세 추적.
+      정규장 신규 진입 허용창(r001 ENABLE_REGULAR_ENTRY_WINDOW, 기본 OFF)은 is_new_entry_allowed에서 처리.
+    impact: live (r003) - 로그/읽기 전용 시세조회만 추가
+    compatibility: backward-compatible (롤백: GAPDIP_MODE="off")
 - [2026-09-29] type=feat owner=claude
     summary: 사용자 요청(20260929 전건 손절 후 반등 종목 재매수 불가 분석 - HPSP 매도 후 +8% 등) + Codex 1차
       검토 반영 - 당일 청산 종목 재진입(REENTRY_MODE) 배선. _rebalance_active_watchlist가 졸업(GRADUATE) 종목을
@@ -682,6 +697,10 @@ from r001_define_config import (
     TRADE_COOLDOWN_MINUTES,
     REENTRY_MODE,
     REENTRY_MAX_PER_CODE,
+    GAPDIP_COST_PCT,
+    GAPDIP_MODE,
+    GAPDIP_WINDOW_END,
+    GAPDIP_WINDOW_START,
     TRAILING_STOP_FROM_PEAK,
     AUX_SELL_MIN_REALIZED_TARGET_PCT,
     AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT,
@@ -724,6 +743,8 @@ from r001_define_config import (
 )
 from r002_strategy_core_shared import (
     R76StrategyConfig,
+    is_regular_new_entry_blocked_time,
+    gapdip_shadow_step,
     calculate_indicators,
     check_sell_condition as shared_check_sell_condition,
     update_live_price_cross_state as shared_update_live_price_cross_state,
@@ -1593,7 +1614,9 @@ def can_trade_code_now(now: datetime, nxt_tradeable: bool) -> bool:
 
 def is_new_entry_allowed(now: datetime, nxt_tradeable: bool) -> bool:
     if is_regular_session(now):
-        return now.time() < REGULAR_NEW_ENTRY_CUTOFF
+        # [2026-10-04] 점심 구간/진입 허용창 밖 신규 매수 금지(r001 ENABLE_MIDDAY_NO_ENTRY,
+        # ENABLE_REGULAR_ENTRY_WINDOW) - 보유 종목 매도는 영향 없음
+        return now.time() < REGULAR_NEW_ENTRY_CUTOFF and not is_regular_new_entry_blocked_time(now.time())
     if not ENABLE_NXT_SESSION or not nxt_tradeable or not is_nxt_session(now):
         return False
     current_time = now.time()
@@ -1848,6 +1871,88 @@ def fetch_prev_close(code: str, now: datetime, nxt_tradeable: bool) -> float | N
                 return value
 
     return None
+
+
+def run_gapdip_shadow(
+    code: str, name: str, now: datetime, price: float, nxt_tradeable: bool, gapdip_state: dict,
+) -> None:
+    """[2026-10-04] 갭하락 반등 관찰(GAPDIP_MODE="shadow") - 주문 없이 가상 진입/청산만 로그로 남긴다.
+    전일종가/당일시가는 진입 판정 시간창 안에서 종목당 최대 3회까지만 조회(성공하면 이후 조회 없음)."""
+    st = gapdip_state.setdefault(code, {"status": "pending"})
+    t = now.time()
+    if (
+        st.get("status") == "pending"
+        and GAPDIP_WINDOW_START <= t < GAPDIP_WINDOW_END
+        and (not st.get("prev_close") or not st.get("day_open"))
+        and int(st.get("ref_tries", 0) or 0) < 3
+    ):
+        st["ref_tries"] = int(st.get("ref_tries", 0) or 0) + 1
+        try:
+            st["prev_close"] = fetch_prev_close(code, now, nxt_tradeable)
+            st["day_open"] = fetch_day_ref_prices(code, now, nxt_tradeable)[0]
+        except Exception as exc:
+            log(f"  [GAPDIP SHADOW] {code} ref fetch failed: {exc}")
+    event = gapdip_shadow_step(st, t, float(price))
+    if event == "ENTRY":
+        gap = (st["day_open"] / st["prev_close"] - 1.0) * 100.0
+        dret = (st["entry"] / st["day_open"] - 1.0) * 100.0
+        msg = (
+            f"[GAPDIP SHADOW] ENTRY {code}({name}) | price={st['entry']:,.0f} gap={gap:.2f}% "
+            f"day_ret={dret:.2f}% open={st['day_open']:,.0f} prev_close={st['prev_close']:,.0f} (주문 없음)"
+        )
+        log(f"  {msg}")
+        log_trade(msg)
+    elif event == "EXIT":
+        gross = (st["exit"] / st["entry"] - 1.0) * 100.0
+        msg = (
+            f"[GAPDIP SHADOW] EXIT {code}({name}) | reason={st['exit_reason']} entry={st['entry']:,.0f}@{st['entry_t']} "
+            f"exit={st['exit']:,.0f}@{st['exit_t']} gross={gross:+.2f}% net={gross - GAPDIP_COST_PCT:+.2f}% (주문 없음)"
+        )
+        log(f"  {msg}")
+        log_trade(msg)
+
+
+_DAY_REF_CACHE: dict[str, tuple[datetime, float | None, float | None]] = {}
+DAY_REF_CACHE_TTL_SECONDS = 15.0  # 연속 확인 폴링(_021)마다 시세를 다시 조회하지 않도록 짧게 재사용
+
+
+def fetch_day_ref_prices(code: str, now: datetime, nxt_tradeable: bool) -> tuple[float | None, float | None]:
+    """정규장 당일 시가(stck_oprc)와 당일 가중평균가(wghn_avrg_stck_prc = VWAP)를 KRX 현재가 시세에서 읽는다
+    (읽기 전용). r005 _019_anti_chase_day_extension 전용 - 정규장에서만 호출된다. 두 값이 모두 있는 첫 응답을
+    쓰고, 없으면 가장 많이 채워진 응답을 쓴다. 실패/0이면 해당 값은 None (게이트는 fail-open)."""
+    cached = _DAY_REF_CACHE.get(code)
+    if cached is not None and 0 <= (now - cached[0]).total_seconds() < DAY_REF_CACHE_TTL_SECONDS:
+        return cached[1], cached[2]
+
+    best: tuple[float | None, float | None] = (None, None)
+    for market_div in ("J", "UN"):
+        try:
+            quote_df = dsf.inquire_price(
+                env_dv=KIS_ENV_DV,
+                fid_cond_mrkt_div_code=market_div,
+                fid_input_iscd=code,
+            )
+        except Exception:
+            continue
+
+        if quote_df is None or quote_df.empty:
+            continue
+
+        row = quote_df.iloc[-1]
+        values: list[float | None] = []
+        for key in ("stck_oprc", "wghn_avrg_stck_prc"):
+            try:
+                value = float(row.get(key))
+            except (TypeError, ValueError):
+                value = None
+            values.append(value if value is not None and value > 0 and value == value else None)
+        if sum(v is not None for v in values) > sum(v is not None for v in best):
+            best = (values[0], values[1])
+        if all(v is not None for v in values):
+            break
+
+    _DAY_REF_CACHE[code] = (now, best[0], best[1])
+    return best
 
 
 def should_refresh_3min_frame(
@@ -2268,7 +2373,19 @@ def _serialize_live_state(live_state: dict) -> dict:
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded,
-            "reentry": _serialize_reentry_state(live_state.get("reentry"))}
+            "reentry": _serialize_reentry_state(live_state.get("reentry")),
+            "gapdip_shadow": _serialize_gapdip_state(live_state.get("gapdip_shadow"))}
+
+
+def _serialize_gapdip_state(raw) -> dict:
+    """[2026-10-04] GAPDIP 관찰 상태(종목별 status/기준가/가상 진입·청산)를 JSON 안전 형태로 - 재시작 후에도
+    당일 가상 포지션 추적과 종목당 1회 진입이 이어지도록 live_state에 저장한다."""
+    out: dict[str, dict] = {}
+    keys = ("status", "prev_close", "day_open", "entry", "entry_t", "exit", "exit_t", "exit_reason", "ref_tries")
+    for code, st in (raw or {}).items():
+        if isinstance(st, dict):
+            out[str(code).zfill(6)] = {k: st.get(k) for k in keys if st.get(k) is not None}
+    return out
 
 
 def _serialize_reentry_state(raw) -> dict:
@@ -2292,12 +2409,12 @@ def _serialize_reentry_state(raw) -> dict:
 def load_live_state(date_str: str) -> dict:
     path = _live_state_path(date_str)
     if not path.exists():
-        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}, "gapdip_shadow": {}}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         log(f"WARNING: live state load failed ({path}): {exc}")
-        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}, "gapdip_shadow": {}}
 
     positions_meta: dict[str, dict] = {}
     for code, meta in (raw.get("positions_meta") or {}).items():
@@ -2332,7 +2449,8 @@ def load_live_state(date_str: str) -> dict:
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded,
-            "reentry": _serialize_reentry_state(raw.get("reentry"))}
+            "reentry": _serialize_reentry_state(raw.get("reentry")),
+            "gapdip_shadow": _serialize_gapdip_state(raw.get("gapdip_shadow"))}
 
 
 def save_live_state(live_state: dict, date_str: str | None = None) -> None:
@@ -4246,6 +4364,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     # [2026-09-29] 졸업/재편입/재진입 사용횟수 (REENTRY_MODE) - live_state["reentry"]를 그대로 참조해 주기
     # 저장(persist_live_state)에 함께 실리고 재시작 시 복원된다.
     reentry_state: dict[str, dict] = api.live_state.setdefault("reentry", {})
+    # [2026-10-04] 갭하락 반등 관찰 상태 (GAPDIP_MODE="shadow", 주문 없음) - live_state로 저장/복원
+    gapdip_state: dict[str, dict] = api.live_state.setdefault("gapdip_shadow", {})
     # 재시작 복원: 이미 졸업(봇 매수)했던 종목은 최초 active_set에서 빼서 재편입 경로(REENTRY_MODE/한도)를 거치게
     # 한다 - 안 빼면 일반 후보로 평가돼 shadow/한도를 우회한 실제 재매수가 나갈 수 있다(Codex 1차 검토 HIGH).
     for _rc, _rst in reentry_state.items():
@@ -4308,6 +4428,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         ),
         fetch_prev_close=fetch_prev_close,
         rise_from_prev_close=_rise_from_prev_close,
+        fetch_day_ref_prices=fetch_day_ref_prices,
         is_stale_live_price_source=_is_stale_live_price_source,
         classify_buy_session=classify_buy_session,
         get_order_spec=get_order_spec,
@@ -4419,6 +4540,15 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             }
             iter_codes = sorted(active_set | position_codes)
 
+            # [2026-10-04] GAPDIP 관찰: 감시 목록에서 빠진 종목의 가상 포지션도 청산까지 추적
+            if GAPDIP_MODE == "shadow" and is_regular_session(current_dt):
+                for _gc, _gst in list(gapdip_state.items()):
+                    if _gst.get("status") == "open" and _gc not in iter_codes:
+                        _gp = fetch_live_price(_gc, current_dt, nxt_map.get(_gc, False))
+                        if _gp is not None and _gp > 0:
+                            run_gapdip_shadow(_gc, watch_map.get(_gc) or _gc, current_dt, float(_gp),
+                                              nxt_map.get(_gc, False), gapdip_state)
+
             for code in iter_codes:
                 name = watch_map.get(code) or _SYMBOL_NAME_MAP.get(code) or code
                 nxt_tradeable = nxt_map.get(code, False)
@@ -4495,6 +4625,18 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         price = float(cur["close"])
                         age_text = f"{cache_age_sec:.0f}s" if cache_age_sec is not None else "unknown"
                         price_source = f"bar_close(stale_live={age_text})"
+
+                # [2026-10-04] 갭하락 반등 관찰(주문 없음) - 실시간가(캐시 포함)일 때만 판정
+                if (
+                    GAPDIP_MODE == "shadow"
+                    and is_regular_session(current_dt)
+                    and price_source in ("live", "cached_live")
+                    and price is not None and price > 0
+                ):
+                    try:
+                        run_gapdip_shadow(code, name, current_dt, float(price), nxt_tradeable, gapdip_state)
+                    except Exception as exc:
+                        log(f"  [GAPDIP SHADOW] {symbol_label} error: {exc}")
 
                 buy_frame = frame
                 if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:
@@ -4598,7 +4740,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         risk=risk, services=buy_services,
                     )
                     if check_buy_conditions(buy_ctx).approved:
-                        # 모든 조건 통과 - _023이 traded_today/signal_buy_bar를 '예약'해 둔 상태다.
+                        # 모든 조건 통과 - _024가 traded_today/signal_buy_bar를 '예약'해 둔 상태다.
                         buy_reason, prev_bar, qty = buy_ctx.buy_reason, buy_ctx.prev_bar, buy_ctx.qty
                         session, buy_detail, norm_code = buy_ctx.session, buy_ctx.buy_detail, buy_ctx.norm_code
                         _re_st = reentry_state.get(code)
@@ -4607,7 +4749,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             # [2026-09-29] 관찰 모드: 주문 없이 '재매수했을 신호'만 기록한다. 가상 보유/청산을
                             # 추적하지 않으므로 종목당 첫 재진입 신호 1회만 기록하고 한도를 소진시킨다(Codex 1차
                             # 검토 E-1: 한도>=2에서 같은 상승구간 반복 신호를 별개 재진입으로 세는 문제 방지).
-                            # _023이 걸어 둔 traded_today 예약은 실제 주문이 없으니 되돌린다(전량 매도 시 이미
+                            # _024가 걸어 둔 traded_today 예약은 실제 주문이 없으니 되돌린다(전량 매도 시 이미
                             # 지워졌던 상태로 복귀).
                             _re_st["used"] = max(int(_re_st.get("used", 0)) + 1, REENTRY_MAX_PER_CODE)
                             traded_today.discard(norm_code)

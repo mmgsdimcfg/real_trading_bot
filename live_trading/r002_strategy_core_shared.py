@@ -18,6 +18,21 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-04] type=feat owner=claude
+    summary: 사용자 요청(전체 매매내역/감시 로그 기반 조건 재검토) - 신규 공용 헬퍼 is_midday_no_entry_time()
+      (r001 ENABLE_MIDDAY_NO_ENTRY, 11:30~13:00 신규매수 금지) + is_regular_new_entry_blocked_time()
+      (점심 + r001 ENABLE_REGULAR_ENTRY_WINDOW 09:30~11:00 진입창, 기본 OFF)와 anti_chase_day_gate()(r001
+      ENABLE_ANTI_CHASE_DAY_GATE, 당일 시가 +8%/VWAP +3% 이상 신규매수 차단). r003 is_new_entry_allowed /
+      r005 _019_anti_chase_day_extension과 g003이 같은 함수를 쓴다. 근거 수치는 r001 Update log 2026-10-04.
+    impact: common (r003 실전/g003 백테스트 공용)
+    compatibility: breaking (매수 빈도 감소. 롤백: r001 두 플래그 False)
+- [2026-10-02] type=feat owner=claude
+    summary: 사용자 요청(069540 빛과전자 20261002 재매수 미발생 분석) - _gate_bb_upper_gap_min이 호가 1틱
+      폭(krx_tick_size/현재가)에 따라 BB_UPPER_GAP_MIN_PCT_BY_TICK 구간별 최소치를 쓰도록 변경(r001 참조).
+      반려 사유 표기를 BB_UPPER_GAP_TOO_SMALL_{gap:.2f}%_LT_{min:.2f}%_TICK_{tick:.2f}%로 변경 - 기존 기준값
+      :.1f 표기로 0.25가 "0.2"로 찍혀 "0.25%_LT_0.2%" 같은 모순처럼 보이던 문제 수정(판정 자체는 정상이었음).
+    impact: common (r003 실전/g003 백테스트 공용 - g003은 run_3min_context_pipeline으로 이 게이트를 공유)
+    compatibility: breaking (1틱 >= 0.10% 종목 매수 소폭 완화. 롤백: r001 BB_UPPER_GAP_MIN_PCT_BY_TICK=())
 - [2026-09-23] type=fix owner=claude
     summary: 사용자 요청(204620 글로벌텍스프리 2026-09-23 09:33 매도 지연 사례 - "매수/매도 컨셉 재검토" 전체
       분석 중 재발견 + Codex 검토) - check_sell_condition()의 price_cross_down 분기에서 즉시손절
@@ -394,6 +409,22 @@ from typing import Callable
 import pandas as pd
 from r001_define_config import (
     ADX_PERIOD,
+    ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT,
+    ANTI_CHASE_MAX_VWAP_GAP_PCT,
+    ENABLE_ANTI_CHASE_DAY_GATE,
+    ENABLE_MIDDAY_NO_ENTRY,
+    ENABLE_REGULAR_ENTRY_WINDOW,
+    GAPDIP_DAY_RET_MAX_PCT,
+    GAPDIP_EXIT_TIME,
+    GAPDIP_GAP_MAX_PCT,
+    GAPDIP_SL_PCT,
+    GAPDIP_TP_PCT,
+    GAPDIP_WINDOW_END,
+    GAPDIP_WINDOW_START,
+    REGULAR_ENTRY_WINDOW_END,
+    REGULAR_ENTRY_WINDOW_START,
+    MIDDAY_NO_ENTRY_END,
+    MIDDAY_NO_ENTRY_START,
     ATR_PERIOD,
     BB_PERIOD,
     BB_STD_MULTIPLIER,
@@ -405,6 +436,7 @@ from r001_define_config import (
     UPTREND_CONT_CHASE_RSI_MAX,
     UPTREND_CONT_SLOPE_MIN_PCT,
     BB_UPPER_GAP_MIN_PCT,
+    BB_UPPER_GAP_MIN_PCT_BY_TICK,
     CANDLE_GAIN_MAX_PCT,
     CANDLE_GAIN_MIN_PCT,
     MIN_ENTRY_VOL_MA,
@@ -1327,13 +1359,43 @@ def _gate_candle_bullish_and_chase_guard(ctx: BuyEvalContext) -> tuple[bool, Buy
     return True, ctx, None
 
 
+def krx_tick_size(price: float) -> int:
+    # KRX 호가가격단위 (2023-01-25 개편, 코스피/코스닥 공통).
+    if price < 2_000:
+        return 1
+    if price < 5_000:
+        return 5
+    if price < 20_000:
+        return 10
+    if price < 50_000:
+        return 50
+    if price < 200_000:
+        return 100
+    if price < 500_000:
+        return 500
+    return 1_000
+
+
+def bb_upper_gap_min_pct_for_price(price: float) -> tuple[float, float]:
+    # 현재가의 1틱 폭(%)에 맞는 BB 상단 여유 최소치(%)와 1틱%를 돌려준다
+    # (BB_UPPER_GAP_MIN_PCT_BY_TICK 구간, 미해당 시 BB_UPPER_GAP_MIN_PCT).
+    tick_pct = krx_tick_size(price) / price * 100.0 if price > 0 else 0.0
+    for tick_pct_floor, gap_min_pct in BB_UPPER_GAP_MIN_PCT_BY_TICK:
+        if tick_pct >= tick_pct_floor:
+            return gap_min_pct, tick_pct
+    return BB_UPPER_GAP_MIN_PCT, tick_pct
+
+
 def _gate_bb_upper_gap_min(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
     live_price, cur_bb_upper = ctx.live_price, ctx.cur_bb_upper
     if live_price <= 0:
         return False, ctx, "LIVE_PRICE_INVALID"
     bb_upper_gap_pct = (cur_bb_upper - live_price) / live_price * 100.0
-    if bb_upper_gap_pct < BB_UPPER_GAP_MIN_PCT:
-        return False, ctx, f"BB_UPPER_GAP_TOO_SMALL_{bb_upper_gap_pct:.2f}%_LT_{BB_UPPER_GAP_MIN_PCT:.1f}%"
+    gap_min_pct, tick_pct = bb_upper_gap_min_pct_for_price(live_price)
+    if bb_upper_gap_pct < gap_min_pct:
+        return False, ctx, (
+            f"BB_UPPER_GAP_TOO_SMALL_{bb_upper_gap_pct:.2f}%_LT_{gap_min_pct:.2f}%_TICK_{tick_pct:.2f}%"
+        )
     return True, ctx, None
 
 
@@ -1485,8 +1547,8 @@ BUY_GATE_CONDITIONS: list[BuyGateCondition] = [
     ),
     BuyGateCondition(
         "bb_upper_gap_min",
-        "BB 상단까지 충분한 공간 확보",
-        ("BB_UPPER_GAP_MIN_PCT",),
+        "BB 상단까지 충분한 공간 확보 (호가 1틱 폭별 최소치 분리)",
+        ("BB_UPPER_GAP_MIN_PCT", "BB_UPPER_GAP_MIN_PCT_BY_TICK"),
         _gate_bb_upper_gap_min,
     ),
     BuyGateCondition(
@@ -1861,6 +1923,93 @@ def check_1min_dead_cross(
             return True, "1MIN_BB_MID_DEAD_CROSS_LOOKBACK", lb - 2
 
     return False, "1MIN_NO_BB_MID_DEAD_CROSS", 0
+
+
+def is_midday_no_entry_time(t) -> bool:
+    """정규장 점심 구간(MIDDAY_NO_ENTRY_START <= t < MIDDAY_NO_ENTRY_END)이면 True - 신규 매수만 막는다."""
+    if not ENABLE_MIDDAY_NO_ENTRY:
+        return False
+    return MIDDAY_NO_ENTRY_START <= t < MIDDAY_NO_ENTRY_END
+
+
+def is_regular_new_entry_blocked_time(t) -> bool:
+    """정규장 신규 매수 시간 제한: 점심 구간(is_midday_no_entry_time) 또는 ENABLE_REGULAR_ENTRY_WINDOW일 때
+    허용 창(REGULAR_ENTRY_WINDOW_START <= t < END) 밖이면 True. 매도/청산 판단에는 쓰지 않는다."""
+    if is_midday_no_entry_time(t):
+        return True
+    if ENABLE_REGULAR_ENTRY_WINDOW and not (REGULAR_ENTRY_WINDOW_START <= t < REGULAR_ENTRY_WINDOW_END):
+        return True
+    return False
+
+
+def gapdip_shadow_step(st: dict, now_t, price: float) -> str | None:
+    """[2026-10-04] 갭하락 반등(GAPDIP) 관찰 상태머신 1스텝 (주문 없음, 순수 함수 - st를 직접 갱신).
+
+    st: {"status": "pending"|"skip"|"open"|"closed", "prev_close", "day_open", "entry", "entry_t",
+         "exit", "exit_t", "exit_reason"} - 호출자가 prev_close/day_open을 채운다(없으면 판정 보류).
+    반환: "ENTRY" / "EXIT" 이벤트가 생기면 그 이름, 아니면 None.
+    규칙(r001 GAPDIP_*): 시가갭 <= GAP_MAX 이고 WINDOW 안에서 현재가/시가-1 <= DAY_RET_MAX 이면 종목당 1회 진입,
+    이후 +TP / -SL / EXIT_TIME 중 먼저 오는 것으로 청산."""
+    status = st.get("status", "pending")
+    if price is None or not (price > 0):
+        return None
+    if status == "open":
+        entry = float(st["entry"])
+        pnl_pct = (price / entry - 1.0) * 100.0
+        reason = None
+        if pnl_pct >= GAPDIP_TP_PCT:
+            reason = "TP"
+        elif pnl_pct <= -GAPDIP_SL_PCT:
+            reason = "SL"
+        elif now_t >= GAPDIP_EXIT_TIME:
+            reason = "EOD"
+        if reason is None:
+            return None
+        st.update(status="closed", exit=float(price), exit_t=now_t.strftime("%H:%M:%S"), exit_reason=reason)
+        return "EXIT"
+    if status != "pending":
+        return None
+    if now_t < GAPDIP_WINDOW_START:
+        return None
+    if now_t >= GAPDIP_WINDOW_END:
+        st["status"] = "skip"
+        return None
+    prev_close, day_open = st.get("prev_close"), st.get("day_open")
+    if not prev_close or not day_open or prev_close <= 0 or day_open <= 0:
+        return None
+    gap_pct = (day_open / prev_close - 1.0) * 100.0
+    if gap_pct > GAPDIP_GAP_MAX_PCT:
+        st["status"] = "skip"
+        return None
+    if (price / day_open - 1.0) * 100.0 <= GAPDIP_DAY_RET_MAX_PCT:
+        st.update(status="open", entry=float(price), entry_t=now_t.strftime("%H:%M:%S"))
+        return "ENTRY"
+    return None
+
+
+def anti_chase_day_gate(
+    price: float, day_open: float | None, day_vwap: float | None,
+) -> tuple[bool, str | None]:
+    """당일 과열(추격) 차단. (통과 여부, 차단 사유)를 돌려준다.
+
+    현재가가 당일 시가 대비 ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT% 이상, 또는 당일 VWAP 대비
+    ANTI_CHASE_MAX_VWAP_GAP_PCT% 이상이면 차단. 기준값이 없거나(<=0, None) 임계값이 <=0이면 그 항목은
+    검사하지 않는다(fail-open - 시세 조회 실패로 매수가 전부 멈추지 않도록)."""
+    if not ENABLE_ANTI_CHASE_DAY_GATE or price is None or price <= 0:
+        return True, None
+    if ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT > 0 and day_open is not None and day_open > 0:
+        rise_pct = (price / day_open - 1.0) * 100.0
+        if rise_pct >= ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT:
+            return False, (
+                f"ANTI_CHASE_RISE_FROM_OPEN_{rise_pct:.2f}%_GE_{ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT:.2f}%"
+            )
+    if ANTI_CHASE_MAX_VWAP_GAP_PCT > 0 and day_vwap is not None and day_vwap > 0:
+        vwap_gap_pct = (price / day_vwap - 1.0) * 100.0
+        if vwap_gap_pct >= ANTI_CHASE_MAX_VWAP_GAP_PCT:
+            return False, (
+                f"ANTI_CHASE_VWAP_GAP_{vwap_gap_pct:.2f}%_GE_{ANTI_CHASE_MAX_VWAP_GAP_PCT:.2f}%"
+            )
+    return True, None
 
 
 def passes_opening_gap_volume_gate(
