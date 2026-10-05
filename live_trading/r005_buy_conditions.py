@@ -48,6 +48,13 @@ Behavior notes kept from the old inline code (do not "fix" them here - they are 
   order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-10-05] type=feat owner=claude
+    summary: 사용자 요청(Codex 2차 검토 권고 "게이트 판정 기록") - _019가 판정(통과/차단)마다 BuyServices.record_gate_decision
+      (선택 필드, 기본 None)으로 시가/VWAP/이격률/차단 여부를 기록. 신규 evaluate_entry_time_shadow(): _001에서
+      점심 금지/진입창 때문에 막힌 종목을 상태 사본 + 무음 로그로 _002~_018 평가해 '주문 직전 단계 도달' 여부와
+      과열 지표를 기록(실제 매수 판정/상태 영향 없음). r001 ENABLE_GATE_DECISION_LOG.
+    impact: live (r003) - 기록 파일만 추가, 매매 판단 무변경
+    compatibility: backward-compatible
 - [2026-10-04] type=feat owner=claude
     summary: 사용자 요청(전체 매매내역/감시 로그 기반 조건 재검토) - 신규 _019_anti_chase_day_extension:
       전일종가 체크(_018) 직후, 당일 시가/VWAP(BuyServices.fetch_day_ref_prices, KIS 현재가 시세) 대비
@@ -75,7 +82,8 @@ Update log (append only):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Callable
 
@@ -102,6 +110,7 @@ from r002_strategy_core_shared import (
     _evaluate_bb_mid_cross,
     _num,
     anti_chase_day_gate,
+    anti_chase_day_metrics,
     build_context_eval,
     check_buy_condition_1min_hybrid_trigger,
     evaluate_context_score,
@@ -159,6 +168,8 @@ class BuyServices:
     get_order_spec: Callable[[datetime, bool], dict | None]
     fetch_orderbook_totals: Callable[[str, str], tuple[float | None, float | None]]
     format_reject_detail: Callable[..., str]
+    # [2026-10-05] 게이트 판정 기록(r001 ENABLE_GATE_DECISION_LOG). None이면 기록하지 않는다.
+    record_gate_decision: Callable[[dict], None] | None = None
 
 
 @dataclass
@@ -470,6 +481,7 @@ def _019_anti_chase_day_extension(ctx: BuyContext) -> bool:
             f"open={ctx.day_open} vwap={ctx.day_vwap} live={ctx.price:,.0f}"
         )
     ok, reason = anti_chase_day_gate(ctx.price, ctx.day_open, ctx.day_vwap)
+    _record_gate(ctx, "ANTI_CHASE", "pass" if ok else "block", reason)
     if not ok:
         ctx.state.buy_confirm_state.pop(ctx.code, None)
         open_txt = f"{ctx.day_open:,.0f}" if ctx.day_open else "nan"
@@ -477,6 +489,25 @@ def _019_anti_chase_day_extension(ctx: BuyContext) -> bool:
         ctx.log(f"  [REJECT  ] {ctx.symbol_label} | {reason} | open={open_txt} vwap={vwap_txt} live={ctx.price:,.0f}")
         return False
     return True
+
+
+def _record_gate(ctx: BuyContext, kind: str, result: str, reason: str | None, **extra) -> None:
+    """[2026-10-05] 게이트 판정 1건을 services.record_gate_decision으로 넘긴다(기록 실패는 매매에 영향 없음)."""
+    rec_fn = ctx.services.record_gate_decision
+    if rec_fn is None:
+        return
+    try:
+        rec = {
+            "ts": ctx.current_dt.isoformat(timespec="seconds"), "code": ctx.norm_code, "kind": kind,
+            "result": result, "reason": reason, "price": ctx.price, "price_source": ctx.price_source,
+            "bar_time": str(ctx.bar_time), "day_open": ctx.day_open, "day_vwap": ctx.day_vwap,
+            "buy_reason": ctx.buy_reason or None,
+        }
+        rec.update(anti_chase_day_metrics(ctx.price, ctx.day_open, ctx.day_vwap))
+        rec.update(extra)
+        rec_fn(rec)
+    except Exception as exc:  # 기록 실패는 매수 판정에 영향 주지 않는다
+        ctx.log(f"  [GATE LOG] {ctx.symbol_label} | record failed: {exc}")
 
 
 def _020_opening_gap_volume_gate(ctx: BuyContext) -> bool:
@@ -713,6 +744,38 @@ def check_buy_conditions(ctx: BuyContext, conditions: tuple[BuyCondition, ...] |
         if not cond.check(ctx):
             return BuyDecision(approved=False, failed=cond)
     return BuyDecision(approved=True)
+
+
+# [2026-10-05] 진입 시간 관찰(shadow)에 쓰는 조건 - 주문 직전 단계(_019 이후: 과열 차단/개장 갭/연속 확인/
+# 수량/현재가 신선도/호가+예약)는 제외. _019 과열 여부는 지표로만 함께 기록한다.
+SHADOW_ENTRY_CONDITIONS: tuple[BuyCondition, ...] = tuple(c for c in BUY_CONDITIONS if 2 <= c.no <= 18)
+
+
+def evaluate_entry_time_shadow(ctx: BuyContext, kind: str) -> bool:
+    """[2026-10-05] _001(진입 시간)에서 점심 금지/진입 허용창 때문에 막힌 종목이 그 제한이 없었다면 _002~_018을
+    통과했을지 관찰한다(Codex 2차 검토: 실제 시세 기준 관찰 기록). 상태(확인/트리거 경과/중복 방지/차단 목록)는
+    사본으로 평가하고 로그는 끄므로 실제 매수 판정과 13:00 이후 동작에는 영향이 없다. 모두 통과하면 당일
+    시가/VWAP 과열 지표(_019 기준)를 붙여 kind로 기록하고 True를 돌려준다. 연속 확인(_021)은 평가하지 않으므로
+    '주문 직전 단계 도달' 기준이다."""
+    shadow_state = BuyState(
+        buy_confirm_state=copy.deepcopy(ctx.state.buy_confirm_state),
+        buy_trigger_age_state=copy.deepcopy(ctx.state.buy_trigger_age_state),
+        signal_buy_bar=dict(ctx.state.signal_buy_bar),
+        hard_stop_today_codes=set(ctx.state.hard_stop_today_codes),
+        gap_blocked_codes=set(ctx.state.gap_blocked_codes),
+        traded_today=set(ctx.state.traded_today),
+    )
+    shadow_ctx = replace(ctx, state=shadow_state, services=replace(ctx.services, log=lambda _msg: None))
+    if not check_buy_conditions(shadow_ctx, SHADOW_ENTRY_CONDITIONS).approved:
+        return False
+    if shadow_ctx.services.classify_buy_session(shadow_ctx.current_dt) == "regular":
+        shadow_ctx.day_open, shadow_ctx.day_vwap = shadow_ctx.services.fetch_day_ref_prices(
+            shadow_ctx.code, shadow_ctx.current_dt, shadow_ctx.nxt_tradeable,
+        )
+    _ok, _reason = anti_chase_day_gate(shadow_ctx.price, shadow_ctx.day_open, shadow_ctx.day_vwap)
+    _record_gate(ctx=replace(shadow_ctx, services=ctx.services), kind=kind, result="would_reach_preorder",
+                 reason=None, anti_chase_ok=_ok, anti_chase_reason=_reason)
+    return True
 
 
 def describe_buy_conditions() -> list[dict[str, object]]:

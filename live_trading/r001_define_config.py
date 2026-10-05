@@ -722,6 +722,11 @@ MAX_BUY_RISE_PCT_FROM_PREV_CLOSE = 0.23  # 23%
 ENABLE_ANTI_CHASE_DAY_GATE = True
 ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT = 8.0   # 현재가/당일시가-1 >= 8% 이면 차단 (<=0 비활성)
 ANTI_CHASE_MAX_VWAP_GAP_PCT = 3.0         # 현재가/당일VWAP-1 >= 3% 이면 차단 (<=0 비활성)
+# [2026-10-05] 게이트 판정 기록(Codex 2차 검토 권고 - 3일 A/B로는 추격차단/점심금지의 효과를 판단할 표본이 부족).
+# True면 r003이 data/live_runtime/gate_decisions_YYYYMMDD.jsonl에 (1) _019 추격차단 판정(통과/차단, 시가/VWAP/
+# 이격률)과 (2) 점심/진입창 때문에 _001에서 막힌 종목이 나머지 조건(_002~_018)을 통과했을지의 관찰(shadow) 판정을
+# 남긴다. 주문/매매 판단에는 영향 없음(shadow는 상태 사본으로 평가). 사후 수익률은 g009_gate_decision_report.py로 집계.
+ENABLE_GATE_DECISION_LOG = True
 # 추격매수 방지: 실시간 BB 상향 크로스 없이(신호 없음) MA5/BB 후행 진입 시
 # 현재가가 BB 중심선 대비 과도하게 이격되면 매수 차단
 MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when price is within 0.2% of BB middle
