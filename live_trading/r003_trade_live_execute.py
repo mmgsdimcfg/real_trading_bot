@@ -26,6 +26,9 @@ Update log:
       새로 조회한 현재가 지정가로 1번만 청산(place_sell_order limit_price, 재주문/정정 없음). NXT 불가 종목은 15:20 청산 유지.
       메인 루프는 청산 15초 전(AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS)부터 종목 감시를 멈추고 청산 시각까지 sleep 후 주문.
       ENABLE_NXT_SESSION=False면 종전과 동일(15:20 정규장 청산).
+      Codex 2차 검토 반영: 계좌/미체결 동기화를 청산 PRESYNC(3)초 전에 미리 수행, 종목마다 벽시계로 20:00 마감 재확인
+      ([NXT CLOSE MISSED] DEADLINE_PASSED), 청산 시각이 지나도 미처리면 종목 감시 중단 유지, 대기 중 '매수' 주문은
+      청산을 막지 않음(대기 중 '매도'만 건너뜀).
     impact: live (r003)
     compatibility: breaking (NXT 운용 시 당일 청산 시각 이동)
 - [2026-10-04] type=feat owner=claude
@@ -668,6 +671,7 @@ from r001_define_config import (
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS,
+    AFTERNOON_NXT_FORCE_EXIT_PRESYNC_SECONDS,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
     AFTERNOON_NXT_START,
     AUX_SELL_MIN_PNL_SCORE2,
@@ -1886,7 +1890,9 @@ def run_gapdip_shadow(
     code: str, name: str, now: datetime, price: float, nxt_tradeable: bool, gapdip_state: dict,
 ) -> None:
     """[2026-10-04] 갭하락 반등 관찰(GAPDIP_MODE="shadow") - 주문 없이 가상 진입/청산만 로그로 남긴다.
-    전일종가/당일시가는 진입 판정 시간창 안에서 종목당 최대 3회까지만 조회(성공하면 이후 조회 없음)."""
+    전일종가/당일시가는 진입 판정 시간창 안에서 종목당 최대 3번 시도(시도마다 fetch_prev_close + 당일시가 조회로
+    시세 API 최대 4회, 성공하면 이후 조회 없음). 15:19~15:20 사이에 시세 관측이 없으면 가상 포지션은 status=open으로
+    남는다 - 분석 시 미청산(censored)으로 집계할 것(Codex 2차)."""
     st = gapdip_state.setdefault(code, {"status": "pending"})
     t = now.time()
     if (
@@ -4176,8 +4182,16 @@ def run_scheduled_liquidations(
             if not _is_today_buy_position(code, pos, date_str, today_buy_codes):
                 log(f"  [NXT CLOSE SKIP] {code} | NOT_TODAY_BUY_POSITION")
                 continue
-            if api.has_pending_order(code):
-                log(f"  [NXT CLOSE SKIP] {code} | pending_order_active")
+            # [2026-10-05 Codex 2차] 대기 중인 '매수' 주문은 보유 수량 청산을 막지 않는다(place_sell_order도 허용).
+            _pending = api.pending_orders.get(str(code).zfill(6))
+            if _pending is not None and _pending.get("side") != "buy":
+                log(f"  [NXT CLOSE SKIP] {code} | pending_sell_order_active")
+                continue
+            # [2026-10-05 Codex 2차] 종목마다 실제 벽시계로 마감(20:00) 전인지 다시 확인 - 앞 종목 처리로 시간이
+            # 흘러 마감 이후가 되면 주문하지 않는다(접수 불가/세션 판정 오류 방지).
+            submit_dt = max(current_dt, datetime.now())
+            if submit_dt.time() >= AFTERNOON_NXT_END:
+                log(f"  [NXT CLOSE MISSED] {code} | DEADLINE_PASSED now={submit_dt:%H:%M:%S.%f}")
                 continue
             if not nxt_map.get(code, False):
                 log(f"  [NXT CLOSE HOLD] {code} | NXT_NOT_TRADABLE")
@@ -4186,7 +4200,7 @@ def run_scheduled_liquidations(
             # [2026-10-05] 청산 시점 현재가를 새로 조회(실패 시 계좌 평가가) - 이 가격 지정가로 1번만 주문
             live_px = None
             try:
-                live_px = fetch_live_price(code, current_dt, True)
+                live_px = fetch_live_price(code, submit_dt, True)
             except Exception as exc:
                 log(f"  [NXT CLOSE] {code} | live price fetch failed: {exc}")
             price = float(live_px or pos.get("current_price") or pos["buy_price"])
@@ -4207,18 +4221,19 @@ def run_scheduled_liquidations(
                 f"src={'live' if live_px else 'account'} qty={int(pos['quantity'])}"
             )
             api.place_sell_order(
-                code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False),
+                code, int(pos["quantity"]), submit_dt, reason, nxt_map.get(code, False),
                 price=price, code_name=watch_map.get(code, ""), limit_price=price,
             )
 
 
-def _nxt_force_exit_prep_reached(now: datetime, state: dict) -> bool:
-    """[2026-10-05] NXT 당일 청산(19:59:58) 직전 대기 구간인가 - 아직 청산 전이고 청산 시각
-    AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS초 전 이후면 True."""
+def _nxt_force_exit_pending(now: datetime, state: dict) -> bool:
+    """[2026-10-05] NXT 당일 청산(19:59:58)이 아직 안 됐고 청산 시각 AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS초 전
+    이후인가. 청산 시각이 지나도 미처리면 계속 True(Codex 2차: 긴 API 호출로 대기 구간을 건너뛰어도 종목 감시를
+    멈추고 바로 청산으로 가도록)."""
     if not ENABLE_NXT_SESSION or state.get("done_1959"):
         return False
     target = datetime.combine(now.date(), AFTERNOON_NXT_FORCE_EXIT)
-    return target - timedelta(seconds=AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS) <= now < target
+    return now >= target - timedelta(seconds=AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS)
 
 
 _SHUTDOWN_API: TradingAPI | None = None
@@ -4563,16 +4578,23 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             api.live_state["traded_today"] = traded_today
             run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
 
-            # [2026-10-05] NXT 당일 청산 직전: 종목별 감시를 멈추고 19:59:58까지 대기한 뒤 바로 청산 주문.
-            if _nxt_force_exit_prep_reached(current_dt, liquidation_state):
+            # [2026-10-05] NXT 당일 청산 직전: 종목별 감시를 멈추고, 계좌/미체결 동기화는 청산 시각
+            # PRESYNC초 전에 미리 끝낸 뒤(Codex 2차: 2초 안에 동기화까지 하면 주문이 마감 후 접수될 수 있음)
+            # 19:59:58에 종목별 현재가 조회 + 지정가 주문만 수행한다.
+            if _nxt_force_exit_pending(current_dt, liquidation_state):
                 _target_dt = datetime.combine(current_dt.date(), AFTERNOON_NXT_FORCE_EXIT)
+                _presync_dt = _target_dt - timedelta(seconds=AFTERNOON_NXT_FORCE_EXIT_PRESYNC_SECONDS)
+                _wait = (_presync_dt - datetime.now()).total_seconds()
+                if _wait > 0:
+                    log(f"[NXT CLOSE] waiting {_wait:.1f}s until presync {_presync_dt:%H:%M:%S}")
+                    time.sleep(_wait)
+                api.sync_positions_from_account(force=True)
+                api.refresh_pending_orders(datetime.now())
                 _wait = (_target_dt - datetime.now()).total_seconds()
-                log(f"[NXT CLOSE] waiting {max(0.0, _wait):.1f}s until {AFTERNOON_NXT_FORCE_EXIT:%H:%M:%S}")
                 if _wait > 0:
                     time.sleep(_wait)
                 current_dt = datetime.now()
-                api.sync_positions_from_account(force=True)
-                api.refresh_pending_orders(current_dt)
+                log(f"[NXT CLOSE] fire at {current_dt:%H:%M:%S.%f}")
                 run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
                 continue
 
@@ -4592,16 +4614,20 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             iter_codes = sorted(active_set | position_codes)
 
             # [2026-10-04] GAPDIP 관찰: 감시 목록에서 빠진 종목의 가상 포지션도 청산까지 추적
+            # [2026-10-05 Codex 2차] 종목별 예외 격리 - 관찰 경로 오류가 실제 포지션 감시 루프를 끊지 않도록.
             if GAPDIP_MODE == "shadow" and is_regular_session(current_dt):
                 for _gc, _gst in list(gapdip_state.items()):
                     if _gst.get("status") == "open" and _gc not in iter_codes:
-                        _gp = fetch_live_price(_gc, current_dt, nxt_map.get(_gc, False))
-                        if _gp is not None and _gp > 0:
-                            run_gapdip_shadow(_gc, watch_map.get(_gc) or _gc, current_dt, float(_gp),
-                                              nxt_map.get(_gc, False), gapdip_state)
+                        try:
+                            _gp = fetch_live_price(_gc, current_dt, nxt_map.get(_gc, False))
+                            if _gp is not None and _gp > 0:
+                                run_gapdip_shadow(_gc, watch_map.get(_gc) or _gc, current_dt, float(_gp),
+                                                  nxt_map.get(_gc, False), gapdip_state)
+                        except Exception as exc:
+                            log(f"  [GAPDIP SHADOW] {_gc} off-watchlist tracking error: {exc}")
 
             for code in iter_codes:
-                if _nxt_force_exit_prep_reached(datetime.now(), liquidation_state):
+                if _nxt_force_exit_pending(datetime.now(), liquidation_state):
                     break  # [2026-10-05] NXT 당일 청산 대기 구간 진입 - 다음 턴에서 대기 후 청산
                 name = watch_map.get(code) or _SYMBOL_NAME_MAP.get(code) or code
                 nxt_tradeable = nxt_map.get(code, False)
