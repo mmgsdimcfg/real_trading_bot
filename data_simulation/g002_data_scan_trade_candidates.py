@@ -23,6 +23,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-01] type=feat owner=claude
+    summary: 종목별 선정 이유 한글 리포트(_{date}_scanner_report_ko.md) 자동 생성 추가(g008).
+      calculate_candidate_score를 calculate_candidate_score_breakdown(항목별 가점/감점 내역 반환)
+      위에 얹는 구조로 바꾸고, scan()에서 row["score_breakdown"]으로 채점 내역을 보존해 리포트가
+      점수를 재계산하지 않게 함. 누적 순서 동일 - 점수 값 변화 없음.
+    impact: scanner
+    compatibility: backward-compatible
 - [2026-09-27] type=fix owner=claude
     summary: 사용자 요청("ranked 종목 절반 이상이 기대한 종목이 아님 - 점수화 검토, 이전 ranked
       종목과 선정 이후 주가흐름 분석 포함, codex 조건체크 후 최종 수정, ranked 50개 제한").
@@ -1448,7 +1455,16 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
 
 def calculate_candidate_score(candidate, config):
-    """배점표 (2026-09-27 기준, 가점 만점 60점):
+    return calculate_candidate_score_breakdown(candidate, config)["score"]
+
+
+def calculate_candidate_score_breakdown(candidate, config):
+    """점수 + 항목별 내역(gains/penalties)을 함께 반환한다. 점수 계산은 여기 한 곳에서만 하고
+    calculate_candidate_score는 이 결과의 score만 꺼내 쓴다 - 종목별 선정 이유 리포트
+    (g008_selection_reason_report)가 실제 채점과 다른 계산을 하지 않도록 단일 출처로 유지.
+    누적 순서는 기존 score +=/-= 순서 그대로라 반올림 결과도 기존과 비트 단위로 동일하다.
+
+    배점표 (2026-09-27 기준, 가점 만점 60점):
     거래대금18 + ATR16 + 거래량상대강도10 + RSI(40~60 최고)8
     - 과열 페널티(MA20 이격 최대12 + 20일 상승률 최대8 + 전일 급등 최대6)
     - 기존 페널티(전일음봉/52주과열/전일급등락/최근반복선정/소프트플래그 개수).
@@ -1478,26 +1494,40 @@ def calculate_candidate_score(candidate, config):
     repeat_recent_days = int(candidate.get("repeat_recent_days") or 0)
     is_last_bearish = bool(candidate.get("is_last_bearish"))
 
+    gains = []
+    penalties = []
     if None in (price, atr_ratio, vol_ma20, amount_ma20):
-        return 0.0
+        return {"score": 0.0, "gains": gains, "penalties": penalties}
 
     score = 0.0
+
+    def _gain(key, value, max_value):
+        nonlocal score
+        score += value
+        gains.append({"key": key, "value": value, "max": max_value})
+
+    def _penalty(key, value):
+        nonlocal score
+        score -= value
+        penalties.append({"key": key, "value": value})
 
     # 1) 거래량 (max 10, 18->10 2026-09-27): 최근 5일 평균거래량 vs 이전 20일 평균거래량 상대강도.
     # 장중 변동폭과는 양(+)의 상관이나 이후 수익률과는 약한 음(-)의 상관이라 비중 축소.
     if vol_rel_strength is not None:
-        score += max(0.0, min(10.0, (vol_rel_strength - 0.8) * 18.0))
+        _gain("vol_rel_strength", max(0.0, min(10.0, (vol_rel_strength - 0.8) * 18.0)), 10.0)
+    else:
+        gains.append({"key": "vol_rel_strength", "value": 0.0, "max": 10.0, "missing": True})
 
     # 2) 거래대금 (max 18): 시장/설정 벤치마크 대비 로그스케일.
     amount_benchmark = candidate.get("liquidity_amount_benchmark")
     if amount_benchmark in (None, 0):
         amount_benchmark = config.amount_ma20_min
     amt_ratio = max(0.0, amount_ma20 / max(1.0, float(amount_benchmark)))
-    score += min(18.0, 9.0 * math.log1p(amt_ratio * 1.6))
+    _gain("amount", min(18.0, 9.0 * math.log1p(amt_ratio * 1.6)), 18.0)
 
     # 3) ATR (max 16): 변동성, 문턱값 대비 로그스케일.
     atr_ratio_norm = max(0.0, atr_ratio / config.atr_ratio_min)
-    score += min(16.0, 7.3 * math.log1p(atr_ratio_norm * 1.8))
+    _gain("atr", min(16.0, 7.3 * math.log1p(atr_ratio_norm * 1.8)), 16.0)
 
     # [2026-09-27 제거] 4) RS(13) / 5) ADX(6) / 6) MA단기정렬(±8) / 6b) MA완전정배열(+6) /
     # 8) 3일 모멘텀(±5) - 전부 이후 수익률과 음(-)의 상관(docstring 참조). 추세 확인은
@@ -1508,13 +1538,13 @@ def calculate_candidate_score(candidate, config):
     # (기존 50~70 최고점 곡선은 RSI 상위 구간일수록 이후 수익률이 나빠 과열 추격을 가점했음)
     if rsi is not None:
         if rsi < 40.0:
-            score += max(0.0, (rsi - 20.0) / 20.0 * 8.0)
+            _gain("rsi", max(0.0, (rsi - 20.0) / 20.0 * 8.0), 8.0)
         elif rsi <= 60.0:
-            score += 8.0
+            _gain("rsi", 8.0, 8.0)
         else:
-            score += max(0.0, 8.0 - (rsi - 60.0) * 0.4)
+            _gain("rsi", max(0.0, 8.0 - (rsi - 60.0) * 0.4), 8.0)
     else:
-        score += 4.0
+        _gain("rsi", 4.0, 8.0)
 
     # [2026-09-23 제거] 기존 9) 가격대 선호(max 2, 저가주에 소폭 가점)는 어떤 특정 스캔 사례로
     # 도입됐는지 changelog에 근거가 없고(다른 배점 항목은 전부 특정 사례/백테스트를 인용함),
@@ -1526,18 +1556,18 @@ def calculate_candidate_score(candidate, config):
     # --- 과열 페널티 (2026-09-27 신규) ---
     # MA20 이격 +8% 초과부터 감점, +30%에서 최대 -12.
     if close_ma20_ratio is not None and close_ma20_ratio > 0.08:
-        score -= min(12.0, (close_ma20_ratio - 0.08) / 0.22 * 12.0)
+        _penalty("overheat_ma20_gap", min(12.0, (close_ma20_ratio - 0.08) / 0.22 * 12.0))
     # 20일 상승률 +25% 초과부터 감점, +75%에서 최대 -8.
     if ret_20d is not None and ret_20d > 0.25:
-        score -= min(8.0, (ret_20d - 0.25) / 0.50 * 8.0)
+        _penalty("overheat_ret_20d", min(8.0, (ret_20d - 0.25) / 0.50 * 8.0))
     # 전일 +8% 초과 급등 추격 감점, +20%에서 최대 -6 (아래 |등락|>=20% 갭리스크 페널티와 별개).
     if prev_day_return is not None and prev_day_return > 0.08:
-        score -= min(6.0, (prev_day_return - 0.08) / 0.12 * 6.0)
+        _penalty("overheat_prev_day_jump", min(6.0, (prev_day_return - 0.08) / 0.12 * 6.0))
 
     # --- 각종 페널티 ---
     # 전일 음봉 (단기매매에서는 전일 조정이 진입 기회일 수 있으므로 -4로 완화).
     if is_last_bearish:
-        score -= 4.0
+        _penalty("last_bearish", 4.0)
 
     # 52주 신고가 과열 (근접 리스크 구간): near_52w_high_override 시 페널티 대폭 완화.
     if high_52w_ratio is not None and high_52w_ratio >= config.max_52w_high_ratio:
@@ -1545,16 +1575,16 @@ def calculate_candidate_score(candidate, config):
         near_high_penalty = min(12.0, 6.0 + (overflow / 0.20) * 6.0)
         if near_52w_high_override:
             near_high_penalty *= 0.25
-        score -= near_high_penalty
+        _penalty("near_52w_high", near_high_penalty)
 
     # 전일 급등/갭 리스크.
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         overflow = min(0.15, prev_day_change - config.max_prev_day_change)
-        score -= min(10.0, 4.0 + (overflow / 0.15) * 6.0)
+        _penalty("prev_day_change_gap", min(10.0, 4.0 + (overflow / 0.15) * 6.0))
 
     # 최근 반복 선정 페널티 (과도한 종목 편중 방지).
     if repeat_recent_days > 0:
-        score -= min(12.0, repeat_recent_days * config.recent_pick_penalty_per_day)
+        _penalty("recent_pick_repeat", min(12.0, repeat_recent_days * config.recent_pick_penalty_per_day))
 
     # 소프트플래그 개수 페널티 (2026-07-22: 3일하락/BB하한/거래량감소 등이 소프트로
     # 편입되며 개수가 늘 수 있어 근소한 차이를 가르는 타이브레이커 역할이 커짐).
@@ -1565,9 +1595,10 @@ def calculate_candidate_score(candidate, config):
     soft_flags = candidate.get("soft_flags", [])
     reversal_override_count = sum(1 for flag in soft_flags if flag.endswith("_reversal_override"))
     plain_soft_count = len(soft_flags) - reversal_override_count
-    score -= 0.7 * plain_soft_count + 1.5 * reversal_override_count
+    _penalty("soft_flags", 0.7 * plain_soft_count + 1.5 * reversal_override_count)
+    penalties[-1]["flags"] = list(soft_flags)
 
-    return round(score, 2)
+    return {"score": round(score, 2), "gains": gains, "penalties": penalties}
 
 
 # ---------------------------------------------------------------------------
@@ -2458,8 +2489,12 @@ def scan(
     liquidity_filter_info = apply_market_relative_liquidity_filters(candidates, market_map)
 
     for row in candidates:
-        score = calculate_candidate_score(row, config)
+        # 내역은 이 시점(반복선정 플래그 반영 후, 업종교체/fallback 플래그 추가 전) 채점 그대로
+        # 보존 - 이후 붙는 정보성 플래그 때문에 리포트에서 다시 계산하면 점수가 어긋날 수 있다.
+        breakdown = calculate_candidate_score_breakdown(row, config)
+        score = breakdown["score"]
         row["score"] = score
+        row["score_breakdown"] = breakdown
         row["fail_reasons"] = [reason for reason in row.get("fail_reasons", []) if reason != "low_score"]
         if score < SCORE_CUTOFF:
             row["fail_reasons"].append("low_score")
@@ -2732,6 +2767,7 @@ if __name__ == "__main__":
     ranked_filename = f"_{output_prefix}_ranked.txt" if output_prefix else "_ranked.txt"
     report_filename = f"_{output_prefix}_scanner_report.md" if output_prefix else "_scanner_report.md"
     all_scan_filename = f"_{output_prefix}_scan_all.md" if output_prefix else "_scan_all.md"
+    reason_report_filename = f"_{output_prefix}_scanner_report_ko.md" if output_prefix else "_scanner_report_ko.md"
 
     if picks:
         picks_file = out_dir / picks_filename
@@ -2779,6 +2815,36 @@ if __name__ == "__main__":
         encoding="utf-8",
     )
     print(f"스캐너 리포트를 저장했습니다: {report_file}")
+
+    # 종목별 선정 이유 리포트(한글) - 부가 산출물이므로 실패해도 picks/watchlist 산출에는 영향 없게 격리.
+    try:
+        from g008_selection_reason_report import render_selection_reason_report
+
+        reason_date_str = effective_target_date.strftime("%Y%m%d") if effective_target_date else output_prefix or None
+
+        def _reason_daily_df(code):
+            df = _load_daily_csv(code, data_root, reason_date_str)
+            if df is None:
+                df = build_daily_bars(data_root, code, reason_date_str, single_date_only=single_date_only)
+            return df
+
+        reason_file = out_dir / reason_report_filename
+        reason_file.write_text(
+            render_selection_reason_report(
+                scan_result["selected_rows"],
+                target_label=reason_date_str or "latest",
+                summary=scan_result["summary"],
+                config=config,
+                load_daily_df=_reason_daily_df,
+                has_volume_thrust_reversal=_has_volume_thrust_reversal,
+                box_window=BOX_RANGE_NO_PROGRESS_WINDOW,
+                bearish_window=BEARISH_CANDLE_DOMINANCE_WINDOW,
+            ),
+            encoding="utf-8",
+        )
+        print(f"종목별 선정 이유 리포트를 저장했습니다: {reason_file}")
+    except Exception as exc:
+        print(f"[WARN] 종목별 선정 이유 리포트 생성 실패(스캔 결과에는 영향 없음): {exc}")
 
     all_scan_file = out_dir / all_scan_filename
     all_scan_file.write_text(render_all_scan_markdown(scan_result["all_rows"]), encoding="utf-8")
