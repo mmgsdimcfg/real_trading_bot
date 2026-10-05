@@ -16,6 +16,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-05] type=fix owner=claude
+    summary: Codex 2차 검토 반영 - (1) 추격차단(r005 _019 parity) 판정 위치를 1분 트리거/3분 컨텍스트 통과 후,
+      연속 확인 전으로 이동(종전: 트리거 평가 전에 continue -> 실전과 달리 트리거 경과시간 상태가 갱신되지 않았음)하고
+      차단 시 연속 확인 상태를 지움(실전과 동일). (2) 판정 기록 data_root/YYYYMMDD/YYYYMMDD_gate_decisions.jsonl
+      (종목/결과별 1분 1건, ENABLE 플래그가 꺼져 있어도 would_block 지표 기록) + --summary에도 ANTI_CHASE GATE 집계 출력.
+      (3) --anti-chase-price minute: 보간된 10초 가격 대신 확정된 실제 1분봉 종가로 판정(민감도 확인용).
+    impact: sim
+    compatibility: breaking (추격차단 ON일 때 판정 위치 변경으로 결과가 종전 A/B와 소폭 다를 수 있음)
 - [2026-10-05] type=feat owner=claude
     summary: r003 parity (r001 Update log 2026-10-05) - ENABLE_NXT_SESSION=True면 15:20 정규장 청산에서 NXT 가능 종목을
       건너뛰고 AFTERNOON_NXT_FORCE_EXIT(19:59:58) 이후 첫 시뮬 틱의 현재가로 청산. NXT 불가 종목은 15:20 청산 유지.
@@ -261,6 +269,7 @@ from r001_define_config import (
     REQUIRE_DI_PLUS_DOMINANT,
     REQUIRE_OBV_SIGNAL_CROSS,
     AFTERNOON_NXT_END,
+    ENABLE_ANTI_CHASE_DAY_GATE,
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
     AFTERNOON_NXT_START,
@@ -414,6 +423,7 @@ from r001_define_config import (
 from r002_strategy_core_shared import (
     R76StrategyConfig,
     anti_chase_day_gate,
+    anti_chase_day_metrics,
     is_regular_new_entry_blocked_time,
     calculate_indicators,
     check_buy_condition as shared_check_buy_condition,
@@ -547,6 +557,11 @@ DAILY_RESULT_CSV = log_dir / "r76_daily_results.csv"
 COMPARE_RESULT_DIR = log_dir / "compare"
 
 LOG_SUMMARY_MODE = False
+# [2026-10-05] 추격차단(_019 parity) 판정 가격: "tick" = 시뮬 현재가(10초 행, 보간값 포함 - 종전 동작),
+# "minute" = 그 시점까지 확정된 실제 1분봉 종가(Codex 2차: 보간가로 임계값을 넘는 판정 민감도 확인용).
+ANTI_CHASE_PRICE_MODE = "tick"
+# 게이트 판정 기록 파일(main에서 data_root/YYYYMMDD/YYYYMMDD_gate_decisions.jsonl로 설정, None이면 기록 안 함)
+GATE_DECISION_PATH: Path | None = None
 COMPARE_FEE_BUY_RATE = 0.00015
 COMPARE_FEE_SELL_RATE = 0.00015
 COMPARE_SLIPPAGE_RATE = 0.00020
@@ -921,6 +936,7 @@ def _build_day_ref_frame(raw_df: pd.DataFrame) -> pd.DataFrame | None:
         vol = pd.to_numeric(m["volume"], errors="coerce").fillna(0.0).to_numpy()
         close = pd.to_numeric(m["close"], errors="coerce").to_numpy()
         out["day_open"] = float(m["open"].iloc[0])
+        out["last_close"] = close  # [2026-10-05] 그 분봉의 실제 종가(종료시각 라벨) - ANTI_CHASE_PRICE_MODE="minute"
         cum_v = vol.cumsum()
         cum_pv = (close * vol).cumsum()
         out["vwap"] = [pv / v if v > 0 else float("nan") for pv, v in zip(cum_pv, cum_v)]
@@ -929,16 +945,35 @@ def _build_day_ref_frame(raw_df: pd.DataFrame) -> pd.DataFrame | None:
         return None
 
 
-def _day_refs_at(ref: pd.DataFrame | None, ts: pd.Timestamp) -> tuple[float | None, float | None]:
-    """ts 시점까지 확정된 1분봉 기준 (당일 시가, VWAP). 없으면 None (게이트 fail-open)."""
+def _day_refs_at(
+    ref: pd.DataFrame | None, ts: pd.Timestamp,
+) -> tuple[float | None, float | None, float | None]:
+    """ts 시점까지 확정된 1분봉 기준 (당일 시가, VWAP, 마지막 실제 1분봉 종가). 없으면 None (게이트 fail-open)."""
     if ref is None or ref.empty:
-        return None, None
+        return None, None, None
     pos = ref.index.searchsorted(ts, side="right")
     if pos <= 0:
-        return None, None
+        return None, None, None
     row = ref.iloc[pos - 1]
     vwap = float(row["vwap"])
-    return float(row["day_open"]), (vwap if vwap == vwap and vwap > 0 else None)
+    last_close = float(row["last_close"]) if "last_close" in row.index else float("nan")
+    return (
+        float(row["day_open"]),
+        (vwap if vwap == vwap and vwap > 0 else None),
+        (last_close if last_close == last_close and last_close > 0 else None),
+    )
+
+
+def _write_gate_decisions(records: list[dict]) -> None:
+    """[2026-10-05] 게이트 판정 기록을 GATE_DECISION_PATH(jsonl)에 쓴다(r003 gate_decisions_YYYYMMDD.jsonl과 같은 형식)."""
+    if GATE_DECISION_PATH is None:
+        return
+    try:
+        with open(GATE_DECISION_PATH, "w", encoding="utf-8") as fh:
+            for rec in records:
+                fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except OSError as exc:
+        log(f"[WARN] gate decision log write failed: {exc}")
 
 
 def is_new_entry_allowed(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
@@ -2352,6 +2387,10 @@ def simulate_date(
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목 (r006 parity)
     buy_primary_reject_counter: collections.Counter[str] = collections.Counter()
     buy_reject_counter: collections.Counter[str] = collections.Counter()
+    # [2026-10-05] 게이트 판정 기록/집계 (Codex 2차 검토 권고)
+    anti_chase_counter: collections.Counter[str] = collections.Counter()
+    gate_records: list[dict] = []
+    gate_record_keys: set[tuple] = set()
 
     log(
         "SIM gate profile: "
@@ -3089,20 +3128,6 @@ def simulate_date(
                 continue
             if signal_buy_bar.get(code) == ts:
                 continue
-            # [2026-10-04] r005 _019_anti_chase_day_extension parity (당일 시가/VWAP 대비 과열 차단)
-            # 정규장 진입에만 적용(r005 _019와 동일 - NXT 세션은 미적용)
-            if classify_buy_session(ts) == "regular":
-                _day_open, _day_vwap = _day_refs_at(day_ref_frames.get(code), ts)
-                _ac_ok, _ac_reason = anti_chase_day_gate(price, _day_open, _day_vwap)
-            else:
-                _day_open, _day_vwap, _ac_ok, _ac_reason = None, None, True, None
-            if not _ac_ok:
-                log_detail(
-                    f"  [ENTRY BLOCK] {code} | {_ac_reason} | open={_day_open or float('nan'):,.0f} "
-                    f"vwap={_day_vwap or float('nan'):,.1f} price={price:,.0f}"
-                )
-                continue
-
             # 하이브리드 매수 경로(r003과 동일 - r001/r002 Update log 2026-08-28 참조) - 유일한 신규 매수
             # 경로다(2026-09-20 1분봉 골든크로스 단독/1분봉 Entry Score/3분봉 단독 경로 삭제): 1분봉
             # 자체 기준으로 트리거를 먼저 확인하고, 통과 시에만 3분봉 컨텍스트로 재확인한다.
@@ -3150,6 +3175,34 @@ def simulate_date(
                     if should_buy:
                         reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{reason}"
 
+            if should_buy and classify_buy_session(ts) == "regular":
+                # [2026-10-04/05] r005 _019_anti_chase_day_extension parity (당일 시가/VWAP 대비 과열 차단).
+                # [2026-10-05 Codex 2차] 실전과 같은 위치(트리거/컨텍스트 통과 후, 연속 확인 전)로 옮기고 차단 시
+                # 연속 확인 상태를 지운다(실전 _019와 동일). 정규장 진입에만 적용(NXT 미적용).
+                _day_open, _day_vwap, _last_close = _day_refs_at(day_ref_frames.get(code), ts)
+                _gate_price = _last_close if (ANTI_CHASE_PRICE_MODE == "minute" and _last_close) else price
+                _ac_ok, _ac_reason = anti_chase_day_gate(_gate_price, _day_open, _day_vwap)
+                anti_chase_counter["evaluated"] += 1
+                _gkey = (code, "pass" if _ac_ok else "block", ts.strftime("%H:%M"))
+                if _gkey not in gate_record_keys:
+                    gate_record_keys.add(_gkey)
+                    _grec = {
+                        "ts": ts.isoformat(), "code": code, "kind": "ANTI_CHASE",
+                        "result": _gkey[1], "reason": _ac_reason, "price": _gate_price,
+                        "price_source": f"sim_{ANTI_CHASE_PRICE_MODE}", "tick_price": price,
+                        "day_open": _day_open, "day_vwap": _day_vwap, "buy_reason": reason,
+                    }
+                    _grec.update(anti_chase_day_metrics(_gate_price, _day_open, _day_vwap))
+                    gate_records.append(_grec)
+                if not _ac_ok:
+                    anti_chase_counter["blocked"] += 1
+                    anti_chase_counter["blocked_" + ("open" if "FROM_OPEN" in str(_ac_reason) else "vwap")] += 1
+                    buy_confirm_state.pop(code, None)
+                    log_detail(
+                        f"  [ENTRY BLOCK] {code} | {_ac_reason} | open={_day_open or float('nan'):,.0f} "
+                        f"vwap={_day_vwap or float('nan'):,.1f} price={_gate_price:,.0f}"
+                    )
+                    should_buy = False
             if should_buy:
                 _confirm_state = buy_confirm_state.setdefault(code, {"count": 0, "first_ts": ts})
                 _confirm_state["count"] += 1
@@ -3355,6 +3408,14 @@ def simulate_date(
         raw("  TOP EXPANDED BUY REJECT REASONS:")
         for reason, cnt in buy_reject_counter.most_common(8):
             raw(f"    - {reason}: {cnt}")
+    # [2026-10-05] 추격차단 판정 집계 - --summary에서도 출력(차단 로그는 log_detail이라 summary에서 안 보임)
+    raw(
+        f"  ANTI_CHASE GATE: enabled={ENABLE_ANTI_CHASE_DAY_GATE} price_mode={ANTI_CHASE_PRICE_MODE} "
+        f"evaluated_ticks={anti_chase_counter['evaluated']} blocked_ticks={anti_chase_counter['blocked']} "
+        f"(open={anti_chase_counter['blocked_open']} vwap={anti_chase_counter['blocked_vwap']}) "
+        f"records={len(gate_records)} -> {GATE_DECISION_PATH}"
+    )
+    _write_gate_decisions(gate_records)
     raw(f"{'=' * 60}\n")
 
     LAST_SIM_STATS = {
@@ -3500,6 +3561,7 @@ def _backup_full_log(log_path: Path) -> None:
 def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
     global LOG_SUMMARY_MODE, COMPARE_FEE_BUY_RATE, COMPARE_FEE_SELL_RATE, COMPARE_SLIPPAGE_RATE
+    global ANTI_CHASE_PRICE_MODE, GATE_DECISION_PATH
 
     parser = argparse.ArgumentParser(description="Simulate R76 strategy using date CSV/TXT data (1-minute input supported)")
     parser.add_argument("--date", required=True, help="Simulation date in YYYYMMDD format")
@@ -3595,6 +3657,12 @@ def main() -> None:
         dest="require_10s_file",
         help="Allow fallback to non-10s TXT inputs (_1m/_20s/plain)",
     )
+    parser.add_argument(
+        "--anti-chase-price",
+        choices=("tick", "minute"),
+        default="tick",
+        help="추격차단 판정 가격: tick=시뮬 현재가(보간 포함, 기본), minute=확정된 실제 1분봉 종가",
+    )
     args = parser.parse_args()
 
 
@@ -3636,6 +3704,11 @@ def main() -> None:
         TRAILING_STOP_FROM_PEAK = abs(float(args.trail))
 
     LOG_SUMMARY_MODE = bool(args.summary)
+    ANTI_CHASE_PRICE_MODE = str(args.anti_chase_price)
+    GATE_DECISION_PATH = log_dir / (
+        f"{args.date}_gate_decisions.jsonl" if ANTI_CHASE_PRICE_MODE == "tick"
+        else f"{args.date}_gate_decisions_{ANTI_CHASE_PRICE_MODE}.jsonl"
+    )
     COMPARE_FEE_BUY_RATE = max(0.0, float(args.compare_fee_buy))
     COMPARE_FEE_SELL_RATE = max(0.0, float(args.compare_fee_sell))
     COMPARE_SLIPPAGE_RATE = max(0.0, float(args.compare_slippage))

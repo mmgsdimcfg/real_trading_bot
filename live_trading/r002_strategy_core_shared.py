@@ -2012,6 +2012,33 @@ def anti_chase_day_gate(
     return True, None
 
 
+def anti_chase_day_metrics(
+    price: float | None, day_open: float | None, day_vwap: float | None,
+) -> dict:
+    """[2026-10-05] 게이트 판정 기록용(Codex 2차 검토) - ENABLE_ANTI_CHASE_DAY_GATE와 무관하게 당일 시가/VWAP 대비
+    상승률과 임계값 초과 여부를 계산한다. 판정 자체는 anti_chase_day_gate가 하고, 이 함수는 기록/사후 분석 전용."""
+    def _pct(ref):
+        if price is None or price <= 0 or ref is None or not ref > 0:
+            return None
+        return (float(price) / float(ref) - 1.0) * 100.0
+
+    rise_pct = _pct(day_open)
+    gap_pct = _pct(day_vwap)
+    block_open = bool(
+        rise_pct is not None and ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT > 0 and rise_pct >= ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT
+    )
+    block_vwap = bool(
+        gap_pct is not None and ANTI_CHASE_MAX_VWAP_GAP_PCT > 0 and gap_pct >= ANTI_CHASE_MAX_VWAP_GAP_PCT
+    )
+    return {
+        "rise_from_open_pct": None if rise_pct is None else round(rise_pct, 3),
+        "vwap_gap_pct": None if gap_pct is None else round(gap_pct, 3),
+        "would_block_open": block_open,
+        "would_block_vwap": block_vwap,
+        "would_block": block_open or block_vwap,
+    }
+
+
 def passes_opening_gap_volume_gate(
     code: str,
     current_dt: datetime,

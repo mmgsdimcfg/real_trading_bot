@@ -21,6 +21,13 @@ Update log format (append only):
 
 Update log:
 - [2026-10-05] type=feat owner=claude
+    summary: 사용자 요청(Codex 2차 검토 권고 "게이트 판정 기록") - record_gate_decision(): r005 _019 추격차단 판정과
+      점심/진입창 관찰(shadow) 판정을 data/live_runtime/gate_decisions_YYYYMMDD.jsonl에 기록(종목/종류/결과별 1분 1건).
+      _001에서 점심/진입창 때문에 막힌 경우 r005 evaluate_entry_time_shadow() 호출(상태 사본, 주문 없음).
+      r001 ENABLE_GATE_DECISION_LOG. 사후 수익률 집계는 data_simulation/g009_gate_decision_report.py.
+    impact: live (r003) - 기록 파일 + 점심 구간 조회 API 증가(정규 시간대와 같은 수준), 매매 판단 무변경
+    compatibility: backward-compatible (롤백: ENABLE_GATE_DECISION_LOG=False)
+- [2026-10-05] type=feat owner=claude
     summary: 사용자 요청("NXT 장 운용 여부에 따라 강제 청산 연동") - run_scheduled_liquidations: ENABLE_NXT_SESSION=True면
       15:20 정규장 청산에서 NXT 가능 종목을 건너뛰고([REGULAR CLOSE DEFER]) 19:59:58(AFTERNOON_NXT_FORCE_EXIT)에
       새로 조회한 현재가 지정가로 1번만 청산(place_sell_order limit_price, 재주문/정정 없음). NXT 불가 종목은 15:20 청산 유지.
@@ -684,6 +691,7 @@ from r001_define_config import (
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
+    ENABLE_GATE_DECISION_LOG,
     LIVE_PRICE_BB_BUFFER_PCT,
     LIVE_PRICE_CROSS_CONFIRM_POLLS,
     LIVE_PRICE_CROSS_CONFIRM_SECONDS,
@@ -757,6 +765,7 @@ from r001_define_config import (
 from r002_strategy_core_shared import (
     R76StrategyConfig,
     is_regular_new_entry_blocked_time,
+    is_midday_no_entry_time,
     gapdip_shadow_step,
     calculate_indicators,
     check_sell_condition as shared_check_sell_condition,
@@ -768,7 +777,9 @@ from r002_strategy_core_shared import (
     BUY_SCORE_RULES,
 )
 
-from r005_buy_conditions import BuyContext, BuyServices, BuyState, RiskState, check_buy_conditions
+from r005_buy_conditions import (
+    BuyContext, BuyServices, BuyState, RiskState, check_buy_conditions, evaluate_entry_time_shadow,
+)
 from r006_sell_conditions import SellContext, SellServices, SellState, evaluate_sell_conditions
 
 BUY_SCORE_MAX = sum(rule.max_score for rule in BUY_SCORE_RULES)
@@ -1925,6 +1936,26 @@ def run_gapdip_shadow(
         )
         log(f"  {msg}")
         log_trade(msg)
+
+
+_GATE_LOG_LAST: dict[tuple, str] = {}
+
+
+def record_gate_decision(rec: dict) -> None:
+    """[2026-10-05] 게이트 판정 1건을 data/live_runtime/gate_decisions_YYYYMMDD.jsonl에 한 줄로 추가한다
+    (r001 ENABLE_GATE_DECISION_LOG). 같은 종목/종류/결과는 1분에 1건만 남긴다(폴링마다 중복 방지). 실패해도 무시."""
+    try:
+        ts = str(rec.get("ts") or datetime.now().isoformat(timespec="seconds"))
+        key = (rec.get("code"), rec.get("kind"), rec.get("result"))
+        minute = ts[:16]
+        if _GATE_LOG_LAST.get(key) == minute:
+            return
+        _GATE_LOG_LAST[key] = minute
+        path = LIVE_RUNTIME_DIR / f"gate_decisions_{ts[:10].replace('-', '')}.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:
+        log(f"  [GATE LOG] write failed: {exc}")
 
 
 _DAY_REF_CACHE: dict[str, tuple[datetime, float | None, float | None]] = {}
@@ -4487,6 +4518,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         get_order_spec=get_order_spec,
         fetch_orderbook_totals=_fetch_orderbook_totals,
         format_reject_detail=_buy_reject_detail,
+        record_gate_decision=record_gate_decision if ENABLE_GATE_DECISION_LOG else None,
     )
     current_trade_date = now.date()
     loop_consecutive_errors = 0
@@ -4818,7 +4850,25 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         ),
                         risk=risk, services=buy_services,
                     )
-                    if check_buy_conditions(buy_ctx).approved:
+                    _buy_decision = check_buy_conditions(buy_ctx)
+                    # [2026-10-05] 점심 금지/진입 허용창 때문에 _001에서 막힌 종목의 관찰(shadow) 기록 - 상태 사본으로
+                    # 평가하므로 실제 매수 판정에는 영향 없음(r005 evaluate_entry_time_shadow).
+                    if (
+                        ENABLE_GATE_DECISION_LOG
+                        and not _buy_decision.approved
+                        and _buy_decision.failed is not None and _buy_decision.failed.no == 1
+                        and is_regular_session(current_dt)
+                        and current_dt.time() < REGULAR_NEW_ENTRY_CUTOFF
+                        and is_regular_new_entry_blocked_time(current_dt.time())
+                    ):
+                        try:
+                            evaluate_entry_time_shadow(
+                                buy_ctx,
+                                "MIDDAY_SHADOW" if is_midday_no_entry_time(current_dt.time()) else "ENTRY_WINDOW_SHADOW",
+                            )
+                        except Exception as exc:
+                            log(f"  [GATE SHADOW] {symbol_label} error: {exc}")
+                    if _buy_decision.approved:
                         # 모든 조건 통과 - _024가 traded_today/signal_buy_bar를 '예약'해 둔 상태다.
                         buy_reason, prev_bar, qty = buy_ctx.buy_reason, buy_ctx.prev_bar, buy_ctx.qty
                         session, buy_detail, norm_code = buy_ctx.session, buy_ctx.buy_detail, buy_ctx.norm_code
