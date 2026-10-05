@@ -7,3 +7,7 @@ data_simulation/shared/data/
 data_simulation/shared/logs/
 
 .vscode/
+
+# 매일 g002/r003이 다시 쓰는 당일 감시목록(실행 데이터) - 커밋하지 않음
+live_trading/r004_trade_watchlist_today.txt
+live_trading/active_watchlist.txt
