@@ -406,6 +406,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
+import math
+
 import pandas as pd
 from r001_define_config import (
     ADX_PERIOD,
@@ -1923,6 +1925,79 @@ def check_1min_dead_cross(
             return True, "1MIN_BB_MID_DEAD_CROSS_LOOKBACK", lb - 2
 
     return False, "1MIN_NO_BB_MID_DEAD_CROSS", 0
+
+
+def _last_num(frame: pd.DataFrame | None, col: str, back: int = 1) -> float:
+    """마지막(back번째) 값. 없음/비수치/무한대는 NaN."""
+    if frame is None or len(frame) < back or col not in frame.columns:
+        return float("nan")
+    value = float(pd.to_numeric(frame[col].iloc[-back], errors="coerce"))
+    return value if math.isfinite(value) else float("nan")
+
+
+def _bar_age_seconds(frame: pd.DataFrame | None, now) -> float:
+    try:
+        if frame is None or len(frame) == 0:
+            return float("nan")
+        return float((pd.Timestamp(now) - pd.Timestamp(frame.index[-1])).total_seconds())
+    except Exception:
+        return float("nan")
+
+
+def dc_regime_snapshot(
+    frame_3min: pd.DataFrame | None,
+    frame_1min: pd.DataFrame | None,
+    pnl_pct: float,
+    now,
+    deep_loss_pct: float,
+    max_bar_age_seconds: float,
+    max_1min_age_seconds: float = 150.0,
+) -> dict:
+    """[2026-10-06] 1분봉 데드크로스 청산의 3분봉 추세 연동 판정(r006 _011 / g003 공용, 순수 함수).
+
+    frame_3min은 반드시 "확정" 3분봉(종료시각 라벨)이어야 한다 - 인트라바(형성 중) 프레임 금지.
+    regime_up: 마지막 확정 3분봉 종가 > BB중심선 AND 중심선 >= 직전 중심선 AND 봉 나이 <= max_bar_age_seconds.
+    데이터 부족/NaN/오래된 봉은 UP으로 인정하지 않는다(Codex 1차: fail-closed = 기존처럼 매도).
+    hold_candidate: regime_up AND pnl > deep_loss_pct AND 1분봉 종가 >= 1분봉 BB하단."""
+    c3, m3, m3p = _last_num(frame_3min, "close"), _last_num(frame_3min, "BB_MIDDLE"), _last_num(frame_3min, "BB_MIDDLE", 2)
+    c1, m1, l1 = _last_num(frame_1min, "close"), _last_num(frame_1min, "BB_MIDDLE"), _last_num(frame_1min, "BB_LOWER")
+    age = _bar_age_seconds(frame_3min, now)
+    age1 = _bar_age_seconds(frame_1min, now)
+    # [Codex r2] 미래 라벨(음수 나이)이나 오래된 1분봉은 신뢰하지 않는다 - 1분봉이 신선하지 않으면 1분봉 값은 없음 취급.
+    if pd.isna(age1) or not (0 <= age1 <= max_1min_age_seconds):
+        c1 = m1 = l1 = float("nan")
+    valid = not any(pd.isna(v) for v in (c3, m3, m3p, age)) and m3 > 0 and m3p > 0
+    regime_up = bool(valid and c3 > m3 and m3 >= m3p and 0 <= age <= max_bar_age_seconds)
+    above_lower = bool(not pd.isna(c1) and not pd.isna(l1) and c1 >= l1)
+    hold_candidate = bool(regime_up and pnl_pct > deep_loss_pct and above_lower)
+    return {
+        "regime_up": regime_up,
+        "hold_candidate": hold_candidate,
+        "c3": c3, "bb_mid3": m3,
+        "dist3_pct": ((c3 / m3 - 1.0) * 100.0) if valid else float("nan"),
+        "slope3_pct": ((m3 / m3p - 1.0) * 100.0) if valid else float("nan"),
+        "bar3_age_s": age,
+        "bar1_age_s": age1,
+        "c1": c1, "bb_mid1": m1, "bb_low1": l1,
+    }
+
+
+def dc_regime_armed_action(snap: dict, pnl_pct: float, deep_loss_pct: float) -> str:
+    """[2026-10-06] armed(3분봉 UP이라 데드크로스 매도를 보류한) 포지션의 다음 행동. cross 감지와 무관하게 매 틱 평가.
+    청산 조건을 회복 조건보다 먼저 본다(Codex 1차). 반환: "EXIT_DEEP_LOSS" | "EXIT_BB_LOWER" | "EXIT_REGIME_FLIP"
+    | "DISARM"(1분봉 종가가 BB중심선 위로 회복) | "HOLD". 1분봉 지표가 없으면 3분봉 판정만으로 보수적으로 청산."""
+    c1, m1, l1 = snap.get("c1"), snap.get("bb_mid1"), snap.get("bb_low1")
+    if pnl_pct <= deep_loss_pct:
+        return "EXIT_DEEP_LOSS"
+    if c1 is None or m1 is None or pd.isna(c1) or pd.isna(m1):
+        return "HOLD" if snap.get("regime_up") else "EXIT_REGIME_FLIP"
+    if l1 is not None and not pd.isna(l1) and c1 < l1:
+        return "EXIT_BB_LOWER"
+    if not snap.get("regime_up") and c1 < m1:
+        return "EXIT_REGIME_FLIP"
+    if c1 >= m1:
+        return "DISARM"
+    return "HOLD"
 
 
 def is_midday_no_entry_time(t) -> bool:

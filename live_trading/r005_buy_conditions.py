@@ -264,7 +264,7 @@ def _reject_hybrid(ctx: BuyContext, buy_reason: str) -> None:
     )
     if ctx.steps_text:
         detail = f"{detail} | STEPS {ctx.steps_text}"
-    ctx.log(f"  [REJECT  ] {ctx.symbol_label} | {detail}")
+    ctx.log(f"  [REJECT      ] {ctx.symbol_label} | {detail}")
 
 
 def _context_gate(ctx: BuyContext, gate_name: str) -> bool:
@@ -292,7 +292,7 @@ def _002_session_open_warmup(ctx: BuyContext) -> bool:
         elapsed = (ctx.current_dt - ctx.session_open_dt).total_seconds()
         if elapsed < STARTUP_WARMUP_SECONDS:
             ctx.log(
-                f"  [REJECT  ] {ctx.symbol_label} | SESSION_OPEN_WARMUP | "
+                f"  [REJECT      ] {ctx.symbol_label} | SESSION_OPEN_WARMUP | "
                 f"elapsed={elapsed:.0f}s / {STARTUP_WARMUP_SECONDS}s | "
                 f"session_open={ctx.session_open_dt:%H:%M:%S}"
             )
@@ -310,7 +310,7 @@ def _004_same_bar_signal_dedup(ctx: BuyContext) -> bool:
 
 def _005_no_open_buy_exposure(ctx: BuyContext) -> bool:
     if ctx.api.has_buy_exposure(ctx.norm_code):
-        ctx.log(f"  {ctx.symbol_label} [BUY SKIP] | ALREADY_TRADED_TODAY_UNTIL_SELL")
+        ctx.log(f"  [BUY SKIP    ] {ctx.symbol_label} | ALREADY_TRADED_TODAY_UNTIL_SELL")
         return False
     return True
 
@@ -318,7 +318,7 @@ def _005_no_open_buy_exposure(ctx: BuyContext) -> bool:
 def _006_hard_stop_reentry_block(ctx: BuyContext) -> bool:
     # 당일 HARD_STOP 발생 종목 재진입 차단
     if HARD_STOP_BLOCK_REENTRY_TODAY and ctx.norm_code in ctx.state.hard_stop_today_codes:
-        ctx.log(f"  {ctx.symbol_label} [BUY SKIP] | HARD_STOP_REENTRY_BLOCKED_TODAY")
+        ctx.log(f"  [BUY SKIP    ] {ctx.symbol_label} | HARD_STOP_REENTRY_BLOCKED_TODAY")
         return False
     return True
 
@@ -328,7 +328,7 @@ def _007_stoploss_circuit_breaker(ctx: BuyContext) -> bool:
     until = ctx.risk.circuit_breaker_until
     if until is not None and ctx.current_dt < until:
         ctx.log(
-            f"  {ctx.symbol_label} [BUY SKIP] | CIRCUIT_BREAKER_ACTIVE until={until:%H:%M:%S} "
+            f"  [BUY SKIP    ] {ctx.symbol_label} | CIRCUIT_BREAKER_ACTIVE until={until:%H:%M:%S} "
             f"count={ctx.risk.hard_stop_daily_count}"
         )
         return False
@@ -456,7 +456,7 @@ def _018_excessive_rise_from_prev_close(ctx: BuyContext) -> bool:
     ):
         ctx.state.buy_confirm_state.pop(ctx.code, None)
         ctx.log(
-            f"  [REJECT  ] {ctx.symbol_label} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
+            f"  [REJECT      ] {ctx.symbol_label} | EXCESSIVE_RISE_FROM_PREV_CLOSE_"
             f"{rise_ratio*100:.2f}%_GE_{MAX_BUY_RISE_PCT_FROM_PREV_CLOSE*100:.2f}% | "
             f"prev_close={float(prev_close):,.0f} live={ctx.price:,.0f}"
         )
@@ -477,7 +477,7 @@ def _019_anti_chase_day_extension(ctx: BuyContext) -> bool:
     ctx.day_open, ctx.day_vwap = ctx.services.fetch_day_ref_prices(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
     if ctx.day_open is None or ctx.day_vwap is None:
         ctx.log(
-            f"  [ANTI_CHASE] {ctx.symbol_label} | REF_MISSING(fail-open) | "
+            f"  [ANTI_CHASE  ] {ctx.symbol_label} | REF_MISSING(fail-open) | "
             f"open={ctx.day_open} vwap={ctx.day_vwap} live={ctx.price:,.0f}"
         )
     ok, reason = anti_chase_day_gate(ctx.price, ctx.day_open, ctx.day_vwap)
@@ -486,7 +486,7 @@ def _019_anti_chase_day_extension(ctx: BuyContext) -> bool:
         ctx.state.buy_confirm_state.pop(ctx.code, None)
         open_txt = f"{ctx.day_open:,.0f}" if ctx.day_open else "nan"
         vwap_txt = f"{ctx.day_vwap:,.1f}" if ctx.day_vwap else "nan"
-        ctx.log(f"  [REJECT  ] {ctx.symbol_label} | {reason} | open={open_txt} vwap={vwap_txt} live={ctx.price:,.0f}")
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | {reason} | open={open_txt} vwap={vwap_txt} live={ctx.price:,.0f}")
         return False
     return True
 
@@ -507,7 +507,7 @@ def _record_gate(ctx: BuyContext, kind: str, result: str, reason: str | None, **
         rec.update(extra)
         rec_fn(rec)
     except Exception as exc:  # 기록 실패는 매수 판정에 영향 주지 않는다
-        ctx.log(f"  [GATE LOG] {ctx.symbol_label} | record failed: {exc}")
+        ctx.log(f"  [GATE LOG    ] {ctx.symbol_label} | record failed: {exc}")
 
 
 def _020_opening_gap_volume_gate(ctx: BuyContext) -> bool:
@@ -521,7 +521,7 @@ def _020_opening_gap_volume_gate(ctx: BuyContext) -> bool:
     if not gap_ok:
         ctx.state.buy_confirm_state.pop(ctx.code, None)
         gap_txt = f"{ctx.rise_ratio*100:.2f}%" if ctx.rise_ratio is not None else "nan"
-        ctx.log(f"  [REJECT  ] {ctx.symbol_label} | {gap_reason} | gap={gap_txt} live={ctx.price:,.0f}")
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | {gap_reason} | gap={gap_txt} live={ctx.price:,.0f}")
         return False
     return True
 
@@ -568,7 +568,7 @@ def _021_consecutive_poll_confirm(ctx: BuyContext) -> bool:
     if confirm_count < BUY_CONSECUTIVE_CONFIRM_COUNT:
         reset_txt = f" | confirm_reset={reset_reason}" if reset_reason else ""
         ctx.log(
-            f"  [BUY HOLD] {ctx.symbol_label} | reason=WAIT_NEXT_POLL_CONFIRM | "
+            f"  [BUY HOLD    ] {ctx.symbol_label} | reason=WAIT_NEXT_POLL_CONFIRM | "
             f"count={confirm_count}/{BUY_CONSECUTIVE_CONFIRM_COUNT} | "
             f"live={ctx.price:,.0f} bb_mid={_num(ctx.buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} bar={ctx.bar_time:%H:%M:%S}"
             f"{reset_txt}"
@@ -580,7 +580,7 @@ def _021_consecutive_poll_confirm(ctx: BuyContext) -> bool:
 def _022_affordable_buy_qty(ctx: BuyContext) -> bool:
     ctx.qty = ctx.api.get_affordable_buy_qty(ctx.code, ctx.price, ctx.current_dt, ctx.nxt_tradeable)
     if ctx.qty <= 0:
-        ctx.log(f"  [REJECT  ] {ctx.symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={ctx.price:,.0f}")
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={ctx.price:,.0f}")
         return False
     return True
 
@@ -588,7 +588,7 @@ def _022_affordable_buy_qty(ctx: BuyContext) -> bool:
 def _023_fresh_live_price(ctx: BuyContext) -> bool:
     if ctx.services.is_stale_live_price_source(ctx.price_source):
         ctx.log(
-            f"  [REJECT  ] {ctx.symbol_label} | STALE_LIVE_PRICE | "
+            f"  [REJECT      ] {ctx.symbol_label} | STALE_LIVE_PRICE | "
             f"source={ctx.price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
         )
         return False
@@ -624,7 +624,7 @@ def _024_orderbook_ask_not_thin(ctx: BuyContext) -> bool:
     if ask_total is not None and bid_total is not None and bid_total > 0:
         if ask_total < bid_total * 0.5:
             ctx.log(
-                f"  [REJECT  ] {ctx.symbol_label} | ORDERBOOK_ASK_THIN | "
+                f"  [REJECT      ] {ctx.symbol_label} | ORDERBOOK_ASK_THIN | "
                 f"ask={ask_total:,.0f} bid={bid_total:,.0f} ratio={ask_total / bid_total:.2f}"
             )
             ctx.state.traded_today.discard(ctx.norm_code)

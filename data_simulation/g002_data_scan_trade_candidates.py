@@ -377,6 +377,7 @@ import math
 import random
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -449,6 +450,31 @@ LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 �
 LOW_UP_DAYS_TOLERANCE = 1
 SCORE_DOT_SLOTS = 9         # verbose 스캔 로그의 점수 동그라미 고정폭(칸 수) - code_name 정렬용
 SCORE_DOT_EMPTY = "⚫"       # 빈 칸(탈락 전체, 후보의 남는 칸) 채움 아이콘
+
+
+# [2026-10-06] 종목 칸 고정폭 - r003 _symbol_log_label과 같은 규칙(코드6+"_"+종목명 10칸 = 17칸, 한글 2칸/영문 1칸,
+# 10칸 넘는 종목명은 9칸까지 + "~"). 사용자 요청: 진행 로그의 종목명 정렬.
+SYMBOL_LOG_WIDTH = 17
+SYMBOL_NAME_LOG_WIDTH = 10
+
+
+def _display_width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1 for ch in text)
+
+
+def _symbol_log_label(code: str, name: str) -> str:
+    name = str(name or "").strip()
+    if _display_width(name) > SYMBOL_NAME_LOG_WIDTH:
+        out, used = "", 0
+        for ch in name:
+            w = _display_width(ch)
+            if used + w > SYMBOL_NAME_LOG_WIDTH - 1:
+                break
+            out += ch
+            used += w
+        name = out + "~"
+    label = f"{code}_{name}" if name else str(code)
+    return label + " " * max(0, SYMBOL_LOG_WIDTH - _display_width(label))
 FALLBACK_RELAXABLE_FAIL_REASONS = {
     "low_score", "liquidity_below_market_dual",
 }  # fallback may override only these; trend/candle-pattern fail_reasons block rescue
@@ -2480,11 +2506,11 @@ def scan(
                 else:
                     dot_icon = "🟣"
                 dots = dot_icon * filled_count + SCORE_DOT_EMPTY * (SCORE_DOT_SLOTS - filled_count)
-                print(f"[{idx:04d}/{total}] {dots} {code}_{name} (score={candidate['score']:.2f})          ")
+                print(f"[{idx:04d}/{total}] {dots} {_symbol_log_label(code, name)} | score={candidate['score']:.2f}          ")
             else:
                 dots = SCORE_DOT_EMPTY * SCORE_DOT_SLOTS
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
-                print(f"[{idx:04d}/{total}] {dots} {code}_{name} ({', '.join(reasons)})          ")
+                print(f"[{idx:04d}/{total}] {dots} {_symbol_log_label(code, name)} | {', '.join(reasons)}          ")
 
     liquidity_filter_info = apply_market_relative_liquidity_filters(candidates, market_map)
 
