@@ -753,6 +753,9 @@ from r001_define_config import (
     BUY_ORDER_REPRICE_AFTER_SECONDS,
     BUY_ORDER_REPRICE_MAX_ATTEMPTS,
     BUY_ORDER_REPRICE_MAX_CHASE_PCT,
+    SELL_ORDER_REPRICE_AFTER_SECONDS,
+    SELL_ORDER_REPRICE_MAX_ATTEMPTS,
+    SELL_UNKNOWN_RECONCILE_SECONDS,
     PENDING_STATUS_BACKOFF_MAX_SECONDS,
     SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
     WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS,
@@ -1110,7 +1113,7 @@ def log_trade(msg: str) -> None:
             handler.flush()
         except Exception:
             pass
-    log(f"[TRADE   ] {msg}")
+    log(f"  [TRADE       ] {msg}")
 
 
 def _log_trade_block(lines: list[str], event_time: datetime | None = None, mirror_main_log: bool = False) -> None:
@@ -1480,7 +1483,7 @@ def _probe_nxt_tradeable_via_stock_info(code: str) -> bool | None:
     try:
         result = stock_info_fn(prdt_type_cd="300", pdno=code)
     except Exception as exc:
-        log(f"WARNING: search_stock_info failed for {code}: {exc}")
+        log(f"  [WARN        ] search_stock_info failed for {code}: {exc}")
         return None
 
     if result is None or getattr(result, "empty", True):
@@ -1510,7 +1513,7 @@ def is_nxt_tradeable(code: str) -> bool:
         return tradeable
 
     if not _NXT_PROBE_FAILED_LOGGED:
-        log("WARNING: NXT probe failed; defaulting to False for unknown codes")
+        log("  [WARN        ] NXT probe failed; defaulting to False for unknown codes")
         _NXT_PROBE_FAILED_LOGGED = True
 
     NXT_TRADABLE_CACHE[code] = False
@@ -1666,7 +1669,7 @@ def _fetch_bid_ask_price(code: str, market_div: str) -> tuple[float | None, floa
         ask = float(row.get("askp1") or 0) or None
         return bid, ask
     except Exception as exc:
-        log(f"WARNING: 호가 조회 실패 {code}: {exc}")
+        log(f"  [WARN        ] 호가 조회 실패 {code}: {exc}")
         return None, None
 
 
@@ -1685,7 +1688,7 @@ def _fetch_orderbook_totals(code: str, market_div: str) -> tuple[float | None, f
         bid_total = float(row.get("total_bidp_rsqn") or 0) or None
         return ask_total, bid_total
     except Exception as exc:
-        log(f"WARNING: 호가잔량 조회 실패 {code}: {exc}")
+        log(f"  [WARN        ] 호가잔량 조회 실패 {code}: {exc}")
         return None, None
 
 
@@ -1764,9 +1767,23 @@ def _normalize_intraday_frame(df: pd.DataFrame, target_date: str, nxt_tradeable:
     if out.empty:
         return None
 
+    # [2026-10-06] KIS 분봉의 stck_cntg_hour는 그 1분봉의 "시작" 시각이고(예: 102200 = 10:22:00~10:22:59),
+    # 가장 최근 행은 아직 형성 중인 봉이다(실측: 10:22:31/10:22:52 두 번 조회 시 102200 행의 종가/거래량이
+    # 계속 바뀜). 기존에는 시작 시각 그대로 label/closed="right"로 묶어서 (1) 1분봉은 형성 중인 봉이
+    # "확정봉" 필터(index <= floor(now))를 통과해 데드크로스/골든크로스가 실시간 현재가로 판정됐고,
+    # (2) 3분봉은 정규 경계(09:00/09:03..)보다 1분 밀린 구간(09:01~09:03분 봉)으로 묶이며 마지막 1분이
+    # 형성 중이었다. 행 시각을 "종료" 시각(+1분)으로 옮겨 표준 경계의 확정봉만 남도록 한다.
+    out.index = out.index + pd.Timedelta(minutes=1)
+
+    bar_minutes = max(1, int(pd.Timedelta(bar_interval).total_seconds() // 60))
     out = out.resample(bar_interval, label="right", closed="right").agg(
-        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "time": "count"}
     ).dropna(subset=["open", "high", "low", "close"])
+    # [2026-10-06] 1회 조회는 최근 30행뿐이라 가장 오래된 3분 구간이 1~2분만 담긴 부분봉일 수 있다 -
+    # _merge_bar_frame(keep="last")가 캐시의 완전한 봉을 이 부분봉으로 덮어쓰지 않도록 버린다.
+    if bar_minutes > 1 and not out.empty and int(out["time"].iloc[0]) < bar_minutes:
+        out = out.iloc[1:]
+    out = out.drop(columns=["time"])
 
     return out if not out.empty else None
 
@@ -1789,7 +1806,7 @@ def fetch_3min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
                 fid_etc_cls_code="",
             )
         except Exception as exc:
-            log(f"WARNING: chart fetch failed for {code} ({market_div}): {exc}")
+            log(f"  [WARN        ] chart fetch failed for {code} ({market_div}): {exc}")
             continue
 
         frame = _normalize_intraday_frame(raw_df, today_str, nxt_tradeable)
@@ -1824,7 +1841,7 @@ def fetch_1min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
                 fid_etc_cls_code="",
             )
         except Exception as exc:
-            log(f"WARNING: 1min chart fetch failed for {code} ({market_div}): {exc}")
+            log(f"  [WARN        ] 1min chart fetch failed for {code} ({market_div}): {exc}")
             continue
 
         frame = _normalize_intraday_frame(raw_df, today_str, nxt_tradeable, bar_interval="1min")
@@ -1851,7 +1868,7 @@ def fetch_live_price(code: str, now: datetime, nxt_tradeable: bool) -> float | N
                 fid_input_iscd=code,
             )
         except Exception as exc:
-            log(f"WARNING: live price fetch failed for {code} ({market_div}): {exc}")
+            log(f"  [WARN        ] live price fetch failed for {code} ({market_div}): {exc}")
             continue
 
         if quote_df is None or quote_df.empty:
@@ -1917,13 +1934,13 @@ def run_gapdip_shadow(
             st["prev_close"] = fetch_prev_close(code, now, nxt_tradeable)
             st["day_open"] = fetch_day_ref_prices(code, now, nxt_tradeable)[0]
         except Exception as exc:
-            log(f"  [GAPDIP SHADOW] {code} ref fetch failed: {exc}")
+            log(f"  [GAPDIP SHDW ] {_sym_label(code)} ref fetch failed: {exc}")
     event = gapdip_shadow_step(st, t, float(price))
     if event == "ENTRY":
         gap = (st["day_open"] / st["prev_close"] - 1.0) * 100.0
         dret = (st["entry"] / st["day_open"] - 1.0) * 100.0
         msg = (
-            f"[GAPDIP SHADOW] ENTRY {code}({name}) | price={st['entry']:,.0f} gap={gap:.2f}% "
+            f"[GAPDIP SHDW ] ENTRY {code}({name}) | price={st['entry']:,.0f} gap={gap:.2f}% "
             f"day_ret={dret:.2f}% open={st['day_open']:,.0f} prev_close={st['prev_close']:,.0f} (주문 없음)"
         )
         log(f"  {msg}")
@@ -1931,7 +1948,7 @@ def run_gapdip_shadow(
     elif event == "EXIT":
         gross = (st["exit"] / st["entry"] - 1.0) * 100.0
         msg = (
-            f"[GAPDIP SHADOW] EXIT {code}({name}) | reason={st['exit_reason']} entry={st['entry']:,.0f}@{st['entry_t']} "
+            f"[GAPDIP SHDW ] EXIT {code}({name}) | reason={st['exit_reason']} entry={st['entry']:,.0f}@{st['entry_t']} "
             f"exit={st['exit']:,.0f}@{st['exit_t']} gross={gross:+.2f}% net={gross - GAPDIP_COST_PCT:+.2f}% (주문 없음)"
         )
         log(f"  {msg}")
@@ -1955,7 +1972,7 @@ def record_gate_decision(rec: dict) -> None:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
     except Exception as exc:
-        log(f"  [GATE LOG] write failed: {exc}")
+        log(f"  [GATE LOG    ] write failed: {exc}")
 
 
 _DAY_REF_CACHE: dict[str, tuple[datetime, float | None, float | None]] = {}
@@ -2234,7 +2251,10 @@ def _num(candle: pd.Series, key: str) -> float:
     return float(value) if value is not None and not pd.isna(value) else float("nan")
 
 
-SYMBOL_LOG_WIDTH = 25
+# [2026-10-06] 종목코드(6)+"_"+종목명 10칸(한글 5자, 한글=2칸/영문=1칸) = 17칸 고정. 더 긴 종목명은
+# 9칸까지 자르고 "~"를 붙여 10칸에 맞춘다(사용자 요청 - 태그 뒤 종목 칸 정렬).
+SYMBOL_LOG_WIDTH = 17
+SYMBOL_NAME_LOG_WIDTH = 10
 
 
 def _display_width(text: str) -> int:
@@ -2244,10 +2264,31 @@ def _display_width(text: str) -> int:
     return width
 
 
+def _fit_display_width(text: str, width: int) -> str:
+    """표시폭(한글 2칸) 기준으로 width를 넘으면 width-1칸까지 자르고 "~"를 붙인다."""
+    if _display_width(text) <= width:
+        return text
+    out, used = "", 0
+    for char in text:
+        w = _display_width(char)
+        if used + w > width - 1:
+            break
+        out += char
+        used += w
+    return out + "~"
+
+
 def _symbol_log_label(code: str, name: str, width: int = SYMBOL_LOG_WIDTH) -> str:
-    label = f"{code}_{name}" if name else code
+    name = _fit_display_width(str(name).strip(), SYMBOL_NAME_LOG_WIDTH) if name else ""
+    label = f"{code}_{name}" if name else str(code)
     pad = max(0, width - _display_width(label))
     return label + " " * pad
+
+
+def _sym_label(code: object) -> str:
+    """종목코드만 아는 로그용 - 전역 종목명 맵에서 이름을 찾아 _symbol_log_label과 같은 고정폭 라벨을 만든다."""
+    norm = str(code).strip().zfill(6)
+    return _symbol_log_label(norm, _SYMBOL_NAME_MAP.get(norm, ""))
 
 
 def _buy_reject_detail(
@@ -2416,6 +2457,7 @@ def _serialize_live_state(live_state: dict) -> dict:
             "tp3_done": bool(meta.get("tp3_done", False)),
             "pyramid_done": bool(meta.get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder(meta.get("surge_ladder")),
+            "dc_regime_hold": bool(meta.get("dc_regime_hold", False)),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded,
@@ -2459,7 +2501,7 @@ def load_live_state(date_str: str) -> dict:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        log(f"WARNING: live state load failed ({path}): {exc}")
+        log(f"  [WARN        ] live state load failed ({path}): {exc}")
         return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}, "gapdip_shadow": {}}
 
     positions_meta: dict[str, dict] = {}
@@ -2492,6 +2534,7 @@ def load_live_state(date_str: str) -> dict:
             "tp3_done": bool((meta or {}).get("tp3_done", False)),
             "pyramid_done": bool((meta or {}).get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder((meta or {}).get("surge_ladder")),
+            "dc_regime_hold": bool((meta or {}).get("dc_regime_hold", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded,
@@ -2546,7 +2589,7 @@ def _append_watchlist_change_history(current_dt: datetime, lines: list[str]) -> 
             for line in lines:
                 f.write(f"{stamp} {line}\n")
     except Exception as exc:
-        log(f"WARNING: watchlist change history write failed: {exc}")
+        log(f"  [WARN        ] watchlist change history write failed: {exc}")
 
 
 def _log_account_watchlist_mismatch(api, watch_map: dict[str, str]) -> None:
@@ -2554,7 +2597,7 @@ def _log_account_watchlist_mismatch(api, watch_map: dict[str, str]) -> None:
     watch_codes = {str(c).zfill(6) for c in watch_map}
     extra = sorted(open_codes - watch_codes)
     if extra:
-        log(f"WARNING: account holdings not in watchlist: {', '.join(extra)}")
+        log(f"  [WARN        ] account holdings not in watchlist: {', '.join(extra)}")
 
 
 def _rebalance_active_watchlist(
@@ -2674,14 +2717,14 @@ def _rebalance_active_watchlist(
     for code in reentered:
         st = reentry_state[code]
         log(
-            f"[ACTIVE REENTER] {code}_{watch_map.get(code, code)} | mode={REENTRY_MODE} "
+            f"  [ACT REENTER ] {_symbol_log_label(code, watch_map.get(code, ""))} | mode={REENTRY_MODE} "
             f"bot={st.get('bot')} filled={st.get('filled')} used={st.get('used', 0)}/{REENTRY_MAX_PER_CODE} | "
             f"active={len(active_set)} backup={len(backup_pool)}"
         )
         history_lines.append(f"[REENTER] {code}_{watch_map.get(code, code)} | mode={REENTRY_MODE}")
     for code in graduated:
         log(
-            f"[ACTIVE GRADUATE] {code}_{watch_map.get(code, code)} | reason=POSITION_OPENED | "
+            f"  [ACT GRADUATE] {_symbol_log_label(code, watch_map.get(code, ""))} | reason=POSITION_OPENED | "
             f"active={len(active_set)} backup={len(backup_pool)}"
         )
         history_lines.append(f"[GRADUATE] {code}_{watch_map.get(code, code)} | reason=POSITION_OPENED")
@@ -2689,7 +2732,7 @@ def _rebalance_active_watchlist(
         if reason.startswith("TIME_LIMIT"):
             backup_pool.append(code)
         log(
-            f"[ACTIVE DROPOUT] {code}_{watch_map.get(code, code)} | reason={reason} | "
+            f"  [ACT DROPOUT ] {_symbol_log_label(code, watch_map.get(code, ""))} | reason={reason} | "
             f"active={len(active_set)} backup={len(backup_pool)}"
         )
         history_lines.append(f"[DROPOUT] {code}_{watch_map.get(code, code)} | reason={reason}")
@@ -2701,14 +2744,14 @@ def _rebalance_active_watchlist(
         first_active_at[code] = current_dt
         promoted.append(code)
     for code in promoted:
-        log(f"[ACTIVE PROMOTE] {code}_{watch_map.get(code, code)} | active={len(active_set)} backup={len(backup_pool)}")
+        log(f"  [ACT PROMOTE ] {_symbol_log_label(code, watch_map.get(code, ""))} | active={len(active_set)} backup={len(backup_pool)}")
         history_lines.append(f"[PROMOTE] {code}_{watch_map.get(code, code)}")
     _append_watchlist_change_history(current_dt, history_lines)
 
     if not backup_pool and len(active_set) < ACTIVE_WATCHLIST_SIZE:
         if not warn_state.get("backup_pool_exhausted_logged"):
             log(
-                f"WARNING: backup_pool 소진 - active_set이 상한({ACTIVE_WATCHLIST_SIZE}) 밑으로 "
+                f"  [WARN        ] backup_pool 소진 - active_set이 상한({ACTIVE_WATCHLIST_SIZE}) 밑으로 "
                 f"유지됨 (active={len(active_set)})"
             )
             warn_state["backup_pool_exhausted_logged"] = True
@@ -2755,7 +2798,7 @@ def _write_active_watchlist_state(
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, ACTIVE_WATCHLIST_STATE_PATH)
     except Exception as exc:
-        log(f"WARNING: active watchlist state write failed: {exc}")
+        log(f"  [WARN        ] active watchlist state write failed: {exc}")
 
 
 def _write_active_watchlist_txt(
@@ -2775,7 +2818,7 @@ def _write_active_watchlist_txt(
                 f.write(f"{code},{watch_map.get(code, code)}\n")
         os.replace(tmp_path, ACTIVE_WATCHLIST_TXT_PATH)
     except Exception as exc:
-        log(f"WARNING: active watchlist txt write failed: {exc}")
+        log(f"  [WARN        ] active watchlist txt write failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -2836,6 +2879,7 @@ class TradingAPI:
             pos["tp3_done"] = bool(meta.get("tp3_done", pos.get("tp3_done", False)))
             pos["pyramid_done"] = bool(meta.get("pyramid_done", pos.get("pyramid_done", False)))
             pos["surge_ladder"] = _sanitize_surge_ladder(meta.get("surge_ladder") or pos.get("surge_ladder"))
+            pos["dc_regime_hold"] = bool(meta.get("dc_regime_hold", pos.get("dc_regime_hold", False)))
 
     def _record_position_meta(self, code: str, pos: dict) -> None:
         meta_map = self.live_state.setdefault("positions_meta", {})
@@ -2850,6 +2894,7 @@ class TradingAPI:
             "tp3_done": bool(pos.get("tp3_done", False)),
             "pyramid_done": bool(pos.get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder(pos.get("surge_ladder")),
+            "dc_regime_hold": bool(pos.get("dc_regime_hold", False)),
         }
 
     def _sync_live_state_from_positions(self) -> None:
@@ -2892,7 +2937,7 @@ class TradingAPI:
                 prcs_dvsn="00",
             )
         except Exception as exc:
-            log(f"WARNING: holdings sync failed: {exc}")
+            log(f"  [WARN        ] holdings sync failed: {exc}")
             return
 
         self._last_sync_at = datetime.now()
@@ -2900,7 +2945,7 @@ class TradingAPI:
         if df_holdings is None or df_holdings.empty:
             if self.positions:
                 log(
-                    "WARNING: holdings API empty but local positions non-empty; keeping previous positions"
+                    "  [WARN        ] holdings API empty but local positions non-empty; keeping previous positions"
                 )
             else:
                 self.positions.clear()
@@ -2952,6 +2997,7 @@ class TradingAPI:
                 "tp3_done": bool(prev.get("tp3_done", persisted.get("tp3_done", False))),
                 "pyramid_done": bool(prev.get("pyramid_done", persisted.get("pyramid_done", False))),
                 "surge_ladder": _sanitize_surge_ladder(prev.get("surge_ladder") or persisted.get("surge_ladder")),
+                "dc_regime_hold": bool(prev.get("dc_regime_hold", persisted.get("dc_regime_hold", False))),
             }
             self._record_position_meta(code, updated[code])
 
@@ -3050,7 +3096,7 @@ class TradingAPI:
                 excg_id_dvsn_cd="ALL",
             )
         except Exception as exc:
-            log(f"WARNING: order status query failed for {code}({side}): {exc}")
+            log(f"  [WARN        ] order status query failed for {code}({side}): {exc}")
             return None
 
         if df_orders is None or df_orders.empty:
@@ -3142,6 +3188,7 @@ class TradingAPI:
         pos["tp2_done"] = False
         pos["tp3_done"] = False
         pos["surge_ladder"] = None
+        pos["dc_regime_hold"] = False  # [2026-10-06] 새 진입은 3분봉 연동 보류(armed) 상태를 물려받지 않는다
         pos["entry_quantity"] = max(int(pos.get("entry_quantity", 0) or 0), filled_qty)
         if fill_price > 0:
             pos["buy_price"] = fill_price
@@ -3242,6 +3289,10 @@ class TradingAPI:
                 self._refresh_split_buy_legs(code, pending, now)
                 continue
 
+            if side == "sell" and pending.get("submission_unknown"):
+                self._reconcile_unknown_sell(code, pending, now)
+                continue
+
             pos = self.positions.get(code)
             status = self._fetch_today_order_status(code, side, now, str(pending.get("order_no", "")))
 
@@ -3266,7 +3317,7 @@ class TradingAPI:
                         terminal = remaining_qty <= 0 or cancel_yn == "Y" or rejected_qty >= order_qty
                         if filled_qty > 0 and terminal:
                             if pos is None:
-                                log(f"  [PYRAMID BUY WARN] {code} | 체결되었으나 기존 포지션을 찾을 수 없음 - 확정 보류")
+                                log(f"  [PYR WARN    ] {_sym_label(code)} | 체결되었으나 기존 포지션을 찾을 수 없음 - 확정 보류")
                             else:
                                 self._confirm_pending_buy(code, pending, pos, status)
                             continue
@@ -3285,7 +3336,7 @@ class TradingAPI:
                             and (now - submitted_at).total_seconds() >= BUY_ORDER_STALE_WARN_SECONDS
                         ):
                             log(
-                                f"  [PYRAMID BUY STALE] {code} | {int((now - submitted_at).total_seconds())}s 미체결 대기중 | "
+                                f"  [PYR STALE   ] {_sym_label(code)} | {int((now - submitted_at).total_seconds())}s 미체결 대기중 | "
                                 f"order_no={pending.get('order_no', '')}"
                             )
                         self._maybe_log_pending_progress(
@@ -3363,7 +3414,7 @@ class TradingAPI:
                     ):
                         _age = int((now - _sub_at).total_seconds())
                         log(
-                            f"  [BUY STALE] {code} | {_age}s 미체결 대기중 "
+                            f"  [BUY STALE   ] {_sym_label(code)} | {_age}s 미체결 대기중 "
                             f"| order_no={pending.get('order_no', '')} | 시장 변화로 체결 불가 가능성 높음"
                         )
                     self._maybe_log_pending_progress(
@@ -3403,6 +3454,10 @@ class TradingAPI:
                     or str(status.get("cancel_yn", "")) == "Y"
                     or int(status.get("rejected_qty", 0)) >= int(status.get("order_qty", pending.get("quantity", 0)))
                 ):
+                    # [2026-10-06] 우리가 _request_sell_reprice로 건 취소가 확인된 경우 - 새 bid로 재주문.
+                    if pending.get("cancel_inflight") and pending.get("reprice_pending"):
+                        self._resubmit_repriced_sell_order(code, pending, now)
+                        continue
                     self._maybe_log_pending_progress(
                         pending,
                         f"SELL closed without fill | {code} | reason={pending.get('reason', 'UNKNOWN')} | order_no={pending.get('order_no', '')}",
@@ -3410,6 +3465,19 @@ class TradingAPI:
                     )
                     self.pending_orders.pop(code, None)
                     continue
+
+                # [2026-10-06] NXT 매도 지정가(ask)가 체결 0주로 오래 걸려 있으면 취소 후 bid로 재주문.
+                _sell_sub_at = pending.get("submitted_at")
+                if (
+                    SELL_ORDER_REPRICE_AFTER_SECONDS > 0
+                    and pending.get("allow_reprice")
+                    and isinstance(_sell_sub_at, datetime)
+                    and int(status.get("filled_qty", 0)) <= 0
+                    and not pending.get("cancel_inflight")
+                    and int(pending.get("reprice_attempt", 0)) < SELL_ORDER_REPRICE_MAX_ATTEMPTS
+                    and (now - _sell_sub_at).total_seconds() >= SELL_ORDER_REPRICE_AFTER_SECONDS
+                ):
+                    self._request_sell_reprice(code, pending)
 
                 self._maybe_log_pending_progress(
                     pending,
@@ -3444,7 +3512,7 @@ class TradingAPI:
                 ovrs_icld_yn="N",
             )
         except Exception as exc:
-            log(f"WARNING: inquire_psbl_order failed for {code}: {exc}")
+            log(f"  [WARN        ] inquire_psbl_order failed for {code}: {exc}")
             return qty_by_budget
 
         if psbl_df is None or psbl_df.empty:
@@ -3481,7 +3549,7 @@ class TradingAPI:
 
         if qty_by_psbl <= 0:
             # 주문가 응답이 예상과 다르거나 수량/금액 해석이 안되면 과주문 방지 위해 보수적으로 0 처리
-            log(f"WARNING: psbl-order parse failed for {code}; force qty=0 to avoid over-order")
+            log(f"  [WARN        ] psbl-order parse failed for {code}; force qty=0 to avoid over-order")
             return 0
 
         return max(0, min(qty_by_budget, qty_by_psbl))
@@ -3552,7 +3620,7 @@ class TradingAPI:
                     and (now - submitted_at).total_seconds() >= BUY_ORDER_STALE_WARN_SECONDS
                 ):
                     log(
-                        f"  [BUY LEG STALE] {code} | role=market | "
+                        f"  [BUY LEG STL ] {_sym_label(code)} | role=market | "
                         f"{int((now - submitted_at).total_seconds())}s 미체결 대기중 | 시장가인데 미체결 - 확인 필요"
                     )
                 self._maybe_log_pending_progress(
@@ -3628,7 +3696,7 @@ class TradingAPI:
         candidate = ask_price if attempt >= 2 else bid_price
         candidate = candidate or bid_price or ask_price
         if not candidate or candidate <= 0:
-            log(f"  [BUY REPRICE SKIP] {code} | leg={leg.get('role')} | 호가 조회 실패 - 다음 폴링에서 재시도")
+            log(f"  [BUY RP SKIP ] {_sym_label(code)} | leg={leg.get('role')} | 호가 조회 실패 - 다음 폴링에서 재시도")
             return
 
         give_up = False
@@ -3636,7 +3704,7 @@ class TradingAPI:
             max_price = reference_price * (1 + BUY_ORDER_REPRICE_MAX_CHASE_PCT / 100.0)
             if candidate > max_price:
                 log(
-                    f"  [BUY REPRICE ABANDON] {code} | leg={leg.get('role')} | candidate={candidate:,.0f} > "
+                    f"  [BUY RP ABAND] {_sym_label(code)} | leg={leg.get('role')} | candidate={candidate:,.0f} > "
                     f"max_chase={max_price:,.0f}(ref={reference_price:,.0f}+{BUY_ORDER_REPRICE_MAX_CHASE_PCT:.1f}%) "
                     f"| 추격 포기, 취소만 진행"
                 )
@@ -3662,23 +3730,23 @@ class TradingAPI:
                 excg_id_dvsn_cd=exchange,
             )
         except Exception as exc:
-            log(f"  [BUY REPRICE CANCEL ERROR] {code} | leg={leg.get('role')} | {exc}")
+            log(f"  [BUY CXL ERR ] {_sym_label(code)} | leg={leg.get('role')} | {exc}")
             return
 
         if not _order_succeeded(cancel_result):
-            log(f"  [BUY REPRICE CANCEL FAILED] {code} | leg={leg.get('role')} | {_extract_order_error_detail(cancel_result)}")
+            log(f"  [BUY CXL REJ ] {_sym_label(code)} | leg={leg.get('role')} | {_extract_order_error_detail(cancel_result)}")
             return
 
         leg["reprice_attempt"] = attempt
         leg["cancel_inflight"] = True
         if give_up:
             leg["reprice_pending"] = False
-            log(f"  [BUY REPRICE GIVEUP] {code} | leg={leg.get('role')} | attempt={attempt} | 취소 요청 완료, 재주문 없이 포기")
+            log(f"  [BUY RP QUIT ] {_sym_label(code)} | leg={leg.get('role')} | attempt={attempt} | 취소 요청 완료, 재주문 없이 포기")
         else:
             leg["reprice_pending"] = True
             leg["reprice_next_mode"] = next_price_mode
             log(
-                f"  [BUY REPRICE CANCEL] {code} | leg={leg.get('role')} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+                f"  [BUY RP CNCL ] {_sym_label(code)} | leg={leg.get('role')} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
                 f"next_mode={next_price_mode} | 취소 요청 완료, 확인되는 대로 재주문"
             )
 
@@ -3697,7 +3765,7 @@ class TradingAPI:
         affordable_qty = self.get_affordable_buy_qty(code, reference_price or 1.0, now, nxt_tradeable)
         qty = min(qty, int(affordable_qty))
         if qty <= 0:
-            log(f"  [BUY REPRICE ABORT] {code} | leg={leg.get('role')} | 재주문 여력 부족 - 포기")
+            log(f"  [BUY RP ABORT] {_sym_label(code)} | leg={leg.get('role')} | 재주문 여력 부족 - 포기")
             leg["done"] = True
             return
 
@@ -3708,14 +3776,14 @@ class TradingAPI:
             candidate = ask_price if price_mode == "ask" else bid_price
             candidate = candidate or bid_price or ask_price
             if not candidate or candidate <= 0:
-                log(f"  [BUY REPRICE SKIP] {code} | leg={leg.get('role')} | 호가 조회 실패 - 다음 폴링에서 재시도")
+                log(f"  [BUY RP SKIP ] {_sym_label(code)} | leg={leg.get('role')} | 호가 조회 실패 - 다음 폴링에서 재시도")
                 return  # leg 그대로 유지(reprice_pending=True) -> 다음 폴링에서 재시도
             ord_dvsn, ord_unpr, price_for_log = "00", str(int(round(candidate))), candidate
 
         order_result = self._submit_buy_order_cash(code, qty, ord_dvsn, ord_unpr, exchange, price_for_log or 0.0)
         if order_result is None or not _order_succeeded(order_result):
             detail = _extract_order_error_detail(order_result) if order_result is not None else "SUBMIT_EXCEPTION"
-            log(f"  [BUY REPRICE RESUBMIT FAILED] {code} | leg={leg.get('role')} | {detail}")
+            log(f"  [BUY RSUB REJ] {_sym_label(code)} | leg={leg.get('role')} | {detail}")
             leg["done"] = True
             return
 
@@ -3733,7 +3801,7 @@ class TradingAPI:
         leg.pop("last_status_signature", None)
         leg.pop("last_status", None)
         log(
-            f"  [BUY REPRICE RESUBMIT] {code} | leg={leg.get('role')} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+            f"  [BUY RP RSUB ] {_sym_label(code)} | leg={leg.get('role')} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
             f"mode={price_mode} | price={new_price:,.0f} | order_no={leg['order_no'] or 'UNKNOWN'}"
         )
         log_trade(
@@ -3769,7 +3837,7 @@ class TradingAPI:
         candidate = ask_price if attempt >= 2 else bid_price
         candidate = candidate or bid_price or ask_price
         if not candidate or candidate <= 0:
-            log(f"  [BUY REPRICE SKIP] {code} | 호가 조회 실패 - 다음 폴링에서 재시도")
+            log(f"  [BUY RP SKIP ] {_sym_label(code)} | 호가 조회 실패 - 다음 폴링에서 재시도")
             return
 
         give_up = False
@@ -3777,7 +3845,7 @@ class TradingAPI:
             max_price = reference_price * (1 + BUY_ORDER_REPRICE_MAX_CHASE_PCT / 100.0)
             if candidate > max_price:
                 log(
-                    f"  [BUY REPRICE ABANDON] {code} | candidate={candidate:,.0f} > "
+                    f"  [BUY RP ABAND] {_sym_label(code)} | candidate={candidate:,.0f} > "
                     f"max_chase={max_price:,.0f}(ref={reference_price:,.0f}+{BUY_ORDER_REPRICE_MAX_CHASE_PCT:.1f}%) "
                     f"| 추격 포기, 취소만 진행"
                 )
@@ -3803,23 +3871,23 @@ class TradingAPI:
                 excg_id_dvsn_cd=exchange,
             )
         except Exception as exc:
-            log(f"  [BUY REPRICE CANCEL ERROR] {code} | {exc}")
+            log(f"  [BUY CXL ERR ] {_sym_label(code)} | {exc}")
             return
 
         if not _order_succeeded(cancel_result):
-            log(f"  [BUY REPRICE CANCEL FAILED] {code} | {_extract_order_error_detail(cancel_result)}")
+            log(f"  [BUY CXL REJ ] {_sym_label(code)} | {_extract_order_error_detail(cancel_result)}")
             return
 
         pending["reprice_attempt"] = attempt
         pending["cancel_inflight"] = True
         if give_up:
             pending["reprice_pending"] = False
-            log(f"  [BUY REPRICE GIVEUP] {code} | attempt={attempt} | 취소 요청 완료, 재주문 없이 포기")
+            log(f"  [BUY RP QUIT ] {_sym_label(code)} | attempt={attempt} | 취소 요청 완료, 재주문 없이 포기")
         else:
             pending["reprice_pending"] = True
             pending["reprice_next_mode"] = next_price_mode
             log(
-                f"  [BUY REPRICE CANCEL] {code} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+                f"  [BUY RP CNCL ] {_sym_label(code)} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
                 f"next_mode={next_price_mode} | 취소 요청 완료, 확인되는 대로 재주문"
             )
 
@@ -3843,7 +3911,7 @@ class TradingAPI:
         affordable_qty = self.get_affordable_buy_qty(code, reference_price or 1.0, now, nxt_tradeable)
         qty = min(qty, int(affordable_qty))
         if qty <= 0:
-            log(f"  [BUY REPRICE ABORT] {code} | 재주문 여력 부족 - 포기")
+            log(f"  [BUY RP ABORT] {_sym_label(code)} | 재주문 여력 부족 - 포기")
             self.buy_inflight_codes.discard(norm_code)
             self.pending_orders.pop(norm_code, None)
             return
@@ -3855,7 +3923,7 @@ class TradingAPI:
             candidate = ask_price if price_mode == "ask" else bid_price
             candidate = candidate or bid_price or ask_price
             if not candidate or candidate <= 0:
-                log(f"  [BUY REPRICE SKIP] {code} | 호가 조회 실패 - 다음 폴링에서 재시도")
+                log(f"  [BUY RP SKIP ] {_sym_label(code)} | 호가 조회 실패 - 다음 폴링에서 재시도")
                 return  # pending 그대로 유지(reprice_pending=True) -> 다음 폴링에서 재시도
             ord_dvsn, ord_unpr, price_for_log = "00", str(int(round(candidate))), candidate
 
@@ -3878,11 +3946,11 @@ class TradingAPI:
                     excg_id_dvsn_cd=exchange,
                 )
             except Exception as exc:
-                log(f"  [BUY REPRICE RESUBMIT ERROR] {code} | {exc}")
+                log(f"  [BUY RSUB ERR] {_sym_label(code)} | {exc}")
                 return
 
         if not _order_succeeded(order_result):
-            log(f"  [BUY REPRICE RESUBMIT FAILED] {code} | {_extract_order_error_detail(order_result)}")
+            log(f"  [BUY RSUB REJ] {_sym_label(code)} | {_extract_order_error_detail(order_result)}")
             self.buy_inflight_codes.discard(norm_code)
             self.pending_orders.pop(norm_code, None)
             return
@@ -3905,12 +3973,208 @@ class TradingAPI:
         detail_suffix = f" | {buy_detail}" if buy_detail else ""
         code_label = _format_code_label(code, code_name)
         log(
-            f"  [BUY REPRICE RESUBMIT] {code_label} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
+            f"  [BUY RP RSUB ] {_sym_label(code)} | attempt={attempt}/{BUY_ORDER_REPRICE_MAX_ATTEMPTS} | "
             f"mode={price_mode} | price={new_price or 0:,.0f} | order_no={new_order_no or 'UNKNOWN'}{detail_suffix}"
         )
         log_trade(
             f"{_symbol_log_label(code, code_name)} | BUY REPRICE RESUBMIT | qty={qty} | mode={price_mode} | "
             f"price={new_price or 0:,.0f} | order_no={new_order_no or 'UNKNOWN'}"
+        )
+
+    def _reconcile_unknown_sell(self, code: str, pending: dict, now: datetime) -> None:
+        """[2026-10-06 Codex r2] 응답 불명(SUBMISSION_UNKNOWN) 매도 재주문을 당일 주문 조회로 확인한다.
+        unknown_since(2초 여유) 이후 접수된, 원주문번호가 없는(정정/취소 행 제외) 이 종목 매도 주문 중 이전에 쓰던
+        주문번호가 아닌 것이 있으면 그 주문을 이어받아 일반 추적으로 돌린다. SELL_UNKNOWN_RECONCILE_SECONDS 동안
+        없으면 미접수로 보고 pending을 정리한다(그 뒤에는 매도 조건이 다시 판단). 확인 중에는 pending이 남아 있어
+        place_sell_order가 이 종목의 새 매도를 막는다."""
+        norm_code = str(code).zfill(6)
+        since = pending.get("unknown_since") if isinstance(pending.get("unknown_since"), datetime) else now
+        exclude = {str(x).strip() for x in (pending.get("unknown_exclude_order_nos") or []) if str(x).strip()}
+        ccld_fn = getattr(dsf, "inquire_daily_ccld", None)
+        found = None
+        if callable(ccld_fn) and not self.dry_run:
+            try:
+                df_orders, _ = ccld_fn(
+                    env_dv=self.env_dv, pd_dv="inner", cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
+                    inqr_strt_dt=now.strftime("%Y%m%d"), inqr_end_dt=now.strftime("%Y%m%d"),
+                    sll_buy_dvsn_cd=self._pending_side_to_ccld_code("sell"), ccld_dvsn="00", inqr_dvsn="00",
+                    inqr_dvsn_3="00", pdno=norm_code, odno="", excg_id_dvsn_cd="ALL",
+                )
+            except Exception as exc:
+                log(f"  [WARN        ] {_sym_label(code)} | unknown-sell reconcile query failed: {exc}")
+                df_orders = None
+            if df_orders is not None and not df_orders.empty:
+                rows = df_orders.copy()
+                if "pdno" in rows.columns:
+                    rows = rows[rows["pdno"].astype(str).str.zfill(6) == norm_code]
+                after = (since - timedelta(seconds=2)).strftime("%H%M%S")
+                if "ord_tmd" in rows.columns:
+                    rows = rows[rows["ord_tmd"].astype(str).str.zfill(6) >= after]
+                if "orgn_odno" in rows.columns:
+                    rows = rows[rows["orgn_odno"].astype(str).str.strip().str.lstrip("0") == ""]
+                if "odno" in rows.columns:
+                    rows = rows[~rows["odno"].astype(str).str.strip().isin(exclude)]
+                if not rows.empty:
+                    found = rows.sort_values([c for c in ("ord_tmd", "odno") if c in rows.columns]).iloc[-1].to_dict()
+        if found is not None:
+            pending.update({
+                "submission_unknown": False,
+                "order_no": str(found.get("odno", "")).strip(),
+                "order_org_no": str(found.get("ord_gno_brno", "") or "").strip(),
+                "requested_price": self._to_float(found.get("ord_unpr"), float(pending.get("requested_price", 0.0) or 0.0)),
+                "submitted_at": since,
+            })
+            log(f"  [SEL RSUB ERR] {_sym_label(code)} | 접수 확인 - order_no={pending['order_no']} 추적 재개")
+            return
+        if (now - since).total_seconds() >= SELL_UNKNOWN_RECONCILE_SECONDS:
+            log(f"  [SEL RSUB ERR] {_sym_label(code)} | {SELL_UNKNOWN_RECONCILE_SECONDS:.0f}s 내 접수 주문 없음 - 미접수로 보고 대기 해제")
+            self.pending_orders.pop(norm_code, None)
+
+    def _request_sell_reprice(self, code: str, pending: dict) -> None:
+        """[2026-10-06] 체결 0주로 걸려 있는 NXT 매도 지정가 주문을 취소 요청한다. 취소가 확인되면
+        refresh_pending_orders가 _resubmit_repriced_sell_order로 새 매수1호가(bid) 재주문을 낸다.
+        (010060 OCI홀딩스 08:30:41 손절 ask 지정가 14분 미체결 사례 - r001 SELL_ORDER_REPRICE_* 참조)"""
+        order_no = str(pending.get("order_no", ""))
+        order_org_no = str(pending.get("order_org_no", ""))
+        if not order_no or not order_org_no:
+            return  # 취소에 필요한 원주문 식별자 없음 - 그대로 대기
+        attempt = int(pending.get("reprice_attempt", 0)) + 1
+        exchange = str(pending.get("exchange", "NXT"))
+
+        if self.dry_run:
+            log(f"DRY_RUN SELL REPRICE CANCEL | {code} | attempt={attempt}")
+            cancel_result = {"rt_cd": "0"}
+        else:
+            try:
+                cancel_result = dsf.order_rvsecncl(
+                    env_dv=self.env_dv,
+                    cano=self.cano,
+                    acnt_prdt_cd=self.acnt_prdt_cd,
+                    krx_fwdg_ord_orgno=order_org_no,
+                    orgn_odno=order_no,
+                    ord_dvsn="00",
+                    rvse_cncl_dvsn_cd="02",
+                    ord_qty=str(int(pending.get("quantity", 0))),
+                    ord_unpr="0",
+                    qty_all_ord_yn="Y",
+                    excg_id_dvsn_cd=exchange,
+                )
+            except Exception as exc:
+                log(f"  [SEL CXL ERR ] {_sym_label(code)} | {exc}")
+                return
+
+        if not _order_succeeded(cancel_result):
+            log(f"  [SEL CXL REJ ] {_sym_label(code)} | {_extract_order_error_detail(cancel_result)}")
+            return
+
+        pending["reprice_attempt"] = attempt
+        pending["cancel_inflight"] = True
+        pending["reprice_pending"] = True
+        log(
+            f"  [SEL RP CNCL ] {_sym_label(code)} | attempt={attempt}/{SELL_ORDER_REPRICE_MAX_ATTEMPTS} | "
+            f"requested={float(pending.get('requested_price', 0.0)):,.0f} | 취소 요청 완료, 확인되는 대로 bid 재주문"
+        )
+
+    def _resubmit_repriced_sell_order(self, code: str, pending: dict, now: datetime) -> None:
+        """[2026-10-06] _request_sell_reprice의 취소가 확인된 뒤 현재 매수1호가(bid) 지정가로 다시 매도한다.
+        place_sell_order()는 trade_lock/쿨다운 검사에 막히므로 전용 경로를 쓴다. pending의 reason/buy_price/
+        pre_submit_qty 등은 그대로 이어받아 _confirm_pending_sell 체결 기록이 원래 매도 사유로 남게 한다."""
+        norm_code = str(code).zfill(6)
+        attempt = int(pending.get("reprice_attempt", 0))
+
+        self.sync_positions_from_account(force=True)
+        pos = self.positions.get(norm_code)
+        held_qty = int(pos.get("quantity", 0)) if pos else 0
+        qty = min(int(pending.get("quantity", 0)), held_qty)
+        if qty <= 0:
+            log(f"  [SEL RP ABORT] {_sym_label(code)} | 보유 수량 없음 - 재주문 생략")
+            self.pending_orders.pop(norm_code, None)
+            return
+
+        order_spec = get_order_spec(now, True)
+        if order_spec is None:
+            log(f"  [SEL RP ABORT] {_sym_label(code)} | 주문 가능 세션 아님 - 재주문 생략")
+            self.pending_orders.pop(norm_code, None)
+            return
+        # 취소~재주문 사이 세션이 바뀌었으면(NXT->정규장) 현재 세션 거래소로 낸다 - 정규장은 시장가.
+        exchange = str(order_spec["exchange"])
+        market_div = "NX" if exchange == "NXT" else "J"
+
+        bid_price, _ask_price = _fetch_bid_ask_price(norm_code, market_div)
+        # [Codex r1] NXT 재주문은 반드시 "현재 매수1호가"로만 낸다 - bid가 없을 때 ask/기존가로 대체하면
+        # 다시 대기 호가가 되어 같은 미체결을 반복한다. bid 조회 실패면 취소 상태를 유지한 채 다음 폴링에서 재시도.
+        if exchange == "NXT" and not (bid_price and bid_price > 0):
+            log(f"  [SEL RP SKIP ] {_sym_label(code)} | 매수1호가 조회 실패 - 다음 폴링에서 재시도")
+            return  # cancel_inflight/reprice_pending 유지 -> 다음 폴링에서 재시도
+        candidate = float(bid_price or pending.get("requested_price", 0.0) or 0.0)  # KRX 시장가는 로그용
+        ord_dvsn, ord_unpr = ("00", str(int(round(candidate)))) if exchange == "NXT" else ("01", "0")
+        price_mode = "bid" if exchange == "NXT" else "market"
+
+        if self.dry_run:
+            log(f"DRY_RUN SELL REPRICE | {code} | qty={qty} | price={candidate:,.0f}")
+            order_result = {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": ord_unpr, "krx_fwdg_ord_orgno": "DRYRUN"}
+        else:
+            try:
+                order_result = dsf.order_cash(
+                    env_dv=self.env_dv,
+                    ord_dv="sell",
+                    cano=self.cano,
+                    acnt_prdt_cd=self.acnt_prdt_cd,
+                    pdno=code,
+                    ord_dvsn=ord_dvsn,
+                    ord_qty=str(qty),
+                    ord_unpr=ord_unpr,
+                    excg_id_dvsn_cd=exchange,
+                )
+            except Exception as exc:
+                # [Codex r1/r2] 응답 수신 실패 = "접수됐는지 모름". 같은 주문을 다시 내면 중복 매도가 될 수 있고,
+                # pending을 지우면 실제 접수된 주문을 추적하지 못한다 -> SUBMISSION_UNKNOWN 상태로 pending을 유지해
+                # 이 종목의 새 매도를 막고, refresh_pending_orders가 당일 주문 조회로 신규 주문을 찾아 이어받는다.
+                log(f"  [SEL RSUB ERR] {_sym_label(code)} | {exc} - 접수 여부 불명, 주문 조회로 확인 대기")
+                pending.update({
+                    "submission_unknown": True,
+                    "unknown_since": now,
+                    "unknown_exclude_order_nos": [str(pending.get("order_no", "") or "")],
+                    "order_no": "",
+                    "order_org_no": "",
+                    "quantity": qty,
+                    "exchange": exchange,
+                    "submitted_at": now,
+                    "cancel_inflight": False,
+                    "reprice_pending": False,
+                })
+                pending.pop("last_status_signature", None)
+                return
+
+        if not _order_succeeded(order_result):
+            # 매도 신호 쪽에서 다시 판단하도록 pending을 정리한다(포지션은 그대로 남음).
+            log(f"  [SEL RSUB REJ] {_sym_label(code)} | {_extract_order_error_detail(order_result)}")
+            self.pending_orders.pop(norm_code, None)
+            return
+
+        new_order_no = _extract_order_number(order_result)
+        new_price = _extract_order_price(order_result) or candidate
+        pending.update({
+            "quantity": qty,
+            "submitted_at": now,
+            "requested_price": float(new_price),
+            "order_no": new_order_no,
+            "order_org_no": _extract_order_org_no(order_result),
+            "order_time": _extract_order_time(order_result),
+            "exchange": exchange,
+            "allow_reprice": exchange == "NXT",
+            "cancel_inflight": False,
+            "reprice_pending": False,
+        })
+        pending.pop("last_status_signature", None)
+        code_name = str(pending.get("code_name", ""))
+        log(
+            f"  [SEL RP RSUB ] {_symbol_log_label(code, code_name)} | attempt={attempt}/{SELL_ORDER_REPRICE_MAX_ATTEMPTS} | "
+            f"mode={price_mode} | exch={exchange} | price={new_price:,.0f} | qty={qty} | order_no={new_order_no or 'UNKNOWN'}"
+        )
+        log_trade(
+            f"{_symbol_log_label(code, code_name)} | SELL REPRICE RESUBMIT | qty={qty} | mode={price_mode} | exch={exchange} | "
+            f"price={new_price:,.0f} | order_no={new_order_no or 'UNKNOWN'}"
         )
 
     def _submit_buy_order_cash(self, code: str, qty: int, ord_dvsn: str, ord_unpr: str, exchange: str, log_price: float) -> dict | None:
@@ -4137,12 +4401,15 @@ class TradingAPI:
             "requested_price": float(requested_price),
             "exchange": order_spec["exchange"],
             "order_no": order_no,
+            "order_org_no": _extract_order_org_no(order_result),
             "order_time": order_time,
             "reason": reason,
             "code_name": code_name,
             "buy_price": float(pos.get("buy_price", 0.0)),
             "buy_time": pos.get("buy_time"),
             "pre_submit_qty": int(pos.get("quantity", qty)),
+            # [2026-10-06] NXT 지정가 매도만 미체결 재주문 대상(19:59:58 limit_price 1회 청산은 제외)
+            "allow_reprice": (not use_market) and limit_price is None,
         }
         self._mark_trade_lock(code, now)
         code_label = _format_code_label(code, code_name)
@@ -4181,25 +4448,25 @@ def run_scheduled_liquidations(
             if code not in watch_map:
                 continue
             if not _is_today_buy_position(code, pos, date_str, today_buy_codes):
-                log(f"  [REGULAR CLOSE SKIP] {code} | NOT_TODAY_BUY_POSITION")
+                log(f"  [REG CLS SKIP] {_sym_label(code)} | NOT_TODAY_BUY_POSITION")
                 continue
             if ENABLE_NXT_SESSION and nxt_map.get(code, False):
                 # [2026-10-05] NXT 운용 시 NXT 가능 종목은 19:59:58 NXT 청산(현재가 1회)으로 넘긴다.
-                log(f"  [REGULAR CLOSE DEFER] {code} | NXT_SESSION_CLOSE_AT {AFTERNOON_NXT_FORCE_EXIT:%H:%M:%S}")
+                log(f"  [REG CLS DEFR] {_sym_label(code)} | NXT_SESSION_CLOSE_AT {AFTERNOON_NXT_FORCE_EXIT:%H:%M:%S}")
                 continue
             if api.has_pending_order(code):
-                log(f"  [REGULAR CLOSE SKIP] {code} | pending_order_active")
+                log(f"  [REG CLS SKIP] {_sym_label(code)} | pending_order_active")
                 continue
             price = float(pos.get("current_price") or pos["buy_price"])
             buy_price = float(pos.get("buy_price") or 0)
             if buy_price <= 0 or price <= 0:
-                log(f"  [REGULAR CLOSE HOLD] {code} | INVALID_PRICE | price={price:,.0f} buy={buy_price:,.0f}")
+                log(f"  [REG CLS HOLD] {_sym_label(code)} | INVALID_PRICE | price={price:,.0f} buy={buy_price:,.0f}")
                 continue
 
             pnl_pct = (price / buy_price) - 1.0
             action, reason = _session_exit_plan("REGULAR_CLOSE", pnl_pct)
             if action == "hold":
-                log(f"  [REGULAR CLOSE HOLD] {code} | {reason} | price={price:,.0f} buy={buy_price:,.0f}")
+                log(f"  [REG CLS HOLD] {_sym_label(code)} | {reason} | price={price:,.0f} buy={buy_price:,.0f}")
                 continue
 
             api.trade_lock_until.pop(code, None)
@@ -4211,21 +4478,21 @@ def run_scheduled_liquidations(
             if code not in watch_map:
                 continue
             if not _is_today_buy_position(code, pos, date_str, today_buy_codes):
-                log(f"  [NXT CLOSE SKIP] {code} | NOT_TODAY_BUY_POSITION")
+                log(f"  [NXT CLS SKIP] {_sym_label(code)} | NOT_TODAY_BUY_POSITION")
                 continue
             # [2026-10-05 Codex 2차] 대기 중인 '매수' 주문은 보유 수량 청산을 막지 않는다(place_sell_order도 허용).
             _pending = api.pending_orders.get(str(code).zfill(6))
             if _pending is not None and _pending.get("side") != "buy":
-                log(f"  [NXT CLOSE SKIP] {code} | pending_sell_order_active")
+                log(f"  [NXT CLS SKIP] {_sym_label(code)} | pending_sell_order_active")
                 continue
             # [2026-10-05 Codex 2차] 종목마다 실제 벽시계로 마감(20:00) 전인지 다시 확인 - 앞 종목 처리로 시간이
             # 흘러 마감 이후가 되면 주문하지 않는다(접수 불가/세션 판정 오류 방지).
             submit_dt = max(current_dt, datetime.now())
             if submit_dt.time() >= AFTERNOON_NXT_END:
-                log(f"  [NXT CLOSE MISSED] {code} | DEADLINE_PASSED now={submit_dt:%H:%M:%S.%f}")
+                log(f"  [NXT CLS MISS] {_sym_label(code)} | DEADLINE_PASSED now={submit_dt:%H:%M:%S.%f}")
                 continue
             if not nxt_map.get(code, False):
-                log(f"  [NXT CLOSE HOLD] {code} | NXT_NOT_TRADABLE")
+                log(f"  [NXT CLS HOLD] {_sym_label(code)} | NXT_NOT_TRADABLE")
                 continue
 
             # [2026-10-05] 청산 시점 현재가를 새로 조회(실패 시 계좌 평가가) - 이 가격 지정가로 1번만 주문
@@ -4233,22 +4500,22 @@ def run_scheduled_liquidations(
             try:
                 live_px = fetch_live_price(code, submit_dt, True)
             except Exception as exc:
-                log(f"  [NXT CLOSE] {code} | live price fetch failed: {exc}")
+                log(f"  [NXT CLOSE   ] {_sym_label(code)} | live price fetch failed: {exc}")
             price = float(live_px or pos.get("current_price") or pos["buy_price"])
             buy_price = float(pos.get("buy_price") or 0)
             if buy_price <= 0 or price <= 0:
-                log(f"  [NXT CLOSE HOLD] {code} | INVALID_PRICE | price={price:,.0f} buy={buy_price:,.0f}")
+                log(f"  [NXT CLS HOLD] {_sym_label(code)} | INVALID_PRICE | price={price:,.0f} buy={buy_price:,.0f}")
                 continue
 
             pnl_pct = (price / buy_price) - 1.0
             action, reason = _session_exit_plan("NXT_CLOSE", pnl_pct)
             if action == "hold":
-                log(f"  [NXT CLOSE HOLD] {code} | {reason} | price={price:,.0f} buy={buy_price:,.0f}")
+                log(f"  [NXT CLS HOLD] {_sym_label(code)} | {reason} | price={price:,.0f} buy={buy_price:,.0f}")
                 continue
 
             api.trade_lock_until.pop(code, None)
             log(
-                f"  [NXT CLOSE] {code} | ONE_SHOT_LIMIT_AT_CURRENT | price={price:,.0f} "
+                f"  [NXT CLOSE   ] {_sym_label(code)} | ONE_SHOT_LIMIT_AT_CURRENT | price={price:,.0f} "
                 f"src={'live' if live_px else 'account'} qty={int(pos['quantity'])}"
             )
             api.place_sell_order(
@@ -4327,47 +4594,47 @@ def _shutdown_save_live_state(api: TradingAPI | None) -> None:
     try:
         api.persist_live_state()
     except Exception as exc:
-        log(f"WARNING: live state save on shutdown failed: {exc}")
+        log(f"  [WARN        ] live state save on shutdown failed: {exc}")
 
 
 def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool | None = None, watchlist_source: str | None = None) -> None:
     now = datetime.now()
     _ensure_log_date_for(now)
-    print(f"[R003 START] {now:%Y-%m-%d %H:%M:%S} | initializing live executor", flush=True)
+    print(f"[R003 START  ] {now:%Y-%m-%d %H:%M:%S} | initializing live executor", flush=True)
     log("R003 START | initializing live executor")
 
     try:
-        print("[R003 AUTH] starting ka.auth()", flush=True)
+        print("[R003 AUTH   ] starting ka.auth()", flush=True)
         ka.auth()
-        print("[R003 AUTH] success", flush=True)
+        print("[R003 AUTH   ] success", flush=True)
     except Exception as exc:
-        print(f"[R003 AUTH ERROR] {exc}", flush=True)
+        print(f"[AUTH ERROR  ] {exc}", flush=True)
         log(f"R003 AUTH ERROR | {exc}")
         return
 
     is_open_day, market_day_log = get_market_day_status(now)
-    print(f"[R003 MARKET] {market_day_log}", flush=True)
+    print(f"[R003 MARKET ] {market_day_log}", flush=True)
     log(market_day_log)
 
     if not is_open_day:
-        print("[R003 STOP] market closed day", flush=True)
+        print("[R003 STOP   ] market closed day", flush=True)
         return
 
     watch_file = _resolve_watchlist_file(target_date, watchlist_source=watchlist_source or "auto")
-    print(f"[R003 WATCHLIST FILE] {watch_file}", flush=True)
+    print(f"[R003 WL FILE] {watch_file}", flush=True)
     try:
         watch_map = load_today_codes(watch_file)
     except Exception as exc:
-        print(f"[R003 WATCHLIST ERROR] {exc}", flush=True)
+        print(f"[R003 WL ERR ] {exc}", flush=True)
         log(f"Failed to load code list: {exc}")
         watch_map = {}
 
     if not watch_map:
-        print("[R003 WATCHLIST] No codes loaded", flush=True)
+        print("[R003 WL     ] No codes loaded", flush=True)
         log("No codes loaded")
         return
 
-    print(f"[R003 WATCHLIST] loaded {len(watch_map)} codes", flush=True)
+    print(f"[R003 WL     ] loaded {len(watch_map)} codes", flush=True)
 
     register_symbol_names(watch_map)
 
@@ -4381,9 +4648,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     backup_pool: "collections.deque[str]" = collections.deque(watch_codes_ordered[ACTIVE_WATCHLIST_SIZE:])
     first_active_at: dict[str, datetime] = {code: now for code in active_set}
     active_watchlist_warn_state: dict[str, bool] = {}
-    log(f"[ACTIVE/BACKUP SPLIT] active={len(active_set)} backup={len(backup_pool)} total={len(watch_map)}")
+    log(f"  [WL SPLIT    ] active={len(active_set)} backup={len(backup_pool)} total={len(watch_map)}")
 
-    log(f"[FEATURE_R004_WATCHLIST] Watchlist source: {watch_file}")
+    log(f"  [FEAT R004 WL] Watchlist source: {watch_file}")
 
     if ENABLE_NXT_SESSION:
         log("MODE BANNER: REGULAR+NXT_MODE")
@@ -4392,7 +4659,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     nxt_map = {code: is_nxt_tradeable(code) for code in watch_map}
     for code, name in watch_map.items():
-#        print(f"[R003 WATCH] {code} | {name} | NXT={nxt_map[code]}", flush=True)
+#        print(f"[R003 WATCH  ] {_sym_label(code)} | {name} | NXT={nxt_map[code]}", flush=True)
         log(f"WATCH | {code} | {name} | NXT={nxt_map[code]}")
 
     log("Strategy: live price cross over buffered BB middle + Stoch/RSI/Williams confirmation")
@@ -4502,6 +4769,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         get_frame_1min=lambda _code, _dt, _nxt: _get_or_refresh_1min_frame(
             _code, _dt, _nxt, frame_cache_1min, frame_last_refresh_at_1min,
         ),
+        record_gate_decision=record_gate_decision if ENABLE_GATE_DECISION_LOG else None,
     )
     buy_services = BuyServices(
         log=log,
@@ -4618,7 +4886,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 _presync_dt = _target_dt - timedelta(seconds=AFTERNOON_NXT_FORCE_EXIT_PRESYNC_SECONDS)
                 _wait = (_presync_dt - datetime.now()).total_seconds()
                 if _wait > 0:
-                    log(f"[NXT CLOSE] waiting {_wait:.1f}s until presync {_presync_dt:%H:%M:%S}")
+                    log(f"  [NXT CLOSE   ] waiting {_wait:.1f}s until presync {_presync_dt:%H:%M:%S}")
                     time.sleep(_wait)
                 api.sync_positions_from_account(force=True)
                 api.refresh_pending_orders(datetime.now())
@@ -4626,7 +4894,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 if _wait > 0:
                     time.sleep(_wait)
                 current_dt = datetime.now()
-                log(f"[NXT CLOSE] fire at {current_dt:%H:%M:%S.%f}")
+                log(f"  [NXT CLOSE   ] fire at {current_dt:%H:%M:%S.%f}")
                 run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
                 continue
 
@@ -4656,7 +4924,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                 run_gapdip_shadow(_gc, watch_map.get(_gc) or _gc, current_dt, float(_gp),
                                                   nxt_map.get(_gc, False), gapdip_state)
                         except Exception as exc:
-                            log(f"  [GAPDIP SHADOW] {_gc} off-watchlist tracking error: {exc}")
+                            log(f"  [GAPDIP SHDW ] {_sym_label(_gc)} off-watchlist tracking error: {exc}")
 
             for code in iter_codes:
                 if _nxt_force_exit_pending(datetime.now(), liquidation_state):
@@ -4665,12 +4933,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 nxt_tradeable = nxt_map.get(code, False)
                 symbol_label = _symbol_log_label(code, name)
                 if not can_trade_code_now(current_dt, nxt_tradeable):
-                    log(f"  [SKIP    ] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
+                    log(f"  [SKIP        ] {symbol_label} | can_trade_code_now=False | time={current_dt:%H:%M:%S} nxt={nxt_tradeable}")
                     continue
 
                 pos = api.get_open_positions().get(code)
                 if pos is not None and pos.get("quantity", 0) > 0 and not _is_today_buy_position(code, pos, date_str, traded_today):
-                    log(f"  {symbol_label} [HOLD SKIP] | NOT_TODAY_BUY_POSITION")
+                    log(f"  [🔴HOLD SKIP ] {symbol_label} | NOT_TODAY_BUY_POSITION")
                     continue
 
                 cached_frame = frame_cache.get(code)
@@ -4691,10 +4959,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         frame = merged_frame
 
                 if frame is None:
-                    log(f"  [SKIP    ] {symbol_label} | frame=None (fetch failed)")
+                    log(f"  [SKIP        ] {symbol_label} | frame=None (fetch failed)")
                     continue
                 if len(frame) < INDICATOR_WARMUP_BARS:
-                    log(f"  [SKIP    ] {symbol_label} | bars={len(frame)} < INDICATOR_WARMUP_BARS={INDICATOR_WARMUP_BARS}")
+                    log(f"  [SKIP        ] {symbol_label} | bars={len(frame)} < INDICATOR_WARMUP_BARS={INDICATOR_WARMUP_BARS}")
                     continue
 
                 bar_time = frame.index[-1]
@@ -4747,7 +5015,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     try:
                         run_gapdip_shadow(code, name, current_dt, float(price), nxt_tradeable, gapdip_state)
                     except Exception as exc:
-                        log(f"  [GAPDIP SHADOW] {symbol_label} error: {exc}")
+                        log(f"  [GAPDIP SHDW ] {symbol_label} error: {exc}")
 
                 buy_frame = frame
                 if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:
@@ -4763,9 +5031,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         if gate_ok:
                             buy_frame = realtime_frame
                         elif not gate_reason.startswith("INTRABAR_ELAPSED_"):
-                            log(f"  [BAR_SKIP] {symbol_label} | {gate_reason} | using confirmed 3min bar instead")
+                            log(f"  [BAR_SKIP    ] {symbol_label} | {gate_reason} | using confirmed 3min bar instead")
                     except Exception as exc:
-                        log(f"  [WARN] {symbol_label} | realtime entry-frame build failed: {exc}")
+                        log(f"  [WARN        ] {symbol_label} | realtime entry-frame build failed: {exc}")
                         buy_frame = frame
 
                 buy_cur = buy_frame.iloc[-1] if buy_frame is not None and not buy_frame.empty else cur
@@ -4789,7 +5057,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         and int(pos.get("quantity", 0) or 0) > 0
                     )
                     log(
-                        f"  [PENDING ] {symbol_label} | side={pending_side} qty={pending_qty} "
+                        f"  [PENDING     ] {symbol_label} | side={pending_side} qty={pending_qty} "
                         f"submitted={pending_time:%H:%M:%S} | order_no={pending.get('order_no', '') or 'UNKNOWN'}"
                         + (" | PYRAMID_ADD_IN_FLIGHT - position monitoring continues" if is_pyramid_pending else "")
                     )
@@ -4799,7 +5067,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     # 계속 진행한다 (아래 포지션 관리 블록으로 그대로 진입).
 
                 log(
-                    f"  [CHECK   ] {symbol_label} | bars={len(frame)} live={price:,.0f}  bar_close={float(cur['close']):,.0f} | "
+                    f"  [CHECK       ] {symbol_label} | bars={len(frame)} live={price:,.0f}  bar_close={float(cur['close']):,.0f} | "
                     f"confirmed_bar={bar_time:%H:%M:%S} cutoff={last_closed_bar:%H:%M:%S} bar_age={bar_age_sec:.0f}s | "
                     f"MA5={_num(cur, 'MA_5'):.1f} BB_MID={_num(cur, 'BB_MIDDLE'):.1f} BB_UP={_num(cur, 'BB_UPPER'):.1f} BB_LW={_num(cur, 'BB_LOWER'):.1f} | "
                     f"CROSS relation={cross_info.get('relation')} upper={float(cross_info.get('upper_trigger', 0.0)):.1f} lower={float(cross_info.get('lower_trigger', 0.0)):.1f} pending={cross_info.get('pending_side')} cnt={cross_info.get('pending_count')} sec={float(cross_info.get('pending_seconds', 0.0)):.0f} signal={cross_info.get('signal')} | "
@@ -4867,7 +5135,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                 "MIDDAY_SHADOW" if is_midday_no_entry_time(current_dt.time()) else "ENTRY_WINDOW_SHADOW",
                             )
                         except Exception as exc:
-                            log(f"  [GATE SHADOW] {symbol_label} error: {exc}")
+                            log(f"  [GATE SHADOW ] {symbol_label} error: {exc}")
                     if _buy_decision.approved:
                         # 모든 조건 통과 - _024가 traded_today/signal_buy_bar를 '예약'해 둔 상태다.
                         buy_reason, prev_bar, qty = buy_ctx.buy_reason, buy_ctx.prev_bar, buy_ctx.qty
@@ -4891,7 +5159,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             buy_trigger_age_state.pop(code, None)
                             api._mark_trade_lock(code, current_dt)
                             _shadow_msg = (
-                                f"[REENTRY SHADOW] {code}({name}) | would BUY qty={qty} price={price:,.0f} "
+                                f"[REENTRY SHDW] {_sym_label(code)}({name}) | would BUY qty={qty} price={price:,.0f} "
                                 f"session={session} used={_re_st['used']}/{REENTRY_MAX_PER_CODE} | reason={buy_reason}"
                             )
                             log(f"  {_shadow_msg}")
@@ -4899,7 +5167,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             continue
                         if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                             log(
-                                f"  {symbol_label} [BUY EVAL] | OK {buy_reason} | {current_dt:%H:%M:%S} | "
+                                f"  [BUY EVAL    ] {symbol_label} | OK {buy_reason} | {current_dt:%H:%M:%S} | "
                                 f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(buy_frame.iloc[-1], 'BB_MIDDLE'):.1f} | "
                                 f"RSI={_num(buy_frame.iloc[-1], 'RSI'):.1f} SIG={_num(buy_frame.iloc[-1], 'RSI_SIGNAL'):.1f} | "
                                 f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(buy_frame.iloc[-1], 'STOCH_K'):.1f} D={_num(buy_frame.iloc[-1], 'STOCH_D'):.1f} | "
@@ -4909,12 +5177,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                 f"VOL={_num(buy_frame.iloc[-1], 'volume'):,.0f} VOLMA={_num(buy_frame.iloc[-1], 'VOL_MA20'):,.0f} | "
                                 f"VWAP={_num(buy_frame.iloc[-1], 'VWAP'):,.0f} OBV={_num(buy_frame.iloc[-1], 'OBV'):,.0f} OBVMA={_num(buy_frame.iloc[-1], 'OBV_MA'):,.0f}"
                             )
-                            log(f"  {symbol_label} [BUY EXECUTED] | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
+                            log(f"  [BUY EXEC    ] {symbol_label} | {buy_reason} | qty={qty} price={price:,.0f} session={session}")
                             if _is_reentry:
                                 _re_st["used"] = int(_re_st.get("used", 0)) + 1
                                 _re_st["readded"] = False
                                 log_trade(
-                                    f"[REENTRY LIVE] {code}({name}) | BUY qty={qty} price={price:,.0f} "
+                                    f"[REENTRY LIVE] {_sym_label(code)}({name}) | BUY qty={qty} price={price:,.0f} "
                                     f"used={_re_st['used']}/{REENTRY_MAX_PER_CODE} | reason={buy_reason}"
                                 )
                             buy_confirm_state.pop(code, None)
@@ -4943,7 +5211,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         first_active_at[_code] = current_dt
                     regular_session_watchlist_reset_done = True
                     log(
-                        f"[ACTIVE WATCHLIST] REGULAR_START 도달 - TIME_LIMIT"
+                        f"  [ACTIVE WL   ] REGULAR_START 도달 - TIME_LIMIT"
                         f"({ACTIVE_WATCHLIST_TIME_DROPOUT_MINUTES}min) 타이머 리셋"
                         f"(프리마켓 NXT 대기시간 제외) | reset_count={_reset_count}"
                     )

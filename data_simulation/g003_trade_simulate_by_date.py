@@ -288,6 +288,10 @@ from r001_define_config import (
     HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS,
     HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS,
     HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX,
+    HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS,
+    HYBRID_1MIN_DEADCROSS_REGIME_MODE,
+    HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT,
+    HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
     ENABLE_PEAK_RETRACE_GUARD,
     PEAK_RETRACE_GUARD_ARM_PNL,
     PEAK_RETRACE_GUARD_MIN_PCT,
@@ -421,6 +425,9 @@ from r001_define_config import (
     BUY_ORDER_REPRICE_MAX_CHASE_PCT,
 )
 from r002_strategy_core_shared import (
+    krx_tick_size,
+    dc_regime_snapshot,
+    dc_regime_armed_action,
     R76StrategyConfig,
     anti_chase_day_gate,
     anti_chase_day_metrics,
@@ -560,6 +567,11 @@ LOG_SUMMARY_MODE = False
 # [2026-10-05] 추격차단(_019 parity) 판정 가격: "tick" = 시뮬 현재가(10초 행, 보간값 포함 - 종전 동작),
 # "minute" = 그 시점까지 확정된 실제 1분봉 종가(Codex 2차: 보간가로 임계값을 넘는 판정 민감도 확인용).
 ANTI_CHASE_PRICE_MODE = "tick"
+# [2026-10-06] r006 _011 3분봉 추세 연동 parity - CLI --dc-regime-mode로 A/B (shadow는 off와 매매 동일, 로그만)
+DC_REGIME_MODE_SIM = str(HYBRID_1MIN_DEADCROSS_REGIME_MODE).lower()
+# [2026-10-06] 봉/가격 공개 시점 모드 (Codex 1차 검토): "causal"(기본) | "legacy"(기존 동작 재현용)
+SIM_BAR_SEMANTICS = "causal"
+CAUSAL_SKIPPED_CODES: list[str] = []
 # 게이트 판정 기록 파일(main에서 data_root/YYYYMMDD/YYYYMMDD_gate_decisions.jsonl로 설정, None이면 기록 안 함)
 GATE_DECISION_PATH: Path | None = None
 COMPARE_FEE_BUY_RATE = 0.00015
@@ -923,6 +935,39 @@ def can_trade_code_now(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     if AFTERNOON_NXT_START <= current_time <= AFTERNOON_NXT_END:
         return nxt_tradeable
     return False
+
+
+def _causal_minute_frames(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """[2026-10-06] g001 _10s 파일(KIS 1분봉을 "분 시작" 라벨 그대로 찍고 10초 선형보간)에서 미래참조를 없앤다.
+
+    Codex 1차 검토: 보간 10초 행은 다음 분 종가까지 섞여 있어 +60초 이동만으로는 미래정보가 남고, 보간 OHLC를 다시
+    집계하면 실제 분봉과 다른 봉이 된다. 그래서 원본 앵커(:00 행)만 뽑아 실제 1분봉을 복원한다.
+    반환: (minute_start - 분 시작 라벨 원본 1분봉, 체결 근사용 / minute_end - 분 종료 라벨 = 공개 시각, 봉·가격용).
+    거래량은 g001 interpolate_to_10sec가 나눈 배수(원본 분 간격/10초 간격)를 곱해 복원한다.
+    10초 보간 파일이 아니면(간격 중앙값이 10초가 아니면) None -> 호출측이 legacy 경로 사용."""
+    if raw_df is None or raw_df.empty or len(raw_df.index) < 3:
+        return None
+    diffs = raw_df.index.to_series().diff().dropna().dt.total_seconds()
+    if diffs.empty or abs(float(diffs.median()) - 10.0) > 0.5:
+        return None
+    m = raw_df[raw_df.index.second == 0]
+    # 세션 공백(08:50~09:00, 15:20~15:30 단일가 구간)의 :00 행은 보간으로 생긴 가짜 행이라 제외한다.
+    _t = m.index.time
+    m = m[~(((_t >= MORNING_NXT_END) & (_t < REGULAR_START)) | ((_t >= REGULAR_NEW_ENTRY_CUTOFF) & (_t < REGULAR_END)))]
+    if len(m.index) < 2:
+        return None
+    m = m[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
+    m = m.dropna(subset=["open", "high", "low", "close"])
+    m = m[m[["open", "high", "low", "close"]].max(axis=1) > 0]
+    if m.empty:
+        return None
+    m_diffs = m.index.to_series().diff().dropna().dt.total_seconds()
+    expansion = max(1.0, round(float(m_diffs.median()) / 10.0)) if not m_diffs.empty else 6.0
+    m = m.copy()
+    m["volume"] = m["volume"].fillna(0.0) * expansion
+    m_end = m.copy()
+    m_end.index = m_end.index + pd.Timedelta(minutes=1)
+    return m, m_end
 
 
 def _build_day_ref_frame(raw_df: pd.DataFrame) -> pd.DataFrame | None:
@@ -2282,7 +2327,22 @@ def simulate_date(
             log(f"Skipped {code}: no bars on target date")
             continue
 
-        strategy_df = normalize_to_strategy_bars(raw_df)
+        # [2026-10-06] causal: 원본 1분봉을 종료시각에 공개(r003 _normalize_intraday_frame 수정과 같은 의미).
+        _causal = _causal_minute_frames(raw_df) if SIM_BAR_SEMANTICS == "causal" else None
+        if SIM_BAR_SEMANTICS == "causal" and _causal is None:
+            # [Codex r2] causal 실행에 legacy 종목이 섞이지 않게 제외(조용한 fallback 금지).
+            log(f"Skipped {code}: causal adapter unavailable (10s 보간 파일 아님/앵커 부족) - legacy fallback 안 함")
+            CAUSAL_SKIPPED_CODES.append(code)
+            continue
+        if _causal is not None:
+            _m_start, _m_end = _causal
+            _agg3 = _m_end.assign(_n=1).resample("3min", label="right", closed="right").agg(
+                {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "_n": "sum"}
+            ).dropna(subset=["open", "high", "low", "close"])
+            # [Codex r2] 1분봉 3개가 다 찬 3분봉만 사용(첫 부분봉/15:30 단일가 단독봉 제외).
+            strategy_df = _agg3[_agg3["_n"] >= 3].drop(columns=["_n"])
+        else:
+            strategy_df = normalize_to_strategy_bars(raw_df)
         if strategy_df is None or strategy_df.empty:
             log(f"Skipped {code}: failed to build strategy bars")
             continue
@@ -2293,20 +2353,27 @@ def simulate_date(
             continue
         frames[code] = frame
         # r003 parity: 하이브리드 1분봉 트리거용 1분봉 프레임 병행 구축.
-        strategy_df_1min = normalize_to_strategy_bars_1min(raw_df)
+        strategy_df_1min = _causal[1] if _causal is not None else normalize_to_strategy_bars_1min(raw_df)
         if strategy_df_1min is not None and not strategy_df_1min.empty:
             frame_1min = calculate_indicators(strategy_df_1min)
             if frame_1min is not None and not frame_1min.empty:
                 frames_1min[code] = frame_1min
         # [2026-10-04] r005 _019_anti_chase_day_extension parity: 당일 시가/VWAP 근사용 정규장 1분봉.
-        day_ref_frames[code] = _build_day_ref_frame(raw_df)
+        # [Codex r2] causal이면 검증된 원본 앵커(분 시작 라벨, 세션 공백 합성행 제외)로 만든다 - helper가 스스로 +1분.
+        day_ref_frames[code] = _build_day_ref_frame(_causal[0] if _causal is not None else raw_df)
         # r006 parity: evaluate live condition every 10s even if source file cadence is 20s/1m.
-        exec_sim_raw_frames[code] = raw_df
+        # [2026-10-06] causal: 체결 근사는 원본 분봉(분 시작 라벨 - 신호 이후 구간만 참조), 판단용 현재가는
+        # 공개된(종료된) 분봉 종가의 ffill - 보간값이 다음 분 종가를 미리 반영하던 미래참조 제거.
+        # day_ref_frames는 _build_day_ref_frame이 원본 :00 행을 스스로 종료시각으로 옮기므로 raw_df 그대로(이중 이동 방지).
+        exec_sim_raw_frames[code] = _causal[0] if _causal is not None else raw_df
+        _price_src = _causal[1] if _causal is not None else raw_df
         if simulate_10s_grid:
-            price_frames[code] = upsample_price_frame_to_10s(raw_df)
+            price_frames[code] = upsample_price_frame_to_10s(_price_src)
         else:
-            price_frames[code] = raw_df
+            price_frames[code] = _price_src
 
+    if SIM_BAR_SEMANTICS == "causal":
+        log(f"[SIM MODE] causal adapter skipped codes: {len(CAUSAL_SKIPPED_CODES)} {CAUSAL_SKIPPED_CODES[:20]}")
     if not frames:
         log("ERROR: No valid chart data loaded")
         return 1
@@ -2376,6 +2443,7 @@ def simulate_date(
     atr_stop_confirm_state: dict[str, dict] = {}
     hard_stop_confirm_state: dict[str, dict] = {}  # [2026-09-23] r006 _004 확인창 parity
     hybrid_1min_dead_cross_state: dict[str, dict] = {}  # [2026-09-23] r006 _011 확인창 parity
+    dc_regime_armed: set[str] = set()  # [2026-10-06] r006 pos['dc_regime_hold'] parity (live 모드 armed 종목)
     peak_retrace_guard_state: dict[str, dict] = {}  # [2026-09-23] r006 _012 확인창 parity
     trailing_sell_confirm_state: dict[str, dict] = {}
     # 급등 판정(detect_price_surge)용 종목별 최근 (시각, 가격) 표본 (r003 recent_price_samples 대응)
@@ -2464,6 +2532,7 @@ def simulate_date(
                 hard_stop_confirm_state.pop(code, None)
                 hybrid_1min_dead_cross_state.pop(code, None)
                 peak_retrace_guard_state.pop(code, None)
+                dc_regime_armed.discard(code)
 
             entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
@@ -2764,7 +2833,34 @@ def simulate_date(
                 # 3.5. Hybrid 1min BB-mid dead-cross exit (r006 _011 parity, 2026-09-23) - 매수측
                 # _008_hybrid_1min_trigger의 대칭 매도판. 손실구간(<=LOSS_EXIT_PNL_MAX)은 즉시, 그 외는
                 # 1분봉 BB중심선 기울기가 꺾였는지 추가 확인(정상 눌림목 보호). r001/r006 Update log 참조.
-                if ENABLE_HYBRID_1MIN_DEADCROSS_EXIT and _sig_held_seconds >= HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS:
+                _dc_armed_handled = False
+                if (
+                    ENABLE_HYBRID_1MIN_DEADCROSS_EXIT and _sig_held_seconds >= HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS
+                    and DC_REGIME_MODE_SIM == "live" and code in dc_regime_armed
+                ):
+                    # [2026-10-06] r006 _011_regime_armed_step parity - cross 감지와 무관하게 먼저 평가.
+                    _dc_armed_handled = True
+                    hybrid_1min_dead_cross_state.pop(code, None)
+                    _rg = dc_regime_snapshot(
+                        available, buy_available_1min, profit_pct, ts,
+                        HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
+                    )
+                    _rg_act = dc_regime_armed_action(_rg, profit_pct, HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT)
+                    if _rg_act == "DISARM":
+                        dc_regime_armed.discard(code)
+                        log(f"  [DC REGIME] {code} | DISARM | pnl={profit_pct*100:.2f}%")
+                    elif _rg_act.startswith("EXIT_"):
+                        reason_dc = "HYBRID_1MIN_DEAD_CROSS_" + ("REGIME_FLIP" if _rg_act == "EXIT_REGIME_FLIP" else _rg_act.replace("EXIT_", "REGIME_"))
+                        dc_regime_armed.discard(code)
+                        trailing_sell_confirm_state.pop(code, None)
+                        sim.sell(code, price, ts, reason_dc, session)
+                        signal_sell_bar[code] = ts
+                        log(f"  [SELL_EXECUTED] {code} | {reason_dc} | price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                        continue
+                if (
+                    not _dc_armed_handled
+                    and ENABLE_HYBRID_1MIN_DEADCROSS_EXIT and _sig_held_seconds >= HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS
+                ):
                     _dc_found, _dc_reason, _dc_bars = check_1min_dead_cross(
                         buy_available_1min, HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
                     )
@@ -2774,7 +2870,18 @@ def simulate_date(
                         _dc_is_loss = profit_pct <= HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX
                         _dc_bb_slope_1min = float("nan")
                         _dc_ok = True
-                        if not _dc_is_loss:
+                        if not _dc_is_loss and HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS > 0:
+                            # [2026-10-06] r006 _011 parity - TREND_FLIP은 확정봉 종가가 BB중심선보다 N호가 이상 아래일 때만.
+                            _dc_close = pd.to_numeric(buy_available_1min.iloc[-1].get("close"), errors="coerce")
+                            _dc_bb = pd.to_numeric(buy_available_1min.iloc[-1].get("BB_MIDDLE"), errors="coerce")
+                            if (
+                                pd.isna(_dc_close) or pd.isna(_dc_bb) or _dc_close <= 0
+                                or (float(_dc_bb) - float(_dc_close))
+                                < HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS * krx_tick_size(float(_dc_close))
+                            ):
+                                hybrid_1min_dead_cross_state.pop(code, None)
+                                _dc_ok = False
+                        if _dc_ok and not _dc_is_loss:
                             _dc_bb_slope_1min = _compute_bb_slope_pct(buy_available_1min)
                             if pd.isna(_dc_bb_slope_1min) or _dc_bb_slope_1min > 0:
                                 hybrid_1min_dead_cross_state.pop(code, None)
@@ -2783,7 +2890,22 @@ def simulate_date(
                             _dc_hold_seconds = update_timed_condition_state(
                                 hybrid_1min_dead_cross_state, code, pos.buy_time, ts, True,
                             )
-                            if _dc_hold_seconds >= HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS:
+                            _dc_regime_hold = False
+                            if _dc_hold_seconds >= HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS and DC_REGIME_MODE_SIM in ("shadow", "live"):
+                                _rg = dc_regime_snapshot(
+                                    available, buy_available_1min, profit_pct, ts,
+                                    HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
+                                )
+                                log(
+                                    f"  [DC REGIME] {code} | mode={DC_REGIME_MODE_SIM} "
+                                    f"decision={'HOLD' if _rg['hold_candidate'] else 'SELL'} | pnl={profit_pct*100:.2f}% "
+                                    f"regime_up={_rg['regime_up']} dist3={_rg['dist3_pct']:.2f}% slope3={_rg['slope3_pct']:.3f}%"
+                                )
+                                if DC_REGIME_MODE_SIM == "live" and _rg["hold_candidate"]:
+                                    _dc_regime_hold = True
+                                    dc_regime_armed.add(code)
+                                    hybrid_1min_dead_cross_state.pop(code, None)
+                            if _dc_hold_seconds >= HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS and not _dc_regime_hold:
                                 _dc_kind = "LOSS" if _dc_is_loss else "TREND_FLIP"
                                 reason_dc = f"HYBRID_1MIN_DEAD_CROSS_{_dc_kind}_{_dc_reason}"
                                 trailing_sell_confirm_state.pop(code, None)
@@ -3562,6 +3684,7 @@ def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
     global LOG_SUMMARY_MODE, COMPARE_FEE_BUY_RATE, COMPARE_FEE_SELL_RATE, COMPARE_SLIPPAGE_RATE
     global ANTI_CHASE_PRICE_MODE, GATE_DECISION_PATH
+    global DC_REGIME_MODE_SIM, SIM_BAR_SEMANTICS
 
     parser = argparse.ArgumentParser(description="Simulate R76 strategy using date CSV/TXT data (1-minute input supported)")
     parser.add_argument("--date", required=True, help="Simulation date in YYYYMMDD format")
@@ -3658,6 +3781,18 @@ def main() -> None:
         help="Allow fallback to non-10s TXT inputs (_1m/_20s/plain)",
     )
     parser.add_argument(
+        "--dc-regime-mode",
+        choices=("off", "shadow", "live"),
+        default=None,
+        help="[2026-10-06] 1분봉 데드크로스 청산의 3분봉 추세 연동 모드(기본: r001 HYBRID_1MIN_DEADCROSS_REGIME_MODE)",
+    )
+    parser.add_argument(
+        "--bar-semantics",
+        choices=("causal", "legacy"),
+        default="causal",
+        help="[2026-10-06] causal=원본 1분봉(:00 행)을 종료시각으로 공개+가격은 확정 종가 ffill(미래참조 제거, 기본), legacy=기존 10초 보간 그대로",
+    )
+    parser.add_argument(
         "--anti-chase-price",
         choices=("tick", "minute"),
         default="tick",
@@ -3705,6 +3840,10 @@ def main() -> None:
 
     LOG_SUMMARY_MODE = bool(args.summary)
     ANTI_CHASE_PRICE_MODE = str(args.anti_chase_price)
+    if args.dc_regime_mode:
+        DC_REGIME_MODE_SIM = str(args.dc_regime_mode)
+    SIM_BAR_SEMANTICS = str(args.bar_semantics)
+    log(f"[SIM MODE] dc_regime_mode={DC_REGIME_MODE_SIM} bar_semantics={SIM_BAR_SEMANTICS}")
     GATE_DECISION_PATH = log_dir / (
         f"{args.date}_gate_decisions.jsonl" if ANTI_CHASE_PRICE_MODE == "tick"
         else f"{args.date}_gate_decisions_{ANTI_CHASE_PRICE_MODE}.jsonl"

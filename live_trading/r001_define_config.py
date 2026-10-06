@@ -1043,6 +1043,24 @@ HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS = 5          # 매수측(12봉)보다 좁힘
 HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS = 60.0    # 매수 직후 최소 유예(초) - 기존 시그널 청산군(600초)보다 훨씬 짧음
 HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS = 15.0     # 노이즈 방지 확인창(초) - HARD_STOP(10s)~ATR_STOP(20s) 사이
 HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX = -0.003  # -0.3%: 이 손익 이하면 수익요건 없이 즉시 청산
+# [2026-10-06] TREND_FLIP(손실이 LOSS_EXIT_PNL_MAX보다 얕은 구간) 전용 이탈 깊이 문턱 - 최신 확정 1분봉 종가가
+# BB중심선보다 이 호가수(krx_tick_size 기준) 이상 아래일 때만 추세이탈로 인정. 066570 LG전자 2026-10-06 10:50
+# 사례: 229,000~230,500 2~3호가 박스 횡보 중 종가 229,500이 중심선 229,687보다 187원(1호가 500원 미만) 아래로
+# 내려간 것만으로 매도 -> 직후 231,000 급등. 고가주는 1호가 흔들림이 곧 크로스가 된다. LOSS 경로에는 미적용
+# (손절 공백 방지). 0 이하로 두면 비활성(기존과 동일).
+HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS = 1.0
+# [2026-10-06] 3분봉 추세(regime) 연동 1분봉 데드크로스 청산 - 사용자 승인 + Codex 1차 설계검토 반영.
+# 근거(약함, 하루 표본): 10/06 _011 데드크로스 청산 11건 중 8건은 매도 시점 확정 3분봉 종가가 3분봉 BB중심선
+# 위(상승 추세)였고, 그 8건의 매도 후 30분 종가는 평균 +0.60%(8건 중 5건 상승). 진입은 3분봉 맥락을 요구하는데
+# 청산은 1분봉 하나로 결정되는 비대칭을 줄이는 게 목적.
+# 규칙: _011이 매도하려는 순간 확정 3분봉이 UP(종가>BB중심선, 중심선>=직전 중심선, 봉 나이<=MAX_BAR_AGE)이고
+# 손익>DEEP_LOSS이고 1분봉 종가>=1분봉 BB하단이면 "보유 후보". live에서는 매도 대신 보유(armed)하고, armed 동안
+# (a) 손익<=DEEP_LOSS (b) 1분봉 종가<BB하단 (c) 3분봉 UP 해제+1분봉 종가<BB중심선 중 하나면 즉시 청산,
+# 1분봉 종가가 BB중심선 위로 회복하면 armed 해제. 하드손절/ATR손절 등 다른 조건은 그대로 동작.
+# "off" | "shadow"(매도는 기존 그대로, 판단만 로그/게이트 jsonl 기록) | "live". 검증 전까지 shadow 유지.
+HYBRID_1MIN_DEADCROSS_REGIME_MODE = "shadow"
+HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT = -0.008      # UP 추세여도 이 손익(현재가 기준) 이하면 청산
+HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS = 300.0  # 확정 3분봉 나이(초) 상한 - 넘으면 UP으로 인정 안 함
 
 # [2026-09-23] 사용자 요청("급등 후 꺾이면 고점 대비 -0.8%서 익절") + Codex 설계검토 - r006
 # _012_peak_retracement_guard. TP1(STAGED_TP1_PCT=3.0%)/ATR익절선 도달 전 구간은 현재 아무 보호장치가
@@ -1293,6 +1311,17 @@ BUY_ORDER_REPRICE_AFTER_SECONDS = 10
 BUY_ORDER_REPRICE_MAX_ATTEMPTS = 3
 BUY_ORDER_REPRICE_MAX_CHASE_PCT = 0.5
 
+# [2026-10-06] NXT 매도 미체결 재주문. NXT는 시장가가 없어 place_sell_order가 매도1호가(ask) 지정가로
+# 내는데, 이는 "대기 호가"라 가격이 다시 오르지 않으면 체결되지 않는다(2026-10-06 010060 OCI홀딩스
+# 08:30:41 데드크로스 손절 - 243,000 ask 지정가가 14분간 미체결, 그동안 손절 공백). 체결 0주로
+# SELL_ORDER_REPRICE_AFTER_SECONDS가 지나면 취소 후 그 시점 매수1호가(bid, 즉시 체결 가격)로 재주문하고,
+# 그래도 안 되면 매 재주문마다 새 bid로 따라간다(최대 SELL_ORDER_REPRICE_MAX_ATTEMPTS회). 매도는 추격 상한
+# 없음 - 빨리 나가는 게 목적. 19:59:58 NXT 당일청산(limit_price 지정, 1회 주문)과 부분체결 주문은 제외.
+# 0 이하로 두면 비활성(기존과 동일).
+SELL_ORDER_REPRICE_AFTER_SECONDS = 10
+SELL_ORDER_REPRICE_MAX_ATTEMPTS = 5
+SELL_UNKNOWN_RECONCILE_SECONDS = 30.0  # 재주문 응답 불명 시 당일 주문 조회로 접수 여부를 확인하는 최대 시간(초)
+
 # 계좌-감시종목 불일치 로그 출력 최소 간격(초)
 WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS = 300
 
@@ -1374,24 +1403,24 @@ def _apply_risk_profile_overrides() -> None:
 	profile = alias.get(raw_profile.lower())
 	if profile is None:
 		print(
-			"[WARN] Unknown AUTO_TRADING_RISK_PROFILE "
+			"[WARN        ] Unknown AUTO_TRADING_RISK_PROFILE "
 			f"'{raw_profile}'. Expected conservative|neutral|aggressive (or 보수|중립|공격)."
 		)
 		return
 
 	profile_path = Path(__file__).resolve().parent / "risk_profiles" / f"{profile}.json"
 	if not profile_path.is_file():
-		print(f"[WARN] Risk profile file not found: {profile_path}")
+		print(f"[WARN        ] Risk profile file not found: {profile_path}")
 		return
 
 	try:
 		overrides = json.loads(profile_path.read_text(encoding="utf-8"))
 	except Exception as exc:
-		print(f"[WARN] Failed to load risk profile '{profile}': {exc}")
+		print(f"[WARN        ] Failed to load risk profile '{profile}': {exc}")
 		return
 
 	if not isinstance(overrides, dict):
-		print(f"[WARN] Invalid risk profile format (expected object): {profile_path}")
+		print(f"[WARN        ] Invalid risk profile format (expected object): {profile_path}")
 		return
 
 	applied_keys: list[str] = []

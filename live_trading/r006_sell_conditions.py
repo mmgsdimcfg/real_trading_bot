@@ -97,6 +97,10 @@ from r001_define_config import (
     HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS,
     HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
     HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX,
+    HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS,
+    HYBRID_1MIN_DEADCROSS_REGIME_MODE,
+    HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT,
+    HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
     ENABLE_PEAK_RETRACE_GUARD,
     PEAK_RETRACE_GUARD_ARM_PNL,
     PEAK_RETRACE_GUARD_MIN_PCT,
@@ -137,6 +141,9 @@ from r002_strategy_core_shared import (
     _compute_bb_slope_pct,
     _num,
     check_1min_dead_cross,
+    krx_tick_size,
+    dc_regime_snapshot,
+    dc_regime_armed_action,
     compute_staged_tp1_target_pct,
     detect_price_surge,
     next_surge_ladder_action,
@@ -181,6 +188,7 @@ class SellServices:
     check_sell_condition: Callable[[pd.DataFrame, float, float, dict], tuple[bool, str]]
     classify_buy_session: Callable[[datetime], str]
     get_frame_1min: Callable[[str, datetime, bool], pd.DataFrame | None]
+    record_gate_decision: Callable[[dict], None] | None = None  # [2026-10-06] DC_REGIME 판정 jsonl 기록
 
 
 @dataclass
@@ -345,7 +353,7 @@ def _register_hard_stop(ctx: SellContext, label: str) -> None:
     if ctx.risk.hard_stop_daily_count >= HARD_STOP_CIRCUIT_BREAKER_COUNT:
         ctx.risk.circuit_breaker_until = ctx.current_dt + timedelta(minutes=HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN)
         ctx.log(
-            f"  [CIRCUIT_BREAKER] {label} {ctx.risk.hard_stop_daily_count}회 발생 → 신규 매수 "
+            f"  [CIRCUIT BRK ] {label} {ctx.risk.hard_stop_daily_count}회 발생 → 신규 매수 "
             f"{HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN}분 차단 until {ctx.risk.circuit_breaker_until:%H:%M:%S}"
         )
 
@@ -357,7 +365,7 @@ def _register_hard_stop(ctx: SellContext, label: str) -> None:
 def _001_stale_live_price_guard(ctx: SellContext) -> bool:
     if ctx.services.is_stale_live_price_source(ctx.price_source):
         ctx.log(
-            f"  {ctx.symbol_label} [SELL REJECT] | STALE_LIVE_PRICE | "
+            f"  [SELL REJECT ] {ctx.symbol_label} | STALE_LIVE_PRICE | "
             f"source={ctx.price_source} ttl={LIVE_PRICE_STALE_TTL_SECONDS}s"
         )
         return True
@@ -432,14 +440,14 @@ def _003_peak_next_bar_bearish_exit(ctx: SellContext) -> bool:
             if cur_close_pb < cur_open_pb and drop_from_peak_pct >= PEAK_NEXT_BAR_DROP_PCT:
                 reason_pb = f"PEAK_NEXT_BAR_BEARISH_{PEAK_NEXT_BAR_DROP_PCT*100:.1f}pct"
                 ctx.log(
-                    f"  [SELL TRIGGER] {code} | {reason_pb} | "
+                    f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_pb} | "
                     f"peak={ctx.highest_price:,.0f}({pos['peak_bar_time']:%H:%M:%S}) "
                     f"next_bar={bar_time:%H:%M:%S} open={cur_open_pb:,.0f} close={cur_close_pb:,.0f} "
                     f"drop={drop_from_peak_pct*100:.2f}% pnl={ctx.pnl_pct*100:.2f}%"
                 )
                 ctx.state.trailing_sell_confirm_state.pop(code, None)
                 if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_pb, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-                    ctx.log(f"  [SELL EXECUTED] {code} | {reason_pb} | qty={pos['quantity']} price={price:,.0f}")
+                    ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_pb} | qty={pos['quantity']} price={price:,.0f}")
                 ctx.state.signal_sell_bar[code] = bar_time
                 return True
     return False
@@ -475,14 +483,14 @@ def _004_hard_stop_loss(ctx: SellContext) -> bool:
     if hard_sl_condition and hard_sl_hold_seconds >= HARD_STOP_CONFIRM_SECONDS:
         reason_hard_sl = f"HARD_STOP_LOSS_{HARD_STOP_LOSS_PCT*100:.1f}PCT"
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_hard_sl} | "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_hard_sl} | "
             f"price={price:,.0f} entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% "
             f"held={held_for_hard_sl:.0f}s confirm={hard_sl_hold_seconds:.0f}s"
         )
         ctx.state.trailing_sell_confirm_state.pop(code, None)
         ctx.state.hard_stop_confirm_state.pop(code, None)
         if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_hard_sl, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_hard_sl} | qty={pos['quantity']} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_hard_sl} | qty={pos['quantity']} price={price:,.0f}")
             # 서킷브레이커: HARD_STOP 누적 및 당일 재진입 차단 등록
             _register_hard_stop(ctx, "HARD_STOP")
         ctx.state.signal_sell_bar[code] = ctx.bar_time
@@ -523,7 +531,7 @@ def _005_pyramid_add_entry(ctx: SellContext) -> bool:
                 pyr_session = ctx.services.classify_buy_session(ctx.current_dt)
                 reason_pyr = f"PYRAMID_2ND_ENTRY_PNL_{ctx.pnl_pct*100:.2f}PCT"
                 ctx.log(
-                    f"  [BUY TRIGGER] {code} | {reason_pyr} | "
+                    f"  [BUY TRIGGER ] {ctx.symbol_label} | {reason_pyr} | "
                     f"add_qty={pyr_qty} price={price:,.0f} avg_entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% | "
                     f"MA5={ma5_prev_pyr:.1f}->{ma5_cur_pyr:.1f} BB_MID={bb_mid_prev_pyr:.1f}->{bb_mid_cur_pyr:.1f} "
                     f"ADX={adx_prev_pyr:.1f}->{adx_cur_pyr:.1f}"
@@ -577,7 +585,7 @@ def _006_staged_tp1_partial(ctx: SellContext) -> bool:
             + ("_SURGE" if surge_now else "")
         )
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_tp1} | "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp1} | "
             f"qty={tp1_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={ctx.pnl_pct*100:.2f}% "
             f"target={tp1_target_pct*100:.2f}% (atr_based={atr_tp1_dynamic_pct*100:.2f}%, atr_tp={ctx.atr_tp_pct*100:.2f}%)"
             + (f" | surge={surge_now} [{surge_detail}]" if ENABLE_SURGE_LADDER_TP else "")
@@ -594,14 +602,14 @@ def _006_staged_tp1_partial(ctx: SellContext) -> bool:
                 ladder_base = tp1_fill_price if tp1_fill_price > 0 else float(price)
                 pos["surge_ladder"] = {"base": ladder_base, "tp2_done": False, "tp3_done": False}
                 ctx.log(
-                    f"  [SURGE_LADDER_ARMED] {code} | 급등 중 1차 익절 -> 잔량 사다리 익절 | "
+                    f"  [SURGE ARMED ] {ctx.symbol_label} | 급등 중 1차 익절 -> 잔량 사다리 익절 | "
                     f"base(TP1 체결가)={ladder_base:,.0f} "
                     f"TP2={ladder_base*(1.0+SURGE_TP2_PCT):,.0f}(+{SURGE_TP2_PCT*100:.1f}%) "
                     f"TP3={ladder_base*(1.0+SURGE_TP3_PCT):,.0f}(+{SURGE_TP3_PCT*100:.1f}%)"
                 )
             api._record_position_meta(code, pos)
             api.persist_live_state(date_str=ctx.date_str)
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp1} | qty={tp1_qty} price={price:,.0f}")
         ctx.state.signal_sell_bar[code] = ctx.bar_time
         return True
     return False
@@ -633,7 +641,7 @@ def _007_surge_ladder_tp(ctx: SellContext) -> bool:
             rung_pct = SURGE_TP2_PCT if rung == "TP2" else SURGE_TP3_PCT
             reason_ladder = f"{rung}_SURGE_LADDER_{rung_pct*100:.1f}PCT_OF_TP1"
             ctx.log(
-                f"  [SELL TRIGGER] {code} | {reason_ladder} | "
+                f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_ladder} | "
                 f"qty={rung_qty}/{int(pos['quantity'])} price={price:,.0f} target={rung_target:,.0f} "
                 f"(tp1_base={surge_ladder['base']:,.0f}) pnl={ctx.pnl_pct*100:.2f}%"
                 + (" | TP2 미실행 상태에서 TP3 도달 - TP2+TP3 합산 잔량 전량 청산" if rung == "TP3" and not surge_ladder["tp2_done"] else "")
@@ -647,7 +655,7 @@ def _007_surge_ladder_tp(ctx: SellContext) -> bool:
                     # TP3는 잔량 전량이라 포지션이 닫힌다 - 닫힌 포지션의 메타를 되살리지 않도록 기록하지 않는다.
                     api._record_position_meta(code, pos)
                     api.persist_live_state(date_str=ctx.date_str)
-                ctx.log(f"  [SELL EXECUTED] {code} | {reason_ladder} | qty={rung_qty} price={price:,.0f}")
+                ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_ladder} | qty={rung_qty} price={price:,.0f}")
             ctx.state.signal_sell_bar[code] = ctx.bar_time
             return True
     return False
@@ -670,14 +678,14 @@ def _008_staged_tp2_partial(ctx: SellContext) -> bool:
         tp2_qty = min(tp2_qty, int(pos["quantity"]))
         reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{ctx.tp2_target_pct*100:.2f}PCT"
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_tp2} | "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp2} | "
             f"qty={tp2_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
         )
         if api.place_sell_order(code, tp2_qty, ctx.current_dt, reason_tp2, ctx.nxt_tradeable, price=price, code_name=ctx.name):
             pos["tp2_done"] = True
             api._record_position_meta(code, pos)
             api.persist_live_state(date_str=ctx.date_str)
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={tp2_qty} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp2} | qty={tp2_qty} price={price:,.0f}")
         ctx.state.signal_sell_bar[code] = ctx.bar_time
         return True
     return False
@@ -697,7 +705,7 @@ def _009_tp3_trail_arm(ctx: SellContext) -> bool:
     ):
         pos["tp3_trail_armed"] = True
         ctx.log(
-            f"  [TP3_TRAIL_ARMED] {code} | 1,2차 익절 완료 - 잔량 {int(pos['quantity'])}주 "
+            f"  [TP3 TRAIL ON] {ctx.symbol_label} | 1,2차 익절 완료 - 잔량 {int(pos['quantity'])}주 "
             f"고정청산 없이 트레일링 스탑에 위임 | price={price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
         )
     return False
@@ -712,12 +720,12 @@ def _010_legacy_tp_full_and_partial(ctx: SellContext) -> bool:
     if ctx.pnl_pct >= 0.020:
         reason_tp2 = "TP2_FULL_2.0PCT"
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_tp2} | "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp2} | "
             f"price={price:,.0f} entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
         )
         ctx.state.trailing_sell_confirm_state.pop(code, None)
         if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_tp2, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_tp2} | qty={pos['quantity']} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp2} | qty={pos['quantity']} price={price:,.0f}")
         ctx.state.signal_sell_bar[code] = ctx.bar_time
         return True
 
@@ -727,14 +735,14 @@ def _010_legacy_tp_full_and_partial(ctx: SellContext) -> bool:
         partial_qty = min(partial_qty, int(pos["quantity"]))
         reason_tp1 = "TP1_PARTIAL_50PCT_1.0PCT"
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_tp1} | "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp1} | "
             f"qty={partial_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
         )
         if api.place_sell_order(code, partial_qty, ctx.current_dt, reason_tp1, ctx.nxt_tradeable, price=price, code_name=ctx.name):
             pos["tp1_done"] = True
             api._record_position_meta(code, pos)
             api.persist_live_state(date_str=ctx.date_str)
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_tp1} | qty={partial_qty} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp1} | qty={partial_qty} price={price:,.0f}")
         ctx.state.signal_sell_bar[code] = ctx.bar_time
         return True
     return False
@@ -759,6 +767,12 @@ def _011_hybrid_1min_dead_cross_exit(ctx: SellContext) -> bool:
         return False
 
     frame_1min = ctx.services.get_frame_1min(code, ctx.current_dt, ctx.nxt_tradeable)
+    regime_mode = str(HYBRID_1MIN_DEADCROSS_REGIME_MODE).lower()
+    if regime_mode == "live" and bool(pos.get("dc_regime_hold", False)):
+        # [2026-10-06] armed 포지션은 cross 감지/깊이/기울기/확인창과 독립적으로 먼저 평가한다(Codex 1차) -
+        # check_1min_dead_cross 룩백(5봉)이 지나면 cross가 안 보여 나중의 3분봉 추세 이탈을 놓치기 때문.
+        return _011_regime_armed_step(ctx, frame_1min)
+
     found, cross_reason, bars_since_cross = check_1min_dead_cross(frame_1min, HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS)
     if not found:
         ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
@@ -766,6 +780,21 @@ def _011_hybrid_1min_dead_cross_exit(ctx: SellContext) -> bool:
 
     is_loss_exit = ctx.pnl_pct <= HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX
     bb_slope_1min = float("nan")
+    depth_label = ""
+    if not is_loss_exit and HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS > 0:
+        # [2026-10-06] 최신 확정봉 종가가 BB중심선보다 N호가 이상 아래여야 추세이탈 인정(066570 LG전자 사례,
+        # r001 HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS 참조) - 1호가 흔들림 휩쏘 매도 방지.
+        last_close = pd.to_numeric(frame_1min.iloc[-1].get("close"), errors="coerce")
+        last_bb = pd.to_numeric(frame_1min.iloc[-1].get("BB_MIDDLE"), errors="coerce")
+        if pd.isna(last_close) or pd.isna(last_bb) or last_close <= 0:
+            ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
+            return False
+        tick = krx_tick_size(float(last_close))
+        depth = float(last_bb) - float(last_close)
+        if depth < HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS * tick:
+            ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
+            return False
+        depth_label = f" depth={depth:,.0f}/{tick}tick"
     if not is_loss_exit:
         # 수익/얕은 손실 구간: BB중심선(1분봉) 자체가 이미 꺾였을 때만 인정 - 상승추세 정상 눌림목 보호.
         bb_slope_1min = _compute_bb_slope_pct(frame_1min)
@@ -781,15 +810,98 @@ def _011_hybrid_1min_dead_cross_exit(ctx: SellContext) -> bool:
 
     kind = "LOSS" if is_loss_exit else "TREND_FLIP"
     reason = f"HYBRID_1MIN_DEAD_CROSS_{kind}_{cross_reason}"
+    if regime_mode in ("shadow", "live"):
+        # [Codex r2] 판정/로그/기록 전체를 예외 격리 - 실패하면 기존대로 매도(보유 판단은 snap 계산 성공 시에만).
+        snap = None
+        try:
+            snap = dc_regime_snapshot(
+                ctx.frame, frame_1min, ctx.pnl_pct, ctx.current_dt,
+                HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
+            )
+            _log_dc_regime(ctx, snap, regime_mode, reason)
+        except Exception as exc:
+            try:
+                ctx.log(f"  [DC REGIME   ] {ctx.symbol_label} | evaluation failed - sell as before: {exc}")
+            except Exception:
+                pass
+        if regime_mode == "live" and snap is not None and snap.get("hold_candidate"):
+            # 매도 대신 보유(armed). signal_sell_bar/다른 조건의 확인상태는 건드리지 않는다(Codex 1차).
+            pos["dc_regime_hold"] = True
+            api._record_position_meta(code, pos)
+            ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
+            return False
     ctx.log(
-        f"  [SELL TRIGGER] {code} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
+        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
         f"pnl={ctx.pnl_pct*100:.2f}% held={held:.0f}s bars_since_cross={bars_since_cross} "
-        f"bb_slope_1min={bb_slope_1min:.3f}% confirm={dead_cross_hold_seconds:.0f}s"
+        f"bb_slope_1min={bb_slope_1min:.3f}%{depth_label} confirm={dead_cross_hold_seconds:.0f}s"
     )
     ctx.state.trailing_sell_confirm_state.pop(code, None)
     ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
     if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-        ctx.log(f"  [SELL EXECUTED] {code} | {reason} | qty={pos['quantity']} price={price:,.0f}")
+        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={pos['quantity']} price={price:,.0f}")
+    ctx.state.signal_sell_bar[code] = ctx.bar_time
+    return True
+
+
+def _log_dc_regime(ctx: SellContext, snap: dict, mode: str, reason: str, action: str | None = None) -> None:
+    """[2026-10-06] 3분봉 추세 연동 판정 로그 + 게이트 jsonl(kind=DC_REGIME). 기록 실패는 매매에 영향 없음."""
+    decision = action or ("HOLD" if snap["hold_candidate"] else "SELL")
+    ctx.log(
+        f"  [DC REGIME   ] {ctx.symbol_label} | mode={mode} decision={decision} | {reason} | "
+        f"pnl={ctx.pnl_pct*100:.2f}% regime_up={snap['regime_up']} dist3={snap['dist3_pct']:.2f}% "
+        f"slope3={snap['slope3_pct']:.3f}% bar3_age={snap['bar3_age_s']:.0f}s | "
+        f"c1={snap['c1']:,.0f} mid1={snap['bb_mid1']:,.1f} low1={snap['bb_low1']:,.1f}"
+    )
+    rec_fn = getattr(ctx.services, "record_gate_decision", None)
+    if rec_fn is None:
+        return
+    try:
+        rec = {
+            "ts": ctx.current_dt.isoformat(timespec="seconds"), "code": str(ctx.code).zfill(6), "kind": "DC_REGIME",
+            "result": decision, "mode": mode, "reason": reason, "price": float(ctx.price),
+            "pnl_pct": round(ctx.pnl_pct * 100.0, 4), "entry_price": float(ctx.entry_price),
+            "bar_time": str(ctx.bar_time),
+        }
+        rec.update({k: (None if (isinstance(v, float) and pd.isna(v)) else v) for k, v in snap.items()})
+        rec_fn(rec)
+    except Exception as exc:
+        ctx.log(f"  [GATE LOG    ] {ctx.symbol_label} | DC_REGIME record failed: {exc}")
+
+
+def _011_regime_armed_step(ctx: SellContext, frame_1min: pd.DataFrame | None) -> bool:
+    """[2026-10-06] live 모드 armed 포지션 1틱 처리(r002 dc_regime_armed_action 공용 판정)."""
+    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
+    try:
+        snap = dc_regime_snapshot(
+            ctx.frame, frame_1min, ctx.pnl_pct, ctx.current_dt,
+            HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
+        )
+        action = dc_regime_armed_action(snap, ctx.pnl_pct, HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT)
+    except Exception as exc:  # 판정 실패 시 보수적으로 청산(fail-closed)
+        snap = {"regime_up": False, "hold_candidate": False, "dist3_pct": float("nan"), "slope3_pct": float("nan"),
+                "bar3_age_s": float("nan"), "c1": float("nan"), "bb_mid1": float("nan"), "bb_low1": float("nan")}
+        action = "EXIT_REGIME_FLIP"
+        ctx.log(f"  [DC REGIME   ] {ctx.symbol_label} | armed evaluation failed - exit: {exc}")
+    ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
+    if action == "HOLD":
+        return False
+    if action == "DISARM":
+        pos["dc_regime_hold"] = False
+        api._record_position_meta(code, pos)
+        _log_dc_regime(ctx, snap, "live", "ARMED_RECOVERED", action="DISARM")
+        return False
+    reason = "HYBRID_1MIN_DEAD_CROSS_" + ("REGIME_FLIP" if action == "EXIT_REGIME_FLIP" else action.replace("EXIT_", "REGIME_"))
+    try:
+        _log_dc_regime(ctx, snap, "live", reason, action="SELL")
+    except Exception:
+        pass
+    ctx.log(
+        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
+        f"pnl={ctx.pnl_pct*100:.2f}%"
+    )
+    ctx.state.trailing_sell_confirm_state.pop(code, None)
+    if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
+        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={pos['quantity']} price={price:,.0f}")
     ctx.state.signal_sell_bar[code] = ctx.bar_time
     return True
 
@@ -841,7 +953,7 @@ def _012_peak_retracement_guard(ctx: SellContext) -> bool:
 
     reason = f"PEAK_RETRACE_GUARD_{retrace_threshold*100:.2f}pct"
     ctx.log(
-        f"  [SELL TRIGGER] {code} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
+        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
         f"peak={ctx.highest_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% peak_pnl={ctx.peak_pnl_pct*100:.2f}% "
         f"giveback={ctx.profit_giveback*100:.2f}% atr_pct={ctx.atr_pct*100:.2f}% held={held:.0f}s "
         f"confirm={hold_seconds:.0f}s"
@@ -849,7 +961,7 @@ def _012_peak_retracement_guard(ctx: SellContext) -> bool:
     ctx.state.trailing_sell_confirm_state.pop(code, None)
     ctx.state.peak_retrace_guard_state.pop(code, None)
     if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-        ctx.log(f"  [SELL EXECUTED] {code} | {reason} | qty={pos['quantity']} price={price:,.0f}")
+        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={pos['quantity']} price={price:,.0f}")
     ctx.state.signal_sell_bar[code] = ctx.bar_time
     return True
 
@@ -861,19 +973,19 @@ def _013_signal_exit_stoch_k_lt_d(ctx: SellContext) -> bool:
     if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
         if s["strong_uptrend"] or s["sig_held_seconds"] < SIGNAL_EXIT_MIN_HOLD_SECONDS or ctx.pnl_pct > SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN:
             ctx.log(
-                f"  [SELL SKIP] {code} | STOCH_K_LT_D suppressed | "
+                f"  [SELL SKIP   ] {ctx.symbol_label} | STOCH_K_LT_D suppressed | "
                 f"K={k_now:.1f} D={d_now:.1f} pnl={ctx.pnl_pct*100:.2f}% held={s['sig_held_seconds']:.0f}s "
                 f"uptrend(adx={s['adx_uptrend']},price={s['price_uptrend']})"
             )
         else:
             reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"
             ctx.log(
-                f"  [SELL TRIGGER] {code} | {reason_sig_kd} | "
+                f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_sig_kd} | "
                 f"K={k_now:.1f} D={d_now:.1f} pnl={ctx.pnl_pct*100:.2f}%"
             )
             ctx.state.trailing_sell_confirm_state.pop(code, None)
             if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_sig_kd, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-                ctx.log(f"  [SELL EXECUTED] {code} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
+                ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
             ctx.state.signal_sell_bar[code] = ctx.bar_time
             return True
     return False
@@ -890,12 +1002,12 @@ def _014_signal_exit_macd_hist_down(ctx: SellContext) -> bool:
             and ctx.pnl_pct <= SIGNAL_EXIT_MACD_PNL_MAX):
         reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_sig_macd} | "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_sig_macd} | "
             f"HIST={hist_prev2:.3f}->{hist_prev:.3f}->{hist_now:.3f} pnl={ctx.pnl_pct*100:.2f}%"
         )
         ctx.state.trailing_sell_confirm_state.pop(code, None)
         if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_sig_macd, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_sig_macd} | qty={pos['quantity']} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_sig_macd} | qty={pos['quantity']} price={price:,.0f}")
         ctx.state.signal_sell_bar[code] = ctx.bar_time
         return True
     return False
@@ -907,18 +1019,18 @@ def _015_atr_take_profit(ctx: SellContext) -> bool:
         if ENABLE_TP_EXTENSION_TRAILING:
             # TP 도달 시 즉시 익절 대신 고점 트레일링 모드로 전환 (주문 없이 로그만 - FALL_THROUGH)
             ctx.log(
-                f"  [TP_EXTENSION] {code} | pnl={ctx.pnl_pct*100:.2f}% >= ATR_TP {ctx.atr_tp_pct*100:.2f}% | "
+                f"  [TP_EXTENSION] {ctx.symbol_label} | pnl={ctx.pnl_pct*100:.2f}% >= ATR_TP {ctx.atr_tp_pct*100:.2f}% | "
                 f"고점 트레일링 모드 전환 (trail={TP_EXTENSION_TRAIL_FROM_PEAK*100:.1f}%) | "
                 f"price={price:,.0f} peak={ctx.highest_price:,.0f} atr={float(ctx.atr_val):.2f}"
             )
         else:
             reason_tp = f"ATR_TAKE_PROFIT_{ATR_TAKE_PROFIT_MULTIPLIER:.1f}x"
             ctx.log(
-                f"  [SELL TRIGGER] {code} | {reason_tp} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
+                f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
                 f"pnl={ctx.pnl_pct*100:.2f}% atr={float(ctx.atr_val):.2f} tp={ctx.atr_tp_price:,.0f}"
             )
             if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_tp, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-                ctx.log(f"  [SELL EXECUTED] {code} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
+                ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp} | qty={pos['quantity']} price={price:,.0f}")
             ctx.state.signal_sell_bar[code] = ctx.bar_time
             return True
     return False
@@ -955,13 +1067,13 @@ def _016_post_buy_entry_drop_guard(ctx: SellContext) -> bool:
             drop_pct_guard = (price / entry_price - 1.0) * 100.0
             reason_bbdrop = f"POST_BUY_ENTRY_DROP_{POST_BUY_BB_DROP_PCT*100:.1f}pct_{POST_BUY_DROP_CONFIRM_SECONDS:.0f}s"
             ctx.log(
-                f"  [SELL TRIGGER] {code} | {reason_bbdrop} | "
+                f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_bbdrop} | "
                 f"held={held_for_guard:.0f}s price={price:,.0f} entry={entry_price:,.0f} "
                 f"drop={drop_pct_guard:.2f}% hold={drop_hold_seconds:.0f}s pnl={ctx.pnl_pct*100:.2f}%"
             )
             _clear_timed_guard_states(ctx)
             if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_bbdrop, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-                ctx.log(f"  [SELL EXECUTED] {code} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
+                ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_bbdrop} | qty={pos['quantity']} price={price:,.0f}")
             ctx.state.signal_sell_bar[code] = ctx.bar_time
             return True
     else:
@@ -993,13 +1105,13 @@ def _017_breakeven_fail_guard(ctx: SellContext) -> bool:
                 f"giveback{BREAKEVEN_FAIL_GIVEBACK_PCT*100:.2f}_{BREAKEVEN_FAIL_CONFIRM_SECONDS:.0f}s"
             )
             ctx.log(
-                f"  [SELL TRIGGER] {code} | {reason_breakeven} | held={held_for_guard:.0f}s "
+                f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_breakeven} | held={held_for_guard:.0f}s "
                 f"price={price:,.0f} entry={entry_price:,.0f} peak={ctx.highest_price:,.0f} "
                 f"peak_pnl={ctx.peak_pnl_pct*100:.2f}% giveback={ctx.profit_giveback*100:.2f}%"
             )
             _clear_timed_guard_states(ctx)
             if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_breakeven, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-                ctx.log(f"  [SELL EXECUTED] {code} | {reason_breakeven} | qty={pos['quantity']} price={price:,.0f}")
+                ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_breakeven} | qty={pos['quantity']} price={price:,.0f}")
             ctx.state.signal_sell_bar[code] = ctx.bar_time
             return True
     else:
@@ -1033,13 +1145,13 @@ def _018_no_trend_time_exit(ctx: SellContext) -> bool:
             f"peakLT{NO_TREND_EXIT_MAX_PEAK_PNL*100:.1f}_{NO_TREND_EXIT_CONFIRM_SECONDS:.0f}s"
         )
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_no_trend} | held={held_for_guard:.0f}s "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_no_trend} | held={held_for_guard:.0f}s "
             f"price={price:,.0f} bb_mid={bb_mid_guard:,.1f} pnl={ctx.pnl_pct*100:.2f}% "
             f"peak_pnl={ctx.peak_pnl_pct*100:.2f}% hold={no_trend_hold_seconds:.0f}s"
         )
         _clear_timed_guard_states(ctx)
         if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_no_trend, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_no_trend} | qty={pos['quantity']} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_no_trend} | qty={pos['quantity']} price={price:,.0f}")
         ctx.state.signal_sell_bar[code] = ctx.bar_time
         return True
     return False
@@ -1067,7 +1179,7 @@ def _019_atr_stop_loss(ctx: SellContext) -> bool:
     if atr_sl_condition and atr_sl_hold_seconds >= ATR_STOP_CONFIRM_SECONDS:
         reason_sl = f"ATR_STOP_LOSS_{ATR_STOP_MULTIPLIER:.1f}x"
         ctx.log(
-            f"  [SELL TRIGGER] {code} | {reason_sl} | held={held_sl:.0f}s price={price:,.0f} "
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_sl} | held={held_sl:.0f}s price={price:,.0f} "
             f"bar_low={ctx.bar_low:,.0f} entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% "
             f"sl_pnl={ctx.pnl_sl*100:.2f}% atr={float(ctx.atr_val):.2f} sl={ctx.atr_sl_price:,.0f} "
             f"confirm={atr_sl_hold_seconds:.0f}s"
@@ -1075,7 +1187,7 @@ def _019_atr_stop_loss(ctx: SellContext) -> bool:
         ctx.state.trailing_sell_confirm_state.pop(code, None)
         ctx.state.atr_stop_confirm_state.pop(code, None)
         if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_sl, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-            ctx.log(f"  [SELL EXECUTED] {code} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_sl} | qty={pos['quantity']} price={price:,.0f}")
             # ATR_STOP_LOSS도 HARD_STOP_LOSS와 동일하게 당일 재진입 차단/서킷브레이커에 반영한다(2026-07-20 로그
             # 분석: 당일 손실의 87%가 ATR_STOP_LOSS였는데 이 카운터는 HARD_STOP_LOSS만 추적했음).
             _register_hard_stop(ctx, "STOP_LOSS(ATR/HARD)")
@@ -1112,7 +1224,7 @@ def _020_trailing_stop(ctx: SellContext) -> bool:
             if not trailing_condition and pending_state is not None:
                 trailing_sell_confirm_state.pop(code, None)
                 ctx.log(
-                    f"  [SELL HOLD CANCEL] {code} | trailing recovered before confirm | "
+                    f"  [TRAIL RESET ] {ctx.symbol_label} | trailing recovered before confirm | "
                     f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                 )
 
@@ -1126,7 +1238,7 @@ def _020_trailing_stop(ctx: SellContext) -> bool:
                         "reason": reason_ts,
                     }
                     ctx.log(
-                        f"  [SELL HOLD] {code} | {reason_ts} first hit, wait next 3m bar confirm | "
+                        f"  [SELL HOLD   ] {ctx.symbol_label} | {reason_ts} first hit, wait next 3m bar confirm | "
                         f"bar={bar_time:%H:%M:%S} pnl={current_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
                     )
                     return True
@@ -1136,13 +1248,13 @@ def _020_trailing_stop(ctx: SellContext) -> bool:
                     return True
 
             ctx.log(
-                f"  [SELL TRIGGER] {code} | {reason_ts} | "
+                f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_ts} | "
                 f"price={price:,.0f} entry={entry_price:,.0f} peak={highest_price:,.0f} | "
                 f"pnl={current_pnl_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={profit_giveback*100:.2f}%"
             )
             trailing_sell_confirm_state.pop(code, None)
             if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_ts, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-                ctx.log(f"  [SELL EXECUTED] {code} | {reason_ts} | qty={pos['quantity']} price={price:,.0f}")
+                ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_ts} | qty={pos['quantity']} price={price:,.0f}")
             ctx.state.signal_sell_bar[code] = bar_time
             return True
     return False
@@ -1171,7 +1283,7 @@ def _022_shared_reversal_sell(ctx: SellContext) -> bool:
                 )
                 if ctx.pnl_pct < aux_required_pnl:
                     ctx.log(
-                        f"  [SELL HOLD] {code} | AUX_TRIGGER_BUFFER_BLOCK "
+                        f"  [SELL HOLD   ] {ctx.symbol_label} | AUX_TRIGGER_BUFFER_BLOCK "
                         f"score={aux_score} pnl={ctx.pnl_pct*100:.2f}% "
                         f"required>={aux_required_pnl*100:.2f}% "
                         f"(base={aux_base_min*100:.2f}%+buffer={AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT*100:.2f}%)"
@@ -1179,7 +1291,7 @@ def _022_shared_reversal_sell(ctx: SellContext) -> bool:
                     return True
         if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, sell_reason, ctx.nxt_tradeable, price=price, code_name=ctx.name):
             ctx.log(
-                f"  [SELL EVAL] {code} | OK {sell_reason} | {ctx.current_dt:%H:%M:%S} | "
+                f"  [SELL EVAL   ] {ctx.symbol_label} | OK {sell_reason} | {ctx.current_dt:%H:%M:%S} | "
                 f"LIVE {price:,.0f} | BB {_num(prev_bar, 'BB_MIDDLE'):.1f}->{_num(cur, 'BB_MIDDLE'):.1f} | "
                 f"RSI={_num(cur, 'RSI'):.1f} SIG={_num(cur, 'RSI_SIGNAL'):.1f} | "
                 f"K={_num(prev_bar, 'STOCH_K'):.1f}->{_num(cur, 'STOCH_K'):.1f} D={_num(cur, 'STOCH_D'):.1f} | "
@@ -1187,7 +1299,7 @@ def _022_shared_reversal_sell(ctx: SellContext) -> bool:
                 f"MACD {_num(prev_bar, 'MACD'):.2f}->{_num(cur, 'MACD'):.2f} SIG={_num(cur, 'MACD_SIGNAL'):.2f} | "
                 f"ADX={_num(cur, 'ADX'):.1f} | pnl={ctx.pnl_pct*100:.2f}% peak={ctx.highest_price:,.0f}"
             )
-            ctx.log(f"  [SELL EXECUTED] {code} | {sell_reason} | qty={pos['quantity']} price={price:,.0f}")
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {sell_reason} | qty={pos['quantity']} price={price:,.0f}")
             ctx.state.signal_sell_bar[code] = ctx.bar_time
     elif (
         sell_reason.startswith("AUX_BLOCKED")
@@ -1195,7 +1307,7 @@ def _022_shared_reversal_sell(ctx: SellContext) -> bool:
         or sell_reason.startswith("LIVE_PRICE_BB_DOWN_CROSS_BLOCKED_SCORE")
         or sell_reason.startswith("BOX_RANGE_HOLD")
     ):
-        ctx.log(f"  [SELL HOLD] {code} | {sell_reason}")
+        ctx.log(f"  [SELL HOLD   ] {ctx.symbol_label} | {sell_reason}")
     return True
 
 
