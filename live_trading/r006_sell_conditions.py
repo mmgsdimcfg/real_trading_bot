@@ -67,13 +67,25 @@ Update log (append only):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
 import pandas as pd
 
 from r001_define_config import (
+    TRADING_STRATEGY_MODE,
+    BASIC_TP1_PCT,
+    BASIC_TP1_RATIO,
+    BASIC_TP2_PCT,
+    BASIC_TP2_RATIO,
+    BASIC_TP3_PCT,
+    BASIC_TP3_JUMP_PCT,
+    BASIC_TP3_EXT_PCT,
+    BASIC_PEAK_PROTECT_ARM_PNL,
+    BASIC_PEAK_PROTECT_EXIT_PNL,
+    BASIC_PEAK_PROTECT_CONFIRM_SECONDS,
+    BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS,
     ATR_STOP_CONFIRM_SECONDS,
     ATR_STOP_MULTIPLIER,
     ATR_TAKE_PROFIT_MULTIPLIER,
@@ -174,6 +186,7 @@ class SellState:
     peak_retrace_guard_state: dict[str, dict]
     signal_sell_bar: dict[str, object]
     hard_stop_today_codes: set[str]
+    basic_peak_protect_state: dict[str, dict] = field(default_factory=dict)  # [2026-10-07] basic 고점보호 확인창
 
 
 @dataclass
@@ -1388,9 +1401,14 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
 )
 
 
+def active_sell_conditions() -> tuple[SellCondition, ...]:
+    """[2026-10-07] TRADING_STRATEGY_MODE에 따른 매도 조건 목록 ("basic"이면 기본 조건, 그 외 기존 normal)."""
+    return BASIC_SELL_CONDITIONS if str(TRADING_STRATEGY_MODE).lower() == "basic" else SELL_CONDITIONS
+
+
 def evaluate_sell_conditions(ctx: SellContext, conditions: tuple[SellCondition, ...] | None = None) -> SellDecision:
     """보유 종목 메인 판정: 조건을 번호 순서대로 평가하고 STOP_SYMBOL(True)을 반환한 첫 조건에서 멈춘다."""
-    for cond in (SELL_CONDITIONS if conditions is None else conditions):
+    for cond in (active_sell_conditions() if conditions is None else conditions):
         if cond.run(ctx):
             return SellDecision(stopped_by=cond)
     return SellDecision(stopped_by=None)
@@ -1403,3 +1421,132 @@ def describe_sell_conditions() -> list[dict[str, object]]:
          "description": c.description, "defines": list(c.related_defines)}
         for c in SELL_CONDITIONS
     ]
+
+
+# =============================================================================================
+# [2026-10-07] basic 모드 매도 조건 (r001 TRADING_STRATEGY_MODE="basic" 참조). 분할 익절 단계는 기존 영속 필드
+# tp1_done/tp2_done/tp3_done(positions_meta 저장)을 재사용하고, 3차 목표 상향 여부는 basic_tp3_ext로 저장한다.
+# 손익(pnl_pct)은 거래세/수수료 제외 가격 기준(현재가/평균매입가-1).
+
+_BASIC_EPS = 1e-9  # 손익 비율 부동소수점 오차 보정(예: 10,150/10,000-1 = 0.01499999... 가 1.5% 목표를 못 넘던 문제)
+
+
+def _basic_entry_qty(pos: dict) -> int:
+    return max(int(pos.get("entry_quantity", 0) or 0), int(pos.get("quantity", 0) or 0), 1)
+
+
+def _basic_sell(ctx: SellContext, qty: int, reason: str, detail: str = "") -> bool:
+    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
+    qty = min(max(1, int(qty)), int(pos.get("quantity", 0) or 0))
+    if qty <= 0:
+        return False
+    ctx.log(
+        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | qty={qty}/{int(pos['quantity'])} price={price:,.0f} "
+        f"entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% peak={ctx.peak_pnl_pct*100:.2f}%{detail}"
+    )
+    ok = api.place_sell_order(code, qty, ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name)
+    if ok:
+        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={qty} price={price:,.0f}")
+    ctx.state.signal_sell_bar[code] = ctx.bar_time
+    return ok
+
+
+def _b10_basic_staged_tp(ctx: SellContext) -> bool:
+    """basic 분할 익절: +1.5%에서 진입수량 40%, +2%에서 30%, +3%에서 잔량. 2차 이후 3% 이상 첫 확인값이 3.1% 이상이면
+    3차 목표를 4%로 상향(basic_tp3_ext 저장)."""
+    pos, api, pnl = ctx.pos, ctx.api, ctx.pnl_pct
+    entry_qty = _basic_entry_qty(pos)
+    if not pos.get("tp1_done"):
+        if pnl >= BASIC_TP1_PCT - _BASIC_EPS:
+            qty = max(1, int(entry_qty * BASIC_TP1_RATIO))
+            if _basic_sell(ctx, qty, f"BASIC_TP1_{BASIC_TP1_PCT*100:.1f}PCT_{BASIC_TP1_RATIO*100:.0f}PCT"):
+                pos["tp1_done"] = True
+                pos["entry_quantity"] = entry_qty
+                api._record_position_meta(ctx.code, pos)
+                api.persist_live_state(date_str=ctx.date_str)
+            return True
+        return False
+    if not pos.get("tp2_done"):
+        if pnl >= BASIC_TP2_PCT - _BASIC_EPS:
+            qty = max(1, int(entry_qty * BASIC_TP2_RATIO))
+            if _basic_sell(ctx, qty, f"BASIC_TP2_{BASIC_TP2_PCT*100:.1f}PCT_{BASIC_TP2_RATIO*100:.0f}PCT"):
+                pos["tp2_done"] = True
+                api._record_position_meta(ctx.code, pos)
+                api.persist_live_state(date_str=ctx.date_str)
+            return True
+        return False
+    if pos.get("tp3_done"):
+        return False
+    target = BASIC_TP3_EXT_PCT if pos.get("basic_tp3_ext") else BASIC_TP3_PCT
+    if pnl < target - _BASIC_EPS:
+        return False
+    if not pos.get("basic_tp3_ext") and pnl >= BASIC_TP3_JUMP_PCT - _BASIC_EPS:
+        pos["basic_tp3_ext"] = True
+        api._record_position_meta(ctx.code, pos)
+        api.persist_live_state(date_str=ctx.date_str)
+        ctx.log(
+            f"  [TP_EXTENSION] {ctx.symbol_label} | BASIC 3% 목표 도달 첫 확인값 {pnl*100:.2f}% >= {BASIC_TP3_JUMP_PCT*100:.1f}% "
+            f"-> 3차 목표 {BASIC_TP3_EXT_PCT*100:.1f}%로 상향"
+        )
+        return False
+    if _basic_sell(ctx, int(pos["quantity"]), f"BASIC_TP3_{target*100:.1f}PCT_ALL"):
+        pos["tp3_done"] = True
+        api._record_position_meta(ctx.code, pos)
+    return True
+
+
+def _b11_basic_peak_protect(ctx: SellContext) -> bool:
+    """basic 고점 보호: 고점 손익이 +2% 이상 찍힌 뒤 현재 손익이 +2% 미만으로 BASIC_PEAK_PROTECT_CONFIRM_SECONDS 유지되면 잔량 매도."""
+    code = ctx.code
+    armed = ctx.peak_pnl_pct >= BASIC_PEAK_PROTECT_ARM_PNL - _BASIC_EPS
+    below = ctx.pnl_pct < BASIC_PEAK_PROTECT_EXIT_PNL - _BASIC_EPS
+    _, buy_token, _held = _hold_info(ctx)
+    held_s = update_timed_condition_state(
+        ctx.state.basic_peak_protect_state, code, buy_token, ctx.current_dt, bool(armed and below),
+    )
+    if not (armed and below) or held_s < BASIC_PEAK_PROTECT_CONFIRM_SECONDS:
+        return False
+    ctx.state.basic_peak_protect_state.pop(code, None)
+    _basic_sell(
+        ctx, int(ctx.pos["quantity"]), f"BASIC_PEAK_PROTECT_{BASIC_PEAK_PROTECT_ARM_PNL*100:.1f}PCT",
+        f" confirm={held_s:.0f}s",
+    )
+    return True
+
+
+def _b12_basic_3min_dead_cross(ctx: SellContext) -> bool:
+    """basic 손절/추세이탈: 확정 3분봉 종가가 3분봉 BB중심선을 위->아래로 이탈(최근 N봉 이내 + 이후 계속 아래)했고
+    그 이탈 봉이 매수 이후에 확정된 경우 잔량 전량 매도. ctx.frame은 r003이 넘기는 확정 3분봉 프레임."""
+    frame = ctx.frame
+    found, cross_reason, bars_since = check_1min_dead_cross(frame, BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS)
+    if not found:
+        return False
+    try:
+        cross_bar_time = pd.Timestamp(frame.index[-(int(bars_since) + 1)])
+    except Exception:
+        return False
+    buy_time_raw = ctx.pos.get("buy_time")
+    if isinstance(buy_time_raw, datetime) and cross_bar_time <= pd.Timestamp(buy_time_raw):
+        return False  # 매수 전에 이미 이탈해 있던 구간은 매도 신호로 쓰지 않는다(매수 후 새로 이탈할 때만)
+    reason = "BASIC_3MIN_BB_MID_DEAD_CROSS"
+    _basic_sell(ctx, int(ctx.pos["quantity"]), reason, f" cross_bar={cross_bar_time:%H:%M} bars_since={bars_since}")
+    return True
+
+
+_NORMAL_SELL_BY_NO = {c.no: c for c in SELL_CONDITIONS}
+BASIC_SELL_CONDITIONS: tuple[SellCondition, ...] = (
+    _NORMAL_SELL_BY_NO[1],   # stale 현재가 보호
+    _NORMAL_SELL_BY_NO[2],   # 포지션 추적 갱신(최고가/고점 손익)
+    _NORMAL_SELL_BY_NO[4],   # 하드 손절(안전장치 유지)
+    SellCondition(10, "_b10_basic_staged_tp", "EXIT", "[basic] 분할 익절 1.5/2/3%",
+                  "+1.5% 진입수량 40%, +2% 30%, +3% 잔량. 2차 후 3% 첫 확인값 >= 3.1%면 3차 목표 4%",
+                  ("BASIC_TP1_PCT", "BASIC_TP1_RATIO", "BASIC_TP2_PCT", "BASIC_TP2_RATIO", "BASIC_TP3_PCT",
+                   "BASIC_TP3_JUMP_PCT", "BASIC_TP3_EXT_PCT"), _b10_basic_staged_tp),
+    SellCondition(11, "_b11_basic_peak_protect", "EXIT", "[basic] +2% 고점 후 하락 매도",
+                  "고점 손익 >= +2% 이후 손익 < +2%가 확인창 동안 유지되면 잔량 매도",
+                  ("BASIC_PEAK_PROTECT_ARM_PNL", "BASIC_PEAK_PROTECT_EXIT_PNL", "BASIC_PEAK_PROTECT_CONFIRM_SECONDS"),
+                  _b11_basic_peak_protect),
+    SellCondition(12, "_b12_basic_3min_dead_cross", "EXIT", "[basic] 3분봉 BB중심선 데드크로스 매도",
+                  "확정 3분봉이 BB중심선 아래로 이탈(매수 이후 발생, 최근 N봉 이내)하면 잔량 매도",
+                  ("BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS",), _b12_basic_3min_dead_cross),
+)

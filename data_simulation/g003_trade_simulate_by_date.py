@@ -283,6 +283,8 @@ from r001_define_config import (
     HARD_STOP_MIN_HOLD_SECONDS,
     HARD_STOP_CONFIRM_SECONDS,
     HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS,
+    HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS,
+    ENTRY_1MIN_FRAME_REQUIRE_LATEST,
     ENABLE_HYBRID_1MIN_DEADCROSS_EXIT,
     HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
     HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS,
@@ -572,6 +574,10 @@ DC_REGIME_MODE_SIM = str(HYBRID_1MIN_DEADCROSS_REGIME_MODE).lower()
 # [2026-10-06] 봉/가격 공개 시점 모드 (Codex 1차 검토): "causal"(기본) | "legacy"(기존 동작 재현용)
 SIM_BAR_SEMANTICS = "causal"
 CAUSAL_SKIPPED_CODES: list[str] = []
+# [2026-10-07] r005 _008 크로스 나이 parity - CLI --cross-max-age로 A/B (<=0 비활성)
+CROSS_MAX_AGE_SIM = float(HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS)
+# causal 모드에서 봉 공개 지연(r003 CANDLE_CONFIRM_DELAY_SECONDS parity): 라벨+지연 <= ts 인 봉만 사용
+SIM_BAR_AVAIL_DELAY_SECONDS = 2.0
 # 게이트 판정 기록 파일(main에서 data_root/YYYYMMDD/YYYYMMDD_gate_decisions.jsonl로 설정, None이면 기록 안 함)
 GATE_DECISION_PATH: Path | None = None
 COMPARE_FEE_BUY_RATE = 0.00015
@@ -2498,7 +2504,8 @@ def simulate_date(
 
             latest_price_map[code] = live_price
 
-            available = frame[frame.index <= ts]
+            _avail_cut = ts - pd.Timedelta(seconds=SIM_BAR_AVAIL_DELAY_SECONDS) if SIM_BAR_SEMANTICS == "causal" else ts
+            available = frame[frame.index <= _avail_cut]
             if len(available) < MIN_BARS_REQUIRED:
                 continue
 
@@ -2508,7 +2515,7 @@ def simulate_date(
             buy_available_1min: pd.DataFrame | None = None
             _frame_1min_full = frames_1min.get(code)
             if _frame_1min_full is not None and not _frame_1min_full.empty:
-                _avail_1min = _frame_1min_full[_frame_1min_full.index <= ts]
+                _avail_1min = _frame_1min_full[_frame_1min_full.index <= _avail_cut]
                 if len(_avail_1min) >= 2:
                     buy_available_1min = _avail_1min
 
@@ -3271,13 +3278,24 @@ def simulate_date(
                     )
                     context_uptrend_continuation = bool(_ctx3_eval.get("uptrend_continuation"))
 
+                _trig_info: dict = {}
                 trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(
-                    buy_available_1min, context_uptrend_continuation=context_uptrend_continuation,
+                    buy_available_1min, context_uptrend_continuation=context_uptrend_continuation, info=_trig_info,
                 )
+                # [2026-10-07] r005 _008 parity: 진입용 1분봉은 직전 확정분이어야 함(ENTRY_1MIN_FRAME_REQUIRE_LATEST).
+                _frame_stale = False
+                if ENTRY_1MIN_FRAME_REQUIRE_LATEST and buy_available_1min is not None and len(buy_available_1min) > 0:
+                    _exp_label = (ts - pd.Timedelta(seconds=SIM_BAR_AVAIL_DELAY_SECONDS)).floor("1min")
+                    if pd.Timestamp(buy_available_1min.index[-1]) != _exp_label:
+                        _frame_stale = True
+                        trigger_ok, trigger_reason = False, (
+                            f"1MIN_FRAME_STALE_last={pd.Timestamp(buy_available_1min.index[-1]):%H:%M}_expected={_exp_label:%H:%M}"
+                        )
                 # [2026-09-23] r005 _008 parity: 1분봉 트리거가 "계속 유효" 상태로 지속된 시간을 재서
                 # HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려(204620 글로벌텍스프리 사례,
                 # r001/r005 Update log 참조). <=0이면 비활성.
-                _trigger_age_seconds = update_timed_condition_state(
+                # (live _008은 stale이면 연속통과 타이머를 갱신하지 않고 반환 - parity)
+                _trigger_age_seconds = 0.0 if _frame_stale else update_timed_condition_state(
                     buy_trigger_age_state, code, "1min_trigger", ts, trigger_ok,
                 )
                 if not trigger_ok:
@@ -3290,6 +3308,20 @@ def simulate_date(
                         f"HYBRID_1MIN_TRIGGER_EXPIRED_{_trigger_age_seconds:.0f}s_"
                         f"GT_{HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS:.0f}s"
                     )
+                elif (
+                    CROSS_MAX_AGE_SIM > 0 and _trig_info.get("path") == "cross"
+                    and (
+                        _trig_info.get("cross_bar_time") is None
+                        or (ts - pd.Timestamp(_trig_info["cross_bar_time"])).total_seconds() < 0
+                        or (ts - pd.Timestamp(_trig_info["cross_bar_time"])).total_seconds() > CROSS_MAX_AGE_SIM
+                    )
+                ):
+                    # [2026-10-07] r005 _008 parity: 크로스 봉 확정 후 CROSS_MAX_AGE 초과(또는 시각 이상)면 반려.
+                    _ca = (
+                        (ts - pd.Timestamp(_trig_info["cross_bar_time"])).total_seconds()
+                        if _trig_info.get("cross_bar_time") is not None else float("nan")
+                    )
+                    should_buy, reason = False, f"HYBRID_1MIN_TRIGGER_CROSS_EXPIRED_{_ca:.1f}s_GT_{CROSS_MAX_AGE_SIM:.0f}s"
                 else:
                     should_buy, reason = run_3min_context_pipeline(
                         buy_available, ts, price, cross_info, SHARED_R76_CONFIG,
@@ -3684,7 +3716,7 @@ def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
     global LOG_SUMMARY_MODE, COMPARE_FEE_BUY_RATE, COMPARE_FEE_SELL_RATE, COMPARE_SLIPPAGE_RATE
     global ANTI_CHASE_PRICE_MODE, GATE_DECISION_PATH
-    global DC_REGIME_MODE_SIM, SIM_BAR_SEMANTICS
+    global DC_REGIME_MODE_SIM, SIM_BAR_SEMANTICS, CROSS_MAX_AGE_SIM
 
     parser = argparse.ArgumentParser(description="Simulate R76 strategy using date CSV/TXT data (1-minute input supported)")
     parser.add_argument("--date", required=True, help="Simulation date in YYYYMMDD format")
@@ -3787,6 +3819,12 @@ def main() -> None:
         help="[2026-10-06] 1분봉 데드크로스 청산의 3분봉 추세 연동 모드(기본: r001 HYBRID_1MIN_DEADCROSS_REGIME_MODE)",
     )
     parser.add_argument(
+        "--cross-max-age",
+        type=float,
+        default=None,
+        help="[2026-10-07] 1분봉 크로스 경로 최대 나이(초, <=0 비활성). 기본: r001 HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS",
+    )
+    parser.add_argument(
         "--bar-semantics",
         choices=("causal", "legacy"),
         default="causal",
@@ -3843,7 +3881,12 @@ def main() -> None:
     if args.dc_regime_mode:
         DC_REGIME_MODE_SIM = str(args.dc_regime_mode)
     SIM_BAR_SEMANTICS = str(args.bar_semantics)
-    log(f"[SIM MODE] dc_regime_mode={DC_REGIME_MODE_SIM} bar_semantics={SIM_BAR_SEMANTICS}")
+    if args.cross_max_age is not None:
+        CROSS_MAX_AGE_SIM = float(args.cross_max_age)
+    log(
+        f"[SIM MODE] dc_regime_mode={DC_REGIME_MODE_SIM} bar_semantics={SIM_BAR_SEMANTICS} "
+        f"cross_max_age={CROSS_MAX_AGE_SIM:.0f}s entry_1min_require_latest={ENTRY_1MIN_FRAME_REQUIRE_LATEST}"
+    )
     GATE_DECISION_PATH = log_dir / (
         f"{args.date}_gate_decisions.jsonl" if ANTI_CHASE_PRICE_MODE == "tick"
         else f"{args.date}_gate_decisions_{ANTI_CHASE_PRICE_MODE}.jsonl"

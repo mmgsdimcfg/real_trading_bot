@@ -756,6 +756,7 @@ from r001_define_config import (
     SELL_ORDER_REPRICE_AFTER_SECONDS,
     SELL_ORDER_REPRICE_MAX_ATTEMPTS,
     SELL_UNKNOWN_RECONCILE_SECONDS,
+    TRADING_STRATEGY_MODE,
     PENDING_STATUS_BACKOFF_MAX_SECONDS,
     SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
     WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS,
@@ -1091,7 +1092,25 @@ def _trade_logger_file_paths() -> set[str]:
     return paths
 
 
-def log_trade(msg: str) -> None:
+def _short_buy_reason(buy_detail: str) -> str:
+    """[2026-10-07] buy_detail("reason=... signal=... live=... bb_mid=... VOL=...")에서 매수 사유만 남긴다."""
+    text = str(buy_detail or "").strip()
+    if not text:
+        return ""
+    text = text.split(" signal=")[0].strip()
+    return text if text.startswith("reason=") else f"reason={text}"
+
+
+def _short_order_error(error_detail: str) -> str:
+    """[2026-10-07] 'rt_cd=7 | msg_cd=APBK0952 | msg1=주문가능금액을 초과 했습니다' -> 'APBK0952 주문가능금액을 초과 했습니다'."""
+    text = str(error_detail or "")
+    code_m = re.search(r"msg_cd=([^|]+)", text)
+    msg_m = re.search(r"msg1=([^|]+)", text)
+    parts = [m.group(1).strip() for m in (code_m, msg_m) if m]
+    return " ".join(parts) if parts else text
+
+
+def log_trade(msg: str, mirror_main_log: bool = True) -> None:
     line = f"{datetime.now():%Y-%m-%d %H:%M:%S} [INFO] {msg}\n"
     logger_managed_paths = _trade_logger_file_paths()
     with _TRADE_LOG_WRITE_LOCK:
@@ -1113,7 +1132,8 @@ def log_trade(msg: str) -> None:
             handler.flush()
         except Exception:
             pass
-    log(f"  [TRADE       ] {msg}")
+    if mirror_main_log:
+        log(f"  [TRADE       ] {msg}")
 
 
 def _log_trade_block(lines: list[str], event_time: datetime | None = None, mirror_main_log: bool = False) -> None:
@@ -2062,6 +2082,9 @@ def _merge_bar_frame(previous: pd.DataFrame | None, refreshed: pd.DataFrame) -> 
     return calculate_indicators(combined[["open", "high", "low", "close", "volume"]])
 
 
+_FRAME_1MIN_LAST_ATTEMPT_AT: dict[str, datetime] = {}  # [2026-10-07] 1분봉 경계 갱신 시도 시각(재시도 간격용)
+
+
 def _get_or_refresh_1min_frame(
     code: str,
     current_dt: datetime,
@@ -2073,7 +2096,20 @@ def _get_or_refresh_1min_frame(
     cached_frame_1min = frame_cache_1min.get(code)
     last_frame_refresh_1min = frame_last_refresh_at_1min.get(code)
     frame_1min = cached_frame_1min
-    if should_refresh_3min_frame(current_dt, cached_frame_1min, last_frame_refresh_1min):
+    # [2026-10-07 Codex 1/2차] 20초 주기와 별개로, 새 1분봉이 확정됐는데 캐시 마지막 봉이 그보다 이전이면 즉시 갱신한다
+    # (분 경계 직후 이전 봉으로 판단하던 문제). 갱신 "시도" 시각을 따로 기록해 실패 시에도 3초 간격으로만 재시도.
+    expected_label = pd.Timestamp(current_dt - timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("1min")
+    boundary_due = False
+    if cached_frame_1min is not None and not cached_frame_1min.empty:
+        try:
+            boundary_due = pd.Timestamp(cached_frame_1min.index[-1]) < expected_label
+        except Exception:
+            boundary_due = True
+    last_attempt = _FRAME_1MIN_LAST_ATTEMPT_AT.get(code)
+    if boundary_due and isinstance(last_attempt, datetime) and (current_dt - last_attempt).total_seconds() < 3.0:
+        boundary_due = False
+    if should_refresh_3min_frame(current_dt, cached_frame_1min, last_frame_refresh_1min) or boundary_due:
+        _FRAME_1MIN_LAST_ATTEMPT_AT[code] = current_dt
         try:
             refreshed_frame_1min = fetch_1min_frame(code, current_dt, nxt_tradeable)
         except Exception as exc:
@@ -2458,6 +2494,7 @@ def _serialize_live_state(live_state: dict) -> dict:
             "pyramid_done": bool(meta.get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder(meta.get("surge_ladder")),
             "dc_regime_hold": bool(meta.get("dc_regime_hold", False)),
+            "basic_tp3_ext": bool(meta.get("basic_tp3_ext", False)),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded,
@@ -2535,6 +2572,7 @@ def load_live_state(date_str: str) -> dict:
             "pyramid_done": bool((meta or {}).get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder((meta or {}).get("surge_ladder")),
             "dc_regime_hold": bool((meta or {}).get("dc_regime_hold", False)),
+            "basic_tp3_ext": bool((meta or {}).get("basic_tp3_ext", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded,
@@ -2880,6 +2918,7 @@ class TradingAPI:
             pos["pyramid_done"] = bool(meta.get("pyramid_done", pos.get("pyramid_done", False)))
             pos["surge_ladder"] = _sanitize_surge_ladder(meta.get("surge_ladder") or pos.get("surge_ladder"))
             pos["dc_regime_hold"] = bool(meta.get("dc_regime_hold", pos.get("dc_regime_hold", False)))
+            pos["basic_tp3_ext"] = bool(meta.get("basic_tp3_ext", pos.get("basic_tp3_ext", False)))
 
     def _record_position_meta(self, code: str, pos: dict) -> None:
         meta_map = self.live_state.setdefault("positions_meta", {})
@@ -2895,6 +2934,7 @@ class TradingAPI:
             "pyramid_done": bool(pos.get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder(pos.get("surge_ladder")),
             "dc_regime_hold": bool(pos.get("dc_regime_hold", False)),
+            "basic_tp3_ext": bool(pos.get("basic_tp3_ext", False)),
         }
 
     def _sync_live_state_from_positions(self) -> None:
@@ -2998,6 +3038,7 @@ class TradingAPI:
                 "pyramid_done": bool(prev.get("pyramid_done", persisted.get("pyramid_done", False))),
                 "surge_ladder": _sanitize_surge_ladder(prev.get("surge_ladder") or persisted.get("surge_ladder")),
                 "dc_regime_hold": bool(prev.get("dc_regime_hold", persisted.get("dc_regime_hold", False))),
+                "basic_tp3_ext": bool(prev.get("basic_tp3_ext", persisted.get("basic_tp3_ext", False))),
             }
             self._record_position_meta(code, updated[code])
 
@@ -3189,6 +3230,7 @@ class TradingAPI:
         pos["tp3_done"] = False
         pos["surge_ladder"] = None
         pos["dc_regime_hold"] = False  # [2026-10-06] 새 진입은 3분봉 연동 보류(armed) 상태를 물려받지 않는다
+        pos["basic_tp3_ext"] = False  # [2026-10-07] basic 3차 목표 상향 여부도 새 진입마다 초기화
         pos["entry_quantity"] = max(int(pos.get("entry_quantity", 0) or 0), filled_qty)
         if fill_price > 0:
             pos["buy_price"] = fill_price
@@ -3240,7 +3282,7 @@ class TradingAPI:
         reason_text = str(pending.get("reason", "UNKNOWN"))
         exch_text = str(pending.get("exchange", "UNKNOWN"))
         log(
-            f"{code_label} SELL executed  | filled_qty={filled_qty}/{requested_qty} | "
+            f"  [SELL FILLED ] {_sym_label(code)} | filled={filled_qty}/{requested_qty} | "
             f"price={fill_price:,.0f} | remaining={remaining_qty} | pnl={pnl_pct:.2f}% | "
             f"reason={reason_text} | exch={exch_text}"
         )
@@ -3324,7 +3366,7 @@ class TradingAPI:
                         if filled_qty <= 0 and terminal:
                             self._maybe_log_pending_progress(
                                 pending,
-                                f"PYRAMID BUY closed without fill | {code} | order_no={pending.get('order_no', '')}",
+                                f"  [PYR NOFILL  ] {_sym_label(code)} | order_no={pending.get('order_no', '')}",
                                 "pyramid_buy_closed_without_fill",
                             )
                             self.pending_orders.pop(str(code).zfill(6), None)
@@ -3341,7 +3383,7 @@ class TradingAPI:
                             )
                         self._maybe_log_pending_progress(
                             pending,
-                            f"PYRAMID BUY pending | {code} | filled={filled_qty}/{order_qty} | remaining={remaining_qty}",
+                            f"  [PYR PENDING ] {_sym_label(code)} | filled={filled_qty}/{order_qty} | remaining={remaining_qty}",
                             f"pyramid_buy_pending:{filled_qty}:{remaining_qty}",
                         )
                     continue
@@ -3350,7 +3392,7 @@ class TradingAPI:
                     if status and int(status.get("remaining_qty", 0)) > 0:
                         self._maybe_log_pending_progress(
                             pending,
-                            f"BUY partial | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                            f"  [BUY PARTIAL ] {_sym_label(code)} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
                             f"| remaining={int(status.get('remaining_qty', 0))} | avg={float(status.get('avg_price', 0.0)):,.0f}",
                             f"buy_partial:{int(status.get('filled_qty', 0))}:{int(status.get('remaining_qty', 0))}:{float(status.get('avg_price', 0.0))}",
                         )
@@ -3374,7 +3416,7 @@ class TradingAPI:
                             else:
                                 self._maybe_log_pending_progress(
                                     pending,
-                                    f"BUY reprice giveup confirmed | {code} | order_no={pending.get('order_no', '')}",
+                                    f"  [BUY RP QUIT ] {_sym_label(code)} | 취소 확인 | order_no={pending.get('order_no', '')}",
                                     "buy_reprice_giveup_confirmed",
                                 )
                                 self.buy_inflight_codes.discard(str(code).zfill(6))
@@ -3387,7 +3429,7 @@ class TradingAPI:
                                 continue
                         self._maybe_log_pending_progress(
                             pending,
-                            f"BUY closed without fill | {code} | order_no={pending.get('order_no', '')} | exch={pending.get('exchange', 'UNKNOWN')}",
+                            f"  [BUY NOFILL  ] {_sym_label(code)} | order_no={pending.get('order_no', '')} | exch={pending.get('exchange', 'UNKNOWN')}",
                             "buy_closed_without_fill",
                         )
                         self.buy_inflight_codes.discard(str(code).zfill(6))
@@ -3419,13 +3461,14 @@ class TradingAPI:
                         )
                     self._maybe_log_pending_progress(
                         pending,
-                        f"BUY pending | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                        f"  [BUY PENDING ] {_sym_label(code)} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
                         f"| remaining={int(status.get('remaining_qty', 0))} | order_no={status.get('order_no', '')}",
                         f"buy_pending:{int(status.get('filled_qty', 0))}:{int(status.get('remaining_qty', 0))}",
                     )
                     log_trade(
-                        f"BUY pending | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
-                        f"| remaining={int(status.get('remaining_qty', 0))} | order_no={status.get('order_no', '')}"
+                        f"[BUY PENDING ] {_sym_label(code)} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                        f"| remaining={int(status.get('remaining_qty', 0))} | order_no={status.get('order_no', '')}",
+                        mirror_main_log=False,
                     )
                 continue
 
@@ -3460,7 +3503,7 @@ class TradingAPI:
                         continue
                     self._maybe_log_pending_progress(
                         pending,
-                        f"SELL closed without fill | {code} | reason={pending.get('reason', 'UNKNOWN')} | order_no={pending.get('order_no', '')}",
+                        f"  [SELL NOFILL ] {_sym_label(code)} | reason={pending.get('reason', 'UNKNOWN')} | order_no={pending.get('order_no', '')}",
                         "sell_closed_without_fill",
                     )
                     self.pending_orders.pop(code, None)
@@ -3481,7 +3524,7 @@ class TradingAPI:
 
                 self._maybe_log_pending_progress(
                     pending,
-                    f"SELL pending | {code} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
+                    f"  [SELL PENDING] {_sym_label(code)} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
                     f"| remaining={int(status.get('remaining_qty', 0))} | current_qty={current_qty} | reason={pending.get('reason', 'UNKNOWN')}",
                     f"sell_pending:{int(status.get('filled_qty', 0))}:{int(status.get('remaining_qty', 0))}:{current_qty}",
                 )
@@ -3655,7 +3698,7 @@ class TradingAPI:
         if total_filled <= 0:
             self._maybe_log_pending_progress(
                 pending,
-                f"BUY closed without fill | {code} | 분할매수 두 leg 모두 미체결로 종결",
+                f"  [BUY NOFILL  ] {_sym_label(code)} | 분할매수 두 leg 모두 미체결로 종결",
                 "split_buy_closed_without_fill",
             )
             self.buy_inflight_codes.discard(norm_code)
@@ -4196,13 +4239,13 @@ class TradingAPI:
                 excg_id_dvsn_cd=exchange,
             )
         except Exception as exc:
-            log(f"BUY error | {code} | {exc}")
+            log(f"  [BUY ERROR   ] {_sym_label(code)} | {exc}")
             return None
 
     def place_buy_order(self, code: str, price: float, qty: int, now: datetime, nxt_tradeable: bool, session: str, buy_detail: str = "", code_name: str = "", pyramid: bool = False) -> bool:
         norm_code = str(code).zfill(6)
         if not pyramid and self.has_buy_exposure(norm_code):
-            log(f"BUY skipped | {code} | reason=BUY_EXPOSURE_ACTIVE")
+            log(f"  [BUY SKIP    ] {_sym_label(code)} | BUY_EXPOSURE_ACTIVE")
             return False
         if qty <= 0 or self._in_cooldown(norm_code, now) or self.has_pending_order(norm_code):
             return False
@@ -4210,7 +4253,7 @@ class TradingAPI:
         affordable_qty = self.get_affordable_buy_qty(code, price, now, nxt_tradeable)
         qty = min(int(qty), int(affordable_qty))
         if qty <= 0:
-            log(f"BUY skipped | {code} | reason=INSUFFICIENT_BUYING_POWER_AT_ORDER_TIME")
+            log(f"  [BUY SKIP    ] {_sym_label(code)} | INSUFFICIENT_BUYING_POWER_AT_ORDER_TIME")
             return False
 
         order_spec = get_order_spec(now, nxt_tradeable)
@@ -4255,7 +4298,7 @@ class TradingAPI:
                 continue
             if not _order_succeeded(order_result):
                 error_detail = _extract_order_error_detail(order_result)
-                log(f"BUY failed | {code} | qty={leg_qty} | role={role} | {error_detail}")
+                log(f"  [BUY FAIL    ] {_sym_label(code)} | qty={leg_qty} | role={role} | {_short_order_error(error_detail)}")
                 continue
 
             requested_price = float(_extract_order_price(order_result) or log_price)
@@ -4280,14 +4323,15 @@ class TradingAPI:
             detail_suffix = f" | {buy_detail}" if buy_detail else ""
             role_suffix = f" | role={role}" if len(legs_spec) > 1 else ""
             code_label = _format_code_label(code, code_name)
-            log(
-                f"BUY submitted | {code_label} | qty={leg_qty} | requested={requested_price:,.0f}{role_suffix} | "
-                f"session={session} | exch={exchange} | order_no={leg['order_no'] or 'UNKNOWN'}{detail_suffix}"
+            # [2026-10-07] 주문 제출 로그는 핵심만(수량/가격/주문유형/거래소/주문번호/매수사유) - 지표 스냅샷은 [BUY EVAL]에 이미 있음.
+            _short_reason = _short_buy_reason(buy_detail)
+            _role_txt = f" | {role}" if len(legs_spec) > 1 else ""
+            _submit_msg = (
+                f"  [BUY SUBMIT  ] {_symbol_log_label(code, code_name)} | qty={leg_qty} | price={requested_price:,.0f}{_role_txt} | "
+                f"{exchange} | order_no={leg['order_no'] or 'UNKNOWN'}" + (f" | {_short_reason}" if _short_reason else "")
             )
-            log_trade(
-                f"BUY submitted | {code_label} | qty={leg_qty} | requested={requested_price:,.0f}{role_suffix} | "
-                f"session={session} | exch={exchange} | order_no={leg['order_no'] or 'UNKNOWN'}{detail_suffix}"
-            )
+            log(_submit_msg)
+            log_trade(_submit_msg.strip(), mirror_main_log=False)
             _log_trade_event_banner(
                 event="BUY SUBMITTED",
                 code=code,
@@ -4383,12 +4427,12 @@ class TradingAPI:
                     excg_id_dvsn_cd=order_spec["exchange"],
                 )
             except Exception as exc:
-                log(f"SELL error | {code} | {exc}")
+                log(f"  [SELL ERROR  ] {_sym_label(code)} | {exc}")
                 return False
 
         if not _order_succeeded(order_result):
             error_detail = _extract_order_error_detail(order_result)
-            log(f"SELL failed | {code} | qty={qty} | reason={reason} | {error_detail}")
+            log(f"  [SELL FAIL   ] {_sym_label(code)} | qty={qty} | {_short_order_error(error_detail)} | reason={reason}")
             return False
 
         requested_price = _extract_order_price(order_result) or current_price
@@ -4414,8 +4458,8 @@ class TradingAPI:
         self._mark_trade_lock(code, now)
         code_label = _format_code_label(code, code_name)
         log(
-            f"SELL submitted | {code_label} | qty={qty} | requested={requested_price:,.0f} | "
-            f"reason={reason} | exch={order_spec['exchange']} | order_no={order_no or 'UNKNOWN'}"
+            f"  [SELL SUBMIT ] {_symbol_log_label(code, code_name)} | qty={qty} | price={requested_price:,.0f} | "
+            f"{order_spec['exchange']} | order_no={order_no or 'UNKNOWN'} | reason={reason}"
         )
         self.refresh_pending_orders(now)
         return True
@@ -4602,6 +4646,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     _ensure_log_date_for(now)
     print(f"[R003 START  ] {now:%Y-%m-%d %H:%M:%S} | initializing live executor", flush=True)
     log("R003 START | initializing live executor")
+    log(f"  [R003 MODE   ] TRADING_STRATEGY_MODE={TRADING_STRATEGY_MODE}")
 
     try:
         print("[R003 AUTH   ] starting ka.auth()", flush=True)

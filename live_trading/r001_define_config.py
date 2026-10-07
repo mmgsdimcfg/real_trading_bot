@@ -1027,6 +1027,46 @@ HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT = 2.2
 # 동일). 아직 백테스트로 정확한 값을 검증하지 않은 탐색적 상수 - 실거래 관찰 후 조정 필요.
 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS = 300.0   # 5분
 
+# [2026-10-07] 사용자 요청(066970 엘앤에프 08:45 매수 - 08:39 골든크로스 이후 6봉, 1분봉이 4봉째 하락 중에 매수 후
+# -0.77% 손절) + Codex 설계검토 2회. 위 MAX_AGE는 "트리거가 연속 통과한 시간"이라 추격가드(CHASE_BUY_BB_GAP)에 한 번
+# 걸리면 0으로 리셋되어 오래된 크로스로도 매수됐다(이 사례 크로스 나이 377초인데 연속시간 188초). 크로스 경로
+# (1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK)는 "크로스 봉이 확정된 시각(종료 라벨)부터" 이 초를 넘으면 반려한다. 240초 =
+# 다음 확정 3분봉 컨텍스트(최대 ~182초 뒤) + 2회 연속확인 여유. 실험 기본값(A/B로 off/180/240/300 비교 예정).
+# 만료된 크로스는 continuation 경로로 넘어가지 않는다(룩백 12봉을 넘긴 긴 상승은 기존처럼 continuation 자격으로 판단).
+# <=0이면 비활성(기존과 동일).
+HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS = 240.0
+# [2026-10-07] Codex 1차: 3분봉 컨텍스트 continuation 경로는 1분봉 종가가 BB중심선 아래여도 통과할 수 있었다 -
+# continuation(3분/1분) 경로도 1분봉 종가 > 1분봉 BB중심선을 요구한다.
+HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID = True
+# [2026-10-07] Codex 1/2차: 진입 판단 시 1분봉 캐시가 직전 확정분을 아직 못 받았으면(20초 주기 갱신) 이전 봉으로 매수할
+# 수 있었다(032820 09:12 추정). 마지막 1분봉 라벨이 기대 라벨(floor(now-CANDLE_CONFIRM_DELAY_SECONDS))과 다르면 진입 보류.
+# KIS는 무거래 분도 거래량 0 행을 주는 것을 실측 확인(저유동 4종목, 2026-10-07)해 1봉 허용 없이 엄격 비교한다.
+ENTRY_1MIN_FRAME_REQUIRE_LATEST = True
+
+# =============================================================================================
+# [2026-10-07] 매매 전략 모드 - 사용자 요청. "normal" = 기존 조건 전체(그대로 보존), "basic" = 아래 기본 조건만으로 매매.
+# basic 규칙(손익은 거래세/수수료 제외한 가격 기준):
+#   매수: 확정 1분봉이 1분봉 BB중심선을 아래->위로 막 돌파(골든크로스)한 봉 + 현재가도 중심선 위
+#         (운영 안전 조건만 공통 유지: 진입 시간대/점심/워밍업/쿨다운/같은 봉 중복/미청산 노출/손절 재진입 차단/
+#          서킷브레이커/매수가능수량/현재가 신선도/호가 얇음. 3분봉 컨텍스트·추격차단 등 normal 필터는 쓰지 않음)
+#   매도: +1.5%에서 진입수량 40% / +2%에서 30% / +3%에서 잔량(30%) 매도.
+#         2차(2%) 이후 처음 3% 이상으로 확인된 값이 3.1% 이상(급등으로 3%를 건너뜀)이면 3차 목표를 4%로 올림.
+#         고점이 +2% 이상 찍힌 뒤 손익이 +2% 아래로 내려와 BASIC_PEAK_PROTECT_CONFIRM_SECONDS 유지되면 잔량 전량 매도.
+#         확정 3분봉이 3분봉 BB중심선을 위->아래로 이탈(데드크로스, 매수 이후 발생분만)하면 잔량 전량 매도.
+#         하드손절(HARD_STOP_LOSS_PCT)과 당일 강제청산(15:20/NXT 19:59:58)은 안전장치로 유지.
+TRADING_STRATEGY_MODE = "basic"   # "normal" | "basic"
+BASIC_TP1_PCT = 0.015
+BASIC_TP1_RATIO = 0.40
+BASIC_TP2_PCT = 0.020
+BASIC_TP2_RATIO = 0.30
+BASIC_TP3_PCT = 0.030
+BASIC_TP3_JUMP_PCT = 0.031        # 2차 이후 3% 도달 첫 확인값이 이 이상이면 3차 목표를 BASIC_TP3_EXT_PCT로
+BASIC_TP3_EXT_PCT = 0.040
+BASIC_PEAK_PROTECT_ARM_PNL = 0.020   # 고점 손익이 이 이상이면 고점 보호 무장
+BASIC_PEAK_PROTECT_EXIT_PNL = 0.020  # 무장 후 손익이 이 미만으로 내려오면(확인창 유지 시) 잔량 매도
+BASIC_PEAK_PROTECT_CONFIRM_SECONDS = 10.0
+BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS = 3
+
 # [2026-09-23] 사용자 요청("매수/매도 컨셉 재검토") + Codex 설계검토 - r006 _011_hybrid_1min_dead_cross_exit.
 # 매수측 1분봉 골든크로스 트리거와 대칭되는 매도 조건. Codex의 5가지 권고를 반영:
 # (1) 신선한 크로스 또는 룩백+연속유지(check_1min_dead_cross, r002) - 매수측과 동일 패턴이나 룩백은 더
