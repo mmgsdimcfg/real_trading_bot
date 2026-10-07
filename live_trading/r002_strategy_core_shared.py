@@ -484,6 +484,7 @@ from r001_define_config import (
     DI_SPREAD_MIN_REQUIRED,
     ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK,
     HYBRID_1MIN_TRIGGER_LOOKBACK_BARS,
+    HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID,
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
@@ -1755,6 +1756,7 @@ def run_3min_context_pipeline(
 def check_buy_condition_1min_hybrid_trigger(
     frame_1min: pd.DataFrame,
     context_uptrend_continuation: bool = False,
+    info: dict | None = None,
 ) -> tuple[bool, str]:
     """하이브리드 매수 경로(1분봉 트리거 -> 3분봉 컨텍스트)의 1단계 1분봉 트리거 - r003 실전/g003
     백테스트 공용(2026-09-20 r003/g003에 따로 있던 복사본을 여기로 통합. 이 함수의 원형이던
@@ -1781,11 +1783,28 @@ def check_buy_condition_1min_hybrid_trigger(
     두 경로 모두 크로스 "발견" 여부만 대체할 뿐, 이후의 캔들/BB갭 안전장치는 그대로
     전부 적용한다(거래량 하한은 3분봉 컨텍스트 min_liquidity_safety가 단독 담당).
     """
+    # [2026-10-07] info(선택): 호출측이 크로스 나이를 재도록 구조 정보를 채운다(캔들/BB갭 가드에 반려돼도 유지).
+    # path: "cross" | "uptrend_3min" | "uptrend_1min" | None, cross_bar_time: 크로스 봉 라벨(종료시각),
+    # bars_since_cross, run_start_time: 현재 BB중심선 위 연속 구간의 첫 봉 라벨(룩백 밖까지 탐색, 없으면 None).
+    if info is not None:
+        info.clear()
+        info.update({"path": None, "cross_bar_time": None, "bars_since_cross": None, "run_start_time": None})
     if frame_1min is None or len(frame_1min) < 2:
         return False, "1MIN_INSUFFICIENT_BARS"
 
     cur = frame_1min.iloc[-1]
     prev = frame_1min.iloc[-2]
+    if info is not None:
+        try:
+            _above = (pd.to_numeric(frame_1min["close"], errors="coerce") > pd.to_numeric(frame_1min["BB_MIDDLE"], errors="coerce")).to_numpy()
+            _run = 0
+            for _v in _above[::-1]:
+                if not _v:
+                    break
+                _run += 1
+            info["run_start_time"] = frame_1min.index[-_run] if _run > 0 else None
+        except Exception:
+            info["run_start_time"] = None
 
     cur_bb = _num(cur, "BB_MIDDLE")
     prev_bb = _num(prev, "BB_MIDDLE")
@@ -1799,6 +1818,8 @@ def check_buy_condition_1min_hybrid_trigger(
     golden_cross = prev_close <= prev_bb and cur_close > cur_bb
     bars_since_cross = 0  # 신선한 크로스(golden_cross=True) 기본값 - 경과봉 0, 갭 상한 완화 없음
     trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
+    if golden_cross and info is not None:
+        info.update({"path": "cross", "cross_bar_time": frame_1min.index[-1], "bars_since_cross": 0})
     if not golden_cross:
         _found = False
         for _lb in range(3, min(HYBRID_1MIN_TRIGGER_LOOKBACK_BARS + 2, len(frame_1min)) + 1):
@@ -1818,12 +1839,16 @@ def check_buy_condition_1min_hybrid_trigger(
                 # 실제 돌파봉은 -_lb(미돌파 마지막봉) 바로 다음인 -(_lb-1) - 그 봉부터
                 # cur(-1)까지 경과한 봉 수 = (_lb-1)의 위치 차이 = _lb-2.
                 bars_since_cross = _lb - 2
+                if info is not None:
+                    info.update({"path": "cross", "cross_bar_time": frame_1min.index[-(_lb - 1)], "bars_since_cross": bars_since_cross})
                 break
 
         if not _found:
             if context_uptrend_continuation:
                 _found = True
                 trigger_reason = "1MIN_UPTREND_CONTINUATION_3MIN_CTX"
+                if info is not None:
+                    info["path"] = "uptrend_3min"
             else:
                 _bb_slope_1min = _compute_bb_slope_pct(frame_1min)
                 _uptrend_eval = _evaluate_bb_mid_cross(
@@ -1832,6 +1857,8 @@ def check_buy_condition_1min_hybrid_trigger(
                 if _uptrend_eval.get("uptrend_continuation"):
                     _found = True
                     trigger_reason = "1MIN_UPTREND_CONTINUATION"
+                    if info is not None:
+                        info["path"] = "uptrend_1min"
 
         if not _found:
             return False, "1MIN_NO_BB_MID_GOLDEN_CROSS"
@@ -1840,6 +1867,9 @@ def check_buy_condition_1min_hybrid_trigger(
             # 우상향 지속 경로로 인정된 경우 - 정확한 경과봉을 알 수 없으므로 BB갭
             # 완화도(아래) 최대치를 적용해 추격매수 가드가 과도하게 좁아지지 않게 한다.
             bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
+            # [2026-10-07 Codex] continuation 경로도 1분봉 종가가 BB중심선 위여야 한다(같으면 반려).
+            if HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID and not cur_close > cur_bb:
+                return False, "1MIN_CONTINUATION_BELOW_BB_MID"
 
     candle_gain_pct = (cur_close - cur_open) / cur_open * 100.0
     if candle_gain_pct < HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT:

@@ -84,7 +84,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 import pandas as pd
@@ -100,6 +100,10 @@ from r001_define_config import (
     ENABLE_OPENING_GAP_VOLUME_GATE,
     HARD_STOP_BLOCK_REENTRY_TODAY,
     HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS,
+    HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS,
+    ENTRY_1MIN_FRAME_REQUIRE_LATEST,
+    TRADING_STRATEGY_MODE,
+    CANDLE_CONFIRM_DELAY_SECONDS,
     LIVE_PRICE_STALE_TTL_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
     STARTUP_WARMUP_SECONDS,
@@ -339,6 +343,41 @@ def _007_stoploss_circuit_breaker(ctx: BuyContext) -> bool:
 # TRIGGER stage
 # ---------------------------------------------------------------------------
 
+# [2026-10-07] 트리거 나이/최신성 판정 기록(gate jsonl kind=TRIGGER_AGE). (결과종류, 종목, 키)별 최초 1회만 기록하고,
+# 전체 발생 횟수는 별도 카운터로 누적해 기록마다 함께 남긴다(Codex 2차: dedup 건수와 전체 카운터 분리).
+_TRIGGER_AGE_SEEN: set[tuple] = set()
+_TRIGGER_AGE_COUNTS: dict[str, int] = {}
+
+
+def _ts_text(value) -> str | None:
+    try:
+        return None if value is None or pd.isna(value) else pd.Timestamp(value).isoformat()
+    except Exception:
+        return str(value)
+
+
+def _record_trigger_age(ctx: BuyContext, result: str, key, **extra) -> None:
+    day = ctx.current_dt.strftime("%Y%m%d")
+    _TRIGGER_AGE_COUNTS[result] = _TRIGGER_AGE_COUNTS.get(result, 0) + 1
+    seen_key = (day, result, ctx.norm_code, _ts_text(key))
+    if seen_key in _TRIGGER_AGE_SEEN:
+        return
+    _TRIGGER_AGE_SEEN.add(seen_key)
+    rec_fn = ctx.services.record_gate_decision
+    if rec_fn is None:
+        return
+    try:
+        rec = {
+            "ts": ctx.current_dt.isoformat(timespec="seconds"), "code": ctx.norm_code, "kind": "TRIGGER_AGE",
+            "result": result, "price": ctx.price, "bar_time": str(ctx.bar_time),
+            "cross_max_age_s": HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS, "counts": dict(_TRIGGER_AGE_COUNTS),
+        }
+        rec.update({k: (_ts_text(v) if isinstance(v, (pd.Timestamp, datetime)) else v) for k, v in extra.items()})
+        rec_fn(rec)
+    except Exception as exc:  # 기록 실패는 매수 판정에 영향 없음
+        ctx.log(f"  [GATE LOG    ] {ctx.symbol_label} | TRIGGER_AGE record failed: {exc}")
+
+
 def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
     frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
     if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
@@ -346,6 +385,25 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
         ctx.steps_text = _steps_text(ctx)
         _reject_hybrid(ctx, "HYBRID_1MIN_FRAME_UNAVAILABLE")
         return False
+
+    # [2026-10-07 Codex 1/2차] 진입 판단용 1분봉은 직전 확정분까지 반드시 있어야 한다(캐시가 한 봉 늦으면 이전 봉으로 매수).
+    # KIS는 무거래 분도 거래량 0 행을 주므로(실측) 마지막 라벨이 기대 라벨과 정확히 같아야 한다. 미래 라벨도 반려.
+    if ENTRY_1MIN_FRAME_REQUIRE_LATEST:
+        expected_label = pd.Timestamp(ctx.current_dt - timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("1min")
+        try:
+            last_label = pd.Timestamp(frame_1min.index[-1])
+        except Exception:
+            last_label = None
+        if last_label is None or pd.isna(last_label) or last_label != expected_label:
+            ctx.trigger_flag = "-"
+            ctx.steps_text = _steps_text(ctx)
+            _record_trigger_age(ctx, "FRAME_STALE", expected_label, expected_label=expected_label, last_label=last_label)
+            _reject_hybrid(
+                ctx,
+                f"HYBRID_1MIN_FRAME_STALE_last={last_label:%H:%M}_expected={expected_label:%H:%M}"
+                if last_label is not None and not pd.isna(last_label) else "HYBRID_1MIN_FRAME_STALE_last=NA",
+            )
+            return False
 
     # [2026-09-09] 3분 컨텍스트가 이미 uptrend_continuation으로 판정한 상태면 그 신호를 1분 트리거에도
     # 그대로 전달한다 - 452190 한빛레이저 사례(1분 트리거가 룩백 밖의 오래/강하게 지속된 랠리를 계속 놓침)
@@ -363,8 +421,9 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
         )
         context_uptrend_continuation = bool(cross_eval.get("uptrend_continuation"))
 
+    trigger_info: dict = {}
     trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(
-        frame_1min, context_uptrend_continuation=context_uptrend_continuation,
+        frame_1min, context_uptrend_continuation=context_uptrend_continuation, info=trigger_info,
     )
     ctx.trigger_flag = "P" if trigger_ok else "F"
     ctx.steps_text = _steps_text(ctx)  # 기존과 동일하게 트리거 판정 직후, 통과 여부와 무관하게 계산
@@ -385,6 +444,41 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
             f"HYBRID_1MIN_TRIGGER_EXPIRED_{trigger_age_seconds:.0f}s_GT_{HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS:.0f}s",
         )
         return False
+    path = trigger_info.get("path")
+    if HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS > 0 and path == "cross":
+        # [2026-10-07] 크로스 봉 확정 시각(종료 라벨)부터 잰 나이 - 연속통과 타이머와 달리 추격가드 반려로 리셋되지 않는다.
+        cross_bar_time = trigger_info.get("cross_bar_time")
+        cross_age = float("nan")
+        try:
+            if cross_bar_time is not None and not pd.isna(cross_bar_time):
+                cross_age = (pd.Timestamp(ctx.current_dt) - pd.Timestamp(cross_bar_time)).total_seconds()
+        except Exception:
+            cross_age = float("nan")
+        common = dict(
+            path=path, cross_bar_time=cross_bar_time, bars_since_cross=trigger_info.get("bars_since_cross"),
+            run_start_time=trigger_info.get("run_start_time"), continuity_age_s=round(trigger_age_seconds, 1),
+            last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
+        )
+        if pd.isna(cross_age) or cross_age < 0:
+            _record_trigger_age(ctx, "CROSS_TIME_INVALID", cross_bar_time, cross_age_s=None, **common)
+            _reject_hybrid(ctx, "HYBRID_1MIN_TRIGGER_CROSS_TIME_INVALID")
+            return False
+        if cross_age > HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS:
+            _record_trigger_age(ctx, "CROSS_EXPIRED", cross_bar_time, cross_age_s=round(cross_age, 1), **common)
+            _reject_hybrid(
+                ctx,
+                f"HYBRID_1MIN_TRIGGER_CROSS_EXPIRED_{cross_age:.1f}s_GT_{HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS:.0f}s"
+                f"_cross={pd.Timestamp(cross_bar_time):%H:%M}",
+            )
+            return False
+        _record_trigger_age(ctx, "CROSS_PASS", cross_bar_time, cross_age_s=round(cross_age, 1), **common)
+    elif path in ("uptrend_3min", "uptrend_1min"):
+        # continuation 통과 기록(같은 상승구간 재허용 측정용, 구간 시작 시각 기준 dedup)
+        _record_trigger_age(
+            ctx, "CONTINUATION_PASS", trigger_info.get("run_start_time"), path=path,
+            run_start_time=trigger_info.get("run_start_time"), continuity_age_s=round(trigger_age_seconds, 1),
+            last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
+        )
     ctx.trigger_reason = trigger_reason
     return True
 
@@ -638,6 +732,43 @@ def _024_orderbook_ask_not_thin(ctx: BuyContext) -> bool:
 # Registry + main function
 # ---------------------------------------------------------------------------
 
+def _b08_basic_1min_golden_cross(ctx: BuyContext) -> bool:
+    """[2026-10-07] basic 모드 매수 트리거: 최신 확정 1분봉이 1분봉 BB중심선을 아래->위로 돌파한 봉이고
+    현재가도 그 중심선 위일 때만 통과. 1분봉 캐시가 직전 확정분이 아니면 보류(ENTRY_1MIN_FRAME_REQUIRE_LATEST)."""
+    frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+    ctx.trigger_flag = "-"
+    ctx.steps_text = "basic"
+    if frame_1min is None or len(frame_1min) < 2:
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | BASIC_1MIN_FRAME_UNAVAILABLE")
+        return False
+    expected_label = pd.Timestamp(ctx.current_dt - timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("1min")
+    last_label = pd.Timestamp(frame_1min.index[-1])
+    if ENTRY_1MIN_FRAME_REQUIRE_LATEST and last_label != expected_label:
+        ctx.log(
+            f"  [REJECT      ] {ctx.symbol_label} | BASIC_1MIN_FRAME_STALE_last={last_label:%H:%M}_expected={expected_label:%H:%M}"
+        )
+        return False
+    cur, prev = frame_1min.iloc[-1], frame_1min.iloc[-2]
+    cur_c, cur_m, prev_c, prev_m = _num(cur, "close"), _num(cur, "BB_MIDDLE"), _num(prev, "close"), _num(prev, "BB_MIDDLE")
+    if any(pd.isna(v) for v in (cur_c, cur_m, prev_c, prev_m)):
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | BASIC_1MIN_MISSING_INDICATOR")
+        return False
+    if not (prev_c <= prev_m and cur_c > cur_m):
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | BASIC_NO_1MIN_GOLDEN_CROSS | close={cur_c:,.0f} mid={cur_m:,.1f}")
+        return False
+    if not (ctx.price > cur_m):
+        ctx.log(
+            f"  [REJECT      ] {ctx.symbol_label} | BASIC_LIVE_BELOW_1MIN_MID | live={ctx.price:,.0f} mid={cur_m:,.1f}"
+        )
+        return False
+    ctx.trigger_flag = "P"
+    ctx.trigger_reason = "BASIC_1MIN_BB_MID_GOLDEN_CROSS"
+    ctx.buy_reason = (
+        f"BASIC_1MIN_BB_MID_GOLDEN_CROSS_bar={last_label:%H:%M}_close={cur_c:,.0f}_mid1={cur_m:,.1f}"
+    )
+    return True
+
+
 _GATES_BY_NAME = {gate.name: gate for gate in HYBRID_3MIN_CONTEXT_GATES}
 
 BUY_CONDITIONS: tuple[BuyCondition, ...] = (
@@ -658,11 +789,13 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  ("HARD_STOP_CIRCUIT_BREAKER_COUNT", "HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN"), _007_stoploss_circuit_breaker),
     BuyCondition(8, "_008_hybrid_1min_trigger", "TRIGGER", "1분봉 트리거",
                  "1분봉 BB중심선 골든크로스(룩백)/우상향 지속 + 1분 캔들·BB갭 추격 가드 (r002 check_buy_condition_1min_hybrid_trigger) "
-                 "+ 트리거 유효 지속시간이 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려",
+                 "+ 트리거 유효 지속시간이 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려 + 크로스 경로는 크로스 봉 확정 후 "
+                 "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS 초과 시 반려 + 1분봉 캐시가 직전 확정분이 아니면 반려",
                  ("HYBRID_1MIN_TRIGGER_LOOKBACK_BARS", "HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT", "HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT",
                   "HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT", "HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR",
                   "HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT", "HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT",
-                  "HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS"), _008_hybrid_1min_trigger),
+                  "HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS", "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS",
+                  "HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _008_hybrid_1min_trigger),
     BuyCondition(9, "_009_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _009_context_frame_ready),
     BuyCondition(10, "_010_bb_slope_rising", "CONTEXT", "BB 중심선 상승 기울기",
@@ -738,9 +871,14 @@ if not _registered_gate_names - set(_GATES_BY_NAME) <= _OPTIONAL_CONTEXT_GATES:
     )
 
 
+def active_buy_conditions() -> tuple[BuyCondition, ...]:
+    """[2026-10-07] TRADING_STRATEGY_MODE에 따른 매수 조건 목록 ("basic"이면 기본 조건, 그 외 기존 normal)."""
+    return BASIC_BUY_CONDITIONS if str(TRADING_STRATEGY_MODE).lower() == "basic" else BUY_CONDITIONS
+
+
 def check_buy_conditions(ctx: BuyContext, conditions: tuple[BuyCondition, ...] | None = None) -> BuyDecision:
     """신규 매수 메인 판정: 조건을 번호 순서대로 평가하고 처음 통과하지 못한 조건에서 멈춘다."""
-    for cond in (BUY_CONDITIONS if conditions is None else conditions):
+    for cond in (active_buy_conditions() if conditions is None else conditions):
         if not cond.check(ctx):
             return BuyDecision(approved=False, failed=cond)
     return BuyDecision(approved=True)
@@ -757,6 +895,8 @@ def evaluate_entry_time_shadow(ctx: BuyContext, kind: str) -> bool:
     사본으로 평가하고 로그는 끄므로 실제 매수 판정과 13:00 이후 동작에는 영향이 없다. 모두 통과하면 당일
     시가/VWAP 과열 지표(_019 기준)를 붙여 kind로 기록하고 True를 돌려준다. 연속 확인(_021)은 평가하지 않으므로
     '주문 직전 단계 도달' 기준이다."""
+    if str(TRADING_STRATEGY_MODE).lower() == "basic":
+        return False  # [2026-10-07] 점심/진입창 관찰은 normal 조건 기준이라 basic 모드에서는 기록하지 않는다
     shadow_state = BuyState(
         buy_confirm_state=copy.deepcopy(ctx.state.buy_confirm_state),
         buy_trigger_age_state=copy.deepcopy(ctx.state.buy_trigger_age_state),
@@ -785,3 +925,15 @@ def describe_buy_conditions() -> list[dict[str, object]]:
          "description": c.description, "defines": list(c.related_defines)}
         for c in BUY_CONDITIONS
     ]
+
+
+# [2026-10-07] basic 모드 매수 조건 - normal의 운영 안전 조건(_001~_007, _022~_024)은 같은 함수 그대로 재사용하고
+# 전략 필터(_008~_021: 1분 트리거 룩백/3분봉 컨텍스트/추격·갭 차단/연속확인)는 basic 트리거 하나로 대체한다.
+_NORMAL_BY_NO = {c.no: c for c in BUY_CONDITIONS}
+BASIC_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
+    [_NORMAL_BY_NO[n] for n in range(1, 8)]
+    + [BuyCondition(8, "_b08_basic_1min_golden_cross", "TRIGGER", "[basic] 1분봉 BB중심선 골든크로스",
+                    "최신 확정 1분봉이 BB중심선을 아래->위로 돌파 + 현재가 중심선 위 (1분봉 캐시 최신 필수)",
+                    ("TRADING_STRATEGY_MODE", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _b08_basic_1min_golden_cross)]
+    + [_NORMAL_BY_NO[n] for n in (22, 23, 24)]
+)
