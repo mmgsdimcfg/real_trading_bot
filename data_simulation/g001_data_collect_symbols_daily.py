@@ -35,6 +35,23 @@ Update log format (append only):
 
 Update log:
 - [2026-10-09] type=fix owner=claude
+    summary: load_symbols가 g004 유니버스 파일의 "#" 줄을 건너뛰도록 read_csv(comment="#").
+      기존에는 "# 046070" 같은 주석 줄 16개가 종목코드로 그대로 읽혀 API 조회 대상에 포함됐음.
+      g010(위험종목 자동 주석)이 쓰는 "# code,name,market  # auto: 사유" 줄도 제외됨.
+    impact: collector
+    compatibility: backward-compatible
+- [2026-10-09] type=feat owner=claude
+    summary: 중단 후 재실행 시 이어받기(resume). 종목 처리 완료 시 {date}/_g001_progress.jsonl에
+      1줄(status/nxt/w52/fetched_at) 기록 - 파일 저장 후 마지막에 기록하므로 처리 도중 중단된
+      종목은 재수집됨. 재실행 시 기록된 종목은 다운로드를 건너뛰고 nxt/w52를 복원해 종료 시
+      집계 파일(nxt_flags/_52w/_daily_close/_prev_close/picks)이 전체 종목을 유지. 진행파일이
+      없는 기존 파일(이전 버전 실행분)은 10s/3m/daily.csv가 모두 있고 장마감(+10분, KST) 이후
+      저장된 경우에만 채택하고 NXT 확인/52주 조회(종목당 1~2회 API)만 다시 수행. 장 마감 전
+      저장분, --nxt 여부 변경, --save-legacy-files 추가 시에는 재수집. --no-resume으로 전체 재수집.
+    impact: collector
+    compatibility: backward-compatible (기본 동작이 이어받기로 변경; 산출물 형식 불변, 날짜 폴더에
+      _g001_progress.jsonl 추가 - g002/g003의 *.txt/*.csv glob에는 걸리지 않음)
+- [2026-10-09] type=fix owner=claude
     summary: KIS HTTP 연결 재사용 + 재시도. kis_auth가 호출마다 requests.get/post로 새 TCP+TLS
       연결을 맺어 Raspberry Pi 4에서 호출당 ~170ms(재사용 시 ~25ms)가 소요됨. main() 시작 시
       ka.requests를 Session 기반 프록시(_KisRequestsProxy)로 교체 - 한국투자 라이브러리 파일은
@@ -125,6 +142,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -247,7 +265,117 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also save legacy _1m/_3m/_20s files in addition to default _10s output",
     )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore already-collected symbols for the date and re-download everything",
+    )
     return parser.parse_args()
+
+
+# Resume support: each finished symbol appends one JSON line to {date_dir}/_g001_progress.jsonl
+# (written only after its files are saved). A restarted run skips those symbols and restores
+# their nxt/w52 values, so the end-of-run aggregates (nxt_flags/_52w/_daily_close/picks)
+# still cover every symbol, not just the ones fetched in the latest run.
+RESUME_PROGRESS_FILE = "_g001_progress.jsonl"
+RESUME_CLOSE_MARGIN_MIN = 10  # files written before close+margin may hold a partial day
+
+
+def _symbol_output_paths(output_dir: Path, code: str, name: str, save_legacy: bool) -> list[Path]:
+    safe_name = str(name).replace("/", "_").replace("\\", "_")
+    paths = [output_dir / f"{code}_{safe_name}_10s.txt", output_dir / f"{code}_{safe_name}_3m.txt"]
+    if save_legacy:
+        paths += [output_dir / f"{code}_{safe_name}_1m.txt", output_dir / f"{code}_{safe_name}_20s.txt"]
+    return paths
+
+
+def _collection_cutoff_ts(target_date: str, include_nxt: bool) -> float:
+    """Epoch seconds after which data for target_date is final (KST, independent of host TZ)."""
+    close_hhmm = "2000" if include_nxt else "1530"
+    close_dt = datetime.strptime(target_date + close_hhmm, "%Y%m%d%H%M").replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    return (close_dt + timedelta(minutes=RESUME_CLOSE_MARGIN_MIN)).timestamp()
+
+
+def _load_resume_progress(output_dir: Path) -> dict[str, dict]:
+    path = output_dir / RESUME_PROGRESS_FILE
+    records: dict[str, dict] = {}
+    if not path.is_file():
+        return records
+    with open(path, encoding="utf-8") as _f:
+        for line in _f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # truncated last line from an interrupted write
+            if isinstance(rec, dict) and rec.get("code"):
+                records[str(rec["code"])] = rec  # later lines win
+    return records
+
+
+def _append_resume_progress(output_dir: Path, record: dict) -> None:
+    with open(output_dir / RESUME_PROGRESS_FILE, "a", encoding="utf-8") as _f:
+        _f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _resume_record_valid(rec: dict, paths: list[Path], include_nxt: bool, save_legacy: bool, cutoff_ts: float) -> bool:
+    if rec.get("status") not in ("saved", "empty"):
+        return False
+    if bool(rec.get("include_nxt")) != include_nxt:
+        return False
+    if save_legacy and not rec.get("legacy"):
+        return False
+    if float(rec.get("fetched_at") or 0) < cutoff_ts:
+        return False
+    if rec["status"] == "saved":
+        return all(p.is_file() for p in paths)
+    return True
+
+
+def _last_row_time(csv_path: Path) -> str | None:
+    """HH:MM:SS of the last data row of a 10s file (reads only the file tail)."""
+    try:
+        with open(csv_path, "rb") as _f:
+            _f.seek(0, os.SEEK_END)
+            _f.seek(max(0, _f.tell() - 4096))
+            lines = [ln for ln in _f.read().decode("utf-8", errors="ignore").splitlines() if ln.strip()]
+        return lines[-1].split(",", 1)[0].strip()[-8:] if lines else None
+    except OSError:
+        return None
+
+
+def _adopt_existing_symbol_files(
+    output_dir: Path, code: str, name: str, include_nxt: bool, save_legacy: bool, cutoff_ts: float, env_dv: str,
+) -> dict | None:
+    """Build a resume record for files saved by a run without a progress entry (e.g. pre-resume version).
+
+    Requires every output file plus the daily csv (written last, so 10s/3m are complete) to exist
+    and be newer than the market close. Re-queries only the cheap per-symbol metadata
+    (NXT probe, 52w) that the aggregates need; the chart pages are not re-downloaded.
+    """
+    safe_name = str(name).replace("/", "_").replace("\\", "_")
+    paths = _symbol_output_paths(output_dir, code, name, save_legacy)
+    paths.append(output_dir / f"{code}_{safe_name}_daily.csv")
+    try:
+        if any(p.stat().st_mtime < cutoff_ts for p in paths):
+            return None
+    except OSError:
+        return None  # a file is missing
+
+    try:
+        nxt = probe_nxt_tradeable(code) if include_nxt else False
+    except Exception as exc:
+        logger.debug("resume adopt: NXT probe failed for %s, refetching: %s", code, exc)
+        return None
+    if nxt:
+        last_time = _last_row_time(paths[0])
+        if last_time is None or last_time <= "15:30:00":
+            return None  # collected without NXT session; refetch with --nxt data
+
+    return {
+        "code": code, "name": name, "status": "saved", "include_nxt": include_nxt,
+        "legacy": save_legacy, "nxt": nxt, "w52": fetch_52w_high_low(code=code, env_dv=env_dv),
+        "fetched_at": time.time(), "adopted": True,
+    }
 
 
 def _is_truthy_flag(value) -> bool | None:
@@ -905,7 +1033,7 @@ def fetch_market_index_daily(target_date: str, window: int = 30) -> dict:
 
 
 def load_symbols(symbols_file: Path) -> list[tuple[str, str]]:
-    df = pd.read_csv(symbols_file)
+    df = pd.read_csv(symbols_file, comment="#")  # "#" lines = excluded (g010 risk flags / manual)
     if "code" not in df.columns:
         raise ValueError(f"'code' column not found in {symbols_file}")
 
@@ -1126,7 +1254,45 @@ def main() -> None:
         saved_symbols: list[tuple[str, str]] = []
         w52_map: dict[str, dict] = {}
 
+        cutoff_ts = _collection_cutoff_ts(target_date, include_nxt)
+        if args.no_resume:
+            (output_dir / RESUME_PROGRESS_FILE).unlink(missing_ok=True)
+            progress: dict[str, dict] = {}
+        else:
+            progress = _load_resume_progress(output_dir)
+        resumed_count = 0
+        adopted_count = 0
+
         for idx, (code, name) in enumerate(symbols, start=1):
+
+            if not args.no_resume:
+                rec = progress.get(code)
+                paths = _symbol_output_paths(output_dir, code, name, args.save_legacy_files)
+                if not (rec and _resume_record_valid(rec, paths, include_nxt, args.save_legacy_files, cutoff_ts)):
+                    rec = None
+                    if all(p.is_file() for p in paths):
+                        rec = _adopt_existing_symbol_files(
+                            output_dir, code, name, include_nxt, args.save_legacy_files, cutoff_ts, args.env,
+                        )
+                        if rec:
+                            _append_resume_progress(output_dir, rec)
+                            adopted_count += 1
+                            logger.info("[%d/%d] %s(%s) | resume: existing files adopted", idx, len(symbols), code, name)
+                            if args.sleep > 0:
+                                time.sleep(args.sleep)
+                if rec:
+                    nxt_flags[code] = bool(rec.get("nxt"))
+                    if rec["status"] == "saved":
+                        if rec.get("w52"):
+                            w52_map[code] = rec["w52"]
+                        get_stock_basic_info_cached(basic_info_cache, code, target_date)
+                        saved_count += 1
+                        saved_symbols.append((code, name))
+                    else:
+                        empty_count += 1
+                    resumed_count += 1
+                    logger.debug("[%d/%d] %s(%s) | resume: skipped", idx, len(symbols), code, name)
+                    continue
 
             nxt_tradeable = False
             df = None
@@ -1159,6 +1325,11 @@ def main() -> None:
 
                 empty_count += 1
                 logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
+                _append_resume_progress(output_dir, {
+                    "code": code, "name": name, "status": "empty", "include_nxt": include_nxt,
+                    "legacy": args.save_legacy_files, "nxt": nxt_tradeable, "w52": None,
+                    "fetched_at": time.time(),
+                })
             else:
                 df_10s = interpolate_to_10sec(df)
 
@@ -1204,6 +1375,13 @@ def main() -> None:
                 # (관리종목/거래정지 배제)와 업종 분산에 사용.
                 get_stock_basic_info_cached(basic_info_cache, code, target_date)
 
+                # Written last so a crash mid-symbol leaves no record and the symbol is refetched.
+                _append_resume_progress(output_dir, {
+                    "code": code, "name": name, "status": "saved", "include_nxt": include_nxt,
+                    "legacy": args.save_legacy_files, "nxt": nxt_tradeable, "w52": w52,
+                    "fetched_at": time.time(),
+                })
+
                 saved_count += 1
                 saved_symbols.append((code, name))
                 logger.info(
@@ -1220,6 +1398,12 @@ def main() -> None:
 
             if args.sleep > 0:
                 time.sleep(args.sleep)
+
+        if resumed_count:
+            logger.info(
+                "resume: %d symbols already collected (%d adopted from existing files) - skipped download",
+                resumed_count, adopted_count,
+            )
 
         # Save NXT tradeable flags for live/sim scripts.
         if nxt_flags:

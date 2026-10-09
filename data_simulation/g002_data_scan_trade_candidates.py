@@ -23,6 +23,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-09] type=fix owner=claude
+    summary: g004 유니버스 파일의 "#" 줄을 건너뛰도록 load_symbols/시장 매핑 read_csv에 comment="#".
+      기존에는 "# 046070" 같은 주석 줄이 종목코드로 그대로 읽혔음. g010(위험종목 자동 주석) 대응.
+    impact: scanner
+    compatibility: backward-compatible
 - [2026-10-01] type=feat owner=claude
     summary: 종목별 선정 이유 한글 리포트(_{date}_scanner_report_ko.md) 자동 생성 추가(g008).
       calculate_candidate_score를 calculate_candidate_score_breakdown(항목별 가점/감점 내역 반환)
@@ -2031,7 +2036,7 @@ def load_symbols():
     if not symbols_path.exists():
         raise SystemExit("g004_universe_symbols_master.txt 파일이 없습니다.")
 
-    df = pd.read_csv(symbols_path)
+    df = pd.read_csv(symbols_path, comment="#")  # "#" lines = excluded (g010 risk flags / manual)
 
     if "code" not in df.columns:
         raise SystemExit("g004_universe_symbols_master.txt에 'code' 컬럼이 필요합니다.")
@@ -2213,7 +2218,7 @@ def load_market_map(data_root: Path, target_date_str: str | None, verbose: bool 
         return {}, ref_date
 
     try:
-        df = pd.read_csv(symbols_path)
+        df = pd.read_csv(symbols_path, comment="#")
     except Exception as exc:
         if verbose:
             print(f"[WARN] {symbols_path} 읽기 실패로 시장 구분 매핑을 사용하지 않습니다: {exc}")
