@@ -34,6 +34,15 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-09] type=fix owner=claude
+    summary: KIS HTTP 연결 재사용 + 재시도. kis_auth가 호출마다 requests.get/post로 새 TCP+TLS
+      연결을 맺어 Raspberry Pi 4에서 호출당 ~170ms(재사용 시 ~25ms)가 소요됨. main() 시작 시
+      ka.requests를 Session 기반 프록시(_KisRequestsProxy)로 교체 - 한국투자 라이브러리 파일은
+      수정하지 않음. EGW00201(초당 거래건수 초과)은 최대 5회 백오프 재시도(기존에는 빈 DF가
+      반환돼 _parse_one_market 페이지 루프가 중단되며 해당 시간대가 조용히 누락됐음), GET의
+      연결오류/타임아웃은 최대 3회 재시도, 요청 타임아웃 (5s, 20s) 신규 적용.
+    impact: collector
+    compatibility: backward-compatible (산출물 형식 불변)
 - [2026-09-23] type=feat owner=claude
     summary: 사용자 요청("g002 종목선정 조건 재검토, 좋은 조건 누락 시 g001에 데이터 추가") +
       Codex 설계검토 - fetch_stock_basic_info()가 이미 매일 호출 중인 search_stock_info(CTPF1002R,
@@ -158,6 +167,64 @@ logging.basicConfig(
     force=True,
 )
 logger = logging.getLogger(__name__)
+
+
+# KIS HTTP wrapper (connection reuse + retry).
+# kis_auth calls the bare requests.get/post per API call, which opens a new TCP+TLS
+# connection every time (~170ms per call on Raspberry Pi 4 vs ~25ms when reused).
+# Swapping kis_auth's module-level `requests` keeps the vendor library untouched.
+KIS_HTTP_TIMEOUT = (5, 20)          # (connect, read) seconds; kis_auth sets none
+KIS_RATE_LIMIT_RETRIES = 5          # EGW00201 "초당 거래건수 초과"
+KIS_RATE_LIMIT_BACKOFF = 0.5        # seconds, multiplied by attempt number
+KIS_NETWORK_RETRIES = 3             # GET only: connection error / timeout
+KIS_NETWORK_BACKOFF = 1.0
+
+
+class _KisRequestsProxy:
+    """Drop-in for the `requests` module inside kis_auth, backed by one Session."""
+
+    def __init__(self, real_requests) -> None:
+        self._real = real_requests
+        self._session = real_requests.Session()
+
+    def __getattr__(self, name):
+        # exceptions, Response, etc. still resolve to the real module.
+        return getattr(self._real, name)
+
+    def get(self, url, **kwargs):
+        return self._request("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._request("POST", url, **kwargs)
+
+    def _request(self, method: str, url: str, **kwargs):
+        kwargs.setdefault("timeout", KIS_HTTP_TIMEOUT)
+        rate_attempt = 0
+        net_attempt = 0
+        while True:
+            try:
+                res = self._session.request(method, url, **kwargs)
+            except (self._real.exceptions.ConnectionError, self._real.exceptions.Timeout) as exc:
+                # POST is not retried: the request may already have been processed.
+                if method != "GET" or net_attempt >= KIS_NETWORK_RETRIES:
+                    raise
+                net_attempt += 1
+                logger.warning("KIS network error, retry %d/%d: %s", net_attempt, KIS_NETWORK_RETRIES, exc)
+                time.sleep(KIS_NETWORK_BACKOFF * net_attempt)
+                continue
+
+            # Rate-limit rejections are refused before processing, so retrying is safe for both methods.
+            if res.status_code != 200 and "EGW00201" in res.text and rate_attempt < KIS_RATE_LIMIT_RETRIES:
+                rate_attempt += 1
+                logger.info("KIS rate limit (EGW00201), retry %d/%d", rate_attempt, KIS_RATE_LIMIT_RETRIES)
+                time.sleep(KIS_RATE_LIMIT_BACKOFF * rate_attempt)
+                continue
+            return res
+
+
+def _install_kis_http_session() -> None:
+    if not isinstance(ka.requests, _KisRequestsProxy):
+        ka.requests = _KisRequestsProxy(ka.requests)
 
 
 # Indicator parameters are imported from r001_define_config so collector, live,
@@ -973,6 +1040,7 @@ def resolve_target_date(date_arg: str | None, symbols: list[tuple[str, str]]) ->
 
 def main() -> None:
     args = parse_args()
+    _install_kis_http_session()
 
     include_nxt = args.nxt
 
