@@ -37,6 +37,22 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=fix owner=claude
+    summary: 데이터 정합성 P0 (Codex 교차검토 후 실데이터로 확인).
+      (1) _prev_close.json: 날짜 폴더를 거슬러 처음 찾은 날의 종가를 쓰던 방식 -> 해당 날짜 {code}_daily.csv의
+      직전 행(공식 종가, 진짜 직전 거래일). 20261008은 20261007을 나중에 수집해 2,275/2,463종목이 20261006
+      종가를 전일종가로 갖고 있었음(000020: 5450, 정답 5610). daily csv 없는 종목만 폴더 폴백(직전 거래일
+      폴더로 한정). (2) _daily_close.json: 분봉 15:30 봉 종가 -> daily csv 당일 행(공식 종가), 단 daily csv가
+      대상일 다음날 이후 저장된 경우만(당일 저장분은 미확정 관측: 20261006 16:38 5420 vs 최종 5450) -
+      20261008은 분봉 종가가 공식 종가와 2,098/2,463종목 불일치(000020 분봉 5360 vs 공식 5410, KIS 재조회 동일).
+      (3) 10s 파일 마지막 열에 raw_bar(1=원본 분봉, 0=보간) 추가 - g003/g009가 :00 행으로 원본 분봉을 복원할 때
+      무체결 분의 보간 :00 행(직전 분 거래량 복사)이 가짜 분봉으로 섞이던 문제(20261008 표본 308종목 중 168종목
+      거래량 +5% 초과, 최대 4.6배). (4) interpolate_to_20sec: 깨진 한글 주석이 줄바꿈을 삼켜 df_indexed 대입이
+      주석 처리돼 --save-legacy-files 시 NameError - 복구. (5) interpolate_to_10sec ±15% 클리핑 제거 -
+      대체값이 ffill(같은 값)이라 아무것도 바꾸지 않던 코드(출력 불변).
+    impact: collector/sim
+    compatibility: backward-compatible (10s 열 1개 추가 - 이름 기반 리더만 존재, g003/g009는 열 없으면 기존
+      동작; prev/daily close 값은 공식 종가로 바뀜. 기존 날짜 폴더 파일은 재수집/재생성 전까지 그대로)
 - [2026-10-10] type=feat owner=claude
     summary: --date에 여러 날짜를 공백으로도 나열 가능(nargs="+"). 기존 콤마 구분과 혼용 가능,
       중복 날짜는 입력 순서를 유지한 채 제거.
@@ -633,7 +649,8 @@ def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     
-    # datetime???몃뜳?ㅻ줈 吏??    df_indexed = df.set_index("datetime")
+    # datetime을 인덱스로 지정
+    df_indexed = df.set_index("datetime")
     
     # 20珥?媛꾧꺽???쒓컙 ?앹꽦
     time_range_20sec = pd.date_range(
@@ -713,12 +730,6 @@ def interpolate_to_10sec(minute_df: pd.DataFrame) -> pd.DataFrame:
     price_cols = ["open", "high", "low", "close"]
     for col in price_cols:
         df_reindexed[col] = df_reindexed[col].interpolate(method="linear", limit_direction="both")
-
-    # 10초 선형 보간 아티팩트 제거: 연속 봉 간 ±15% 초과 변화는 이전 값으로 대체
-    for col in price_cols:
-        pct_chg = df_reindexed[col].pct_change().abs()
-        mask = pct_chg > 0.15
-        df_reindexed[col] = df_reindexed[col].where(~mask, df_reindexed[col].ffill())
 
     step_seconds = 10.0
     if len(df.index) >= 2:
@@ -1112,16 +1123,65 @@ def _regular_session_last_close(csv_path: Path) -> float | None:
     return float(_col.iloc[-1])
 
 
-def _compute_prev_close_from_data(code: str, target_date: str, data_root: Path) -> float | None:
+def _load_daily_closes(output_dir: Path, code: str, name: str) -> pd.Series | None:
+    """date(YYYYMMDD str) -> official close (stck_clpr) from {code}_{name}_daily.csv, or None."""
+    safe_name = str(name).replace("/", "_").replace("\\", "_")
+    path = output_dir / f"{code}_{safe_name}_daily.csv"
+    try:
+        df = pd.read_csv(path, usecols=["date", "close"], dtype={"date": str})
+    except Exception:
+        return None
+    s = pd.Series(pd.to_numeric(df["close"], errors="coerce").to_numpy(), index=df["date"].str.strip())
+    s = s[s > 0]
+    return s.sort_index() if not s.empty else None
+
+
+def _official_prev_close(daily: pd.Series | None, target_date: str) -> tuple[float | None, str | None]:
+    """(close, date) of the last daily row before target_date.
+
+    The daily API lists trading days only, so this is the true previous trading day even when
+    the prior day's folder was never collected (or collected later) - _compute_prev_close_from_data
+    walks back folders and silently returned an older day's close in that case
+    (e.g. 20261008 got 20261006's close because 20261007 was collected afterwards).
+    The row is final once target_date's collection runs, unlike target_date's own row.
+    """
+    if daily is None:
+        return None, None
+    prior = daily[daily.index < target_date]
+    if prior.empty:
+        return None, None
+    return float(prior.iloc[-1]), str(prior.index[-1])
+
+
+def _official_close_on(daily: pd.Series | None, target_date: str, daily_csv_mtime: float | None) -> float | None:
+    """target_date's official close, only if the daily csv was written after that day ended (KST).
+
+    A same-day fetch can still be pre-final (observed: 20261006 fetched 16:38 -> 5420/5.83M shares,
+    final 5450/5.95M), so same-day collections keep the minute-bar fallback.
+    """
+    if daily is None or daily_csv_mtime is None or target_date not in daily.index:
+        return None
+    day_end = datetime.strptime(target_date, "%Y%m%d").replace(tzinfo=ZoneInfo("Asia/Seoul")) + timedelta(days=1)
+    if daily_csv_mtime < day_end.timestamp():
+        return None
+    return float(daily[target_date])
+
+
+def _compute_prev_close_from_data(
+    code: str, target_date: str, data_root: Path, only_date: str | None = None,
+) -> float | None:
     """Return the prior trading day's regular-session close from already-collected data.
 
     Replicates r006 fetch_prev_close() without extra API calls, so r007 can apply
-    MAX_BUY_RISE_PCT_FROM_PREV_CLOSE on stored data.
+    MAX_BUY_RISE_PCT_FROM_PREV_CLOSE on stored data. Fallback for symbols without a daily csv:
+    when only_date (the known previous trading day) is given, only that folder is accepted.
     """
     import json as _json_pc
     target = datetime.strptime(target_date, "%Y%m%d").date()
     for back in range(1, 15):
         prior = (target - timedelta(days=back)).strftime("%Y%m%d")
+        if only_date is not None and prior != only_date:
+            continue
         prior_dir = data_root / prior
         if not prior_dir.is_dir():
             continue
@@ -1140,6 +1200,42 @@ def _compute_prev_close_from_data(code: str, target_date: str, data_root: Path) 
             if val is not None:
                 return val
     return None
+
+
+def _build_prev_close_map(
+    symbols: list[tuple[str, str]], target_date: str, output_dir: Path,
+    daily_series: dict[str, pd.Series | None] | None = None,
+) -> tuple[dict[str, float], int, str | None]:
+    """{code: prev close} for target_date -> (map, official count, previous trading day).
+
+    Primary: the daily csv's last row before target_date (official close, true previous trading day).
+    Fallback (no daily csv / no prior row): already-collected data, restricted to the previous trading
+    day's folder as seen by the other symbols' daily csvs. Unknown previous day -> no fallback at all:
+    an older day's close is worse than no value (g003 skips the gate when a code is missing).
+    """
+    daily_series = daily_series or {}
+    prev_close_map: dict[str, float] = {}
+    missing: list[str] = []
+    prev_days: dict[str, int] = {}
+    for code, name in symbols:
+        daily = daily_series[code] if code in daily_series else _load_daily_closes(output_dir, code, name)
+        val, prev_day = _official_prev_close(daily, target_date)
+        if val is None:
+            missing.append(code)
+            continue
+        prev_close_map[code] = val
+        prev_days[prev_day] = prev_days.get(prev_day, 0) + 1
+    official = len(prev_close_map)
+
+    prev_trading_day = max(prev_days, key=prev_days.get) if prev_days else None
+    if missing and prev_trading_day is None:
+        logger.warning("prev_close: previous trading day unknown (no daily csv) - %d codes left without prev_close", len(missing))
+        return prev_close_map, official, None
+    for code in missing:
+        val = _compute_prev_close_from_data(code, target_date, output_dir.parent, only_date=prev_trading_day)
+        if val is not None:
+            prev_close_map[code] = val
+    return prev_close_map, official, prev_trading_day
 
 
 def _parse_code_filter(raw: str) -> set[str]:
@@ -1345,7 +1441,10 @@ def main() -> None:
                 df_10s = interpolate_to_10sec(df)
 
                 df_10s = calculate_r76_indicators(df_10s)
-                
+                # 1 = KIS 원본 1분봉 행, 0 = 보간 합성 행. 무체결 분/단일가 구간의 :00 행도 합성이라
+                # g003/g009가 :00 행만으로 원본 분봉을 복원하면 가짜 봉이 섞이던 문제 방지용(마지막 열에 추가).
+                df_10s["raw_bar"] = df_10s["datetime"].isin(df["datetime"]).astype("int8")
+
                 safe_name = str(name).replace("/", "_").replace("\\", "_")
                 file_10s_path = output_dir / f"{code}_{safe_name}_10s.txt"
                 df_10s.to_csv(file_10s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
@@ -1426,19 +1525,35 @@ def main() -> None:
         # Save daily close (regular-session last close) for each symbol, used as next-day
         # prev_close in r007. Restricted to REGULAR_END so --nxt-collected days don't leak
         # an NXT after-hours print in place of the official close (see _regular_session_last_close).
+        # Official close (daily csv stck_clpr) is preferred: the minute chart's 15:30 bar can differ from
+        # it (20261008: 2,098/2,463 symbols, e.g. 000020 minute 5360 vs official 5410).
         daily_close_map: dict[str, float] = {}
+        daily_series: dict[str, pd.Series | None] = {}
+        dc_official = 0
         for _dc_code, _dc_name in saved_symbols:
             _safe = str(_dc_name).replace("/", "_").replace("\\", "_")
-            _f10 = output_dir / f"{_dc_code}_{_safe}_10s.txt"
-            if _f10.exists():
-                _dc_val = _regular_session_last_close(_f10)
-                if _dc_val is not None:
-                    daily_close_map[_dc_code] = _dc_val
+            _daily = _load_daily_closes(output_dir, _dc_code, _dc_name)
+            daily_series[_dc_code] = _daily
+            try:
+                _daily_mtime = (output_dir / f"{_dc_code}_{_safe}_daily.csv").stat().st_mtime
+            except OSError:
+                _daily_mtime = None
+            _dc_val = _official_close_on(_daily, target_date, _daily_mtime)
+            if _dc_val is not None:
+                dc_official += 1
+            else:
+                _f10 = output_dir / f"{_dc_code}_{_safe}_10s.txt"
+                _dc_val = _regular_session_last_close(_f10) if _f10.exists() else None
+            if _dc_val is not None:
+                daily_close_map[_dc_code] = _dc_val
         if daily_close_map:
             daily_close_path = output_dir / "_daily_close.json"
             with open(daily_close_path, "w", encoding="utf-8") as _f:
                 json.dump(daily_close_map, _f, ensure_ascii=False, indent=2)
-            logger.info("saved daily_close.json (%d codes): %s", len(daily_close_map), daily_close_path)
+            logger.info(
+                "saved daily_close.json (%d codes, %d official / %d minute-bar fallback): %s",
+                len(daily_close_map), dc_official, len(daily_close_map) - dc_official, daily_close_path,
+            )
 
         if w52_map:
             w52_path = output_dir / "_52w_high_low.json"
@@ -1452,16 +1567,21 @@ def main() -> None:
         _save_basic_info_cache(data_root_path, basic_info_cache)
 
         # Save prev_close from prior trading day data (mirrors r006 fetch_prev_close).
-        prev_close_map: dict[str, float] = {}
-        for _pc_code, _ in saved_symbols:
-            _pc = _compute_prev_close_from_data(_pc_code, target_date, output_dir.parent)
-            if _pc is not None:
-                prev_close_map[_pc_code] = _pc
+        prev_close_map, pc_official, prev_trading_day = _build_prev_close_map(
+            saved_symbols, target_date, output_dir, daily_series,
+        )
+        prev_close_path = output_dir / "_prev_close.json"
+        if not prev_close_map and prev_close_path.exists():
+            # A stale file from an earlier (possibly wrong) run must not outlive a rerun that found nothing.
+            prev_close_path.unlink()
+            logger.warning("prev_close: no values for %s - removed stale %s", target_date, prev_close_path)
         if prev_close_map:
-            prev_close_path = output_dir / "_prev_close.json"
             with open(prev_close_path, "w", encoding="utf-8") as _f:
                 json.dump(prev_close_map, _f, ensure_ascii=False, indent=2)
-            logger.info("saved prev_close.json (%d codes): %s", len(prev_close_map), prev_close_path)
+            logger.info(
+                "saved prev_close.json (%d codes, %d official / %d folder fallback, prev trading day=%s): %s",
+                len(prev_close_map), pc_official, len(prev_close_map) - pc_official, prev_trading_day, prev_close_path,
+            )
 
         # Save date-scoped picks file for r007 simulation input.
         if saved_symbols:

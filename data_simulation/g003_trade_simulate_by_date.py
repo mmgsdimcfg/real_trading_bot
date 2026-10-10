@@ -16,6 +16,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=fix owner=claude
+    summary: causal 원본 분봉 복원(_causal_minute_frames/_build_day_ref_frame)이 g001 10s 파일의 raw_bar 열(1=원본
+      분봉)이 있으면 그 행만 사용 - 장중 무체결 분의 보간 :00 행이 가짜 분봉(직전 분 거래량 복사 + 직선 가격)으로
+      섞여 거래량이 부풀던 문제(20261008 065130: 분봉 381개/거래량 1.315배 -> 원본 164개/1.000배). 3분봉 "1분봉 3개
+      다 찬 봉만" 판정은 슬롯(:00 행 전체) 기준으로 유지(_causal_3min_slot_counts) - 원본 개수로 세면 무체결 분이
+      낀 정상 봉까지 버려져 r003(첫 부분봉만 제외)과 어긋남. 세션 공백 판정은 _session_gap_mask로 추출(동작 불변).
+    impact: sim
+    compatibility: backward-compatible (raw_bar 없는 기존 파일은 기존 동작 그대로)
 - [2026-10-05] type=fix owner=claude
     summary: Codex 2차 검토 반영 - (1) 추격차단(r005 _019 parity) 판정 위치를 1분 트리거/3분 컨텍스트 통과 후,
       연속 확인 전으로 이동(종전: 트리거 평가 전에 continue -> 실전과 달리 트리거 경과시간 상태가 갱신되지 않았음)하고
@@ -943,6 +951,23 @@ def can_trade_code_now(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     return False
 
 
+def _session_gap_mask(index: pd.DatetimeIndex):
+    """세션 공백(08:50~09:00, 15:20~15:30 단일가 구간) 여부 - 이 구간의 :00 행은 보간으로 생긴 가짜 행."""
+    _t = index.time
+    return ((_t >= MORNING_NXT_END) & (_t < REGULAR_START)) | ((_t >= REGULAR_NEW_ENTRY_CUTOFF) & (_t < REGULAR_END))
+
+
+def _causal_3min_slot_counts(raw_df: pd.DataFrame) -> pd.Series:
+    """3분 구간별 1분 슬롯 수(분 종료 라벨 기준, 세션 공백 제외 :00 행 전체 - 원본/보간 구분 없음).
+
+    [2026-10-10] raw_bar 필터 이후에는 무체결 분이 빠져 원본 분봉 개수로 세면 정상 3분봉까지 "부분봉"으로
+    버려진다. r003 _normalize_intraday_frame은 첫 부분봉만 버리므로, "3개가 다 찬" 판정은 raw_bar 도입 전과
+    같은 슬롯 기준으로 유지하고(첫 부분봉/15:30 단일가 단독봉만 제외) 봉의 OHLCV만 원본 분봉으로 만든다."""
+    slots = raw_df.index[(raw_df.index.second == 0)]
+    slots = slots[~_session_gap_mask(slots)] + pd.Timedelta(minutes=1)
+    return pd.Series(1, index=slots).resample("3min", label="right", closed="right").sum()
+
+
 def _causal_minute_frames(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     """[2026-10-06] g001 _10s 파일(KIS 1분봉을 "분 시작" 라벨 그대로 찍고 10초 선형보간)에서 미래참조를 없앤다.
 
@@ -957,9 +982,13 @@ def _causal_minute_frames(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     if diffs.empty or abs(float(diffs.median()) - 10.0) > 0.5:
         return None
     m = raw_df[raw_df.index.second == 0]
+    # [2026-10-10] g001이 raw_bar 열(1=원본 분봉)을 쓰면 그것만 사용 - 장중 무체결 분의 :00 행도 보간 합성
+    # (직전 분 거래량 복사 + 가격 직선)이라 가짜 분봉이 섞였음(20261008 표본 308종목 중 168종목 거래량 +5% 초과).
+    # 구버전 파일(열 없음)은 기존처럼 :00 행 전체 사용.
+    if "raw_bar" in m.columns:
+        m = m[pd.to_numeric(m["raw_bar"], errors="coerce") == 1]
     # 세션 공백(08:50~09:00, 15:20~15:30 단일가 구간)의 :00 행은 보간으로 생긴 가짜 행이라 제외한다.
-    _t = m.index.time
-    m = m[~(((_t >= MORNING_NXT_END) & (_t < REGULAR_START)) | ((_t >= REGULAR_NEW_ENTRY_CUTOFF) & (_t < REGULAR_END)))]
+    m = m[~_session_gap_mask(m.index)]
     if len(m.index) < 2:
         return None
     m = m[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
@@ -980,6 +1009,8 @@ def _build_day_ref_frame(raw_df: pd.DataFrame) -> pd.DataFrame | None:
     """정규장 실제 1분봉(10초 파일의 :00 행, 분 시작 라벨)을 종료시각 라벨로 바꿔 시가/누적 VWAP 열을 만든다."""
     try:
         m = raw_df[(raw_df.index.second == 0)]
+        if "raw_bar" in m.columns:  # 원본 분봉만 (_causal_minute_frames 참조)
+            m = m[pd.to_numeric(m["raw_bar"], errors="coerce") == 1]
         m = m[(m.index.time >= REGULAR_START) & (m.index.time < REGULAR_END)]
         if m.empty:
             return None
@@ -2345,6 +2376,8 @@ def simulate_date(
             _agg3 = _m_end.assign(_n=1).resample("3min", label="right", closed="right").agg(
                 {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "_n": "sum"}
             ).dropna(subset=["open", "high", "low", "close"])
+            if "raw_bar" in raw_df.columns:  # 슬롯 기준 판정 (_causal_3min_slot_counts 참조)
+                _agg3["_n"] = _causal_3min_slot_counts(raw_df).reindex(_agg3.index).fillna(0)
             # [Codex r2] 1분봉 3개가 다 찬 3분봉만 사용(첫 부분봉/15:30 단일가 단독봉 제외).
             strategy_df = _agg3[_agg3["_n"] >= 3].drop(columns=["_n"])
         else:
