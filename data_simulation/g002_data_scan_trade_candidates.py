@@ -23,6 +23,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=perf owner=claude
+    summary: 스캔 속도 - 종목마다 build_daily_bars가 날짜폴더 전체(27개)의 10s 파일을 읽어 일봉을 만들던 것을,
+      서버 일봉(daily.csv)이 있으면 대상일 폴더만 읽도록 변경(이력 지표는 전부 서버 일봉에서 계산하고 10s 집계는
+      대상일 1행만 씀). load_data는 일봉 집계에 필요한 열만 읽음. Raspberry Pi 실측 종목당 6.83초 -> 0.16초,
+      표본 60종목 점수/적격/탈락사유/소프트플래그/가격 동일. low_up_days_warning 가드를 len(daily_df) ->
+      len(_check_df)로(up_days_in_5가 _check_df 기준이라 동작 동일).
+      종목 파일 찾기를 날짜폴더 1회 목록(_dir_files_by_code) 기반으로 - Path.glob이 호출마다 폴더 전체(~5천~7천
+      파일)를 훑어 Pi에서 회당 ~0.12초, 종목당 2~3회였음(결과 동일 확인 480/480).
+    impact: scanner
+    compatibility: backward-compatible (서버 일봉이 없는 종목은 기존처럼 날짜폴더 전체 집계)
 - [2026-10-10] type=feat owner=claude
     summary: 사용자 결정 1-b "우상향 조건 필수 적용" + "각종 지표를 최대한 활용".
       (1) 우상향 필수조건(하드필터, 반전신호 예외 없음) - g001 daily.csv 일봉 지표(HTS 기본 기간)로 종가>MA20,
@@ -397,6 +407,7 @@ Update log:
 import argparse
 import json
 import math
+import os
 import random
 import re
 import sys
@@ -544,6 +555,26 @@ def _symbol_file_priority(path):
     return 1
 
 
+_DIR_LISTING_CACHE: dict[str, dict[str, list[str]]] = {}
+
+
+def _dir_files_by_code(data_dir) -> dict[str, list[str]]:
+    """{6-char prefix: [file names]} for a date folder, listed once per process. Path.glob(f"{code}*") scans
+    the whole folder (~5,000-7,500 files) on every call - ~0.12s each on a Raspberry Pi, 2-3 calls per symbol.
+    Symbol files do not change during a scan (outputs written into the folder start with "_")."""
+    key = str(data_dir)
+    cached = _DIR_LISTING_CACHE.get(key)
+    if cached is None:
+        cached = {}
+        try:
+            for entry in os.scandir(key):
+                cached.setdefault(entry.name[:6], []).append(entry.name)
+        except OSError:
+            pass
+        _DIR_LISTING_CACHE[key] = cached
+    return cached
+
+
 def resolve_symbol_file(data_dir, code):
     """Return best matching symbol file path among supported naming formats."""
     # 1) Legacy exact names first
@@ -555,10 +586,10 @@ def resolve_symbol_file(data_dir, code):
     if csv_path.exists():
         return csv_path
 
-    # 2) New names: {code}_{name}.txt, {code}_{name}_1m.txt, etc.
-    candidates = []
-    candidates.extend(data_dir.glob(f"{code}*.txt"))
-    candidates.extend(data_dir.glob(f"{code}*.csv"))
+    # 2) New names: {code}_{name}.txt, {code}_{name}_1m.txt, etc. (folder listed once, see _dir_files_by_code)
+    names = _dir_files_by_code(data_dir).get(str(code)[:6], [])
+    candidates = [data_dir / n for n in names if n.startswith(str(code)) and n.endswith(".txt")]
+    candidates += [data_dir / n for n in names if n.startswith(str(code)) and n.endswith(".csv")]
     candidates = [p for p in candidates if _extract_code_from_stem(p.stem) == code]
     if not candidates:
         return None
@@ -575,7 +606,9 @@ def load_data(code, data_dir, warn=True):
         return None
 
     try:
-        df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+        # 일봉 집계에 필요한 열만 읽는다(10s 파일은 지표 포함 30열 - 전체 파싱이 Pi에서 주된 비용).
+        _keep = {"timestamp", "datetime", "Time", "time", "date", "Date", "open", "high", "low", "close", "volume"}
+        df = pd.read_csv(file_path, index_col=0, parse_dates=True, usecols=lambda c: c in _keep)
         df = ensure_datetime_index(df)
         return df
     except Exception as exc:
@@ -904,7 +937,10 @@ def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFram
     date_dir = data_root / str(target_date_str)
     if not date_dir.is_dir():
         return None
-    matches = sorted(date_dir.glob(f"{code}_*_daily.csv")) + sorted(date_dir.glob(f"{code}_daily.csv"))
+    names = _dir_files_by_code(date_dir).get(str(code)[:6], [])
+    matches = sorted(date_dir / n for n in names if n.startswith(f"{code}_") and n.endswith("_daily.csv"))
+    if (date_dir / f"{code}_daily.csv").exists():
+        matches.append(date_dir / f"{code}_daily.csv")
     if not matches:
         return None
     try:
@@ -1607,7 +1643,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         candidate["soft_flags"].append("low_volatility_atr")
         
     min_up_days_required = max(0, config.min_up_days_in_5 - LOW_UP_DAYS_TOLERANCE)
-    if len(daily_df) >= 5 and up_days_in_5 < min_up_days_required:
+    if len(_check_df) >= 5 and up_days_in_5 < min_up_days_required:
         candidate["soft_flags"].append("low_up_days_warning")
 
     # 거래량 감소 종목 - 소프트 경고 (2026-07-22: 하드필터 -> 소프트플래그).
@@ -2672,7 +2708,14 @@ def scan(
         if verbose:
             print(f"[{idx}/{total}] {code} 검증중...", end="\r", flush=True)
 
-        daily_df = build_daily_bars(data_root, code, target_date_str, single_date_only=single_date_only)
+        # [2026-10-10] 서버 일봉(daily.csv)이 있으면 이력 지표는 전부 그쪽(_check_df)에서 계산하고 10s 집계 일봉은
+        # 대상일 1행만 쓰므로(가격 폴백/장대음봉/대상일 확인) 대상일 폴더만 읽는다. 기존에는 종목마다 날짜폴더
+        # 전체(27개)의 10s 파일을 읽어 Raspberry Pi에서 종목당 ~7.5초(대상일만 ~0.2초)가 걸렸다.
+        daily_hist = _load_daily_csv(code, data_root, target_date_str)
+        daily_df = build_daily_bars(
+            data_root, code, target_date_str,
+            single_date_only=single_date_only or (daily_hist is not None and target_date_str is not None),
+        )
         if daily_df is None or len(daily_df) < MIN_REQUIRED_BARS:
             skipped += 1
             if daily_df is None or len(daily_df) == 0:
@@ -2682,7 +2725,6 @@ def scan(
             continue
 
         recent_repeat_days = int(recent_pick_counts.get(code, 0))
-        daily_hist = _load_daily_csv(code, data_root, target_date_str)
         candidate = evaluate_candidate(
             code, name, daily_df, config,
             recent_pick_count=recent_repeat_days, daily_hist=daily_hist,
