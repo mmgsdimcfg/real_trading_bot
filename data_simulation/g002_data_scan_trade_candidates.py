@@ -23,6 +23,24 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=feat owner=claude
+    summary: 사용자 결정 1-b "우상향 조건 필수 적용" + "각종 지표를 최대한 활용".
+      (1) 우상향 필수조건(하드필터, 반전신호 예외 없음) - g001 daily.csv 일봉 지표(HTS 기본 기간)로 종가>MA20,
+      MA20 상승(5거래일 전 대비), MA5>MA20, MACD>시그널, DI+>DI- 5개 모두 만족. 지표 이력이 없으면
+      uptrend_unknown으로 탈락. fail_reasons: uptrend_close_below_ma20/uptrend_ma20_not_rising/uptrend_ma5_below_ma20/
+      uptrend_macd_below_signal/uptrend_di_minus_dominant. fallback 채우기도 이 사유는 구제하지 않음.
+      (2) 지표 가점 +16(가점 만점 52->68): ADX(14) 추세강도 최대4(20->40), 이평 정배열 MA5>MA20>MA60 3,
+      OBV>OBV_MA20 3, MACD 히스토그램 증가 2, 스토캐스틱 K>D & K<80 2, 당일 종가>VWAP(10s 파일, 1분봉 누적) 2.
+      (3) 과열 소프트플래그: above_bb_upper(종가>볼린저 상단), stoch_overbought(STOCH_K>=90 또는 %R>=-10).
+      (4) 현재가를 서버 일봉 대상일 종가(공식 종가)로 - 10s 마지막 행(KIS 분봉 15:30)과 다른 날이 있었음.
+      (5) 지표 열이 없는 이전 daily.csv는 _compute_daily_indicators로 같은 공식 계산(g001 값과 일치 확인).
+      검증 메모: 2026-08-28~10-07 25거래일 포인트인타임 재현에서 (1)과 같은 조건(T2)은 유니버스 대비 D+1
+      시가->종가 -0.03% vs -0.09%, 장중 시가->고가 중앙 2.49% vs 1.85%였고, 기존 선정군 중 이 조건 미통과
+      종목(26%)의 D+1 성과가 통과 종목보다 좋았음(+1.02% vs -0.00%) - 근거가 약한 상태에서 사용자 원칙에 따라
+      적용. 실전 결과로 재평가 필요.
+    impact: scanner
+    compatibility: breaking (선정 기준 변경: 우상향 필수조건 미충족 종목 배제, 점수 척도 확대). _scan_all.md 끝에
+      지표 열 9개 추가, _ranked.txt 열은 불변.
 - [2026-10-09] type=fix owner=claude
     summary: g004 유니버스 파일의 "#" 줄을 건너뛰도록 load_symbols/시장 매핑 read_csv에 comment="#".
       기존에는 "# 046070" 같은 주석 줄이 종목코드로 그대로 읽혔음. g010(위험종목 자동 주석) 대응.
@@ -832,6 +850,51 @@ def _has_volume_thrust_reversal(df: pd.DataFrame) -> bool:
         and close_p > ma5_close
     )
 
+# [2026-10-10] 일봉 지표 - g001이 {code}_daily.csv에 저장하는 열(DAILY_INDICATOR_PARAMS: HTS 기본 기간)과 같은
+# 공식. 열이 없는 이전 버전 daily.csv(20행, 지표 없음)는 여기서 같은 방식으로 계산해 채운다.
+DAILY_INDICATOR_COLUMNS = (
+    "MA_5", "MA_20", "MA_60", "BB_MIDDLE", "BB_UPPER", "BB_LOWER", "RSI", "STOCH_K", "STOCH_D",
+    "WILLIAMS_R", "MACD", "MACD_SIGNAL", "MACD_HIST", "DI_PLUS", "DI_MINUS", "ADX", "OBV", "OBV_MA",
+)
+
+
+def _compute_daily_indicators(df: "pd.DataFrame") -> "pd.DataFrame":
+    out = df.copy()
+    close, high, low = out["close"].astype(float), out["high"].astype(float), out["low"].astype(float)
+    volume = out["volume"].astype(float)
+    out["MA_5"] = close.rolling(5, min_periods=1).mean()
+    out["MA_20"] = close.rolling(20, min_periods=20).mean()
+    out["MA_60"] = close.rolling(60, min_periods=60).mean()
+    mid = close.rolling(20, min_periods=1).mean()
+    std = close.rolling(20, min_periods=1).std()
+    out["BB_MIDDLE"], out["BB_UPPER"], out["BB_LOWER"] = mid, mid + 2.0 * std, mid - 2.0 * std
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1.0 / 14, min_periods=1, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / 14, min_periods=1, adjust=False).mean()
+    out["RSI"] = 100 - 100 / (1 + gain / loss.replace(0, float("nan")))
+    out.loc[loss == 0, "RSI"] = 100.0
+    lo14, hi14 = low.rolling(14, min_periods=1).min(), high.rolling(14, min_periods=1).max()
+    rng = (hi14 - lo14).replace(0, float("nan"))
+    out["STOCH_K"] = 100.0 * (close - lo14) / rng
+    out["STOCH_D"] = out["STOCH_K"].rolling(3, min_periods=1).mean()
+    out["WILLIAMS_R"] = -100.0 * (hi14 - close) / rng
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    out["MACD"], out["MACD_SIGNAL"] = macd, macd.ewm(span=9, adjust=False).mean()
+    out["MACD_HIST"] = out["MACD"] - out["MACD_SIGNAL"]
+    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    up, dn = high - high.shift(1), low.shift(1) - low
+    plus_dm, minus_dm = up.where((up > dn) & (up > 0), 0.0), dn.where((dn > up) & (dn > 0), 0.0)
+    atr = tr.ewm(alpha=1.0 / 14, min_periods=1, adjust=False).mean().replace(0, float("nan"))
+    out["DI_PLUS"] = 100.0 * plus_dm.ewm(alpha=1.0 / 14, min_periods=1, adjust=False).mean() / atr
+    out["DI_MINUS"] = 100.0 * minus_dm.ewm(alpha=1.0 / 14, min_periods=1, adjust=False).mean() / atr
+    dx = 100.0 * (out["DI_PLUS"] - out["DI_MINUS"]).abs() / (out["DI_PLUS"] + out["DI_MINUS"]).replace(0, float("nan"))
+    out["ADX"] = dx.ewm(alpha=1.0 / 14, min_periods=1, adjust=False).mean()
+    sign = close.diff()
+    out["OBV"] = (volume * sign.gt(0).astype(float) - volume * sign.lt(0).astype(float)).cumsum()
+    out["OBV_MA"] = out["OBV"].rolling(20, min_periods=1).mean()
+    return out
+
+
 def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFrame | None":
     """Load {code}_*_daily.csv saved by r001 from the target date directory.
     Returns None if file not found or unreadable.
@@ -853,7 +916,15 @@ def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFram
         for col in ("open", "high", "low", "close", "volume"):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df if not df.empty else None
+        if df.empty:
+            return None
+        # g001 이전 버전 파일(지표 열 없음)은 같은 공식으로 계산해 채운다.
+        if {"open", "high", "low", "volume"}.issubset(df.columns) and not set(DAILY_INDICATOR_COLUMNS).issubset(df.columns):
+            df = _compute_daily_indicators(df)
+        for col in DAILY_INDICATOR_COLUMNS:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
     except Exception:
         return None
 
@@ -1046,7 +1117,68 @@ def _has_upperlimit_streak_then_crash(df, lookback=15, upperlimit_min_pct=0.20, 
 # Candidate evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None, market_map=None, market_index_series=None, basic_info=None):
+def _sub(a, b):
+    return (a - b) if (a is not None and b is not None) else None
+
+
+def _daily_indicator_snapshot(df) -> dict | None:
+    """Latest daily indicator values (+ a few derived ones) from a daily frame with DAILY_INDICATOR_COLUMNS."""
+    if df is None or len(df) < 2 or not set(DAILY_INDICATOR_COLUMNS).issubset(df.columns):
+        return None
+    last, prev = df.iloc[-1], df.iloc[-2]
+    snap = {c: safe_float(last[c]) for c in DAILY_INDICATOR_COLUMNS}
+    ma20_ago = safe_float(df["MA_20"].iloc[-6]) if len(df) >= 6 else None
+    snap["ma20_slope5"] = (snap["MA_20"] / ma20_ago - 1.0) if (snap["MA_20"] and ma20_ago) else None
+    snap["macd_hist_prev"] = safe_float(prev["MACD_HIST"])
+    snap["obv_up"] = (snap["OBV"] > snap["OBV_MA"]) if (snap["OBV"] is not None and snap["OBV_MA"] is not None) else None
+    return snap
+
+
+def _uptrend_gate_failures(price, ind) -> list[str]:
+    if not ind:
+        return ["uptrend_unknown"]
+    need = ("MA_5", "MA_20", "MACD", "MACD_SIGNAL", "DI_PLUS", "DI_MINUS")
+    if price is None or ind.get("ma20_slope5") is None or any(ind.get(k) is None for k in need):
+        return ["uptrend_unknown"]
+    fails = []
+    if price <= ind["MA_20"]:
+        fails.append("uptrend_close_below_ma20")
+    if ind["ma20_slope5"] <= 0:
+        fails.append("uptrend_ma20_not_rising")
+    if ind["MA_5"] <= ind["MA_20"]:
+        fails.append("uptrend_ma5_below_ma20")
+    if ind["MACD"] <= ind["MACD_SIGNAL"]:
+        fails.append("uptrend_macd_below_signal")
+    if ind["DI_PLUS"] <= ind["DI_MINUS"]:
+        fails.append("uptrend_di_minus_dominant")
+    return fails
+
+
+def _load_last_vwap(data_root: Path, target_date_str, code: str) -> float | None:
+    """[2026-10-10] 대상일 정규장(<=15:30) 마지막 행의 VWAP (g001 10s 파일의 VWAP 열, 1분봉 누적 기준).
+    VWAP 열이 없거나(지표 생략 수집) 파일이 없으면 None -> 마감 강도 가점은 건너뛴다."""
+    if not target_date_str:
+        return None
+    date_dir = data_root / str(target_date_str)
+    path = resolve_symbol_file(date_dir, code) if date_dir.is_dir() else None
+    if path is None or not path.stem.endswith("_10s"):
+        return None
+    try:
+        df = pd.read_csv(path, usecols=lambda c: c in ("datetime", "close", "VWAP"), encoding="utf-8-sig")
+        if "VWAP" not in df.columns:
+            return None
+        dt = pd.to_datetime(df["datetime"], errors="coerce")
+        df = df[dt.notna() & (dt.dt.strftime("%H:%M:%S") <= "15:30:00")]
+        df = df.dropna(subset=["VWAP"])
+        if df.empty:
+            return None
+        vwap = float(df["VWAP"].iloc[-1])
+        return vwap if vwap > 0 else None
+    except Exception:
+        return None
+
+
+def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None, market_map=None, market_index_series=None, basic_info=None, close_vs_vwap=None):
 
     candidate = {
         "code": code,
@@ -1108,6 +1240,21 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # MA20/ATR14/추세 판정이 짧은 창에서 왜곡될 수 있다. price(당일 실거래가)만은 실시간
     # 인트라데이 집계인 daily_df를 그대로 쓰고, 그 외 이력 기반 지표는 _check_df를 쓴다.
     _check_df = daily_hist if daily_hist is not None else daily_df
+
+    # [2026-10-10] 서버 일봉에 대상일 행이 있으면 그 종가(공식 종가)를 현재가로 사용. 10s 마지막 행(KIS 분봉
+    # 15:30 종가)은 공식 종가와 다른 날이 있음(20261008 표본 121종목 중 16종목만 일치) - 일봉 지표(MA_20 등)도
+    # 이 종가로 계산돼 있어 같은 기준으로 비교해야 한다.
+    hist_is_current = False  # 서버 일봉의 마지막 행이 대상일(daily_df 마지막 날짜)인지
+    if daily_hist is not None and len(daily_hist) and len(daily_df):
+        try:
+            _hist_last = daily_hist.iloc[-1]
+            if pd.Timestamp(_hist_last["date"]).normalize() == pd.Timestamp(daily_df.index[-1]).normalize():
+                hist_is_current = True
+                _official = safe_float(_hist_last["close"])
+                if _official is not None and _official > 0:
+                    price = _official
+        except Exception:
+            pass
 
     # --- Stage 0: 데이터/상장일수/기본 유동성 - 값싸고 절대적인 기준이라 이 시점에
     # 즉시 skip 처리한다(하드필터 fail_reasons가 아니라 skip_reason). 이후 계산되는
@@ -1313,8 +1460,28 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "relative_strength": relative_strength,
     })
 
+    # [2026-10-10] 일봉 지표 스냅샷(g001 daily.csv, HTS 기본 기간) - 우상향 필수 조건과 지표 가점에 사용.
+    # 대상일 일봉이 없으면(이전 거래일까지만 있음) 당일 가격과 전일 지표가 섞이므로 지표를 쓰지 않는다
+    # -> 우상향을 확인할 수 없어 uptrend_unknown으로 탈락.
+    ind = _daily_indicator_snapshot(_check_df) if hist_is_current else None
+    candidate["ind"] = ind
+    candidate["close_vs_vwap"] = close_vs_vwap
+    if ind:
+        candidate.update({
+            "macd_hist": ind.get("MACD_HIST"), "di_spread": _sub(ind.get("DI_PLUS"), ind.get("DI_MINUS")),
+            "adx14": ind.get("ADX"), "rsi14": ind.get("RSI"), "stoch_k": ind.get("STOCH_K"),
+            "obv_up": ind.get("obv_up"), "ma20_slope5": ind.get("ma20_slope5"),
+        })
+
     # --- Hard filters (fail = disqualified) ---
     # [최적화] 절대적인 거부 조건만 하드 필터로 남깁니다.
+
+    # [2026-10-10] 우상향 필수 조건(사용자 결정 1-b) - 일봉 지표 5개를 모두 만족해야 한다(반전신호 예외 없음):
+    # 종가>MA20, MA20 상승(5거래일 전 대비), MA5>MA20, MACD>시그널, DI+>DI-. 지표를 계산할 이력이 없으면
+    # (서버 일봉 없음/MACD·MA20 미형성) 우상향을 확인할 수 없으므로 탈락시킨다.
+    gate_fails = _uptrend_gate_failures(price, ind)
+    candidate["uptrend_gate"] = not gate_fails
+    candidate["fail_reasons"].extend(gate_fails)
     if price < config.price_min:
         candidate["fail_reasons"].append("price_floor")
     if price > config.price_max:
@@ -1455,6 +1622,14 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # 타이브레이커 페널티(-0.7)에도 반영한다.
     if rsi is not None and rsi > 75.0:
         candidate["soft_flags"].append("rsi_overbought")
+    # [2026-10-10] 일봉 지표 과열 경고 - 볼린저 상단 돌파 마감, 스토캐스틱/윌리엄스 과매수.
+    if ind:
+        if ind.get("BB_UPPER") is not None and price > ind["BB_UPPER"]:
+            candidate["soft_flags"].append("above_bb_upper")
+        if (ind.get("STOCH_K") is not None and ind["STOCH_K"] >= 90.0) or (
+            ind.get("WILLIAMS_R") is not None and ind["WILLIAMS_R"] >= -10.0
+        ):
+            candidate["soft_flags"].append("stoch_overbought")
 
     # --- Soft flags (warning only, not disqualified) ---
     # (flat_trend은 위에서 하드 필터로 승격됨 - 여기서 중복 추가하지 않음)
@@ -1495,8 +1670,9 @@ def calculate_candidate_score_breakdown(candidate, config):
     (g008_selection_reason_report)가 실제 채점과 다른 계산을 하지 않도록 단일 출처로 유지.
     누적 순서는 기존 score +=/-= 순서 그대로라 반올림 결과도 기존과 비트 단위로 동일하다.
 
-    배점표 (2026-09-27 기준, 가점 만점 60점):
+    배점표 (2026-10-10 기준, 가점 만점 68점):
     거래대금18 + ATR16 + 거래량상대강도10 + RSI(40~60 최고)8
+    + 일봉 지표(ADX추세4 + 이평정배열3 + OBV3 + MACD가속2 + 스토캐스틱2) + 당일 종가>VWAP 2
     - 과열 페널티(MA20 이격 최대12 + 20일 상승률 최대8 + 전일 급등 최대6)
     - 기존 페널티(전일음봉/52주과열/전일급등락/최근반복선정/소프트플래그 개수).
 
@@ -1576,6 +1752,26 @@ def calculate_candidate_score_breakdown(candidate, config):
             _gain("rsi", max(0.0, 8.0 - (rsi - 60.0) * 0.4), 8.0)
     else:
         _gain("rsi", 4.0, 8.0)
+
+    # 5) [2026-10-10] 일봉 지표 가점(max 14, 사용자 요청 "각종 지표를 최대한 활용"). 우상향 필수 조건(종가>MA20,
+    # MA20 상승, MA5>MA20, MACD>시그널, DI+>DI-)을 통과한 종목 사이의 추세 질을 가른다. 과열은 아래 이격/과매수
+    # 페널티와 소프트플래그(above_bb_upper, stoch_overbought)가 따로 깎는다.
+    ind = candidate.get("ind") or {}
+    adx14 = ind.get("ADX")
+    if adx14 is not None:  # 추세 강도: ADX 20에서 0점 -> 40 이상 4점
+        _gain("adx_trend", max(0.0, min(4.0, (adx14 - 20.0) / 20.0 * 4.0)), 4.0)
+    if ind.get("MA_60") is not None and ind.get("MA_5") is not None and ind.get("MA_20") is not None:
+        _gain("ma_alignment", 3.0 if ind["MA_5"] > ind["MA_20"] > ind["MA_60"] else 0.0, 3.0)
+    if ind.get("obv_up") is not None:  # 거래량 동반 상승: OBV > OBV 20일 평균
+        _gain("obv_trend", 3.0 if ind["obv_up"] else 0.0, 3.0)
+    if ind.get("MACD_HIST") is not None and ind.get("macd_hist_prev") is not None:  # 모멘텀 가속
+        _gain("macd_momentum", 2.0 if ind["MACD_HIST"] > ind["macd_hist_prev"] else 0.0, 2.0)
+    if ind.get("STOCH_K") is not None and ind.get("STOCH_D") is not None:  # 과매수 전 상승 교차
+        _gain("stoch_bullish", 2.0 if (ind["STOCH_K"] > ind["STOCH_D"] and ind["STOCH_K"] < 80.0) else 0.0, 2.0)
+    # 6) [2026-10-10] 당일 마감 강도(max 2): 종가가 당일 VWAP(1분봉 누적) 위 - 매수세 우위로 마감.
+    close_vs_vwap = candidate.get("close_vs_vwap")
+    if close_vs_vwap is not None:
+        _gain("close_above_vwap", 2.0 if close_vs_vwap > 0 else 0.0, 2.0)
 
     # [2026-09-23 제거] 기존 9) 가격대 선호(max 2, 저가주에 소폭 가점)는 어떤 특정 스캔 사례로
     # 도입됐는지 changelog에 근거가 없고(다른 배점 항목은 전부 특정 사례/백테스트를 인용함),
@@ -1859,7 +2055,12 @@ def render_all_scan_markdown(all_rows):
         "trend_state", "ma_gap", "ma_full_alignment", "up_days_in_5", "high_52w_ratio", "low_52w_ratio", "sector", "market_cap", "listing_days", "prev_day_change", "repeat_recent_days",
         "soft_flags", "fail_reasons", "eligible", "skip_reason", "vol_trend_ratio", "adx", "rsi", "relative_strength",
         "prev_day_return", "close_ma20_ratio", "ret_20d",
+        # [2026-10-10] 일봉 지표(g001 daily.csv) 기반 우상향 필수조건/가점 근거
+        "uptrend_gate", "ma20_slope5", "macd_hist", "di_spread", "adx14", "rsi14", "stoch_k", "obv_up", "close_vs_vwap",
     ]
+
+    def _f(value, digits):
+        return f"{value:.{digits}f}" if value is not None else ""
 
     lines = [
         "| " + " | ".join(headers) + " |",
@@ -1901,6 +2102,11 @@ def render_all_scan_markdown(all_rows):
             f"{row.get('prev_day_return'):.4f}" if row.get("prev_day_return") is not None else "",
             f"{row.get('close_ma20_ratio'):.4f}" if row.get("close_ma20_ratio") is not None else "",
             f"{row.get('ret_20d'):.4f}" if row.get("ret_20d") is not None else "",
+            ("Y" if row.get("uptrend_gate") else "N") if row.get("uptrend_gate") is not None else "",
+            _f(row.get("ma20_slope5"), 4), _f(row.get("macd_hist"), 2), _f(row.get("di_spread"), 1),
+            _f(row.get("adx14"), 1), _f(row.get("rsi14"), 1), _f(row.get("stoch_k"), 1),
+            ("Y" if row.get("obv_up") else "N") if row.get("obv_up") is not None else "",
+            _f(row.get("close_vs_vwap"), 4),
         ]
         sanitized = [str(value).replace("|", "\\|") for value in values]
         lines.append("| " + " | ".join(sanitized) + " |")
@@ -2484,6 +2690,13 @@ def scan(
             market_map=market_map, market_index_series=market_index_series,
             basic_info=basic_info_map.get(code),
         )
+        # 당일 종가/VWAP(마감 강도 가점)는 10s 파일을 다시 읽어야 해서 우상향 필수조건을 통과한 종목만 읽는다
+        # (전 종목을 읽으면 Raspberry Pi에서 스캔이 약 9분 늘어남). 점수는 아래 시장상대 유동성 필터 뒤
+        # 전 종목 재채점 때 이 값까지 반영된다.
+        if candidate.get("uptrend_gate") and candidate.get("skip_reason") is None:
+            _vwap = _load_last_vwap(data_root, target_date_str, code)
+            if _vwap and candidate.get("price"):
+                candidate["close_vs_vwap"] = candidate["price"] / _vwap - 1.0  # 공식 종가 기준
         if recent_repeat_days > 0:
             candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
         candidates.append(candidate)
@@ -2517,6 +2730,12 @@ def scan(
                 reasons = candidate["fail_reasons"] or [candidate["skip_reason"] or "unknown"]
                 print(f"[{idx:04d}/{total}] {dots} {_symbol_log_label(code, name)} | {', '.join(reasons)}          ")
 
+    # [2026-10-10] 우상향 필수조건은 MA20 5일 기울기 때문에 서버 일봉 25행 이상이 필요하다. g001 이전 버전의
+    # 20행 daily.csv(2026-10-10 이전 수집분)는 전부 uptrend_unknown으로 탈락하므로, 많으면 재수집을 안내한다.
+    _unknown = sum(1 for row in candidates if "uptrend_unknown" in row.get("fail_reasons", []))
+    if candidates and _unknown > 0.1 * len(candidates):
+        print(f"[WARN] 우상향 판정 불가(uptrend_unknown) {_unknown}/{len(candidates)}종목 - 서버 일봉이 25행 미만이거나 "
+              f"대상일 행이 없음. 최신 g001로 해당 날짜를 다시 실행하면 이어받기 중 일봉 파일만 100행+지표로 재수집됩니다.")
     liquidity_filter_info = apply_market_relative_liquidity_filters(candidates, market_map)
 
     for row in candidates:

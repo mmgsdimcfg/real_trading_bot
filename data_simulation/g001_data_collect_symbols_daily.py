@@ -45,6 +45,12 @@ Update log format (append only):
 
 Update log:
 - [2026-10-10] type=feat owner=claude
+    summary: 이어받기 중 일봉 파일이 이전 형식(지표 열 없음, 20행)이면 일봉만 다시 받음(_daily_csv_outdated, 종목당
+      1회 호출). g002 우상향 필수조건이 MA20 5일 기울기 때문에 일봉 25행+지표를 요구해, 이전 수집분은 모두
+      uptrend_unknown으로 탈락하던 것을 차트 재다운로드 없이 해결.
+    impact: collector
+    compatibility: backward-compatible
+- [2026-10-10] type=feat owner=claude
     summary: 사용자 요청 "지표를 취득해 g002 종목 선정에 사용".
       (1) {code}_daily.csv(100일)에 일봉 지표 추가 - MA_5/VOL_MA20/BB/RSI(14)/STOCH(14,3)/WILLIAMS(14)/MACD(12,26,9)/
       DI·ADX(14)/OBV(+MA20) + MA_20/MA_60 (HTS 기본 기간, DAILY_INDICATOR_PARAMS; VWAP은 일봉에서 무의미해 제외).
@@ -459,6 +465,17 @@ def _record_w52_point_in_time(rec: dict, target_date: str) -> bool:
     except (TypeError, ValueError, OSError):
         return False
     return fetched == target_date
+
+
+def _daily_csv_outdated(output_dir: Path, code: str, name: str) -> bool:
+    """True when {code}_{name}_daily.csv exists but predates the daily-indicator format (no MA_20 column)."""
+    safe_name = str(name).replace("/", "_").replace("\\", "_")
+    path = output_dir / f"{code}_{safe_name}_daily.csv"
+    try:
+        with open(path, encoding="utf-8-sig") as _f:
+            return "MA_20" not in _f.readline().strip().split(",")
+    except OSError:
+        return False
 
 
 def _quote_record_fields(code: str, env_dv: str, target_date: str) -> dict:
@@ -1814,6 +1831,13 @@ def main() -> None:
                         _append_resume_progress(output_dir, rec)
                     else:
                         rec = None  # cannot rebuild (no raw_bar) - fall through to a full refetch
+                if rec and rec["status"] == "saved" and _daily_csv_outdated(output_dir, code, name):
+                    # 2026-10-10 이전 수집분(20행, 지표 없음): g002 우상향 판정에 25행+지표가 필요해 일봉만 다시 받는다.
+                    if fetch_and_save_daily_ohlcv(code=code, name=name, env_dv=args.env,
+                                                  target_date=target_date, output_dir=output_dir):
+                        logger.info("[%d/%d] %s(%s) | resume: daily csv refreshed (100 rows + indicators)", idx, len(symbols), code, name)
+                    if args.sleep > 0:
+                        time.sleep(args.sleep)
                 if rec and args.flows and rec["status"] == "saved":
                     # Collected without --flows, or some sources came back empty: fetch only the missing sources
                     # (charts are not re-downloaded). Records before per-source tracking: flows=True -> complete.

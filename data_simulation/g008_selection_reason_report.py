@@ -64,6 +64,8 @@ def _soft_flag_label(flag: str, row: dict) -> str:
         "prev_day_gap_risk": "전일 급등락 갭 리스크",
         "amount_below_market_avg": "거래대금 시장 평균 미달",
         "volume_below_market_price_adjusted_avg": "거래량 시장 평균 미달",
+        "above_bb_upper": "볼린저 상단 위 마감(단기 과열)",
+        "stoch_overbought": "스토캐스틱/윌리엄스 과매수",
     }
     return labels.get(flag, flag)
 
@@ -168,6 +170,15 @@ def _render_stock(rank: int, row: dict, feat: dict, config) -> str:
         good.append(f"**RSI {rsi:.1f}** → 8/8점 (과열 전 최적 구간 40~60)")
     elif rsi is not None:
         good.append(f"RSI {rsi:.1f} → {g_rsi:.1f}/8점")
+    # [2026-10-10] g002 일봉 지표 기반 우상향 필수조건 + 지표 가점
+    if row.get("uptrend_gate"):
+        good.insert(0, "**일봉 우상향 필수조건 통과**: 종가>20일선, 20일선 상승, 5일선>20일선, MACD>시그널, DI+>DI-")
+    _ind_items = [("adx_trend", "ADX 추세강도", 4), ("ma_alignment", "이평 정배열(5>20>60)", 3), ("obv_trend", "OBV 상승", 3),
+                  ("macd_momentum", "MACD 히스토그램 증가", 2), ("stoch_bullish", "스토캐스틱 상승 교차", 2),
+                  ("close_above_vwap", "종가가 당일 VWAP 위", 2)]
+    _ind_got = [f"{label} {gains[k]['value']:.1f}/{mx}" for k, label, mx in _ind_items if k in gains and gains[k]["value"] > 0]
+    if _ind_got:
+        good.append("지표 가점: " + ", ".join(_ind_got))
     if 0 <= cm <= 0.08 and rt <= 0.25:
         good.append(f"20일선 위 {_pct(cm)}, 20일 수익률 {_pct(rt)}: 너무 오르지 않아 **과열 감점 없음**")
     elif -0.08 <= cm < 0:
