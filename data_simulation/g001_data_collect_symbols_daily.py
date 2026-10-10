@@ -7,12 +7,15 @@ Purpose:
 - Build normalized intraday outputs and indicator columns used by live/sim flows.
 
 Output schema (_10s.txt):
-- datetime, open, high, low, close, volume, market, amount, raw_bar
-  (amount = per-minute traded value on raw_bar==1 rows only; raw_bar 1 = KIS minute bar, 0 = interpolated)
-- R76 indicator columns (MA_5, VOL_MA20, BB_*, RSI*, STOCH*, WILLIAMS*, MACD*, DI/ADX, VWAP, OBV*) only with
-  --save-10s-indicators (placed before amount/raw_bar)
-Per date folder also: {code}_{name}_daily.csv, _prev_close.json, _daily_close.json, _52w_high_low.json,
-  _quote_snapshot.json, _market_index.json, nxt_flags.json, _{date}_picks.txt, _g001_progress.jsonl
+- datetime, open, high, low, close, volume, market, <R76 indicators>, amount, raw_bar
+  (raw_bar 1 = KIS minute bar, 0 = interpolated; amount = that minute's traded value on raw_bar==1 rows only;
+   volume = minute volume / 6 per 10s row)
+- R76 indicators (MA_5, VOL_MA20, BB_*, RSI*, STOCH*, WILLIAMS*, MACD*, DI/ADX, VWAP, OBV*) are computed on the
+  real 1m bars and carried on each 10s row as of the last completed minute (--no-10s-indicators omits them)
+{code}_{name}_daily.csv: date, open, high, low, close, volume, amount + the same indicators on daily bars
+  (HTS-standard periods, no VWAP) + MA_20, MA_60 - used by g002 for stock selection.
+Per date folder also: _prev_close.json, _daily_close.json, _52w_high_low.json, _quote_snapshot.json,
+  _market_index.json, nxt_flags.json, _{date}_collected.txt, _g001_progress.jsonl ({code}_{name}_flows.csv with --flows)
 
 Key behavior:
 - Collects by date from KIS minute API (`inquire_time_dailychartprice`).
@@ -41,6 +44,21 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=feat owner=claude
+    summary: 사용자 요청 "지표를 취득해 g002 종목 선정에 사용".
+      (1) {code}_daily.csv(100일)에 일봉 지표 추가 - MA_5/VOL_MA20/BB/RSI(14)/STOCH(14,3)/WILLIAMS(14)/MACD(12,26,9)/
+      DI·ADX(14)/OBV(+MA20) + MA_20/MA_60 (HTS 기본 기간, DAILY_INDICATOR_PARAMS; VWAP은 일봉에서 무의미해 제외).
+      (2) 10s 파일 지표 열을 다시 기본 포함하되 실제 1분봉으로 계산(add_minute_indicators_to_10s) - 각 10초 행에는 그
+      시각까지 완성된 1분봉의 값(미래 정보 없음). 기존(오늘 이전)은 보간 10초 격자 위에서 계산(RSI14=140초)했었음.
+      --save-10s-indicators -> --no-10s-indicators(생략 옵션)로 교체. 지표 없이 저장된 오늘 파일은 이어받기 때
+      raw_bar 행으로 1분봉을 복원해 재다운로드 없이 지표를 채움.
+      (3) 수집 목록 파일 _{date}_picks.txt -> _{date}_collected.txt. g002 선정 결과와 같은 파일명이라 g001 재실행 시
+      g002 선정 50종목이 전체 수집 목록(~2,400)으로 덮였음(20261007 실제 발생) - g002 반복선정 감점과 g003 대상
+      종목이 오염됨.
+      calculate_r76_indicators에 params 인자 추가(기본값은 기존 r001 값 그대로).
+    impact: collector/scanner
+    compatibility: 10s/daily.csv 열 추가(이름 기반 리더만 존재). _{date}_picks.txt를 g001 수집 목록으로 읽던 곳 없음
+      (g003/g005/g002는 g002 결과로 읽음).
 - [2026-10-10] type=feat owner=claude
     summary: P1 보류분 + P2.
       (1) 일봉 저장 20 -> 100행(fetch_and_save_daily_ohlcv lookback_days). API 1회 최대 100행(최신순)이라 호출 수 불변.
@@ -333,9 +351,9 @@ def parse_args() -> argparse.Namespace:
         help="Also save {code}_{name}_flows.csv (investor/program/short-sale/credit daily series, +4 API calls per symbol)",
     )
     parser.add_argument(
-        "--save-10s-indicators",
+        "--no-10s-indicators",
         action="store_true",
-        help="Keep the R76 indicator columns in _10s files (not read by g003/g009; g003 recomputes them on 1m/3m bars)",
+        help="Omit the R76 indicator columns (computed on real 1m bars) from _10s files",
     )
     parser.add_argument(
         "--no-resume",
@@ -399,7 +417,8 @@ def _resume_record_valid(
     if rec.get("status") not in ("saved", "empty"):
         return False
     # Records before 2026-10-10 have no "ind10s" key; their 10s files always carried the indicators.
-    if save_ind and not rec.get("ind10s", True):
+    # A saved record without indicators is upgraded in place by the resume branch in main (no refetch).
+    if save_ind and not rec.get("ind10s", True) and rec.get("status") != "saved":
         return False
     if bool(rec.get("include_nxt")) != include_nxt:
         return False
@@ -472,7 +491,9 @@ def _adopt_existing_symbol_files(
     except OSError:
         return None
     if save_ind and not has_ind:
-        return None  # indicators requested but missing - regenerate
+        if not _upgrade_10s_indicators(paths[0]):
+            return None  # no raw_bar to rebuild from - refetch
+        has_ind = True
 
     try:
         nxt = probe_nxt_tradeable(code) if include_nxt else False
@@ -705,43 +726,69 @@ def fetch_symbol_data(code: str, target_date: str, include_nxt: bool) -> pd.Data
     return merged
 
 
-def calculate_r76_indicators(df: pd.DataFrame) -> pd.DataFrame:
+# Indicator periods: intraday defaults come from r001 (tuned for 3m bars, shared with live/sim);
+# daily bars use the common HTS defaults (MACD 12/26/9, ADX/DMI 14, Stoch 14/3, Williams %R 14).
+INTRADAY_INDICATOR_PARAMS = {
+    "MA_PERIOD": MA_PERIOD, "VOLUME_MA_PERIOD": VOLUME_MA_PERIOD, "BB_PERIOD": BB_PERIOD,
+    "BB_STD_MULTIPLIER": BB_STD_MULTIPLIER, "RSI_PERIOD": RSI_PERIOD, "RSI_SIGNAL_PERIOD": RSI_SIGNAL_PERIOD,
+    "STOCH_K_PERIOD": STOCH_K_PERIOD, "STOCH_D_PERIOD": STOCH_D_PERIOD, "WILLIAMS_R_PERIOD": WILLIAMS_R_PERIOD,
+    "WILLIAMS_D_PERIOD": WILLIAMS_D_PERIOD, "MACD_FAST": MACD_FAST, "MACD_SLOW": MACD_SLOW,
+    "MACD_SIGNAL_PERIOD": MACD_SIGNAL_PERIOD, "ADX_PERIOD": ADX_PERIOD, "OBV_MA_PERIOD": OBV_MA_PERIOD,
+}
+DAILY_INDICATOR_PARAMS = {
+    "MA_PERIOD": 5, "VOLUME_MA_PERIOD": 20, "BB_PERIOD": 20, "BB_STD_MULTIPLIER": 2.0, "RSI_PERIOD": 14,
+    "RSI_SIGNAL_PERIOD": 6, "STOCH_K_PERIOD": 14, "STOCH_D_PERIOD": 3, "WILLIAMS_R_PERIOD": 14,
+    "WILLIAMS_D_PERIOD": 9, "MACD_FAST": 12, "MACD_SLOW": 26, "MACD_SIGNAL_PERIOD": 9, "ADX_PERIOD": 14,
+    "OBV_MA_PERIOD": 20,
+}
+R76_INDICATOR_COLUMNS = [
+    "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
+    "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
+    "MACD", "MACD_SIGNAL", "MACD_HIST", "DI_PLUS", "DI_MINUS", "ADX",
+    "VWAP", "OBV", "OBV_MA",
+]
+
+
+def calculate_r76_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
+    """R76 indicator columns. params overrides INTRADAY_INDICATOR_PARAMS (r001, tuned for 3m bars);
+    daily bars use DAILY_INDICATOR_PARAMS (HTS-standard periods)."""
+    p = {**INTRADAY_INDICATOR_PARAMS, **(params or {})}
     out = df.copy()
     for col in ("open", "high", "low", "close", "volume"):
         out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
 
-    out["MA_5"] = out["close"].rolling(window=MA_PERIOD, min_periods=1).mean()
-    out["VOL_MA20"] = out["volume"].rolling(window=VOLUME_MA_PERIOD, min_periods=1).mean()
+    out["MA_5"] = out["close"].rolling(window=p["MA_PERIOD"], min_periods=1).mean()
+    out["VOL_MA20"] = out["volume"].rolling(window=p["VOLUME_MA_PERIOD"], min_periods=1).mean()
 
-    out["BB_MIDDLE"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).mean()
-    out["BB_STD"] = out["close"].rolling(window=BB_PERIOD, min_periods=1).std()
-    out["BB_UPPER"] = out["BB_MIDDLE"] + out["BB_STD"] * BB_STD_MULTIPLIER
-    out["BB_LOWER"] = out["BB_MIDDLE"] - out["BB_STD"] * BB_STD_MULTIPLIER
+    out["BB_MIDDLE"] = out["close"].rolling(window=p["BB_PERIOD"], min_periods=1).mean()
+    out["BB_STD"] = out["close"].rolling(window=p["BB_PERIOD"], min_periods=1).std()
+    out["BB_UPPER"] = out["BB_MIDDLE"] + out["BB_STD"] * p["BB_STD_MULTIPLIER"]
+    out["BB_LOWER"] = out["BB_MIDDLE"] - out["BB_STD"] * p["BB_STD_MULTIPLIER"]
 
     delta = out["close"].diff()
-    avg_gain = delta.clip(lower=0).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
-    avg_loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / RSI_PERIOD, min_periods=1, adjust=False).mean()
+    avg_gain = delta.clip(lower=0).ewm(alpha=1.0 / p["RSI_PERIOD"], min_periods=1, adjust=False).mean()
+    avg_loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / p["RSI_PERIOD"], min_periods=1, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, float("nan"))
     out["RSI"] = 100 - (100 / (1 + rs))
     out.loc[avg_loss == 0, "RSI"] = 100.0
-    out["RSI_SIGNAL"] = out["RSI"].rolling(window=RSI_SIGNAL_PERIOD, min_periods=1).mean()
+    out["RSI_SIGNAL"] = out["RSI"].rolling(window=p["RSI_SIGNAL_PERIOD"], min_periods=1).mean()
 
-    low_n = out["low"].rolling(window=STOCH_K_PERIOD, min_periods=1).min()
-    high_n = out["high"].rolling(window=STOCH_K_PERIOD, min_periods=1).max()
+    low_n = out["low"].rolling(window=p["STOCH_K_PERIOD"], min_periods=1).min()
+    high_n = out["high"].rolling(window=p["STOCH_K_PERIOD"], min_periods=1).max()
     denom = (high_n - low_n).replace(0, float("nan"))
     out["STOCH_K"] = 100.0 * (out["close"] - low_n) / denom
-    out["STOCH_D"] = out["STOCH_K"].rolling(window=STOCH_D_PERIOD, min_periods=1).mean()
+    out["STOCH_D"] = out["STOCH_K"].rolling(window=p["STOCH_D_PERIOD"], min_periods=1).mean()
 
-    high_w = out["high"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).max()
-    low_w = out["low"].rolling(window=WILLIAMS_R_PERIOD, min_periods=1).min()
+    high_w = out["high"].rolling(window=p["WILLIAMS_R_PERIOD"], min_periods=1).max()
+    low_w = out["low"].rolling(window=p["WILLIAMS_R_PERIOD"], min_periods=1).min()
     wr_denom = (high_w - low_w).replace(0, float("nan"))
     out["WILLIAMS_R"] = -100.0 * (high_w - out["close"]) / wr_denom
-    out["WILLIAMS_D"] = out["WILLIAMS_R"].rolling(window=WILLIAMS_D_PERIOD, min_periods=1).mean()
+    out["WILLIAMS_D"] = out["WILLIAMS_R"].rolling(window=p["WILLIAMS_D_PERIOD"], min_periods=1).mean()
 
-    ema_fast = out["close"].ewm(span=MACD_FAST, adjust=False).mean()
-    ema_slow = out["close"].ewm(span=MACD_SLOW, adjust=False).mean()
+    ema_fast = out["close"].ewm(span=p["MACD_FAST"], adjust=False).mean()
+    ema_slow = out["close"].ewm(span=p["MACD_SLOW"], adjust=False).mean()
     out["MACD"] = ema_fast - ema_slow
-    out["MACD_SIGNAL"] = out["MACD"].ewm(span=MACD_SIGNAL_PERIOD, adjust=False).mean()
+    out["MACD_SIGNAL"] = out["MACD"].ewm(span=p["MACD_SIGNAL_PERIOD"], adjust=False).mean()
     out["MACD_HIST"] = out["MACD"] - out["MACD_SIGNAL"]
 
     tr = pd.concat(
@@ -756,14 +803,14 @@ def calculate_r76_indicators(df: pd.DataFrame) -> pd.DataFrame:
     low_diff = out["low"].shift(1) - out["low"]
     plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
     minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
-    ema_tr = tr.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    ema_plus = plus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
-    ema_minus = minus_dm.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
+    ema_tr = tr.ewm(alpha=1.0 / p["ADX_PERIOD"], min_periods=1, adjust=False).mean()
+    ema_plus = plus_dm.ewm(alpha=1.0 / p["ADX_PERIOD"], min_periods=1, adjust=False).mean()
+    ema_minus = minus_dm.ewm(alpha=1.0 / p["ADX_PERIOD"], min_periods=1, adjust=False).mean()
     out["DI_PLUS"] = 100.0 * ema_plus / ema_tr.replace(0, float("nan"))
     out["DI_MINUS"] = 100.0 * ema_minus / ema_tr.replace(0, float("nan"))
     di_sum = (out["DI_PLUS"] + out["DI_MINUS"]).replace(0, float("nan"))
     dx = 100.0 * (out["DI_PLUS"] - out["DI_MINUS"]).abs() / di_sum
-    out["ADX"] = dx.ewm(alpha=1.0 / ADX_PERIOD, min_periods=1, adjust=False).mean()
+    out["ADX"] = dx.ewm(alpha=1.0 / p["ADX_PERIOD"], min_periods=1, adjust=False).mean()
 
     cum_vol = out["volume"].cumsum()
     out["VWAP"] = (out["close"] * out["volume"]).cumsum() / cum_vol.replace(0, float("nan"))
@@ -771,9 +818,61 @@ def calculate_r76_indicators(df: pd.DataFrame) -> pd.DataFrame:
     close_diff = out["close"].diff()
     obv_vol = out["volume"] * close_diff.gt(0).astype(float) - out["volume"] * close_diff.lt(0).astype(float)
     out["OBV"] = obv_vol.cumsum()
-    out["OBV_MA"] = out["OBV"].rolling(window=OBV_MA_PERIOD, min_periods=1).mean()
+    out["OBV_MA"] = out["OBV"].rolling(window=p["OBV_MA_PERIOD"], min_periods=1).mean()
 
     return out
+
+
+def add_minute_indicators_to_10s(df_10s: pd.DataFrame, minute_df: pd.DataFrame) -> pd.DataFrame:
+    """R76 indicators computed on the real 1m bars, attached to each 10s row as of the last minute bar
+    completed at that time (bar labelled hh:mm completes at hh:mm+1), so a row never sees its own
+    minute's future close. Columns are placed right after "market" (before amount/raw_bar).
+
+    [2026-10-10] Before 2026-10-10 the same columns were computed on the interpolated 10s grid itself
+    (RSI(14) = 140 seconds of synthetic rows); g003 never read them and recomputes on 1m/3m bars.
+    """
+    m = minute_df[["datetime", "open", "high", "low", "close", "volume"]].copy()
+    m["datetime"] = pd.to_datetime(m["datetime"])
+    m = m.dropna(subset=["datetime"]).sort_values("datetime")
+    ind = calculate_r76_indicators(m)
+    ind["datetime"] = ind["datetime"] + pd.Timedelta(minutes=1)
+    base = df_10s.drop(columns=[c for c in R76_INDICATOR_COLUMNS if c in df_10s.columns]).sort_values("datetime")
+    base["datetime"] = pd.to_datetime(base["datetime"])
+    merged = pd.merge_asof(base, ind[["datetime", *R76_INDICATOR_COLUMNS]], on="datetime", direction="backward")
+    lead = [c for c in base.columns if c not in ("amount", "raw_bar")]
+    tail = [c for c in ("amount", "raw_bar") if c in base.columns]
+    return merged[lead + R76_INDICATOR_COLUMNS + tail]
+
+
+def _minutes_from_10s_file(path: Path) -> pd.DataFrame | None:
+    """Rebuild the raw 1m bars of a 10s file from its raw_bar rows (volume re-multiplied by the
+    expansion interpolate_to_10sec divided by). None if the file has no raw_bar column."""
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    if "raw_bar" not in df.columns:
+        return None
+    m = df[pd.to_numeric(df["raw_bar"], errors="coerce") == 1].copy()
+    if m.empty:
+        return None
+    m["datetime"] = pd.to_datetime(m["datetime"])
+    gaps = m["datetime"].diff().dropna().dt.total_seconds()
+    expansion = max(1.0, round(float(gaps.median()) / 10.0)) if not gaps.empty and gaps.median() > 0 else 6.0
+    m["volume"] = pd.to_numeric(m["volume"], errors="coerce") * expansion
+    return m
+
+
+def _upgrade_10s_indicators(path: Path) -> bool:
+    """Add 1m-based indicator columns to an existing 10s file without re-downloading (needs raw_bar)."""
+    try:
+        minutes = _minutes_from_10s_file(path)
+        if minutes is None:
+            return False
+        df = pd.read_csv(path, encoding="utf-8-sig")
+        out = add_minute_indicators_to_10s(df, minutes)
+        out.to_csv(path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+        return True
+    except Exception as exc:
+        logger.warning("10s indicator upgrade failed for %s: %s", path.name, exc)
+        return False
 
 
 def interpolate_to_20sec(minute_df: pd.DataFrame) -> pd.DataFrame:
@@ -1020,6 +1119,15 @@ def fetch_and_save_daily_ohlcv(
     df2 = df2.dropna(subset=["close"]).sort_values("date").tail(lookback_days)
     if df2.empty:
         return False
+
+    # [2026-10-10] 일봉 지표(HTS 기본 기간) - g002 종목 선정용. VWAP은 누적 시작점이 임의라 일봉에서는 제외.
+    # MA_20/MA_60은 기간이 다 찬 행부터만 값(그 전은 공란).
+    if {"open", "high", "low", "volume"}.issubset(df2.columns):
+        df2 = calculate_r76_indicators(df2.reset_index(drop=True), DAILY_INDICATOR_PARAMS).drop(columns=["VWAP"])
+        df2["MA_20"] = df2["close"].rolling(20, min_periods=20).mean()
+        df2["MA_60"] = df2["close"].rolling(60, min_periods=60).mean()
+        _ind_cols = [c for c in df2.columns if c not in ("date", "open", "high", "low", "close", "volume", "amount")]
+        df2[_ind_cols] = df2[_ind_cols].round(4)
 
     safe_name = str(name).replace("/", "_").replace("\\", "_")
     out_path = output_dir / f"{code}_{safe_name}_daily.csv"
@@ -1580,6 +1688,7 @@ def resolve_target_date(date_arg: str | None, symbols: list[tuple[str, str]]) ->
 
 def main() -> None:
     args = parse_args()
+    args.save_10s_indicators = not args.no_10s_indicators
     _install_kis_http_session()
 
     include_nxt = args.nxt
@@ -1699,6 +1808,12 @@ def main() -> None:
                             logger.info("[%d/%d] %s(%s) | resume: existing files adopted", idx, len(symbols), code, name)
                             if args.sleep > 0:
                                 time.sleep(args.sleep)
+                if rec and args.save_10s_indicators and rec["status"] == "saved" and not rec.get("ind10s", True):
+                    if _upgrade_10s_indicators(paths[0]):
+                        rec = {**rec, "ind10s": True}
+                        _append_resume_progress(output_dir, rec)
+                    else:
+                        rec = None  # cannot rebuild (no raw_bar) - fall through to a full refetch
                 if rec and args.flows and rec["status"] == "saved":
                     # Collected without --flows, or some sources came back empty: fetch only the missing sources
                     # (charts are not re-downloaded). Records before per-source tracking: flows=True -> complete.
@@ -1771,10 +1886,9 @@ def main() -> None:
             else:
                 df_10s = interpolate_to_10sec(df)
 
-                # [2026-10-10] 지표 열은 기본 생략(--save-10s-indicators로 유지) - g003은 1분/3분봉으로 묶은 뒤
-                # r002 calculate_indicators로 다시 계산하고 g009는 종가만 읽어, 파일 용량의 대부분이 미사용이었음.
+                # [2026-10-10] 지표 열은 실제 1분봉으로 계산해 붙인다(기본 포함, --no-10s-indicators로 생략).
                 if args.save_10s_indicators:
-                    df_10s = calculate_r76_indicators(df_10s)
+                    df_10s = add_minute_indicators_to_10s(df_10s, df)
                 # amount = 해당 분 거래대금(원), raw_bar==1 행에만 값(보간 행은 공란).
                 # raw_bar: 1 = KIS 원본 1분봉 행, 0 = 보간 합성 행. 무체결 분/단일가 구간의 :00 행도 합성이라
                 # g003/g009가 :00 행만으로 원본 분봉을 복원하면 가짜 봉이 섞이던 문제 방지용. 두 열 모두 맨 뒤.
@@ -1940,16 +2054,18 @@ def main() -> None:
                 len(prev_close_map), pc_official, len(prev_close_map) - pc_official, prev_trading_day, prev_close_path,
             )
 
-        # Save date-scoped picks file for r007 simulation input.
+        # Save the list of symbols collected for this date (_{date}_collected.txt).
         if saved_symbols:
             picks_lines = [f"{code},{name}" for code, name in saved_symbols]
             picks_payload = "\n".join(picks_lines) + "\n"
 
-            underscored_dated_picks = output_dir / f"_{target_date}_picks.txt"
+            # [2026-10-10] _{date}_picks.txt는 g002 선정 결과 파일명과 같아, g001을 다시 돌리면 g002 선정 50종목이
+            # 수집 전체 목록으로 덮였다(g002 반복선정 감점/g003 대상 종목 오염). 수집 목록은 별도 이름으로 저장.
+            underscored_dated_picks = output_dir / f"_{target_date}_collected.txt"
 
             underscored_dated_picks.write_text(picks_payload, encoding="utf-8-sig")
             logger.info(
-                "saved picks file (%d codes): %s",
+                "saved collected list (%d codes): %s",
                 len(saved_symbols),
                 underscored_dated_picks,
             )
