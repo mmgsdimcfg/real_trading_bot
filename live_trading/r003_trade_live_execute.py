@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=feat owner=claude
+    summary: record_live_quote - fetch_live_price가 10초마다 이미 받는 inquire_price 응답을 data/live_runtime/
+      quote_ticks_YYYYMMDD.csv에 기록(현재가/누적거래량·대금/시고저/VWAP/등락률/VI·시장경고·임시정지·단기과열).
+      추가 API 호출 없음, 실패 무시. 백테스트 10s 파일(1분봉 보간)의 실제 10초 경로 대체/검증 자료 축적용.
+    impact: live (기록만, 매매 판단 불변)
+    compatibility: backward-compatible (롤백: r001 ENABLE_LIVE_QUOTE_LOG=False)
 - [2026-10-05] type=feat owner=claude
     summary: 사용자 요청(Codex 2차 검토 권고 "게이트 판정 기록") - record_gate_decision(): r005 _019 추격차단 판정과
       점심/진입창 관찰(shadow) 판정을 data/live_runtime/gate_decisions_YYYYMMDD.jsonl에 기록(종목/종류/결과별 1분 1건).
@@ -663,6 +669,7 @@ import atexit
 import collections
 import json
 import os
+import queue
 import signal
 import logging
 import re
@@ -692,6 +699,7 @@ from r001_define_config import (
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
     ENABLE_GATE_DECISION_LOG,
+    ENABLE_LIVE_QUOTE_LOG,
     LIVE_PRICE_BB_BUFFER_PCT,
     LIVE_PRICE_CROSS_CONFIRM_POLLS,
     LIVE_PRICE_CROSS_CONFIRM_SECONDS,
@@ -1901,9 +1909,78 @@ def fetch_live_price(code: str, now: datetime, nxt_tradeable: bool) -> float | N
             except (TypeError, ValueError):
                 continue
             if value > 0:
+                if ENABLE_LIVE_QUOTE_LOG:
+                    record_live_quote(code, market_div, row)
                 return value
 
     return None
+
+
+# [2026-10-10] r001 ENABLE_LIVE_QUOTE_LOG - fetch_live_price가 받은 inquire_price 응답 기록(추가 호출 없음).
+LIVE_QUOTE_FIELDS = (
+    "stck_prpr", "acml_vol", "acml_tr_pbmn", "stck_oprc", "stck_hgpr", "stck_lwpr", "wghn_avrg_stck_prc",
+    "prdy_ctrt", "vi_cls_code", "mrkt_warn_cls_code", "temp_stop_yn", "short_over_yn", "iscd_stat_cls_code",
+)
+
+
+_LIVE_QUOTE_QUEUE: "queue.Queue[str]" = queue.Queue(maxsize=5000)
+_LIVE_QUOTE_WRITER: threading.Thread | None = None
+_LIVE_QUOTE_DROPPED = 0
+
+
+def _live_quote_writer_loop() -> None:
+    """Background writer: the trading loop only enqueues lines, so slow storage cannot delay it."""
+    fh = None
+    cur_day = None
+    while True:
+        line = _LIVE_QUOTE_QUEUE.get()
+        try:
+            day = line[:10].replace("-", "")
+            if day != cur_day:
+                if fh is not None:
+                    fh.close()
+                path = LIVE_RUNTIME_DIR / f"quote_ticks_{day}.csv"
+                new_file = not path.exists()
+                fh = path.open("a", encoding="utf-8")
+                if new_file:
+                    fh.write("ts,code,market," + ",".join(LIVE_QUOTE_FIELDS) + "\n")
+                cur_day = day
+            fh.write(line)
+            if _LIVE_QUOTE_QUEUE.empty():
+                fh.flush()
+        except Exception as exc:
+            log(f"  [QUOTE LOG   ] write failed: {exc}")
+            fh, cur_day = None, None
+
+
+def _drain_live_quotes(timeout: float = 3.0) -> None:
+    """At exit, give the writer thread a moment to flush queued lines (daemon threads die with the process)."""
+    deadline = time.time() + timeout
+    while not _LIVE_QUOTE_QUEUE.empty() and time.time() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.1)  # let the last line's write+flush finish
+
+
+atexit.register(_drain_live_quotes)
+
+
+def record_live_quote(code: str, market_div: str, row) -> None:
+    """현재가 응답 1건을 data/live_runtime/quote_ticks_YYYYMMDD.csv용 큐에 넣는다(쓰기는 백그라운드 스레드).
+    큐가 가득 차면 버리고, 어떤 실패도 매매 루프로 전파하지 않는다."""
+    global _LIVE_QUOTE_WRITER, _LIVE_QUOTE_DROPPED
+    try:
+        if _LIVE_QUOTE_WRITER is None or not _LIVE_QUOTE_WRITER.is_alive():
+            _LIVE_QUOTE_WRITER = threading.Thread(target=_live_quote_writer_loop, name="live-quote-log", daemon=True)
+            _LIVE_QUOTE_WRITER.start()
+        values = [str(row.get(k, "") if row.get(k, "") is not None else "").strip().replace(",", "") for k in LIVE_QUOTE_FIELDS]
+        line = f"{datetime.now().isoformat(timespec='seconds')},{str(code).zfill(6)},{market_div}," + ",".join(values) + "\n"
+        _LIVE_QUOTE_QUEUE.put_nowait(line)
+    except queue.Full:
+        _LIVE_QUOTE_DROPPED += 1
+        if _LIVE_QUOTE_DROPPED % 1000 == 1:
+            log(f"  [QUOTE LOG   ] queue full - dropped {_LIVE_QUOTE_DROPPED} lines")
+    except Exception as exc:
+        log(f"  [QUOTE LOG   ] record failed: {exc}")
 
 
 def fetch_prev_close(code: str, now: datetime, nxt_tradeable: bool) -> float | None:

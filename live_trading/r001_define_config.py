@@ -1,6 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-10] type=feat owner=claude
+#     summary: ENABLE_LIVE_QUOTE_LOG 추가 - r003이 10초 폴링으로 이미 받는 현재가 응답을 quote_ticks_YYYYMMDD.csv로 기록.
+#     impact: live (기록만, 매매 판단 불변)
+#     compatibility: backward-compatible (롤백: ENABLE_LIVE_QUOTE_LOG=False)
 # - [2026-10-05] type=feat owner=claude
 #     summary: 사용자 요청("NXT 장 운용 여부에 따라 강제 청산 연동") - ENABLE_NXT_SESSION=True면 당일 매수 포지션 중
 #       NXT 거래 가능 종목은 15:20 정규장 청산을 건너뛰고 19:59:58(AFTERNOON_NXT_FORCE_EXIT, 20:00 - 주문지연 2초)에
@@ -727,6 +731,11 @@ ANTI_CHASE_MAX_VWAP_GAP_PCT = 3.0         # 현재가/당일VWAP-1 >= 3% 이면 
 # 이격률)과 (2) 점심/진입창 때문에 _001에서 막힌 종목이 나머지 조건(_002~_018)을 통과했을지의 관찰(shadow) 판정을
 # 남긴다. 주문/매매 판단에는 영향 없음(shadow는 상태 사본으로 평가). 사후 수익률은 g009_gate_decision_report.py로 집계.
 ENABLE_GATE_DECISION_LOG = True
+# [2026-10-10] 실시간 시세 기록. True면 r003 fetch_live_price가 이미 10초마다 받는 inquire_price 응답(추가 API 호출 없음)을
+# data/live_runtime/quote_ticks_YYYYMMDD.csv에 1줄씩 남긴다(현재가/누적거래량·대금/당일고저/VI·시장경고·정지 등).
+# 백테스트용 10s 파일은 1분봉 보간이라 실제 10초 가격 경로가 없음 - 이 기록이 쌓이면 그 대체/검증 자료가 된다.
+# 주문/매매 판단에는 영향 없음, 쓰기 실패는 무시.
+ENABLE_LIVE_QUOTE_LOG = True
 # 추격매수 방지: 실시간 BB 상향 크로스 없이(신호 없음) MA5/BB 후행 진입 시
 # 현재가가 BB 중심선 대비 과도하게 이격되면 매수 차단
 MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = 0.002  # 0.20% -- tightened: buy only when price is within 0.2% of BB middle
