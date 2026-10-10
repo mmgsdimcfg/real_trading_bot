@@ -22,6 +22,9 @@ Usage examples:
     python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310
 - Single code on specific date (include NXT market):
     python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310 --nxt
+- Multiple dates (space- or comma-separated):
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 20260511 20260512
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508,20260511,20260512 --nxt
 - Multiple codes on specific date:
     python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930 --nxt
 - Full list from symbols file:
@@ -34,6 +37,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=feat owner=claude
+    summary: --date에 여러 날짜를 공백으로도 나열 가능(nargs="+"). 기존 콤마 구분과 혼용 가능,
+      중복 날짜는 입력 순서를 유지한 채 제거.
+    impact: collector
+    compatibility: backward-compatible
 - [2026-10-09] type=fix owner=claude
     summary: load_symbols가 g004 유니버스 파일의 "#" 줄을 건너뛰도록 read_csv(comment="#").
       기존에는 "# 046070" 같은 주석 줄 16개가 종목코드로 그대로 읽혀 API 조회 대상에 포함됐음.
@@ -252,7 +260,7 @@ def _install_kis_http_session() -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Date-based KIS minute collector (20260401-compatible schema)")
     parser.add_argument("--env", type=str, default="real", choices=["real", "demo"], help="API environment")
-    parser.add_argument("--date", type=str, default=None, help="Target date YYYYMMDD, or comma-separated list (e.g. 20260508,20260509,20260510)")
+    parser.add_argument("--date", type=str, nargs="+", default=None, help="Target date(s) YYYYMMDD. Space- or comma-separated list (e.g. 20260508 20260511 or 20260508,20260511)")
     parser.add_argument("--code", type=str, default="", help="Collect only this code (6-digit). Comma-separated supported")
     parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "g004_universe_symbols_master.txt"), help="Path to g004_universe_symbols_master.txt")
     parser.add_argument("--watchlist-file", type=str, default="", help="r004-style watchlist file(s) with code,name per line. Comma-separated multiple paths.")
@@ -1202,8 +1210,11 @@ def main() -> None:
                 wl_path.name, added, len(symbols),
             )
 
-    # Parse --date: single value or comma-separated list (e.g. 20260508,20260509,20260510)
-    raw_dates = [d.strip() for d in (args.date or "").split(",") if d.strip()]
+    # Parse --date: one or more values, space- and/or comma-separated
+    # (e.g. --date 20260508 20260511 / --date 20260508,20260511). Duplicates removed, order kept.
+    raw_dates = list(dict.fromkeys(
+        d.strip() for arg in (args.date or []) for d in arg.split(",") if d.strip()
+    ))
     if raw_dates:
         for d in raw_dates:
             try:
