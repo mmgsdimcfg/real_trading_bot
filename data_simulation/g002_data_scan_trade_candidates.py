@@ -23,6 +23,22 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=feat owner=claude
+    summary: 사용자 지정 "상승 초입(빨간 박스)" 패턴으로 선정 기준 교체(같은 날 넣은 우상향 필수조건 5개 대체).
+      사용자 피드백: 10/08 상위 선정이 이미 많이 오른 뒤 조정 중인 종목(20일선 +7~20%, 최근 5일 음봉 2~3개)이었음.
+      필수(_pattern_assessment): MA120 상승(20일 전 대비, MA120 있을 때), 종가 >= min(MA60,MA120)*0.98, 종가>MA20,
+      MA20 5일 하락폭 1% 이내, 직전 10거래일 중 종가가 MA20 +5% 이내였던 날 있음(눌림/바닥 출발), MA20 대비 +15%
+      이하 & RSI(14)<=70, 매수신호 3개 이상(MACD 상승전환, 스토캐스틱 골든 3일내 %K<85, DI+ 우위, RSI 50~68,
+      거래량 1.3배+, OBV 상승 - DI/RSI는 현재 상태 기준). A등급 = 당일 양봉이 직전 5일 종가 고점 돌파, B등급 = 당일
+      양봉 + 최근 5일 음봉 1개 이하 + MA20 대비 +10% 이내. 선정 순서 등급 -> 신호 개수 -> 점수(_selection_rank_key). 50개 미만이면 그 수만큼만 선정(사용자 결정).
+      근거: 테스 9/21, 대덕전자 9/23, 저스템 8/28·9/22 포착. 08-28~10-07 25거래일(일봉 300행, 포인트인타임) A등급
+      하루 1~17종목(평균 7) D+1 시가->종가 +0.36%/5일 +1.37% vs 유니버스 -0.08%/+1.08%, 직전 우상향 필수조건
+      -0.03%/+0.84%. 표본 약 175건으로 작음 - 실전 재평가 필요.
+      MA_120을 일봉 지표에 추가(g001 200행). _scan_all.md에 pattern_tier/buy_signal_count/buy_signals 열 추가.
+      fallback의 유동성 미달 구제는 20일 평균 거래대금 100억 이상만(LIQUIDITY_FALLBACK_MIN_AMOUNT) - 적격이 적을 때
+      일 거래대금 1억 미만 종목까지 채워지던 문제.
+    impact: scanner
+    compatibility: breaking (선정 기준 교체, 선정 수가 50 미만일 수 있음; _ranked.txt 열 불변)
 - [2026-10-10] type=perf owner=claude
     summary: 스캔 속도 - 종목마다 build_daily_bars가 날짜폴더 전체(27개)의 10s 파일을 읽어 일봉을 만들던 것을,
       서버 일봉(daily.csv)이 있으면 대상일 폴더만 읽도록 변경(이력 지표는 전부 서버 일봉에서 계산하고 10s 집계는
@@ -481,6 +497,9 @@ SCORE_CUTOFF = 15.0  # 30->15, 2026-09-27: 배점 재구성(만점 98->60)으로
                      # "극단적 저유동성/저변동성/과열" 종목만 거르는 바닥선.
 LIQUIDITY_RELAX_FACTOR = 0.70
 LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 시장상대 비교와 무관하게 유동성 하드탈락 면제
+# [2026-10-10] fallback이 유동성 미달(liquidity_below_market_dual) 종목을 구제할 때의 절대 하한(20일 평균 거래대금).
+# 상승 초입 패턴 도입 후 적격이 적어(20261008: 7종목) fallback이 일 거래대금 1억 미만 종목까지 채워 넣었음.
+LIQUIDITY_FALLBACK_MIN_AMOUNT = 10_000_000_000  # 100억원/일
 LOW_UP_DAYS_TOLERANCE = 1
 SCORE_DOT_SLOTS = 9         # verbose 스캔 로그의 점수 동그라미 고정폭(칸 수) - code_name 정렬용
 SCORE_DOT_EMPTY = "⚫"       # 빈 칸(탈락 전체, 후보의 남는 칸) 채움 아이콘
@@ -898,6 +917,7 @@ def _compute_daily_indicators(df: "pd.DataFrame") -> "pd.DataFrame":
     out["MA_5"] = close.rolling(5, min_periods=1).mean()
     out["MA_20"] = close.rolling(20, min_periods=20).mean()
     out["MA_60"] = close.rolling(60, min_periods=60).mean()
+    out["MA_120"] = close.rolling(120, min_periods=120).mean()
     mid = close.rolling(20, min_periods=1).mean()
     std = close.rolling(20, min_periods=1).std()
     out["BB_MIDDLE"], out["BB_UPPER"], out["BB_LOWER"] = mid, mid + 2.0 * std, mid - 2.0 * std
@@ -957,7 +977,9 @@ def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFram
         # g001 이전 버전 파일(지표 열 없음)은 같은 공식으로 계산해 채운다.
         if {"open", "high", "low", "volume"}.issubset(df.columns) and not set(DAILY_INDICATOR_COLUMNS).issubset(df.columns):
             df = _compute_daily_indicators(df)
-        for col in DAILY_INDICATOR_COLUMNS:
+        if "MA_120" not in df.columns:  # g001 100행 버전 파일(MA_120 열 없음) - 120행 미만이면 공란
+            df["MA_120"] = df["close"].rolling(120, min_periods=120).mean()
+        for col in (*DAILY_INDICATOR_COLUMNS, "MA_120"):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
@@ -1167,27 +1189,110 @@ def _daily_indicator_snapshot(df) -> dict | None:
     snap["ma20_slope5"] = (snap["MA_20"] / ma20_ago - 1.0) if (snap["MA_20"] and ma20_ago) else None
     snap["macd_hist_prev"] = safe_float(prev["MACD_HIST"])
     snap["obv_up"] = (snap["OBV"] > snap["OBV_MA"]) if (snap["OBV"] is not None and snap["OBV_MA"] is not None) else None
+    snap.update(_base_breakout_features(df))
     return snap
 
 
-def _uptrend_gate_failures(price, ind) -> list[str]:
-    if not ind:
-        return ["uptrend_unknown"]
-    need = ("MA_5", "MA_20", "MACD", "MACD_SIGNAL", "DI_PLUS", "DI_MINUS")
-    if price is None or ind.get("ma20_slope5") is None or any(ind.get(k) is None for k in need):
-        return ["uptrend_unknown"]
+def _cross_age(above: "pd.Series", max_age: int = 10) -> int | None:
+    """Days since `above` last turned False->True within the last max_age bars (0 = today), else None."""
+    vals = above.fillna(False).to_numpy()[-(max_age + 2):]
+    for age in range(len(vals) - 1):
+        i = len(vals) - 1 - age
+        if vals[i] and not vals[i - 1]:
+            return age
+    return None
+
+
+def _base_breakout_features(df) -> dict:
+    """[2026-10-10] 상승 초입(사용자 빨간 박스) 패턴 판정용 일봉 특징 - _pattern_assessment 참조."""
+    c, o = df["close"].astype(float), df["open"].astype(float)
+    feat: dict = {"close": safe_float(c.iloc[-1]), "open": safe_float(o.iloc[-1])}
+    ma120 = df["MA_120"] if "MA_120" in df.columns else pd.Series(dtype=float)
+    feat["MA_120"] = safe_float(ma120.iloc[-1]) if len(ma120) else None
+    feat["ma120_slope20"] = (
+        safe_float(ma120.iloc[-1] / ma120.iloc[-21] - 1.0) if len(ma120) >= 21 and pd.notna(ma120.iloc[-21]) else None
+    )
+    vs20 = c / df["MA_20"] - 1.0
+    prev10 = vs20.iloc[-11:-1].dropna()
+    feat["min_vs20_prev10"] = safe_float(prev10.min()) if len(prev10) >= 5 else None
+    feat["brk5"] = bool(len(c) >= 6 and c.iloc[-1] > c.iloc[-6:-1].max())
+    feat["bull"] = bool(c.iloc[-1] > o.iloc[-1])
+    feat["bear5"] = int((c.tail(5) < o.tail(5)).sum())
+    vol = df["volume"].astype(float)
+    vol_ma = vol.tail(20).mean() if len(vol) >= 5 else None
+    feat["vol_ratio"] = safe_float(vol.iloc[-1] / vol_ma) if vol_ma else None
+    obv = df["OBV"]
+    feat["obv_rising"] = bool(len(obv) >= 6 and obv.iloc[-1] > df["OBV_MA"].iloc[-1] and obv.iloc[-1] > obv.iloc[-6])
+    feat["macd_x_age"] = _cross_age(df["MACD"] > df["MACD_SIGNAL"])
+    feat["stoch_x_age"] = _cross_age(df["STOCH_K"] > df["STOCH_D"])
+    feat["di_x_age"] = _cross_age(df["DI_PLUS"] > df["DI_MINUS"])
+    feat["rsi50_x_age"] = _cross_age(df["RSI"] > 50.0)
+    return feat
+
+
+# [2026-10-10] 상승 초입 패턴(사용자 지정 차트의 빨간 박스: 테스 9/21, 대덕전자 9/22~23, 저스템 8/28·9/22).
+PATTERN_MIN_SIGNALS = 3          # 아래 매수 신호 중 최소 개수
+PATTERN_BASE_MAX_VS_MA20 = 0.05  # 직전 10거래일 중 한 번은 종가가 MA20 대비 +5% 이내(눌림/바닥에서 출발)
+PATTERN_MAX_VS_MA20 = 0.15       # 과열 상한: 종가가 MA20 대비 +15% 초과면 이미 올라간 종목
+PATTERN_MAX_RSI = 70.0
+PATTERN_MAX_BEAR5 = 1            # B등급: 최근 5거래일 음봉 최대 개수
+PATTERN_B_MAX_VS_MA20 = 0.10     # B등급: 돌파 캔들이 없으므로 MA20 대비 +10% 이내만(이미 오른 뒤 쉬는 종목 제외)
+
+
+def _buy_signals(f: dict) -> list[str]:
+    s = []
+    if (f.get("macd_x_age") is not None and f["macd_x_age"] <= 3) or (
+        (f.get("MACD_HIST") or 0) > 0 and f.get("macd_hist_prev") is not None and f["MACD_HIST"] > f["macd_hist_prev"]
+    ):
+        s.append("macd_turn_up")
+    if f.get("stoch_x_age") is not None and f["stoch_x_age"] <= 3 and (f.get("STOCH_K") or 100) < 85:
+        s.append("stoch_golden")
+    # DI/RSI는 현재 상태 기준(최근 교차만으로는 인정하지 않음 - 교차 후 되돌아간 경우 제외, Codex 검토).
+    if f.get("DI_PLUS") is not None and f.get("DI_MINUS") is not None and f["DI_PLUS"] > f["DI_MINUS"]:
+        s.append("di_plus_lead")
+    if f.get("RSI") is not None and 50.0 <= f["RSI"] <= 68.0:
+        s.append("rsi_50_68")
+    if f.get("vol_ratio") is not None and f["vol_ratio"] >= 1.3:
+        s.append("volume_1_3x")
+    if f.get("obv_rising"):
+        s.append("obv_rising")
+    return s
+
+
+def _pattern_assessment(price, f) -> tuple[list[str], str | None, list[str]]:
+    """(fail_reasons, tier, signals). tier A = 장기 우상향 + 눌림/바닥 출발 + 당일 양봉으로 직전 5일 종가 고점 돌파
+    + 매수신호 3개 이상, tier B = A에서 돌파 대신 '당일 양봉 + 최근 5일 음봉 1개 이하 + MA20 대비 +10% 이내'.
+    둘 다 아니면 탈락. (B를 음봉 2개 이하로 두면 B 단독 D+1 -0.28%였음, 1개 이하+이격 10% 이내 +0.34%/소표본)
+    검증(2026-08-28~10-07, 25거래일): A 하루 1~17종목(평균 7) D+1 시가->종가 +0.36%(유니버스 -0.08%),
+    A+B(돌파 없이 신호 3개+) 하루 약 25종목 +0.16%."""
+    if not f or price is None or any(f.get(k) is None for k in ("MA_20", "MA_5", "RSI", "min_vs20_prev10")):
+        return ["pattern_unknown"], None, []
     fails = []
-    if price <= ind["MA_20"]:
-        fails.append("uptrend_close_below_ma20")
-    if ind["ma20_slope5"] <= 0:
-        fails.append("uptrend_ma20_not_rising")
-    if ind["MA_5"] <= ind["MA_20"]:
-        fails.append("uptrend_ma5_below_ma20")
-    if ind["MACD"] <= ind["MACD_SIGNAL"]:
-        fails.append("uptrend_macd_below_signal")
-    if ind["DI_PLUS"] <= ind["DI_MINUS"]:
-        fails.append("uptrend_di_minus_dominant")
-    return fails
+    if f.get("ma120_slope20") is not None and not f["ma120_slope20"] > 0:
+        fails.append("pattern_ma120_falling")
+    long_ma = [v for v in (f.get("MA_60"), f.get("MA_120")) if v is not None]
+    if long_ma and price < min(long_ma) * 0.98:
+        fails.append("pattern_below_long_ma")
+    if price <= f["MA_20"]:
+        fails.append("pattern_below_ma20")
+    if f.get("ma20_slope5") is not None and f["ma20_slope5"] < -0.01:
+        fails.append("pattern_ma20_falling")
+    if f["min_vs20_prev10"] > PATTERN_BASE_MAX_VS_MA20:
+        fails.append("pattern_no_pullback_base")
+    if price / f["MA_20"] - 1.0 > PATTERN_MAX_VS_MA20 or f["RSI"] > PATTERN_MAX_RSI:
+        fails.append("pattern_overheated")
+    signals = _buy_signals(f)
+    if fails:
+        return fails, None, signals
+    if len(signals) < PATTERN_MIN_SIGNALS:
+        return ["pattern_few_buy_signals"], None, signals
+    if f["bull"] and f["brk5"]:
+        return [], "A", signals
+    if f["bull"] and f["bear5"] <= PATTERN_MAX_BEAR5 and price / f["MA_20"] - 1.0 <= PATTERN_B_MAX_VS_MA20:
+        return [], "B", signals
+    if not f["bull"]:
+        return ["pattern_no_bullish_close"], None, signals
+    return (["pattern_bearish_candles"] if f["bear5"] > PATTERN_MAX_BEAR5 else ["pattern_b_extended"]), None, signals
 
 
 def _load_last_vwap(data_root: Path, target_date_str, code: str) -> float | None:
@@ -1512,12 +1617,18 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # --- Hard filters (fail = disqualified) ---
     # [최적화] 절대적인 거부 조건만 하드 필터로 남깁니다.
 
-    # [2026-10-10] 우상향 필수 조건(사용자 결정 1-b) - 일봉 지표 5개를 모두 만족해야 한다(반전신호 예외 없음):
-    # 종가>MA20, MA20 상승(5거래일 전 대비), MA5>MA20, MACD>시그널, DI+>DI-. 지표를 계산할 이력이 없으면
-    # (서버 일봉 없음/MACD·MA20 미형성) 우상향을 확인할 수 없으므로 탈락시킨다.
-    gate_fails = _uptrend_gate_failures(price, ind)
-    candidate["uptrend_gate"] = not gate_fails
-    candidate["fail_reasons"].extend(gate_fails)
+    # [2026-10-10] 상승 초입 패턴(사용자 지정 빨간 박스) 필수 - _pattern_assessment 참조. A/B 등급만 적격이고
+    # 선정 순서는 등급 -> 매수신호 개수 -> 점수(_selection_rank_key). 같은 날 앞서 넣었던 '우상향 필수조건 5개'
+    # (종가>MA20, MA20 상승, MA5>MA20, MACD>시그널, DI+>DI-)를 대체한다 - 이미 많이 오른 뒤 조정 중인
+    # 종목(20일선 +7~20%, 최근 5일 음봉 2~3개)이 상위를 차지하던 문제(사용자 피드백).
+    pattern_fails, tier, buy_signals = _pattern_assessment(price, ind)
+    candidate["pattern_tier"] = tier
+    candidate["pattern_tier_rank"] = {"A": 2, "B": 1}.get(tier, 0)
+    candidate["buy_signals"] = buy_signals
+    candidate["ma120_slope20"] = (ind or {}).get("ma120_slope20")
+    candidate["buy_signal_count"] = len(buy_signals)
+    candidate["uptrend_gate"] = tier is not None
+    candidate["fail_reasons"].extend(pattern_fails)
     if price < config.price_min:
         candidate["fail_reasons"].append("price_floor")
     if price > config.price_max:
@@ -1924,6 +2035,17 @@ def weighted_sample_without_replacement(rows, k, rng):
     return selected
 
 
+def _selection_rank_key(row):
+    """[2026-10-10] 선정/정렬 순서: 패턴 등급(A>B) -> 매수신호 개수 -> 점수 -> 거래대금 -> ATR."""
+    return (
+        row.get("pattern_tier_rank") or 0,
+        row.get("buy_signal_count") or 0,
+        row.get("score") or 0.0,
+        row.get("amount_ma20") or 0.0,
+        row.get("atr_ratio") or 0.0,
+    )
+
+
 def pick_with_tie_randomization(sorted_rows, max_picks, rng):
     """Pick by score rank, but randomize inside same-score buckets."""
     if max_picks is None:
@@ -1934,9 +2056,9 @@ def pick_with_tie_randomization(sorted_rows, max_picks, rng):
     n = len(sorted_rows)
 
     while idx < n and len(picked) < max_picks:
-        score = sorted_rows[idx]["score"]
+        score = _selection_rank_key(sorted_rows[idx])[:3]
         bucket = []
-        while idx < n and sorted_rows[idx]["score"] == score:
+        while idx < n and _selection_rank_key(sorted_rows[idx])[:3] == score:
             bucket.append(sorted_rows[idx])
             idx += 1
 
@@ -1949,7 +2071,7 @@ def pick_with_tie_randomization(sorted_rows, max_picks, rng):
         break
 
     picked.sort(
-        key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+        key=_selection_rank_key,
         reverse=True,
     )
     return picked
@@ -1989,7 +2111,7 @@ def apply_sector_diversification_cap(selected_rows, eligible_rows, max_picks, ca
 
         swapped = False
         for sector, rows in over_cap:
-            worst = min(rows, key=lambda r: (r.get("score") or 0.0))
+            worst = min(rows, key=_selection_rank_key)
             for cand in replacement_pool:
                 cand_sector = cand.get("sector")
                 if cand_sector == sector:
@@ -2093,6 +2215,7 @@ def render_all_scan_markdown(all_rows):
         "prev_day_return", "close_ma20_ratio", "ret_20d",
         # [2026-10-10] 일봉 지표(g001 daily.csv) 기반 우상향 필수조건/가점 근거
         "uptrend_gate", "ma20_slope5", "macd_hist", "di_spread", "adx14", "rsi14", "stoch_k", "obv_up", "close_vs_vwap",
+        "pattern_tier", "buy_signal_count", "buy_signals",
     ]
 
     def _f(value, digits):
@@ -2143,6 +2266,9 @@ def render_all_scan_markdown(all_rows):
             _f(row.get("adx14"), 1), _f(row.get("rsi14"), 1), _f(row.get("stoch_k"), 1),
             ("Y" if row.get("obv_up") else "N") if row.get("obv_up") is not None else "",
             _f(row.get("close_vs_vwap"), 4),
+            str(row.get("pattern_tier") or ""),
+            str(row.get("buy_signal_count") if row.get("buy_signal_count") is not None else ""),
+            "+".join(row.get("buy_signals") or []),
         ]
         sanitized = [str(value).replace("|", "\\|") for value in values]
         lines.append("| " + " | ".join(sanitized) + " |")
@@ -2794,7 +2920,7 @@ def scan(
 
     eligible_rows = [row for row in candidates if row["eligible"]]
     eligible_rows.sort(
-        key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+        key=_selection_rank_key,
         reverse=True,
     )
 
@@ -2836,10 +2962,14 @@ def scan(
             and not bool(row.get("is_last_bearish"))
             and row.get("score", 0.0) >= SCORE_CUTOFF
             and not (set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS)
+            and (
+                "liquidity_below_market_dual" not in row.get("fail_reasons", [])
+                or (row.get("amount_ma20") or 0.0) >= LIQUIDITY_FALLBACK_MIN_AMOUNT
+            )
             and row["code"] not in selected_codes
         ]
         fallback_rows.sort(
-            key=lambda row: (row["score"], row["amount_ma20"] or 0.0),
+            key=_selection_rank_key,
             reverse=True,
         )
         needed = config.max_picks - len(selected_rows)
@@ -2857,7 +2987,7 @@ def scan(
 
     # Final output order: always keep selected rows sorted by score desc.
     selected_rows.sort(
-        key=lambda row: (row["score"], row["amount_ma20"] or 0.0, row["atr_ratio"] or 0.0),
+        key=_selection_rank_key,
         reverse=True,
     )
 

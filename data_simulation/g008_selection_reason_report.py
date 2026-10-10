@@ -171,8 +171,14 @@ def _render_stock(rank: int, row: dict, feat: dict, config) -> str:
     elif rsi is not None:
         good.append(f"RSI {rsi:.1f} → {g_rsi:.1f}/8점")
     # [2026-10-10] g002 일봉 지표 기반 우상향 필수조건 + 지표 가점
-    if row.get("uptrend_gate"):
-        good.insert(0, "**일봉 우상향 필수조건 통과**: 종가>20일선, 20일선 상승, 5일선>20일선, MACD>시그널, DI+>DI-")
+    _sig_kr = {"macd_turn_up": "MACD 상승전환", "stoch_golden": "스토캐스틱 골든크로스", "di_plus_lead": "DI+ 우위",
+               "rsi_50_68": "RSI 50~68", "volume_1_3x": "거래량 1.3배+", "obv_rising": "OBV 상승"}
+    if row.get("pattern_tier"):
+        _tier_txt = ("A: 당일 양봉으로 직전 5일 종가 고점 돌파" if row["pattern_tier"] == "A"
+                     else "B: 당일 양봉, 최근 5일 음봉 1개 이하, 20일선 +10% 이내")
+        _sigs = ", ".join(_sig_kr.get(x, x) for x in row.get("buy_signals") or [])
+        _ma120 = "120일선 상승, " if row.get("ma120_slope20") is not None else "120일선 이력 부족(미확인), "
+        good.insert(0, f"**상승 초입 패턴 {_tier_txt}** ({_ma120}눌림/바닥 출발) | 매수신호 {len(row.get('buy_signals') or [])}개: {_sigs}")
     _ind_items = [("adx_trend", "ADX 추세강도", 4), ("ma_alignment", "이평 정배열(5>20>60)", 3), ("obv_trend", "OBV 상승", 3),
                   ("macd_momentum", "MACD 히스토그램 증가", 2), ("stoch_bullish", "스토캐스틱 상승 교차", 2),
                   ("close_above_vwap", "종가가 당일 VWAP 위", 2)]
