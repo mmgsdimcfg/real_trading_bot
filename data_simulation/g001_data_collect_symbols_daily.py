@@ -41,6 +41,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=feat owner=claude
+    summary: P1 보류분 + P2.
+      (1) 일봉 저장 20 -> 100행(fetch_and_save_daily_ohlcv lookback_days). API 1회 최대 100행(최신순)이라 호출 수 불변.
+      g002의 MA60/RS(21봉)가 20행으로는 항상 공란이던 문제 해소 - g002 점수 입력(RSI/ATR/20일 수익률 등)도 더 긴
+      이력으로 계산되므로 종목 선정 결과가 달라진다(전후 비교는 커밋 메시지 참조).
+      (2) --flows: {code}_{name}_flows.csv에 투자자별(외국인/기관/개인) 순매수, 프로그램 순매수, 공매도, 신용 융자잔고
+      일별 ~30거래일 저장(종목당 +4회 호출, 기본 꺼짐). 날짜 인자가 있어 과거 날짜 백필 가능. 이어받기 시 기존 종목은
+      flows 파일만 추가로 받음. 신용은 약 2거래일 늦게 공표, 투자자 수급은 장 마감 직후 수집 시 잠정치일 수 있음.
+    impact: collector
+    compatibility: backward-compatible (daily.csv 행 수만 증가, --flows는 옵션)
 - [2026-10-10] type=fix owner=claude
     summary: 데이터 수집 P1 (Codex 교차검토 권고).
       (1) 분봉 조회 실패를 "데이터 없음"과 구분: 벤더 래퍼는 오류도 빈 DataFrame으로 돌려줘 페이지 중간 실패 시
@@ -205,6 +215,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "examples_user" / "domestic_stock"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_time_dailychartprice"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_daily_itemchartprice"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_price"))
+for _flow_api in ("investor_trade_by_stock_daily", "program_trade_by_stock_daily", "daily_short_sale", "daily_credit_balance"):
+    sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / _flow_api))
 
 import kis_auth as ka
 import domestic_stock_functions as dsf
@@ -314,6 +326,11 @@ def parse_args() -> argparse.Namespace:
         "--save-legacy-files",
         action="store_true",
         help="Also save legacy _1m/_3m/_20s files in addition to default _10s output",
+    )
+    parser.add_argument(
+        "--flows",
+        action="store_true",
+        help="Also save {code}_{name}_flows.csv (investor/program/short-sale/credit daily series, +4 API calls per symbol)",
     )
     parser.add_argument(
         "--save-10s-indicators",
@@ -947,11 +964,14 @@ def fetch_and_save_daily_ohlcv(
     env_dv: str,
     target_date: str,
     output_dir: Path,
-    lookback_days: int = 20,
+    lookback_days: int = 100,
 ) -> bool:
     """Fetch actual daily (일봉) OHLCV for the past lookback_days business days.
     Saves {code}_{name}_daily.csv to output_dir for r002 downtrend filter.
     Uses KIS inquire_daily_itemchartprice API.  Returns True on success.
+
+    [2026-10-10] 20 -> 100 rows: one call returns at most 100 rows (newest first), so this is the
+    most a single call gives - MA60/RS(21 bars) in g002 were always blank with 20 rows. No extra calls.
     """
     try:
         from inquire_daily_itemchartprice import inquire_daily_itemchartprice as _daily_api
@@ -1006,6 +1026,108 @@ def fetch_and_save_daily_ohlcv(
     df2.to_csv(out_path, index=False, encoding="utf-8-sig")
     logger.debug("[daily] %s(%s) | %d rows -> %s", code, name, len(df2), out_path)
     return True
+
+
+# --flows: per-symbol daily supply/demand series -> {code}_{name}_flows.csv (one row per date, ~30 trading
+# days up to target_date; each API answers one call with ~30 rows and takes a date, so past dates backfill).
+# Columns keep the KIS field names, prefixed by source. Availability timing differs - consumers must lag:
+#   inv_*  투자자별 순매수(외국인/기관/개인, 수량·대금 - 대금 단위 백만원): KRX finalizes after the close; a run
+#          right after 15:30 can see preliminary values for target_date.
+#   pgm_*  프로그램매매 순매수(수량·대금 - 대금 단위 원).
+#   ss_*   공매도 체결수량/거래량 대비 비중(%)/대금(원).
+#   crd_*  신용 융자잔고(주수/잔고율), indexed by deal_date: published ~2 trading days late (20261008 run -> last 20261006).
+FLOW_FIELDS = {
+    "inv": ("frgn_ntby_qty", "orgn_ntby_qty", "prsn_ntby_qty", "frgn_ntby_tr_pbmn", "orgn_ntby_tr_pbmn", "prsn_ntby_tr_pbmn"),
+    "pgm": ("whol_smtn_ntby_qty", "whol_smtn_ntby_tr_pbmn"),
+    "ss": ("ssts_cntg_qty", "ssts_vol_rlim", "ssts_tr_pbmn"),
+    "crd": ("whol_loan_rmnd_stcn", "whol_loan_rmnd_rate"),
+}
+
+
+def _flow_frame(df: pd.DataFrame | None, prefix: str, date_col: str = "stck_bsop_date") -> pd.DataFrame | None:
+    if df is None or df.empty or date_col not in df.columns:
+        return None
+    cols = [c for c in FLOW_FIELDS[prefix] if c in df.columns]
+    if not cols:
+        return None
+    out = df[[date_col, *cols]].copy()
+    out[date_col] = out[date_col].astype(str).str.strip()
+    out = out[out[date_col].str.fullmatch(r"\d{8}")]
+    for c in cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out = out.rename(columns={date_col: "date", **{c: f"{prefix}_{c}" for c in cols}})
+    return out.drop_duplicates("date").set_index("date")
+
+
+FLOW_SOURCES = tuple(FLOW_FIELDS)  # ("inv", "pgm", "ss", "crd")
+FLOW_MAX_ATTEMPTS = 3  # a source still empty after this many runs is treated as legitimately empty
+
+
+def _fetch_flow_source(src: str, code: str, target_date: str) -> pd.DataFrame | None:
+    try:
+        if src == "inv":
+            from investor_trade_by_stock_daily import investor_trade_by_stock_daily as _inv
+            _o1, o2 = _inv(fid_cond_mrkt_div_code="J", fid_input_iscd=code, fid_input_date_1=target_date,
+                           fid_org_adj_prc="", fid_etc_cls_code="", max_depth=1)
+            return _flow_frame(o2, "inv")
+        if src == "pgm":
+            from program_trade_by_stock_daily import program_trade_by_stock_daily as _pgm
+            return _flow_frame(_pgm(fid_cond_mrkt_div_code="J", fid_input_iscd=code, fid_input_date_1=target_date), "pgm")
+        if src == "ss":
+            from daily_short_sale import daily_short_sale as _ss
+            date_from = (datetime.strptime(target_date, "%Y%m%d") - timedelta(days=45)).strftime("%Y%m%d")
+            _o1, o2 = _ss(fid_cond_mrkt_div_code="J", fid_input_iscd=code, fid_input_date_1=date_from, fid_input_date_2=target_date)
+            return _flow_frame(o2, "ss")
+        if src == "crd":
+            from daily_credit_balance import daily_credit_balance as _crd
+            return _flow_frame(
+                _crd(fid_cond_mrkt_div_code="J", fid_cond_scr_div_code="20476", fid_input_iscd=code,
+                     fid_input_date_1=target_date, max_depth=1),
+                "crd", date_col="deal_date",
+            )
+    except Exception as exc:
+        logger.debug("flow source %s failed %s: %s", src, code, exc)
+    return None
+
+
+def fetch_and_save_flows(
+    code: str, name: str, target_date: str, output_dir: Path, sources: tuple[str, ...] = FLOW_SOURCES,
+) -> list[str]:
+    """Fetch the given flow sources (1 call each) and merge them into {code}_{name}_flows.csv, keeping
+    columns of sources already saved by an earlier run. Returns the sources still missing.
+
+    The vendor wrappers return empty frames on errors as well as on "no data", so an empty source is
+    reported missing and retried by later runs (up to FLOW_MAX_ATTEMPTS, see the resume branch in main).
+    """
+    safe_name = str(name).replace("/", "_").replace("\\", "_")
+    path = output_dir / f"{code}_{safe_name}_flows.csv"
+    existing = None
+    if path.exists():
+        try:
+            existing = pd.read_csv(path, dtype={"date": str}).set_index("date")
+        except Exception:
+            existing = None
+
+    fetched: dict[str, pd.DataFrame] = {}
+    for src in sources:
+        frame = _fetch_flow_source(src, code, target_date)
+        if frame is not None:
+            frame = frame[frame.index <= target_date]
+        if frame is not None and not frame.empty:
+            fetched[src] = frame
+
+    parts: list[pd.DataFrame] = []
+    if existing is not None:
+        keep = [c for c in existing.columns if c.split("_", 1)[0] not in fetched]
+        if keep:
+            parts.append(existing[keep])
+    parts.extend(fetched.values())
+    present = {c.split("_", 1)[0] for part in parts for c in part.columns}
+    if fetched:
+        merged = pd.concat(parts, axis=1).sort_index()
+        merged.index.name = "date"
+        merged.reset_index().to_csv(path, index=False, encoding="utf-8-sig")
+    return [src for src in FLOW_SOURCES if src not in present]
 
 
 # inquire_price fields kept in _quote_snapshot.json (same response as the 52w lookup, no extra call).
@@ -1577,6 +1699,23 @@ def main() -> None:
                             logger.info("[%d/%d] %s(%s) | resume: existing files adopted", idx, len(symbols), code, name)
                             if args.sleep > 0:
                                 time.sleep(args.sleep)
+                if rec and args.flows and rec["status"] == "saved":
+                    # Collected without --flows, or some sources came back empty: fetch only the missing sources
+                    # (charts are not re-downloaded). Records before per-source tracking: flows=True -> complete.
+                    missing = rec.get("flows_missing")
+                    if missing is None:
+                        missing = [] if rec.get("flows") is True else list(FLOW_SOURCES)
+                    attempts = int(rec.get("flows_attempts") or 0)
+                    if missing and attempts < FLOW_MAX_ATTEMPTS:
+                        missing = fetch_and_save_flows(code, name, target_date, output_dir, tuple(missing))
+                        rec = {**rec, "flows": not missing, "flows_missing": missing,
+                               "flows_attempts": attempts + 1, "flows_at": time.time()}
+                        _append_resume_progress(output_dir, rec)
+                        if missing:
+                            logger.warning("[%d/%d] %s(%s) | flows missing %s (attempt %d/%d)",
+                                           idx, len(symbols), code, name, missing, attempts + 1, FLOW_MAX_ATTEMPTS)
+                        if args.sleep > 0:
+                            time.sleep(args.sleep)
                 if rec:
                     nxt_flags[code] = bool(rec.get("nxt"))
                     if rec["status"] == "saved":
@@ -1673,6 +1812,10 @@ def main() -> None:
                     target_date=target_date, output_dir=output_dir,
                 )
 
+                flows_missing = fetch_and_save_flows(code, name, target_date, output_dir) if args.flows else list(FLOW_SOURCES)
+                if args.flows and flows_missing:
+                    logger.warning("[%d/%d] %s(%s) | flows missing %s - retried on next run", idx, len(symbols), code, name, flows_missing)
+
                 # KIS inquire_price snapshot: real 52-week high/low for r002/g002 high_52w_ratio (dropped when
                 # the range was set after target_date) + risk/limit fields for _quote_snapshot.json.
                 snap = _quote_record_fields(code, args.env, target_date)
@@ -1691,7 +1834,9 @@ def main() -> None:
                 _append_resume_progress(output_dir, {
                     "code": code, "name": name, "status": "saved", "include_nxt": include_nxt,
                     "legacy": args.save_legacy_files, "nxt": nxt_tradeable, **snap,
-                    "daily": bool(daily_ok), "ind10s": bool(args.save_10s_indicators), "fetched_at": time.time(),
+                    "daily": bool(daily_ok), "ind10s": bool(args.save_10s_indicators), "flows": args.flows and not flows_missing,
+                    **({"flows_missing": flows_missing, "flows_attempts": 1} if args.flows else {}),
+                    "fetched_at": time.time(),
                 })
                 if not daily_ok:
                     logger.warning("[%d/%d] %s(%s) | daily csv fetch failed - will refetch on next run", idx, len(symbols), code, name)
