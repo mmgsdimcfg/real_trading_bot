@@ -22,6 +22,10 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=fix owner=claude
+    summary: load_minute_closes가 g001 10s 파일의 raw_bar 열이 있으면 원본 분봉 행만 사용(무체결 분 보간 :00 행 제외).
+    impact: sim
+    compatibility: backward-compatible (열 없으면 기존 동작)
 - [2026-10-05] type=feat owner=claude
     summary: 신규 - 게이트 판정 기록 사후 수익률 리포트(r003/g003 gate_decisions jsonl).
     impact: sim
@@ -49,10 +53,12 @@ def load_minute_closes(data_dir: Path, date_str: str, code: str) -> pd.Series | 
     files = glob.glob(str(data_dir / date_str / f"{code}_*_10s.txt"))
     if not files:
         return None
-    df = pd.read_csv(files[0], encoding="utf-8-sig", usecols=["datetime", "close"])
+    df = pd.read_csv(files[0], encoding="utf-8-sig", usecols=lambda c: c in ("datetime", "close", "raw_bar"))
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
     df = df.dropna(subset=["datetime"])
     df = df[df["datetime"].dt.second == 0]
+    if "raw_bar" in df.columns:  # g001 원본 분봉 표식 - 무체결 분의 보간 :00 행 제외
+        df = df[pd.to_numeric(df["raw_bar"], errors="coerce") == 1]
     if df.empty:
         return None
     s = pd.Series(pd.to_numeric(df["close"], errors="coerce").to_numpy(),
