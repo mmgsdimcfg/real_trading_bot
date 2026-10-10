@@ -45,6 +45,11 @@ Update log format (append only):
 
 Update log:
 - [2026-10-10] type=feat owner=claude
+    summary: 일봉 100 -> 200행(2회 호출, 100행씩 과거로 페이징) + MA_120 열 - g002 상승 초입 패턴이 MA120과 그
+      20일 기울기(~140행)를 씀. 이어받기 시 MA_120 열이 없는 일봉 파일은 일봉만 재수집.
+    impact: collector
+    compatibility: backward-compatible (종목당 API +1회)
+- [2026-10-10] type=feat owner=claude
     summary: CSV 숫자 표기 - 사용자 규칙: 절대값 1000 이상 소수 0자리, 100 이상 1자리, 10 이상 2자리, 그 밖 3자리
       (7700.00->7700, 138.33->138.3, 14.56->14.56, 6.789->6.789). 10s/일봉/flows/legacy 파일 모두 _fmt_numbers 적용
       (기존 10s는 일괄 소수 2자리). 10s volume(분 거래량/6)도 같은 규칙이라 1000 이상이면 정수로 반올림됨.
@@ -474,12 +479,16 @@ def _record_w52_point_in_time(rec: dict, target_date: str) -> bool:
 
 
 def _daily_csv_outdated(output_dir: Path, code: str, name: str) -> bool:
-    """True when {code}_{name}_daily.csv exists but predates the daily-indicator format (no MA_20 column)."""
+    """True when {code}_{name}_daily.csv exists but predates the 200-row daily-indicator format (no MA_120 column)."""
     safe_name = str(name).replace("/", "_").replace("\\", "_")
     path = output_dir / f"{code}_{safe_name}_daily.csv"
     try:
         with open(path, encoding="utf-8-sig") as _f:
-            return "MA_20" not in _f.readline().strip().split(",")
+            if "MA_120" not in _f.readline().strip().split(","):
+                return True
+            # Exactly one 100-row page: the second page failed (fetch saves the partial page and reports
+            # failure). Real histories shorter than 200 rows end at the listing date, rarely at exactly 100.
+            return sum(1 for _ in _f) == 100
     except OSError:
         return False
 
@@ -1112,14 +1121,15 @@ def fetch_and_save_daily_ohlcv(
     env_dv: str,
     target_date: str,
     output_dir: Path,
-    lookback_days: int = 100,
+    lookback_days: int = 200,
 ) -> bool:
     """Fetch actual daily (일봉) OHLCV for the past lookback_days business days.
     Saves {code}_{name}_daily.csv to output_dir for r002 downtrend filter.
     Uses KIS inquire_daily_itemchartprice API.  Returns True on success.
 
-    [2026-10-10] 20 -> 100 rows: one call returns at most 100 rows (newest first), so this is the
-    most a single call gives - MA60/RS(21 bars) in g002 were always blank with 20 rows. No extra calls.
+    [2026-10-10] 20 -> 100 rows: one call returns at most 100 rows (newest first) - MA60/RS(21 bars) in
+    g002 were always blank with 20 rows. 100 -> 200 rows (2 calls): g002's base-breakout pattern needs
+    MA120 and its 20-day slope (~140 rows).
     """
     try:
         from inquire_daily_itemchartprice import inquire_daily_itemchartprice as _daily_api
@@ -1130,22 +1140,40 @@ def fetch_and_save_daily_ohlcv(
     target_dt = datetime.strptime(target_date, "%Y%m%d")
     date_from = (target_dt - timedelta(days=lookback_days * 2 + 5)).strftime("%Y%m%d")
 
-    try:
-        _, df2 = _daily_api(
-            env_dv=env_dv,
-            fid_cond_mrkt_div_code="J",
-            fid_input_iscd=code,
-            fid_input_date_1=date_from,
-            fid_input_date_2=target_date,
-            fid_period_div_code="D",
-            fid_org_adj_prc="0",
-        )
-    except Exception as exc:
-        logger.debug("daily OHLCV fetch failed %s: %s", code, exc)
-        return False
+    # The API returns at most 100 rows per call (newest first): page backwards until lookback_days rows.
+    pages: list[pd.DataFrame] = []
+    partial = False  # a later page failed: save what we have but report failure so the next run refetches
+    page_end = target_date
+    for _page in range((lookback_days + 99) // 100):
+        try:
+            _, page = _daily_api(
+                env_dv=env_dv,
+                fid_cond_mrkt_div_code="J",
+                fid_input_iscd=code,
+                fid_input_date_1=date_from,
+                fid_input_date_2=page_end,
+                fid_period_div_code="D",
+                fid_org_adj_prc="0",
+            )
+        except Exception as exc:
+            logger.debug("daily OHLCV fetch failed %s: %s", code, exc)
+            if not pages:
+                return False
+            partial = True
+            break
+        if page is None or page.empty or "stck_bsop_date" not in page.columns:
+            break
+        pages.append(page)
+        if len(page) < 100:
+            break  # reached the listing date / requested start
+        oldest = pd.to_datetime(page["stck_bsop_date"].astype(str), format="%Y%m%d", errors="coerce").min()
+        if pd.isna(oldest):
+            break
+        page_end = (oldest - timedelta(days=1)).strftime("%Y%m%d")
 
-    if df2 is None or df2.empty:
+    if not pages:
         return False
+    df2 = pd.concat(pages, ignore_index=True).drop_duplicates(subset=["stck_bsop_date"])
 
     col_map = {
         "stck_bsop_date": "date",
@@ -1175,6 +1203,7 @@ def fetch_and_save_daily_ohlcv(
         df2 = calculate_r76_indicators(df2.reset_index(drop=True), DAILY_INDICATOR_PARAMS).drop(columns=["VWAP"])
         df2["MA_20"] = df2["close"].rolling(20, min_periods=20).mean()
         df2["MA_60"] = df2["close"].rolling(60, min_periods=60).mean()
+        df2["MA_120"] = df2["close"].rolling(120, min_periods=120).mean()
         _ind_cols = [c for c in df2.columns if c not in ("date", "open", "high", "low", "close", "volume", "amount")]
         df2[_ind_cols] = df2[_ind_cols].round(4)
 
@@ -1182,7 +1211,7 @@ def fetch_and_save_daily_ohlcv(
     out_path = output_dir / f"{code}_{safe_name}_daily.csv"
     _fmt_numbers(df2).to_csv(out_path, index=False, encoding="utf-8-sig")
     logger.debug("[daily] %s(%s) | %d rows -> %s", code, name, len(df2), out_path)
-    return True
+    return not partial
 
 
 # --flows: per-symbol daily supply/demand series -> {code}_{name}_flows.csv (one row per date, ~30 trading
@@ -1864,10 +1893,10 @@ def main() -> None:
                     else:
                         rec = None  # cannot rebuild (no raw_bar) - fall through to a full refetch
                 if rec and rec["status"] == "saved" and _daily_csv_outdated(output_dir, code, name):
-                    # 2026-10-10 이전 수집분(20행, 지표 없음): g002 우상향 판정에 25행+지표가 필요해 일봉만 다시 받는다.
+                    # 이전 형식(20/100행, 지표/MA_120 없음): g002 패턴 판정에 200행+지표가 필요해 일봉만 다시 받는다.
                     if fetch_and_save_daily_ohlcv(code=code, name=name, env_dv=args.env,
                                                   target_date=target_date, output_dir=output_dir):
-                        logger.info("[%d/%d] %s(%s) | resume: daily csv refreshed (100 rows + indicators)", idx, len(symbols), code, name)
+                        logger.info("[%d/%d] %s(%s) | resume: daily csv refreshed (200 rows + indicators)", idx, len(symbols), code, name)
                     if args.sleep > 0:
                         time.sleep(args.sleep)
                 if rec and args.flows and rec["status"] == "saved":
