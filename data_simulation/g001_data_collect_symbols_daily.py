@@ -6,16 +6,20 @@ Purpose:
 - Collect minute bars for a target date from KIS APIs.
 - Build normalized intraday outputs and indicator columns used by live/sim flows.
 
-Output schema:
-- datetime, open, high, low, close, volume, market
-- R76 indicator columns (MA_5, VOL_MA20, BB_*, RSI*, STOCH*, WILLIAMS*, MACD*, DI/ADX, VWAP, OBV*)
+Output schema (_10s.txt):
+- datetime, open, high, low, close, volume, market, amount, raw_bar
+  (amount = per-minute traded value on raw_bar==1 rows only; raw_bar 1 = KIS minute bar, 0 = interpolated)
+- R76 indicator columns (MA_5, VOL_MA20, BB_*, RSI*, STOCH*, WILLIAMS*, MACD*, DI/ADX, VWAP, OBV*) only with
+  --save-10s-indicators (placed before amount/raw_bar)
+Per date folder also: {code}_{name}_daily.csv, _prev_close.json, _daily_close.json, _52w_high_low.json,
+  _quote_snapshot.json, _market_index.json, nxt_flags.json, _{date}_picks.txt, _g001_progress.jsonl
 
 Key behavior:
 - Collects by date from KIS minute API (`inquire_time_dailychartprice`).
 - Uses market priority NX > J > UN for overlapping timestamps.
 - Supports NXT pre/after sessions (08:00~19:59) when symbol is NXT-tradeable.
 - Exports 10-second interpolated bars (`_10s.txt`) for r007 simulation input.
-- Optionally saves legacy `_1m/_3m/_20s` files for backward compatibility.
+- Optionally saves legacy `_1m/_3m/_20s` files for backward compatibility (--save-legacy-files).
 
 Usage examples:
 - Single code on specific date (regular market only):
@@ -37,6 +41,29 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-10] type=fix owner=claude
+    summary: 데이터 수집 P1 (Codex 교차검토 권고).
+      (1) 분봉 조회 실패를 "데이터 없음"과 구분: 벤더 래퍼는 오류도 빈 DataFrame으로 돌려줘 페이지 중간 실패 시
+      하루 일부만 저장되거나 "empty"로 기록돼 이후 이어받기에서 영영 건너뛰었음. _fetch_minute_page가 직접
+      호출해 rt_cd!=0이면 MinuteChartError -> 종목 단위 재시도/실패(진행기록 없음 -> 다음 실행에서 재수집).
+      실측: 데이터 없음(다른 시장, 비NXT 종목의 NX/UN, 없는 코드)은 모두 rt_cd=0 + 0행.
+      (2) 일봉 csv 실패 시 진행기록 daily=False -> 다음 실행에서 재수집.
+      (3) 52주 고저: 조회 시점 값이라 과거 날짜 백필 시 미래가 섞임 - 최근 거래일(KOSPI 일별지수로 실행당 1회
+      조회)이 대상일일 때만 사용, 아니면 버림(r002/g002는 로컬 일봉 계산으로 폴백). 발생일 비교만으로는 대상일
+      당시 고가가 지금 52주 창에서 빠진 경우를 못 걸러 이 방식으로 변경(Codex 검토). 구버전 진행기록의 w52는
+      대상일 당일 조회분만 복원. 결과가 비어도 _52w_high_low.json/_quote_snapshot.json을 덮어써 이전 파일 제거. 같은 inquire_price 응답의 기준가/상하한가/시장경고/단기과열/
+      투자유의/정리매매/임시정지/VI/시총/회전율/PER·PBR/외국인·프로그램 순매수 등을 _quote_snapshot.json에
+      저장(추가 호출 없음, point_in_time=최근 거래일==대상일일 때만 대상일 값으로 유효).
+      (4) 분봉 acml_tr_pbmn(누적 거래대금)에서 분별 거래대금(amount) 계산해 10s 파일에 저장.
+      (5) search_stock_info를 NXT 판정과 기본정보 캐시 갱신이 1회 응답 공유(종목당 최대 2회 -> 1회).
+      (6) 기본정보 캐시 fetched_at을 대상일이 아닌 실제 조회일(KST)로 기록, 나이도 오늘 기준.
+      (7) _market_index.json에 "dates" 키 추가(g002는 kospi/kosdaq 리스트만 읽음).
+      (8) 10s 지표 열 기본 생략(--save-10s-indicators로 유지, 이어받기도 이 옵션을 반영), _3m.txt는
+      --save-legacy-files로 이동 -
+      둘 다 읽는 코드 없음(g003은 재계산). 10s 파일 약 450KB -> 150KB/종목.
+    impact: collector
+    compatibility: 10s 파일에서 지표 21열이 기본으로 빠지고 _3m.txt가 기본 생성되지 않음(소비자 없음 확인,
+      필요 시 옵션으로 복원). 그 외 산출물은 키/열 추가만. 진행기록에 quote/daily 필드 추가(구버전 기록 호환).
 - [2026-10-10] type=fix owner=claude
     summary: 데이터 정합성 P0 (Codex 교차검토 후 실데이터로 확인).
       (1) _prev_close.json: 날짜 폴더를 거슬러 처음 찾은 날의 종가를 쓰던 방식 -> 해당 날짜 {code}_daily.csv의
@@ -181,7 +208,6 @@ sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inqui
 
 import kis_auth as ka
 import domestic_stock_functions as dsf
-from inquire_time_dailychartprice import inquire_time_dailychartprice
 from r001_define_config import (
     ADX_PERIOD,
     BB_PERIOD,
@@ -290,6 +316,11 @@ def parse_args() -> argparse.Namespace:
         help="Also save legacy _1m/_3m/_20s files in addition to default _10s output",
     )
     parser.add_argument(
+        "--save-10s-indicators",
+        action="store_true",
+        help="Keep the R76 indicator columns in _10s files (not read by g003/g009; g003 recomputes them on 1m/3m bars)",
+    )
+    parser.add_argument(
         "--no-resume",
         action="store_true",
         help="Ignore already-collected symbols for the date and re-download everything",
@@ -307,9 +338,13 @@ RESUME_CLOSE_MARGIN_MIN = 10  # files written before close+margin may hold a par
 
 def _symbol_output_paths(output_dir: Path, code: str, name: str, save_legacy: bool) -> list[Path]:
     safe_name = str(name).replace("/", "_").replace("\\", "_")
-    paths = [output_dir / f"{code}_{safe_name}_10s.txt", output_dir / f"{code}_{safe_name}_3m.txt"]
+    paths = [output_dir / f"{code}_{safe_name}_10s.txt"]
     if save_legacy:
-        paths += [output_dir / f"{code}_{safe_name}_1m.txt", output_dir / f"{code}_{safe_name}_20s.txt"]
+        paths += [
+            output_dir / f"{code}_{safe_name}_3m.txt",
+            output_dir / f"{code}_{safe_name}_1m.txt",
+            output_dir / f"{code}_{safe_name}_20s.txt",
+        ]
     return paths
 
 
@@ -341,8 +376,13 @@ def _append_resume_progress(output_dir: Path, record: dict) -> None:
         _f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _resume_record_valid(rec: dict, paths: list[Path], include_nxt: bool, save_legacy: bool, cutoff_ts: float) -> bool:
+def _resume_record_valid(
+    rec: dict, paths: list[Path], include_nxt: bool, save_legacy: bool, cutoff_ts: float, save_ind: bool = False,
+) -> bool:
     if rec.get("status") not in ("saved", "empty"):
+        return False
+    # Records before 2026-10-10 have no "ind10s" key; their 10s files always carried the indicators.
+    if save_ind and not rec.get("ind10s", True):
         return False
     if bool(rec.get("include_nxt")) != include_nxt:
         return False
@@ -351,6 +391,8 @@ def _resume_record_valid(rec: dict, paths: list[Path], include_nxt: bool, save_l
     if float(rec.get("fetched_at") or 0) < cutoff_ts:
         return False
     if rec["status"] == "saved":
+        if rec.get("daily") is False:
+            return False  # daily csv fetch failed - refetch so prev/daily close and g002 inputs exist
         return all(p.is_file() for p in paths)
     return True
 
@@ -367,8 +409,30 @@ def _last_row_time(csv_path: Path) -> str | None:
         return None
 
 
+def _record_w52_point_in_time(rec: dict, target_date: str) -> bool:
+    """Whether a resume record's w52 belongs to target_date (see fetch_quote_snapshot)."""
+    quote = rec.get("quote")
+    if isinstance(quote, dict) and "point_in_time" in quote:
+        return bool(quote["point_in_time"])
+    # Records before 2026-10-10 stored the raw snapshot. Valid if target_date is still the latest session
+    # (resume records are always fetched after its close), or if it was fetched on target_date itself.
+    if latest_session_date() == target_date:
+        return True
+    try:
+        fetched = datetime.fromtimestamp(float(rec.get("fetched_at") or 0), ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+    except (TypeError, ValueError, OSError):
+        return False
+    return fetched == target_date
+
+
+def _quote_record_fields(code: str, env_dv: str, target_date: str) -> dict:
+    snap = fetch_quote_snapshot(code=code, env_dv=env_dv, target_date=target_date) or {}
+    return {"w52": snap.get("w52"), "quote": snap.get("quote")}
+
+
 def _adopt_existing_symbol_files(
     output_dir: Path, code: str, name: str, include_nxt: bool, save_legacy: bool, cutoff_ts: float, env_dv: str,
+    target_date: str, save_ind: bool = False,
 ) -> dict | None:
     """Build a resume record for files saved by a run without a progress entry (e.g. pre-resume version).
 
@@ -386,6 +450,14 @@ def _adopt_existing_symbol_files(
         return None  # a file is missing
 
     try:
+        with open(paths[0], encoding="utf-8-sig") as _f:
+            has_ind = "MA_5" in _f.readline().split(",")
+    except OSError:
+        return None
+    if save_ind and not has_ind:
+        return None  # indicators requested but missing - regenerate
+
+    try:
         nxt = probe_nxt_tradeable(code) if include_nxt else False
     except Exception as exc:
         logger.debug("resume adopt: NXT probe failed for %s, refetching: %s", code, exc)
@@ -397,8 +469,8 @@ def _adopt_existing_symbol_files(
 
     return {
         "code": code, "name": name, "status": "saved", "include_nxt": include_nxt,
-        "legacy": save_legacy, "nxt": nxt, "w52": fetch_52w_high_low(code=code, env_dv=env_dv),
-        "fetched_at": time.time(), "adopted": True,
+        "legacy": save_legacy, "nxt": nxt, **_quote_record_fields(code, env_dv, target_date),
+        "daily": True, "ind10s": has_ind, "fetched_at": time.time(), "adopted": True,
     }
 
 
@@ -413,12 +485,20 @@ def _is_truthy_flag(value) -> bool | None:
     return None
 
 
-def probe_nxt_tradeable(code: str) -> bool:
+# search_stock_info (CTPF1002R) rows memoized per run: the NXT probe and the basic-info cache refresh
+# read the same response, which used to be requested twice per symbol. Failures are not memoized.
+_STOCK_INFO_ROWS: dict[str, pd.Series] = {}
+
+
+def _search_stock_info_row(code: str) -> pd.Series | None:
+    if code in _STOCK_INFO_ROWS:
+        return _STOCK_INFO_ROWS[code]
     stock_info_fn = getattr(dsf, "search_stock_info", None)
     if not callable(stock_info_fn):
-        return False
+        return None
 
     last_exc = None
+    result = None
     for attempt in range(2):
         try:
             result = stock_info_fn(prdt_type_cd="300", pdno=code)
@@ -427,19 +507,26 @@ def probe_nxt_tradeable(code: str) -> bool:
         except Exception as exc:
             last_exc = exc
             if attempt == 0:
-                logger.debug("NXT probe attempt 1 failed for %s, retrying: %s", code, exc)
+                logger.debug("search_stock_info attempt 1 failed for %s, retrying: %s", code, exc)
                 time.sleep(0.3)
 
     if last_exc is not None:
-        logger.warning("NXT probe failed for %s (both attempts): %s", code, last_exc)
-        return False
-
+        logger.warning("search_stock_info failed for %s (both attempts): %s", code, last_exc)
+        return None
     if result is None or getattr(result, "empty", True):
+        return None
+    row = result.iloc[-1]
+    _STOCK_INFO_ROWS[code] = row
+    return row
+
+
+def probe_nxt_tradeable(code: str) -> bool:
+    row = _search_stock_info_row(code)
+    if row is None:
         return False
 
-    row = result.iloc[-1]
     for key in ("cptt_trad_tr_psbl_yn", "nxt_tr_stop_yn", "tr_stop_yn"):
-        if key not in result.columns:
+        if key not in row.index:
             continue
         flag = _is_truthy_flag(row.get(key))
         if flag is None:
@@ -449,25 +536,49 @@ def probe_nxt_tradeable(code: str) -> bool:
     return False
 
 
+MINUTE_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+MINUTE_CHART_TR_ID = "FHKST03010230"  # 주식일별분봉조회
+
+
+class MinuteChartError(RuntimeError):
+    """KIS minute-chart request failed (not "no data")."""
+
+
+def _fetch_minute_page(code: str, market_div: str, target_date: str, hour: str) -> pd.DataFrame:
+    """One page of inquire_time_dailychartprice output2; raises MinuteChartError on an API error.
+
+    The vendor wrapper returns an empty DataFrame for both "no data" and errors, so a failed page
+    used to end pagination silently: the symbol was saved with a truncated day, or recorded as
+    "empty" and skipped by every later resume. Measured: no-data cases (other market, NX/UN for a
+    non-NXT symbol, unknown code) all answer rt_cd=0 with zero rows, so not-OK is always an error.
+    """
+    res = ka._url_fetch(MINUTE_CHART_URL, MINUTE_CHART_TR_ID, "", {
+        "FID_COND_MRKT_DIV_CODE": market_div,
+        "FID_INPUT_ISCD": code,
+        "FID_INPUT_HOUR_1": hour,
+        "FID_INPUT_DATE_1": target_date,
+        "FID_PW_DATA_INCU_YN": "Y",
+        "FID_FAKE_TICK_INCU_YN": "",
+    })
+    if not res.isOK():
+        try:
+            detail = f"{res.getErrorCode()} {res.getErrorMessage()}"
+        except Exception:
+            detail = str(getattr(res, "getResCode", lambda: "?")())
+        raise MinuteChartError(f"{code} {market_div} {target_date} {hour}: {detail}")
+    return pd.DataFrame(res.getBody().output2)
+
+
 def _parse_one_market(code: str, market_div: str, target_date: str, max_pages: int = 15) -> pd.DataFrame | None:
     # Regular market: until 15:30, NXT: until 20:00.
+    # API errors propagate (MinuteChartError) so the caller retries/fails the whole symbol
+    # instead of saving a partial day.
     current_hour = "200000" if market_div == "NX" else "153000"
     all_df: list[pd.DataFrame] = []
     last_earliest_time: int | None = None
 
     for _ in range(max_pages):
-        try:
-            _, df = inquire_time_dailychartprice(
-                fid_cond_mrkt_div_code=market_div,
-                fid_input_iscd=code,
-                fid_input_hour_1=current_hour,
-                fid_input_date_1=target_date,
-                fid_pw_data_incu_yn="Y",
-                fid_fake_tick_incu_yn="",
-            )
-        except Exception as exc:
-            logger.warning("chart fetch failed %s (%s): %s", code, market_div, exc)
-            break
+        df = _fetch_minute_page(code, market_div, target_date, current_hour)
 
         if df is None or df.empty:
             break
@@ -503,6 +614,10 @@ def _parse_one_market(code: str, market_div: str, target_date: str, max_pages: i
 
     for col in ("stck_oprc", "stck_hgpr", "stck_lwpr", "stck_prpr", "cntg_vol"):
         merged[col] = pd.to_numeric(merged[col], errors="coerce")
+    if "acml_tr_pbmn" in merged.columns:
+        merged["acml_tr_pbmn"] = pd.to_numeric(merged["acml_tr_pbmn"], errors="coerce")
+    else:
+        merged["acml_tr_pbmn"] = float("nan")
 
     merged["datetime"] = pd.to_datetime(
         target_date + merged["stck_cntg_hour"],
@@ -517,6 +632,15 @@ def _parse_one_market(code: str, market_div: str, target_date: str, max_pages: i
         ascending=[True, False, False],
     ).drop_duplicates(subset=["datetime"], keep="first")
 
+    # Per-minute traded value (KRW) = diff of this market's cumulative value (acml_tr_pbmn);
+    # the first bar of the day is its own cumulative value. Taken before the low-price filter so
+    # dropping a bad row does not merge two minutes' value into one.
+    merged = merged.sort_values("datetime")
+    acml = merged["acml_tr_pbmn"]
+    amount = acml.diff()
+    amount.iloc[0] = acml.iloc[0]
+    merged["amount"] = amount.where(amount >= 0)
+
     valid_price = merged[["stck_oprc", "stck_hgpr", "stck_lwpr", "stck_prpr"]].max(axis=1) > 0
     merged = merged[valid_price].copy()
     if merged.empty:
@@ -530,7 +654,7 @@ def _parse_one_market(code: str, market_div: str, target_date: str, max_pages: i
             "stck_prpr": "close",
             "cntg_vol": "volume",
         }
-    )[["datetime", "open", "high", "low", "close", "volume"]]
+    )[["datetime", "open", "high", "low", "close", "volume", "amount"]]
     out["market"] = market_div
     return out.sort_values("datetime").reset_index(drop=True)
 
@@ -884,37 +1008,99 @@ def fetch_and_save_daily_ohlcv(
     return True
 
 
-def fetch_52w_high_low(code: str, env_dv: str) -> dict | None:
-    """Fetch the real 52-week high/low from KIS inquire_price (fields
-    w52_hgpr/w52_lwpr). Used by r002 to compute high_52w_ratio against the
-    true 52-week high instead of the max of a short local daily-bar window.
-    Returns None on any failure (r002 falls back to its own local calc).
+# inquire_price fields kept in _quote_snapshot.json (same response as the 52w lookup, no extra call).
+# This is the state at fetch time: valid for target_date only while target_date is still the latest
+# session (collected that evening / before the next open) - "point_in_time" in each entry.
+QUOTE_NUMERIC_FIELDS = (
+    "stck_sdpr", "stck_mxpr", "stck_llam", "aspr_unit", "hts_avls", "vol_tnrt", "per", "pbr", "eps", "bps",
+    "hts_frgn_ehrt", "frgn_ntby_qty", "pgtr_ntby_qty", "marg_rate", "whol_loan_rmnd_rate",
+)
+QUOTE_FLAG_FIELDS = (
+    "iscd_stat_cls_code", "mrkt_warn_cls_code", "short_over_yn", "invt_caful_yn", "sltr_yn", "temp_stop_yn",
+    "mang_issu_cls_code", "vi_cls_code", "crdt_able_yn", "ssts_yn", "w52_hgpr_date", "w52_lwpr_date",
+)
+
+
+def _kst_today() -> str:
+    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+
+
+_LATEST_SESSION: dict[str, str | None] = {}
+
+
+def latest_session_date() -> str | None:
+    """Most recent KRX session date (YYYYMMDD), from the KOSPI daily index as of today (KST); once per run."""
+    today = _kst_today()
+    if today in _LATEST_SESSION:
+        return _LATEST_SESSION[today]
+    latest = None
+    index_fn = getattr(dsf, "inquire_index_daily_price", None)
+    if callable(index_fn):
+        try:
+            _df1, df2 = index_fn(
+                fid_period_div_code="D", fid_cond_mrkt_div_code="U", fid_input_iscd="0001", fid_input_date_1=today,
+            )
+            if df2 is not None and not df2.empty and "stck_bsop_date" in df2.columns:
+                dates = df2["stck_bsop_date"].astype(str).str.strip()
+                dates = dates[dates.str.fullmatch(r"\d{8}") & (dates <= today)]
+                latest = dates.max() if not dates.empty else None
+        except Exception as exc:
+            logger.warning("latest session lookup failed: %s", exc)
+    if latest is None:
+        logger.warning("latest session date unknown - quote/52w snapshots treated as point-in-time only when fetched on the target date")
+    _LATEST_SESSION[today] = latest
+    return latest
+
+
+def fetch_quote_snapshot(code: str, env_dv: str, target_date: str) -> dict | None:
+    """KIS inquire_price snapshot -> {"w52": {...} | None, "quote": {...}} or None on failure.
+
+    w52 (w52_hgpr/w52_lwpr) feeds r002/g002 high_52w_ratio. The API has no date parameter and reflects
+    every session up to now, so it is target_date's value only while target_date is still the latest
+    session (point_in_time). Otherwise w52 is dropped and consumers fall back to their local daily-bar
+    calc: checking the high/low dates alone is not enough, since target_date's 52-week high may have
+    rolled out of today's window (Codex review).
     """
     try:
         from inquire_price import inquire_price as _price_api
     except ImportError:
-        logger.debug("inquire_price not importable; skipping 52w snapshot for %s", code)
+        logger.debug("inquire_price not importable; skipping quote snapshot for %s", code)
         return None
 
     try:
         df = _price_api(env_dv=env_dv, fid_cond_mrkt_div_code="J", fid_input_iscd=code)
     except Exception as exc:
-        logger.debug("52w price snapshot fetch failed %s: %s", code, exc)
+        logger.debug("quote snapshot fetch failed %s: %s", code, exc)
         return None
 
     if df is None or df.empty:
         return None
 
     row = df.iloc[0]
+    quote: dict = {"fetched_on": _kst_today()}
+    latest = latest_session_date()
+    quote["point_in_time"] = (latest == target_date) if latest else (quote["fetched_on"] == target_date)
+    for key in QUOTE_NUMERIC_FIELDS:
+        try:
+            quote[key] = float(row.get(key))
+        except (TypeError, ValueError):
+            quote[key] = None
+    for key in QUOTE_FLAG_FIELDS:
+        val = row.get(key)
+        quote[key] = None if val is None else str(val).strip()
+
+    w52 = None
     try:
         w52_high = float(row.get("w52_hgpr"))
         w52_low = float(row.get("w52_lwpr"))
     except (TypeError, ValueError):
-        return None
-    if w52_high <= 0:
-        return None
-
-    return {"w52_high": w52_high, "w52_low": w52_low}
+        w52_high = w52_low = 0.0
+    if w52_high > 0:
+        if quote["point_in_time"]:
+            w52 = {"w52_high": w52_high, "w52_low": w52_low}
+        else:
+            logger.debug("52w for %s dropped: %s is not the latest session (%s)", code, target_date, latest)
+    return {"w52": w52, "quote": quote}
 
 
 BASIC_INFO_CACHE_MAX_AGE_DAYS = 30  # 관리종목/거래정지/업종은 자주 안 바뀌므로 매일 재조회하지 않음
@@ -926,18 +1112,10 @@ def fetch_stock_basic_info(code: str) -> dict | None:
     in production by probe_nxt_tradeable() above (NXT 판정에 동일 API 사용 중).
     Returns None on any failure - caller keeps the previous cached value (if any).
     """
-    stock_info_fn = getattr(dsf, "search_stock_info", None)
-    if not callable(stock_info_fn):
-        return None
-    try:
-        result = stock_info_fn(prdt_type_cd="300", pdno=code)
-    except Exception as exc:
-        logger.debug("search_stock_info failed for %s: %s", code, exc)
-        return None
-    if result is None or getattr(result, "empty", True):
+    row = _search_stock_info_row(code)
+    if row is None:
         return None
 
-    row = result.iloc[-1]
     admn_item = _is_truthy_flag(row.get("admn_item_yn"))
     tr_stop = _is_truthy_flag(row.get("tr_stop_yn"))
     # [2026-09-23] lstg_stqt(상장주수) - 같은 응답의 기존 미사용 필드. 시가총액(price*lstg_stqt)
@@ -1001,8 +1179,11 @@ def get_stock_basic_info_cached(cache: dict, code: str, target_date: str) -> dic
         if "lstg_stqty" in entry:
             fetched_at = entry.get("fetched_at")
             if fetched_at:
+                # [2026-10-10] 나이는 실제 조회일(KST 오늘) 기준. 이전에는 fetched_at에 대상일을 적고 대상일과
+                # 비교해서, 과거 날짜 백필 시 오늘 조회한 값이 과거 날짜로 기록되고 나이도 틀렸음.
+                # (이 캐시는 날짜별이 아닌 현재 상태라 과거 날짜 백필에는 여전히 현재 값이 쓰인다.)
                 try:
-                    age_days = (datetime.strptime(target_date, "%Y%m%d") - datetime.strptime(fetched_at, "%Y%m%d")).days
+                    age_days = (datetime.strptime(_kst_today(), "%Y%m%d") - datetime.strptime(fetched_at, "%Y%m%d")).days
                 except ValueError:
                     age_days = BASIC_INFO_CACHE_MAX_AGE_DAYS + 1
                 if 0 <= age_days <= BASIC_INFO_CACHE_MAX_AGE_DAYS:
@@ -1011,7 +1192,7 @@ def get_stock_basic_info_cached(cache: dict, code: str, target_date: str) -> dic
     fresh = fetch_stock_basic_info(code)
     if fresh is None:
         return entry  # keep stale cache rather than losing the data on a transient API failure
-    fresh["fetched_at"] = target_date
+    fresh["fetched_at"] = _kst_today()
     cache[code] = fresh
     return fresh
 
@@ -1045,9 +1226,14 @@ def fetch_market_index_daily(target_date: str, window: int = 30) -> dict:
         series_df = df2.copy()
         if "stck_bsop_date" in series_df.columns:
             series_df = series_df.sort_values("stck_bsop_date")
-        closes = pd.to_numeric(series_df["bstp_nmix_prpr"], errors="coerce").dropna().tail(window)
-        if len(closes) >= 2:
-            result[key] = closes.tolist()
+        series_df["_close"] = pd.to_numeric(series_df["bstp_nmix_prpr"], errors="coerce")
+        series_df = series_df.dropna(subset=["_close"]).tail(window)
+        if len(series_df) >= 2:
+            result[key] = series_df["_close"].tolist()
+            # [2026-10-10] 날짜를 함께 저장(종가만 있으면 종목 일봉과 날짜 정렬 불가). g002는 kospi/kosdaq
+            # 리스트만 읽으므로 별도 키로 추가 - 기존 형식 호환.
+            if "stck_bsop_date" in series_df.columns:
+                result.setdefault("dates", {})[key] = series_df["stck_bsop_date"].astype(str).tolist()
     return result
 
 
@@ -1349,7 +1535,7 @@ def main() -> None:
                 json.dump(market_index, _f, ensure_ascii=False, indent=2)
             logger.info(
                 "saved market index snapshot (%s): %s",
-                ", ".join(f"{k}={len(v)}d" for k, v in market_index.items()),
+                ", ".join(f"{k}={len(v)}d" for k, v in market_index.items() if k != "dates"),
                 market_index_path,
             )
         else:
@@ -1360,6 +1546,7 @@ def main() -> None:
         nxt_flags: dict[str, bool] = {}
         saved_symbols: list[tuple[str, str]] = []
         w52_map: dict[str, dict] = {}
+        quote_map: dict[str, dict] = {}
 
         cutoff_ts = _collection_cutoff_ts(target_date, include_nxt)
         if args.no_resume:
@@ -1375,11 +1562,14 @@ def main() -> None:
             if not args.no_resume:
                 rec = progress.get(code)
                 paths = _symbol_output_paths(output_dir, code, name, args.save_legacy_files)
-                if not (rec and _resume_record_valid(rec, paths, include_nxt, args.save_legacy_files, cutoff_ts)):
+                if not (rec and _resume_record_valid(
+                    rec, paths, include_nxt, args.save_legacy_files, cutoff_ts, args.save_10s_indicators,
+                )):
                     rec = None
                     if all(p.is_file() for p in paths):
                         rec = _adopt_existing_symbol_files(
                             output_dir, code, name, include_nxt, args.save_legacy_files, cutoff_ts, args.env,
+                            target_date, args.save_10s_indicators,
                         )
                         if rec:
                             _append_resume_progress(output_dir, rec)
@@ -1390,8 +1580,10 @@ def main() -> None:
                 if rec:
                     nxt_flags[code] = bool(rec.get("nxt"))
                     if rec["status"] == "saved":
-                        if rec.get("w52"):
+                        if rec.get("w52") and _record_w52_point_in_time(rec, target_date):
                             w52_map[code] = rec["w52"]
+                        if rec.get("quote"):
+                            quote_map[code] = rec["quote"]
                         get_stock_basic_info_cached(basic_info_cache, code, target_date)
                         saved_count += 1
                         saved_symbols.append((code, name))
@@ -1440,21 +1632,27 @@ def main() -> None:
             else:
                 df_10s = interpolate_to_10sec(df)
 
-                df_10s = calculate_r76_indicators(df_10s)
-                # 1 = KIS 원본 1분봉 행, 0 = 보간 합성 행. 무체결 분/단일가 구간의 :00 행도 합성이라
-                # g003/g009가 :00 행만으로 원본 분봉을 복원하면 가짜 봉이 섞이던 문제 방지용(마지막 열에 추가).
+                # [2026-10-10] 지표 열은 기본 생략(--save-10s-indicators로 유지) - g003은 1분/3분봉으로 묶은 뒤
+                # r002 calculate_indicators로 다시 계산하고 g009는 종가만 읽어, 파일 용량의 대부분이 미사용이었음.
+                if args.save_10s_indicators:
+                    df_10s = calculate_r76_indicators(df_10s)
+                # amount = 해당 분 거래대금(원), raw_bar==1 행에만 값(보간 행은 공란).
+                # raw_bar: 1 = KIS 원본 1분봉 행, 0 = 보간 합성 행. 무체결 분/단일가 구간의 :00 행도 합성이라
+                # g003/g009가 :00 행만으로 원본 분봉을 복원하면 가짜 봉이 섞이던 문제 방지용. 두 열 모두 맨 뒤.
+                df_10s["amount"] = df_10s.pop("amount")
                 df_10s["raw_bar"] = df_10s["datetime"].isin(df["datetime"]).astype("int8")
 
                 safe_name = str(name).replace("/", "_").replace("\\", "_")
                 file_10s_path = output_dir / f"{code}_{safe_name}_10s.txt"
                 df_10s.to_csv(file_10s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
 
-                # 3분봉 파일 기본 저장 (r006 전략 로직의 메인 신호 소스)
-                df_3m = build_3min_indicator_frame(df)
-                file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
-                df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
-                legacy_log = f" | 3m={len(df_3m)} -> {file_3m_path}"
+                legacy_log = ""
                 if args.save_legacy_files:
+                    # [2026-10-10] 3분봉 파일은 읽는 코드가 없어(g003/r003은 직접 3분봉을 만듦) legacy 옵션으로 이동.
+                    df_3m = build_3min_indicator_frame(df)
+                    file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
+                    df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                    legacy_log += f" | 3m={len(df_3m)} -> {file_3m_path}"
                     df_1m = enrich_with_strategy_indicators(df)
                     df_20s = interpolate_to_20sec(df_1m)
 
@@ -1468,17 +1666,21 @@ def main() -> None:
                         f" | 20s(interpolated)={len(df_20s)} -> {legacy_20s_path}"
                     )
 
-                # 일봉 데이터 취득 및 저장 (r002 우하향 종목 필터용)
-                fetch_and_save_daily_ohlcv(
+                # 일봉 데이터 취득 및 저장 (r002 우하향 종목 필터용). 실패하면 진행기록에 daily=False를 남겨
+                # 다음 실행에서 재수집 - 전일/당일 종가와 g002 입력이 이 파일에 의존한다.
+                daily_ok = fetch_and_save_daily_ohlcv(
                     code=code, name=name, env_dv=args.env,
                     target_date=target_date, output_dir=output_dir,
                 )
 
-                # Real 52-week high/low snapshot (KIS inquire_price) for r002's
-                # high_52w_ratio, replacing its short local daily-bar max.
-                w52 = fetch_52w_high_low(code=code, env_dv=args.env)
+                # KIS inquire_price snapshot: real 52-week high/low for r002/g002 high_52w_ratio (dropped when
+                # the range was set after target_date) + risk/limit fields for _quote_snapshot.json.
+                snap = _quote_record_fields(code, args.env, target_date)
+                w52 = snap["w52"]
                 if w52:
                     w52_map[code] = w52
+                if snap["quote"]:
+                    quote_map[code] = snap["quote"]
 
                 # 관리종목/거래정지/업종 스냅샷 (KIS search_stock_info) - 캐시가 신선하면
                 # API 재호출 없이 재사용(BASIC_INFO_CACHE_MAX_AGE_DAYS). g002가 하드필터
@@ -1488,9 +1690,11 @@ def main() -> None:
                 # Written last so a crash mid-symbol leaves no record and the symbol is refetched.
                 _append_resume_progress(output_dir, {
                     "code": code, "name": name, "status": "saved", "include_nxt": include_nxt,
-                    "legacy": args.save_legacy_files, "nxt": nxt_tradeable, "w52": w52,
-                    "fetched_at": time.time(),
+                    "legacy": args.save_legacy_files, "nxt": nxt_tradeable, **snap,
+                    "daily": bool(daily_ok), "ind10s": bool(args.save_10s_indicators), "fetched_at": time.time(),
                 })
+                if not daily_ok:
+                    logger.warning("[%d/%d] %s(%s) | daily csv fetch failed - will refetch on next run", idx, len(symbols), code, name)
 
                 saved_count += 1
                 saved_symbols.append((code, name))
@@ -1555,8 +1759,16 @@ def main() -> None:
                 len(daily_close_map), dc_official, len(daily_close_map) - dc_official, daily_close_path,
             )
 
-        if w52_map:
-            w52_path = output_dir / "_52w_high_low.json"
+        # Written even when empty so a rerun drops a stale file (e.g. an older version's future-leaking 52w).
+        quote_path = output_dir / "_quote_snapshot.json"
+        if quote_map or quote_path.exists():
+            with open(quote_path, "w", encoding="utf-8") as _f:
+                json.dump(quote_map, _f, ensure_ascii=False, indent=2)
+            pit = sum(1 for q in quote_map.values() if q.get("point_in_time"))
+            logger.info("saved quote_snapshot.json (%d codes, %d point-in-time): %s", len(quote_map), pit, quote_path)
+
+        w52_path = output_dir / "_52w_high_low.json"
+        if w52_map or w52_path.exists():
             with open(w52_path, "w", encoding="utf-8") as _f:
                 json.dump(w52_map, _f, ensure_ascii=False, indent=2)
             logger.info("saved 52w_high_low.json (%d codes): %s", len(w52_map), w52_path)
