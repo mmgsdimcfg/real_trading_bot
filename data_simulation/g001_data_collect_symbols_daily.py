@@ -45,6 +45,12 @@ Update log format (append only):
 
 Update log:
 - [2026-10-10] type=feat owner=claude
+    summary: CSV 숫자 표기 - 사용자 규칙: 절대값 1000 이상 소수 0자리, 100 이상 1자리, 10 이상 2자리, 그 밖 3자리
+      (7700.00->7700, 138.33->138.3, 14.56->14.56, 6.789->6.789). 10s/일봉/flows/legacy 파일 모두 _fmt_numbers 적용
+      (기존 10s는 일괄 소수 2자리). 10s volume(분 거래량/6)도 같은 규칙이라 1000 이상이면 정수로 반올림됨.
+    impact: collector
+    compatibility: backward-compatible (값 표기만 변경, 열 불변)
+- [2026-10-10] type=feat owner=claude
     summary: 이어받기 중 일봉 파일이 이전 형식(지표 열 없음, 20행)이면 일봉만 다시 받음(_daily_csv_outdated, 종목당
       1회 호출). g002 우상향 필수조건이 MA20 5일 기울기 때문에 일봉 25행+지표를 요구해, 이전 수집분은 모두
       uptrend_unknown으로 탈락하던 것을 차트 재다운로드 없이 해결.
@@ -840,6 +846,32 @@ def calculate_r76_indicators(df: pd.DataFrame, params: dict | None = None) -> pd
     return out
 
 
+def _fmt_number(v) -> str:
+    """Decimal places by magnitude (user rule 2026-10-10): |v|>=1000 -> 0, >=100 -> 1, >=10 -> 2, else 3.
+    e.g. 7700.00 -> 7700, 138.33 -> 138.3, 14.56 -> 14.56, 6.789 -> 6.789. NaN -> empty, 0 -> 0."""
+    if v is None or v != v:
+        return ""
+    if v == 0:
+        return "0"
+    def _digits(x):
+        return 0 if x >= 1000 else 1 if x >= 100 else 2 if x >= 10 else 3
+
+    text = f"{v:.{_digits(abs(v))}f}"
+    rounded = abs(float(text))  # 99.999 -> "100.00" crosses a band: re-render as "100.0"
+    if _digits(rounded) < _digits(abs(v)):
+        text = f"{v:.{_digits(rounded)}f}"
+    return text[1:] if text.startswith("-") and float(text) == 0 else text
+
+
+def _fmt_numbers(df: pd.DataFrame) -> pd.DataFrame:
+    """Copy of df with float columns rendered by _fmt_number (used for every CSV g001 writes)."""
+    out = df.copy()
+    for col in out.columns:
+        if pd.api.types.is_float_dtype(out[col]):
+            out[col] = [_fmt_number(v) for v in out[col].to_numpy()]
+    return out
+
+
 def add_minute_indicators_to_10s(df_10s: pd.DataFrame, minute_df: pd.DataFrame) -> pd.DataFrame:
     """R76 indicators computed on the real 1m bars, attached to each 10s row as of the last minute bar
     completed at that time (bar labelled hh:mm completes at hh:mm+1), so a row never sees its own
@@ -885,7 +917,7 @@ def _upgrade_10s_indicators(path: Path) -> bool:
             return False
         df = pd.read_csv(path, encoding="utf-8-sig")
         out = add_minute_indicators_to_10s(df, minutes)
-        out.to_csv(path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+        _fmt_numbers(out).to_csv(path, index=False, encoding="utf-8-sig", sep=",")
         return True
     except Exception as exc:
         logger.warning("10s indicator upgrade failed for %s: %s", path.name, exc)
@@ -1148,7 +1180,7 @@ def fetch_and_save_daily_ohlcv(
 
     safe_name = str(name).replace("/", "_").replace("\\", "_")
     out_path = output_dir / f"{code}_{safe_name}_daily.csv"
-    df2.to_csv(out_path, index=False, encoding="utf-8-sig")
+    _fmt_numbers(df2).to_csv(out_path, index=False, encoding="utf-8-sig")
     logger.debug("[daily] %s(%s) | %d rows -> %s", code, name, len(df2), out_path)
     return True
 
@@ -1251,7 +1283,7 @@ def fetch_and_save_flows(
     if fetched:
         merged = pd.concat(parts, axis=1).sort_index()
         merged.index.name = "date"
-        merged.reset_index().to_csv(path, index=False, encoding="utf-8-sig")
+        _fmt_numbers(merged.reset_index()).to_csv(path, index=False, encoding="utf-8-sig")
     return [src for src in FLOW_SOURCES if src not in present]
 
 
@@ -1921,14 +1953,14 @@ def main() -> None:
 
                 safe_name = str(name).replace("/", "_").replace("\\", "_")
                 file_10s_path = output_dir / f"{code}_{safe_name}_10s.txt"
-                df_10s.to_csv(file_10s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                _fmt_numbers(df_10s).to_csv(file_10s_path, index=False, encoding="utf-8-sig", sep=",")
 
                 legacy_log = ""
                 if args.save_legacy_files:
                     # [2026-10-10] 3분봉 파일은 읽는 코드가 없어(g003/r003은 직접 3분봉을 만듦) legacy 옵션으로 이동.
                     df_3m = build_3min_indicator_frame(df)
                     file_3m_path = output_dir / f"{code}_{safe_name}_3m.txt"
-                    df_3m.to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                    _fmt_numbers(df_3m).to_csv(file_3m_path, index=False, encoding="utf-8-sig", sep=",")
                     legacy_log += f" | 3m={len(df_3m)} -> {file_3m_path}"
                     df_1m = enrich_with_strategy_indicators(df)
                     df_20s = interpolate_to_20sec(df_1m)
@@ -1936,8 +1968,8 @@ def main() -> None:
                     file_1m_path = output_dir / f"{code}_{safe_name}_1m.txt"
                     legacy_20s_path = output_dir / f"{code}_{safe_name}_20s.txt"
 
-                    df_1m.to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
-                    df_20s.to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",", float_format="%.2f")
+                    _fmt_numbers(df_1m).to_csv(file_1m_path, index=False, encoding="utf-8-sig", sep=",")
+                    _fmt_numbers(df_20s).to_csv(legacy_20s_path, index=False, encoding="utf-8-sig", sep=",")
                     legacy_log += (
                         f" | 1m={len(df_1m)} -> {file_1m_path}"
                         f" | 20s(interpolated)={len(df_20s)} -> {legacy_20s_path}"
