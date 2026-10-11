@@ -44,6 +44,15 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=perf owner=claude
+    summary: 수집 속도 개선(사용자 요청: Pi에서 종목당 2~4초). 실측 원인 - 분봉 페이지마다 고정 0.1초 대기(분봉 조회 1.27초 중
+      0.70초), NXT 가능 종목의 UN(통합) 전 구간 중복 조회(+4회 이상), 숫자 표기 값 단위 처리(0.49초), 종목 간 0.12초 대기.
+      (1) 고정 대기 제거 -> 요청 간 전역 최소 간격 0.06초(_KisRequestsProxy._throttle, KIS 실전 한도 초당 20건 이하).
+      (2) UN은 NX/J가 모두 비었을 때만 조회. (3) _fmt_numbers numpy 벡터화(0.49 -> 0.17초, 20,017개 값 기존과 동일).
+      (4) --sleep 기본값 0.12 -> 0. 결과: 표본 3종목 2.46/4.13/3.23초 -> 1.83/1.64/0.86초, 10s 파일 수정 전과 동일.
+      12종목 실행 14.8초(시작 포함, 종목당 약 1초).
+    impact: collector
+    compatibility: backward-compatible (출력 동일; NXT 가능 종목에서 J에 없는 분을 UN 봉으로 채우던 동작만 제거)
 - [2026-10-11] type=refactor owner=claude
     summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
       data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
@@ -246,6 +255,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -300,6 +310,10 @@ KIS_RATE_LIMIT_RETRIES = 5          # EGW00201 "초당 거래건수 초과"
 KIS_RATE_LIMIT_BACKOFF = 0.5        # seconds, multiplied by attempt number
 KIS_NETWORK_RETRIES = 3             # GET only: connection error / timeout
 KIS_NETWORK_BACKOFF = 1.0
+# [2026-10-11] 요청 간 최소 간격(전역). KIS 실전 한도 초당 20건보다 낮게(약 16건/초) 유지 - 페이지마다 넣던 고정
+# 0.1초 대기와 종목 간 0.12초 대기를 대체(실측: 분봉 조회 1.27초 중 0.70초가 고정 대기였음). 한도 초과(EGW00201)는
+# 아래 재시도가 그대로 처리한다.
+KIS_MIN_REQUEST_INTERVAL = 0.06
 
 
 class _KisRequestsProxy:
@@ -308,6 +322,13 @@ class _KisRequestsProxy:
     def __init__(self, real_requests) -> None:
         self._real = real_requests
         self._session = real_requests.Session()
+        self._last_request = 0.0
+
+    def _throttle(self) -> None:
+        wait = self._last_request + KIS_MIN_REQUEST_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last_request = time.monotonic()
 
     def __getattr__(self, name):
         # exceptions, Response, etc. still resolve to the real module.
@@ -324,6 +345,7 @@ class _KisRequestsProxy:
         rate_attempt = 0
         net_attempt = 0
         while True:
+            self._throttle()
             try:
                 res = self._session.request(method, url, **kwargs)
             except (self._real.exceptions.ConnectionError, self._real.exceptions.Timeout) as exc:
@@ -362,7 +384,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watchlist-file", type=str, default="", help="r004-style watchlist file(s) with code,name per line. Comma-separated multiple paths.")
     parser.add_argument("--watchlist-only", action="store_true", help="Use --watchlist-file as the only symbol source, ignoring --symbols-file.")
     parser.add_argument("--data-root", type=str, default=str(RUNTIME_DATA_DIR), help="Output data root (default: <git root>/runtime/data)")
-    parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
+    parser.add_argument("--sleep", type=float, default=0.0, help="Extra sleep seconds between symbols (requests are already throttled to KIS_MIN_REQUEST_INTERVAL)")
     parser.add_argument("--nxt", action="store_true", help="Include NXT market data (08:00~20:00)")
     parser.add_argument(
         "--save-legacy-files",
@@ -681,7 +703,6 @@ def _parse_one_market(code: str, market_div: str, target_date: str, max_pages: i
 
         next_dt = datetime.strptime(f"{earliest:06d}", "%H%M%S") - timedelta(minutes=1)
         current_hour = next_dt.strftime("%H%M%S")
-        time.sleep(0.1)
 
     if not all_df:
         return None
@@ -743,6 +764,11 @@ def fetch_symbol_data(code: str, target_date: str, include_nxt: bool) -> pd.Data
 
     collected: list[pd.DataFrame] = []
     for market in market_candidates:
+        # [2026-10-11] UN(통합)은 NX/J가 비었을 때만 조회 - 우선순위(NX > J > UN)상 UN 봉은 J/NX에 없는 분만 채우는데,
+        # NXT 거래 가능 종목은 UN 전 구간(4페이지+)을 매번 받아 버려 왔음. J에 없는 분은 무체결 분으로 둔다
+        # (UN 봉은 KRX+NXT 합산 거래량이라 J 기준 데이터와 섞이지 않는 편이 정확).
+        if market == "UN" and collected:
+            break
         data = _parse_one_market(code, market, target_date)
         if data is not None and not data.empty:
             collected.append(data)
@@ -880,13 +906,32 @@ def _fmt_number(v) -> str:
 
 
 def _fmt_numbers(df: pd.DataFrame) -> pd.DataFrame:
-    """Copy of df with float columns rendered by _fmt_number (used for every CSV g001 writes)."""
+    """Copy of df with float columns rendered by the _fmt_number rule (used for every CSV g001 writes).
+    Vectorized with numpy (per-value Python formatting took ~0.5s per 10s file on a Raspberry Pi)."""
     out = df.copy()
     for col in out.columns:
-        if pd.api.types.is_float_dtype(out[col]):
-            out[col] = [_fmt_number(v) for v in out[col].to_numpy()]
+        if not pd.api.types.is_float_dtype(out[col]):
+            continue
+        arr = out[col].to_numpy(dtype="float64")
+        res = np.full(arr.shape, "", dtype=object)
+        finite = np.isfinite(arr)
+        absv = np.abs(np.where(finite, arr, 0.0))
+        digits = np.where(absv >= 1000, 0, np.where(absv >= 100, 1, np.where(absv >= 10, 2, 3)))
+        # rounding can cross a band (99.999 -> 100.00): use the band of the rounded magnitude
+        rounded = np.select([digits == 0, digits == 1, digits == 2],
+                            [np.round(absv, 0), np.round(absv, 1), np.round(absv, 2)], np.round(absv, 3))
+        digits = np.minimum(digits, np.where(rounded >= 1000, 0, np.where(rounded >= 100, 1, np.where(rounded >= 10, 2, 3))))
+        for d in (0, 1, 2, 3):
+            mask = finite & (digits == d)
+            if mask.any():
+                res[mask] = [f"{v:.{d}f}" for v in arr[mask].tolist()]
+        res[finite & (arr == 0)] = "0"
+        # 반올림하면 0이 되는 음수(-0.0004 -> "-0.000")는 부호 없이 표기 (대상: 절대값 1 미만 음수만 확인)
+        for i in np.flatnonzero(finite & (arr < 0) & (absv < 1)):
+            if float(res[i]) == 0:
+                res[i] = res[i][1:]
+        out[col] = res
     return out
-
 
 def add_minute_indicators_to_10s(df_10s: pd.DataFrame, minute_df: pd.DataFrame) -> pd.DataFrame:
     """R76 indicators computed on the real 1m bars, attached to each 10s row as of the last minute bar
