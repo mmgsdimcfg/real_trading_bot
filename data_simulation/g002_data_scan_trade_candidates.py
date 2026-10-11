@@ -23,6 +23,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=feat owner=claude
+    summary: 종목별 선정 이유 리포트를 국문(_scanner_report_ko.md)과 영문(_scanner_report_ko_en.md) 두 파일로 저장하고,
+      끝에 _scanner_report.md의 Filter Counts/Soft Flags를 사유별 뜻풀이(국문/영문)와 함께 포함(g008, 사용자 요청).
+    impact: scanner
+    compatibility: backward-compatible (파일 1개 추가)
 - [2026-10-11] type=tune owner=claude
     summary: 상승 초입 패턴 등급(A/B) 종목은 20일 평균 거래대금 50억 이상이면 시장상대 유동성 탈락 면제
       (PATTERN_LIQUIDITY_MIN_AMOUNT, 사용자 결정 - 선정 수 확대). 소프트플래그 liquidity_below_market_dual_pattern_exempt.
@@ -3209,6 +3214,7 @@ if __name__ == "__main__":
     report_filename = f"_{output_prefix}_scanner_report.md" if output_prefix else "_scanner_report.md"
     all_scan_filename = f"_{output_prefix}_scan_all.md" if output_prefix else "_scan_all.md"
     reason_report_filename = f"_{output_prefix}_scanner_report_ko.md" if output_prefix else "_scanner_report_ko.md"
+    reason_report_en_filename = f"_{output_prefix}_scanner_report_ko_en.md" if output_prefix else "_scanner_report_ko_en.md"
 
     if picks:
         picks_file = out_dir / picks_filename
@@ -3269,21 +3275,24 @@ if __name__ == "__main__":
                 df = build_daily_bars(data_root, code, reason_date_str, single_date_only=single_date_only)
             return df
 
-        reason_file = out_dir / reason_report_filename
-        reason_file.write_text(
-            render_selection_reason_report(
-                scan_result["selected_rows"],
-                target_label=reason_date_str or "latest",
-                summary=scan_result["summary"],
-                config=config,
-                load_daily_df=_reason_daily_df,
-                has_volume_thrust_reversal=_has_volume_thrust_reversal,
-                box_window=BOX_RANGE_NO_PROGRESS_WINDOW,
-                bearish_window=BEARISH_CANDLE_DOMINANCE_WINDOW,
-            ),
-            encoding="utf-8",
-        )
-        print(f"종목별 선정 이유 리포트를 저장했습니다: {reason_file}")
+        # [2026-10-11] 국문(_ko.md)과 영문(_ko_en.md) 두 벌 - 끝에 Filter Counts/Soft Flags 뜻풀이 포함(g008).
+        for _lang, _fname in (("ko", reason_report_filename), ("en", reason_report_en_filename)):
+            reason_file = out_dir / _fname
+            reason_file.write_text(
+                render_selection_reason_report(
+                    scan_result["selected_rows"],
+                    target_label=reason_date_str or "latest",
+                    summary=scan_result["summary"],
+                    config=config,
+                    load_daily_df=_reason_daily_df,
+                    has_volume_thrust_reversal=_has_volume_thrust_reversal,
+                    box_window=BOX_RANGE_NO_PROGRESS_WINDOW,
+                    bearish_window=BEARISH_CANDLE_DOMINANCE_WINDOW,
+                    lang=_lang,
+                ),
+                encoding="utf-8",
+            )
+            print(f"종목별 선정 이유 리포트를 저장했습니다: {reason_file}")
     except Exception as exc:
         print(f"[WARN] 종목별 선정 이유 리포트 생성 실패(스캔 결과에는 영향 없음): {exc}")
 
