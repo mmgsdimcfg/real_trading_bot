@@ -66,6 +66,7 @@ def _soft_flag_label(flag: str, row: dict) -> str:
         "volume_below_market_price_adjusted_avg": "거래량 시장 평균 미달",
         "above_bb_upper": "볼린저 상단 위 마감(단기 과열)",
         "stoch_overbought": "스토캐스틱/윌리엄스 과매수",
+        "liquidity_below_market_dual_pattern_exempt": "거래대금 시장 기준 미달(패턴 종목 50억+ 예외 통과)",
     }
     return labels.get(flag, flag)
 

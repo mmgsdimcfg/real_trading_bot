@@ -24,6 +24,12 @@ Update log format (append only):
 
 Update log:
 - [2026-10-11] type=tune owner=claude
+    summary: 상승 초입 패턴 등급(A/B) 종목은 20일 평균 거래대금 50억 이상이면 시장상대 유동성 탈락 면제
+      (PATTERN_LIQUIDITY_MIN_AMOUNT, 사용자 결정 - 선정 수 확대). 소프트플래그 liquidity_below_market_dual_pattern_exempt.
+      25거래일 재현: 하루 8.6 -> 15.0종목, D+1 시가->종가 +0.36% -> +0.29%, 5일 +1.97% -> +2.24%.
+    impact: scanner
+    compatibility: backward-compatible (패턴 등급 종목만 해당)
+- [2026-10-11] type=tune owner=claude
     summary: 상승 초입 패턴 매수신호 최소 개수 3 -> 2(PATTERN_MIN_SIGNALS, 사용자 요청: 선정 수 확대).
       25거래일 재현에서 A+B 하루 8.4 -> 8.6종목, D+1 시가->종가 +0.36% 유지. 20261008은 2종목 그대로 - 패턴 등급
       종목(A 22, B 7) 대부분이 시장상대 유동성 미달로 탈락해 신호 개수는 병목이 아님.
@@ -506,6 +512,10 @@ LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 �
 # [2026-10-10] fallback이 유동성 미달(liquidity_below_market_dual) 종목을 구제할 때의 절대 하한(20일 평균 거래대금).
 # 상승 초입 패턴 도입 후 적격이 적어(20261008: 7종목) fallback이 일 거래대금 1억 미만 종목까지 채워 넣었음.
 LIQUIDITY_FALLBACK_MIN_AMOUNT = 10_000_000_000  # 100억원/일
+# [2026-10-11] 상승 초입 패턴 등급(A/B) 종목은 20일 평균 거래대금이 이 이상이면 시장상대 유동성 탈락을 면제(사용자 결정).
+# 패턴이 중소형주에서 많이 나와 시장상대 기준(시장 평균의 70%)에 대부분 걸렸음(20261008: 등급 29종목 중 2종목만 통과).
+# 25거래일 재현: 200억+만 하루 8.6종목 D+1 시가->종가 +0.36%, 50억+ 15.0종목 +0.29%(50~100억 구간만 보면 -0.31%, 소표본).
+PATTERN_LIQUIDITY_MIN_AMOUNT = 5_000_000_000  # 50억원/일
 LOW_UP_DAYS_TOLERANCE = 1
 SCORE_DOT_SLOTS = 9         # verbose 스캔 로그의 점수 동그라미 고정폭(칸 수) - code_name 정렬용
 SCORE_DOT_EMPTY = "⚫"       # 빈 칸(탈락 전체, 후보의 남는 칸) 채움 아이콘
@@ -2745,6 +2755,7 @@ def apply_market_relative_liquidity_filters(candidates: list[dict], market_map: 
         vol_below = float(vol_ma20) < required_vol
         amt_below = float(amount_ma20) < required_amt
         absolute_safe = float(amount_ma20) >= LIQUIDITY_ABSOLUTE_SAFE_AMOUNT
+        pattern_safe = bool(row.get("pattern_tier")) and float(amount_ma20) >= PATTERN_LIQUIDITY_MIN_AMOUNT
 
         # Relaxation: disqualify only when both liquidity checks fail, unless the
         # stock's absolute turnover is high enough to be safe regardless of how the
@@ -2754,6 +2765,8 @@ def apply_market_relative_liquidity_filters(candidates: list[dict], market_map: 
         if vol_below and amt_below:
             if absolute_safe:
                 row["soft_flags"].append("liquidity_below_market_dual_but_absolute_safe")
+            elif pattern_safe:
+                row["soft_flags"].append("liquidity_below_market_dual_pattern_exempt")
             else:
                 row["fail_reasons"].append("liquidity_below_market_dual")
         else:
