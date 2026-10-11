@@ -23,6 +23,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=tune owner=claude
+    summary: 상승 초입 패턴 매수신호 최소 개수 3 -> 2(PATTERN_MIN_SIGNALS, 사용자 요청: 선정 수 확대).
+      25거래일 재현에서 A+B 하루 8.4 -> 8.6종목, D+1 시가->종가 +0.36% 유지. 20261008은 2종목 그대로 - 패턴 등급
+      종목(A 22, B 7) 대부분이 시장상대 유동성 미달로 탈락해 신호 개수는 병목이 아님.
+    impact: scanner
+    compatibility: backward-compatible
 - [2026-10-10] type=feat owner=claude
     summary: 사용자 지정 "상승 초입(빨간 박스)" 패턴으로 선정 기준 교체(같은 날 넣은 우상향 필수조건 5개 대체).
       사용자 피드백: 10/08 상위 선정이 이미 많이 오른 뒤 조정 중인 종목(20일선 +7~20%, 최근 5일 음봉 2~3개)이었음.
@@ -1231,7 +1237,7 @@ def _base_breakout_features(df) -> dict:
 
 
 # [2026-10-10] 상승 초입 패턴(사용자 지정 차트의 빨간 박스: 테스 9/21, 대덕전자 9/22~23, 저스템 8/28·9/22).
-PATTERN_MIN_SIGNALS = 3          # 아래 매수 신호 중 최소 개수
+PATTERN_MIN_SIGNALS = 2          # 아래 매수 신호 중 최소 개수 (3 -> 2, 2026-10-11 사용자 요청: 선정 수 확대)
 PATTERN_BASE_MAX_VS_MA20 = 0.05  # 직전 10거래일 중 한 번은 종가가 MA20 대비 +5% 이내(눌림/바닥에서 출발)
 PATTERN_MAX_VS_MA20 = 0.15       # 과열 상한: 종가가 MA20 대비 +15% 초과면 이미 올라간 종목
 PATTERN_MAX_RSI = 70.0
