@@ -4,7 +4,7 @@ g008_selection_reason_report.py
 g002 스캔 결과(최종 선정 종목)마다 "왜 선정됐는가"를 풀어 쓴 리포트를 만든다.
 산출물(g002 실행 시 자동 생성):
 - data/{date}/_{date}_scanner_report_ko.md     (국문)
-- data/{date}/_{date}_scanner_report_ko_en.md  (영문, 같은 내용)
+- data/{date}/_{date}_scanner_report_en.md  (영문, 같은 내용)
 
 종목별 구성:
 - 유형(강세 지속형/반등 기대형/완만한 상승형/횡보 후 반전 시도형)과 핵심 수치

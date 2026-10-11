@@ -24,7 +24,7 @@ Update log format (append only):
 
 Update log:
 - [2026-10-11] type=feat owner=claude
-    summary: 종목별 선정 이유 리포트를 국문(_scanner_report_ko.md)과 영문(_scanner_report_ko_en.md) 두 파일로 저장하고,
+    summary: 종목별 선정 이유 리포트를 국문(_scanner_report_ko.md)과 영문(_scanner_report_en.md) 두 파일로 저장하고,
       끝에 _scanner_report.md의 Filter Counts/Soft Flags를 사유별 뜻풀이(국문/영문)와 함께 포함(g008, 사용자 요청).
     impact: scanner
     compatibility: backward-compatible (파일 1개 추가)
@@ -3214,7 +3214,7 @@ if __name__ == "__main__":
     report_filename = f"_{output_prefix}_scanner_report.md" if output_prefix else "_scanner_report.md"
     all_scan_filename = f"_{output_prefix}_scan_all.md" if output_prefix else "_scan_all.md"
     reason_report_filename = f"_{output_prefix}_scanner_report_ko.md" if output_prefix else "_scanner_report_ko.md"
-    reason_report_en_filename = f"_{output_prefix}_scanner_report_ko_en.md" if output_prefix else "_scanner_report_ko_en.md"
+    reason_report_en_filename = f"_{output_prefix}_scanner_report_en.md" if output_prefix else "_scanner_report_en.md"
 
     if picks:
         picks_file = out_dir / picks_filename
@@ -3275,7 +3275,7 @@ if __name__ == "__main__":
                 df = build_daily_bars(data_root, code, reason_date_str, single_date_only=single_date_only)
             return df
 
-        # [2026-10-11] 국문(_ko.md)과 영문(_ko_en.md) 두 벌 - 끝에 Filter Counts/Soft Flags 뜻풀이 포함(g008).
+        # [2026-10-11] 국문(_ko.md)과 영문(_en.md) 두 벌 - 끝에 Filter Counts/Soft Flags 뜻풀이 포함(g008).
         for _lang, _fname in (("ko", reason_report_filename), ("en", reason_report_en_filename)):
             reason_file = out_dir / _fname
             reason_file.write_text(
