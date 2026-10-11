@@ -22,6 +22,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=refactor owner=claude
+    summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
+      data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
+      (환경변수 AUTO_TRADING_RUNTIME로 변경 가능)를 따른다.
+    impact: common
+    compatibility: breaking (기본 데이터/로그 경로 변경 - 폴더는 함께 이동함)
 - [2026-10-10] type=fix owner=claude
     summary: load_minute_closes가 g001 10s 파일의 raw_bar 열이 있으면 원본 분봉 행만 사용(무체결 분 보간 :00 행 제외).
     impact: sim
@@ -37,13 +43,15 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 from datetime import time as dt_time
 from pathlib import Path
 
 import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_DIR = BASE_DIR / "data"
+# [2026-10-11] data_simulation/data -> <git root>/runtime/data (AUTO_TRADING_RUNTIME로 변경 가능)
+DEFAULT_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or BASE_DIR.parent.parent / "runtime") / "data"
 COST_PCT = 0.23
 EOD_TIME = dt_time(15, 19)
 

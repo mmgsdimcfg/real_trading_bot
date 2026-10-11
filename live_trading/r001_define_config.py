@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-11] type=refactor owner=claude
+#     summary: RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR 추가 - 수집 데이터와 로그를 저장소 밖 <git 루트>/runtime/
+#       {data,log}에 둔다(사용자 요청, 환경변수 AUTO_TRADING_RUNTIME로 변경 가능).
+#     impact: common
+#     compatibility: breaking (data_simulation/data, data_simulation/logs 경로 변경 - 폴더는 함께 이동함)
 # - [2026-10-10] type=feat owner=claude
 #     summary: ENABLE_LIVE_QUOTE_LOG 추가 - r003이 10초 폴링으로 이미 받는 현재가 응답을 quote_ticks_YYYYMMDD.csv로 기록.
 #     impact: live (기록만, 매매 판단 불변)
@@ -548,6 +553,11 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 DEFINE_TODAY_CODE_PATH = "r004_trade_watchlist_today.txt"
 DATA_DIR_NAME = "data"
+# [2026-10-11] 런타임 산출물(수집 데이터/로그)은 저장소 밖 <git 루트>/runtime/{data,log}에 둔다(사용자 요청).
+# 환경변수 AUTO_TRADING_RUNTIME으로 다른 위치를 지정할 수 있다.
+RUNTIME_ROOT = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime")
+RUNTIME_DATA_DIR = RUNTIME_ROOT / DATA_DIR_NAME   # 날짜별 수집 데이터(data/YYYYMMDD), live_runtime 등
+RUNTIME_LOG_DIR = RUNTIME_ROOT / "log"            # r003 실매매 로그, g003 결과 csv/compare
 # ---------------------------------------------------------------------------
 # Feature: R004 watchlist pipeline (scanner -> r004 -> r003 live)
 # ---------------------------------------------------------------------------
@@ -1063,7 +1073,7 @@ ENTRY_1MIN_FRAME_REQUIRE_LATEST = True
 #         고점이 +2% 이상 찍힌 뒤 손익이 +2% 아래로 내려와 BASIC_PEAK_PROTECT_CONFIRM_SECONDS 유지되면 잔량 전량 매도.
 #         확정 3분봉이 3분봉 BB중심선을 위->아래로 이탈(데드크로스, 매수 이후 발생분만)하면 잔량 전량 매도.
 #         하드손절(HARD_STOP_LOSS_PCT)과 당일 강제청산(15:20/NXT 19:59:58)은 안전장치로 유지.
-TRADING_STRATEGY_MODE = "basic"   # "normal" | "basic"
+TRADING_STRATEGY_MODE = "normal"   # "normal" | "basic"
 BASIC_TP1_PCT = 0.015
 BASIC_TP1_RATIO = 0.40
 BASIC_TP2_PCT = 0.020
