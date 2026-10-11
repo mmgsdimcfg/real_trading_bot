@@ -45,6 +45,21 @@ Update log format (append only):
 
 Update log:
 - [2026-10-11] type=perf owner=claude
+    summary: 종목 병렬 수집(--workers, 기본 4, 1이면 기존 순차). 종목 처리 본문을 _process_symbol로 분리해 스레드풀로 실행.
+      공유 상태 보호: 요청 간격 슬롯 예약(_KisRequestsProxy._throttle, 잠금), 진행기록 추가(_PROGRESS_LOCK), 건수/목록
+      집계(_agg_lock). 저장 목록은 원래 종목 순서로 정렬, 집계 JSON(nxt_flags/_quote_snapshot/_52w)은 코드순 정렬해
+      실행마다 같은 내용. 한도 초과(EGW00201)는 분봉/일봉 차트 TR에서 요청 속도와 무관하게 간헐적으로 발생해
+      재시도 대기 0.5 -> 0.15초 x 시도(최대 8회), 요청 간격 0.06 -> 0.05초. 환경변수 G001_MIN_REQUEST_INTERVAL,
+      G001_RATE_LIMIT_BACKOFF로 조정 가능. 실측 40종목: 순차 56.2초 -> 4스레드 37.6초, 결과 파일 동일(진행기록/조회일 제외).
+      kis_auth는 호출마다 헤더를 deepcopy하고 자동 재인증이 꺼져 있어(_autoReAuth=False) 동시 호출에 안전.
+      Codex 검토 반영: 요청 간격은 슬롯을 다시 확인하며 대기(늦게 깬 스레드가 끼어들지 않음, 전송 자체는 잠그지 않아
+      느린 응답 하나가 전체를 막지 않음 - OS 스케줄링으로 수 ms 어긋날 수 있음), 한도 초과 시 모든 스레드 공용 대기
+      (_cooldown), 환경변수 값 검증(_env_seconds), 예상 못 한 예외와 조회 최종 실패는 순차/병렬 모두 실패로 집계하고
+      종료코드 1, Ctrl+C는 STOP_EVENT로 대기 중 작업 취소 + 실행 중 작업은 다음 요청/대기 시점에 중단(이미 보낸
+      HTTP 요청은 응답 또는 read timeout 20초까지 기다림), 중단 중에는 진행기록을 쓰지 않음.
+    impact: collector
+    compatibility: backward-compatible (출력 동일; 처리 로그 순서만 섞임)
+- [2026-10-11] type=perf owner=claude
     summary: 수집 속도 개선(사용자 요청: Pi에서 종목당 2~4초). 실측 원인 - 분봉 페이지마다 고정 0.1초 대기(분봉 조회 1.27초 중
       0.70초), NXT 가능 종목의 UN(통합) 전 구간 중복 조회(+4회 이상), 숫자 표기 값 단위 처리(0.49초), 종목 간 0.12초 대기.
       (1) 고정 대기 제거 -> 요청 간 전역 최소 간격 0.06초(_KisRequestsProxy._throttle, KIS 실전 한도 초당 20건 이하).
@@ -248,9 +263,12 @@ from __future__ import annotations
 import argparse
 import os
 import json
+import math
 import logging
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -306,14 +324,31 @@ logger = logging.getLogger(__name__)
 # connection every time (~170ms per call on Raspberry Pi 4 vs ~25ms when reused).
 # Swapping kis_auth's module-level `requests` keeps the vendor library untouched.
 KIS_HTTP_TIMEOUT = (5, 20)          # (connect, read) seconds; kis_auth sets none
-KIS_RATE_LIMIT_RETRIES = 5          # EGW00201 "초당 거래건수 초과"
-KIS_RATE_LIMIT_BACKOFF = 0.5        # seconds, multiplied by attempt number
+KIS_RATE_LIMIT_RETRIES = 8          # EGW00201 "초당 거래건수 초과" (짧은 대기로 여러 번)
+# [2026-10-11] 0.5 -> 0.15초 x 시도횟수. 한도 초과는 분봉/일봉 차트 TR에서 요청 속도와 무관하게 간헐적으로 나서
+# (간격 0.06~0.125초 모두 24종목당 15~38회) 긴 대기는 시간만 잃었음. 환경변수로 조정 가능.
+def _env_seconds(name: str, default: float, upper: float = 5.0) -> float:
+    """Non-negative, finite seconds from an env var (invalid -> default, clamped to [0, upper])."""
+    try:
+        value = float(os.environ.get(name, default))
+    except ValueError:
+        return default
+    return min(max(value, 0.0), upper) if math.isfinite(value) else default
+
+
+KIS_RATE_LIMIT_BACKOFF = _env_seconds("G001_RATE_LIMIT_BACKOFF", 0.15)  # seconds x attempt
 KIS_NETWORK_RETRIES = 3             # GET only: connection error / timeout
 KIS_NETWORK_BACKOFF = 1.0
-# [2026-10-11] 요청 간 최소 간격(전역). KIS 실전 한도 초당 20건보다 낮게(약 16건/초) 유지 - 페이지마다 넣던 고정
+# [2026-10-11] 요청 간 최소 간격(전역, 스레드 공용). KIS 실전 한도 초당 20건 이하 - 페이지마다 넣던 고정
 # 0.1초 대기와 종목 간 0.12초 대기를 대체(실측: 분봉 조회 1.27초 중 0.70초가 고정 대기였음). 한도 초과(EGW00201)는
 # 아래 재시도가 그대로 처리한다.
-KIS_MIN_REQUEST_INTERVAL = 0.06
+KIS_MIN_REQUEST_INTERVAL = _env_seconds("G001_MIN_REQUEST_INTERVAL", 0.05, upper=1.0)
+# Ctrl+C 등으로 수집을 멈출 때 설정 - 다음 API 요청 시점에 작업 스레드가 즉시 빠져나간다.
+STOP_EVENT = threading.Event()
+
+
+class CollectionStopped(RuntimeError):
+    """Raised inside worker threads once STOP_EVENT is set."""
 
 
 class _KisRequestsProxy:
@@ -322,13 +357,29 @@ class _KisRequestsProxy:
     def __init__(self, real_requests) -> None:
         self._real = real_requests
         self._session = real_requests.Session()
-        self._last_request = 0.0
+        self._next_slot = 0.0
+        self._slot_lock = threading.Lock()
 
     def _throttle(self) -> None:
-        wait = self._last_request + KIS_MIN_REQUEST_INTERVAL - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        self._last_request = time.monotonic()
+        """Wait until this thread may send (thread-safe). The spacing is enforced when a thread leaves this method
+        (rechecked after every wait, so a thread that overslept cannot jump the queue); OS scheduling between
+        here and the actual socket write can still shift sends by a few ms - KIS rejections (EGW00201) are retried.
+        The send itself is not held under the lock so one slow response cannot stall every worker."""
+        while True:
+            if STOP_EVENT.is_set():
+                raise CollectionStopped("collection stopped")
+            with self._slot_lock:
+                now = time.monotonic()
+                if now >= self._next_slot:
+                    self._next_slot = now + KIS_MIN_REQUEST_INTERVAL
+                    return
+                wait = self._next_slot - now
+            STOP_EVENT.wait(min(wait, 0.2))
+
+    def _cooldown(self, seconds: float) -> None:
+        """Push the next slot for every thread (shared backoff after a rate-limit rejection)."""
+        with self._slot_lock:
+            self._next_slot = max(self._next_slot, time.monotonic() + seconds)
 
     def __getattr__(self, name):
         # exceptions, Response, etc. still resolve to the real module.
@@ -354,14 +405,15 @@ class _KisRequestsProxy:
                     raise
                 net_attempt += 1
                 logger.warning("KIS network error, retry %d/%d: %s", net_attempt, KIS_NETWORK_RETRIES, exc)
-                time.sleep(KIS_NETWORK_BACKOFF * net_attempt)
+                if STOP_EVENT.wait(KIS_NETWORK_BACKOFF * net_attempt):
+                    raise CollectionStopped("collection stopped")
                 continue
 
             # Rate-limit rejections are refused before processing, so retrying is safe for both methods.
             if res.status_code != 200 and "EGW00201" in res.text and rate_attempt < KIS_RATE_LIMIT_RETRIES:
                 rate_attempt += 1
                 logger.info("KIS rate limit (EGW00201), retry %d/%d", rate_attempt, KIS_RATE_LIMIT_RETRIES)
-                time.sleep(KIS_RATE_LIMIT_BACKOFF * rate_attempt)
+                self._cooldown(KIS_RATE_LIMIT_BACKOFF * rate_attempt)  # 모든 스레드가 함께 쉰다
                 continue
             return res
 
@@ -384,6 +436,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watchlist-file", type=str, default="", help="r004-style watchlist file(s) with code,name per line. Comma-separated multiple paths.")
     parser.add_argument("--watchlist-only", action="store_true", help="Use --watchlist-file as the only symbol source, ignoring --symbols-file.")
     parser.add_argument("--data-root", type=str, default=str(RUNTIME_DATA_DIR), help="Output data root (default: <git root>/runtime/data)")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Symbols processed in parallel (threads). API requests stay globally throttled; 1 = sequential. "
+                             "--sleep then applies per worker")
     parser.add_argument("--sleep", type=float, default=0.0, help="Extra sleep seconds between symbols (requests are already throttled to KIS_MIN_REQUEST_INTERVAL)")
     parser.add_argument("--nxt", action="store_true", help="Include NXT market data (08:00~20:00)")
     parser.add_argument(
@@ -452,9 +507,14 @@ def _load_resume_progress(output_dir: Path) -> dict[str, dict]:
     return records
 
 
+_PROGRESS_LOCK = threading.Lock()
+
+
 def _append_resume_progress(output_dir: Path, record: dict) -> None:
-    with open(output_dir / RESUME_PROGRESS_FILE, "a", encoding="utf-8") as _f:
-        _f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with _PROGRESS_LOCK:  # --workers 스레드들이 같은 파일에 한 줄씩 추가
+        with open(output_dir / RESUME_PROGRESS_FILE, "a", encoding="utf-8") as _f:
+            _f.write(line)
 
 
 def _resume_record_valid(
@@ -607,7 +667,7 @@ def _search_stock_info_row(code: str) -> pd.Series | None:
             last_exc = exc
             if attempt == 0:
                 logger.debug("search_stock_info attempt 1 failed for %s, retrying: %s", code, exc)
-                time.sleep(0.3)
+                STOP_EVENT.wait(0.3)
 
     if last_exc is not None:
         logger.warning("search_stock_info failed for %s (both attempts): %s", code, last_exc)
@@ -1881,6 +1941,7 @@ def main() -> None:
     data_root_path = Path(args.data_root)
     basic_info_cache = _load_basic_info_cache(data_root_path)
 
+    total_failed: list[str] = []
     for target_date in target_dates:
         output_dir = data_root_path / target_date
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1902,10 +1963,20 @@ def main() -> None:
         else:
             logger.warning("market index snapshot fetch failed for %s - g002 RS/regime will fall back to pykrx", target_date)
 
-        saved_count = 0
-        empty_count = 0
+        counters = {"saved": 0, "empty": 0, "resumed": 0, "adopted": 0, "failed": 0}
+        failed_codes: list[str] = []
+        saved_entries: list[tuple[int, str, str]] = []
+        _agg_lock = threading.Lock()
+
+        def _bump(key: str) -> None:
+            with _agg_lock:
+                counters[key] += 1
+
+        def _add_saved(idx: int, code: str, name: str) -> None:
+            with _agg_lock:
+                saved_entries.append((idx, code, name))
+
         nxt_flags: dict[str, bool] = {}
-        saved_symbols: list[tuple[str, str]] = []
         w52_map: dict[str, dict] = {}
         quote_map: dict[str, dict] = {}
 
@@ -1915,10 +1986,11 @@ def main() -> None:
             progress: dict[str, dict] = {}
         else:
             progress = _load_resume_progress(output_dir)
-        resumed_count = 0
-        adopted_count = 0
 
-        for idx, (code, name) in enumerate(symbols, start=1):
+        # [2026-10-11] 종목 처리를 함수로 분리해 --workers 개 스레드로 병렬 실행. API 요청 간격은 _KisRequestsProxy가
+        # 전역으로 제한(초당 약 16건)하므로 스레드를 늘려도 KIS 한도를 넘지 않는다. 공유 집계(건수/목록)는 _agg_lock,
+        # 진행기록 파일 추가는 _append_resume_progress 내부 잠금으로 보호. 종목별 파일은 서로 겹치지 않는다.
+        def _process_symbol(idx: int, code: str, name: str) -> None:
 
             if not args.no_resume:
                 rec = progress.get(code)
@@ -1934,10 +2006,10 @@ def main() -> None:
                         )
                         if rec:
                             _append_resume_progress(output_dir, rec)
-                            adopted_count += 1
+                            _bump("adopted")
                             logger.info("[%d/%d] %s(%s) | resume: existing files adopted", idx, len(symbols), code, name)
                             if args.sleep > 0:
-                                time.sleep(args.sleep)
+                                STOP_EVENT.wait(args.sleep)
                 if rec and args.save_10s_indicators and rec["status"] == "saved" and not rec.get("ind10s", True):
                     if _upgrade_10s_indicators(paths[0]):
                         rec = {**rec, "ind10s": True}
@@ -1950,7 +2022,7 @@ def main() -> None:
                                                   target_date=target_date, output_dir=output_dir):
                         logger.info("[%d/%d] %s(%s) | resume: daily csv refreshed (200 rows + indicators)", idx, len(symbols), code, name)
                     if args.sleep > 0:
-                        time.sleep(args.sleep)
+                        STOP_EVENT.wait(args.sleep)
                 if rec and args.flows and rec["status"] == "saved":
                     # Collected without --flows, or some sources came back empty: fetch only the missing sources
                     # (charts are not re-downloaded). Records before per-source tracking: flows=True -> complete.
@@ -1967,7 +2039,7 @@ def main() -> None:
                             logger.warning("[%d/%d] %s(%s) | flows missing %s (attempt %d/%d)",
                                            idx, len(symbols), code, name, missing, attempts + 1, FLOW_MAX_ATTEMPTS)
                         if args.sleep > 0:
-                            time.sleep(args.sleep)
+                            STOP_EVENT.wait(args.sleep)
                 if rec:
                     nxt_flags[code] = bool(rec.get("nxt"))
                     if rec["status"] == "saved":
@@ -1976,13 +2048,13 @@ def main() -> None:
                         if rec.get("quote"):
                             quote_map[code] = rec["quote"]
                         get_stock_basic_info_cached(basic_info_cache, code, target_date)
-                        saved_count += 1
-                        saved_symbols.append((code, name))
+                        _bump("saved")
+                        _add_saved(idx, code, name)
                     else:
-                        empty_count += 1
-                    resumed_count += 1
+                        _bump("empty")
+                    _bump("resumed")
                     logger.debug("[%d/%d] %s(%s) | resume: skipped", idx, len(symbols), code, name)
-                    continue
+                    return
 
             nxt_tradeable = False
             df = None
@@ -2000,21 +2072,28 @@ def main() -> None:
                     last_error = exc
                     if attempt == 0:
                         logger.warning("[%d/%d] %s(%s) | fetch error (retry): %s", idx, len(symbols), code, name, exc)
-                        time.sleep(0.5)  # ?ъ떆?????좉퉸 ?湲?
+                        STOP_EVENT.wait(0.5)  # ?ъ떆?????좉퉸 ?湲?
             # 2???쒕룄 紐⑤몢 ?ㅽ뙣??寃쎌슦
             if last_error is not None:
+                if isinstance(last_error, CollectionStopped):
+                    return
                 logger.error("[%d/%d] %s(%s) | fetch error (final): %s", idx, len(symbols), code, name, last_error)
                 nxt_flags[code] = False
-                empty_count += 1
+                # 조회 실패는 '데이터 없음'이 아니라 수집 실패로 집계(진행기록 없음 -> 다음 실행에서 재수집, 종료코드 1)
+                _bump("failed")
+                with _agg_lock:
+                    failed_codes.append(code)
                 if args.sleep > 0:
-                    time.sleep(args.sleep)
+                    STOP_EVENT.wait(args.sleep)
 
-                continue
+                return
 
             if df is None or df.empty:
 
-                empty_count += 1
+                _bump("empty")
                 logger.info("[%d/%d] %s(%s) | NXT=%s | no data", idx, len(symbols), code, name, nxt_tradeable)
+                if STOP_EVENT.is_set():
+                    return
                 _append_resume_progress(output_dir, {
                     "code": code, "name": name, "status": "empty", "include_nxt": include_nxt,
                     "legacy": args.save_legacy_files, "nxt": nxt_tradeable, "w52": None,
@@ -2082,6 +2161,8 @@ def main() -> None:
                 get_stock_basic_info_cached(basic_info_cache, code, target_date)
 
                 # Written last so a crash mid-symbol leaves no record and the symbol is refetched.
+                if STOP_EVENT.is_set():  # 중단 중 하위 함수가 예외를 삼켰을 수 있음 - 기록하지 않고 다음 실행에서 재수집
+                    return
                 _append_resume_progress(output_dir, {
                     "code": code, "name": name, "status": "saved", "include_nxt": include_nxt,
                     "legacy": args.save_legacy_files, "nxt": nxt_tradeable, **snap,
@@ -2092,8 +2173,8 @@ def main() -> None:
                 if not daily_ok:
                     logger.warning("[%d/%d] %s(%s) | daily csv fetch failed - will refetch on next run", idx, len(symbols), code, name)
 
-                saved_count += 1
-                saved_symbols.append((code, name))
+                _bump("saved")
+                _add_saved(idx, code, name)
                 logger.info(
                     "[%d/%d] %s(%s) | NXT=%s | 10s(interpolated)=%d -> %s%s",
                     idx,
@@ -2107,7 +2188,50 @@ def main() -> None:
                 )
 
             if args.sleep > 0:
-                time.sleep(args.sleep)
+                STOP_EVENT.wait(args.sleep)
+
+
+        def _run_one(idx: int, code: str, name: str) -> None:
+            # 예상 못 한 예외: 순차/병렬 모두 같은 방식 - traceback 기록, 실패 집계 후 다음 종목 계속,
+            # 실행 끝에 종료코드 1. 진행기록은 저장 완료 시에만 남으므로 다음 실행에서 다시 수집된다.
+            if STOP_EVENT.is_set():
+                return
+            try:
+                _process_symbol(idx, code, name)
+            except CollectionStopped:
+                return
+            except Exception:
+                logger.exception("[%d/%d] %s(%s) | unexpected error", idx, len(symbols), code, name)
+                _bump("failed")
+                with _agg_lock:
+                    failed_codes.append(code)
+
+        try:
+            if args.workers <= 1:
+                for idx, (code, name) in enumerate(symbols, start=1):
+                    _run_one(idx, code, name)
+            else:
+                with ThreadPoolExecutor(max_workers=args.workers, thread_name_prefix="g001") as pool:
+                    futures = []
+                    try:
+                        futures = [pool.submit(_run_one, idx, code, name) for idx, (code, name) in enumerate(symbols, start=1)]
+                        for fut in as_completed(futures):
+                            fut.result()
+                    except KeyboardInterrupt:
+                        # with 블록을 빠져나가며 shutdown(wait=True)가 돌기 전에 멈춤 신호를 켠다: 대기 중 작업은 취소,
+                        # 실행 중 작업은 다음 API 요청 시점에 CollectionStopped로 빠져나간다.
+                        STOP_EVENT.set()
+                        for fut in futures:
+                            fut.cancel()
+                        raise
+        except KeyboardInterrupt:
+            STOP_EVENT.set()
+            logger.warning("interrupted - stopped (in-flight symbols are not recorded and will be refetched)")
+            raise
+
+        saved_count, empty_count = counters["saved"], counters["empty"]
+        resumed_count, adopted_count = counters["resumed"], counters["adopted"]
+        saved_symbols = [(code, name) for _idx, code, name in sorted(saved_entries)]
 
         if resumed_count:
             logger.info(
@@ -2119,7 +2243,7 @@ def main() -> None:
         if nxt_flags:
             nxt_flags_path = output_dir / "nxt_flags.json"
             with open(nxt_flags_path, "w", encoding="utf-8") as _f:
-                json.dump(nxt_flags, _f, ensure_ascii=False, indent=2)
+                json.dump(dict(sorted(nxt_flags.items())), _f, ensure_ascii=False, indent=2)
             logger.info("saved NXT flags (%d codes): %s", len(nxt_flags), nxt_flags_path)
 
         # Save daily close (regular-session last close) for each symbol, used as next-day
@@ -2159,14 +2283,14 @@ def main() -> None:
         quote_path = output_dir / "_quote_snapshot.json"
         if quote_map or quote_path.exists():
             with open(quote_path, "w", encoding="utf-8") as _f:
-                json.dump(quote_map, _f, ensure_ascii=False, indent=2)
+                json.dump(dict(sorted(quote_map.items())), _f, ensure_ascii=False, indent=2)
             pit = sum(1 for q in quote_map.values() if q.get("point_in_time"))
             logger.info("saved quote_snapshot.json (%d codes, %d point-in-time): %s", len(quote_map), pit, quote_path)
 
         w52_path = output_dir / "_52w_high_low.json"
         if w52_map or w52_path.exists():
             with open(w52_path, "w", encoding="utf-8") as _f:
-                json.dump(w52_map, _f, ensure_ascii=False, indent=2)
+                json.dump(dict(sorted(w52_map.items())), _f, ensure_ascii=False, indent=2)
             logger.info("saved 52w_high_low.json (%d codes): %s", len(w52_map), w52_path)
 
         # basic_info_cache는 날짜 폴더가 아니라 data_root 최상위에 저장되는 전역 캐시라
@@ -2207,7 +2331,16 @@ def main() -> None:
                 underscored_dated_picks,
             )
 
-        logger.info("done: date=%s saved=%d, empty=%d, out=%s", target_date, saved_count, empty_count, output_dir)
+        logger.info("done: date=%s saved=%d, empty=%d, failed=%d, out=%s",
+                    target_date, saved_count, empty_count, counters["failed"], output_dir)
+        if failed_codes:
+            total_failed.extend(f"{target_date}:{c}" for c in failed_codes)
+            logger.error("unexpected errors on %d symbols (refetched on next run): %s",
+                         len(failed_codes), ", ".join(sorted(failed_codes)[:20]))
+
+    if total_failed:
+        logger.error("finished with %d failed symbol(s) - exit code 1", len(total_failed))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
