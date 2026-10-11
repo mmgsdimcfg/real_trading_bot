@@ -23,6 +23,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=refactor owner=claude
+    summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
+      data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
+      (환경변수 AUTO_TRADING_RUNTIME로 변경 가능)를 따른다.
+    impact: common
+    compatibility: breaking (기본 데이터/로그 경로 변경 - 폴더는 함께 이동함)
 - [2026-10-11] type=feat owner=claude
     summary: 종목별 선정 이유 리포트를 국문(_scanner_report_ko.md)과 영문(_scanner_report_en.md) 두 파일로 저장하고,
       끝에 _scanner_report.md의 Filter Counts/Soft Flags를 사유별 뜻풀이(국문/영문)와 함께 포함(g008, 사용자 요청).
@@ -451,6 +457,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+# [2026-10-11] 런타임 산출물(수집 데이터/로그)은 저장소 밖 <git 루트>/runtime/{data,log}에 둔다(사용자 요청).
+# 환경변수 AUTO_TRADING_RUNTIME으로 다른 위치를 지정할 수 있다.
+RUNTIME_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime") / "data"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r001_define_config
 
@@ -3069,7 +3079,7 @@ def scan(
 def parse_args():
     parser = argparse.ArgumentParser(description="Trade candidate scanner (daily-bar mode)")
     parser.add_argument("--date", type=str, default=None, help="Base date (YYYYMMDD)")
-    parser.add_argument("--data-dir", type=str, default=None, help="Root data folder (default: data/)")
+    parser.add_argument("--data-dir", type=str, default=None, help="Root data folder (default: <git root>/runtime/data)")
     parser.add_argument(
         "--config", type=str, default="balanced",
         choices=list(CONFIG_MAP.keys()),
@@ -3139,7 +3149,7 @@ if __name__ == "__main__":
         except ValueError:
             raise SystemExit("날짜 형식은 YYYYMMDD 여야 합니다.")
 
-    data_root = Path(args.data_dir) if args.data_dir else Path("data")
+    data_root = Path(args.data_dir) if args.data_dir else RUNTIME_DATA_DIR
     if not data_root.exists():
         raise SystemExit(f"데이터 폴더가 없습니다: {data_root}")
 

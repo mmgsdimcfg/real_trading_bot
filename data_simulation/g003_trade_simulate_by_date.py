@@ -16,6 +16,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=refactor owner=claude
+    summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
+      data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
+      (환경변수 AUTO_TRADING_RUNTIME로 변경 가능)를 따른다.
+    impact: common
+    compatibility: breaking (기본 데이터/로그 경로 변경 - 폴더는 함께 이동함)
 - [2026-10-10] type=fix owner=claude
     summary: causal 원본 분봉 복원(_causal_minute_frames/_build_day_ref_frame)이 g001 10s 파일의 raw_bar 열(1=원본
       분봉)이 있으면 그 행만 사용 - 장중 무체결 분의 보간 :00 행이 가짜 분봉(직전 분 거래량 복사 + 직선 가격)으로
@@ -318,6 +324,8 @@ from r001_define_config import (
     BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT,
     BOX_RANGE_HOLD_MAX_RANGE_PCT,
     DATA_DIR_NAME,
+    RUNTIME_DATA_DIR,
+    RUNTIME_LOG_DIR,
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
@@ -568,8 +576,8 @@ SAMPLE_CODE_MAP = {
     "032500": "케이엠더블유",
 }
 
-log_dir = SCRIPT_DIR / "logs"
-log_dir.mkdir(exist_ok=True)
+log_dir = RUNTIME_LOG_DIR  # [2026-10-11] data_simulation/logs -> <git root>/runtime/log
+log_dir.mkdir(parents=True, exist_ok=True)
 DAILY_RESULT_CSV = log_dir / "r76_daily_results.csv"
 COMPARE_RESULT_DIR = log_dir / "compare"
 
@@ -3756,7 +3764,7 @@ def main() -> None:
     parser.add_argument("--codes", nargs="*", help="Optional stock codes to simulate")
     parser.add_argument(
         "--data-root",
-        default=str(SCRIPT_DIR / DATA_DIR_NAME),
+        default=str(RUNTIME_DATA_DIR),
         help="Root directory containing date subfolders",
     )
     parser.add_argument(

@@ -44,6 +44,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=refactor owner=claude
+    summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
+      data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
+      (환경변수 AUTO_TRADING_RUNTIME로 변경 가능)를 따른다.
+    impact: common
+    compatibility: breaking (기본 데이터/로그 경로 변경 - 폴더는 함께 이동함)
 - [2026-10-10] type=feat owner=claude
     summary: 일봉 100 -> 200행(2회 호출, 100행씩 과거로 페이징) + MA_120 열 - g002 상승 초입 패턴이 MA120과 그
       20일 기울기(~140행)를 씀. 이어받기 시 MA_120 열이 없는 일봉 파일은 일봉만 재수집.
@@ -266,6 +272,7 @@ from r001_define_config import (
     OBV_MA_PERIOD,
     REGULAR_END,
     RSI_PERIOD,
+    RUNTIME_DATA_DIR,
     RSI_SIGNAL_PERIOD,
     STOCH_D_PERIOD,
     STOCH_K_PERIOD,
@@ -354,7 +361,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols-file", type=str, default=str(SCRIPT_DIR / "g004_universe_symbols_master.txt"), help="Path to g004_universe_symbols_master.txt")
     parser.add_argument("--watchlist-file", type=str, default="", help="r004-style watchlist file(s) with code,name per line. Comma-separated multiple paths.")
     parser.add_argument("--watchlist-only", action="store_true", help="Use --watchlist-file as the only symbol source, ignoring --symbols-file.")
-    parser.add_argument("--data-root", type=str, default=str(SCRIPT_DIR / "data"), help="Output data root")
+    parser.add_argument("--data-root", type=str, default=str(RUNTIME_DATA_DIR), help="Output data root (default: <git root>/runtime/data)")
     parser.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between symbols")
     parser.add_argument("--nxt", action="store_true", help="Include NXT market data (08:00~20:00)")
     parser.add_argument(

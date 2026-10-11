@@ -9,6 +9,7 @@ Feature-gated by r001_define_config:
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,7 @@ try:
         SCAN_PICKS_LEGACY_FILENAME,
         SCAN_PICKS_PREFIX_TEMPLATE,
         DATA_DIR_NAME,
+        RUNTIME_DATA_DIR,
     )
 except Exception:
     FEATURE_R004_WATCHLIST = True
@@ -33,6 +35,7 @@ except Exception:
     SCAN_PICKS_LEGACY_FILENAME = "picks.txt"
     SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
     DATA_DIR_NAME = "data"
+    RUNTIME_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime") / DATA_DIR_NAME
 
 R004_HEADER = """# R76 daily live trading watchlist.
 #
@@ -62,7 +65,7 @@ def resolve_watchlist_path(
     data_dir: Path | None = None,
 ) -> Path:
     """Resolve watchlist file for r006 / simulation."""
-    data_root = data_dir or (auto_trading_dir / DATA_DIR_NAME)
+    data_root = data_dir or RUNTIME_DATA_DIR  # [2026-10-11] <git root>/runtime/data
     r004_path = auto_trading_dir / R004_WATCHLIST_FILENAME
     source = (watchlist_source or "auto").strip().lower()
 

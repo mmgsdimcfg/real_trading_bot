@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-11] type=refactor owner=claude
+    summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
+      data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
+      (환경변수 AUTO_TRADING_RUNTIME로 변경 가능)를 따른다.
+    impact: common
+    compatibility: breaking (기본 데이터/로그 경로 변경 - 폴더는 함께 이동함)
 - [2026-10-10] type=feat owner=claude
     summary: record_live_quote - fetch_live_price가 10초마다 이미 받는 inquire_price 응답을 data/live_runtime/
       quote_ticks_YYYYMMDD.csv에 기록(현재가/누적거래량·대금/시고저/VWAP/등락률/VI·시장경고·임시정지·단기과열).
@@ -695,6 +701,8 @@ from r001_define_config import (
     BOX_RANGE_HOLD_MAX_BB_WIDTH_PCT,
     BOX_RANGE_HOLD_MAX_RANGE_PCT,
     DATA_DIR_NAME,
+    RUNTIME_DATA_DIR,
+    RUNTIME_LOG_DIR,
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
@@ -816,7 +824,7 @@ except Exception:
     inquire_time_itemchartprice = None
 
 TODAY_CODE_FILE = current_dir / DEFINE_TODAY_CODE_PATH
-DATA_DIR = data_sim_dir / DATA_DIR_NAME  # data/ lives under data_simulation/
+DATA_DIR = RUNTIME_DATA_DIR  # [2026-10-11] data_simulation/data -> <git root>/runtime/data
 TODAY_BUYS_FILENAME = "today_buys.txt"
 
 LIVE_RUNTIME_DIR = DATA_DIR / "live_runtime"
@@ -971,7 +979,7 @@ class _PerSymbolFileHandler(logging.Handler):
 
 def _rotate_logging_for_date(date_str: str) -> None:
     _LOG_CTX["date_str"] = date_str
-    log_dir = data_sim_dir / "logs"
+    log_dir = RUNTIME_LOG_DIR
     log_date_dir = log_dir / date_str
     log_dir.mkdir(parents=True, exist_ok=True)
     log_date_dir.mkdir(parents=True, exist_ok=True)
@@ -1071,7 +1079,7 @@ def log(msg: str) -> None:
 def _trade_log_target_paths() -> list[Path]:
     date_str = str(_LOG_CTX.get("date_str") or datetime.now().strftime("%Y%m%d"))
     candidates: list[Path] = [
-        data_sim_dir / "logs" / date_str / f"{date_str}_buy_sell.log",
+        RUNTIME_LOG_DIR / date_str / f"{date_str}_buy_sell.log",
     ]
     value = _LOG_CTX.get("trade_log")
     if value:
@@ -2696,7 +2704,7 @@ def _append_watchlist_change_history(current_dt: datetime, lines: list[str]) -> 
     if not lines:
         return
     date_str = current_dt.strftime("%Y%m%d")
-    history_path = data_sim_dir / "logs" / date_str / f"{date_str}_change_history.txt"
+    history_path = RUNTIME_LOG_DIR / date_str / f"{date_str}_change_history.txt"
     try:
         history_path.parent.mkdir(parents=True, exist_ok=True)
         stamp = current_dt.strftime("%Y-%m-%d %H:%M:%S")
