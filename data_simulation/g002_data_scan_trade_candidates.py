@@ -23,6 +23,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-21] type=tune owner=claude
+    summary: 사용자 결정 - 보충(fallback) 후보의 '당일 음봉 아님' 조건 해제(FALLBACK_ALLOW_LAST_BEARISH=True). 장대 음봉
+      (-2% 이상)은 big_bearish_candle로 계속 제외, 당일 음봉은 점수 -4(last_bearish)로 반영. 52거래일 재현: 보충분 하루
+      +4종목, D+1 시가->종가 +0.10% -> +0.19%. 롤백: FALLBACK_ALLOW_LAST_BEARISH=False.
+    impact: scanner
+    compatibility: breaking (보충 기준 완화)
 - [2026-10-20] type=tune owner=claude
     summary: 사용자 결정 - 상승 초입 패턴 MA120 20일 변화율 하한 PATTERN_MA120_MIN_SLOPE -1% -> -3%(하락장 선정 수 확대).
       20261020 점수 상위 100 중 60종목이 pattern_ma120_falling, 단독 탈락 원인 1위. g008 리포트의 MA120 문구를
@@ -640,6 +646,10 @@ FALLBACK_RELAXABLE_FAIL_REASONS = {
 # 50억+ 전체 +0.12%), 종가/MA20 이격 +10% 이내만 허용하면 하루 +10종목 +0.11%(전/후반 +0.12%/+0.09%로 일관).
 FALLBACK_NON_PATTERN_ENABLED = True
 FALLBACK_NON_PATTERN_MAX_VS_MA20 = 0.10
+# [2026-10-21] 보충(fallback) 후보의 당일 음봉(종가<시가) 허용 여부(사용자 결정). 장대 음봉(-2% 이상)은 big_bearish_candle
+# 하드필터로 계속 제외되고, 당일 음봉은 점수에서 -4점(last_bearish)으로 반영된다. 52거래일 재현(장중 ATR 적용, MA120 -2%
+# 기준): 보충분 하루 +4종목(23.1 -> 27.3, 10월 13.4 -> 16.2), D+1 시가->종가 +0.10% -> +0.19%. 롤백: False.
+FALLBACK_ALLOW_LAST_BEARISH = True
 
 
 # ---------------------------------------------------------------------------
@@ -3348,7 +3358,7 @@ def scan(
             if is_scorable_candidate(row)
             # Keep fallback defensive: only clear up-trend names.
             and row.get("trend_state") == "up"
-            and not bool(row.get("is_last_bearish"))
+            and (FALLBACK_ALLOW_LAST_BEARISH or not bool(row.get("is_last_bearish")))
             # 장중 지표를 아직 안 읽은 보충 후보는 VWAP 마감 가점(최대 2점, 강세섹터 +10% 포함 2.2점)을 받기 전이라
             # 그만큼 낮춰 1차로 거르고, 아래에서 지표 반영 후 재채점해 SCORE_CUTOFF를 다시 확인한다(Codex 5차 검토).
             and row.get("score", 0.0) >= SCORE_CUTOFF - (
