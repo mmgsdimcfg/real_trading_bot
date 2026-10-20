@@ -23,6 +23,62 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-20] type=fix owner=claude
+    summary: 사용자 요청("최근 선정 2~3개, 매일 같은 종목 - 선별 조건 재검토") + Codex 1~5차 검토. 원인: 상승 초입 패턴(A/B)
+      필수화(2026-10-10) 후 (a) fallback이 pattern_* 탈락을 구제할 수 없어 선정 수 = 패턴 통과 수로 고정, (b) 레거시 추세
+      하드필터(down/flat_trend, box_range_no_progress, bearish_candle_dominant, linreg_long_term_downtrend)가 패턴이 찾는
+      '눌림 후 MA20 근처 출발' 형태를 다시 탈락시킴(20261019 빛샘전자 B등급 704억), (c) 9/23 이후 급락장(KOSPI -21%)에서
+      MA120 상승 종목 17%. 수정: (1) A/B 종목은 위 레거시 필터를 <reason>_pattern_override soft flag(-0.7)로 전환,
+      (2) MA120 20일 변화율 하한 > 0 -> > -1%(PATTERN_MA120_MIN_SLOPE), (3) 비패턴 보충(FALLBACK_NON_PATTERN_ENABLED):
+      pattern_* 조건에만 걸리고 종가/MA20 이격 +10% 이내(FALLBACK_NON_PATTERN_MAX_VS_MA20)인 종목을 패턴 종목 뒤에 보충,
+      보충 후보도 장중 ATR 하한을 같은 방식(fail-closed)으로 지연 판정(_apply_intraday_metrics), (4) big_bearish_candle을
+      서버 공식 일봉 OHLC로 판정(패턴 양봉 판정과 같은 캔들), (5) macd_turn_up/stoch_golden의 최근 교차 경로에 현재
+      MACD>시그널/K>D 확인 추가, (6) 데드코드였던 uptrend_unknown 경고를 pattern_unknown으로, 재채점 적격 판정에 skip 가드.
+      검증(52거래일 8/03~10/20 재현, 장중 ATR 적용): 하루 7.6 -> 패턴 10.0 + 보충 약 10종목. 패턴 D+1 시가->종가
+      +0.40% -> +0.41%, 보충분 +0.11%(거래대금 50억+ 전체 +0.12%; 이격 제한 없이 50개까지 채우면 보충분 -0.15%로 열위).
+      10월 하락장은 패턴 3.1 -> 4.4. 롤백: FALLBACK_NON_PATTERN_ENABLED=False, PATTERN_MA120_MIN_SLOPE=0.0,
+      PATTERN_OVERRIDABLE_TREND_FAILS=().
+    impact: scanner (선정 종목 수 증가, g008 리포트 문구)
+    compatibility: breaking (선정 기준 변경, soft flag *_pattern_override 추가)
+- [2026-10-19] type=fix owner=claude
+    summary: --date 대상일 폴더에 종목 데이터가 없을 때 무조건 "거래 없는 날(공휴일)"로 보고 다른 날짜로 조정하던 것을
+      수정(예: 20260629는 평일인데 가장 이른 데이터 폴더 20260701로 '조정'됨). 주말/KRX 휴장일이면
+      "휴장일(사유)"로 표시하고 중단(다른 날짜로 조정하지 않음), 휴장일이 아닌데 데이터가 없으면 "대상 데이터 없음"으로
+      중단한다. 휴장 사유는 주말(토요일/일요일)과 holidays 패키지의 KRX 시장 달력(XKRX)에서 자동 조회
+      (패키지 미설치 시 주말만 판단).
+    impact: scanner
+    compatibility: breaking (데이터 없는 날/휴장일 지정 시 이제 종료코드 1로 중단, 날짜 자동 조정 없음)
+- [2026-10-15] type=feat owner=claude
+    summary: 사용자 요청("g002 선정 기준에 r003 진입 최소 변동성(3분봉 ATR 0.6%) 이상을 보장하는 조건") + Codex 설계검토 -
+      대상일 장중 3분봉 ATR% 중앙값(intraday_atr3_med_pct, 09:30~15:00, r003 _gate_min_entry_atr_volatility와 같은
+      방식: raw 1분봉 -> 종료시각 라벨 3분봉 -> Wilder ATR14 / 봉 종가)이 INTRADAY_ATR3_MIN_PCT(0.40%) 미만이면 하드 탈락
+      (low_intraday_atr), 계산 불가면 탈락(intraday_atr_unknown, fail-closed). 둘 다 fallback 완화 대상이 아니다.
+      r003 게이트(0.60%)를 '보장'하지는 않는다 - 다음날 저변동 가능성을 줄이는 선정 단계 필터이고 진입 판정은 r003이 한다.
+      근거: 유니버스 309종목 x 35일에서 당일 중앙값과 다음날 중앙값 순위상관 0.665(일봉 ATR14%는 0.569). 과거 picks
+      71건(7일) 검증: 0.40% 이상 유지분은 다음날 09:15~11:30 3분봉 중 ATR 0.6% 이상 비율 평균 87% vs 탈락분 60%
+      (전/후반 81%/96% vs 70%/48%), 하루 유지 5.7종목. 0.6%로 두면 하루 0~3종목만 남아 0.40%로 잠정 설정.
+      한계: picks 다음날 실매매는 두 그룹 모두 거의 없었다(71건 중 1건) - ATR 외 진입 조건이 함께 막고 있음.
+      같은 10s 파일 읽기(우상향 통과 종목만, 기존 VWAP 읽기와 동일 집합)에서 VWAP과 ATR을 독립 계산한다(_load_intraday_metrics).
+      검사 대상 전 종목이 데이터 부재(대상일 10s 파일 없음/raw_bar 열 없는 구버전 수집) 상태일 때만 그 스캔의 필터를 끄고
+      경고한다(거래 희소/계산 오류는 전 종목이 그래도 fail-closed 유지 - Codex 2차 검토).
+      롤백: INTRADAY_ATR3_MIN_PCT=0.0.
+    impact: scanner (선정 종목 수 감소 - 최근 picks 기준 하루 약 절반)
+    compatibility: breaking (선정 기준 강화, 출력 컬럼 intraday_atr3_med_pct 추가)
+- [2026-10-15] type=feat owner=claude
+    summary: 사용자 요청("그날 상승률이 높은 섹터의 종목이면 점수 10% 가산점") - 당일 강세 섹터 가산점 추가.
+      스캔한 전 종목(skip 제외)을 업종(sector_detail: KIS 업종 소분류 우선, 중분류 보조, "KOSDAQ MID 300"/
+      "시가총액규모중" 같은 지수/규모 분류명은 업종이 아니므로 제외)별로 묶어 대상일 등락률(±15% 클립) 평균을
+      구하고, 구성 종목 HOT_SECTOR_MIN_MEMBERS(5)개 이상 + 평균 HOT_SECTOR_MIN_AVG_RETURN(+1.0%) 이상인 업종 중
+      상위 HOT_SECTOR_TOP_N(3)개를 강세 섹터로 지정. 강세 섹터 종목은 calculate_candidate_score_breakdown 마지막에
+      (가점-감점 합계가 양수일 때) 점수 x HOT_SECTOR_BONUS_RATIO(10%)를 hot_sector_bonus 가점으로 더한다.
+      선정 순서는 기존대로 패턴등급 -> 매수신호 수 -> 점수라서 같은 등급/신호 수 안의 순위와 SCORE_CUTOFF 통과에만
+      영향을 준다. 대상일 등락률은 서버 일봉 마지막 행이 대상일일 때(또는 서버 일봉이 없을 때)만 사용 - 서버 일봉이
+      하루 늦으면 기존 prev_day_return은 2일 전 종가 대비가 되므로 섹터 평균에서 제외.
+      사전 검증(2026-06~10 서버 일봉, 거래대금 50억+ 당일 상승 종목): 강세 섹터(상위3, 5종목+, +1%+) 종목은 D+1
+      시가->고가 중앙값 2.49% vs 기타 2.14%(장중 기회는 큼)이나 D+1 시가->종가 평균 -0.81% vs -0.66%(갭 후 밀림)로
+      익일 방향성 우위는 확인되지 않음 - 효과는 운용 로그로 계속 확인 필요. 롤백: HOT_SECTOR_BONUS_RATIO=0.0.
+    impact: scanner
+    compatibility: backward-compatible (점수만 변동, 출력 컬럼 3개 추가: sector_detail/sector_day_return/hot_sector)
 - [2026-10-11] type=refactor owner=claude
     summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
       data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
@@ -532,6 +588,13 @@ LIQUIDITY_FALLBACK_MIN_AMOUNT = 10_000_000_000  # 100억원/일
 # 25거래일 재현: 200억+만 하루 8.6종목 D+1 시가->종가 +0.36%, 50억+ 15.0종목 +0.29%(50~100억 구간만 보면 -0.31%, 소표본).
 PATTERN_LIQUIDITY_MIN_AMOUNT = 5_000_000_000  # 50억원/일
 LOW_UP_DAYS_TOLERANCE = 1
+# [2026-10-15] 선정 단계 장중 변동성 하한(파일 상단 changelog 참조). 단위는 퍼센트(0.40 = 0.40% = 비율 0.004).
+# r003 진입 게이트는 3분봉 ATR/현재가 >= STAGED_TP1_PCT(3%) x MIN_ENTRY_ATR_TO_TP1_RATIO(0.2) = 0.60%.
+INTRADAY_ATR3_MIN_PCT = 0.40
+INTRADAY_ATR3_PERIOD = 14                 # r001 ATR_PERIOD와 동일 (Wilder EWM alpha=1/14)
+INTRADAY_ATR3_WINDOW = ("09:30", "15:00")  # 중앙값 구간(3분봉 종료시각) - 개장 직후 EWM 초기 구간/동시호가 제외
+INTRADAY_ATR3_MIN_RAW_BARS = 60            # 정규장 raw 1분봉 최소 개수
+INTRADAY_ATR3_MIN_WINDOW_BARS = 20         # 중앙값 구간 3분봉 최소 개수 (정상일 약 110봉)
 SCORE_DOT_SLOTS = 9         # verbose 스캔 로그의 점수 동그라미 고정폭(칸 수) - code_name 정렬용
 SCORE_DOT_EMPTY = "⚫"       # 빈 칸(탈락 전체, 후보의 남는 칸) 채움 아이콘
 
@@ -563,6 +626,14 @@ FALLBACK_RELAXABLE_FAIL_REASONS = {
     "low_score", "liquidity_below_market_dual",
 }  # fallback may override only these; trend/candle-pattern fail_reasons block rescue
   # (2026-07-22: volume_declining은 이제 fail_reason이 아니라 soft_flag이므로 제거)
+# [2026-10-20] 비패턴 보충(사용자 결정): 패턴 A/B 적격이 max_picks에 못 미치면, 상승 초입 패턴 조건(pattern_*)에만
+# 걸린 종목도 보충 후보로 허용한다(pattern_unknown = 지표 없음은 제외). 상승 초입 패턴 필수화(2026-10-10) 이후
+# 패턴 탈락은 fallback이 구제할 수 없어 선정 수가 패턴 통과 수(하루 2~10)로 고정됐던 문제. 레거시 추세/캔들 하드필터,
+# 구조적 배제, 장중 ATR 하한은 보충 후보에도 그대로 적용한다.
+# 52거래일 재현(장중 ATR 적용): 이격 제한 없이 채우면 하루 +34종목이지만 보충분 D+1 시가->종가 -0.15%(거래대금
+# 50억+ 전체 +0.12%), 종가/MA20 이격 +10% 이내만 허용하면 하루 +10종목 +0.11%(전/후반 +0.12%/+0.09%로 일관).
+FALLBACK_NON_PATTERN_ENABLED = True
+FALLBACK_NON_PATTERN_MAX_VS_MA20 = 0.10
 
 
 # ---------------------------------------------------------------------------
@@ -1268,15 +1339,28 @@ PATTERN_MAX_VS_MA20 = 0.15       # 과열 상한: 종가가 MA20 대비 +15% 초
 PATTERN_MAX_RSI = 70.0
 PATTERN_MAX_BEAR5 = 1            # B등급: 최근 5거래일 음봉 최대 개수
 PATTERN_B_MAX_VS_MA20 = 0.10     # B등급: 돌파 캔들이 없으므로 MA20 대비 +10% 이내만(이미 오른 뒤 쉬는 종목 제외)
+# [2026-10-20] MA120 20일 변화율 하한 (기존 > 0). 52거래일 재현(장중 ATR 적용): > 0 하루 7.6종목 -> > -1% 10.0종목,
+# 패턴 D+1 시가->종가 +0.40% -> +0.41%로 품질 유지(-2%는 11.5종목이지만 5일 수익률 약화).
+PATTERN_MA120_MIN_SLOPE = -0.01
+# [2026-10-20] A/B 등급 종목에는 하드필터 대신 soft flag(<reason>_pattern_override)로만 남기는 레거시 추세 필터.
+# 패턴이 이미 종가>MA20/MA20 기울기/장기선 위치/과열/당일 양봉을 검사하는데, 이 필터들(MA5-MA20 크로스, 10일 박스권,
+# 10일 음봉 비율, 20일 회귀 하락)은 '눌림 후 MA20 근처에서 막 출발'하는 패턴 형태 자체를 다시 탈락시켰다
+# (예: 20261019 빛샘전자 B등급, 거래대금 704억 - flat_trend+box_range_no_progress). 재현: 하루 +1.3종목, 성과 동일~개선.
+PATTERN_OVERRIDABLE_TREND_FAILS = (
+    "down_trend", "flat_trend", "box_range_no_progress", "bearish_candle_dominant", "linreg_long_term_downtrend",
+)
 
 
 def _buy_signals(f: dict) -> list[str]:
     s = []
-    if (f.get("macd_x_age") is not None and f["macd_x_age"] <= 3) or (
+    # [2026-10-20] 최근 교차 경로도 현재 상태(MACD>시그널, K>D)를 확인한다 - 교차 후 되돌아간 경우 제외(Codex 2차 검토).
+    macd_above = f.get("MACD") is not None and f.get("MACD_SIGNAL") is not None and f["MACD"] > f["MACD_SIGNAL"]
+    if (f.get("macd_x_age") is not None and f["macd_x_age"] <= 3 and macd_above) or (
         (f.get("MACD_HIST") or 0) > 0 and f.get("macd_hist_prev") is not None and f["MACD_HIST"] > f["macd_hist_prev"]
     ):
         s.append("macd_turn_up")
-    if f.get("stoch_x_age") is not None and f["stoch_x_age"] <= 3 and (f.get("STOCH_K") or 100) < 85:
+    stoch_above = f.get("STOCH_K") is not None and f.get("STOCH_D") is not None and f["STOCH_K"] > f["STOCH_D"]
+    if f.get("stoch_x_age") is not None and f["stoch_x_age"] <= 3 and stoch_above and (f.get("STOCH_K") or 100) < 85:
         s.append("stoch_golden")
     # DI/RSI는 현재 상태 기준(최근 교차만으로는 인정하지 않음 - 교차 후 되돌아간 경우 제외, Codex 검토).
     if f.get("DI_PLUS") is not None and f.get("DI_MINUS") is not None and f["DI_PLUS"] > f["DI_MINUS"]:
@@ -1299,7 +1383,7 @@ def _pattern_assessment(price, f) -> tuple[list[str], str | None, list[str]]:
     if not f or price is None or any(f.get(k) is None for k in ("MA_20", "MA_5", "RSI", "min_vs20_prev10")):
         return ["pattern_unknown"], None, []
     fails = []
-    if f.get("ma120_slope20") is not None and not f["ma120_slope20"] > 0:
+    if f.get("ma120_slope20") is not None and not f["ma120_slope20"] > PATTERN_MA120_MIN_SLOPE:
         fails.append("pattern_ma120_falling")
     long_ma = [v for v in (f.get("MA_60"), f.get("MA_120")) if v is not None]
     if long_ma and price < min(long_ma) * 0.98:
@@ -1326,28 +1410,103 @@ def _pattern_assessment(price, f) -> tuple[list[str], str | None, list[str]]:
     return (["pattern_bearish_candles"] if f["bear5"] > PATTERN_MAX_BEAR5 else ["pattern_b_extended"]), None, signals
 
 
-def _load_last_vwap(data_root: Path, target_date_str, code: str) -> float | None:
-    """[2026-10-10] 대상일 정규장(<=15:30) 마지막 행의 VWAP (g001 10s 파일의 VWAP 열, 1분봉 누적 기준).
-    VWAP 열이 없거나(지표 생략 수집) 파일이 없으면 None -> 마감 강도 가점은 건너뛴다."""
-    if not target_date_str:
+def _last_vwap_from_frame(df: "pd.DataFrame", dt: "pd.Series") -> float | None:
+    """[2026-10-10] 대상일 정규장(<=15:30) 마지막 행의 VWAP (g001 10s 파일의 VWAP 열, 1분봉 누적 기준)."""
+    if "VWAP" not in df.columns:
         return None
+    vw = df.loc[dt.notna() & (dt.dt.strftime("%H:%M:%S") <= "15:30:00"), "VWAP"]
+    vw = pd.to_numeric(vw, errors="coerce").dropna()
+    if vw.empty:
+        return None
+    vwap = float(vw.iloc[-1])
+    return vwap if vwap > 0 else None
+
+
+def _intraday_atr3_median_pct(df: "pd.DataFrame", dt: "pd.Series") -> tuple[float | None, str]:
+    """[2026-10-15] 대상일 장중 3분봉 ATR% 중앙값(퍼센트). r003과 같은 방식: g001 10s 파일의 raw 1분봉(raw_bar==1,
+    행 시각=봉 시작) -> +1분(종료시각) -> 3분 리샘플(label/closed="right") -> True Range의 Wilder EWM(alpha=1/14,
+    min_periods=1, adjust=False) / 봉 종가. INTRADAY_ATR3_WINDOW(종료시각 기준) 구간의 중앙값.
+    반환 (값, 상태): 상태 "ok" | "no_columns"(구버전 수집 - 데이터 부재) | "too_few_bars"(거래 희소) | "nan"."""
+    need = ("raw_bar", "open", "high", "low", "close")
+    if any(c not in df.columns for c in need):
+        return None, "no_columns"
+    bars = df.loc[dt.notna()].assign(_dt=dt[dt.notna()])
+    bars = bars[pd.to_numeric(bars["raw_bar"], errors="coerce") == 1]
+    tod = bars["_dt"].dt.strftime("%H:%M:%S")
+    bars = bars[(tod >= "09:00:00") & (tod < "15:20:00")]  # 정규장 연속매매 구간의 1분봉(15:20~ 동시호가 제외)
+    if len(bars) < INTRADAY_ATR3_MIN_RAW_BARS:
+        return None, "too_few_bars"
+    ohlc = bars[["open", "high", "low", "close"]].apply(pd.to_numeric, errors="coerce")
+    ohlc.index = pd.DatetimeIndex(bars["_dt"]) + pd.Timedelta(minutes=1)
+    ohlc = ohlc[~ohlc.index.duplicated(keep="last")].sort_index()
+    b = ohlc.resample("3min", label="right", closed="right").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last"}
+    ).dropna()
+    if b.empty:
+        return None, "too_few_bars"
+    prev_close = b["close"].shift(1)
+    true_range = pd.concat(
+        [b["high"] - b["low"], (b["high"] - prev_close).abs(), (b["low"] - prev_close).abs()], axis=1
+    ).max(axis=1)
+    atr_pct = true_range.ewm(alpha=1.0 / INTRADAY_ATR3_PERIOD, min_periods=1, adjust=False).mean() / b["close"]
+    tod3 = atr_pct.index.strftime("%H:%M")
+    window = atr_pct[(tod3 >= INTRADAY_ATR3_WINDOW[0]) & (tod3 <= INTRADAY_ATR3_WINDOW[1])].dropna()
+    if len(window) < INTRADAY_ATR3_MIN_WINDOW_BARS:
+        return None, "too_few_bars"
+    value = float(window.median()) * 100.0
+    return (value, "ok") if math.isfinite(value) else (None, "nan")
+
+
+def _load_intraday_metrics(data_root: Path, target_date_str, code: str) -> dict:
+    """[2026-10-15] 대상일 10s 파일을 한 번 읽어 {"vwap", "atr3_med_pct", "atr3_status"}를 돌려준다. 두 값은 서로
+    독립적으로 계산한다(한쪽 열이 없거나 계산에 실패해도 다른 쪽은 유지). atr3_status: "ok" | 데이터 부재
+    ("no_date", "no_file", "no_columns") | 종목 문제("too_few_bars", "nan", "read_error", "error")."""
+    out = {"vwap": None, "atr3_med_pct": None, "atr3_status": "no_date"}
+    if not target_date_str:
+        return out
     date_dir = data_root / str(target_date_str)
     path = resolve_symbol_file(date_dir, code) if date_dir.is_dir() else None
     if path is None or not path.stem.endswith("_10s"):
-        return None
+        out["atr3_status"] = "no_file"
+        return out
+    wanted = ("datetime", "VWAP", "raw_bar", "open", "high", "low", "close")
     try:
-        df = pd.read_csv(path, usecols=lambda c: c in ("datetime", "close", "VWAP"), encoding="utf-8-sig")
-        if "VWAP" not in df.columns:
-            return None
+        df = pd.read_csv(path, usecols=lambda c: c in wanted, encoding="utf-8-sig")
         dt = pd.to_datetime(df["datetime"], errors="coerce")
-        df = df[dt.notna() & (dt.dt.strftime("%H:%M:%S") <= "15:30:00")]
-        df = df.dropna(subset=["VWAP"])
-        if df.empty:
-            return None
-        vwap = float(df["VWAP"].iloc[-1])
-        return vwap if vwap > 0 else None
     except Exception:
-        return None
+        out["atr3_status"] = "read_error"
+        return out
+    try:
+        out["vwap"] = _last_vwap_from_frame(df, dt)
+    except Exception:
+        out["vwap"] = None
+    try:
+        out["atr3_med_pct"], out["atr3_status"] = _intraday_atr3_median_pct(df, dt)
+    except Exception:
+        out["atr3_med_pct"], out["atr3_status"] = None, "error"
+    return out
+
+
+def _apply_intraday_metrics(candidate: dict, metrics: dict) -> None:
+    """[2026-10-20] _load_intraday_metrics 결과를 candidate에 반영하고 장중 ATR 하한(INTRADAY_ATR3_MIN_PCT)을
+    fail_reasons로 적용한다(계산 불가는 fail-closed). 패턴 통과 종목(스캔 루프)과 비패턴 보충 후보(fallback)가 공용."""
+    _vwap = metrics["vwap"]
+    if _vwap and candidate.get("price"):
+        candidate["close_vs_vwap"] = candidate["price"] / _vwap - 1.0  # 공식 종가 기준
+    candidate["intraday_atr3_med_pct"] = metrics["atr3_med_pct"]
+    candidate["intraday_atr3_status"] = metrics["atr3_status"]
+    if INTRADAY_ATR3_MIN_PCT > 0:
+        candidate["intraday_atr3_floor_pct"] = INTRADAY_ATR3_MIN_PCT
+        if metrics["atr3_med_pct"] is None:
+            candidate["fail_reasons"].append("intraday_atr_unknown")
+        elif metrics["atr3_med_pct"] < INTRADAY_ATR3_MIN_PCT:
+            candidate["fail_reasons"].append("low_intraday_atr")
+
+
+def _load_last_vwap(data_root: Path, target_date_str, code: str) -> float | None:
+    """[2026-10-10] 대상일 마지막 VWAP. VWAP 열이 없거나(지표 생략 수집) 파일이 없으면 None -> 마감 강도 가점은
+    건너뛴다. [2026-10-15] _load_intraday_metrics로 통합(호환용으로 남김)."""
+    return _load_intraday_metrics(data_root, target_date_str, code)["vwap"]
 
 
 def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_hist=None, w52_info=None, market_map=None, market_index_series=None, basic_info=None, close_vs_vwap=None):
@@ -1377,6 +1536,13 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "high_52w_ratio": None,
         "low_52w_ratio": None,
         "sector": None,
+        "sector_detail": None,
+        "intraday_atr3_med_pct": None,
+        "intraday_atr3_status": None,
+        "intraday_atr3_floor_pct": None,  # 실제 적용된 선정 하한(필터 꺼짐/해제 시 None) - g008 '통과' 표기 근거
+        "day_return": None,
+        "sector_day_return": None,
+        "hot_sector": False,
         "lstg_stqty": None,
         "market_cap": None,
         "near_52w_high_override": False,
@@ -1537,6 +1703,7 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         sector = basic_info.get("sector_mid") or basic_info.get("sector_large") or None
         if sector:
             sector = str(sector).strip() or None
+    sector_detail = _sector_detail_from_basic_info(basic_info)
 
     # [2026-09-23] 상장주식수/시가총액 - 정보성 컬럼만(점수 미반영, 이 파일 changelog 참조).
     # g001 fetch_stock_basic_info()가 없거나(구버전 캐시) API 실패 시 None으로 남는다.
@@ -1551,6 +1718,9 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         if prev_close is not None and prev_close > 0:
             prev_day_return = (price - prev_close) / prev_close
             prev_day_change = abs(prev_day_return)
+    # [2026-10-15] 강세 섹터 판정용 대상일 등락률 - 서버 일봉이 대상일보다 하루 늦으면(hist_is_current=False)
+    # 위 prev_day_return은 2일 전 종가 대비라 섹터 평균에 쓰지 않는다.
+    day_return = prev_day_return if (daily_hist is None or hist_is_current) else None
 
     # [2026-09-27] 과열(이격) 지표 - calculate_candidate_score의 과열 페널티용.
     # close_ma20_ratio: 현재가/MA20 - 1. ret_20d: 가용 이력(서버 일봉은 g001이 20봉만 저장하므로
@@ -1618,6 +1788,8 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         "high_52w_ratio": high_52w_ratio,
         "low_52w_ratio": low_52w_ratio,
         "sector": sector,
+        "sector_detail": sector_detail,
+        "day_return": day_return,
         "lstg_stqty": lstg_stqty,
         "market_cap": market_cap,
         "near_52w_high_override": near_52w_high_override,
@@ -1744,8 +1916,11 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         candidate["fail_reasons"].append("upperlimit_streak_crash")
 
     # 대상일 일봉 장대 음봉 하드 필터 (close < open, body >= 2.0%)
-    if len(daily_df) >= 1:
-        _last = daily_df.iloc[-1]
+    # [2026-10-20] 서버 일봉에 대상일 행이 있으면 그 공식 시가/종가로 판정 - 패턴의 당일 양봉 판정과 같은 캔들을 본다
+    # (10s 집계 시가는 첫 수신 행이라 공식 시가와 달라 양봉인 날에 장대 음봉으로 걸리기도 했음).
+    _bar_df = _check_df if hist_is_current else daily_df
+    if len(_bar_df) >= 1:
+        _last = _bar_df.iloc[-1]
         _open_p = float(_last.get("open") or 0)
         _close_p = float(_last.get("close") or 0)
         if _open_p > 0 and _close_p < _open_p and (_open_p - _close_p) / _open_p >= 0.020:
@@ -1826,6 +2001,12 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     if prev_day_change is not None and prev_day_change >= config.max_prev_day_change:
         candidate["soft_flags"].append("prev_day_gap_risk")
 
+    # [2026-10-20] A/B 등급 종목은 레거시 추세 하드필터를 soft flag로 전환(PATTERN_OVERRIDABLE_TREND_FAILS 참조).
+    if tier is not None:
+        for reason in PATTERN_OVERRIDABLE_TREND_FAILS:
+            if reason in candidate["fail_reasons"]:
+                candidate["fail_reasons"].remove(reason)
+                candidate["soft_flags"].append(f"{reason}_pattern_override")
     # 시장상대 유동성 필터(apply_market_relative_liquidity_filters)는 
     # 함수 외부(scan)에서 실행되며 'liquidity_below_market_dual'을 fail_reasons에 추가하므로 그대로 유지됩니다.
 
@@ -2003,6 +2184,12 @@ def calculate_candidate_score_breakdown(candidate, config):
     _penalty("soft_flags", 0.7 * plain_soft_count + 1.5 * reversal_override_count)
     penalties[-1]["flags"] = list(soft_flags)
 
+    # [2026-10-15] 당일 강세 섹터 가산점(사용자 요청): 위 가점-감점 합계의 HOT_SECTOR_BONUS_RATIO(10%)를 더한다.
+    # 합계가 0 이하이면 비율 가산의 의미가 없어(음수에 곱하면 감점이 됨) 적용하지 않는다. hot_sector는
+    # scan()의 mark_hot_sectors()가 전 종목 평가 후 채운다.
+    if candidate.get("hot_sector") and HOT_SECTOR_BONUS_RATIO > 0 and score > 0:
+        _gain("hot_sector_bonus", score * HOT_SECTOR_BONUS_RATIO, None)
+
     return {"score": round(score, 2), "gains": gains, "penalties": penalties}
 
 
@@ -2109,6 +2296,64 @@ def pick_with_tie_randomization(sorted_rows, max_picks, rng):
 
 
 SECTOR_CAP_RATIO = 0.3  # 최종 선정 중 한 업종(sector)이 차지할 수 있는 최대 비율
+
+# [2026-10-15] 당일 강세 섹터 가산점 (파일 상단 changelog 참조)
+HOT_SECTOR_BONUS_RATIO = 0.10      # 강세 섹터 종목 점수 가산 비율 (0.0이면 비활성)
+HOT_SECTOR_TOP_N = 3               # 대상일 평균 등락률 상위 N개 업종
+HOT_SECTOR_MIN_MEMBERS = 5         # 평균을 낼 최소 구성 종목 수 (1~2종목 급등이 업종 전체로 보이는 것 방지)
+HOT_SECTOR_MIN_AVG_RETURN = 0.01   # 업종 평균 등락률 하한 (+1.0%) - 하락장에서 '덜 빠진' 업종은 강세로 보지 않음
+HOT_SECTOR_RETURN_CLIP = 0.15      # 평균 계산 시 종목 등락률 클립(±15%) - 상한가 1종목이 평균을 끌어올리는 것 방지
+# KIS 업종명 중 업종이 아닌 지수/규모 분류(예: "KOSDAQ MID 300", "시가총액규모중", "KOGI(지배구조지수)")
+_NON_SECTOR_NAME_PREFIXES = ("KOSPI", "KOSDAQ", "KOGI", "KODI", "KRX", "시가총액규모")
+
+
+def _sector_detail_from_basic_info(basic_info):
+    """[2026-10-15] 강세 섹터 판정용 업종명. KIS 업종 소분류(sector_small, 예: 반도체/IT부품/제약)를 우선 쓰고
+    없으면 중분류(sector_mid). 지수/규모 분류명은 업종이 아니므로 None (기존 sector 필드는 대분류까지 폴백해
+    "시가총액규모중" 같은 값이 섞여 있어 그대로 쓰지 않는다)."""
+    if not basic_info:
+        return None
+    for key in ("sector_small", "sector_mid"):
+        name = str(basic_info.get(key) or "").strip()
+        if name and not name.startswith(_NON_SECTOR_NAME_PREFIXES):
+            return name
+    return None
+
+
+def mark_hot_sectors(candidates, top_n=None, min_members=None, min_avg_return=None, clip=None):
+    """[2026-10-15] 대상일 업종별 평균 등락률로 강세 섹터를 골라 각 row에 sector_day_return/hot_sector를 채운다.
+    skip 종목과 day_return/sector_detail이 없는 종목은 평균에서 빠진다. 반환: 강세 섹터 목록
+    [{"sector", "avg_return", "members", "rank"}] (평균 내림차순)."""
+    top_n = HOT_SECTOR_TOP_N if top_n is None else top_n
+    min_members = HOT_SECTOR_MIN_MEMBERS if min_members is None else min_members
+    min_avg_return = HOT_SECTOR_MIN_AVG_RETURN if min_avg_return is None else min_avg_return
+    clip = HOT_SECTOR_RETURN_CLIP if clip is None else clip
+
+    returns_by_sector: dict[str, list[float]] = {}
+    for row in candidates:
+        sector = row.get("sector_detail")
+        ret = row.get("day_return")
+        if row.get("skip_reason") is not None or not sector or ret is None:
+            continue
+        returns_by_sector.setdefault(sector, []).append(max(-clip, min(clip, float(ret))))
+
+    stats = {
+        sector: (sum(rets) / len(rets), len(rets))
+        for sector, rets in returns_by_sector.items()
+        if len(rets) >= min_members
+    }
+    ranked = sorted(stats.items(), key=lambda item: item[1][0], reverse=True)
+    hot = [
+        {"sector": sector, "avg_return": avg, "members": n, "rank": rank}
+        for rank, (sector, (avg, n)) in enumerate(ranked[:max(0, top_n)], start=1)
+        if avg >= min_avg_return
+    ]
+    hot_names = {item["sector"] for item in hot}
+    for row in candidates:
+        sector = row.get("sector_detail")
+        row["sector_day_return"] = stats[sector][0] if sector in stats else None
+        row["hot_sector"] = sector in hot_names
+    return hot
 
 
 def apply_sector_diversification_cap(selected_rows, eligible_rows, max_picks, cap_ratio=SECTOR_CAP_RATIO):
@@ -2247,6 +2492,7 @@ def render_all_scan_markdown(all_rows):
         # [2026-10-10] 일봉 지표(g001 daily.csv) 기반 우상향 필수조건/가점 근거
         "uptrend_gate", "ma20_slope5", "macd_hist", "di_spread", "adx14", "rsi14", "stoch_k", "obv_up", "close_vs_vwap",
         "pattern_tier", "buy_signal_count", "buy_signals",
+        "sector_detail", "sector_day_return", "hot_sector", "intraday_atr3_med_pct",
     ]
 
     def _f(value, digits):
@@ -2300,6 +2546,10 @@ def render_all_scan_markdown(all_rows):
             str(row.get("pattern_tier") or ""),
             str(row.get("buy_signal_count") if row.get("buy_signal_count") is not None else ""),
             "+".join(row.get("buy_signals") or []),
+            str(row.get("sector_detail") or ""),
+            _f(row.get("sector_day_return"), 4),
+            "Y" if row.get("hot_sector") else "",
+            _f(row.get("intraday_atr3_med_pct"), 3),
         ]
         sanitized = [str(value).replace("|", "\\|") for value in values]
         lines.append("| " + " | ".join(sanitized) + " |")
@@ -2348,6 +2598,7 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         f"- config: {config.name}",
         f"- price range: {config.price_min:,} ~ {config.price_max:,}",
         f"- ATR/price min (daily): {config.atr_ratio_min:.4f}",
+        f"- intraday 3-min ATR median min: {INTRADAY_ATR3_MIN_PCT:.2f}% (r003 entry gate 0.60%)",
         "- liquidity filter: market-relative (KOSPI/KOSDAQ average amount + price-adjusted volume)",
         f"- amount baseline(for score only): {config.amount_ma20_min:,}",
         f"- min listing days: {config.min_listing_days}",
@@ -2365,6 +2616,10 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
         f"- selected picks: {summary['selected_count']}",
         f"- skipped: {summary['skipped']}",
         f"- RS(relative strength) data: {'OK' if scan_result.get('rs_data_available') else 'FAILED - all candidates scored with neutral RS (6.5/13)'}",
+        "- hot sectors (score +{:.0%}): {}".format(
+            HOT_SECTOR_BONUS_RATIO,
+            ", ".join(f"{item['sector']} {item['avg_return']:+.2%} ({item['members']})" for item in scan_result.get("hot_sectors") or []) or "none",
+        ),
         "",
         "## Ranked Picks",
         "",
@@ -2482,6 +2737,57 @@ def find_nearest_trading_date(data_root, target_date_str):
     
     # Return the most recent available date
     return available_dates[-1]
+
+
+# KRX 휴장일 이름은 holidays 패키지의 KRX 시장 달력(XKRX, 한국어 이름)에서 가져온다(pip install holidays).
+# 패키지가 없으면 주말만 휴장일로 판단한다(그 외 데이터 없는 날은 "데이터 없음"으로 처리).
+try:
+    import holidays as _holidays_pkg
+except ImportError:
+    _holidays_pkg = None
+_KRX_HOLIDAYS_BY_YEAR: dict[int, dict] = {}
+
+
+def _krx_holiday_name(dt):
+    if _holidays_pkg is None:
+        return None
+    cal = _KRX_HOLIDAYS_BY_YEAR.get(dt.year)
+    if cal is None:
+        try:
+            cal = dict(_holidays_pkg.financial_holidays("XKRX", years=dt.year, language="ko"))
+        except Exception as exc:
+            print(f"[WARN] KRX 휴장일 조회 실패({dt.year}): {exc} - 주말만 휴장일로 판단합니다.")
+            cal = {}
+        _KRX_HOLIDAYS_BY_YEAR[dt.year] = cal
+    return cal.get(dt.date())
+
+
+def market_closed_reason(date_str):
+    """Return the reason KRX is closed on date_str (weekend/holiday name), or None if it is a trading day."""
+    dt = datetime.strptime(date_str, "%Y%m%d")
+    if dt.weekday() >= 5:
+        return "토요일" if dt.weekday() == 5 else "일요일"
+    return _krx_holiday_name(dt)
+
+
+def _date_dir_has_symbol_data(date_dir):
+    return date_dir.is_dir() and any(_extract_code_from_stem(Path(n).stem) for n in os.listdir(date_dir))
+
+
+def ensure_scan_target_date(data_root, target_date_str):
+    """대상일 폴더에 종목 데이터가 없으면 SystemExit - 다른 날짜로 조정하지 않는다.
+
+    휴장일(주말/KRX 시장 달력)이면 "휴장일(사유)", 아니면 "데이터 없음"으로 표시한다.
+    """
+    if _date_dir_has_symbol_data(data_root / target_date_str):
+        return
+    reason = market_closed_reason(target_date_str)
+    if reason is not None:
+        raise SystemExit(f"[INFO] {target_date_str}은(는) 휴장일({reason})입니다. 진행하지 않습니다.")
+    raise SystemExit(
+        f"[ERROR] {target_date_str}의 종목 데이터가 없습니다({data_root / target_date_str}). "
+        f"대상 데이터가 없어 진행하지 않습니다."
+    )
 
 
 def filter_stock_list_by_min_bars(stock_list, data_root, target_date_str=None, min_bars=5, verbose=True, single_date_only=False):
@@ -2814,13 +3120,9 @@ def scan(
     target_date_str = target_date.strftime("%Y%m%d") if target_date else None
     rng = random.Random(int(target_date_str) if target_date_str and target_date_str.isdigit() else 42)
     
-    # Auto-adjust target_date if it's a holiday (no data directory exists)
+    # 대상일 데이터가 없으면(휴장일 포함) 중단 - 다른 날짜로 조정하지 않음(ensure_scan_target_date)
     if target_date_str:
-        adjusted_target_date_str = find_nearest_trading_date(data_root, target_date_str)
-        if adjusted_target_date_str != target_date_str:
-            if verbose:
-                print(f"[INFO] {target_date_str}은(는) 거래 없는 날(공휴일)입니다. {adjusted_target_date_str}로 조정합니다.")
-            target_date_str = adjusted_target_date_str
+        ensure_scan_target_date(data_root, target_date_str)
     
     stock_list = stock_list or load_symbols()
     total = len(stock_list)
@@ -2895,10 +3197,13 @@ def scan(
         # 당일 종가/VWAP(마감 강도 가점)는 10s 파일을 다시 읽어야 해서 우상향 필수조건을 통과한 종목만 읽는다
         # (전 종목을 읽으면 Raspberry Pi에서 스캔이 약 9분 늘어남). 점수는 아래 시장상대 유동성 필터 뒤
         # 전 종목 재채점 때 이 값까지 반영된다.
+        # [2026-10-15] 같은 읽기에서 장중 3분봉 ATR% 중앙값도 계산해 선정 단계 변동성 하한(INTRADAY_ATR3_MIN_PCT)을
+        # 적용한다. fallback/업종교체 후보도 모두 이 집합(우상향 통과)에서 나오므로 최종 선정 전체에 적용된다.
+        # [2026-10-20] 비패턴 보충 후보는 fallback 단계에서 같은 함수(_apply_intraday_metrics)로 지연 판정한다.
         if candidate.get("uptrend_gate") and candidate.get("skip_reason") is None:
-            _vwap = _load_last_vwap(data_root, target_date_str, code)
-            if _vwap and candidate.get("price"):
-                candidate["close_vs_vwap"] = candidate["price"] / _vwap - 1.0  # 공식 종가 기준
+            _apply_intraday_metrics(candidate, _load_intraday_metrics(data_root, target_date_str, code))
+            if INTRADAY_ATR3_MIN_PCT > 0:
+                candidate["eligible"] = not candidate["fail_reasons"]  # 아래 진행 로그 표시용(최종 판정은 재채점 루프)
         if recent_repeat_days > 0:
             candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
         candidates.append(candidate)
@@ -2913,18 +3218,18 @@ def scan(
             if candidate["eligible"]:
                 score = candidate["score"]
                 filled_count = min(SCORE_DOT_SLOTS, max(0, round(score / 5.0)))
-                if score < 20:
-                    dot_icon = "🔴"
+                if score < 15:
+                    dot_icon = "🔵"
+                elif score < 20:
+                    dot_icon = "🟢"
                 elif score < 25:
-                    dot_icon = "🟠"
+                    dot_icon = "🟣"
                 elif score < 30:
                     dot_icon = "🟡"
                 elif score < 35:
-                    dot_icon = "🟢"
-                elif score < 40:
-                    dot_icon = "🔵"
+                    dot_icon = "🟠"
                 else:
-                    dot_icon = "🟣"
+                    dot_icon = "🔴"
                 dots = dot_icon * filled_count + SCORE_DOT_EMPTY * (SCORE_DOT_SLOTS - filled_count)
                 print(f"[{idx:04d}/{total}] {dots} {_symbol_log_label(code, name)} | score={candidate['score']:.2f}          ")
             else:
@@ -2934,11 +3239,40 @@ def scan(
 
     # [2026-10-10] 우상향 필수조건은 MA20 5일 기울기 때문에 서버 일봉 25행 이상이 필요하다. g001 이전 버전의
     # 20행 daily.csv(2026-10-10 이전 수집분)는 전부 uptrend_unknown으로 탈락하므로, 많으면 재수집을 안내한다.
-    _unknown = sum(1 for row in candidates if "uptrend_unknown" in row.get("fail_reasons", []))
+    # [2026-10-20] 상승 초입 패턴 도입 후 실패명이 pattern_unknown으로 바뀌었는데 uptrend_unknown을 세고 있어 경고가 죽어 있었음.
+    _unknown = sum(1 for row in candidates if "pattern_unknown" in row.get("fail_reasons", []))
     if candidates and _unknown > 0.1 * len(candidates):
-        print(f"[WARN] 우상향 판정 불가(uptrend_unknown) {_unknown}/{len(candidates)}종목 - 서버 일봉이 25행 미만이거나 "
+        print(f"[WARN] 패턴 판정 불가(pattern_unknown) {_unknown}/{len(candidates)}종목 - 서버 일봉이 25행 미만이거나 "
               f"대상일 행이 없음. 최신 g001로 해당 날짜를 다시 실행하면 이어받기 중 일봉 파일만 100행+지표로 재수집됩니다.")
+    # [2026-10-15] 검사 대상 전 종목이 '데이터 부재'(대상일 10s 파일 없음/raw_bar 열 없는 구버전 수집)로 ATR을 못 구했을
+    # 때만 이번 스캔의 장중 변동성 필터를 끈다(전 종목 탈락 방지) - 경고만 남김. 거래 희소(봉 부족)/계산 오류는 종목
+    # 문제이므로 전 종목이 그렇더라도 fail-closed 유지(Codex 2차 검토).
+    _atr_checked = [row for row in candidates if row.get("uptrend_gate") and row.get("skip_reason") is None]
+    _no_data = ("no_date", "no_file", "no_columns")
+    atr_filter_disabled = bool(
+        INTRADAY_ATR3_MIN_PCT > 0 and _atr_checked and all(row.get("intraday_atr3_status") in _no_data for row in _atr_checked)
+    )
+    if atr_filter_disabled:
+        for row in _atr_checked:
+            row["fail_reasons"] = [r for r in row["fail_reasons"] if r != "intraday_atr_unknown"]
+            row["soft_flags"].append("intraday_atr_filter_disabled_no_data")
+            row["intraday_atr3_floor_pct"] = None
+        print(f"[WARN] 장중 3분봉 ATR 계산 가능 종목 0/{len(_atr_checked)} (대상일 10s 데이터 없음?) - "
+              "이번 스캔은 장중 변동성 필터(INTRADAY_ATR3_MIN_PCT)를 적용하지 않습니다.")
+    elif verbose and INTRADAY_ATR3_MIN_PCT > 0 and _atr_checked:
+        _low = sum(1 for row in _atr_checked if "low_intraday_atr" in row["fail_reasons"])
+        _unk = sum(1 for row in _atr_checked if "intraday_atr_unknown" in row["fail_reasons"])
+        print(f"[INFO] 장중 3분봉 ATR 중앙값 < {INTRADAY_ATR3_MIN_PCT:.2f}% 탈락 {_low}/{len(_atr_checked)}, 계산 불가 탈락 {_unk}")
     liquidity_filter_info = apply_market_relative_liquidity_filters(candidates, market_map)
+    # [2026-10-15] 당일 강세 섹터 표시 - 아래 재채점(calculate_candidate_score_breakdown)이 hot_sector를 읽는다.
+    hot_sectors = mark_hot_sectors(candidates)
+    if verbose:
+        if hot_sectors:
+            print("[INFO] 당일 강세 섹터(점수 +{:.0%}): ".format(HOT_SECTOR_BONUS_RATIO) + ", ".join(
+                f"{item['rank']}.{item['sector']} {item['avg_return']:+.2%}({item['members']}종목)" for item in hot_sectors
+            ))
+        else:
+            print(f"[INFO] 당일 강세 섹터 없음 (구성 {HOT_SECTOR_MIN_MEMBERS}종목+ / 평균 {HOT_SECTOR_MIN_AVG_RETURN:+.1%}+ 업종 없음)")
 
     for row in candidates:
         # 내역은 이 시점(반복선정 플래그 반영 후, 업종교체/fallback 플래그 추가 전) 채점 그대로
@@ -2950,7 +3284,8 @@ def scan(
         row["fail_reasons"] = [reason for reason in row.get("fail_reasons", []) if reason != "low_score"]
         if score < SCORE_CUTOFF:
             row["fail_reasons"].append("low_score")
-        row["eligible"] = not row["fail_reasons"]
+        # [2026-10-20] skip 종목(데이터 부족 등 조기 반환)은 fail_reasons가 비어 있어도 적격이 아니다(방어 가드).
+        row["eligible"] = not row["fail_reasons"] and row.get("skip_reason") is None
 
     eligible_rows = [row for row in candidates if row["eligible"]]
     eligible_rows.sort(
@@ -2988,20 +3323,63 @@ def scan(
     # pattern failures are not.
     if config.max_picks is not None and len(selected_rows) < config.max_picks:
         selected_codes = {row["code"] for row in selected_rows}
+
+        def _fallback_relaxable(row) -> bool:
+            extra = set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS
+            if not extra:
+                return True
+            # [2026-10-20] 비패턴 보충: 상승 초입 패턴 조건에만 걸린 종목(지표 없음 제외) + MA20 이격 상한
+            if not FALLBACK_NON_PATTERN_ENABLED or "pattern_unknown" in extra:
+                return False
+            if not all(reason.startswith("pattern_") for reason in extra):
+                return False
+            ratio = row.get("close_ma20_ratio")
+            return ratio is not None and ratio <= FALLBACK_NON_PATTERN_MAX_VS_MA20
+
         fallback_rows = [
             row for row in candidates
             if is_scorable_candidate(row)
             # Keep fallback defensive: only clear up-trend names.
             and row.get("trend_state") == "up"
             and not bool(row.get("is_last_bearish"))
-            and row.get("score", 0.0) >= SCORE_CUTOFF
-            and not (set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS)
+            # 장중 지표를 아직 안 읽은 보충 후보는 VWAP 마감 가점(최대 2점, 강세섹터 +10% 포함 2.2점)을 받기 전이라
+            # 그만큼 낮춰 1차로 거르고, 아래에서 지표 반영 후 재채점해 SCORE_CUTOFF를 다시 확인한다(Codex 5차 검토).
+            and row.get("score", 0.0) >= SCORE_CUTOFF - (
+                0.0 if row.get("intraday_atr3_status") is not None else 2.0 * (1.0 + HOT_SECTOR_BONUS_RATIO)
+            )
+            and _fallback_relaxable(row)
             and (
                 "liquidity_below_market_dual" not in row.get("fail_reasons", [])
                 or (row.get("amount_ma20") or 0.0) >= LIQUIDITY_FALLBACK_MIN_AMOUNT
             )
             and row["code"] not in selected_codes
         ]
+        # [2026-10-20] 장중 지표(VWAP/ATR)는 스캔 루프에서 패턴 통과 종목만 읽었으므로, 아직 읽지 않은 보충 후보는 여기서
+        # 읽어 VWAP 가점을 반영해 재채점하고 장중 ATR 하한을 같은 방식(fail-closed)으로 판정한다. 패턴 종목 전체가 데이터
+        # 부재라 이번 스캔의 ATR 필터를 껐더라도 보충 후보는 각자 판정하고, 그 종목도 데이터 부재(_no_data)일 때만 필터 꺼짐
+        # 정책을 따른다(Codex 4차 검토).
+        _kept = []
+        for row in fallback_rows:
+            if row.get("intraday_atr3_status") is None:
+                _apply_intraday_metrics(row, _load_intraday_metrics(data_root, target_date_str, row["code"]))
+                if atr_filter_disabled and row["intraday_atr3_status"] in _no_data:
+                    row["fail_reasons"] = [r for r in row["fail_reasons"] if r != "intraday_atr_unknown"]
+                    row["soft_flags"].append("intraday_atr_filter_disabled_no_data")
+                    row["intraday_atr3_floor_pct"] = None
+                breakdown = calculate_candidate_score_breakdown(row, config)
+                row["score"] = breakdown["score"]
+                row["score_breakdown"] = breakdown
+                row["fail_reasons"] = [reason for reason in row["fail_reasons"] if reason != "low_score"]
+                if row["score"] < SCORE_CUTOFF:
+                    row["fail_reasons"].append("low_score")
+            if row["score"] < SCORE_CUTOFF:
+                continue
+            if {"low_intraday_atr", "intraday_atr_unknown"} & set(row["fail_reasons"]):
+                continue
+            _kept.append(row)
+        if verbose:
+            print(f"[INFO] 보충 후보 {len(fallback_rows)}종목 중 점수/장중 3분봉 ATR 통과 {len(_kept)}종목")
+        fallback_rows = _kept
         fallback_rows.sort(
             key=_selection_rank_key,
             reverse=True,
@@ -3072,6 +3450,7 @@ def scan(
             "market_ref_date": market_ref_date,
             "liquidity_filter": liquidity_filter_info,
             "rs_data_available": rs_data_available,
+            "hot_sectors": hot_sectors,
         }
     return selected
 
@@ -3162,11 +3541,7 @@ if __name__ == "__main__":
     effective_target_date = target_date
     single_date_only = False
     if target_date:
-        target_date_str = target_date.strftime("%Y%m%d")
-        adjusted = find_nearest_trading_date(data_root, target_date_str)
-        if adjusted != target_date_str:
-            print(f"[INFO] {target_date_str}은(는) 거래 없는 날(공휴일)입니다. {adjusted}로 조정합니다.")
-            effective_target_date = datetime.strptime(adjusted, "%Y%m%d")
+        ensure_scan_target_date(data_root, target_date.strftime("%Y%m%d"))
 
     # Determine output directory (스캔 실행 전에 먼저 정해야 실행 로그도 같은 폴더에 남길 수 있음)
     if effective_target_date:

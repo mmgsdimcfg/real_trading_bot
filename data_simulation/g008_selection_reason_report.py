@@ -42,6 +42,15 @@ REVERSAL_OVERRIDE_FLAGS = {
     "bearish_candle_dominant_reversal_override": ("음봉 우세 예외 통과", "bearish-candle dominance passed by reversal exception"),
 }
 
+# [2026-10-20] g002 PATTERN_OVERRIDABLE_TREND_FAILS - 상승 초입 패턴(A/B) 종목은 레거시 추세 하드필터를 경고(-0.7점)로만 반영.
+PATTERN_OVERRIDE_FLAGS = {
+    "down_trend_pattern_override": ("하락 추세(MA5<MA20) - 패턴 종목이라 경고만", "down trend (MA5<MA20) - warning only for a pattern stock"),
+    "flat_trend_pattern_override": ("횡보 추세 - 패턴 종목이라 경고만", "flat trend - warning only for a pattern stock"),
+    "box_range_no_progress_pattern_override": ("박스권 정체 - 패턴 종목이라 경고만", "box-range stall - warning only for a pattern stock"),
+    "bearish_candle_dominant_pattern_override": ("음봉 우세 - 패턴 종목이라 경고만", "bearish-candle dominance - warning only for a pattern stock"),
+    "linreg_long_term_downtrend_pattern_override": ("20일 회귀선 하락 - 패턴 종목이라 경고만", "20-day regression downtrend - warning only for a pattern stock"),
+}
+
 BUY_SIGNAL_LABELS = {
     "macd_turn_up": ("MACD 상승전환", "MACD turning up"),
     "stoch_golden": ("스토캐스틱 골든크로스", "stochastic golden cross"),
@@ -132,6 +141,9 @@ def _flag_desc(flag: str, lang: str) -> str:
     if flag in REVERSAL_OVERRIDE_FLAGS:
         return _pick(lang, REVERSAL_OVERRIDE_FLAGS[flag]) + (
             " (반전 신호로 하드필터 예외 통과, -1.5점)" if lang == "ko" else " (hard filter waived by a reversal signal, -1.5)")
+    if flag in PATTERN_OVERRIDE_FLAGS:
+        return _pick(lang, PATTERN_OVERRIDE_FLAGS[flag]) + (
+            " (상승 초입 패턴 종목은 하드필터 대신 경고, -0.7점)" if lang == "ko" else " (pattern stock: hard filter downgraded to a warning, -0.7)")
     m = re.fullmatch(r"bearish_2in3d_(\d+)", flag)
     if m:
         return (f"최근 3일 중 음봉 {m.group(1)}개" if lang == "ko" else f"{m.group(1)} bearish candles in the last 3 days")
@@ -152,6 +164,8 @@ def _soft_flag_label(flag: str, row: dict, lang: str = "ko") -> str:
     ko = lang == "ko"
     if flag in REVERSAL_OVERRIDE_FLAGS:
         return _pick(lang, REVERSAL_OVERRIDE_FLAGS[flag])
+    if flag in PATTERN_OVERRIDE_FLAGS:
+        return _pick(lang, PATTERN_OVERRIDE_FLAGS[flag])
     if flag.startswith("recent_pick_repeat_"):
         return "반복 선정 플래그" if ko else "repeat-pick flag"
     if flag.startswith("bearish_2in3d_"):
@@ -280,6 +294,8 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
     vol_note = ("데이터 부족 0" if ko else "no data 0") if g_vol.get("missing") else f"{g_vol['value']:.1f}"
     ind_keys = ("adx_trend", "ma_alignment", "obv_trend", "macd_momentum", "stoch_bullish", "close_above_vwap")
     g_ind = sum(gains[k]["value"] for k in ind_keys if k in gains)
+    g_hot = gains.get("hot_sector_bonus", {"value": 0.0})["value"]  # [2026-10-15] g002 당일 강세 섹터 가산점
+    hot_note = (f" + 강세섹터 {g_hot:.1f}" if ko else f" + hot sector {g_hot:.1f}") if g_hot > 0 else ""
 
     if pen_total < 2.5:
         rank_note = "감점이 거의 없음" if ko else "almost no penalties"
@@ -327,6 +343,20 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
     got = [f"{_pick(lang, label)} {gains[k]['value']:.1f}/{mx}" for k, label, mx in ind_items if k in gains and gains[k]["value"] > 0]
     if got:
         good.append(("지표 가점: " if ko else "Indicator points: ") + ", ".join(got))
+    a3 = row.get("intraday_atr3_med_pct")  # [2026-10-15] g002 장중 3분봉 ATR 중앙값(%)
+    a3_floor = row.get("intraday_atr3_floor_pct")  # 실제 적용된 선정 하한(필터 꺼짐/해제면 None)
+    if a3 is not None:
+        if a3_floor is not None:
+            good.append(f"장중 3분봉 ATR 중앙값 {a3:.2f}% (선정 하한 {a3_floor:.2f}% 통과, r003 진입 기준 0.60%)" if ko
+                        else f"Intraday 3-min ATR median {a3:.2f}% (passed the {a3_floor:.2f}% scanner floor; r003 entry gate 0.60%)")
+        else:
+            good.append(f"장중 3분봉 ATR 중앙값 {a3:.2f}% (선정 하한 미적용, r003 진입 기준 0.60%)" if ko
+                        else f"Intraday 3-min ATR median {a3:.2f}% (scanner floor not applied; r003 entry gate 0.60%)")
+    if g_hot > 0:
+        sdr = row.get("sector_day_return")
+        sdr_txt = _pct(sdr) if sdr is not None else "-"
+        good.append(f"**당일 강세 섹터** ({row.get('sector_detail')}, 업종 평균 {sdr_txt}) → 가산점 +{g_hot:.1f}점" if ko
+                    else f"**Hot sector of the day** ({row.get('sector_detail')}, sector average {sdr_txt}) → bonus +{g_hot:.1f}")
     if 0 <= cm <= 0.08 and rt <= 0.25:
         good.append(f"20일선 위 {_pct(cm)}, 20일 수익률 {_pct(rt)}: 너무 오르지 않아 **과열 감점 없음**" if ko
                     else f"{_pct(cm)} above MA20, 20-day return {_pct(rt)}: not stretched, **no overheating penalty**")
@@ -409,19 +439,27 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
         if flag == "sector_cap_swapped_in":
             risk.append("업종 쏠림 제한으로 다른 종목 대신 교체 편입됨" if ko else "swapped in by the sector cap")
         elif flag == "fallback_selected":
-            risk.append("적격 종목 부족으로 보충(fallback) 편입됨" if ko else "added as fallback (not enough eligible stocks)")
+            if row.get("pattern_tier"):
+                risk.append("적격 종목 부족으로 보충(fallback) 편입됨" if ko else "added as fallback (not enough eligible stocks)")
+            else:
+                risk.append("상승 초입 패턴 미충족 - 패턴 종목 부족으로 보충(fallback) 편입됨(MA20 이격 +10% 이내)" if ko
+                            else "not a base-breakout pattern - added as fallback (MA20 gap within +10%)")
         else:
             risk.append(_soft_flag_label(flag, row, lang))
 
     # ---- 필터 통과 근거 / filters passed
     hf = []
     if row.get("pattern_tier"):
-        hf.append("상승 초입 패턴 필수조건(120일선 상승, 장기선·20일선 위, 눌림/바닥 출발, 과열 아님, 매수신호 2개 이상)을 모두 충족했다."
+        hf.append("상승 초입 패턴 필수조건(120일선 20일 변화율 -1% 초과, 장기선·20일선 위, 눌림/바닥 출발, 과열 아님, 매수신호 2개 이상)을 모두 충족했다."
                   if ko else
-                  "Met every base-breakout requirement (MA120 rising, above long MAs and MA20, started from a pullback/base, "
+                  "Met every base-breakout requirement (MA120 20-day change above -1%, above long MAs and MA20, started from a pullback/base, "
                   "not overheated, 2+ buy signals).")
     if trend == "up":
         hf.append("MA5 > MA20 **상승 추세**로 추세 필터를 정상 통과했다." if ko else "Passed the trend filter with **MA5 > MA20 (uptrend)**.")
+    elif f"{trend}_trend_pattern_override" in scored_flags:
+        hf.append(f"MA5/MA20 기준 **{TREND['ko'].get(trend, trend)} 추세**지만 상승 초입 패턴 종목이라 경고로만 반영했다 (-0.7점)."
+                  if ko else
+                  f"By MA5/MA20 this is a **{TREND['en'].get(trend, trend)} trend**, kept as a warning only for a pattern stock (-0.7).")
     else:
         if ko:
             hf.append(f"MA5/MA20 기준 **{TREND['ko'].get(trend, trend)} 추세**라 원래는 탈락 대상이었으나, "
@@ -455,7 +493,7 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
             (f"- **핵심 수치**: 종가 {price:,.0f}원 (당일 {_pct(pr)}) · ATR {atr * 100:.1f}% · 거래대금 {amt_txt} · RSI {rsi_txt} · "
              f"20일선 {_pct(cm)} · 20일 {_pct(rt)} · 52주고가 대비 {high * 100:.0f}% · 최근 5일 캔들 {candles or '-'}"),
             (f"- **점수 계산**: 가점 {gain_total:.1f} (ATR {g_atr:.1f} + 거래대금 {g_amt:.1f} + RSI {g_rsi:.1f}"
-             f" + 거래량강도 {vol_note} + 지표 {g_ind:.1f}) − 감점 {pen_total:.1f} = **{score:.2f}** → {rank_note}"),
+             f" + 거래량강도 {vol_note} + 지표 {g_ind:.1f}{hot_note}) − 감점 {pen_total:.1f} = **{score:.2f}** → {rank_note}"),
         ]
         titles = ("**✅ 선정된 이유 (좋은 조건)**", "**⛔ 감점 요인**", "- 없음", "**⚠️ 점수에 반영 안 된 주의점**", "**필터 통과 근거**")
     else:
@@ -465,7 +503,7 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
             (f"- **Key numbers**: close {price:,.0f} KRW (day {_pct(pr)}) · ATR {atr * 100:.1f}% · traded value {amt_txt} · RSI {rsi_txt} · "
              f"vs MA20 {_pct(cm)} · 20-day {_pct(rt)} · {high * 100:.0f}% of 52w high · last 5 candles {candles or '-'}"),
             (f"- **Score**: points {gain_total:.1f} (ATR {g_atr:.1f} + value {g_amt:.1f} + RSI {g_rsi:.1f}"
-             f" + volume strength {vol_note} + indicators {g_ind:.1f}) − penalties {pen_total:.1f} = **{score:.2f}** → {rank_note}"),
+             f" + volume strength {vol_note} + indicators {g_ind:.1f}{hot_note}) − penalties {pen_total:.1f} = **{score:.2f}** → {rank_note}"),
         ]
         titles = ("**✅ Why it was picked**", "**⛔ Penalties**", "- none", "**⚠️ Risks not reflected in the score**", "**Filters passed**")
 
