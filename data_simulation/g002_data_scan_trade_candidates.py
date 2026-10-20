@@ -23,6 +23,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-20] type=tune owner=claude
+    summary: 사용자 결정 - 상승 초입 패턴 MA120 20일 변화율 하한 PATTERN_MA120_MIN_SLOPE -1% -> -3%(하락장 선정 수 확대).
+      20261020 점수 상위 100 중 60종목이 pattern_ma120_falling, 단독 탈락 원인 1위. g008 리포트의 MA120 문구를
+      실제 기준(20일 변화율 -3% 초과)과 종목 값으로 갱신. 롤백: PATTERN_MA120_MIN_SLOPE=-0.01.
+    impact: scanner
+    compatibility: breaking (선정 기준 완화)
 - [2026-10-20] type=fix owner=claude
     summary: 사용자 요청("최근 선정 2~3개, 매일 같은 종목 - 선별 조건 재검토") + Codex 1~5차 검토. 원인: 상승 초입 패턴(A/B)
       필수화(2026-10-10) 후 (a) fallback이 pattern_* 탈락을 구제할 수 없어 선정 수 = 패턴 통과 수로 고정, (b) 레거시 추세
@@ -1341,7 +1347,8 @@ PATTERN_MAX_BEAR5 = 1            # B등급: 최근 5거래일 음봉 최대 개�
 PATTERN_B_MAX_VS_MA20 = 0.10     # B등급: 돌파 캔들이 없으므로 MA20 대비 +10% 이내만(이미 오른 뒤 쉬는 종목 제외)
 # [2026-10-20] MA120 20일 변화율 하한 (기존 > 0). 52거래일 재현(장중 ATR 적용): > 0 하루 7.6종목 -> > -1% 10.0종목,
 # 패턴 D+1 시가->종가 +0.40% -> +0.41%로 품질 유지(-2%는 11.5종목이지만 5일 수익률 약화).
-PATTERN_MA120_MIN_SLOPE = -0.01
+# [2026-10-20] -1% -> -3% (사용자 결정: 하락장 선정 수 확대, 20일간 120일선 3% 하락까지 허용).
+PATTERN_MA120_MIN_SLOPE = -0.03
 # [2026-10-20] A/B 등급 종목에는 하드필터 대신 soft flag(<reason>_pattern_override)로만 남기는 레거시 추세 필터.
 # 패턴이 이미 종가>MA20/MA20 기울기/장기선 위치/과열/당일 양봉을 검사하는데, 이 필터들(MA5-MA20 크로스, 10일 박스권,
 # 10일 음봉 비율, 20일 회귀 하락)은 '눌림 후 MA20 근처에서 막 출발'하는 패턴 형태 자체를 다시 탈락시켰다

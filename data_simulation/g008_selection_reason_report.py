@@ -70,7 +70,7 @@ FAIL_REASON_DESC = {
         "상승 초입 패턴: 종가가 60·120일선 중 낮은 쪽보다 2% 넘게 아래",
         "Base-breakout pattern: close more than 2% below the lower of MA60/MA120"),
     "pattern_ma20_falling": ("상승 초입 패턴: 20일선이 5일 동안 1% 넘게 하락", "Base-breakout pattern: MA20 fell more than 1% over 5 days"),
-    "pattern_ma120_falling": ("상승 초입 패턴: 120일선이 20일 전보다 낮음(장기 하락)", "Base-breakout pattern: MA120 lower than 20 days ago (long-term downtrend)"),
+    "pattern_ma120_falling": ("상승 초입 패턴: 120일선 20일 변화율 -3% 이하(장기 하락)", "Base-breakout pattern: MA120 20-day change at or below -3% (long-term downtrend)"),
     "pattern_no_pullback_base": (
         "상승 초입 패턴: 직전 10일 동안 20일선 +5% 이내로 내려온 적 없음(눌림/바닥 없이 이미 올라간 상태)",
         "Base-breakout pattern: never within +5% of MA20 in the prior 10 days (already extended, no pullback/base)"),
@@ -316,10 +316,12 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
         sigs = row.get("buy_signals") or []
         sig_txt = ", ".join(_pick(lang, BUY_SIGNAL_LABELS[s]) if s in BUY_SIGNAL_LABELS else s for s in sigs)
         if ko:
-            ma120 = "120일선 상승, " if row.get("ma120_slope20") is not None else "120일선 이력 부족(미확인), "
+            _s = row.get("ma120_slope20")
+            ma120 = f"120일선 20일 변화 {_pct(_s)}, " if _s is not None else "120일선 이력 부족(미확인), "
             good.append(f"**상승 초입 패턴 {tier_txt}** ({ma120}눌림/바닥 출발) | 매수신호 {len(sigs)}개: {sig_txt}")
         else:
-            ma120 = "MA120 rising, " if row.get("ma120_slope20") is not None else "MA120 history too short (unchecked), "
+            _s = row.get("ma120_slope20")
+            ma120 = f"MA120 20-day change {_pct(_s)}, " if _s is not None else "MA120 history too short (unchecked), "
             good.append(f"**Base-breakout pattern {tier_txt}** ({ma120}started from a pullback/base) | {len(sigs)} buy signals: {sig_txt}")
     atr_full = g_atr >= 15.95
     if ko:
@@ -450,9 +452,9 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
     # ---- 필터 통과 근거 / filters passed
     hf = []
     if row.get("pattern_tier"):
-        hf.append("상승 초입 패턴 필수조건(120일선 20일 변화율 -1% 초과, 장기선·20일선 위, 눌림/바닥 출발, 과열 아님, 매수신호 2개 이상)을 모두 충족했다."
+        hf.append("상승 초입 패턴 필수조건(120일선 20일 변화율 -3% 초과, 장기선·20일선 위, 눌림/바닥 출발, 과열 아님, 매수신호 2개 이상)을 모두 충족했다."
                   if ko else
-                  "Met every base-breakout requirement (MA120 20-day change above -1%, above long MAs and MA20, started from a pullback/base, "
+                  "Met every base-breakout requirement (MA120 20-day change above -3%, above long MAs and MA20, started from a pullback/base, "
                   "not overheated, 2+ buy signals).")
     if trend == "up":
         hf.append("MA5 > MA20 **상승 추세**로 추세 필터를 정상 통과했다." if ko else "Passed the trend filter with **MA5 > MA20 (uptrend)**.")
@@ -586,7 +588,7 @@ def render_selection_reason_report(
             "",
             "**1) 필수 조건: 상승 초입 패턴** (모두 만족해야 선정 대상)",
             "",
-            "- 120일선이 20일 전보다 높고(장기 우상향), 종가가 60·120일선 중 낮은 쪽 이상, 종가가 20일선 위",
+            "- 120일선 20일 변화율 -3% 초과(장기 하락 아님), 종가가 60·120일선 중 낮은 쪽 이상, 종가가 20일선 위",
             "- 20일선이 5일 동안 1% 넘게 떨어지지 않음, 직전 10일 중 종가가 20일선 +5% 이내였던 날이 있음(눌림/바닥 출발)",
             "- 20일선 대비 +15% 이하, RSI 70 이하(과열 아님), 매수신호 2개 이상"
             "(MACD 상승전환, 스토캐스틱 골든크로스, DI+ 우위, RSI 50~68, 거래량 1.3배+, OBV 상승)",
@@ -630,7 +632,7 @@ def render_selection_reason_report(
             "",
             "**1) Requirement: base-breakout (early-uptrend) pattern** (all must hold)",
             "",
-            "- MA120 higher than 20 days ago (long-term uptrend), close above the lower of MA60/MA120, close above MA20",
+            "- MA120 20-day change above -3% (not in a long-term decline), close above the lower of MA60/MA120, close above MA20",
             "- MA20 has not fallen more than 1% over 5 days; in the prior 10 days the close was within +5% of MA20 at least once (started from a pullback/base)",
             "- At most +15% above MA20 and RSI at most 70 (not overheated); 2+ buy signals "
             "(MACD turning up, stochastic golden cross, DI+ above DI-, RSI 50-68, volume 1.3x+, OBV rising)",
