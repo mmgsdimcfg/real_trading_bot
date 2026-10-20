@@ -106,6 +106,7 @@ from r001_define_config import (
     CANDLE_CONFIRM_DELAY_SECONDS,
     LIVE_PRICE_STALE_TTL_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
+    MAX_BUY_RISE_SHADOW_PCT,
     STARTUP_WARMUP_SECONDS,
 )
 from r002_strategy_core_shared import (
@@ -209,6 +210,8 @@ class BuyContext:
     qty: int = 0
     session: str = ""
     buy_detail: str = ""
+    # [2026-10-15] 게이트 섀도 기록 구분용 - 실제 판정이면 "live", evaluate_entry_time_shadow의 시간차단 관찰이면 그 kind
+    eval_mode: str = "live"
 
     @property
     def norm_code(self) -> str:
@@ -555,6 +558,18 @@ def _018_excessive_rise_from_prev_close(ctx: BuyContext) -> bool:
             f"prev_close={float(prev_close):,.0f} live={ctx.price:,.0f}"
         )
         return False
+    if (
+        MAX_BUY_RISE_SHADOW_PCT > 0
+        and rise_ratio is not None
+        and rise_ratio >= MAX_BUY_RISE_SHADOW_PCT
+    ):
+        # [2026-10-15] 관찰 전용(주문 영향 없음, r001 MAX_BUY_RISE_SHADOW_PCT) - 이 단계 통과 기록이며 이후 조건
+        # (_019~_024) 통과까지 뜻하지는 않는다. record_gate_decision이 종목/kind/result별 1분 1건으로 중복을 줄이므로
+        # 시간차단 관찰(eval_mode != "live") 기록은 result에 모드를 붙여 live 기록과 서로 지워지지 않게 한다(Codex 4차).
+        _record_gate(ctx, kind="PREV_CLOSE_RISE_SHADOW",
+                     result="would_block" if ctx.eval_mode == "live" else f"would_block@{ctx.eval_mode}", reason=None,
+                     evaluation_mode=ctx.eval_mode, prev_close=prev_close, rise_ratio=rise_ratio,
+                     shadow_threshold=MAX_BUY_RISE_SHADOW_PCT, live_cap=MAX_BUY_RISE_PCT_FROM_PREV_CLOSE)
     return True
 
 
@@ -905,7 +920,7 @@ def evaluate_entry_time_shadow(ctx: BuyContext, kind: str) -> bool:
         gap_blocked_codes=set(ctx.state.gap_blocked_codes),
         traded_today=set(ctx.state.traded_today),
     )
-    shadow_ctx = replace(ctx, state=shadow_state, services=replace(ctx.services, log=lambda _msg: None))
+    shadow_ctx = replace(ctx, state=shadow_state, services=replace(ctx.services, log=lambda _msg: None), eval_mode=kind)
     if not check_buy_conditions(shadow_ctx, SHADOW_ENTRY_CONDITIONS).approved:
         return False
     if shadow_ctx.services.classify_buy_session(shadow_ctx.current_dt) == "regular":

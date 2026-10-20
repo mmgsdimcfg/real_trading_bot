@@ -1,6 +1,25 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-15] type=tune owner=claude
+#     summary: 사용자 요청("기존 log/data 기반 매수·익절·손절·기타매도 조건 보완점 검토, Codex와 상호 검토 후 수정") -
+#       실매매 223포지션(0818~1007, 승률 27.8%, 평균 이익 +1.48%/손실 -0.77%, 합계 -75,405원)과 감시종목 1분봉 패널
+#       (38거래일, BB중심선 골든크로스 5,911건, 기간 A<0914/B>=0914 분할) 분석 + Codex 3회 검토로 확정한 변경:
+#       (1) MIDDAY_NO_ENTRY_END 13:00 -> 14:00 (점심 신규매수 금지를 14:00까지 연장). 패널에서 13:00~14:00 진입이
+#       두 기간 모두 최악(순 -0.40%/-0.42%, n=99/145, 기준 -0.33%/-0.28%). 현 로직은 점심 신호가 거의 없어(10/06~10/14
+#       MIDDAY_SHADOW 기록 0건) 실거래 영향은 작고, 차단된 신호는 기존 MIDDAY_SHADOW로 계속 기록된다.
+#       (2) MAX_BUY_RISE_SHADOW_PCT(0.10) 신규 - 실주문 상한(23%)은 유지하고 전일 대비 +10%~23% 진입 후보를 게이트
+#       로그(kind=PREV_CLOSE_RISE_SHADOW)로만 기록. 패널은 +10% 초과가 두 기간 모두 나빴으나(-0.61%/-0.57%, n=45/85)
+#       실매매 9건은 반대(평균 +0.62%)라 표본을 더 모은 뒤 판단.
+#       기각(근거 부족): 14:00 이후/09:00~09:30 일괄 차단(패널에서 지지 안 됨 - 실매매 14시 이후 손실은 구 로직/basic
+#       모드 거래였음), 시간손절(60분 이상 보유 15건이 +40,530원으로 수익원), TP1/트레일/손절폭 변경(실진입 재생 그리드
+#       1,800여 조합과 패널 그리드 1,900여 조합 모두 현행보다 낫지 않음 - 승률은 청산 설계로 23~58%까지 바뀌지만 건당
+#       기대수익은 거의 그대로이고, 기대수익은 진입 품질이 결정).
+#       (3) 문서화: 기본 리스크 프로파일(neutral.json)이 이 파일의 일부 값을 덮어쓰는 것이 실전 기준임을 명시(값 변경 없음,
+#       아래 STOP_LOSS 섹션 주석 참조).
+#     impact: common (r003 실전/g003 백테스트 공용 - is_regular_new_entry_blocked_time 경유)
+#     compatibility: breaking (13:00~14:00 신규 매수 차단. 롤백: MIDDAY_NO_ENTRY_END=dt_time(13, 0),
+#       MAX_BUY_RISE_SHADOW_PCT=0.0으로 섀도 기록 끔)
 # - [2026-10-11] type=refactor owner=claude
 #     summary: RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR 추가 - 수집 데이터와 로그를 저장소 밖 <git 루트>/runtime/
 #       {data,log}에 둔다(사용자 요청, 환경변수 AUTO_TRADING_RUNTIME로 변경 가능).
@@ -587,6 +606,14 @@ SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
 # =============================================================================
 
 # --- 1. 손절 (Stop Loss) ----------------------------------------------------
+# [2026-10-15] 주의: AUTO_TRADING_RISK_PROFILE 미설정 시 risk_profiles/neutral.json이 기본 적용되어(이 파일 맨 끝
+# _apply_risk_profile_overrides) 아래 값 일부를 덮어쓴다 - 실전 동작 기준은 neutral.json 값이다(로그 사유
+# "BREAKEVEN_FAIL_peak1.0_giveback0.80_60s", "NO_TREND_EXIT_20m_peakLT0.3_90s"로 확인). 덮어쓰는 키(이 파일 -> neutral):
+# TRAILING_STOP_FROM_PEAK 0.012->0.015, STOP_LOSS_EARLY_PERCENT -0.020->-0.018, STOP_LOSS_PERCENT -0.021->-0.02,
+# POST_BUY_BB_DROP_PCT 0.014->0.01, POST_BUY_DROP_CONFIRM_SECONDS 90->60, BREAKEVEN_FAIL_GIVEBACK_PCT 0.028->0.008,
+# BREAKEVEN_FAIL_CONFIRM_SECONDS 150->60, NO_TREND_EXIT_MAX_PEAK_PNL 0.006->0.003, NO_TREND_EXIT_MIN_PNL -0.005->-0.0045
+# (나머지 키는 같은 값). 아래 주석의 "백테스트 결과 완화" 이력은 neutral 적용 시 실전에 반영되지 않은 상태다 -
+# 어느 쪽으로 통일할지는 검증 후 결정(2026-10-15 Codex 검토: 일괄 복귀는 근거 부족).
 TAKE_PROFIT_PERCENT = 0.025  # 고정 익절 비율(+2.5%) - 섹션 2와 함께 관리
 STOP_LOSS_PERCENT = -0.021  # 기본 손절 기준(-2.1%)
 STOP_LOSS_EARLY_PERCENT = -0.020  # 보유 초기 구간에서 사용하는 완화 손절 기준
@@ -724,6 +751,11 @@ LIVE_PRICE_DOWN_CROSS_CONFIRM_POLLS = 1
 LIVE_PRICE_DOWN_CROSS_CONFIRM_SECONDS = 0
 # 추격매수 방지: 전일 종가 대비 현재가 상승률이 임계치 이상이면 매수 차단
 MAX_BUY_RISE_PCT_FROM_PREV_CLOSE = 0.23  # 23%
+# [2026-10-15] 전일 종가 대비 상승률이 이 값 이상(실주문 상한 미만)인 진입 후보를 게이트 로그
+# (gate_decisions_YYYYMMDD.jsonl, kind=PREV_CLOSE_RISE_SHADOW)로만 기록한다 - 주문에는 영향 없음. 1분봉 패널에서
+# +10% 초과 진입이 두 기간 모두 나빴지만(순 -0.61%/-0.57%) 실매매 9건은 반대여서 상한 하향 전에 표본을 모은다.
+# evaluation_mode=live(실제 판정)/MIDDAY_SHADOW 등(시간차단 관찰)으로 구분된다. <=0이면 기록하지 않음.
+MAX_BUY_RISE_SHADOW_PCT = 0.10
 # [2026-10-04] 당일 과열(추격) 차단 - 진입 직전 KIS 현재가 시세(inquire_price)의 당일 시가(stck_oprc)와
 # 당일 가중평균가(wghn_avrg_stck_prc = VWAP) 기준. 34거래일 1분봉 분석: 1~30분 구간은 평균회귀가 우세해서
 # (10분 수익률/BB 위치/RSI/스토캐스틱 모두 30분 후 수익률과 음의 상관, 일별 t=-5~-9) 당일 이미 크게 오른
@@ -1241,9 +1273,11 @@ REGULAR_NEW_ENTRY_CUTOFF = dt_time(15, 20)
 # [2026-10-05 근거 정정 - Codex 2차] 점심 진입 손실 27건 중 20건(-47,506원)은 0818~0909(구 로직)이고 현재
 # 로직(0922~1002)에서는 1건(-4,310원)뿐이다(ATR 게이트가 오후 진입을 이미 대부분 막음). 노출 제한 정책으로
 # 유지(브로커 호출 추가 없음) - 현재 전략의 손익 개선 수단으로 보지 말 것.
+# [2026-10-15] 종료 13:00 -> 14:00 연장(Update log 2026-10-15) - 1분봉 패널에서 13:00~14:00 진입이 두 기간 모두 최악
+# (순 -0.40%/-0.42%). 14:00 이후는 패널에서 기준보다 나쁘지 않아 차단하지 않는다. 롤백: dt_time(13, 0).
 ENABLE_MIDDAY_NO_ENTRY = True
 MIDDAY_NO_ENTRY_START = dt_time(11, 30)
-MIDDAY_NO_ENTRY_END = dt_time(13, 0)      # 이 시각부터 다시 허용 (START <= t < END 차단)
+MIDDAY_NO_ENTRY_END = dt_time(14, 0)      # 이 시각부터 다시 허용 (START <= t < END 차단)
 # [2026-10-04] 정규장 신규 진입 허용 시간창(START <= t < END 에서만 신규 매수, 보유 종목 매도는 무관).
 # 근거(실매매 188건, 비용 0.23% 포함): 추격차단 통과분 중 09:30~11:00 진입 74건 비용전 +0.12%/순 -0.11%,
 # 11:00 이후 52건 순 -0.57%(15일 중 이익일 0), 09:00~09:30 38건 순 -0.38%. 거래 수 자체가 비용(건당 0.23%)

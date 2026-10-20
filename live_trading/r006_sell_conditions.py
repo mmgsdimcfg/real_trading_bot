@@ -38,6 +38,16 @@ Order                                        Kind        Old r003 inline block (
   _022 shared reversal sell                  EXIT        5058-5099  (r002 check_sell_condition)
 
 Update log (append only):
+- [2026-10-15] type=fix owner=claude
+    summary: Codex 2~3차 검토 지적 - _003 peak_next_bar_bearish_exit의 고점봉 off-by-one 수정. 3분봉은 종료시각
+      라벨(r003 fetch_3min_frame: label/closed="right")이고 ctx.bar_time은 마지막 '확정봉'인데, _002가 실시간 틱 신고점에
+      ctx.bar_time(고점 틱이 속한 형성 중 봉의 바로 앞 봉)을 기록해서 _003이 '고점봉 다음 봉'이 아니라 고점봉 자체가
+      확정되는 순간 평가하고 있었다. _002는 고점 틱이 속한 봉 라벨 ceil(현재시각, 3분)을 기록하고, _003은 확정봉이
+      정확히 그 다음 봉(peak_bar_time + 3분)일 때만 평가한다(봉 누락으로 건너뛰었으면 평가하지 않음).
+      실매매 223포지션 중 이 사유 청산은 0건이었고 g003에는 이 조건이 없다(백테스트 정합성 영향 없음).
+      peak_bar_time은 live_state 직렬화 대상이 아니라 재시작 시 구 의미값이 남지 않는다.
+    impact: live (r003)
+    compatibility: breaking (PEAK_NEXT_BAR_BEARISH 판정 시점이 한 봉 늦춰짐 - 원래 의도대로. 롤백: 이 커밋의 _002/_003 되돌림)
 - [2026-09-23] type=feat owner=claude
     summary: 사용자 요청("매수/매도 컨셉 재검토" 3~4단계 적용) + Codex 설계검토 - 신규 _011_hybrid_1min_dead_cross_exit
       추가(매수측 _008_hybrid_1min_trigger의 대칭 매도판, r002 check_1min_dead_cross 사용). 기존 _021
@@ -418,9 +428,11 @@ def _002_update_position_tracking(ctx: SellContext) -> bool:
     pos["highest_price"] = max(prev_highest_price, price)
     highest_price = float(pos["highest_price"])  # TP/트레일링 로직 계산 전에 갱신값 반영
     if highest_price > prev_highest_price:
-        # 이 틱에서 신고점을 찍었다 - 그 신고점이 속한 확정봉을 "고점봉"으로 기록해둔다
+        # 이 틱에서 신고점을 찍었다 - 그 신고점이 속한 봉을 "고점봉"으로 기록해둔다
         # (PEAK_NEXT_BAR_BEARISH_EXIT에서 "고점봉 바로 다음 확정봉" 판정에 사용).
-        pos["peak_bar_time"] = ctx.bar_time
+        # [2026-10-15] 실시간 틱은 아직 형성 중인 봉에 속하므로 ctx.bar_time(마지막 확정봉)이 아니라 그 틱이 속한
+        # 3분봉의 종료시각 라벨(closed="right" -> 경계 정각 틱은 그 정각 라벨)을 기록한다.
+        pos["peak_bar_time"] = pd.Timestamp(ctx.current_dt).ceil(PEAK_BAR_INTERVAL)
     ctx.highest_price = highest_price
     ctx.peak_pnl_pct = (highest_price / entry_price) - 1.0 if highest_price > 0 and entry_price > 0 else 0.0
     ctx.profit_giveback = ctx.peak_pnl_pct - ctx.pnl_pct
@@ -430,6 +442,9 @@ def _002_update_position_tracking(ctx: SellContext) -> bool:
 # ---------------------------------------------------------------------------
 # EXIT / ADD_ENTRY
 # ---------------------------------------------------------------------------
+
+PEAK_BAR_INTERVAL = "3min"  # r003 fetch_3min_frame 봉 간격(종료시각 라벨, 자정 기준 3분 격자 - 08:00/09:00/15:30 모두 격자 위)
+
 
 def _003_peak_next_bar_bearish_exit(ctx: SellContext) -> bool:
     # 고점봉 바로 다음 확정봉이 음봉이면서 고점 대비 PEAK_NEXT_BAR_DROP_PCT 이상 하락하면 TP_EXTENSION_TRAIL
@@ -442,7 +457,8 @@ def _003_peak_next_bar_bearish_exit(ctx: SellContext) -> bool:
         and not pd.isna(ctx.atr_tp_pct)
         and ctx.peak_pnl_pct >= ctx.atr_tp_pct
         and pos.get("peak_bar_time") is not None
-        and bar_time > pos["peak_bar_time"]
+        # [2026-10-15] 확정봉이 고점봉 '바로 다음 봉'일 때만 평가(프레임 지연으로 그 봉을 건너뛰었으면 평가하지 않음)
+        and bar_time == pos["peak_bar_time"] + pd.Timedelta(PEAK_BAR_INTERVAL)
         and pos.get("peak_next_bar_checked") != pos["peak_bar_time"]
     ):
         pos["peak_next_bar_checked"] = pos["peak_bar_time"]
