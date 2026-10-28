@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-"""R76 live trading executor - BB middle cross strategy with multi indicators.
+"""Live trading executor - BB middle cross strategy with multi indicators.
 
 Core idea:
 1) Buy when live price crosses above BB middle and stays there long enough.
@@ -20,6 +20,39 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-28] type=feat owner=claude
+    summary: 사용자 요청(대책 a) - 전일 봉 warmup: _load_prior_day_warmup()이 runtime/data/<이전 거래일>/<코드>_*_10s.txt의
+      원본 분봉(r012 load_prior_day_warmup - g003에서 옮긴 import 부작용 없는 복원 함수, 오늘 기준가 stck_sdpr와 전일
+      종가가 다르면 미사용(fetch_base_price - stck_sdpr만 인정), 종목·날짜당 1회 캐시)을 읽어 _merge_bar_frame(1분/3분 캐시)과
+      _build_realtime_entry_frame(실시간 3분봉)이 r002 calculate_indicators_with_warmup으로 지표를 계산. 캐시/프레임 행은
+      당일만(봉 수·VWAP·OBV 의미 불변). 파일 없음/실패는 warmup 없이 기존과 동일. r001 ENABLE_PRIOR_DAY_INDICATOR_WARMUP.
+    impact: live (매수·매도 공용 프레임의 장 초반 지표 값이 바뀜)
+    compatibility: breaking (롤백: r001 ENABLE_PRIOR_DAY_INDICATOR_WARMUP=False)
+- [2026-10-28] type=fix owner=claude
+    summary: 사용자 요청(091580 상신이디피 09:18 반등 초입 미매수 분석, 대책 c) - kis_auth의 requests 호출에 기본
+      타임아웃 주입(_KisRequestsWithTimeout, r001 KIS_HTTP_CONNECT_TIMEOUT_SECONDS=3 / KIS_HTTP_READ_TIMEOUT_SECONDS=10,
+      읽기 타임아웃은 GET만). 20261028 09:19:12~09:21:24 225190 1분봉 조회가 TCP 연결 재시도(약 127초)로 132초 멈춰
+      메인 루프 전체가 정지했던 문제. 예외 처리 경로는 기존과 같고(기존에도 127초 뒤 같은 예외) 대기 시간만 줄어든다.
+    impact: live (r003 프로세스 안의 kis_auth 호출만)
+    compatibility: backward-compatible (r001 두 값 <=0이면 기존과 동일)
+- [2026-10-23] type=fix owner=claude
+    summary: import 시점 로그 파일 생성 제거 - 모듈 레벨 _rotate_logging_for_date() 호출을 없애고 run()의
+      _ensure_log_date_for()에서 처음 만들게 함(_LOG_CTX date_str 초기값 None). 로깅 미초기화 상태에선
+      _trade_log_target_paths()가 []를 반환해 <날짜>_buy_sell.log에 쓰지 않음. 원인: unittest discover에서
+      test_g012가 r001을 먼저 import해 RUNTIME_LOG_DIR가 운영 경로로 고정 -> test_r003의 AUTO_TRADING_RUNTIME
+      우회가 무력화되어 20261023 운영 로그에 089890 가짜 매도 기록 7회분 + 로그 파일 14개 생성.
+    impact: live - 실행 시 로그 파일 생성 시점만 import -> run() 시작으로 이동(파일명/내용 동일)
+    compatibility: backward-compatible
+- [2026-10-23] type=fix+feat owner=claude
+    summary: 사용자 요청(r003 실전 조건 재검토 + 전략 V2) + Codex 2회 검토.
+      (1) fix: refresh_pending_orders 매도 체결 확정 시 _confirm_pending_sell에 주문 잔량(rmn_qty) 대신 포지션 잔량
+      (pre_submit_qty - filled_qty)을 넘긴다. 부분 익절(TP1 40%)이 전량 체결되면 rmn_qty=0이라 남은 보유분까지
+      positions/positions_meta(tp1_done 등)가 삭제되던 버그(20261022 089890 코세스 실발생, 65초 뒤 계좌 동기화로
+      재생성되며 메타 소실). (2) 당일 실현손익(비용 추정 차감) live_state["realized_pnl_krw"] 누적/저장/복원 -
+      r005 _025 일일 손실 한도(기본 OFF)용 회계. (3) BuyServices.fetch_bid_ask 주입(r005 _027 스프레드, 기본 OFF).
+      (4) V2 섀도우 훅(r010, V2_LIVE_MODE="shadow"일 때만, 주문 없음).
+    impact: live - (1)(2)는 기본값에서도 동작. (3)(4)는 플래그 OFF 기본으로 무동작.
+    compatibility: backward-compatible (live_state json에 realized_pnl_krw 키 추가, 없으면 0)
 - [2026-10-11] type=refactor owner=claude
     summary: 런타임 산출물 위치 이동(사용자 요청) - data_simulation/data -> <git 루트>/runtime/data,
       data_simulation/logs -> <git 루트>/runtime/log. 경로는 r001 RUNTIME_ROOT/RUNTIME_DATA_DIR/RUNTIME_LOG_DIR
@@ -781,13 +814,23 @@ from r001_define_config import (
     ACTIVE_WATCHLIST_HARD_TIME_LIMIT_MINUTES,
     ENABLE_WATCHLIST_ROTATION,
     CANDLE_CONFIRM_DELAY_SECONDS,
+    KIS_HTTP_CONNECT_TIMEOUT_SECONDS,
+    KIS_HTTP_READ_TIMEOUT_SECONDS,
+    ENABLE_PRIOR_DAY_INDICATOR_WARMUP,
+    PRIOR_DAY_WARMUP_MINUTES,
+    PRIOR_DAY_WARMUP_MAX_LOOKBACK_DAYS,
+    PRIOR_DAY_WARMUP_MAX_BASE_DIFF_PCT,
+    V2_COMMISSION_PCT,
+    V2_SELL_TAX_PCT,
+    V2_LIVE_MODE,
 )
 from r002_strategy_core_shared import (
-    R76StrategyConfig,
+    StrategyConfig,
     is_regular_new_entry_blocked_time,
     is_midday_no_entry_time,
     gapdip_shadow_step,
     calculate_indicators,
+    calculate_indicators_with_warmup,
     check_sell_condition as shared_check_sell_condition,
     update_live_price_cross_state as shared_update_live_price_cross_state,
     _compute_bb_slope_pct,
@@ -808,6 +851,7 @@ current_dir = Path(__file__).resolve().parent
 data_sim_dir = current_dir.parent / "data_simulation"
 sys.path.insert(0, str(data_sim_dir))  # g005_watchlist_bridge
 from g005_watchlist_bridge import resolve_watchlist_path
+from r012_prior_day_warmup import load_prior_day_warmup
 
 project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
 sys.path.insert(0, str(project_root / "examples_llm"))
@@ -817,6 +861,40 @@ sys.path.insert(0, str(current_dir))
 
 import kis_auth as ka
 import domestic_stock_functions as dsf
+
+
+class _KisRequestsWithTimeout:
+    """[2026-10-28] kis_auth 모듈의 requests 대체물 - timeout 미지정 호출에 기본 타임아웃을 넣는다(r001
+    KIS_HTTP_*_TIMEOUT_SECONDS). GET은 (연결, 읽기), POST는 연결만(주문 응답 대기는 끊지 않음). 나머지 속성
+    (exceptions 등)은 실제 requests로 위임한다. 토큰 발급 POST(/oauth2/)는 읽기 타임아웃도 적용. kis_auth 모듈 안의 이름만 바꾸므로 다른 모듈의 requests는 무영향."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @staticmethod
+    def _timeout(read_seconds: float | None):
+        connect = KIS_HTTP_CONNECT_TIMEOUT_SECONDS if KIS_HTTP_CONNECT_TIMEOUT_SECONDS > 0 else None
+        read = read_seconds if read_seconds is not None and read_seconds > 0 else None
+        return None if connect is None and read is None else (connect, read)
+
+    def get(self, url, **kwargs):
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = self._timeout(KIS_HTTP_READ_TIMEOUT_SECONDS)
+        return self._real.get(url, **kwargs)
+
+    def post(self, url, *args, **kwargs):
+        if "timeout" not in kwargs:
+            # 토큰 발급(/oauth2/)은 주문이 아니라 읽기 타임아웃도 건다 - 응답 대기로 루프 전체가 멈추는 것 방지(Codex 검토).
+            is_token = "/oauth2/" in str(url)
+            kwargs["timeout"] = self._timeout(KIS_HTTP_READ_TIMEOUT_SECONDS if is_token else None)
+        return self._real.post(url, *args, **kwargs)
+
+
+if not isinstance(getattr(ka, "requests", None), _KisRequestsWithTimeout) and hasattr(ka, "requests"):
+    ka.requests = _KisRequestsWithTimeout(ka.requests)
 
 try:
     from inquire_time_itemchartprice import inquire_time_itemchartprice
@@ -841,7 +919,7 @@ LIVE_DRY_RUN = _LIVE_DRY_RUN_RAW in ("1", "true", "yes", "on", "y")
 
 ENABLE_LIVE_DRY_RUN = LIVE_DRY_RUN
 
-SHARED_R76_CONFIG = R76StrategyConfig(
+SHARED_STRATEGY_CONFIG = StrategyConfig(
     live_price_bb_buffer_pct=LIVE_PRICE_BB_BUFFER_PCT,
     live_price_cross_confirm_polls=LIVE_PRICE_CROSS_CONFIRM_POLLS,
     live_price_cross_confirm_seconds=LIVE_PRICE_CROSS_CONFIRM_SECONDS,
@@ -906,7 +984,8 @@ class _ConsoleTruncateRejectFormatter(logging.Formatter):
                 return formatted[:cut]
         return formatted
 
-_LOG_CTX: dict[str, object] = {"date_str": datetime.now().strftime("%Y%m%d")}
+# date_str=None: 로그 파일은 run()의 _ensure_log_date_for()가 처음 호출될 때 만든다(import 시점 생성 금지).
+_LOG_CTX: dict[str, object] = {"date_str": None}
 
 import threading
 
@@ -1067,7 +1146,12 @@ def _rotate_logging_for_date(date_str: str) -> None:
             pass
     _LOG_CTX["trade_log"] = trade_log_filename
 
-_rotate_logging_for_date(str(_LOG_CTX["date_str"]))
+# [2026-10-23] import만으로는 로그 파일을 만들지 않는다 - 예전엔 여기서 _rotate_logging_for_date()를 호출해
+# 테스트가 r003을 import할 때마다 운영 runtime/log/<날짜>/에 {stem}_{ts}.log 쌍이 생기고 <날짜>_buy_sell.log가
+# 오염됐다. 핸들러 없는 로거만 두고, 실제 파일 핸들러는 run() 시작 시 _ensure_log_date_for()가 붙인다.
+logger = logging.getLogger(__name__)
+trade_logger = logging.getLogger("trade_events")
+trade_logger.propagate = False
 
 def log(msg: str) -> None:
     logger.info(msg)
@@ -1077,13 +1161,15 @@ def log(msg: str) -> None:
 
 
 def _trade_log_target_paths() -> list[Path]:
+    value = _LOG_CTX.get("trade_log")
+    if not value:
+        # 로깅 미초기화(import만 한 테스트/도구) - 운영 <날짜>_buy_sell.log에 쓰지 않는다.
+        return []
     date_str = str(_LOG_CTX.get("date_str") or datetime.now().strftime("%Y%m%d"))
     candidates: list[Path] = [
         RUNTIME_LOG_DIR / date_str / f"{date_str}_buy_sell.log",
+        Path(value),
     ]
-    value = _LOG_CTX.get("trade_log")
-    if value:
-        candidates.append(Path(value))
     deduped: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -1213,7 +1299,7 @@ def load_today_codes(code_file: Path | None = None) -> dict[str, str]:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="R76 real trading runner")
+    parser = argparse.ArgumentParser(description="Real trading runner")
     parser.add_argument("--date", type=str, help="Watchlist date (YYYYMMDD). Use data/YYYYMMDD/picks.txt first")
     parser.add_argument(
         "--watchlist-source",
@@ -2019,6 +2105,25 @@ def fetch_prev_close(code: str, now: datetime, nxt_tradeable: bool) -> float | N
     return None
 
 
+def fetch_base_price(code: str, now: datetime) -> float | None:
+    """[2026-10-28] 오늘 기준가(KIS stck_sdpr - 액면분할/권리락 반영)만 반환. fetch_prev_close와 달리 전일종가 필드로
+    대체하지 않는다 - 전일 warmup의 가격 기준 검사용(r012 load_prior_day_warmup, Codex 검토)."""
+    for market_div in ("J", "UN"):
+        try:
+            quote_df = dsf.inquire_price(env_dv=KIS_ENV_DV, fid_cond_mrkt_div_code=market_div, fid_input_iscd=code)
+        except Exception:
+            continue
+        if quote_df is None or quote_df.empty:
+            continue
+        try:
+            value = float(quote_df.iloc[-1].get("stck_sdpr"))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def run_gapdip_shadow(
     code: str, name: str, now: datetime, price: float, nxt_tradeable: bool, gapdip_state: dict,
 ) -> None:
@@ -2061,6 +2166,22 @@ def run_gapdip_shadow(
 
 
 _GATE_LOG_LAST: dict[tuple, str] = {}
+
+
+def _make_v2_shadow_runner(date_str: str):
+    """[2026-10-23] Strategy V2 shadow runner (r010) or None. Import is lazy so V2_LIVE_MODE="off" adds nothing."""
+    if str(V2_LIVE_MODE).lower() != "shadow":
+        return None
+    try:
+        import r001_define_config as _cfg_mod
+        from r008_strategy_v2 import V2Config
+        from r010_v2_shadow import V2ShadowRunner
+        runner = V2ShadowRunner(V2Config.from_module(_cfg_mod), DATA_DIR, LIVE_RUNTIME_DIR, date_str, log)
+        log(f"  [V2 SHADOW   ] enabled | out={runner.out_path}")
+        return runner
+    except Exception as exc:
+        log(f"  [V2 SHADOW   ] init failed, shadow disabled: {exc}")
+        return None
 
 
 def record_gate_decision(rec: dict) -> None:
@@ -2155,8 +2276,46 @@ def should_refresh_3min_frame(
 FRAME_CACHE_MAX_BARS = 200  # generous cap (~10h of 3-min bars); covers a full NXT+regular session
 
 
-def _merge_bar_frame(previous: pd.DataFrame | None, refreshed: pd.DataFrame) -> pd.DataFrame:
-    """봉 간격에 무관한 공용 병합 로직 (3분봉/1분봉 캐시 겸용)."""
+# [2026-10-28] 전일 봉 warmup 캐시 (code, 당일 YYYYMMDD) -> (1분봉, 3분봉) - 판정이 끝난 경우(사용/미사용)만 저장한다.
+# 기준가 조회가 실패하면 저장하지 않고 PRIOR_DAY_WARMUP_RETRY_SECONDS 뒤 다시 시도한다(그동안은 warmup 없이 계산).
+_PRIOR_DAY_WARMUP_CACHE: dict[tuple[str, str], tuple[pd.DataFrame | None, pd.DataFrame | None]] = {}
+_PRIOR_DAY_WARMUP_RETRY_AT: dict[tuple[str, str], datetime] = {}
+PRIOR_DAY_WARMUP_RETRY_SECONDS = 60.0
+
+
+def _load_prior_day_warmup(code: str, now: datetime) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """[2026-10-28] 전일 원본 1분봉 마지막 PRIOR_DAY_WARMUP_MINUTES개와 3분 집계(r012 load_prior_day_warmup).
+    r001 ENABLE_PRIOR_DAY_INDICATOR_WARMUP. 오늘 기준가(fetch_base_price = KIS stck_sdpr)와 전일 종가가 다르면 미사용.
+    없음/실패는 (None, None) - 호출측은 warmup 없이 기존과 동일하게 계산한다."""
+    if not ENABLE_PRIOR_DAY_INDICATOR_WARMUP or PRIOR_DAY_WARMUP_MINUTES <= 0:
+        return None, None
+    key = (str(code).zfill(6), now.strftime("%Y%m%d"))
+    if key in _PRIOR_DAY_WARMUP_CACHE:
+        return _PRIOR_DAY_WARMUP_CACHE[key]
+    retry_at = _PRIOR_DAY_WARMUP_RETRY_AT.get(key)
+    if retry_at is not None and now < retry_at:
+        return None, None
+    try:
+        base_price = fetch_base_price(key[0], now)
+        m1, m3, why = load_prior_day_warmup(
+            DATA_DIR, key[1], key[0], PRIOR_DAY_WARMUP_MINUTES, PRIOR_DAY_WARMUP_MAX_LOOKBACK_DAYS,
+            base_price, PRIOR_DAY_WARMUP_MAX_BASE_DIFF_PCT,
+        )
+    except Exception as exc:
+        m1, m3, why, base_price = None, None, f"load failed: {exc}", None
+    if base_price is None:
+        _PRIOR_DAY_WARMUP_RETRY_AT[key] = now + timedelta(seconds=PRIOR_DAY_WARMUP_RETRY_SECONDS)
+        log(f"  [WARMUP      ] {key[0]} | base price unavailable ({why}) - retry in {PRIOR_DAY_WARMUP_RETRY_SECONDS:.0f}s")
+        return None, None
+    log(f"  [WARMUP      ] {key[0]} | {'ON' if m1 is not None else 'OFF'} | {why}")
+    _PRIOR_DAY_WARMUP_CACHE[key] = (m1, m3)
+    return m1, m3
+
+
+def _merge_bar_frame(
+    previous: pd.DataFrame | None, refreshed: pd.DataFrame, warmup: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """봉 간격에 무관한 공용 병합 로직 (3분봉/1분봉 캐시 겸용). warmup(전일 봉)이 있으면 지표만 이어서 계산."""
     if previous is None or previous.empty:
         combined = refreshed
     else:
@@ -2164,7 +2323,7 @@ def _merge_bar_frame(previous: pd.DataFrame | None, refreshed: pd.DataFrame) -> 
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
     if len(combined) > FRAME_CACHE_MAX_BARS:
         combined = combined.tail(FRAME_CACHE_MAX_BARS)
-    return calculate_indicators(combined[["open", "high", "low", "close", "volume"]])
+    return calculate_indicators_with_warmup(combined[["open", "high", "low", "close", "volume"]], warmup)
 
 
 _FRAME_1MIN_LAST_ATTEMPT_AT: dict[str, datetime] = {}  # [2026-10-07] 1분봉 경계 갱신 시도 시각(재시도 간격용)
@@ -2201,7 +2360,9 @@ def _get_or_refresh_1min_frame(
             log(f"{code} 1min frame error: {exc}")
             refreshed_frame_1min = None
         if refreshed_frame_1min is not None and not refreshed_frame_1min.empty:
-            frame_1min = _merge_bar_frame(cached_frame_1min, refreshed_frame_1min)
+            frame_1min = _merge_bar_frame(
+                cached_frame_1min, refreshed_frame_1min, warmup=_load_prior_day_warmup(code, current_dt)[0],
+            )
             frame_cache_1min[code] = frame_1min
             frame_last_refresh_at_1min[code] = current_dt
     return frame_1min
@@ -2255,7 +2416,7 @@ def update_live_price_cross_state(
         now=pd.Timestamp(now),
         live_price=live_price,
         bb_middle=bb_middle,
-        config=SHARED_R76_CONFIG,
+        config=SHARED_STRATEGY_CONFIG,
     )
 def _build_realtime_entry_frame(
     frame: pd.DataFrame,
@@ -2311,7 +2472,7 @@ def _build_realtime_entry_frame(
             realtime_row["volume"],
         ]
     working = working.sort_index()
-    return calculate_indicators(working), elapsed_seconds
+    return calculate_indicators_with_warmup(working, _load_prior_day_warmup(code, now)[1]), elapsed_seconds
 
 
 def _passes_intrabar_entry_gate(frame: pd.DataFrame, elapsed_seconds: float) -> tuple[bool, str]:
@@ -2447,7 +2608,7 @@ def _buy_support_score(cur: pd.Series, prev: pd.Series, frame: pd.DataFrame | No
     """
     if frame is None:
         return -1
-    return _shared_buy_support_score(cur, prev, frame, SHARED_R76_CONFIG)
+    return _shared_buy_support_score(cur, prev, frame, SHARED_STRATEGY_CONFIG)
 
 
 def _buy_condition_snapshot(
@@ -2515,7 +2676,7 @@ def check_sell_condition(frame: pd.DataFrame, pnl_pct: float, live_price: float,
         pnl_pct=pnl_pct,
         live_price=live_price,
         cross_info=cross_info,
-        config=SHARED_R76_CONFIG,
+        config=SHARED_STRATEGY_CONFIG,
     )
 
 
@@ -2584,7 +2745,8 @@ def _serialize_live_state(live_state: dict) -> dict:
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded,
             "reentry": _serialize_reentry_state(live_state.get("reentry")),
-            "gapdip_shadow": _serialize_gapdip_state(live_state.get("gapdip_shadow"))}
+            "gapdip_shadow": _serialize_gapdip_state(live_state.get("gapdip_shadow")),
+            "realized_pnl_krw": float(live_state.get("realized_pnl_krw", 0.0) or 0.0)}
 
 
 def _serialize_gapdip_state(raw) -> dict:
@@ -2660,9 +2822,14 @@ def load_live_state(date_str: str) -> dict:
             "basic_tp3_ext": bool((meta or {}).get("basic_tp3_ext", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
+    try:
+        realized = float(raw.get("realized_pnl_krw", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        realized = 0.0
     return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded,
             "reentry": _serialize_reentry_state(raw.get("reentry")),
-            "gapdip_shadow": _serialize_gapdip_state(raw.get("gapdip_shadow"))}
+            "gapdip_shadow": _serialize_gapdip_state(raw.get("gapdip_shadow")),
+            "realized_pnl_krw": realized}
 
 
 def save_live_state(live_state: dict, date_str: str | None = None) -> None:
@@ -2827,7 +2994,7 @@ def _rebalance_active_watchlist(
                 if frame is None:
                     reason = "TIME_LIMIT"
                 else:
-                    is_box, box_info = _is_box_range_hold_zone(frame, SHARED_R76_CONFIG)
+                    is_box, box_info = _is_box_range_hold_zone(frame, SHARED_STRATEGY_CONFIG)
                     if not is_box:
                         continue
                     reason = f"TIME_LIMIT_BOX_{box_info}"
@@ -2977,7 +3144,7 @@ class TradingAPI:
                 self.buy_inflight_codes.add(norm_code)
                 self.startup_position_codes.add(norm_code)
         log(
-            f"TradingAPI (r76 MA5-BB multi-indicator) initialized | env_dv={self.env_dv} | dry_run={self.dry_run}"
+            f"TradingAPI (MA5-BB multi-indicator) initialized | env_dv={self.env_dv} | dry_run={self.dry_run}"
         )
 
     def _apply_persisted_position_meta(self) -> None:
@@ -3381,6 +3548,12 @@ class TradingAPI:
             event_time=event_time,
             mirror_main_log=False,
         )
+        # [2026-10-23] Daily realized P&L (net of estimated commission both sides + sell tax) for r005 _025.
+        # Accounting only: no decision reads it unless ENABLE_DAILY_LOSS_LIMIT_GATE is on.
+        if pd.notna(profit_amount):
+            est_costs = (fill_price * filled_qty * (V2_COMMISSION_PCT + V2_SELL_TAX_PCT)
+                         + buy_price * filled_qty * V2_COMMISSION_PCT) / 100.0
+            self.live_state["realized_pnl_krw"] = float(self.live_state.get("realized_pnl_krw", 0.0) or 0.0) + profit_amount - est_costs
         if remaining_qty <= 0:
             self.buy_inflight_codes.discard(str(code).zfill(6))
             self.startup_position_codes.discard(str(code).zfill(6))
@@ -3569,7 +3742,11 @@ class TradingAPI:
                 cancel_yn = str(status.get("cancel_yn", ""))
                 terminal = remaining_qty <= 0 or cancel_yn == "Y" or rejected_qty >= order_qty
                 if filled_qty > 0 and terminal:
-                    self._confirm_pending_sell(code, pending, status, remaining_qty)
+                    # [2026-10-23] Pass the POSITION's remaining shares, not the ORDER's unfilled qty (rmn_qty).
+                    # A fully filled partial take-profit (TP1 40%) has rmn_qty=0, which used to pop the whole
+                    # position + its meta (tp1_done/buy_time) while shares were still held (20261022 089890).
+                    position_remaining_qty = max(0, pre_submit_qty - filled_qty)
+                    self._confirm_pending_sell(code, pending, status, position_remaining_qty)
                     continue
 
             if current_qty <= expected_remaining_qty:
@@ -4917,7 +5094,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         fetch_orderbook_totals=_fetch_orderbook_totals,
         format_reject_detail=_buy_reject_detail,
         record_gate_decision=record_gate_decision if ENABLE_GATE_DECISION_LOG else None,
+        fetch_bid_ask=_fetch_bid_ask_price,
     )
+    v2_shadow = _make_v2_shadow_runner(date_str)
     current_trade_date = now.date()
     loop_consecutive_errors = 0
     last_watchlist_mismatch_log_at: datetime | None = None
@@ -4953,6 +5132,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             hard_stop_today_codes.clear()
             gap_blocked_codes.clear()
             reentry_state = api.live_state.setdefault("reentry", {})  # 새 날짜 live_state 기준으로 재바인딩
+            v2_shadow = _make_v2_shadow_runner(date_str)  # [2026-10-23] V2 shadow state is per day
             risk.reset()
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()
@@ -5083,7 +5263,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         refreshed_frame = None
 
                     if refreshed_frame is not None and not refreshed_frame.empty:
-                        merged_frame = _merge_bar_frame(cached_frame, refreshed_frame)
+                        merged_frame = _merge_bar_frame(
+                            cached_frame, refreshed_frame, warmup=_load_prior_day_warmup(code, current_dt)[1],
+                        )
                         frame_cache[code] = merged_frame
                         frame_last_refresh_at[code] = current_dt
                         frame = merged_frame
@@ -5146,6 +5328,21 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         run_gapdip_shadow(code, name, current_dt, float(price), nxt_tradeable, gapdip_state)
                     except Exception as exc:
                         log(f"  [GAPDIP SHDW ] {symbol_label} error: {exc}")
+
+                # [2026-10-23] Strategy V2 shadow (r010, no orders) - only when r001 V2_LIVE_MODE == "shadow"
+                if (
+                    v2_shadow is not None
+                    and is_regular_session(current_dt)
+                    and price_source in ("live", "cached_live")
+                    and price is not None and price > 0
+                ):
+                    try:
+                        _v2_frame_1m = _get_or_refresh_1min_frame(
+                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
+                        )
+                        v2_shadow.on_symbol(code, name, current_dt, _v2_frame_1m, float(price))
+                    except Exception as exc:
+                        log(f"  [V2 SHADOW   ] {symbol_label} error: {exc}")
 
                 buy_frame = frame
                 if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:
@@ -5239,7 +5436,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     buy_ctx = BuyContext(
                         code=code, symbol_label=symbol_label, current_dt=current_dt, nxt_tradeable=nxt_tradeable,
                         price=price, price_source=price_source, bar_time=bar_time, buy_frame=buy_frame,
-                        cross_info=cross_info, config=SHARED_R76_CONFIG, api=api,
+                        cross_info=cross_info, config=SHARED_STRATEGY_CONFIG, api=api,
                         state=BuyState(
                             buy_confirm_state=buy_confirm_state, buy_trigger_age_state=buy_trigger_age_state,
                             signal_buy_bar=signal_buy_bar,

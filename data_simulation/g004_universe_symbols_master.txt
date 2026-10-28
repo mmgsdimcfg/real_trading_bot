@@ -22,7 +22,7 @@ code,name,market
 000227,유유제약2우B,KOSPI
 000230,일동홀딩스,KOSPI
 000240,한국앤컴퍼니,KOSPI
-# 000250,삼천당제약,KOSDAQ  # auto: 공매도과열
+000250,삼천당제약,KOSDAQ
 000270,기아,KOSPI
 # 000300,DH오토넥스,KOSPI  # auto: 거래정지
 000320,노루홀딩스,KOSPI
@@ -40,8 +40,8 @@ code,name,market
 000540,흥국화재,KOSPI
 # 000545,흥국화재우,KOSPI  # auto: 단기과열지정연장
 000590,CS홀딩스,KOSPI
-000640,동아쏘시오홀딩스,KOSPI
-000650,천일고속,KOSPI
+000640,동아제약,KOSPI
+# 000650,천일고속,KOSPI  # auto: 투자경고
 000670,영풍,KOSPI
 000680,LS네트웍스,KOSPI
 000700,유수홀딩스,KOSPI
@@ -63,7 +63,7 @@ code,name,market
 000970,한국주철관,KOSPI
 000990,DB하이텍,KOSPI
 0009K0,에임드바이오,KOSDAQ
-# 001000,신라섬유,KOSDAQ  # auto: 관리종목
+# 001000,신라섬유,KOSDAQ  # auto: 관리종목, 단기과열지정예고
 001020,페이퍼코리아,KOSPI
 001040,CJ,KOSPI
 001045,CJ우,KOSPI
@@ -72,8 +72,8 @@ code,name,market
 001065,JW중외제약우,KOSPI
 001067,JW중외제약2우B,KOSPI
 001070,대한방직,KOSPI
-001080,만호제강,KOSPI
-0010F0,보원케미칼,KOSDAQ
+001080,MH머트리얼즈,KOSPI
+# 0010F0,보원케미칼,KOSDAQ  # auto: 단기과열지정예고
 0010V0,제이피아이헬스케어,KOSDAQ
 001120,LX인터내셔널,KOSPI
 001130,대한제분,KOSPI
@@ -148,7 +148,7 @@ code,name,market
 002320,한진,KOSPI
 002350,넥센타이어,KOSPI
 002355,넥센타이어1우B,KOSPI
-# 002360,SH에너지화학,KOSPI  # auto: 관리종목, 투자경고, 단기과열지정예고
+# 002360,SH에너지화학,KOSPI  # auto: 관리종목, 투자경고
 002380,KCC,KOSPI
 002390,한독,KOSPI
 # 002410,범양건영,KOSPI  # auto: 거래정지, 관리종목
@@ -158,15 +158,15 @@ code,name,market
 002600,조흥,KOSPI
 002620,제일파마홀딩스,KOSPI
 002630,오리엔트바이오,KOSPI
-# 002680,한탑,KOSDAQ  # auto: 관리종목, 투자주의
+# 002680,한탑,KOSDAQ  # auto: 관리종목
 002690,동일제강,KOSPI
 002700,신일전자,KOSPI
 002710,TCC스틸,KOSPI
-002720,국제약품,KOSPI
+# 002720,국제약품,KOSPI  # auto: 단기과열지정예고
 002760,보락,KOSPI
 002780,진흥기업,KOSPI
-# 002785,진흥기업우B,KOSPI  # auto: 관리종목
-# 002787,진흥기업2우B,KOSPI  # auto: 관리종목
+# 002785,진흥기업우B,KOSPI  # auto: 거래정지, 관리종목
+# 002787,진흥기업2우B,KOSPI  # auto: 거래정지, 관리종목
 002790,아모레퍼시픽홀딩스,KOSPI
 002795,아모레퍼시픽홀딩스우,KOSPI
 00279K,아모레퍼시픽홀딩스3우C,KOSPI
@@ -182,7 +182,7 @@ code,name,market
 002990,금호건설,KOSPI
 002995,금호건설우,KOSPI
 003000,부광약품,KOSPI
-# 003010,혜인,KOSPI  # auto: 투자주의
+003010,혜인,KOSPI
 003030,세아제강지주,KOSPI
 003060,에이프로젠바이오로직스,KOSPI
 003070,코오롱글로벌,KOSPI
@@ -251,7 +251,7 @@ code,name,market
 004370,농심,KOSPI
 004380,삼익THK,KOSPI
 004410,서울식품,KOSPI
-# 004415,서울식품우,KOSPI  # auto: 관리종목
+# 004415,서울식품우,KOSPI  # auto: 정리매매, 관리종목
 004430,송원산업,KOSPI
 004440,삼일씨엔에스,KOSPI
 004450,삼화왕관,KOSPI
@@ -269,12 +269,12 @@ code,name,market
 004780,대륙제관,KOSDAQ
 004800,효성,KOSPI
 004830,덕성,KOSPI
-004835,덕성우,KOSPI
+# 004835,덕성우,KOSPI  # auto: 단기과열지정연장
 004840,DRB동일,KOSPI
 # 004870,티웨이홀딩스,KOSPI  # auto: 관리종목
 004890,동일산업,KOSPI
 004910,조광페인트,KOSPI
-# 004920,씨아이테크,KOSPI  # auto: 투자주의
+004920,씨아이테크,KOSPI
 004960,한신공영,KOSPI
 004970,신라교역,KOSPI
 004980,성신양회,KOSPI
@@ -282,7 +282,6 @@ code,name,market
 004990,롯데지주,KOSPI
 00499K,롯데지주우,KOSPI
 005010,휴스틸,KOSPI
-# 005030,부산주공,KOSPI  # auto: 정리매매, 관리종목
 005070,코스모신소재,KOSPI
 005090,SGC에너지,KOSPI
 # 005110,한창,KOSPI  # auto: 정리매매, 관리종목
@@ -293,7 +292,7 @@ code,name,market
 005290,동진쎄미켐,KOSDAQ
 005300,롯데칠성,KOSPI
 005305,롯데칠성우,KOSPI
-# 005320,온타이드,KOSPI  # auto: 관리종목, 투자주의
+# 005320,온타이드,KOSPI  # auto: 관리종목
 # 005360,모나미,KOSPI  # auto: 관리종목
 005380,현대차,KOSPI
 005385,현대차우,KOSPI
@@ -418,7 +417,7 @@ code,name,market
 009070,KCTC,KOSPI
 009140,케이아이이,KOSPI
 009150,삼성전기,KOSPI
-# 009155,삼성전기우,KOSPI  # auto: 투자경고
+009155,삼성전기우,KOSPI
 009160,SIMPAC,KOSPI
 009180,한솔로지스틱스,KOSPI
 009190,대양금속,KOSPI
@@ -441,7 +440,7 @@ code,name,market
 009580,무림P&P,KOSPI
 # 009620,삼보산업,KOSDAQ  # auto: 투자주의환기
 009680,모토닉,KOSPI
-# 009730,이렘,KOSDAQ  # auto: 투자주의환기
+# 009730,이렘,KOSDAQ  # auto: 투자경고, 단기과열지정예고, 투자주의환기
 009770,삼정펄프,KOSPI
 009780,엠에스씨,KOSDAQ
 009810,MDS스피어,KOSPI
@@ -473,10 +472,10 @@ code,name,market
 # 011000,진원생명과학,KOSPI  # auto: 거래정지, 관리종목
 011040,경동제약,KOSDAQ
 011070,LG이노텍,KOSPI
-# 011080,형지I&C,KOSDAQ  # auto: 관리종목
+# 011080,형지I&C,KOSDAQ  # auto: 관리종목, 투자경고
 # 011090,에넥스,KOSPI  # auto: 관리종목
 011150,CJ씨푸드,KOSPI
-# 011155,CJ씨푸드1우,KOSPI  # auto: 관리종목
+# 011155,CJ씨푸드1우,KOSPI  # auto: 거래정지, 관리종목
 011170,롯데케미칼,KOSPI
 011200,HMM,KOSPI
 011210,현대위아,KOSPI
@@ -508,7 +507,7 @@ code,name,market
 012280,영화금속,KOSPI
 012320,경동인베스트,KOSPI
 012330,현대모비스,KOSPI
-# 012340,뉴인텍,KOSDAQ  # auto: 관리종목, 투자주의환기
+# 012340,뉴인텍,KOSDAQ  # auto: 관리종목, 투자경고, 투자주의환기
 012450,한화에어로스페이스,KOSPI
 012610,경인양행,KOSPI
 012620,원일특강,KOSDAQ
@@ -536,7 +535,7 @@ code,name,market
 013990,아가방컴퍼니,KOSDAQ
 014100,메디앙스,KOSDAQ
 014130,한익스프레스,KOSPI
-# 014160,대영포장,KOSPI  # auto: 거래정지, 관리종목
+# 014160,대영포장,KOSPI  # auto: 관리종목
 014190,원익큐브,KOSDAQ
 014280,금강공업,KOSPI
 014285,금강공업우,KOSPI
@@ -560,7 +559,7 @@ code,name,market
 014990,인디에프,KOSPI
 # 015020,이스타코,KOSPI  # auto: 거래정지, 관리종목
 015230,대창단조,KOSPI
-# 015260,에이엔피,KOSPI  # auto: 관리종목
+# 015260,에이엔피,KOSPI  # auto: 관리종목, 투자경고, 공매도과열
 015360,INVENI,KOSPI
 015590,DKME,KOSPI
 015710,코콤,KOSDAQ
@@ -594,16 +593,16 @@ code,name,market
 017480,삼현철강,KOSDAQ
 017510,세명전기,KOSDAQ
 017550,수산세보틱스,KOSPI
-# 017650,대림제지,KOSDAQ  # auto: 거래정지
+017650,대림제지,KOSDAQ
 017670,SK텔레콤,KOSPI
 017800,현대엘리베이터,KOSPI
 017810,풀무원,KOSPI
 017860,DS단석,KOSPI
 017890,한국알콜,KOSDAQ
-# 017900,광전자,KOSPI  # auto: 투자경고
+017900,광전자,KOSPI
 017940,E1,KOSPI
 017960,한국카본,KOSPI
-018000,유니슨,KOSDAQ
+# 018000,유니슨,KOSDAQ  # auto: 거래정지
 018120,진로발효,KOSDAQ
 018250,애경산업,KOSPI
 018260,삼성에스디에스,KOSPI
@@ -612,13 +611,13 @@ code,name,market
 018470,조일알미늄,KOSPI
 018500,동원모빌리티,KOSPI
 018620,우진비앤지,KOSDAQ
-018670,SK가스,KOSPI
+# 018670,SK가스,KOSPI  # auto: 공매도과열
 018680,서울제약,KOSDAQ
 # 018700,졸스,KOSDAQ  # auto: 투자주의환기
 018880,한온시스템,KOSPI
 019010,베뉴지,KOSDAQ
 019170,신풍제약,KOSPI
-# 019175,신풍제약우,KOSPI  # auto: 단기과열지정연장
+# 019175,신풍제약우,KOSPI  # auto: 단기과열지정
 019180,티에이치엔,KOSPI
 019210,와이지-원,KOSDAQ
 # 019490,엑시큐어하이트론,KOSPI  # auto: 거래정지, 관리종목
@@ -705,7 +704,7 @@ code,name,market
 026040,제이에스티나,KOSDAQ
 026150,특수건설,KOSDAQ
 026890,스틱인베스트먼트,KOSPI
-026910,광진실업,KOSDAQ
+# 026910,광진실업,KOSDAQ  # auto: 투자주의
 026940,부국철강,KOSPI
 026960,동서,KOSPI
 027040,서울전자통신,KOSDAQ
@@ -715,7 +714,7 @@ code,name,market
 027580,상보,KOSDAQ
 027710,팜스토리,KOSDAQ
 027740,마니커,KOSPI
-# 027830,대성창투,KOSDAQ  # auto: 관리종목
+# 027830,대성창투,KOSDAQ  # auto: 거래정지, 관리종목
 027970,한국제지,KOSPI
 028050,삼성E&A,KOSPI
 # 028080,휴맥스홀딩스,KOSDAQ  # auto: 거래정지, 관리종목
@@ -737,7 +736,7 @@ code,name,market
 030530,원익홀딩스,KOSDAQ
 030610,교보증권,KOSPI
 # 030720,동원수산,KOSPI  # auto: 관리종목
-030960,양지사,KOSDAQ
+# 030960,양지사,KOSDAQ  # auto: 단기과열지정예고
 031210,서울보증보험,KOSPI
 031310,아이즈비전,KOSDAQ
 031330,에스에이엠티,KOSDAQ
@@ -745,7 +744,7 @@ code,name,market
 031510,오스템,KOSDAQ
 031820,아이티센씨티에스,KOSPI
 031980,피에스케이홀딩스,KOSDAQ
-# 032080,아즈텍WB,KOSDAQ  # auto: 거래정지
+032080,아즈텍WB,KOSDAQ
 032190,다우데이타,KOSDAQ
 032280,삼일,KOSDAQ
 032300,한국파마,KOSDAQ
@@ -757,7 +756,7 @@ code,name,market
 032620,GC메디아이,KOSDAQ
 032640,LG유플러스,KOSPI
 032680,소프트센,KOSDAQ
-# 032685,소프트센우,KOSDAQ  # auto: 관리종목
+# 032685,소프트센우,KOSDAQ  # auto: 정리매매, 관리종목
 032750,삼진,KOSDAQ
 032790,엠젠솔루션,KOSDAQ
 032800,판타지오,KOSDAQ
@@ -766,12 +765,12 @@ code,name,market
 032850,비트컴퓨터,KOSDAQ
 032860,더라미,KOSDAQ
 032940,원익,KOSDAQ
-032960,동일기연,KOSDAQ
-# 033050,제이엠아이,KOSDAQ  # auto: 관리종목
+# 032960,동일기연,KOSDAQ  # auto: 단기과열지정예고
+# 033050,제이엠아이,KOSDAQ  # auto: 거래정지, 관리종목
 033100,제룡전기,KOSDAQ
 033130,디지틀조선,KOSDAQ
 033160,엠케이전자,KOSDAQ
-# 033170,시그네틱스,KOSDAQ  # auto: 투자주의
+033170,시그네틱스,KOSDAQ
 # 033200,모아텍,KOSDAQ  # auto: 투자주의환기
 033230,인성정보,KOSDAQ
 033240,자화전자,KOSPI
@@ -780,7 +779,7 @@ code,name,market
 033290,로젠,KOSDAQ
 033310,엠투엔,KOSDAQ
 033320,제이씨현시스템,KOSDAQ
-# 033340,좋은사람들,KOSDAQ  # auto: 거래정지, 관리종목
+# 033340,좋은사람들,KOSDAQ  # auto: 관리종목
 033500,동성화인텍,KOSDAQ
 033530,SJG세종,KOSPI
 033540,파라텍,KOSDAQ
@@ -800,7 +799,7 @@ code,name,market
 034810,해성산업,KOSDAQ
 03481K,해성산업1우,KOSDAQ
 034830,한국토지신탁,KOSPI
-034940,조아제약,KOSDAQ
+# 034940,조아제약,KOSDAQ  # auto: 관리종목
 034950,한국기업평가,KOSDAQ
 035000,HS애드,KOSPI
 035080,그래디언트,KOSDAQ
@@ -824,7 +823,7 @@ code,name,market
 036030,케이티알파,KOSDAQ
 036090,위지트,KOSDAQ
 036120,서울평가정보,KOSDAQ
-# 036170,에이치엠넥스,KOSDAQ  # auto: 투자경고
+036170,에이치엠넥스,KOSDAQ
 036190,금화피에스시,KOSDAQ
 036200,유니셈,KOSDAQ
 036220,오상헬스케어,KOSDAQ
@@ -861,13 +860,13 @@ code,name,market
 037760,쎄니트,KOSDAQ
 037950,엘컴텍,KOSDAQ
 038010,제일테크노스,KOSDAQ
-# 038060,루멘스바이오스,KOSDAQ  # auto: 거래정지
+038060,루멘스바이오스,KOSDAQ
 038070,서린바이오,KOSDAQ
 038110,에코플라스틱,KOSDAQ
 038290,마크로젠,KOSDAQ
 038390,레드캡투어,KOSDAQ
 038460,바이오스마트,KOSDAQ
-# 038500,삼표시멘트,KOSDAQ  # auto: 공매도과열
+038500,삼표시멘트,KOSDAQ
 038530,케이바이오랩스,KOSDAQ
 038540,상상인,KOSDAQ
 038620,위즈코프,KOSDAQ
@@ -912,12 +911,12 @@ code,name,market
 041920,메디아나,KOSDAQ
 041930,SY동아,KOSDAQ
 041960,코미팜,KOSDAQ
-# 042000,카페24,KOSDAQ  # auto: 공매도과열
+042000,카페24,KOSDAQ
 042110,에스씨디,KOSDAQ
 042370,비츠로테크,KOSDAQ
 042420,네오위즈홀딩스,KOSDAQ
 042500,링네트,KOSDAQ
-042510,라온시큐어,KOSDAQ
+# 042510,라온시큐어,KOSDAQ  # auto: 단기과열지정예고
 042520,한스바이오메드,KOSDAQ
 042600,새로닉스,KOSDAQ
 042660,한화오션,KOSPI
@@ -927,10 +926,10 @@ code,name,market
 043200,파루,KOSDAQ
 # 043220,티에스넥스젠,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
 043260,성호전자,KOSDAQ
-# 043340,에쎈테크,KOSDAQ  # auto: 관리종목
+# 043340,에쎈테크,KOSDAQ  # auto: 거래정지, 관리종목
 043360,디지아이,KOSDAQ
 043370,피에이치에이,KOSDAQ
-043590,웰킵스하이텍,KOSDAQ
+# 043590,웰킵스하이텍,KOSDAQ  # auto: 단기과열지정예고
 # 043610,KT지니뮤직,KOSDAQ  # auto: 거래정지
 043650,국순당,KOSDAQ
 043710,코스리거글로벌,KOSDAQ
@@ -965,16 +964,16 @@ code,name,market
 047050,포스코인터내셔널,KOSPI
 047080,한빛소프트,KOSDAQ
 047310,파워로직스,KOSDAQ
-# 047400,유니온머티리얼,KOSPI  # auto: 거래정지, 관리종목
+# 047400,유니온머티리얼,KOSPI  # auto: 관리종목
 047560,이스트소프트,KOSDAQ
 047770,코데즈컴바인,KOSDAQ
 047810,한국항공우주,KOSPI
 047820,초록뱀미디어,KOSDAQ
-047920,HLB제약,KOSDAQ
+# 047920,HLB제약,KOSDAQ  # auto: 단기과열지정예고
 048410,현대바이오,KOSDAQ
 048430,유라테크,KOSDAQ
 048470,대동스틸,KOSDAQ
-048530,인트론바이오,KOSDAQ
+# 048530,인트론바이오,KOSDAQ  # auto: 공매도과열
 048550,SM C&C,KOSDAQ
 048770,TPC로보틱스,KOSDAQ
 048830,엔피케이,KOSDAQ
@@ -983,7 +982,7 @@ code,name,market
 049070,인탑스,KOSDAQ
 049120,파인디앤씨,KOSDAQ
 049430,코메론,KOSDAQ
-# 049470,비트플래닛,KOSDAQ  # auto: 투자경고
+049470,비트플래닛,KOSDAQ
 049480,오픈베이스,KOSDAQ
 049520,유아이엘,KOSDAQ
 049550,잉크테크,KOSDAQ
@@ -994,7 +993,7 @@ code,name,market
 049950,미래컴퍼니,KOSDAQ
 049960,쎌바이오텍,KOSDAQ
 # 050090,비케이홀딩스,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
-050110,캠시스,KOSDAQ
+# 050110,캠시스,KOSDAQ  # auto: 투자주의
 050120,ES큐브,KOSDAQ
 050760,에스폴리텍,KOSDAQ
 050860,아세아텍,KOSDAQ
@@ -1048,7 +1047,7 @@ code,name,market
 053620,태양,KOSDAQ
 053690,한미글로벌,KOSPI
 053700,삼보모터스,KOSDAQ
-# 053800,안랩,KOSDAQ  # auto: 공매도과열
+053800,안랩,KOSDAQ
 053950,경남제약,KOSDAQ
 053980,오상자이엘,KOSDAQ
 054040,한국컴퓨터,KOSDAQ
@@ -1077,7 +1076,7 @@ code,name,market
 056700,신화인터텍,KOSDAQ
 056730,CNT85,KOSDAQ
 057030,YBM넷,KOSDAQ
-# 057540,옴니시스템,KOSDAQ  # auto: 거래정지, 관리종목
+# 057540,옴니시스템,KOSDAQ  # auto: 관리종목
 057680,티사이언티픽,KOSDAQ
 058110,멕아이씨에스,KOSDAQ
 058400,KNN,KOSDAQ
@@ -1112,7 +1111,7 @@ code,name,market
 060590,씨티씨바이오,KOSDAQ
 060720,KH바텍,KOSDAQ
 060850,영림원소프트랩,KOSDAQ
-# 060900,에이전트AI,KOSDAQ  # auto: 불성실공시
+060900,에이전트AI,KOSDAQ
 060980,HL홀딩스,KOSPI
 061040,알에프텍,KOSDAQ
 061090,세나테크놀로지,KOSDAQ
@@ -1129,7 +1128,7 @@ code,name,market
 # 064090,인크레더블버즈,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
 064240,홈캐스트,KOSDAQ
 064260,다날,KOSDAQ
-# 064290,인텍플러스,KOSDAQ  # auto: 투자경고
+064290,인텍플러스,KOSDAQ
 064350,현대로템,KOSPI
 064400,LG씨엔에스,KOSPI
 064480,브리지텍,KOSDAQ
@@ -1146,14 +1145,14 @@ code,name,market
 # 065170,비엘팜텍,KOSDAQ  # auto: 투자주의환기
 065350,신성델타테크,KOSDAQ
 065370,위세아이텍,KOSDAQ
-# 065420,에스아이리소스,KOSDAQ  # auto: 거래정지
+# 065420,에스아이리소스,KOSDAQ  # auto: 거래정지, 관리종목
 065440,이루온,KOSDAQ
 065450,빅텍,KOSDAQ
 065500,오리엔트정공,KOSDAQ
 065510,휴비츠,KOSDAQ
 065530,와이어블,KOSDAQ
 # 065570,삼영이엔씨,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
-065650,하이퍼코퍼레이션,KOSDAQ
+# 065650,하이퍼코퍼레이션,KOSDAQ  # auto: 투자경고, 공매도과열
 065660,안트로젠,KOSDAQ
 065680,우주일렉트로,KOSDAQ
 # 065690,파커스,KOSDAQ  # auto: 투자주의환기
@@ -1187,7 +1186,7 @@ code,name,market
 067370,선바이오,KOSDAQ
 067390,아스트,KOSDAQ
 067570,엔브이에이치코리아,KOSDAQ
-# 067630,HLB생명과학,KOSDAQ  # auto: 단기과열지정, 공매도과열, 투자주의환기
+# 067630,HLB생명과학,KOSDAQ  # auto: 투자주의환기
 067730,로지시스,KOSDAQ
 # 067770,세진티에스,KOSDAQ  # auto: 거래정지, 관리종목
 067830,세이브존I&C,KOSPI
@@ -1268,7 +1267,7 @@ code,name,market
 078150,HB테크놀러지,KOSDAQ
 078160,메디포스트,KOSDAQ
 078340,컴투스,KOSDAQ
-# 078350,한양디지텍,KOSDAQ  # auto: 투자경고
+078350,한양디지텍,KOSDAQ
 078520,에이블씨엔씨,KOSPI
 078590,휴림에이텍,KOSDAQ
 078600,대주전자재료,KOSDAQ
@@ -1279,11 +1278,11 @@ code,name,market
 079000,와토스코리아,KOSDAQ
 079160,CJ CGV,KOSPI
 079170,한창산업,KOSDAQ
-# 079190,케스피온,KOSDAQ  # auto: 관리종목
+# 079190,케스피온,KOSDAQ  # auto: 관리종목, 투자주의
 079370,제우스,KOSDAQ
 079430,현대리바트,KOSPI
 079550,LIG디펜스앤에어로스페이스,KOSPI
-079650,서산,KOSDAQ
+# 079650,서산,KOSDAQ  # auto: 투자경고
 079810,APS이노베이션,KOSDAQ
 079900,전진건설로봇,KOSPI
 079940,가비아,KOSDAQ
@@ -1324,12 +1323,11 @@ code,name,market
 083930,아바코,KOSDAQ
 084010,대한제강,KOSPI
 084110,휴온스글로벌,KOSDAQ
-# 084180,수성웹툰,KOSDAQ  # auto: 정리매매, 관리종목
 084370,유진테크,KOSDAQ
 084440,유비온,KOSDAQ
 # 084650,랩지노믹스,KOSDAQ  # auto: 관리종목
-084670,동양고속,KOSPI
-# 084680,이월드,KOSPI  # auto: 관리종목, 투자주의
+# 084670,동양고속,KOSPI  # auto: 투자경고
+# 084680,이월드,KOSPI  # auto: 관리종목
 084690,대상홀딩스,KOSPI
 # 084695,대상홀딩스우,KOSPI  # auto: 단기과열지정연장
 084730,팅크웨어,KOSDAQ
@@ -1337,11 +1335,11 @@ code,name,market
 084870,TBH글로벌,KOSPI
 084990,헬릭스미스,KOSDAQ
 085310,엔케이,KOSPI
-# 085620,미래에셋생명,KOSPI  # auto: 투자주의
+085620,미래에셋생명,KOSPI
 085660,차바이오텍,KOSDAQ
 085670,뉴프렉스,KOSDAQ
 085810,알티캐스트,KOSDAQ
-# 085910,네오티스,KOSDAQ  # auto: 투자경고
+085910,네오티스,KOSDAQ
 086040,바이오톡스텍,KOSDAQ
 086060,진바이오텍,KOSDAQ
 086280,현대글로비스,KOSPI
@@ -1361,7 +1359,7 @@ code,name,market
 087600,픽셀플러스,KOSDAQ
 088130,동아엘텍,KOSDAQ
 088260,이리츠코크렙,KOSPI
-088280,쏘닉스,KOSDAQ
+# 088280,쏘닉스,KOSDAQ  # auto: 단기과열지정예고
 # 088290,이원컴포텍,KOSDAQ  # auto: 관리종목, 투자주의환기
 088340,유라클,KOSDAQ
 088350,한화생명,KOSPI
@@ -1373,7 +1371,7 @@ code,name,market
 089010,켐트로닉스,KOSDAQ
 089030,테크윙,KOSDAQ
 089140,넥스턴앤롤코리아,KOSDAQ
-089150,케이씨티,KOSDAQ
+# 089150,케이씨티,KOSDAQ  # auto: 거래정지
 089230,THE E&M,KOSDAQ
 089470,HDC현대EP,KOSPI
 089590,제주항공,KOSPI
@@ -1397,18 +1395,18 @@ code,name,market
 090470,제이스로보틱스,KOSDAQ
 090710,휴림로봇,KOSDAQ
 090850,현대이지웰,KOSDAQ
-091120,이엠텍,KOSDAQ
-091340,S&K폴리텍,KOSDAQ
+# 091120,이엠텍,KOSDAQ  # auto: 투자주의
+091340,S&K글로벌,KOSDAQ
 # 091440,한울소재과학,KOSDAQ  # auto: 투자주의환기
 091580,상신이디피,KOSDAQ
 091590,남화토건,KOSDAQ
 091700,파트론,KOSDAQ
 091810,트리니티항공,KOSPI
 091970,LSK아이로봇,KOSDAQ
-# 092040,아미코젠,KOSDAQ  # auto: 불성실공시
+092040,아미코젠,KOSDAQ
 092070,디엔에프,KOSDAQ
 092130,이크레더블,KOSDAQ
-# 092190,서울바이오시스,KOSDAQ  # auto: 투자경고, 투자주의환기
+# 092190,서울바이오시스,KOSDAQ  # auto: 투자주의, 투자주의환기
 092200,디아이씨,KOSPI
 092220,KEC,KOSPI
 092230,KPX홀딩스,KOSPI
@@ -1419,10 +1417,10 @@ code,name,market
 092730,네오팜,KOSDAQ
 092780,DYP,KOSPI
 092790,넥스틸,KOSPI
-# 092870,엑시콘,KOSDAQ  # auto: 투자주의
+# 092870,엑시콘,KOSDAQ  # auto: 투자경고
 093050,LF,KOSPI
 093190,빅솔론,KOSDAQ
-# 093240,형지엘리트,KOSPI  # auto: 거래정지, 관리종목
+# 093240,형지엘리트,KOSPI  # auto: 관리종목
 093320,케이아이엔엑스,KOSDAQ
 093370,후성,KOSPI
 093380,풍강,KOSDAQ
@@ -1441,7 +1439,7 @@ code,name,market
 094940,푸른로보틱스,KOSDAQ
 094970,제이엠티,KOSDAQ
 095190,신화프리텍,KOSDAQ
-095270,웨이브일렉트로,KOSDAQ
+# 095270,웨이브일렉트로,KOSDAQ  # auto: 투자주의
 095340,ISC,KOSDAQ
 095500,미래나노텍,KOSDAQ
 095570,AJ네트웍스,KOSPI
@@ -1463,7 +1461,7 @@ code,name,market
 097230,HJ중공업,KOSPI
 097520,엠씨넥스,KOSPI
 097780,에코볼트,KOSDAQ
-# 097800,윈팩,KOSDAQ  # auto: 단기과열지정예고
+097800,윈팩,KOSDAQ
 097870,효성오앤비,KOSDAQ
 097950,CJ제일제당,KOSPI
 097955,CJ제일제당 우,KOSPI
@@ -1478,7 +1476,7 @@ code,name,market
 099410,동방선기,KOSDAQ
 099430,바이오플러스,KOSDAQ
 099440,스맥,KOSDAQ
-# 099520,DGI,KOSDAQ  # auto: 거래정지, 관리종목
+099520,DGI,KOSDAQ
 099750,이지케어텍,KOSDAQ
 100030,인지소프트,KOSDAQ
 100090,SK오션플랜트,KOSPI
@@ -1497,7 +1495,7 @@ code,name,market
 101170,우림피티에스,KOSDAQ
 101240,씨큐브,KOSDAQ
 101330,모베이스,KOSDAQ
-101360,에코앤드림,KOSDAQ
+# 101360,에코앤드림,KOSDAQ  # auto: 단기과열지정예고
 101400,엔시트론,KOSDAQ
 101490,에스앤에스텍,KOSDAQ
 # 101530,해태제과식품,KOSPI  # auto: 거래정지
@@ -1517,7 +1515,7 @@ code,name,market
 103590,일진전기,KOSPI
 103840,우양,KOSDAQ
 104040,디에스엠,KOSDAQ
-# 104200,NHN벅스,KOSDAQ  # auto: 투자주의
+104200,NHN벅스,KOSDAQ
 104460,디와이피엔에프,KOSDAQ
 104480,티케이케미칼,KOSDAQ
 104540,코렌텍,KOSDAQ
@@ -1547,7 +1545,7 @@ code,name,market
 109070,주성코퍼레이션,KOSPI
 109080,옵티시스,KOSDAQ
 109610,에스와이,KOSDAQ
-# 109670,씨싸이트,KOSDAQ  # auto: 투자경고
+109670,씨싸이트,KOSDAQ
 109740,디에스케이,KOSDAQ
 109820,진매트릭스,KOSDAQ
 109860,동일금속,KOSDAQ
@@ -1573,7 +1571,7 @@ code,name,market
 115180,큐리언트,KOSDAQ
 115310,인포바인,KOSDAQ
 115440,우리넷,KOSDAQ
-# 115450,HLB테라퓨틱스,KOSDAQ  # auto: 단기과열지정예고
+115450,HLB테라퓨틱스,KOSDAQ
 115480,씨유메디칼,KOSDAQ
 115500,케이씨에스,KOSDAQ
 115530,씨엔플러스,KOSDAQ
@@ -1646,7 +1644,7 @@ code,name,market
 130740,티피씨글로벌,KOSDAQ
 131030,옵투스제약,KOSDAQ
 131090,시큐브,KOSDAQ
-# 131100,티엔엔터테인먼트,KOSDAQ  # auto: 투자주의
+131100,티엔엔터테인먼트,KOSDAQ
 131180,딜리,KOSDAQ
 131220,대한과학,KOSDAQ
 131290,티에스이,KOSDAQ
@@ -1660,7 +1658,7 @@ code,name,market
 134380,미원화학,KOSPI
 134580,엔키AX,KOSDAQ
 134790,시디즈,KOSPI
-# 136150,원일티엔아이,KOSDAQ  # auto: 단기과열지정
+136150,원일티엔아이,KOSDAQ
 136410,아셈스,KOSDAQ
 136480,하림,KOSDAQ
 136490,선진,KOSPI
@@ -1725,14 +1723,14 @@ code,name,market
 155660,DSR,KOSPI
 156100,엘앤케이바이오,KOSDAQ
 # 158430,아톤,KOSDAQ  # auto: 단기과열지정예고
-# 159010,아스플로,KOSDAQ  # auto: 투자경고
+159010,아스플로,KOSDAQ
 159580,제로투세븐,KOSDAQ
 159910,에코글로우,KOSDAQ
 160190,하이젠알앤엠,KOSDAQ
 160550,NEW,KOSDAQ
 160980,싸이맥스,KOSDAQ
 161000,애경케미칼,KOSPI
-161390,한국타이어앤테크놀로지,KOSPI
+# 161390,한국타이어앤테크놀로지,KOSPI  # auto: 공매도과열
 161580,필옵틱스,KOSDAQ
 161890,한국콜마,KOSPI
 162300,신스틸,KOSDAQ
@@ -1759,14 +1757,14 @@ code,name,market
 # 175250,아이큐어,KOSDAQ  # auto: 관리종목
 175330,JB금융지주,KOSPI
 176750,듀켐바이오,KOSDAQ
-# 177350,베셀,KOSDAQ  # auto: 투자주의환기
+# 177350,베셀,KOSDAQ  # auto: 관리종목, 투자주의, 투자주의환기
 177830,파버나인,KOSDAQ
 177900,쓰리에이로직스,KOSDAQ
 178320,서진시스템,KOSDAQ
 178780,일월지엠엘,KOSDAQ
 178920,PI첨단소재,KOSPI
 179290,엠아이텍,KOSDAQ
-# 179530,애드바이오텍,KOSDAQ  # auto: 투자주의
+179530,애드바이오텍,KOSDAQ
 # 179900,유티아이,KOSDAQ  # auto: 투자주의환기
 # 180400,DXVX,KOSDAQ  # auto: 관리종목
 180640,한진칼,KOSPI
@@ -1817,7 +1815,6 @@ code,name,market
 196170,알테오젠,KOSDAQ
 # 196300,HLB펩,KOSDAQ  # auto: 관리종목
 196450,코아시아씨엠,KOSDAQ
-# 196490,디에이테크놀로지,KOSDAQ  # auto: 정리매매, 관리종목, 투자주의환기
 196700,웹스,KOSDAQ
 197140,디지캡,KOSDAQ
 198080,캐프,KOSDAQ
@@ -1826,19 +1823,19 @@ code,name,market
 199430,케이엔알시스템,KOSDAQ
 199480,뱅크웨어글로벌,KOSDAQ
 199550,레이저옵텍,KOSDAQ
-# 199730,바이오인프라,KOSDAQ  # auto: 관리종목
+# 199730,바이오인프라,KOSDAQ  # auto: 관리종목, 투자경고
 199800,툴젠,KOSDAQ
 199820,제일일렉트릭,KOSDAQ
 200130,콜마비앤에이치,KOSDAQ
 200230,텔콘RF제약,KOSDAQ
-# 200350,아티스트스튜디오,KOSDAQ  # auto: 투자주의
+200350,아티스트스튜디오,KOSDAQ
 200470,에이팩트,KOSDAQ
 200670,휴메딕스,KOSDAQ
 200710,에이디테크놀로지,KOSDAQ
 200780,비씨월드제약,KOSDAQ
 200880,서연이화,KOSPI
 201490,미투온,KOSDAQ
-# 203400,에이비온,KOSDAQ  # auto: 거래정지, 관리종목, 불성실공시
+# 203400,에이비온,KOSDAQ  # auto: 거래정지, 관리종목
 203450,유니온바이오메트릭스,KOSDAQ
 203650,드림시큐리티,KOSDAQ
 204020,그리티,KOSDAQ
@@ -1850,7 +1847,7 @@ code,name,market
 # 205100,엑셈,KOSDAQ  # auto: 거래정지
 205470,휴마시스,KOSDAQ
 205500,넥써쓰,KOSDAQ
-# 206400,베노티앤알,KOSDAQ  # auto: 관리종목
+# 206400,베노티앤알,KOSDAQ  # auto: 거래정지, 관리종목
 206560,덱스터,KOSDAQ
 206640,바디텍메드,KOSDAQ
 206650,유바이오로직스,KOSDAQ
@@ -1859,11 +1856,11 @@ code,name,market
 208140,정다운,KOSDAQ
 208350,지란지교시큐리티,KOSDAQ
 208370,셀바스헬스케어,KOSDAQ
-# 208640,썸에이지,KOSDAQ  # auto: 관리종목, 불성실공시
+# 208640,썸에이지,KOSDAQ  # auto: 관리종목
 208710,포톤,KOSDAQ
 208860,다산디엠씨,KOSDAQ
 209640,와이제이링크,KOSDAQ
-# 210120,빅텐츠,KOSDAQ  # auto: 거래정지
+# 210120,빅텐츠,KOSDAQ  # auto: 거래정지, 불성실공시
 210540,디와이파워,KOSPI
 210980,SK디앤디,KOSPI
 211050,인카금융서비스,KOSDAQ
@@ -1910,7 +1907,7 @@ code,name,market
 219130,타이거일렉,KOSDAQ
 219420,링크제니시스,KOSDAQ
 # 219550,디와이디,KOSDAQ  # auto: 관리종목
-219750,한국비티비,KOSDAQ
+# 219750,한국비티비,KOSDAQ  # auto: 단기과열지정예고, 공매도과열
 220100,퓨쳐켐,KOSDAQ
 220180,폴라리스AI핸디,KOSDAQ
 220260,켐트로스,KOSDAQ
@@ -1930,7 +1927,7 @@ code,name,market
 225190,LK삼양,KOSDAQ
 225220,제놀루션,KOSDAQ
 # 225430,케이엠제약,KOSDAQ  # auto: 거래정지, 관리종목
-225530,HC보광산업,KOSDAQ
+# 225530,HC보광산업,KOSDAQ  # auto: 단기과열지정예고
 225570,넥슨게임즈,KOSDAQ
 # 225590,패션플랫폼,KOSDAQ  # auto: 관리종목
 226320,잇츠한불,KOSPI
@@ -1950,7 +1947,7 @@ code,name,market
 230240,에치에프알,KOSDAQ
 232140,와이씨,KOSDAQ
 232680,라온로보틱스,KOSDAQ
-232830,아이티센피엔에스,KOSDAQ
+# 232830,아이티센피엔에스,KOSDAQ  # auto: 공매도과열
 234030,싸이닉솔루션,KOSDAQ
 234080,JW생명과학,KOSPI
 234100,폴라리스세원,KOSDAQ
@@ -1995,14 +1992,14 @@ code,name,market
 246710,티앤알바이오팹,KOSDAQ
 # 246720,아스타,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
 246960,SCL사이언스,KOSDAQ
-247540,에코프로비엠,KOSDAQ
+# 247540,에코프로비엠,KOSDAQ  # auto: 공매도과열
 # 247660,나노씨엠에스,KOSDAQ  # auto: 관리종목
 248070,솔루엠,KOSPI
 248170,샘표식품,KOSPI
 249420,일동제약,KOSPI
 250000,보라티알,KOSDAQ
 250060,모비스,KOSDAQ
-# 250930,예선테크,KOSDAQ  # auto: 관리종목
+# 250930,예선테크,KOSDAQ  # auto: 관리종목, 투자경고
 251120,바이오에프디엔씨,KOSDAQ
 251270,넷마블,KOSPI
 251370,와이엠티,KOSDAQ
@@ -2013,7 +2010,7 @@ code,name,market
 253450,스튜디오드래곤,KOSDAQ
 253590,네오셈,KOSDAQ
 253840,수젠텍,KOSDAQ
-# 254120,자비스,KOSDAQ  # auto: 거래정지
+254120,자비스,KOSDAQ
 254490,미래반도체,KOSDAQ
 255220,SG,KOSDAQ
 255440,야스,KOSDAQ
@@ -2060,7 +2057,7 @@ code,name,market
 267260,HD현대일렉트릭,KOSPI
 267270,HD건설기계,KOSPI
 267290,경동도시가스,KOSPI
-267320,나인테크,KOSDAQ
+# 267320,나인테크,KOSDAQ  # auto: 단기과열지정예고
 267790,배럴,KOSDAQ
 267850,아시아나IDT,KOSPI
 267980,매일유업,KOSDAQ
@@ -2090,7 +2087,7 @@ code,name,market
 277880,티에스아이,KOSDAQ
 278280,천보,KOSDAQ
 278470,에이피알,KOSPI
-# 278650,HLB바이오스텝,KOSDAQ  # auto: 투자주의, 투자경고·위험 지정예고
+# 278650,HLB바이오스텝,KOSDAQ  # auto: 투자경고
 279570,케이뱅크,KOSPI
 279600,미디어젠,KOSDAQ
 280360,롯데웰푸드,KOSPI
@@ -2105,13 +2102,13 @@ code,name,market
 28513K,SK케미칼우,KOSPI
 285490,노바텍,KOSDAQ
 285800,진영,KOSDAQ
-# 286750,나노실리칸첨단소재,KOSDAQ  # auto: 투자주의환기
+# 286750,나노실리칸첨단소재,KOSDAQ  # auto: 투자주의, 투자주의환기
 286940,롯데이노베이트,KOSPI
-287840,인투셀,KOSDAQ
+# 287840,인투셀,KOSDAQ  # auto: 투자주의
 288180,케이피항공산업,KOSDAQ
 # 288330,파라택시스코리아,KOSDAQ  # auto: 거래정지, 관리종목
 288620,에스프리즘,KOSDAQ
-# 288980,모아데이타,KOSDAQ  # auto: 관리종목
+# 288980,모아데이타,KOSDAQ  # auto: 거래정지, 관리종목
 # 289010,아이스크림에듀,KOSDAQ  # auto: 관리종목
 289080,SV인베스트먼트,KOSDAQ
 289220,자이언트스텝,KOSDAQ
@@ -2121,7 +2118,7 @@ code,name,market
 290270,휴네시온,KOSDAQ
 290520,신도기연,KOSDAQ
 290550,디케이티,KOSDAQ
-290560,파라택시스이더리움,KOSDAQ
+# 290560,파라택시스이더리움,KOSDAQ  # auto: 거래정지
 290650,엘앤씨바이오,KOSDAQ
 290660,다이나믹솔루션,KOSDAQ
 290670,대보마그네틱,KOSDAQ
@@ -2129,7 +2126,7 @@ code,name,market
 290720,푸드나무,KOSDAQ
 290740,액트로,KOSDAQ
 291230,컴투스엔,KOSDAQ
-# 291650,츌립앤사이언스,KOSDAQ  # auto: 투자주의
+# 291650,츌립앤사이언스,KOSDAQ  # auto: 투자경고
 # 291810,핀텔,KOSDAQ  # auto: 거래정지, 관리종목
 293480,하나제약,KOSPI
 293490,카카오게임즈,KOSDAQ
@@ -2161,14 +2158,14 @@ code,name,market
 300080,플리토,KOSDAQ
 300120,라온피플,KOSDAQ
 300720,한일시멘트,KOSPI
-# 301300,바이브컴퍼니,KOSDAQ  # auto: 투자주의
+301300,바이브컴퍼니,KOSDAQ
 302430,이노메트리,KOSDAQ
 302440,SK바이오사이언스,KOSPI
 302550,리메드,KOSDAQ
 # 303030,지니틱스,KOSDAQ  # auto: 관리종목
 303360,프로티아,KOSDAQ
 303530,이노뎁,KOSDAQ
-# 303810,동국생명과학,KOSDAQ  # auto: 단기과열지정예고
+303810,동국생명과학,KOSDAQ
 304100,솔트룩스,KOSDAQ
 304360,에스바이오메딕스,KOSDAQ
 # 304840,피플바이오,KOSDAQ  # auto: 거래정지
@@ -2183,7 +2180,7 @@ code,name,market
 307930,컴퍼니케이,KOSDAQ
 307950,현대오토에버,KOSPI
 308080,바이젠셀,KOSDAQ
-# 308100,형지글로벌,KOSDAQ  # auto: 관리종목
+# 308100,형지글로벌,KOSDAQ  # auto: 관리종목, 투자경고
 308170,씨티알모빌리티,KOSPI
 308430,셀비온,KOSDAQ
 # 309710,아이티켐,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
@@ -2196,7 +2193,7 @@ code,name,market
 311390,네오크레마,KOSDAQ
 311690,CJ 바이오사이언스,KOSDAQ
 # 312610,에이에프더블류,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
-# 313760,캐리,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
+# 313760,캐리,KOSDAQ  # auto: 거래정지, 관리종목, 불성실공시, 투자주의환기
 314130,지놈앤컴퍼니,KOSDAQ
 314140,알피바이오,KOSDAQ
 314930,바이오다인,KOSDAQ
@@ -2220,7 +2217,7 @@ code,name,market
 318160,셀바이오휴먼텍,KOSDAQ
 318410,비비씨,KOSDAQ
 319400,현대무벡스,KOSDAQ
-# 319660,피에스케이,KOSDAQ  # auto: 투자경고
+319660,피에스케이,KOSDAQ
 320000,한울반도체,KOSDAQ
 321260,프로이천,KOSDAQ
 321370,센서뷰,KOSDAQ
@@ -2257,7 +2254,7 @@ code,name,market
 334890,이지스밸류플러스리츠,KOSPI
 334970,프레스티지바이오로직스,KOSDAQ
 335810,프리시젼바이오,KOSDAQ
-335870,윙스풋,KOSDAQ
+# 335870,윙스풋,KOSDAQ  # auto: 관리종목
 336060,웨이버스,KOSDAQ
 336260,두산퓨얼셀,KOSPI
 33626K,두산퓨얼셀1우,KOSPI
@@ -2270,12 +2267,12 @@ code,name,market
 337930,젝시믹스,KOSDAQ
 338100,NH프라임리츠,KOSPI
 338220,뷰노,KOSDAQ
-338840,와이바이오로직스,KOSDAQ
+# 338840,와이바이오로직스,KOSDAQ  # auto: 투자주의
 339770,교촌에프앤비,KOSPI
 339950,아이비김영,KOSDAQ
 # 340360,다보링크,KOSDAQ  # auto: 투자주의환기
 # 340440,세림B&G,KOSDAQ  # auto: 관리종목
-# 340450,지씨지놈,KOSDAQ  # auto: 단기과열지정예고
+# 340450,지씨지놈,KOSDAQ  # auto: 투자주의
 340570,티앤엘,KOSDAQ
 340810,시선AI,KOSDAQ
 # 340930,성원에너텍,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
@@ -2298,7 +2295,7 @@ code,name,market
 348370,엔켐,KOSDAQ
 # 348950,제이알글로벌리츠,KOSPI  # auto: 거래정지, 관리종목
 350520,이지스레지던스리츠,KOSPI
-# 351320,넥사다이내믹스,KOSDAQ  # auto: 투자경고
+351320,넥사다이내믹스,KOSDAQ
 351330,이삭엔지니어링,KOSDAQ
 351870,차이커뮤니케이션,KOSDAQ
 352090,스톰테크,KOSDAQ
@@ -2331,8 +2328,8 @@ code,name,market
 358570,지아이이노베이션,KOSDAQ
 359090,씨엔알리서치,KOSDAQ
 360070,탑머티리얼,KOSDAQ
-# 360350,코셈,KOSDAQ  # auto: 투자경고, 단기과열지정예고
-# 361390,제노코,KOSDAQ  # auto: 공매도과열
+# 360350,코셈,KOSDAQ  # auto: 투자경고
+361390,제노코,KOSDAQ
 361570,알비더블유,KOSDAQ
 361610,SK아이이테크놀로지,KOSPI
 361670,삼영에스앤씨,KOSDAQ
@@ -2356,7 +2353,7 @@ code,name,market
 368970,오에스피,KOSDAQ
 369370,블리츠웨이엔터테인먼트,KOSDAQ
 370090,퓨런티어,KOSDAQ
-371950,풍원정밀,KOSDAQ
+# 371950,풍원정밀,KOSDAQ  # auto: 투자주의
 372170,윤성에프앤씨,KOSDAQ
 372320,큐로셀,KOSDAQ
 372800,아이티아이즈,KOSDAQ
@@ -2419,7 +2416,7 @@ code,name,market
 389650,넥스트바이오메디컬,KOSDAQ
 # 389680,유디엠텍,KOSDAQ  # auto: 관리종목
 391710,코닉오토메이션,KOSDAQ
-# 393210,토마토시스템,KOSDAQ  # auto: 투자경고, 단기과열지정예고
+393210,토마토시스템,KOSDAQ
 393890,더블유씨피,KOSDAQ
 # 393970,대진첨단소재,KOSDAQ  # auto: 거래정지, 관리종목, 투자주의환기
 394280,오픈엣지테크놀로지,KOSDAQ
@@ -2472,14 +2469,14 @@ code,name,market
 418420,라온텍,KOSDAQ
 418470,KT밀리의서재,KOSDAQ
 418550,제이오,KOSDAQ
-# 418620,E8,KOSDAQ  # auto: 관리종목
+# 418620,E8,KOSDAQ  # auto: 거래정지, 관리종목
 419050,삼기에너지솔루션즈,KOSDAQ
 419080,엔젯,KOSDAQ
 419120,산돌,KOSDAQ
 419530,SAMG엔터,KOSDAQ
 419540,비스토스,KOSDAQ
 420570,제이투케이바이오,KOSDAQ
-# 420770,기가비스,KOSDAQ  # auto: 투자경고
+420770,기가비스,KOSDAQ
 424760,벨로크,KOSDAQ
 424870,이뮨온시아,KOSDAQ
 424960,스마트레이더시스템,KOSDAQ
@@ -2488,7 +2485,7 @@ code,name,market
 425420,티에프이,KOSDAQ
 429270,시지트로닉스,KOSDAQ
 430690,한싹,KOSDAQ
-# 431190,케이쓰리아이,KOSDAQ  # auto: 단기과열지정예고
+431190,케이쓰리아이,KOSDAQ
 432320,KB스타리츠,KOSPI
 432430,와이랩,KOSDAQ
 432470,케이엔에스,KOSDAQ
@@ -2512,7 +2509,7 @@ code,name,market
 444530,심플랫폼,KOSDAQ
 445090,에이직랜드,KOSDAQ
 445180,퓨릿,KOSDAQ
-445680,큐리옥스바이오시스템즈,KOSDAQ
+# 445680,큐리옥스바이오시스템즈,KOSDAQ  # auto: 공매도과열
 446070,유니드비티플러스,KOSPI
 446540,메가터치,KOSDAQ
 446840,지슨,KOSDAQ
@@ -2523,7 +2520,7 @@ code,name,market
 450080,에코프로머티,KOSPI
 450330,하스,KOSDAQ
 450520,인스웨이브,KOSDAQ
-# 450950,아스테라시스,KOSDAQ  # auto: 공매도과열
+450950,아스테라시스,KOSDAQ
 451220,아이엠티,KOSDAQ
 451250,삐아,KOSDAQ
 451760,컨텍,KOSDAQ
@@ -2532,7 +2529,7 @@ code,name,market
 452190,한빛레이저,KOSDAQ
 452200,민테크,KOSDAQ
 452260,한화갤러리아,KOSPI
-# 45226K,한화갤러리아우,KOSPI  # auto: 단기과열지정연장
+# 45226K,한화갤러리아우,KOSPI  # auto: 단기과열지정, 공매도과열
 452280,한선엔지니어링,KOSDAQ
 452300,캡스톤파트너스,KOSDAQ
 452400,이닉스,KOSDAQ
@@ -2550,7 +2547,7 @@ code,name,market
 456160,지투지바이오,KOSDAQ
 457190,이수스페셜티케미컬,KOSPI
 457370,한켐,KOSDAQ
-# 457550,우진엔텍,KOSDAQ  # auto: 거래정지
+457550,우진엔텍,KOSDAQ
 457600,벡트,KOSDAQ
 458350,에스팀,KOSDAQ
 458650,성우,KOSDAQ
@@ -2578,7 +2575,7 @@ code,name,market
 464080,에스오에스랩,KOSDAQ
 464280,티디에스팜,KOSDAQ
 464490,쿼드메디슨,KOSDAQ
-464500,아이언디바이스,KOSDAQ
+# 464500,아이언디바이스,KOSDAQ  # auto: 투자주의
 464580,닷밀,KOSDAQ
 465480,인스피언,KOSDAQ
 # 465770,STX그린로지스,KOSPI  # auto: 관리종목
@@ -2589,7 +2586,7 @@ code,name,market
 469750,아이비젼웍스,KOSDAQ
 471820,셀로맥스사이언스,KOSDAQ
 472850,폰드그룹,KOSDAQ
-473980,노머스,KOSDAQ
+# 473980,노머스,KOSDAQ  # auto: 공매도과열
 474170,루미르,KOSDAQ
 474610,RF시스템즈,KOSDAQ
 474650,링크솔루션,KOSDAQ
@@ -2608,7 +2605,7 @@ code,name,market
 476080,M83,KOSDAQ
 476830,알지노믹스,KOSDAQ
 477850,마키나락스,KOSDAQ
-# 478340,나라스페이스테크놀로지,KOSDAQ  # auto: 단기과열지정
+478340,나라스페이스테크놀로지,KOSDAQ
 478560,블랙야크아이앤씨,KOSDAQ
 479960,위너스일렉,KOSDAQ
 480370,씨케이솔루션,KOSPI
@@ -2617,7 +2614,7 @@ code,name,market
 482630,삼양엔씨켐,KOSDAQ
 483650,달바글로벌,KOSPI
 484120,도우인시스,KOSDAQ
-484590,삼양컴텍,KOSDAQ
+# 484590,삼양컴텍,KOSDAQ  # auto: 투자주의
 484810,티엑스알로보틱스,KOSDAQ
 484870,엠앤씨솔루션,KOSPI
 486990,노타,KOSDAQ
@@ -2632,7 +2629,7 @@ code,name,market
 491000,리브스메드,KOSDAQ
 493280,아이엠바이오로직스,KOSDAQ
 493330,지에프아이,KOSDAQ
-494120,큐리오시스,KOSDAQ
+# 494120,큐리오시스,KOSDAQ  # auto: 투자주의
 499790,GS피앤엘,KOSPI
 900070,글로벌에스엠,KOSDAQ
 # 900100,파이온엑스,KOSDAQ  # auto: 거래정지, 관리종목
@@ -2669,7 +2666,7 @@ code,name,market
 0218L0,네오뷰,KOSDAQ
 483350,딜리셔스,KOSDAQ
 487400,케이앤에스아이앤씨,KOSDAQ
-# 950260,인제니아테라퓨틱스(Reg.S),KOSDAQ  # auto: 투자주의
+950260,인제니아테라퓨틱스(Reg.S),KOSDAQ
 282620,기도산업,KOSDAQ
 417030,니어스랩,KOSDAQ
 0155E0,해치텍,KOSDAQ
@@ -2682,6 +2679,9 @@ code,name,market
 486510,글로벌테크놀로지,KOSDAQ
 266690,덕산넵코어스,KOSDAQ
 468670,브릴스,KOSDAQ
+# 179880,멜콘,KOSDAQ  # auto: 신규상장(10/15)
+# 250030,진코스텍,KOSDAQ  # auto: 신규상장(10/15)
+# 0158S0,엘리스,KOSDAQ  # auto: 신규상장(10/20)
 
 # 046070,코다코
 # 038880,아이에이,KOSDAQ

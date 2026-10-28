@@ -60,7 +60,7 @@ DATASET: dict[str, list[str]] = {
 # and its execution-delay-proxy code was kept in g003 as a standalone analysis tool.
 VARIANTS: list[tuple[str, dict[str, str]]] = [
     ("baseline", {}),
-    ("A", {"R76_SIM_EXEC_MODEL": "passive_limit_chase"}),
+    ("A", {"SIM_EXEC_MODEL": "passive_limit_chase"}),
 ]
 
 VARIANT_LABELS = {
@@ -102,10 +102,10 @@ class RunResult:
 
 def run_one(date: str, codes: list[str], variant: str, env_overrides: dict[str, str], timeout: int) -> RunResult:
     env = dict(os.environ)
-    env.pop("R76_SIM_EXEC_MODEL", None)
-    env.pop("R76_SIM_BUY_CONSECUTIVE_CONFIRM_COUNT", None)
-    env.pop("R76_SIM_OPENING_GUARD_MINUTES", None)
-    env.pop("R76_SIM_ENABLE_VWAP_MANDATORY_GATE", None)
+    env.pop("SIM_EXEC_MODEL", None)
+    env.pop("SIM_BUY_CONSECUTIVE_CONFIRM_COUNT", None)
+    env.pop("SIM_OPENING_GUARD_MINUTES", None)
+    env.pop("SIM_ENABLE_VWAP_MANDATORY_GATE", None)
     env.update(env_overrides)
 
     cmd = [
@@ -363,14 +363,14 @@ def write_report(all_results: list[RunResult]) -> None:
         "`_env_int(name, default)` helper following the existing `_env_bool`/`_env_float` pattern. "
         "(3) ~line 455-478 (Experiment overrides block, right after `SIMULATE_10S_GRID_DEFAULT`): "
         "Experiment B overrides g003's own module-level `BUY_CONSECUTIVE_CONFIRM_COUNT` directly "
-        "(env `R76_SIM_BUY_CONSECUTIVE_CONFIRM_COUNT`); Experiment C and D instead mutate "
+        "(env `SIM_BUY_CONSECUTIVE_CONFIRM_COUNT`); Experiment C and D instead mutate "
         "`_r002_mod.OPENING_GUARD_MINUTES` / `_r002_mod.ENABLE_VWAP_MANDATORY_GATE` (env "
-        "`R76_SIM_OPENING_GUARD_MINUTES` / `R76_SIM_ENABLE_VWAP_MANDATORY_GATE`) because those two "
+        "`SIM_OPENING_GUARD_MINUTES` / `SIM_ENABLE_VWAP_MANDATORY_GATE`) because those two "
         "names are read as r002's OWN module-global bindings inside "
         "`run_buy_condition_pipeline_comment()`/`run_3min_context_pipeline()` and "
         "`_gate_vwap_mandatory()` respectively - reassigning g003's own same-named globals would "
         "have had zero effect on r002's behavior (verified by reading the actual import/read "
-        "sites, not assumed). `R76_SIM_EXEC_MODEL` (default `\"instant\"`) is read as a plain "
+        "sites, not assumed). `SIM_EXEC_MODEL` (default `\"instant\"`) is read as a plain "
         "string. (4) ~line 2384-2429 (data loading loop): added `exec_sim_raw_frames: dict[str, "
         "pd.DataFrame] = {}`, populated with the pristine per-code `raw_df` *before* the "
         "`upsample_price_frame_to_10s()` call - kept deliberately separate from the pre-existing "
@@ -383,7 +383,7 @@ def write_report(all_results: list[RunResult]) -> None:
         "at t2+10s, L3 final chase-or-cancel check, using `BUY_ORDER_REPRICE_AFTER_SECONDS` and "
         "`BUY_ORDER_REPRICE_MAX_CHASE_PCT` imported from r001, not hardcoded). (6) ~line 3253-3283, "
         "the original `sim.buy(code, ..., price, ts, session, reason)` call is now wrapped in an "
-        "`if R76_SIM_EXEC_MODEL == \"passive_limit_chase\":` branch that runs the proxy, logs one "
+        "`if SIM_EXEC_MODEL == \"passive_limit_chase\":` branch that runs the proxy, logs one "
         "`EXEC_SIM_RESULT ...` line per attempted signal, and calls `sim.buy()` with the proxy's "
         "fill price/time instead of the signal tick - falling through to the original unchanged "
         "call when the env var is unset/`\"instant\"`."
@@ -407,9 +407,9 @@ def write_report(all_results: list[RunResult]) -> None:
     lines.append(
         "- **Every new toggle defaults to reproducing current/live behavior when its env var is "
         "unset.** `ENABLE_VWAP_MANDATORY_GATE` defaults to `False` in r001 and the new "
-        "`_gate_vwap_mandatory` gate short-circuits to always-pass in that state; `R76_SIM_EXEC_MODEL` "
+        "`_gate_vwap_mandatory` gate short-circuits to always-pass in that state; `SIM_EXEC_MODEL` "
         "defaults to `\"instant\"`, which takes the original unmodified `sim.buy(...)` code path; "
-        "`R76_SIM_BUY_CONSECUTIVE_CONFIRM_COUNT`/`R76_SIM_OPENING_GUARD_MINUTES` default to the "
+        "`SIM_BUY_CONSECUTIVE_CONFIRM_COUNT`/`SIM_OPENING_GUARD_MINUTES` default to the "
         "existing r001 values (2 and 15 respectively) when unset. This was verified concretely for "
         "Experiment D with a smoke test: `g003 --date 20260907 --codes 001820 --summary` was run "
         "once immediately before adding the r002 gate function/list entry and once immediately "

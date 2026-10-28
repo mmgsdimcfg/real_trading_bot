@@ -37,7 +37,7 @@ except Exception:
     DATA_DIR_NAME = "data"
     RUNTIME_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime") / DATA_DIR_NAME
 
-R004_HEADER = """# R76 daily live trading watchlist.
+R004_HEADER = """# Daily live trading watchlist.
 #
 # Purpose:
 # - List of symbols used by r003_trade_live_execute.py and optional simulation watchlist mode.

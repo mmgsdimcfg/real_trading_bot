@@ -1,4 +1,4 @@
-# 매수/매도 조건 정리 (R76 전략)
+# 매수/매도 조건 정리 (MA5/BB 크로스 전략)
 
 - 기준 파일: `live_trading/r002_strategy_core_shared.py` (핵심 판정 로직), `live_trading/r001_define_config.py` (define/설정값)
 - 매수 필수조건/가점항목은 `r002_strategy_core_shared.py`의 `BUY_GATE_CONDITIONS` / `BUY_SCORE_RULES` 리스트에서 자동 추출 (2026-08-26 기준, `neutral` 리스크 프로파일 적용값)

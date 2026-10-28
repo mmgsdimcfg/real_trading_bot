@@ -1,13 +1,13 @@
-# R76 Backtesting Framework
+# Backtesting Framework
 
 ## Overview
 
-This is a complete backtesting framework for the **R76 MA5/BB Cross Strategy** that mirrors the real trading logic in `r003_trade_live_execute.py`.
+This is a complete backtesting framework for the **MA5/BB Cross Strategy** that mirrors the real trading logic in `r003_trade_live_execute.py`.
 
 ### Key Features
 
 - **Unified Strategy**: `shared/` modules contain all strategy logic shared between real trading and backtesting
-- **r76 Logic Extracted**: All indicator calculations, buy/sell conditions are extracted from r76
+- **Live Logic Extracted**: All indicator calculations, buy/sell conditions are extracted from the live trader
 - **3-Minute Bar Replay**: Backtester replays historical 3-minute OHLCV data
 - **Risk Management**: Implements take-profit, stop-loss, and trailing-stop
 - **Session-Aware**: Respects trading session rules (regular, morning NXT, afternoon NXT)
@@ -17,7 +17,7 @@ This is a complete backtesting framework for the **R76 MA5/BB Cross Strategy** t
 
 ```
 xgraph/auto_trading/
-├── shared/                          # ← Shared logic (r76 + backtester)
+├── shared/                          # ← Shared logic (live trader + backtester)
 │   ├── __init__.py
 │   ├── config.py                    # All parameters/thresholds
 │   ├── indicators.py                # MA5, BB, RSI, Stoch, Williams, MACD, ADX
@@ -157,11 +157,11 @@ STOP_LOSS_PERCENT = -0.015
 TRAILING_STOP_FROM_PEAK = 0.012
 ```
 
-## Comparison with Real Trading (r76)
+## Comparison with Real Trading (r003)
 
 - **Shared Code**: Both use identical `shared/` modules
-- **Data Source**: r76 gets real-time 3-minute bars → backtester replays historical 3-minute bars
-- **Execution**: r76 places real orders → backtester simulates at close prices
+- **Data Source**: r003 gets real-time 3-minute bars → backtester replays historical 3-minute bars
+- **Execution**: r003 places real orders → backtester simulates at close prices
 - **Result**: Same strategy logic, different data source → validate strategy performance
 
 ## Troubleshooting
@@ -200,4 +200,4 @@ Backtester assumes execution at bar close price. Real execution may vary.
 
 ---
 
-**Status**: Production-ready for backtesting. Shares code with r76 real trading.
+**Status**: Production-ready for backtesting. Shares code with r003 real trading.

@@ -7,10 +7,10 @@ Purpose:
 - Build normalized intraday outputs and indicator columns used by live/sim flows.
 
 Output schema (_10s.txt):
-- datetime, open, high, low, close, volume, market, <R76 indicators>, amount, raw_bar
+- datetime, open, high, low, close, volume, market, <strategy indicators>, amount, raw_bar
   (raw_bar 1 = KIS minute bar, 0 = interpolated; amount = that minute's traded value on raw_bar==1 rows only;
    volume = minute volume / 6 per 10s row)
-- R76 indicators (MA_5, VOL_MA20, BB_*, RSI*, STOCH*, WILLIAMS*, MACD*, DI/ADX, VWAP, OBV*) are computed on the
+- Strategy indicators (MA_5, VOL_MA20, BB_*, RSI*, STOCH*, WILLIAMS*, MACD*, DI/ADX, VWAP, OBV*) are computed on the
   real 1m bars and carried on each 10s row as of the last completed minute (--no-10s-indicators omits them)
 {code}_{name}_daily.csv: date, open, high, low, close, volume, amount + the same indicators on daily bars
   (HTS-standard periods, no VWAP) + MA_20, MA_60 - used by g002 for stock selection.
@@ -102,7 +102,7 @@ Update log:
       (3) 수집 목록 파일 _{date}_picks.txt -> _{date}_collected.txt. g002 선정 결과와 같은 파일명이라 g001 재실행 시
       g002 선정 50종목이 전체 수집 목록(~2,400)으로 덮였음(20261007 실제 발생) - g002 반복선정 감점과 g003 대상
       종목이 오염됨.
-      calculate_r76_indicators에 params 인자 추가(기본값은 기존 r001 값 그대로).
+      calculate_strategy_indicators에 params 인자 추가(기본값은 기존 r001 값 그대로).
     impact: collector/scanner
     compatibility: 10s/daily.csv 열 추가(이름 기반 리더만 존재). _{date}_picks.txt를 g001 수집 목록으로 읽던 곳 없음
       (g003/g005/g002는 g002 결과로 읽음).
@@ -454,7 +454,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-10s-indicators",
         action="store_true",
-        help="Omit the R76 indicator columns (computed on real 1m bars) from _10s files",
+        help="Omit the strategy indicator columns (computed on real 1m bars) from _10s files",
     )
     parser.add_argument(
         "--no-resume",
@@ -866,7 +866,7 @@ DAILY_INDICATOR_PARAMS = {
     "WILLIAMS_D_PERIOD": 9, "MACD_FAST": 12, "MACD_SLOW": 26, "MACD_SIGNAL_PERIOD": 9, "ADX_PERIOD": 14,
     "OBV_MA_PERIOD": 20,
 }
-R76_INDICATOR_COLUMNS = [
+STRATEGY_INDICATOR_COLUMNS = [
     "MA_5", "VOL_MA20", "BB_MIDDLE", "BB_STD", "BB_UPPER", "BB_LOWER",
     "RSI", "RSI_SIGNAL", "STOCH_K", "STOCH_D", "WILLIAMS_R", "WILLIAMS_D",
     "MACD", "MACD_SIGNAL", "MACD_HIST", "DI_PLUS", "DI_MINUS", "ADX",
@@ -874,8 +874,8 @@ R76_INDICATOR_COLUMNS = [
 ]
 
 
-def calculate_r76_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
-    """R76 indicator columns. params overrides INTRADAY_INDICATOR_PARAMS (r001, tuned for 3m bars);
+def calculate_strategy_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
+    """Strategy indicator columns. params overrides INTRADAY_INDICATOR_PARAMS (r001, tuned for 3m bars);
     daily bars use DAILY_INDICATOR_PARAMS (HTS-standard periods)."""
     p = {**INTRADAY_INDICATOR_PARAMS, **(params or {})}
     out = df.copy()
@@ -994,7 +994,7 @@ def _fmt_numbers(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def add_minute_indicators_to_10s(df_10s: pd.DataFrame, minute_df: pd.DataFrame) -> pd.DataFrame:
-    """R76 indicators computed on the real 1m bars, attached to each 10s row as of the last minute bar
+    """Strategy indicators computed on the real 1m bars, attached to each 10s row as of the last minute bar
     completed at that time (bar labelled hh:mm completes at hh:mm+1), so a row never sees its own
     minute's future close. Columns are placed right after "market" (before amount/raw_bar).
 
@@ -1004,14 +1004,14 @@ def add_minute_indicators_to_10s(df_10s: pd.DataFrame, minute_df: pd.DataFrame) 
     m = minute_df[["datetime", "open", "high", "low", "close", "volume"]].copy()
     m["datetime"] = pd.to_datetime(m["datetime"])
     m = m.dropna(subset=["datetime"]).sort_values("datetime")
-    ind = calculate_r76_indicators(m)
+    ind = calculate_strategy_indicators(m)
     ind["datetime"] = ind["datetime"] + pd.Timedelta(minutes=1)
-    base = df_10s.drop(columns=[c for c in R76_INDICATOR_COLUMNS if c in df_10s.columns]).sort_values("datetime")
+    base = df_10s.drop(columns=[c for c in STRATEGY_INDICATOR_COLUMNS if c in df_10s.columns]).sort_values("datetime")
     base["datetime"] = pd.to_datetime(base["datetime"])
-    merged = pd.merge_asof(base, ind[["datetime", *R76_INDICATOR_COLUMNS]], on="datetime", direction="backward")
+    merged = pd.merge_asof(base, ind[["datetime", *STRATEGY_INDICATOR_COLUMNS]], on="datetime", direction="backward")
     lead = [c for c in base.columns if c not in ("amount", "raw_bar")]
     tail = [c for c in ("amount", "raw_bar") if c in base.columns]
-    return merged[lead + R76_INDICATOR_COLUMNS + tail]
+    return merged[lead + STRATEGY_INDICATOR_COLUMNS + tail]
 
 
 def _minutes_from_10s_file(path: Path) -> pd.DataFrame | None:
@@ -1194,7 +1194,7 @@ def build_3min_indicator_frame(minute_df: pd.DataFrame) -> pd.DataFrame:
     if bars_3m.empty:
         return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
 
-    bars_3m = calculate_r76_indicators(bars_3m)
+    bars_3m = calculate_strategy_indicators(bars_3m)
     return bars_3m.reset_index().rename(columns={"index": "datetime"})
 
 
@@ -1312,7 +1312,7 @@ def fetch_and_save_daily_ohlcv(
     # [2026-10-10] 일봉 지표(HTS 기본 기간) - g002 종목 선정용. VWAP은 누적 시작점이 임의라 일봉에서는 제외.
     # MA_20/MA_60은 기간이 다 찬 행부터만 값(그 전은 공란).
     if {"open", "high", "low", "volume"}.issubset(df2.columns):
-        df2 = calculate_r76_indicators(df2.reset_index(drop=True), DAILY_INDICATOR_PARAMS).drop(columns=["VWAP"])
+        df2 = calculate_strategy_indicators(df2.reset_index(drop=True), DAILY_INDICATOR_PARAMS).drop(columns=["VWAP"])
         df2["MA_20"] = df2["close"].rolling(20, min_periods=20).mean()
         df2["MA_60"] = df2["close"].rolling(60, min_periods=60).mean()
         df2["MA_120"] = df2["close"].rolling(120, min_periods=120).mean()

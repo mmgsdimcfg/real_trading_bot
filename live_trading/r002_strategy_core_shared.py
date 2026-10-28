@@ -1,15 +1,15 @@
-﻿"""R76 shared strategy core.
+﻿"""Shared strategy core (MA5/BB cross).
 
 Overview:
 - Single source of truth for live/sim buy-sell decision logic.
 - Keep this file as the only place for core rule changes.
 
 Used by:
-- r76_trade_live_execute.py
-- r76_trade_simulate_by_date.py
+- r003_trade_live_execute.py
+- g003_trade_simulate_by_date.py
 
 Quick usage:
-- from r76_strategy_core_shared import R76StrategyConfig, check_buy_condition, check_sell_condition, update_live_price_cross_state
+- from r002_strategy_core_shared import StrategyConfig, check_buy_condition, check_sell_condition, update_live_price_cross_state
 
 Update log format (append only):
 - [YYYY-MM-DD] type=feat|fix|refactor|docs owner=<name>
@@ -18,6 +18,20 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-28] type=feat owner=claude
+    summary: 사용자 요청(091580 09:18 반등 초입 미매수 대책 a) - calculate_indicators_with_warmup() 신설. 전일 봉을 앞에
+      붙여 지표를 계산하고 당일 행만 반환(VWAP/OBV/OBV_MA는 당일 봉만). r003(r001 ENABLE_PRIOR_DAY_INDICATOR_WARMUP)과
+      g003이 1분/3분/실시간 3분 프레임에 사용. calculate_indicators 자체는 무변경.
+    impact: common (플래그 ON일 때만)
+    compatibility: backward-compatible (warmup None이면 기존과 동일)
+- [2026-10-28] type=fix owner=claude
+    summary: 사용자 요청(091580 상신이디피 09:35 하락 중 매수 분석) + Codex 검토 - check_buy_condition_1min_hybrid_trigger()에
+      이어 쓰는 신규 check_1min_trigger_live_guard() - 형성 중인 1분봉 실시간가가 직전 확정 1분봉 종가 대비
+      HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT(r001, 0.4%) 초과 하락이거나 1분봉 BB중심선 이하이면 1MIN_LIVE_DROP_*/
+      1MIN_LIVE_BELOW_BB_MID로 반려. 트리거 함수 자체는 무변경(유효시간 타이머가 이 가드 반려로 리셋되지 않게 분리,
+      Codex 검토). r005 _008/g003이 타이머·만료 판정 뒤에 호출. r011(Edge AI 피처)은 미적용(학습 피처 불변).
+    impact: common (r003 실전/g003 백테스트)
+    compatibility: breaking (매수 감소 방향. 롤백: r001 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT=0)
 - [2026-10-04] type=feat owner=claude
     summary: 사용자 요청(전체 매매내역/감시 로그 기반 조건 재검토) - 신규 공용 헬퍼 is_midday_no_entry_time()
       (r001 ENABLE_MIDDAY_NO_ENTRY, 11:30~13:00 신규매수 금지) + is_regular_new_entry_blocked_time()
@@ -43,7 +57,7 @@ Update log:
       LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_{score} 아니면 LIVE_PRICE_BB_DOWN_CROSS). pnl>=0.0% 구간(기존
       BLOCKED_PNL/AUX 점수별 최소수익 요건)은 전부 동일 - 경계값(0%, -0.5%, -0.69%, -0.70%, -0.71%, -2%)
       단위 테스트로 확인. g003은 이 함수를 shared_check_sell_condition으로 직접 import해 쓰므로(g003
-      check_sell_condition_r76_sim) 별도 수정 없이 동일하게 반영된다 - PaperStrategyTracker(BASIC_CROSS/
+      check_sell_condition_sim) 별도 수정 없이 동일하게 반영된다 - PaperStrategyTracker(BASIC_CROSS/
       MULTI_FILTER 비교 전용)의 로컬 check_sell_condition은 다른 함수라 영향 없음.
     impact: common (r003 실전/g003 백테스트 공용, _020_shared_reversal_sell을 통해 라이브 매도 경로에 반영)
     compatibility: breaking (pnl<=-0.7% + BB중심선 하향돌파 live cross_down 신호가 겹치는 순간에만 매도
@@ -344,7 +358,7 @@ Update log:
       함께 나올 때 매수"였는데, 실제 코드는 2026-06-28 리팩토링(불필요 로직 제거 명목)
       이후 스토캐스틱은 매도 판단에만, 윌리엄스 %R은 어디에도 쓰이지 않는 상태였음
       (STOCH_BUY_MIN/MAX, WILLIAMS_BUY_FLOOR/OVERBOUGHT_CEIL 등 관련 config 필드도
-      R76StrategyConfig에 정의만 되고 아무 곳에서도 읽히지 않는 죽은 필드였음). 필수조건 5는
+      StrategyConfig에 정의만 되고 아무 곳에서도 읽히지 않는 죽은 필드였음). 필수조건 5는
       스토캐스틱 %K가 %D를 상향 돌파하거나(골든크로스) %K>%D이면서 STOCH_BUY_MIN~MAX
       구간(과열 아님)일 때 통과, 필수조건 6은 윌리엄스 %R이 직전봉 대비 상승 중이면서
       WILLIAMS_BUY_FLOOR~WILLIAMS_OVERBOUGHT_CEIL 구간(바닥권 탈출~과열 직전)일 때
@@ -394,7 +408,7 @@ Update log:
     impact: common
     compatibility: backward-compatible
 - [2026-05-10] type=refactor owner=copilot
-    summary: created r76 shared core module and centralized core strategy logic.
+    summary: created shared core module and centralized core strategy logic.
     impact: common
     compatibility: backward-compatible
 """
@@ -491,6 +505,7 @@ from r001_define_config import (
     HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR,
     HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT,
+    HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT,
     OPENING_GAP_GATE_WINDOW_MINUTES,
     OPENING_GAP_MIN_PCT,
     OPENING_GAP_MAX_PCT,
@@ -500,7 +515,7 @@ from r001_define_config import (
 
 
 @dataclass(frozen=True)
-class R76StrategyConfig:
+class StrategyConfig:
     live_price_bb_buffer_pct: float
     live_price_cross_confirm_polls: int
     live_price_cross_confirm_seconds: float
@@ -734,7 +749,7 @@ class BuyEvalContext:
     now: pd.Timestamp | None
     live_price: float | None
     cross_info: dict[str, object] | None
-    config: "R76StrategyConfig"
+    config: "StrategyConfig"
     cur: pd.Series
     prev: pd.Series
     cur_bb: float
@@ -988,7 +1003,7 @@ def _buy_support_score(
     cur: pd.Series,
     prev: pd.Series,
     frame: pd.DataFrame,
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> int:
     """가점 조건 합산 (BUY_SCORE_RULES 참조). 실제 최대 합산 점수는
     sum(rule.max_score for rule in BUY_SCORE_RULES) - 항목이 추가될 때마다
@@ -1001,7 +1016,7 @@ def _buy_support_score(
     return sum(rule.eval_fn(ctx) for rule in BUY_SCORE_RULES)
 
 
-def _sell_support_score(cur: pd.Series, prev: pd.Series, config: R76StrategyConfig) -> int:
+def _sell_support_score(cur: pd.Series, prev: pd.Series, config: StrategyConfig) -> int:
     score = 0
 
     k_c = _num(cur, "STOCH_K")
@@ -1044,7 +1059,7 @@ def _sell_support_score(cur: pd.Series, prev: pd.Series, config: R76StrategyConf
     return score
 
 
-def _is_box_range_hold_zone(frame: pd.DataFrame, config: R76StrategyConfig) -> tuple[bool, str]:
+def _is_box_range_hold_zone(frame: pd.DataFrame, config: StrategyConfig) -> tuple[bool, str]:
     if len(frame) < config.box_range_hold_lookback_bars:
         return False, "INSUFFICIENT_BOX_BARS"
 
@@ -1071,7 +1086,7 @@ def update_live_price_cross_state(
     now: pd.Timestamp,
     live_price: float,
     bb_middle: float,
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> dict[str, object]:
     relation = "on"
     upper_trigger = bb_middle * (1.0 + config.live_price_bb_buffer_pct)
@@ -1262,7 +1277,7 @@ def check_buy_condition(
     now: pd.Timestamp,
     live_price: float,
     cross_info: dict[str, object],
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> tuple[bool, str]:
     return run_buy_condition_pipeline_comment(
         frame=frame,
@@ -1589,7 +1604,7 @@ def run_buy_condition_pipeline_comment(
     now: pd.Timestamp,
     live_price: float,
     cross_info: dict[str, object],
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> tuple[bool, str]:
     """BB 중앙선 상승 돌파 전략: BUY_GATE_CONDITIONS(9개 필수조건) 순차 통과 +
     BUY_SCORE_RULES 가점 합계가 config.bb_buy_score_threshold 이상.
@@ -1674,7 +1689,7 @@ def build_context_eval(
     now: pd.Timestamp,
     live_price: float,
     cross_info: dict[str, object],
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> tuple[BuyEvalContext | None, str]:
     """3분봉 컨텍스트 판정 준비 단계: 봉 수/지표 산출 여부를 확인하고 BuyEvalContext를 만든다.
 
@@ -1704,7 +1719,7 @@ def build_context_eval(
 def evaluate_context_score(
     ctx: BuyEvalContext,
     now: pd.Timestamp,
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> tuple[bool, str]:
     """3분봉 컨텍스트 판정 마무리 단계: 가점 합산 + 개장 직후 보호 + 최종 점수 임계값.
 
@@ -1729,7 +1744,7 @@ def run_3min_context_pipeline(
     now: pd.Timestamp,
     live_price: float,
     cross_info: dict[str, object],
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> tuple[bool, str]:
     """ENABLE_1MIN_TRIGGER_3MIN_CONTEXT 하이브리드 경로의 2단계: 1분봉 트리거(호출측에서
     이미 확인 완료)가 통과된 뒤, 3분봉 상위 프레임에서 "아직 추세/유동성 컨텍스트가
@@ -1907,6 +1922,33 @@ def check_buy_condition_1min_hybrid_trigger(
     # 하한은 통과한 틱이 12,070건이고, 그중 나머지 3분봉 게이트까지 전부 통과해 점수 단계에
     # 도달했을 틱은 217건(그 뒤 점수 10점/2회 연속 확인이 다시 걸러냄).
     return True, trigger_reason
+
+
+def check_1min_trigger_live_guard(frame_1min: pd.DataFrame, live_price: float | None) -> tuple[bool, str]:
+    """[2026-10-28] 1분 트리거(확정봉 기준) 통과 뒤의 실시간 진입 가드 - r005 _008 / g003 공용.
+
+    check_buy_condition_1min_hybrid_trigger는 직전 "확정" 1분봉만 보므로 형성 중인 봉이 꺾여도 다음 분 경계까지
+    트리거가 유효하다(091580 상신이디피 20261028 09:34:57: 확정 종가 27,850 -> 실시간 27,650, -0.72%에서 매수).
+    실시간가가 직전 확정 종가보다 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT를 넘게 낮거나 1분봉 BB중심선 이하이면 반려.
+    트리거 유효시간 타이머(update_timed_condition_state)와 분리하려고 트리거 함수 밖에 둔다 - 이 가드의 일시 반려가
+    확정봉 신호의 수명(HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS)을 리셋하면 안 된다(Codex 검토).
+    가격 없음/비정상, 지표 없음, 설정 <=0이면 통과(기존 동작).
+    """
+    if HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT <= 0 or live_price is None or pd.isna(live_price) or live_price <= 0:
+        return True, ""
+    if frame_1min is None or len(frame_1min) == 0:
+        return True, ""
+    cur = frame_1min.iloc[-1]
+    cur_close = _num(cur, "close")
+    cur_bb = _num(cur, "BB_MIDDLE")
+    if any(pd.isna(v) for v in (cur_close, cur_bb)) or cur_close <= 0:
+        return True, ""
+    live_drop_pct = (cur_close - live_price) / cur_close * 100.0
+    if live_drop_pct > HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT:
+        return False, f"1MIN_LIVE_DROP_{live_drop_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT:.2f}%"
+    if not live_price > cur_bb:
+        return False, "1MIN_LIVE_BELOW_BB_MID"
+    return True, ""
 
 
 def check_1min_dead_cross(
@@ -2194,7 +2236,7 @@ def gate_steps_diagnostic(
     now: pd.Timestamp,
     live_price: float,
     cross_info: dict[str, object],
-    config: R76StrategyConfig,
+    config: StrategyConfig,
     gates: list[BuyGateCondition] | None = None,
 ) -> str:
     """로그 표시 전용 진단 함수. gates(기본값 BUY_GATE_CONDITIONS) 리스트의 각 게이트를
@@ -2237,7 +2279,7 @@ def check_sell_condition(
     pnl_pct: float,
     live_price: float,
     cross_info: dict[str, object],
-    config: R76StrategyConfig,
+    config: StrategyConfig,
 ) -> tuple[bool, str]:
     if len(frame) < 2:
         return False, "INSUFFICIENT_BARS"
@@ -2407,6 +2449,37 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["OBV"] = obv_vol.cumsum()
     out["OBV_MA"] = out["OBV"].rolling(window=OBV_MA_PERIOD, min_periods=1).mean()
 
+    return out
+
+
+# [2026-10-28] 세션 누적 지표 - 전일 warmup을 섞으면 의미가 바뀌므로 당일 봉만으로 다시 계산한다.
+SESSION_ANCHORED_INDICATOR_COLUMNS = ("VWAP", "OBV", "OBV_MA")
+
+
+def calculate_indicators_with_warmup(df: pd.DataFrame, warmup: pd.DataFrame | None) -> pd.DataFrame:
+    """[2026-10-28] 전일 봉(warmup)을 앞에 붙여 지표를 계산하고 당일 행만 돌려준다 - r003 실전/g003 공용.
+
+    calculate_indicators는 min_periods=1이라 장 초반 3분봉 6~11개로 RSI/ADX/DI/BB가 무의미한 값이 된다(091580 상신이디피
+    20261028 09:19 3분 RSI 8.1, ADX 74.9, +DI 1.8 -> di_spread/stochastic 게이트 실패, 실시간 3분봉도 INTRABAR_RSI로 거부).
+    HTS 차트처럼 전일 봉에 이어서 계산하면 같은 시점 RSI 60/ADX 36/DI 24-9로 정상화된다.
+    반환 프레임은 df와 같은 행(당일)만 담으므로 봉 수/첫 봉 의미는 그대로다. VWAP/OBV/OBV_MA는 당일 봉만으로 계산한다.
+    warmup이 없거나 df보다 이후 봉뿐이면 calculate_indicators(df)와 동일.
+    """
+    if df is None or len(df) == 0 or warmup is None or len(warmup) == 0:
+        return calculate_indicators(df)
+    cols = ["open", "high", "low", "close", "volume"]
+    first_ts = df.index[0]
+    warm = warmup.loc[warmup.index < first_ts, cols]
+    if warm.empty:
+        return calculate_indicators(df)
+    full = calculate_indicators(pd.concat([warm, df[cols]]))
+    out = full.iloc[len(warm):].copy()
+    extra = [c for c in df.columns if c not in out.columns]
+    if extra:
+        out[extra] = df[extra].to_numpy()
+    session = calculate_indicators(df[cols])
+    for col in SESSION_ANCHORED_INDICATOR_COLUMNS:
+        out[col] = session[col].to_numpy()
     return out
 
 
