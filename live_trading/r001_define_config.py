@@ -1,6 +1,29 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-28] type=feat+tune owner=claude
+#     summary: 사용자 요청(091580 09:18 반등 초입 미매수 대책 a/b/c 동시 적용) - (c) KIS_HTTP_CONNECT/READ_TIMEOUT_SECONDS
+#       (3/10초, r003이 kis_auth requests에 주입), (a) ENABLE_PRIOR_DAY_INDICATOR_WARMUP=True / PRIOR_DAY_WARMUP_MINUTES=180
+#       (전일 봉 이어서 지표 계산), (b) HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT 0.5->0.8. 091580 재현: 현행/a/b 단독은 09:19~09:23
+#       매수 불가, a+b는 09:19:40 진입 판정(c 없으면 그 시각 루프 정지로 미평가).
+#     impact: live (r003) + g003
+#     compatibility: breaking (롤백: KIS_HTTP_* = 0, ENABLE_PRIOR_DAY_INDICATOR_WARMUP=False, BB_GAP_MAX_PCT=0.5)
+# - [2026-10-28] type=fix owner=claude
+#     summary: 사용자 요청(091580 상신이디피 20261028 09:35 하락 중 매수 분석) + Codex 검토 - HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT
+#       (0.4%) 신설. 1분 트리거가 직전 확정 1분봉만 보던 것에 형성 중인 봉의 실시간 하락/1분 BB중심선 이탈 반려를 추가.
+#     impact: common (r005 _008 실전 + g003)
+#     compatibility: breaking (매수 감소 방향. 롤백: 0)
+# - [2026-10-26] type=feat owner=claude
+#     summary: Edge AI 설정(EDGE_AI_MODE/EDGE_AI_DIR/EDGE_AI_MIN_PROB_OVERRIDE) 신설 - r005 _028 LightGBM 메타 라벨 필터.
+#     impact: 기본 "shadow"는 기록만 하므로 실거래 매수 판정 변화 없음
+#     compatibility: backward-compatible
+# - [2026-10-23] type=feat owner=claude
+#     summary: 전략 V2 설정 섹션(V2_*) 신설 - 일봉 MA20/MA60 추세, 5분 EMA20/VWAP, 1분 트리거, 눌림목/돌파 재테스트,
+#       60/120틱 필터, 손절(구조+최소 1.0%)/BE/TP1/샹들리에 트레일/5분 추세이탈/시간손절/15:15 청산, 거래당 위험 0.5%
+#       사이징, 일일 손실 1.5%, 동시 4종목, 시장 폭(VWAP 위 종목 비율) 게이트, 비용(수수료 0.015%/매도세 0.20%/슬리피지).
+#       V2_LIVE_MODE="off" 기본. 기존 전략 경로용 포트폴리오 가드 플래그 3종(ENABLE_*_GATE=False) 추가.
+#     impact: 기본값에서 실거래 동작 변화 없음
+#     compatibility: backward-compatible
 # - [2026-10-15] type=tune owner=claude
 #     summary: 사용자 요청("기존 log/data 기반 매수·익절·손절·기타매도 조건 보완점 검토, Codex와 상호 검토 후 수정") -
 #       실매매 223포지션(0818~1007, 승률 27.8%, 평균 이익 +1.48%/손실 -0.77%, 합계 -75,405원)과 감시종목 1분봉 패널
@@ -545,7 +568,7 @@
 # - [2026-06-28] type=fix owner=copilot summary=저거래량 추격매수 차단 강화 + 거래량 hard_floor 상향 + 개장 직후 보호 강화 + BB 갭 추격 기준 엄격화
 # - [2026-06-26] type=fix owner=copilot summary=BREAKEVEN_FAIL 완화(giveback 2.0%, confirm 120s) + VOLUME_RATIO_MIDDAY 강화(0.50)
 
-"""R76 shared configuration for live trading and simulation.
+"""Shared configuration for live trading and simulation.
 
 Risk profile presets:
 - Set AUTO_TRADING_RISK_PROFILE to one of conservative|neutral|aggressive.
@@ -1048,7 +1071,11 @@ EMA_20_PERIOD = 20   # calculate_indicators의 EMA_20(3분봉 ema_trend_align �
 HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 12       # 크로스 인정 룩백(1분봉 12봉 = 12분 = 3분봉 4봉)
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.4  # 1분봉 자체 틱노이즈가 더 커서 3분봉(-0.1%)보다 완화
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 1.8   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화
-HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT = 0.5        # 3분봉(0.35%)보다 소폭 완화 - 트리거를 빨리 잡는 목적과 상충 방지
+# [2026-10-28] 0.5 -> 0.8 (사용자 요청, 대책 b): 반등 초입의 첫 크로스 1분봉은 후행 BB중심선(SMA20) 대비 갭이 자연히
+# 크다(091580 상신이디피 09:19 크로스봉 26,750->27,100, 갭 0.60~0.75%로 반려 -> 09:21엔 1.14%로 벌어져 영영 놓침).
+# 경과봉 완화(0.15%/봉)와 신선한 크로스 상한 CEILING_PCT(1.1%)는 그대로라 0.80 -> 0.95 -> 1.10%로 단조 증가.
+# 단일 사례 근거의 탐색값 - g003 표본 검증 전(롤백: 0.5).
+HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT = 0.8        # 3분봉(0.35%)보다 완화 - 트리거를 빨리 잡는 목적과 상충 방지
 
 # [2026-09-07] 크로스가 유효하게 지속(BB_MID 위 연속 유지) 중인데도 BB_MID가 후행지표라
 # 갭이 계속 벌어져 고정 상한(HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT)에 매 폴링 걸리는 문제
@@ -1089,6 +1116,13 @@ HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS = 240.0
 # [2026-10-07] Codex 1차: 3분봉 컨텍스트 continuation 경로는 1분봉 종가가 BB중심선 아래여도 통과할 수 있었다 -
 # continuation(3분/1분) 경로도 1분봉 종가 > 1분봉 BB중심선을 요구한다.
 HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID = True
+# [2026-10-28] 사용자 요청(091580 상신이디피 09:35 매수 - 1분/60틱/120틱 모두 하락 중 매수 후 -1.02% 손절) + Codex 검토.
+# 1분 트리거는 직전 "확정" 1분봉만 보므로 형성 중인 봉이 꺾여도 그 1분 내내 트리거가 유효했다(09:34:57 판정 시 확정봉
+# 09:33~09:34 종가 27,850 -> 실시간 27,650, -0.72%; 그 봉은 27,650 음봉으로 마감). 실시간가가 직전 확정 1분봉 종가보다
+# 이 %를 넘게 낮거나 1분봉 BB중심선 이하이면 트리거를 반려한다(모든 경로: 크로스/3분·1분 continuation).
+# 0.4% = HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT(-0.4%, 확정 1분봉 음봉 허용폭)와 같은 스케일(2만~5만원대 50원 틱 기준 약 2틱).
+# <=0이면 비활성(기존과 동일).
+HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT = 0.4
 # [2026-10-07] Codex 1/2차: 진입 판단 시 1분봉 캐시가 직전 확정분을 아직 못 받았으면(20초 주기 갱신) 이전 봉으로 매수할
 # 수 있었다(032820 09:12 추정). 마지막 1분봉 라벨이 기대 라벨(floor(now-CANDLE_CONFIRM_DELAY_SECONDS))과 다르면 진입 보류.
 # KIS는 무거래 분도 거래량 0 행을 주는 것을 실측 확인(저유동 4종목, 2026-10-07)해 1봉 허용 없이 엄격 비교한다.
@@ -1215,6 +1249,24 @@ OPENING_MIN_EARLY_VOLUME_RATIO = 1.5    # 개장초반 거래량 폭발 판정 �
 # 수 있어, 정확히 마감된 시각까지만 포함하면 아직 데이터가 덜 채워진 봉을 '확정봉'
 # 으로 오인할 수 있다. 봉 확정 판정 시각을 이 값만큼 뒤로 미뤄 안전 마진을 둔다.
 CANDLE_CONFIRM_DELAY_SECONDS = 2
+# [2026-10-28] KIS REST 호출 타임아웃(r003이 kis_auth의 requests에 기본값으로 주입). kis_auth는 timeout 없이 호출해
+# 서버 연결이 안 되면 OS TCP SYN 재시도(tcp_syn_retries=6, 약 127초)만큼 메인 루프 전체가 멈췄다(20261028 09:19:12~
+# 09:21:24 225190 1분봉 조회 132초 정지 -> 그 사이 091580 반등 초입 등 전 종목 미평가). 연결 타임아웃은 GET/POST 모두,
+# 읽기 타임아웃은 GET(조회)과 토큰 발급 POST(/oauth2/)에만 적용 - 주문 POST는 서버 도달 후 응답 대기 중 끊으면 체결
+# 여부가 불명확해지므로 제외.
+# <=0이면 해당 타임아웃 미적용(기존과 동일).
+KIS_HTTP_CONNECT_TIMEOUT_SECONDS = 3.0
+KIS_HTTP_READ_TIMEOUT_SECONDS = 10.0
+# [2026-10-28] 전일 봉 이어서 지표 계산(r002 calculate_indicators_with_warmup) - 장 초반 3분봉이 6~11개뿐이라 RSI/ADX/DI/
+# BB/스토캐스틱이 무의미한 값(091580 09:19 3분 RSI 8.1, ADX 74.9, +DI 1.8)으로 컨텍스트 게이트와 실시간 3분봉 필터
+# (INTRABAR_RSI)를 좌우하던 문제. 전일 마지막 PRIOR_DAY_WARMUP_MINUTES분(1분봉, 3분봉은 이를 3분으로 집계)을 앞에 붙여
+# 계산하고 당일 행만 쓴다(VWAP/OBV는 당일만). 전일 데이터는 g001이 모은 runtime/data/<전일>/<코드>_*_10s.txt의 원본 분봉
+# (r012 causal_minute_frames 복원). 파일이 없거나, 오늘 기준가(KIS stck_sdpr)와 전일 종가가 어긋나면(액면분할/권리락 등
+# 가격 기준 변경) warmup 없이 기존과 동일. 매수/매도 공용 프레임에 적용된다.
+ENABLE_PRIOR_DAY_INDICATOR_WARMUP = True
+PRIOR_DAY_WARMUP_MINUTES = 180
+PRIOR_DAY_WARMUP_MAX_LOOKBACK_DAYS = 7      # 전일 데이터 폴더를 찾을 최대 달력일(주말/휴장 건너뜀)
+PRIOR_DAY_WARMUP_MAX_BASE_DIFF_PCT = 0.3    # 전일 마지막 종가 vs 오늘 기준가 허용 차이(%) - 정상이면 0
 
 
 # ---------------------------------------------------------------------------
@@ -1275,7 +1327,7 @@ REGULAR_NEW_ENTRY_CUTOFF = dt_time(15, 20)
 # 유지(브로커 호출 추가 없음) - 현재 전략의 손익 개선 수단으로 보지 말 것.
 # [2026-10-15] 종료 13:00 -> 14:00 연장(Update log 2026-10-15) - 1분봉 패널에서 13:00~14:00 진입이 두 기간 모두 최악
 # (순 -0.40%/-0.42%). 14:00 이후는 패널에서 기준보다 나쁘지 않아 차단하지 않는다. 롤백: dt_time(13, 0).
-ENABLE_MIDDAY_NO_ENTRY = True
+ENABLE_MIDDAY_NO_ENTRY = False #True
 MIDDAY_NO_ENTRY_START = dt_time(11, 30)
 MIDDAY_NO_ENTRY_END = dt_time(14, 0)      # 이 시각부터 다시 허용 (START <= t < END 차단)
 # [2026-10-04] 정규장 신규 진입 허용 시간창(START <= t < END 에서만 신규 매수, 보유 종목 매도는 무관).
@@ -1475,6 +1527,134 @@ SIM_RELAXED_REQUIRE_CONFIRMED_ABOVE = False
 SIM_RELAXED_REQUIRE_MA5_BIAS = False
 SIM_RELAXED_ALLOW_BELOW_BB = True
 SIM_RELAXED_ALLOW_FALLING_TREND = True
+
+
+# =============================================================================
+# [2026-10-23] STRATEGY V2 (trend pullback / breakout-retest) - r008/r009/g011/g012
+#   신규 전략은 기본값 전부 OFF. 실거래 기존 동작(r005/r006 기존 전략 경로)은 이 섹션 값과 무관하다.
+#   적용 순서: g012 백테스트(비용 반영, walk-forward) -> V2_LIVE_MODE="shadow"(가상 체결 기록) ->
+#   KIS 모의투자(--env-dv demo) -> 소액 실거래. 단계를 건너뛰지 말 것.
+# =============================================================================
+# --- V2 feature flags ---------------------------------------------------------
+# "off": r003 does nothing for V2. "shadow": r003 evaluates V2 on live data and logs virtual
+# entries/exits only (no orders). There is intentionally no "live" value yet.
+V2_LIVE_MODE = "off"
+V2_ENABLE_PULLBACK_SETUP = True      # setup 1: pullback to 5m EMA20/VWAP in an intraday uptrend
+V2_ENABLE_BREAKOUT_RETEST_SETUP = True  # setup 2: breakout of opening/swing high, then retest re-entry
+V2_TICK_FILTER_MODE = "off"          # "off" | "tick120" | "tick60" (strategy B / C)
+
+# --- Daily trend filter (evaluated on D-1 completed daily bars only) ---------
+V2_DAILY_MA_FAST = 20
+V2_DAILY_MA_SLOW = 60
+V2_DAILY_MA_FAST_SLOPE_DAYS = 5
+V2_DAILY_MA_FAST_SLOPE_MIN_PCT = 0.0      # MA20 must not be falling over 5 days
+V2_DAILY_MA_SLOW_SLOPE_DAYS = 20
+V2_DAILY_MA_SLOW_SLOPE_MIN_PCT = -1.0     # MA60 flat-or-rising (tolerate -1% over 20 days)
+V2_DAILY_MAX_EXT_ABOVE_MA_FAST_PCT = 15.0  # skip names already >15% above MA20 (late-stage chase)
+V2_DAILY_MIN_PRICE = 1000
+V2_DAILY_MIN_AVG_AMOUNT_KRW = 3_000_000_000  # 20d avg traded value floor (3bn KRW)
+V2_DAILY_ATR_PCT_MIN = 1.5                 # daily ATR14 % band: too quiet -> no day-trade edge
+V2_DAILY_ATR_PCT_MAX = 12.0                # too wild -> stops get gapped
+V2_UNIVERSE_MAX_SYMBOLS = 40               # top-N after ranking (also KIS websocket cap is 40)
+# Liquidity tiers (20d avg traded value) used for reporting and slippage model.
+V2_LIQ_TIER_LARGE_KRW = 50_000_000_000
+V2_LIQ_TIER_MID_KRW = 10_000_000_000
+
+# --- 5-minute context ----------------------------------------------------------
+V2_5M_EMA_PERIOD = 20
+V2_5M_EMA_RISING_BARS = 3                  # EMA20[t] > EMA20[t-3]
+V2_5M_MIN_BARS = 6                         # need 30 minutes of 5m history before any entry
+V2_5M_ATR_PERIOD = 14
+
+# --- Setup 1: pullback -------------------------------------------------------------
+V2_PB_IMPULSE_MIN_ATR = 1.0                # swing high must be >= 1.0 x ATR5m above VWAP before a pullback counts
+V2_PB_ZONE_BAND_PCT = 0.25                 # touch zone: low <= max(EMA20, VWAP) x (1 + band)
+V2_PB_MAX_CLOSE_BELOW_SUPPORT_PCT = 0.30   # 5m close may undercut support by at most this % (else invalidated)
+V2_PB_MIN_DEPTH_ATR = 0.5                  # pullback depth from swing high, in ATR5m units
+V2_PB_MAX_DEPTH_ATR = 3.0
+V2_PB_ARM_EXPIRY_MIN = 30                  # armed setup expires if no trigger within N minutes
+
+# --- Setup 2: breakout -> retest re-entry -------------------------------------------
+V2_BO_OPENING_RANGE_MIN = 30               # reference level = high of 09:00~09:30 (opening range)
+V2_BO_BREAK_VOL_RATIO = 1.5                # 5m breakout bar volume / 5m vol MA20
+V2_BO_BREAK_CLOSE_ABOVE_PCT = 0.10         # 5m close must clear the level by this %
+V2_BO_RETEST_BAND_PCT = 0.40               # retest: low comes back within +band of the level
+V2_BO_RETEST_MAX_UNDERCUT_PCT = 0.50       # retest low may undercut the level by at most this %
+V2_BO_ARM_EXPIRY_MIN = 45
+
+# --- 1-minute trigger ---------------------------------------------------------------
+V2_1M_VOL_MA_PERIOD = 20
+V2_1M_TRIGGER_VOL_RATIO = 1.3              # trigger bar volume >= 1.3 x 1m vol MA20
+V2_1M_TRIGGER_BREAK_PREV_HIGH = True       # trigger bar close > previous 1m high (rebound confirmation)
+V2_1M_TRIGGER_MAX_BAR_GAIN_PCT = 1.5       # do not buy a single 1m candle that already ran >1.5%
+V2_1M_TRIGGER_MAX_ABOVE_SUPPORT_PCT = 1.5  # entry must stay within 1.5% of the support level (no chase)
+
+# --- Tick momentum filter (strategy B/C) -----------------------------------------------
+V2_TICK_LOOKBACK_BARS = 5                  # last N tick bars
+V2_TICK_MIN_UP_BARS = 3                    # >= N of them closed above their open
+V2_TICK_MIN_BUY_VOLUME_RATIO = 0.55        # buyer-initiated volume share over lookback (CCLD_DVSN=1)
+V2_TICK_MAX_GAP_RATIO = 0.05               # if >5% of ticks in the lookback were missing -> filter abstains (pass-through=False)
+V2_TICK_STALE_SECONDS = 120                # last tick bar older than this -> abstain
+
+# --- Exits (independent per-position state) ---------------------------------------------
+V2_STOP_BUFFER_TICKS = 1                   # stop = structure low - N ticks
+V2_STOP_MIN_PCT = 1.0                      # widen tighter stops to this: round-trip friction (~0.25% cost + 2 ticks)
+                                           # must stay well below 1R, otherwise every stop costs ~1.3R
+V2_STOP_MAX_PCT = 3.0                      # reject setups whose stop is wider than this (bad R)
+V2_BREAKEVEN_AT_R = 1.0                    # move stop to entry+costs after +1R
+V2_TP1_AT_R = 1.5                          # scale out part of the position at +1.5R
+V2_TP1_FRACTION = 0.5
+V2_TRAIL_START_R = 1.0
+V2_TRAIL_ATR_MULT = 1.2                    # chandelier: highest close - 1.2 x ATR5m
+V2_TREND_EXIT_ON_5M_CLOSE = True           # completed 5m close below EMA20 AND VWAP -> exit
+V2_TIME_STOP_MIN = 45                      # no +0.5R progress within 45 min -> exit
+V2_TIME_STOP_MIN_R = 0.5
+V2_MARKET_BREADTH_MIN_PCT = 50.0           # >= this % of the V2 universe must trade above session VWAP (0 = off)
+V2_ENTRY_START = dt_time(9, 5)             # skip the opening auction noise
+V2_ENTRY_END = dt_time(14, 30)             # no fresh day-trade entries late in the session
+V2_FLATTEN_AT = dt_time(15, 15)            # flat before the 15:20 closing call auction
+
+# --- Portfolio risk ------------------------------------------------------------------
+V2_ACCOUNT_EQUITY_KRW = 10_000_000         # fallback equity when the API value is unavailable
+V2_RISK_PER_TRADE_PCT = 0.5                # max loss per trade = 0.5% of equity (stop distance sizing)
+V2_MAX_POSITION_PCT = 20.0                 # notional cap per position
+V2_MAX_OPEN_POSITIONS = 4
+V2_MAX_TRADES_PER_SYMBOL = 2
+V2_DAILY_LOSS_LIMIT_PCT = 1.5              # realized+open loss <= -1.5% equity -> no new entries today
+V2_MAX_SPREAD_TICKS = 2                    # live: (ask-bid) in ticks; skip if wider
+V2_MAX_TICK_PCT = 0.30                     # one tick > 0.30% of price -> spread cost too high for intraday R
+
+# --- Costs (backtest + shadow P&L) -------------------------------------------------------
+# Check against the broker fee schedule / current tax law before trusting results.
+V2_COMMISSION_PCT = 0.015                  # per side, incl. exchange fees (KIS non-face-to-face ~0.0140527%)
+V2_SELL_TAX_PCT = 0.20                     # securities transaction tax (+rural tax) on sells, 2026 rate
+V2_SLIPPAGE_TICKS_ENTRY = 1                # market/aggressive entry
+V2_SLIPPAGE_TICKS_EXIT = 1
+V2_SLIPPAGE_EXTRA_BPS_SMALL = 5            # extra bps for the low-liquidity tier (thin books)
+
+# --- Existing-strategy portfolio guards - all OFF by default ------------------------
+# r005 gates _025~_027. Enabling them changes live behavior: validate in shadow/demo first.
+ENABLE_DAILY_LOSS_LIMIT_GATE = False
+DAILY_LOSS_LIMIT_KRW = 150_000             # realized loss today <= -this -> block new buys (existing strategy path)
+ENABLE_MAX_OPEN_POSITIONS_GATE = False
+MAX_OPEN_POSITIONS = 6
+ENABLE_SPREAD_GATE = False
+MAX_ENTRY_SPREAD_TICKS = 2
+
+
+# =============================================================================
+# [2026-10-26] EDGE AI (LightGBM meta-label filter on the primary buy path) - r011/g013/g014
+#   기본 매수 신호가 매수 직전(_020 뒤)일 때 P(승) = 비용 차감 후 순수익 > 0 확률을 예측한다. 매수를 새로 만들지 않고
+#   걸러내기만 한다. 학습: g013(데이터) -> g014(walk-forward 검증/승격/배포) -> runtime/edge_ai/current_*.
+#   "off"    : 계산 안 함
+#   "shadow" : 예측/기록만(runtime/edge_ai/live/edge_ai_YYYYMMDD.jsonl), 매수 차단 없음 (기본)
+#   "auto"   : g014가 승격(promoted=True)한 모델일 때만 P < 임계값 매수 차단, 아니면 shadow와 동일
+#   "gate"   : 승격 여부와 무관하게 차단 (수동 강제 - 권장하지 않음)
+#   모델/라이브러리 없음, 예외 -> 항상 통과(fail-open).
+# =============================================================================
+EDGE_AI_MODE = "shadow"
+EDGE_AI_DIR = RUNTIME_ROOT / "edge_ai"
+EDGE_AI_MIN_PROB_OVERRIDE = 0.0  # >0이면 모델 메타의 임계값 대신 이 값 사용
 
 
 def _apply_risk_profile_overrides() -> None:

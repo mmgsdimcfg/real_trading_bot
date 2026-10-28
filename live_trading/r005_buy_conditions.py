@@ -35,6 +35,7 @@ Order (stage)                                     Old r003 inline block
   PRE_ORDER _018 excessive rise from prev close   MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
             _019 anti-chase day extension         (2026-10-04 신규) 당일 시가/VWAP 대비 과열 차단
             _020 opening gap / volume gate        passes_opening_gap_volume_gate
+            _028 edge AI meta-label filter        (2026-10-26 신규) r011 LightGBM P(승) - 기본 shadow(기록만)
             _021 consecutive poll confirm         BUY_CONSECUTIVE_CONFIRM_COUNT
             _022 affordable buy qty               api.get_affordable_buy_qty
             _023 fresh live price                 _is_stale_live_price_source
@@ -48,6 +49,32 @@ Behavior notes kept from the old inline code (do not "fix" them here - they are 
   order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-10-28] type=fix owner=claude
+    summary: _008이 트리거 통과·유효시간 판정 뒤 r002 check_1min_trigger_live_guard(frame_1min, ctx.price)를 호출 -
+      형성 중인 1분봉이 직전 확정 종가 대비 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT(0.4%) 초과 하락이거나 1분 BB중심선
+      이하이면 반려(091580 상신이디피 20261028 09:35 하락 중 매수 사례, r001/r002 Update log 참조). 반려 시 기존 트리거
+      반려와 같이 확인 상태 초기화. 트리거 유효시간 타이머는 이 반려로 리셋되지 않음.
+    impact: live (r003)
+    compatibility: breaking (매수 감소 방향. 롤백: r001 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT=0)
+- [2026-10-27] type=fix owner=claude
+    summary: _008이 통과시킨 트리거 info를 ctx.trigger_info로 보관, _028이 r011에 전달(Edge AI trig_path 피처를
+      실제 트리거 기준으로 계산 - Codex 1차 리뷰 ② 반영). 매수 판정 무변경.
+    impact: live (shadow 기록 내용만)
+    compatibility: backward-compatible
+- [2026-10-26] type=feat owner=claude
+    summary: 신규 _028_edge_ai_meta_filter(r011 LightGBM 메타 라벨링) - _020 뒤 / _027·_021 앞에서 평가(차단 시 확인·예약
+      부작용 없음). r001 EDGE_AI_MODE: off/shadow(기본, 기록만)/auto(승격 모델만 차단)/gate. 모델·라이브러리 없음/예외는
+      fail-open. 전일 종가는 _018 값, 당일 시가/VWAP은 _019 값이 없으면 fetch_day_ref_prices로 조회(정규장만, 15초 캐시).
+      basic 모드와 시간차단 섀도 평가(SHADOW_ENTRY_CONDITIONS)에는 포함하지 않음.
+    impact: live (r003) - 기본 shadow는 runtime/edge_ai/live/*.jsonl 기록만, 매수 판정 무변경
+    compatibility: backward-compatible
+- [2026-10-23] type=feat owner=claude
+    summary: 포트폴리오 가드 3종 추가(기본 OFF) - _025 일일 손실 한도(live_state realized_pnl_krw), _026 봇 동시
+      보유 종목 수 상한(traded_today 중 노출 남은 종목만, 장기 보유분 제외), _027 매도1-매수1 호가 스프레드(틱 수).
+      번호 1~24는 유지하고 평가 순서는 튜플 위치로 정함(_025/_026은 _007 뒤, _027은 _021 연속확인 앞 -
+      차단 시 확인/예약 부작용이 남지 않음). basic 모드에도 _025/_026 포함.
+    impact: live (r001 ENABLE_DAILY_LOSS_LIMIT_GATE / ENABLE_MAX_OPEN_POSITIONS_GATE / ENABLE_SPREAD_GATE=True일 때만)
+    compatibility: backward-compatible
 - [2026-10-05] type=feat owner=claude
     summary: 사용자 요청(Codex 2차 검토 권고 "게이트 판정 기록") - _019가 판정(통과/차단)마다 BuyServices.record_gate_decision
       (선택 필드, 기본 None)으로 시가/VWAP/이격률/차단 여부를 기록. 신규 evaluate_entry_time_shadow(): _001에서
@@ -108,7 +135,18 @@ from r001_define_config import (
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
     MAX_BUY_RISE_SHADOW_PCT,
     STARTUP_WARMUP_SECONDS,
+    ENABLE_DAILY_LOSS_LIMIT_GATE,
+    DAILY_LOSS_LIMIT_KRW,
+    ENABLE_MAX_OPEN_POSITIONS_GATE,
+    MAX_OPEN_POSITIONS,
+    ENABLE_SPREAD_GATE,
+    MAX_ENTRY_SPREAD_TICKS,
+    EDGE_AI_DIR,
+    EDGE_AI_MIN_PROB_OVERRIDE,
+    EDGE_AI_MODE,
+    RUNTIME_DATA_DIR,
 )
+from r008_strategy_v2 import krx_tick_size
 from r002_strategy_core_shared import (
     HYBRID_3MIN_CONTEXT_GATES,
     _compute_bb_slope_pct,
@@ -118,6 +156,7 @@ from r002_strategy_core_shared import (
     anti_chase_day_metrics,
     build_context_eval,
     check_buy_condition_1min_hybrid_trigger,
+    check_1min_trigger_live_guard,
     evaluate_context_score,
     gate_steps_diagnostic,
     passes_opening_gap_volume_gate,
@@ -175,6 +214,8 @@ class BuyServices:
     format_reject_detail: Callable[..., str]
     # [2026-10-05] 게이트 판정 기록(r001 ENABLE_GATE_DECISION_LOG). None이면 기록하지 않는다.
     record_gate_decision: Callable[[dict], None] | None = None
+    # [2026-10-23] best bid/ask for the spread gate (_027). None -> gate passes (flag is OFF by default anyway).
+    fetch_bid_ask: Callable[[str, str], tuple[float | None, float | None]] | None = None
 
 
 @dataclass
@@ -190,7 +231,7 @@ class BuyContext:
     bar_time: Any
     buy_frame: pd.DataFrame
     cross_info: dict[str, object]
-    config: Any  # r002.R76StrategyConfig
+    config: Any  # r002.StrategyConfig
     api: Any  # TradingAPI (duck-typed: _in_cooldown / has_buy_exposure / get_affordable_buy_qty / live_state)
     state: BuyState
     risk: RiskState
@@ -212,6 +253,8 @@ class BuyContext:
     buy_detail: str = ""
     # [2026-10-15] 게이트 섀도 기록 구분용 - 실제 판정이면 "live", evaluate_entry_time_shadow의 시간차단 관찰이면 그 kind
     eval_mode: str = "live"
+    # [2026-10-27] _008이 통과시킨 1분 트리거의 info(path/bars_since_cross) - _028 Edge AI 피처가 재계산 대신 사용
+    trigger_info: dict | None = None
 
     @property
     def norm_code(self) -> str:
@@ -342,6 +385,46 @@ def _007_stoploss_circuit_breaker(ctx: BuyContext) -> bool:
     return True
 
 
+# [2026-10-23] Portfolio guards (r001 ENABLE_*_GATE, all OFF by default). Evaluated right after _007 / before _021
+# so a block never leaves confirm/reservation side effects behind. Numbers 25-27 keep the existing 1-24 stable.
+def _025_daily_loss_limit(ctx: BuyContext) -> bool:
+    if not ENABLE_DAILY_LOSS_LIMIT_GATE:
+        return True
+    realized = float((ctx.api.live_state or {}).get("realized_pnl_krw", 0.0) or 0.0)
+    if realized <= -abs(float(DAILY_LOSS_LIMIT_KRW)):
+        ctx.log(f"  [BUY SKIP    ] {ctx.symbol_label} | DAILY_LOSS_LIMIT realized={realized:,.0f} limit=-{abs(DAILY_LOSS_LIMIT_KRW):,.0f}")
+        return False
+    return True
+
+
+def _026_max_open_positions(ctx: BuyContext) -> bool:
+    if not ENABLE_MAX_OPEN_POSITIONS_GATE:
+        return True
+    # Bot exposure only: codes bought today (traded_today is cleared on a full exit) that are still held/pending.
+    # Long-term holdings in the same account are not counted.
+    open_n = sum(1 for c in ctx.state.traded_today if c != ctx.norm_code and ctx.api.has_buy_exposure(c))
+    if open_n >= int(MAX_OPEN_POSITIONS):
+        ctx.log(f"  [BUY SKIP    ] {ctx.symbol_label} | MAX_OPEN_POSITIONS open={open_n} max={MAX_OPEN_POSITIONS}")
+        return False
+    return True
+
+
+def _027_entry_spread(ctx: BuyContext) -> bool:
+    if not ENABLE_SPREAD_GATE or ctx.services.fetch_bid_ask is None:
+        return True
+    spec = ctx.services.get_order_spec(ctx.current_dt, ctx.nxt_tradeable)
+    mkt = "NX" if (spec and spec.get("exchange") == "NXT") else "J"
+    bid, ask = ctx.services.fetch_bid_ask(ctx.norm_code, mkt)
+    if not (bid and ask and bid > 0 and ask >= bid):
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | SPREAD_NO_QUOTE bid={bid} ask={ask}")
+        return False
+    ticks = (ask - bid) / krx_tick_size(bid)
+    if ticks > MAX_ENTRY_SPREAD_TICKS + 1e-9:
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | SPREAD_TOO_WIDE {ticks:.0f}ticks bid={bid:,.0f} ask={ask:,.0f} max={MAX_ENTRY_SPREAD_TICKS}")
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # TRIGGER stage
 # ---------------------------------------------------------------------------
@@ -447,6 +530,12 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
             f"HYBRID_1MIN_TRIGGER_EXPIRED_{trigger_age_seconds:.0f}s_GT_{HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS:.0f}s",
         )
         return False
+    # [2026-10-28] 형성 중인 1분봉 실시간 하락/BB중심선 이탈 반려(091580 사례) - 유효시간 타이머 갱신 뒤에 둬서
+    # 이 반려가 확정봉 트리거의 수명을 리셋하지 않게 한다(Codex 검토).
+    live_ok, live_reason = check_1min_trigger_live_guard(frame_1min, ctx.price)
+    if not live_ok:
+        _reject_hybrid(ctx, f"HYBRID_1MIN_TRIGGER_{live_reason}")
+        return False
     path = trigger_info.get("path")
     if HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS > 0 and path == "cross":
         # [2026-10-07] 크로스 봉 확정 시각(종료 라벨)부터 잰 나이 - 연속통과 타이머와 달리 추격가드 반려로 리셋되지 않는다.
@@ -483,6 +572,7 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
             last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
         )
     ctx.trigger_reason = trigger_reason
+    ctx.trigger_info = trigger_info
     return True
 
 
@@ -633,6 +723,37 @@ def _020_opening_gap_volume_gate(ctx: BuyContext) -> bool:
         ctx.log(f"  [REJECT      ] {ctx.symbol_label} | {gap_reason} | gap={gap_txt} live={ctx.price:,.0f}")
         return False
     return True
+
+
+def _edge_ai_gate(config):
+    from r011_edge_ai import EdgeAIGate, get_gate  # lazy: EDGE_AI_MODE="off" imports nothing
+    return get_gate(lambda: EdgeAIGate(EDGE_AI_MODE, EDGE_AI_DIR, RUNTIME_DATA_DIR, EDGE_AI_DIR / "live", config,
+                                       EDGE_AI_MIN_PROB_OVERRIDE))
+
+
+def _028_edge_ai_meta_filter(ctx: BuyContext) -> bool:
+    """[2026-10-26] 기본 매수 신호에 대한 LightGBM 메타 라벨 필터(r011). 정규장만 평가하고, 예외/모델 없음은 통과(fail-open)."""
+    if str(EDGE_AI_MODE).lower() == "off" or ctx.services.classify_buy_session(ctx.current_dt) != "regular":
+        return True
+    try:
+        if ctx.day_open is None or ctx.day_vwap is None:
+            ctx.day_open, ctx.day_vwap = ctx.services.fetch_day_ref_prices(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+        frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+        decision = _edge_ai_gate(ctx.config).evaluate(
+            ctx.code, ctx.current_dt, float(ctx.price), frame_1min, ctx.prev_close, ctx.day_open, ctx.day_vwap,
+            trigger_info=ctx.trigger_info,
+        )
+    except Exception as exc:
+        ctx.log(f"  [EDGE AI     ] {ctx.symbol_label} | error(fail-open): {exc}")
+        return True
+    if decision.prob is not None:
+        thr = f"{decision.threshold:.3f}" if decision.threshold is not None else "-"
+        ctx.log(f"  [EDGE AI     ] {ctx.symbol_label} | p={decision.prob:.3f} thr={thr} {decision.reason} mode={EDGE_AI_MODE}")
+    if decision.allow:
+        return True
+    ctx.state.buy_confirm_state.pop(ctx.code, None)
+    ctx.log(f"  [REJECT      ] {ctx.symbol_label} | EDGE_AI_LOW_PROB_p={decision.prob:.3f}_LT_{decision.threshold:.3f}")
+    return False
 
 
 def _021_consecutive_poll_confirm(ctx: BuyContext) -> bool:
@@ -786,6 +907,21 @@ def _b08_basic_1min_golden_cross(ctx: BuyContext) -> bool:
 
 _GATES_BY_NAME = {gate.name: gate for gate in HYBRID_3MIN_CONTEXT_GATES}
 
+# [2026-10-23] Portfolio guards - tuple position (not number) decides evaluation order.
+_COND_025 = BuyCondition(25, "_025_daily_loss_limit", "STATE", "일일 손실 한도",
+                         "당일 실현손익(live_state realized_pnl_krw, 비용 차감 추정) <= -DAILY_LOSS_LIMIT_KRW면 신규 매수 중단",
+                         ("ENABLE_DAILY_LOSS_LIMIT_GATE", "DAILY_LOSS_LIMIT_KRW"), _025_daily_loss_limit)
+_COND_026 = BuyCondition(26, "_026_max_open_positions", "STATE", "동시 보유 종목 수 상한",
+                         "봇이 당일 매수해 보유/미체결 중인 종목 수 >= MAX_OPEN_POSITIONS면 신규 매수 중단",
+                         ("ENABLE_MAX_OPEN_POSITIONS_GATE", "MAX_OPEN_POSITIONS"), _026_max_open_positions)
+_COND_028 = BuyCondition(28, "_028_edge_ai_meta_filter", "PRE_ORDER", "Edge AI 메타 라벨 필터",
+                         "r011 LightGBM이 예측한 P(비용 차감 순수익>0) < 임계값이면 차단(EDGE_AI_MODE auto=승격 모델만/gate). "
+                         "shadow는 기록만. 모델 없음/오류는 통과",
+                         ("EDGE_AI_MODE", "EDGE_AI_DIR", "EDGE_AI_MIN_PROB_OVERRIDE"), _028_edge_ai_meta_filter)
+_COND_027 = BuyCondition(27, "_027_entry_spread", "PRE_ORDER", "호가 스프레드",
+                         "(매도1호가-매수1호가)/호가단위 > MAX_ENTRY_SPREAD_TICKS면 차단, 호가 없음도 차단 (API: 호가 조회)",
+                         ("ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"), _027_entry_spread)
+
 BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     BuyCondition(1, "_001_entry_time_window", "STATE", "신규 진입 허용 시간대",
                  "정규장/NXT 세션별 신규 진입 마감 시각 이전인가 (마감 후에는 청산만)", (), _001_entry_time_window),
@@ -802,15 +938,19 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     BuyCondition(7, "_007_stoploss_circuit_breaker", "STATE", "손절 누적 서킷브레이커",
                  "손절이 HARD_STOP_CIRCUIT_BREAKER_COUNT회 누적되면 COOLDOWN_MIN분간 신규 매수 중단",
                  ("HARD_STOP_CIRCUIT_BREAKER_COUNT", "HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN"), _007_stoploss_circuit_breaker),
+    _COND_025,
+    _COND_026,
     BuyCondition(8, "_008_hybrid_1min_trigger", "TRIGGER", "1분봉 트리거",
                  "1분봉 BB중심선 골든크로스(룩백)/우상향 지속 + 1분 캔들·BB갭 추격 가드 (r002 check_buy_condition_1min_hybrid_trigger) "
                  "+ 트리거 유효 지속시간이 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려 + 크로스 경로는 크로스 봉 확정 후 "
-                 "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS 초과 시 반려 + 1분봉 캐시가 직전 확정분이 아니면 반려",
+                 "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS 초과 시 반려 + 1분봉 캐시가 직전 확정분이 아니면 반려 "
+                 "+ 실시간가가 확정 1분봉 종가 대비 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT 초과 하락/1분 BB중심선 이하이면 반려",
                  ("HYBRID_1MIN_TRIGGER_LOOKBACK_BARS", "HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT", "HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT",
                   "HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT", "HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR",
                   "HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT", "HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT",
                   "HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS", "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS",
-                  "HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _008_hybrid_1min_trigger),
+                  "HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID", "ENTRY_1MIN_FRAME_REQUIRE_LATEST",
+                  "HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT"), _008_hybrid_1min_trigger),
     BuyCondition(9, "_009_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _009_context_frame_ready),
     BuyCondition(10, "_010_bb_slope_rising", "CONTEXT", "BB 중심선 상승 기울기",
@@ -844,6 +984,8 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  "개장 후 5분 이내: 갭 범위 + 거래량 폭발 확인, 큰 갭하락은 당일 영구 차단",
                  ("ENABLE_OPENING_GAP_VOLUME_GATE", "OPENING_GAP_GATE_WINDOW_MINUTES", "OPENING_GAP_MIN_PCT", "OPENING_GAP_MAX_PCT",
                   "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _020_opening_gap_volume_gate),
+    _COND_028,
+    _COND_027,
     BuyCondition(21, "_021_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
                  "모든 조건이 연속 BUY_CONSECUTIVE_CONFIRM_COUNT회 통과해야 매수 - 직전 통과와 간격 BUY_CONFIRM_MAX_GAP_SECONDS 이내, "
                  "같은 3분봉(BUY_CONFIRM_REQUIRE_SAME_BAR), 실시간가 이탈 BUY_CONFIRM_MAX_PRICE_DRIFT_PCT 이내여야 연속으로 인정",
@@ -902,6 +1044,7 @@ def check_buy_conditions(ctx: BuyContext, conditions: tuple[BuyCondition, ...] |
 # [2026-10-05] 진입 시간 관찰(shadow)에 쓰는 조건 - 주문 직전 단계(_019 이후: 과열 차단/개장 갭/연속 확인/
 # 수량/현재가 신선도/호가+예약)는 제외. _019 과열 여부는 지표로만 함께 기록한다.
 SHADOW_ENTRY_CONDITIONS: tuple[BuyCondition, ...] = tuple(c for c in BUY_CONDITIONS if 2 <= c.no <= 18)
+# (_025~_027 have numbers > 24 and are therefore excluded from the shadow set, like the other pre-order stages.)
 
 
 def evaluate_entry_time_shadow(ctx: BuyContext, kind: str) -> bool:
@@ -947,6 +1090,7 @@ def describe_buy_conditions() -> list[dict[str, object]]:
 _NORMAL_BY_NO = {c.no: c for c in BUY_CONDITIONS}
 BASIC_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
     [_NORMAL_BY_NO[n] for n in range(1, 8)]
+    + [_COND_025, _COND_026]
     + [BuyCondition(8, "_b08_basic_1min_golden_cross", "TRIGGER", "[basic] 1분봉 BB중심선 골든크로스",
                     "최신 확정 1분봉이 BB중심선을 아래->위로 돌파 + 현재가 중심선 위 (1분봉 캐시 최신 필수)",
                     ("TRADING_STRATEGY_MODE", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _b08_basic_1min_golden_cross)]
