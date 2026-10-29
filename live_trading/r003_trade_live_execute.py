@@ -20,6 +20,15 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-29] type=fix owner=claude
+    summary: 사용자 요청(UNKNOWN_ORDER_ERROR 원인 분석) - 20261029 11:54~12:00 105740(20+20주)/003160(6+5주)이 주문가능
+      현금(약 19만원)을 넘는 예산 수량(MAX_ORDER_AMOUNT_KRW 50만원)으로 주문해 연속 거부. get_affordable_buy_qty가
+      inquire_psbl_order 빈 응답/예외 시 예산 수량을 반환(fail-open)하던 것을 1회 재시도 후 0(fail-closed, WARN 로그)으로,
+      max(nrcvb_buy_qty, max_buy_qty(미수 포함), ...)를 현금 기준 nrcvb_buy_qty(없으면 ord_psbl_qty/금액)로 변경.
+      KIS 예제 함수가 print만 하던 거부 사유(msg_cd/msg1)를 stdout 캡처(_call_kis_capturing)로 매수가능조회 WARN과
+      [BUY FAIL] 로그에 남김(실패 dict에는 rt_cd!=0 보장).
+    impact: live - 조회 실패 시 매수 안 함(재주문 경로는 기존 '여력 부족 - 포기'로 처리)
+    compatibility: breaking (주문 수량 감소/실패 시 미주문 방향)
 - [2026-10-28] type=feat owner=claude
     summary: 사용자 요청(대책 a) - 전일 봉 warmup: _load_prior_day_warmup()이 runtime/data/<이전 거래일>/<코드>_*_10s.txt의
       원본 분봉(r012 load_prior_day_warmup - g003에서 옮긴 import 부작용 없는 복원 함수, 오늘 기준가 stck_sdpr와 전일
@@ -706,6 +715,8 @@ from __future__ import annotations
 import argparse
 import atexit
 import collections
+import contextlib
+import io
 import json
 import os
 import queue
@@ -1484,6 +1495,28 @@ def _session_exit_plan(reason_prefix: str, pnl_pct: float) -> tuple[str, str]:
     if ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP and pnl_pct >= STOP_LOSS_PERCENT:
         return "hold", _format_pending_pnl(f"{reason_prefix}_OVERNIGHT_HOLD_WITHIN_STOP", pnl_pct)
     return "sell", _format_pending_pnl(f"{reason_prefix}_STOP_LOSS_BREACH", pnl_pct)
+
+
+def _call_kis_capturing(fn, **kwargs):
+    """[2026-10-29] KIS 예제 함수 호출 + stdout 캡처. 예제 함수는 오류 시 사유(msg_cd/msg1)를 print만 하고 빈 DataFrame을
+    반환해 로그에 UNKNOWN_ORDER_ERROR만 남았다(003160/105740 20261029 11:54~12:00). 반환: (결과, 캡처된 출력 한 줄 요약).
+    예외는 호출측으로 그대로 전파."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = fn(**kwargs)
+    text = " ".join(buf.getvalue().replace("-", " ").split())
+    return result, text
+
+
+def _kis_error_from_stdout(text: str) -> str:
+    """printError 출력('rt_cd : 1 / msg_cd : APBK0952 / msg1 : ...')을 _extract_order_error_detail 형식으로 변환."""
+    if not text:
+        return ""
+    rt = re.search(r"rt_cd\s*:\s*(\S+)", text)
+    code = re.search(r"msg_cd\s*:\s*(\S+)", text)
+    msg = re.search(r"msg1\s*:\s*(.+?)\s*$", text)
+    parts = [f"{k}={m.group(1).strip()}" for k, m in (("rt_cd", rt), ("msg_cd", code), ("msg1", msg)) if m]
+    return " | ".join(parts) if parts else f"msg1={text[:200].replace('|', '/')}"
 
 
 def _extract_order_error_detail(result) -> str:
@@ -3805,50 +3838,47 @@ class TradingAPI:
         if not callable(psbl_fn):
             return qty_by_budget
 
-        try:
-            psbl_df = psbl_fn(
-                env_dv=self.env_dv,
-                cano=self.cano,
-                acnt_prdt_cd=self.acnt_prdt_cd,
-                pdno=code,
-                ord_unpr=str(price_krw),
-                ord_dvsn=order_spec["ord_dvsn"],
-                cma_evlu_amt_icld_yn="N",
-                ovrs_icld_yn="N",
-            )
-        except Exception as exc:
-            log(f"  [WARN        ] inquire_psbl_order failed for {code}: {exc}")
-            return qty_by_budget
-
+        # [2026-10-29] 조회 실패(빈 응답/예외) 시 예산 수량으로 주문하던 fail-open을 fail-closed(0)로 변경 - 20261029
+        # 11:54~12:00 105740/003160이 주문가능 현금(약 19만원)을 넘는 예산 수량(약 50만원)으로 주문해 연속 거부됨.
+        # 일시 오류 대비 1회 재시도. KIS 오류 사유는 stdout 캡처로 로그에 남긴다.
+        psbl_df, kis_text = None, ""
+        for attempt in range(2):
+            try:
+                psbl_df, kis_text = _call_kis_capturing(
+                    psbl_fn,
+                    env_dv=self.env_dv,
+                    cano=self.cano,
+                    acnt_prdt_cd=self.acnt_prdt_cd,
+                    pdno=code,
+                    ord_unpr=str(price_krw),
+                    ord_dvsn=order_spec["ord_dvsn"],
+                    cma_evlu_amt_icld_yn="N",
+                    ovrs_icld_yn="N",
+                )
+            except Exception as exc:
+                psbl_df, kis_text = None, f"{type(exc).__name__}: {exc}"
+            if psbl_df is not None and not psbl_df.empty:
+                break
+            if attempt == 0:
+                time.sleep(0.3)
         if psbl_df is None or psbl_df.empty:
-            return qty_by_budget
+            log(f"  [WARN        ] inquire_psbl_order failed for {code}; qty=0 (no order) | "
+                f"{_kis_error_from_stdout(kis_text) or 'EMPTY_RESPONSE'}")
+            return 0
 
         row = psbl_df.iloc[-1].to_dict()
-        qty_candidates = ("nrcvb_buy_qty", "max_buy_qty", "ord_psbl_qty")
+        # [2026-10-29] 미수 없는(현금 기준) 수량만 쓴다. 기존 max(nrcvb, max_buy_qty, ...)는 max_buy_qty(미수 포함)가
+        # 크면 현금을 넘는 수량을 골랐다. 키가 있으면 0이어도 그 값을 따른다(현금 부족 = 주문 안 함).
         qty_by_psbl = 0
-        for key in qty_candidates:
-            qty_by_psbl = max(qty_by_psbl, self._to_int(row.get(key), 0))
-
-        # 응답 포맷 차이를 대비해 유사 컬럼명도 허용
-        if qty_by_psbl <= 0:
-            for key, value in row.items():
-                key_text = str(key).lower()
-                if "qty" in key_text and ("buy" in key_text or "psbl" in key_text or "ord" in key_text):
-                    qty_by_psbl = max(qty_by_psbl, self._to_int(value, 0))
-
-        if qty_by_psbl <= 0:
-            amt_candidates = ("nrcvb_buy_amt", "max_buy_amt", "ord_psbl_cash", "ord_psbl_amt")
+        cash_qty_key = next((k for k in ("nrcvb_buy_qty", "ord_psbl_qty") if str(row.get(k, "")).strip() != ""), None)
+        if cash_qty_key is not None:
+            qty_by_psbl = self._to_int(row.get(cash_qty_key), 0)
+            if qty_by_psbl <= 0:
+                return 0
+        else:
             psbl_amt = 0
-            for key in amt_candidates:
+            for key in ("nrcvb_buy_amt", "ord_psbl_cash", "ord_psbl_amt"):
                 psbl_amt = max(psbl_amt, self._to_int(row.get(key), 0))
-
-            if psbl_amt <= 0:
-                for key, value in row.items():
-                    key_text = str(key).lower()
-                    if "amt" in key_text or "cash" in key_text:
-                        if "buy" in key_text or "psbl" in key_text or "ord" in key_text:
-                            psbl_amt = max(psbl_amt, self._to_int(value, 0))
-
             if psbl_amt > 0:
                 qty_by_psbl = int(psbl_amt / price_krw)
 
@@ -4489,7 +4519,8 @@ class TradingAPI:
             log(f"DRY_RUN BUY | {code} | qty={qty} | ord_dvsn={ord_dvsn} | price={log_price:,.0f} | exch={exchange}")
             return {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": str(int(round(log_price)))}
         try:
-            return dsf.order_cash(
+            result, kis_text = _call_kis_capturing(
+                dsf.order_cash,
                 env_dv=self.env_dv,
                 ord_dv="buy",
                 cano=self.cano,
@@ -4500,6 +4531,15 @@ class TradingAPI:
                 ord_unpr=ord_unpr,
                 excg_id_dvsn_cd=exchange,
             )
+            # [2026-10-29] 실패 시 KIS 사유(stdout)를 호출측 _extract_order_error_detail이 읽도록 dict로 바꿔 돌려준다
+            if (result is None or getattr(result, "empty", False)) and kis_text:
+                detail = _kis_error_from_stdout(kis_text)
+                failed = {k: v.strip() for k, v in (p.split("=", 1) for p in detail.split(" | ") if "=" in p)}
+                # rt_cd 없는 dict는 _order_succeeded가 성공으로 본다 - 실패 표시를 반드시 넣는다
+                if str(failed.get("rt_cd", "")).strip() in ("", "0"):
+                    failed["rt_cd"] = "1"
+                return failed
+            return result
         except Exception as exc:
             log(f"  [BUY ERROR   ] {_sym_label(code)} | {exc}")
             return None
