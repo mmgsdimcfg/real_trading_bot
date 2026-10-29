@@ -18,6 +18,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-29] type=feat owner=claude
+    summary: 사용자 요청(003160 V자 반등 미진입) - _rebound_confirmed() 신설, r001 ENABLE_REBOUND_CONTEXT_EXCEPTION이면
+      반등 확인(3분 종가·실시간가 > BB중심, DI 스프레드 >= 10, MACD > 시그널, 기울기 >= -6%) 시 _gate_bb_slope_rising /
+      _gate_stochastic_buy_signal 실패를 통과 처리(스토캐스틱 본체는 _stochastic_buy_signal_core로 분리, 판정 무변경).
+    impact: common (r005 실전 + g003) - 플래그 기본 OFF면 기존과 동일
+    compatibility: backward-compatible (OFF 기본)
 - [2026-10-28] type=feat owner=claude
     summary: 사용자 요청(091580 09:18 반등 초입 미매수 대책 a) - calculate_indicators_with_warmup() 신설. 전일 봉을 앞에
       붙여 지표를 계산하고 당일 행만 반환(VWAP/OBV/OBV_MA는 당일 봉만). r003(r001 ENABLE_PRIOR_DAY_INDICATOR_WARMUP)과
@@ -496,6 +502,9 @@ from r001_define_config import (
     BB_UPPER_ROOM_ATR_TIER1,
     BB_UPPER_ROOM_ATR_TIER2,
     DI_SPREAD_MIN_REQUIRED,
+    ENABLE_REBOUND_CONTEXT_EXCEPTION,
+    REBOUND_BB_SLOPE_FLOOR_PCT,
+    REBOUND_MIN_DI_SPREAD,
     ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK,
     HYBRID_1MIN_TRIGGER_LOOKBACK_BARS,
     HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID,
@@ -1291,9 +1300,31 @@ def check_buy_condition(
 # ---- 필수 게이트 (BUY_GATE_CONDITIONS, 순차 통과형) --------------------------
 
 
+def _rebound_confirmed(ctx: BuyEvalContext) -> bool:
+    """[2026-10-29] V자 반등 확인(r001 ENABLE_REBOUND_CONTEXT_EXCEPTION) - bb_slope_rising/stochastic_buy_signal 실패를
+    통과 처리할 조건. 확정 3분 종가와 실시간가가 모두 3분 BB중심 위, +DI가 -DI보다 REBOUND_MIN_DI_SPREAD 이상 우세,
+    MACD > MACD_SIGNAL, BB 기울기 >= REBOUND_BB_SLOPE_FLOOR_PCT. 값이 하나라도 없으면 False."""
+    if not ENABLE_REBOUND_CONTEXT_EXCEPTION:
+        return False
+    cur = ctx.cur
+    vals = (_num(cur, "close"), ctx.cur_bb, ctx.live_price, _num(cur, "DI_PLUS"), _num(cur, "DI_MINUS"),
+            _num(cur, "MACD"), _num(cur, "MACD_SIGNAL"), ctx.bb_slope_pct)
+    if any(v is None or pd.isna(v) for v in vals):
+        return False
+    close, bb_mid, live, di_plus, di_minus, macd, macd_sig, slope = vals
+    return (
+        bb_mid > 0 and close > bb_mid and live > bb_mid
+        and di_plus - di_minus >= REBOUND_MIN_DI_SPREAD
+        and macd > macd_sig
+        and slope >= REBOUND_BB_SLOPE_FLOOR_PCT
+    )
+
+
 def _gate_bb_slope_rising(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
     bb_slope_pct = ctx.bb_slope_pct
     if pd.isna(bb_slope_pct) or bb_slope_pct <= BB_SLOPE_MIN_PCT:
+        if _rebound_confirmed(ctx):
+            return True, ctx, None
         slope_str = f"{bb_slope_pct:.3f}" if not pd.isna(bb_slope_pct) else "nan"
         return False, ctx, f"BB_SLOPE_NOT_RISING_{slope_str}%"
     return True, ctx, None
@@ -1418,6 +1449,14 @@ def _gate_bb_upper_gap_min(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, s
 
 
 def _gate_stochastic_buy_signal(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
+    # [2026-10-29] 반등 확인(_rebound_confirmed) 시 스토캐스틱 실패(과열/K<D/D 하한/윌리엄스 밴드)를 통과 처리.
+    passed, ctx, reason = _stochastic_buy_signal_core(ctx)
+    if not passed and reason != "STOCH_DATA_MISSING" and _rebound_confirmed(ctx):
+        return True, ctx, None
+    return passed, ctx, reason
+
+
+def _stochastic_buy_signal_core(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
     # 스토캐스틱 패스트 매수신호 (%K가 %D를 상향 돌파, 또는 %K>%D이면서 진짜
     # 과열(stoch_overbought) 아닌 구간). 주의: %K는 10봉 오실레이터라 BB중앙선
     # 돌파 순간엔 이미 50을 넘어서는 게 정상적인 움직임이라 STOCH_BUY_MAX(50)를
