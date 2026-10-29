@@ -13,6 +13,7 @@ Run examples:
 - python g002_data_scan_trade_candidates.py --date 20260508 --history-window 5
 - python g002_data_scan_trade_candidates.py --date 20260508 --export-watchlist --for-next-trading-day
 - python g002_data_scan_trade_candidates.py --date 20260508 --write-picks-alias
+- python g002_data_scan_trade_candidates.py --date 20260508 --notify-email
   (--config is still accepted for compatibility but "balanced" is now the only preset - see
   2026-08-27 changelog entry below)
 
@@ -23,6 +24,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-29] type=feat owner=claude
+    summary: --notify-email 추가 - 스캔 종료 시 g016_email_notify로 종목 리스트(본문)와 picks/ranked/scanner_report/
+      선정이유(ko) 파일(첨부)을 메일 전송. 설정은 ~/.mail/mail_config.json. 전송 실패는 스캔 결과에 영향 없음.
+    impact: scanner
+    compatibility: backward-compatible (옵션 미지정 시 동작 동일)
 - [2026-10-21] type=tune owner=claude
     summary: 사용자 결정 - 보충(fallback) 후보의 '당일 음봉 아님' 조건 해제(FALLBACK_ALLOW_LAST_BEARISH=True). 장대 음봉
       (-2% 이상)은 big_bearish_candle로 계속 제외, 당일 음봉은 점수 -4(last_bearish)로 반영. 52거래일 재현: 보충분 하루
@@ -3517,6 +3523,11 @@ def parse_args():
         action="store_true",
         help="Send the pick list to KakaoTalk (talk_message '나에게 보내기') via g007_kakao_notify",
     )
+    parser.add_argument(
+        "--notify-email",
+        action="store_true",
+        help="Email the pick list with report files attached via g016_email_notify (~/.mail/mail_config.json)",
+    )
     return parser.parse_args()
 
 
@@ -3717,6 +3728,20 @@ if __name__ == "__main__":
             print("[KAKAO] 감시종목 알림 전송 완료")
         else:
             print("[KAKAO] 감시종목 알림 전송 실패 (위 로그 참고)")
+
+    if args.notify_email:
+        from g016_email_notify import send_scan_report
+
+        # picks 파일은 선정 종목이 있을 때만 생기므로 존재하는 파일만 첨부한다.
+        email_attachments = [
+            out_dir / name
+            for name in (picks_filename, ranked_filename, report_filename, reason_report_filename)
+            if (out_dir / name).exists()
+        ]
+        if send_scan_report(picks, label, email_attachments):
+            print("[EMAIL] 감시종목 메일 전송 완료")
+        else:
+            print("[EMAIL] 감시종목 메일 전송 실패 (위 로그 참고)")
 
     sys.stdout = sys.__stdout__
     log_fp.close()
