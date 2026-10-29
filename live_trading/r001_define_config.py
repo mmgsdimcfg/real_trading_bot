@@ -1,6 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-29] type=feat owner=claude
+#     summary: 사용자 요청(003160 V자 반등 대응) - ENABLE_REBOUND_CONTEXT_EXCEPTION/REBOUND_MIN_DI_SPREAD/REBOUND_BB_SLOPE_FLOOR_PCT
+#       신설(r002 _rebound_confirmed: 반등 확인 시 3분 bb_slope_rising/stochastic_buy_signal 실패 통과). 20261029 로그 재생
+#       결과가 손실 방향(31건, +3% 선도달 0 / -1% 선도달 12)이라 기본 OFF.
+#     impact: common (OFF면 무영향)
+#     compatibility: backward-compatible
 # - [2026-10-28] type=feat+tune owner=claude
 #     summary: 사용자 요청(091580 09:18 반등 초입 미매수 대책 a/b/c 동시 적용) - (c) KIS_HTTP_CONNECT/READ_TIMEOUT_SECONDS
 #       (3/10초, r003이 kis_auth requests에 주입), (a) ENABLE_PRIOR_DAY_INDICATOR_WARMUP=True / PRIOR_DAY_WARMUP_MINUTES=180
@@ -851,7 +857,17 @@ BB_SLOPE_LOOKBACK_BARS = 20      # BB 기울기 측정 봉 수 (3분봉 기준 �
 # 60분 lookback은 급등 후 되돌림 국면에서 BB중앙선이 실제 저점 형성보다 한참 늦게 양전환되어,
 # 가격/스토캐스틱/윌리엄스%R이 이미 반전된 뒤에도 한동안 매수를 막는 경우가 있어 -0.7%->-2.0%로 완화.
 BB_SLOPE_MIN_PCT = -2.0
-BB_MID_DOWNTREND_BARS = 5        # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
+# [2026-10-29] 사용자 요청(003160 디아이 10:42~11:28 V자 반등 +6.3% 미진입) - "반등 확인" 시 3분 컨텍스트의
+# bb_slope_rising(BB 기울기 <= BB_SLOPE_MIN_PCT)과 stochastic_buy_signal(과열 %K>=96 / %K<%D / %D<40 등) 실패를 통과 처리.
+# 반등 확인 = 확정 3분 종가 > 3분 BB중심 AND 실시간가 > 3분 BB중심 AND (+DI - -DI) >= REBOUND_MIN_DI_SPREAD
+#            AND MACD > MACD_SIGNAL AND BB 기울기 >= REBOUND_BB_SLOPE_FLOOR_PCT(급락 배제).
+# 20261029 로그 재생(1분 트리거 통과 + 실패 게이트가 이 둘(+downtrend_block)뿐인 폴링): 신규 진입 후보 31건(10분 군집),
+# 30분 내 +3% 선도달 0건 / -1% 선도달 12건 / 30분 뒤 평균 -0.29% - 하루 표본이지만 손실 방향이라 기본 OFF.
+# 003160은 11:06 43,600(저점 대비 이미 +4%)에서 처음 통과(30분 고점 +2.18%, 종료 +0.23%). g003 다일 A/B 후 켤 것.
+ENABLE_REBOUND_CONTEXT_EXCEPTION = False
+REBOUND_MIN_DI_SPREAD = 10.0
+REBOUND_BB_SLOPE_FLOOR_PCT = -6.0
+BB_MID_DOWNTREND_BARS = 5       # BB 중간선 우하향 감지 봉 수 (3분봉 기준 약 15분): 연속 하락 시 매수 차단
 # [2026-09-20] 하이브리드 경로(HYBRID_3MIN_CONTEXT_GATES)에서 bb_mid_downtrend_block 게이트를 쓸지 여부.
 # True = 현재 동작 유지. False로 바꾸면 이 게이트가 빠져 진입이 완화된다 - 별도 전략 변경으로 다룬다:
 # 최근 라이브 5거래일 단독 차단 0건, g003 20260916~18 x 랭킹 상위 8종목(24 종목-일)에서 게이트
