@@ -24,6 +24,12 @@ Update log:
       _gate_stochastic_buy_signal 실패를 통과 처리(스토캐스틱 본체는 _stochastic_buy_signal_core로 분리, 판정 무변경).
     impact: common (r005 실전 + g003) - 플래그 기본 OFF면 기존과 동일
     compatibility: backward-compatible (OFF 기본)
+- [2026-10-29] type=feat owner=claude
+    summary: 틱 트리거(r013) 지원 - check_buy_condition_1min_hybrid_trigger(tick_cross_label=)이 주어지면 1분 크로스 탐색 대신
+      틱 크로스로 인정(path="tick", 경과봉 0, 이후 캔들/BB갭 가드 동일), check_1min_trigger_live_guard(require_above_mid=)
+      False면 1분 BB중심선 조건 생략(하락폭 조건은 유지).
+    impact: common (기본값이면 기존과 동일 - g003 무영향)
+    compatibility: backward-compatible
 - [2026-10-28] type=feat owner=claude
     summary: 사용자 요청(091580 09:18 반등 초입 미매수 대책 a) - calculate_indicators_with_warmup() 신설. 전일 봉을 앞에
       붙여 지표를 계산하고 당일 행만 반환(VWAP/OBV/OBV_MA는 당일 봉만). r003(r001 ENABLE_PRIOR_DAY_INDICATOR_WARMUP)과
@@ -1811,6 +1817,7 @@ def check_buy_condition_1min_hybrid_trigger(
     frame_1min: pd.DataFrame,
     context_uptrend_continuation: bool = False,
     info: dict | None = None,
+    tick_cross_label: str | None = None,
 ) -> tuple[bool, str]:
     """하이브리드 매수 경로(1분봉 트리거 -> 3분봉 컨텍스트)의 1단계 1분봉 트리거 - r003 실전/g003
     백테스트 공용(2026-09-20 r003/g003에 따로 있던 복사본을 여기로 통합. 이 함수의 원형이던
@@ -1872,7 +1879,14 @@ def check_buy_condition_1min_hybrid_trigger(
     golden_cross = prev_close <= prev_bb and cur_close > cur_bb
     bars_since_cross = 0  # 신선한 크로스(golden_cross=True) 기본값 - 경과봉 0, 갭 상한 완화 없음
     trigger_reason = "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"
-    if golden_cross and info is not None:
+    if tick_cross_label:
+        # [2026-10-29] 호출측(r005 _008, r013)이 60/120틱봉 MA5>MA20 골든크로스를 확인했으면 그 크로스로 1분 크로스 탐색을
+        # 대체한다(경과봉 0 = 가장 좁은 BB갭 상한). 아래 캔들/BB갭 추격가드는 그대로 적용. cross_bar_time은 호출측이 채운다.
+        golden_cross = True
+        trigger_reason = f"{tick_cross_label}_GOLDEN_CROSS"
+        if info is not None:
+            info.update({"path": "tick", "cross_bar_time": None, "bars_since_cross": 0})
+    elif golden_cross and info is not None:
         info.update({"path": "cross", "cross_bar_time": frame_1min.index[-1], "bars_since_cross": 0})
     if not golden_cross:
         _found = False
@@ -1963,7 +1977,9 @@ def check_buy_condition_1min_hybrid_trigger(
     return True, trigger_reason
 
 
-def check_1min_trigger_live_guard(frame_1min: pd.DataFrame, live_price: float | None) -> tuple[bool, str]:
+def check_1min_trigger_live_guard(
+    frame_1min: pd.DataFrame, live_price: float | None, require_above_mid: bool = True,
+) -> tuple[bool, str]:
     """[2026-10-28] 1분 트리거(확정봉 기준) 통과 뒤의 실시간 진입 가드 - r005 _008 / g003 공용.
 
     check_buy_condition_1min_hybrid_trigger는 직전 "확정" 1분봉만 보므로 형성 중인 봉이 꺾여도 다음 분 경계까지
@@ -1972,6 +1988,8 @@ def check_1min_trigger_live_guard(frame_1min: pd.DataFrame, live_price: float | 
     트리거 유효시간 타이머(update_timed_condition_state)와 분리하려고 트리거 함수 밖에 둔다 - 이 가드의 일시 반려가
     확정봉 신호의 수명(HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS)을 리셋하면 안 된다(Codex 검토).
     가격 없음/비정상, 지표 없음, 설정 <=0이면 통과(기존 동작).
+    [2026-10-29] require_above_mid=False(틱 트리거 경로, r001 TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID)면 BB중심선 조건은 건너뛰고
+    하락폭 조건만 본다.
     """
     if HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT <= 0 or live_price is None or pd.isna(live_price) or live_price <= 0:
         return True, ""
@@ -1985,7 +2003,7 @@ def check_1min_trigger_live_guard(frame_1min: pd.DataFrame, live_price: float | 
     live_drop_pct = (cur_close - live_price) / cur_close * 100.0
     if live_drop_pct > HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT:
         return False, f"1MIN_LIVE_DROP_{live_drop_pct:.2f}%_GT_{HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT:.2f}%"
-    if not live_price > cur_bb:
+    if require_above_mid and not live_price > cur_bb:
         return False, "1MIN_LIVE_BELOW_BB_MID"
     return True, ""
 
