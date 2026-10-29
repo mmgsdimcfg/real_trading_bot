@@ -29,6 +29,11 @@ Update log:
       [BUY FAIL] 로그에 남김(실패 dict에는 rt_cd!=0 보장).
     impact: live - 조회 실패 시 매수 안 함(재주문 경로는 기존 '여력 부족 - 포기'로 처리)
     compatibility: breaking (주문 수량 감소/실패 시 미주문 방향)
+- [2026-10-29] type=feat owner=claude
+    summary: 틱 트리거 피드(r013 TickTriggerFeed)를 run() 시작 시 생성해 BuyServices.tick_trigger로 주입(r001
+      TICK_TRIGGER_MODE="live"일 때). g011_tick_collector가 기록하는 runtime/data/ticks/YYYYMMDD/<code>.csv를 증분으로 읽음.
+    impact: live - 수집기 미실행이면 틱 트리거만 불인정(1분 트리거 동작 동일)
+    compatibility: backward-compatible (롤백: TICK_TRIGGER_MODE="off")
 - [2026-10-28] type=feat owner=claude
     summary: 사용자 요청(대책 a) - 전일 봉 warmup: _load_prior_day_warmup()이 runtime/data/<이전 거래일>/<코드>_*_10s.txt의
       원본 분봉(r012 load_prior_day_warmup - g003에서 옮긴 import 부작용 없는 복원 함수, 오늘 기준가 stck_sdpr와 전일
@@ -747,6 +752,7 @@ from r001_define_config import (
     DATA_DIR_NAME,
     RUNTIME_DATA_DIR,
     RUNTIME_LOG_DIR,
+    TICK_TRIGGER_MODE,
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
@@ -2214,6 +2220,26 @@ def _make_v2_shadow_runner(date_str: str):
         return runner
     except Exception as exc:
         log(f"  [V2 SHADOW   ] init failed, shadow disabled: {exc}")
+        return None
+
+
+def _make_tick_trigger_feed():
+    """[2026-10-29] r013 tick-chart trigger feed or None (r001 TICK_TRIGGER_MODE). Needs g011_tick_collector running."""
+    if str(TICK_TRIGGER_MODE).lower() != "live":
+        return None
+    try:
+        import r001_define_config as _cfg_mod
+        from r013_tick_trigger import TickTriggerFeed
+        feed = TickTriggerFeed(
+            _cfg_mod.TICK_DATA_DIR, _cfg_mod.TICK_TRIGGER_BAR_SIZES, _cfg_mod.TICK_TRIGGER_MA_FAST,
+            _cfg_mod.TICK_TRIGGER_MA_SLOW, _cfg_mod.TICK_TRIGGER_CROSS_MAX_AGE_SECONDS,
+            _cfg_mod.TICK_TRIGGER_FEED_STALE_SECONDS, log,
+        )
+        log(f"  [TICK TRIG   ] enabled | sizes={feed.sizes} MA{feed.fast}/MA{feed.slow} dir={feed.data_dir} "
+            f"(g011_tick_collector must be running, otherwise only the 1-min trigger is used)")
+        return feed
+    except Exception as exc:
+        log(f"  [TICK TRIG   ] init failed, tick trigger disabled: {exc}")
         return None
 
 
@@ -5136,6 +5162,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         record_gate_decision=record_gate_decision if ENABLE_GATE_DECISION_LOG else None,
         fetch_bid_ask=_fetch_bid_ask_price,
     )
+    tick_feed = _make_tick_trigger_feed()
+    if tick_feed is not None:
+        buy_services.tick_trigger = tick_feed.evaluate
     v2_shadow = _make_v2_shadow_runner(date_str)
     current_trade_date = now.date()
     loop_consecutive_errors = 0

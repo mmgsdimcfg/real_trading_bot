@@ -7,6 +7,11 @@
 #       결과가 손실 방향(31건, +3% 선도달 0 / -1% 선도달 12)이라 기본 OFF.
 #     impact: common (OFF면 무영향)
 #     compatibility: backward-compatible
+# - [2026-10-29] type=feat owner=claude
+#     summary: 사용자 요청(003160 디아이 10:42 사례) - 틱차트 트리거 TICK_TRIGGER_* 신설. 60틱/120틱봉 MA5>MA20 골든크로스를
+#       1분 BB중심선 크로스와 OR로 인정(r013 + r005 _008). 틱 데이터는 g011_tick_collector 별도 실행 필요.
+#     impact: live (r003). g003은 틱 데이터가 없어 무영향
+#     compatibility: breaking (매수 증가 방향. 롤백: TICK_TRIGGER_MODE="off")
 # - [2026-10-28] type=feat+tune owner=claude
 #     summary: 사용자 요청(091580 09:18 반등 초입 미매수 대책 a/b/c 동시 적용) - (c) KIS_HTTP_CONNECT/READ_TIMEOUT_SECONDS
 #       (3/10초, r003이 kis_auth requests에 주입), (a) ENABLE_PRIOR_DAY_INDICATOR_WARMUP=True / PRIOR_DAY_WARMUP_MINUTES=180
@@ -1143,6 +1148,25 @@ HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT = 0.4
 # 수 있었다(032820 09:12 추정). 마지막 1분봉 라벨이 기대 라벨(floor(now-CANDLE_CONFIRM_DELAY_SECONDS))과 다르면 진입 보류.
 # KIS는 무거래 분도 거래량 0 행을 주는 것을 실측 확인(저유동 4종목, 2026-10-07)해 1봉 허용 없이 엄격 비교한다.
 ENTRY_1MIN_FRAME_REQUIRE_LATEST = True
+
+# [2026-10-29] 사용자 요청(003160 디아이 10:42 - 1분/3분/60틱/120틱 모두 골든크로스로 보였으나 매수 없음) - 틱차트 트리거.
+# 60틱봉·120틱봉 각각 MA5가 MA20을 상향 돌파하면 1분 BB중심선 크로스와 OR로 "크로스 발견"을 인정한다(r013, r005 _008).
+# 크로스 발견만 대체 - 1분 캔들/BB갭 추격가드, 실시간 하락 가드, 3분 컨텍스트 게이트 이후 단계는 그대로 적용.
+# 틱 데이터는 별도 프로세스 g011_tick_collector(KIS 웹소켓 H0STCNT0, KRX 정규장)가 TICK_DATA_DIR/YYYYMMDD/<code>.csv로
+# 기록하고 r003이 증분으로 읽는다. 파일 없음/수집 정지/누락 봉이면 틱 트리거만 불인정(fail-closed) - 1분 트리거는 그대로.
+# 백테스트 미검증(틱 데이터 없음) - 사용자 결정으로 바로 live. "off"면 기존과 동일(롤백).
+TICK_TRIGGER_MODE = "live"                 # "off" | "live"
+TICK_TRIGGER_BAR_SIZES = (60, 120)         # 각 틱봉 크로스가 독립적으로 OR
+TICK_TRIGGER_MA_FAST = 5
+TICK_TRIGGER_MA_SLOW = 20
+# 크로스 틱봉이 완성(수신)된 시각부터의 유효시간 - 1분 크로스(HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS)와 같은 240초.
+TICK_TRIGGER_CROSS_MAX_AGE_SECONDS = 240.0
+# 마지막 체결 수신이 이 초보다 오래되면 수집 정지로 보고 불인정(저유동 종목도 불인정되는 보수적 값).
+TICK_TRIGGER_FEED_STALE_SECONDS = 120.0
+# 틱 경로는 1분봉 종가가 아직 1분 BB중심선 아래일 때 더 빨리 잡는 것이 목적이라, 실시간 가드의 "1분 BB중심선 이하 반려"를
+# 틱 경로에는 적용하지 않는다(하락폭 0.4% 반려는 적용). True면 틱 경로도 1분 BB중심선 위를 요구.
+TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID = False
+TICK_DATA_DIR = RUNTIME_DATA_DIR / "ticks"
 
 # =============================================================================================
 # [2026-10-07] 매매 전략 모드 - 사용자 요청. "normal" = 기존 조건 전체(그대로 보존), "basic" = 아래 기본 조건만으로 매매.

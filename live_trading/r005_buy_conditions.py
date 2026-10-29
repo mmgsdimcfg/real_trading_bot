@@ -49,6 +49,14 @@ Behavior notes kept from the old inline code (do not "fix" them here - they are 
   order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-10-29] type=feat owner=claude
+    summary: _008에 틱 트리거 OR 추가(사용자 요청, 003160 디아이 10:42 사례) - services.tick_trigger(r013)가 60/120틱봉
+      MA5>MA20 골든크로스를 보고하고 1분 쪽에 유효한 크로스가 없으면(크로스 없음/continuation BB중심선 아래/1분 크로스
+      CROSS_MAX_AGE 초과) r002 트리거를 tick_cross_label로 다시 평가(캔들/BB갭 가드 동일, 경과봉 0). 틱 경로는 실시간
+      가드의 1분 BB중심선 조건을 생략(r001 TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID=False), 하락폭 조건은 유지.
+      통과 시 gate_decisions에 TRIGGER_AGE/TICK_CROSS_PASS 기록.
+    impact: live (r003)
+    compatibility: breaking (매수 증가 방향. 롤백: r001 TICK_TRIGGER_MODE="off")
 - [2026-10-28] type=fix owner=claude
     summary: _008이 트리거 통과·유효시간 판정 뒤 r002 check_1min_trigger_live_guard(frame_1min, ctx.price)를 호출 -
       형성 중인 1분봉이 직전 확정 종가 대비 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT(0.4%) 초과 하락이거나 1분 BB중심선
@@ -145,6 +153,8 @@ from r001_define_config import (
     EDGE_AI_MIN_PROB_OVERRIDE,
     EDGE_AI_MODE,
     RUNTIME_DATA_DIR,
+    TICK_TRIGGER_MODE,
+    TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID,
 )
 from r008_strategy_v2 import krx_tick_size
 from r002_strategy_core_shared import (
@@ -216,6 +226,8 @@ class BuyServices:
     record_gate_decision: Callable[[dict], None] | None = None
     # [2026-10-23] best bid/ask for the spread gate (_027). None -> gate passes (flag is OFF by default anyway).
     fetch_bid_ask: Callable[[str, str], tuple[float | None, float | None]] | None = None
+    # [2026-10-29] r013 틱 트리거 (code, now) -> TickTriggerResult. None이면 틱 트리거 없음(1분 트리거만).
+    tick_trigger: Callable[[str, datetime], Any] | None = None
 
 
 @dataclass
@@ -464,6 +476,36 @@ def _record_trigger_age(ctx: BuyContext, result: str, key, **extra) -> None:
         ctx.log(f"  [GATE LOG    ] {ctx.symbol_label} | TRIGGER_AGE record failed: {exc}")
 
 
+def _cross_age_seconds(ctx: BuyContext, cross_bar_time) -> float:
+    try:
+        if cross_bar_time is not None and not pd.isna(cross_bar_time):
+            return (pd.Timestamp(ctx.current_dt) - pd.Timestamp(cross_bar_time)).total_seconds()
+    except Exception:
+        pass
+    return float("nan")
+
+
+def _evaluate_tick_trigger(ctx: BuyContext):
+    """r013 틱 트리거 결과(TickTriggerResult) 또는 None(모드 off / 서비스 미주입 / 예외)."""
+    fn = getattr(ctx.services, "tick_trigger", None)
+    if fn is None or TICK_TRIGGER_MODE != "live":
+        return None
+    try:
+        return fn(ctx.norm_code, ctx.current_dt)
+    except Exception as exc:  # 틱 피드 문제로 1분 트리거 판정을 막지 않는다
+        ctx.log(f"  [TICK TRIG   ] {ctx.symbol_label} | evaluate failed: {exc}")
+        return None
+
+
+def _tick_may_replace_1min(ctx: BuyContext, trigger_ok: bool, trigger_reason: str, trigger_info: dict) -> bool:
+    """틱 후보를 만들지 여부. 1분 트리거가 통과했으면 항상 만든다(1분 후보가 실시간 가드/크로스 나이에 걸릴 때의 대안 -
+    Codex 리뷰). 1분이 실패했으면 크로스 자체가 없을 때만 만든다 - 1분이 크로스를 찾고 캔들/BB갭 가드에 걸린 경우는
+    틱 경로도 같은 가드(더 좁은 BB갭 상한)를 받으므로 결과가 같다."""
+    if trigger_ok:
+        return True
+    return trigger_reason in ("1MIN_NO_BB_MID_GOLDEN_CROSS", "1MIN_CONTINUATION_BELOW_BB_MID")
+
+
 def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
     frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
     if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
@@ -511,7 +553,17 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
     trigger_ok, trigger_reason = check_buy_condition_1min_hybrid_trigger(
         frame_1min, context_uptrend_continuation=context_uptrend_continuation, info=trigger_info,
     )
-    ctx.trigger_flag = "P" if trigger_ok else "F"
+    # [2026-10-29] 틱 트리거(r013): 60/120틱봉 MA5>MA20 골든크로스를 1분 트리거와 OR. 틱 후보는 같은 1분 캔들/BB갭 가드를
+    # 받고(r002 tick_cross_label), 아래에서 1분 후보와 각자의 실시간 가드/크로스 나이로 평가한 뒤 하나라도 통과하면 인정.
+    tick_result = _evaluate_tick_trigger(ctx)
+    tick_ok, tick_reason, tick_info = False, "", {}
+    if tick_result is not None and tick_result.ok and _tick_may_replace_1min(ctx, trigger_ok, trigger_reason, trigger_info):
+        tick_ok, tick_reason = check_buy_condition_1min_hybrid_trigger(
+            frame_1min, info=tick_info, tick_cross_label=tick_result.label,
+        )
+        tick_info["cross_bar_time"] = tick_result.cross_time
+    any_trigger_ok = trigger_ok or tick_ok
+    ctx.trigger_flag = "P" if any_trigger_ok else "F"
     ctx.steps_text = _steps_text(ctx)  # 기존과 동일하게 트리거 판정 직후, 통과 여부와 무관하게 계산
     # [2026-09-23] 1분봉 트리거가 "계속 유효" 상태로 지속된 시간을 추적한다 - 크로스 자체는 유효한데
     # 3분봉 컨텍스트 게이트가 못 따라와 대기만 길어지다가, 뒤늦게 게이트가 맞아떨어진 시점엔 이미
@@ -519,10 +571,11 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
     # 지연) 대응. r002 check_buy_condition_1min_hybrid_trigger 자체는 무변경 - 이 함수가 반환한
     # trigger_ok를 그대로 사용해 별도로 체류시간만 잰다(g003도 동일 패턴 사용, r001 Update log 참조).
     trigger_age_seconds = update_timed_condition_state(
-        ctx.state.buy_trigger_age_state, ctx.code, "1min_trigger", ctx.current_dt, trigger_ok,
+        ctx.state.buy_trigger_age_state, ctx.code, "1min_trigger", ctx.current_dt, any_trigger_ok,
     )
-    if not trigger_ok:
-        _reject_hybrid(ctx, f"HYBRID_1MIN_TRIGGER_{trigger_reason}")
+    if not any_trigger_ok:
+        # 1분 크로스가 없어 틱 후보를 평가했다면 그 반려 사유(가드)가 더 구체적이다
+        _reject_hybrid(ctx, f"HYBRID_1MIN_TRIGGER_{tick_reason or trigger_reason}")
         return False
     if HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS > 0 and trigger_age_seconds > HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS:
         _reject_hybrid(
@@ -530,22 +583,48 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
             f"HYBRID_1MIN_TRIGGER_EXPIRED_{trigger_age_seconds:.0f}s_GT_{HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS:.0f}s",
         )
         return False
+    reject_reason = None
+    if trigger_ok:
+        reject_reason = _1min_candidate_reject(ctx, frame_1min, trigger_info, trigger_age_seconds)
+        if reject_reason is None:
+            ctx.trigger_reason = trigger_reason
+            ctx.trigger_info = trigger_info
+            return True
+    if tick_ok:
+        # 틱 경로 실시간 가드: 하락폭 조건만(1분 BB중심선 조건은 r001 TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID일 때만).
+        # 틱 크로스 나이는 r013이 TICK_TRIGGER_CROSS_MAX_AGE_SECONDS로 이미 판정.
+        live_ok, live_reason = check_1min_trigger_live_guard(
+            frame_1min, ctx.price, require_above_mid=TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID,
+        )
+        if live_ok:
+            cross_bar_time = tick_info.get("cross_bar_time")
+            _record_trigger_age(
+                ctx, "TICK_CROSS_PASS", cross_bar_time, path="tick", trigger=tick_reason, cross_bar_time=cross_bar_time,
+                cross_age_s=round(_cross_age_seconds(ctx, cross_bar_time), 1),
+                continuity_age_s=round(trigger_age_seconds, 1), tick_reason=tick_result.reason,
+                one_min_reject=reject_reason, last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
+            )
+            ctx.trigger_reason = tick_reason
+            ctx.trigger_info = tick_info
+            return True
+        reject_reason = reject_reason or f"HYBRID_1MIN_TRIGGER_{live_reason}"
+    _reject_hybrid(ctx, reject_reason)
+    return False
+
+
+def _1min_candidate_reject(ctx: BuyContext, frame_1min: pd.DataFrame, trigger_info: dict,
+                           trigger_age_seconds: float) -> str | None:
+    """1분 트리거 후보의 실시간 가드 + 크로스 나이 판정(기존 _008 후반부). 통과면 None, 반려면 리젝 사유 문자열."""
     # [2026-10-28] 형성 중인 1분봉 실시간 하락/BB중심선 이탈 반려(091580 사례) - 유효시간 타이머 갱신 뒤에 둬서
     # 이 반려가 확정봉 트리거의 수명을 리셋하지 않게 한다(Codex 검토).
     live_ok, live_reason = check_1min_trigger_live_guard(frame_1min, ctx.price)
     if not live_ok:
-        _reject_hybrid(ctx, f"HYBRID_1MIN_TRIGGER_{live_reason}")
-        return False
+        return f"HYBRID_1MIN_TRIGGER_{live_reason}"
     path = trigger_info.get("path")
     if HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS > 0 and path == "cross":
         # [2026-10-07] 크로스 봉 확정 시각(종료 라벨)부터 잰 나이 - 연속통과 타이머와 달리 추격가드 반려로 리셋되지 않는다.
         cross_bar_time = trigger_info.get("cross_bar_time")
-        cross_age = float("nan")
-        try:
-            if cross_bar_time is not None and not pd.isna(cross_bar_time):
-                cross_age = (pd.Timestamp(ctx.current_dt) - pd.Timestamp(cross_bar_time)).total_seconds()
-        except Exception:
-            cross_age = float("nan")
+        cross_age = _cross_age_seconds(ctx, cross_bar_time)
         common = dict(
             path=path, cross_bar_time=cross_bar_time, bars_since_cross=trigger_info.get("bars_since_cross"),
             run_start_time=trigger_info.get("run_start_time"), continuity_age_s=round(trigger_age_seconds, 1),
@@ -553,16 +632,13 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
         )
         if pd.isna(cross_age) or cross_age < 0:
             _record_trigger_age(ctx, "CROSS_TIME_INVALID", cross_bar_time, cross_age_s=None, **common)
-            _reject_hybrid(ctx, "HYBRID_1MIN_TRIGGER_CROSS_TIME_INVALID")
-            return False
+            return "HYBRID_1MIN_TRIGGER_CROSS_TIME_INVALID"
         if cross_age > HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS:
             _record_trigger_age(ctx, "CROSS_EXPIRED", cross_bar_time, cross_age_s=round(cross_age, 1), **common)
-            _reject_hybrid(
-                ctx,
+            return (
                 f"HYBRID_1MIN_TRIGGER_CROSS_EXPIRED_{cross_age:.1f}s_GT_{HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS:.0f}s"
-                f"_cross={pd.Timestamp(cross_bar_time):%H:%M}",
+                f"_cross={pd.Timestamp(cross_bar_time):%H:%M}"
             )
-            return False
         _record_trigger_age(ctx, "CROSS_PASS", cross_bar_time, cross_age_s=round(cross_age, 1), **common)
     elif path in ("uptrend_3min", "uptrend_1min"):
         # continuation 통과 기록(같은 상승구간 재허용 측정용, 구간 시작 시각 기준 dedup)
@@ -571,9 +647,7 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
             run_start_time=trigger_info.get("run_start_time"), continuity_age_s=round(trigger_age_seconds, 1),
             last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
         )
-    ctx.trigger_reason = trigger_reason
-    ctx.trigger_info = trigger_info
-    return True
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -944,13 +1018,16 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  "1분봉 BB중심선 골든크로스(룩백)/우상향 지속 + 1분 캔들·BB갭 추격 가드 (r002 check_buy_condition_1min_hybrid_trigger) "
                  "+ 트리거 유효 지속시간이 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려 + 크로스 경로는 크로스 봉 확정 후 "
                  "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS 초과 시 반려 + 1분봉 캐시가 직전 확정분이 아니면 반려 "
-                 "+ 실시간가가 확정 1분봉 종가 대비 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT 초과 하락/1분 BB중심선 이하이면 반려",
+                 "+ 실시간가가 확정 1분봉 종가 대비 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT 초과 하락/1분 BB중심선 이하이면 반려 "
+                 "+ 60/120틱봉 MA5>MA20 골든크로스(r013)를 1분 크로스와 OR (TICK_TRIGGER_MODE)",
                  ("HYBRID_1MIN_TRIGGER_LOOKBACK_BARS", "HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT", "HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT",
                   "HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT", "HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR",
                   "HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT", "HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_UPTREND_PCT",
                   "HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS", "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS",
                   "HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID", "ENTRY_1MIN_FRAME_REQUIRE_LATEST",
-                  "HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT"), _008_hybrid_1min_trigger),
+                  "HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT", "TICK_TRIGGER_MODE", "TICK_TRIGGER_BAR_SIZES",
+                  "TICK_TRIGGER_MA_FAST", "TICK_TRIGGER_MA_SLOW", "TICK_TRIGGER_CROSS_MAX_AGE_SECONDS",
+                  "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID"), _008_hybrid_1min_trigger),
     BuyCondition(9, "_009_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _009_context_frame_ready),
     BuyCondition(10, "_010_bb_slope_rising", "CONTEXT", "BB 중심선 상승 기울기",
