@@ -18,6 +18,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-30] type=feat+fix owner=claude
+    summary: 사용자 요청(326030 SK바이오팜) - (1) r001 HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY=False면
+      check_buy_condition_1min_hybrid_trigger가 크로스 없는 3분/1분 uptrend_continuation 경로를 인정하지 않음(룩백 크로스만).
+      (2) tick_cross_label 경로에 external_bars_since_cross(BB갭 상한 완화용 경과봉) 인자 추가(기본 0 = 기존 동일).
+      (3) find_1min_ma_golden_cross() 신설 - 1분봉 MA_fast>MA_slow 골든크로스(현재 위 구간의 시작 봉) 탐색(r005 3중 크로스용).
+    impact: common - (1)은 g003에도 적용(continuation 진입 감소), (2)(3)은 기본값/미호출이면 무영향
+    compatibility: breaking ((1) 롤백: HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY=True)
 - [2026-10-29] type=feat owner=claude
     summary: 사용자 요청(003160 V자 반등 미진입) - _rebound_confirmed() 신설, r001 ENABLE_REBOUND_CONTEXT_EXCEPTION이면
       반등 확인(3분 종가·실시간가 > BB중심, DI 스프레드 >= 10, MACD > 시그널, 기울기 >= -6%) 시 _gate_bb_slope_rising /
@@ -514,6 +521,7 @@ from r001_define_config import (
     ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK,
     HYBRID_1MIN_TRIGGER_LOOKBACK_BARS,
     HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID,
+    HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY,
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT,
     HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT,
     HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT,
@@ -1818,6 +1826,7 @@ def check_buy_condition_1min_hybrid_trigger(
     context_uptrend_continuation: bool = False,
     info: dict | None = None,
     tick_cross_label: str | None = None,
+    external_bars_since_cross: int = 0,
 ) -> tuple[bool, str]:
     """하이브리드 매수 경로(1분봉 트리거 -> 3분봉 컨텍스트)의 1단계 1분봉 트리거 - r003 실전/g003
     백테스트 공용(2026-09-20 r003/g003에 따로 있던 복사본을 여기로 통합. 이 함수의 원형이던
@@ -1882,10 +1891,12 @@ def check_buy_condition_1min_hybrid_trigger(
     if tick_cross_label:
         # [2026-10-29] 호출측(r005 _008, r013)이 60/120틱봉 MA5>MA20 골든크로스를 확인했으면 그 크로스로 1분 크로스 탐색을
         # 대체한다(경과봉 0 = 가장 좁은 BB갭 상한). 아래 캔들/BB갭 추격가드는 그대로 적용. cross_bar_time은 호출측이 채운다.
+        # [2026-10-30] external_bars_since_cross: 호출측 크로스(r005 3중 크로스의 1분 MA 크로스) 이후 경과봉 - BB갭 상한 완화에 사용.
         golden_cross = True
         trigger_reason = f"{tick_cross_label}_GOLDEN_CROSS"
+        bars_since_cross = max(0, int(external_bars_since_cross))
         if info is not None:
-            info.update({"path": "tick", "cross_bar_time": None, "bars_since_cross": 0})
+            info.update({"path": "tick", "cross_bar_time": None, "bars_since_cross": bars_since_cross})
     elif golden_cross and info is not None:
         info.update({"path": "cross", "cross_bar_time": frame_1min.index[-1], "bars_since_cross": 0})
     if not golden_cross:
@@ -1911,7 +1922,8 @@ def check_buy_condition_1min_hybrid_trigger(
                     info.update({"path": "cross", "cross_bar_time": frame_1min.index[-(_lb - 1)], "bars_since_cross": bars_since_cross})
                 break
 
-        if not _found:
+        # [2026-10-30] HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY=False(326030 사례)면 크로스 없는 continuation 진입을 인정하지 않는다.
+        if not _found and HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY:
             if context_uptrend_continuation:
                 _found = True
                 trigger_reason = "1MIN_UPTREND_CONTINUATION_3MIN_CTX"
@@ -1975,6 +1987,48 @@ def check_buy_condition_1min_hybrid_trigger(
     # 하한은 통과한 틱이 12,070건이고, 그중 나머지 3분봉 게이트까지 전부 통과해 점수 단계에
     # 도달했을 틱은 217건(그 뒤 점수 10점/2회 연속 확인이 다시 걸러냄).
     return True, trigger_reason
+
+
+def find_1min_ma_golden_cross(frame_1min: pd.DataFrame, fast: int = 5, slow: int = 20) -> dict:
+    """[2026-10-30] 1분봉 MA_fast > MA_slow 골든크로스(HTS 이동평균선 기준) - r005 3중 크로스 트리거용.
+
+    마지막 확정봉에서 MA_fast > MA_slow여야 하고, 그 "위" 구간이 시작된 봉(직전 봉은 MA_fast <= MA_slow)을 크로스 봉으로
+    본다(r013 tick_ma_golden_cross와 같은 정의). MA는 프레임에 이미 계산된 MA_<fast> / BB_MIDDLE(=종가 SMA BB_PERIOD) 열을
+    우선 쓴다 - r003 1분 프레임은 전일 warmup 포함으로 계산돼 있어 장 초반에도 값이 있다. 열이 없으면 종가 rolling(min_periods=창).
+    반환: ok, reason, cross_bar_time(크로스 봉 라벨=봉 종료시각), bars_since_cross(크로스 봉 -> 마지막 봉 경과 봉 수),
+    ma_fast, ma_slow(마지막 봉 값).
+    """
+    out = {"ok": False, "reason": "", "cross_bar_time": None, "bars_since_cross": None,
+           "ma_fast": float("nan"), "ma_slow": float("nan")}
+    tag = f"1MIN_MA{fast}_MA{slow}"
+    if frame_1min is None or len(frame_1min) < 2 or "close" not in frame_1min.columns:
+        out["reason"] = f"{tag}_INSUFFICIENT_BARS"
+        return out
+    close = pd.to_numeric(frame_1min["close"], errors="coerce")
+    fast_col = f"MA_{fast}"
+    ma_fast = (pd.to_numeric(frame_1min[fast_col], errors="coerce") if fast_col in frame_1min.columns
+               else close.rolling(fast, min_periods=fast).mean())
+    ma_slow = (pd.to_numeric(frame_1min["BB_MIDDLE"], errors="coerce")
+               if slow == BB_PERIOD and "BB_MIDDLE" in frame_1min.columns
+               else close.rolling(slow, min_periods=slow).mean())
+    f_vals, s_vals = ma_fast.to_numpy(), ma_slow.to_numpy()
+    last = len(f_vals) - 1
+    out["ma_fast"], out["ma_slow"] = float(f_vals[last]), float(s_vals[last])
+    if pd.isna(f_vals[last]) or pd.isna(s_vals[last]):
+        out["reason"] = f"{tag}_MISSING"
+        return out
+    if not f_vals[last] > s_vals[last]:
+        out["reason"] = f"{tag}_NOT_ABOVE"
+        return out
+    i = last
+    while i - 1 >= 0 and not pd.isna(f_vals[i - 1]) and not pd.isna(s_vals[i - 1]) and f_vals[i - 1] > s_vals[i - 1]:
+        i -= 1
+    if i - 1 < 0 or pd.isna(f_vals[i - 1]) or pd.isna(s_vals[i - 1]):
+        out["reason"] = f"{tag}_NO_CROSS_IN_FRAME"  # 프레임 시작부터 위(또는 직전 값 없음) - 크로스 시점 불명
+        return out
+    out.update({"ok": True, "reason": f"{tag}_GOLDEN_CROSS", "cross_bar_time": frame_1min.index[i],
+                "bars_since_cross": last - i})
+    return out
 
 
 def check_1min_trigger_live_guard(

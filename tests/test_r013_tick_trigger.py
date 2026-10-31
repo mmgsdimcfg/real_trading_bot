@@ -288,7 +288,8 @@ class TestR005TickOr(unittest.TestCase):
     def setUp(self):
         for p in (mock.patch.object(r005, "ENTRY_1MIN_FRAME_REQUIRE_LATEST", False),
                   mock.patch.object(r005, "_steps_text", lambda ctx: ""),
-                  mock.patch.object(r005, "TICK_TRIGGER_MODE", "live")):
+                  mock.patch.object(r005, "TICK_TRIGGER_MODE", "live"),
+                  mock.patch.object(r005, "ENTRY_TRIGGER_MODE", "legacy")):  # 1-min OR tick path
             p.start()
         self.addCleanup(mock.patch.stopall)
         r005._TRIGGER_AGE_SEEN.clear()
