@@ -29,6 +29,15 @@ Update log:
       [BUY FAIL] 로그에 남김(실패 dict에는 rt_cd!=0 보장).
     impact: live - 조회 실패 시 매수 안 함(재주문 경로는 기존 '여력 부족 - 포기'로 처리)
     compatibility: breaking (주문 수량 감소/실패 시 미주문 방향)
+- [2026-10-30] type=feat owner=claude
+    summary: 사용자 요청(326030 - 틱 수집기 g011 미실행으로 60/120틱 트리거가 조용히 불인정) - r001 TICK_COLLECTOR_AUTOSTART면
+      run()이 g011_tick_collector를 자식 프로세스(별도 세션, --codes 감시 종목 최대 40 --until TICK_COLLECTOR_UNTIL)로 띄우고
+      루프마다 생존 확인 후 죽었으면 재기동(최소 간격 TICK_COLLECTOR_RESTART_MIN_INTERVAL_SECONDS). 이미 실행 중인 g011(/proc
+      cmdline)이 있으면 재사용. r003 종료 시 수집기는 그대로 둔다(15:31 자체 종료). 정규장 중 틱 파일이
+      TICK_FEED_WARN_AFTER_SECONDS 이상 갱신되지 않으면 [TICK FEED] WARN(5분 스로틀). ENTRY_TRIGGER_MODE="triple"이면
+      TICK_TRIGGER_MODE와 무관하게 틱 피드를 생성.
+    impact: live - 수집기 출력 runtime/log/<date>/g011_tick_collector.log
+    compatibility: backward-compatible (TICK_COLLECTOR_AUTOSTART=False면 기존 동일)
 - [2026-10-29] type=feat owner=claude
     summary: 틱 트리거 피드(r013 TickTriggerFeed)를 run() 시작 시 생성해 BuyServices.tick_trigger로 주입(r001
       TICK_TRIGGER_MODE="live"일 때). g011_tick_collector가 기록하는 runtime/data/ticks/YYYYMMDD/<code>.csv를 증분으로 읽음.
@@ -726,6 +735,7 @@ import json
 import os
 import queue
 import signal
+import subprocess
 import logging
 import re
 import sys
@@ -753,6 +763,11 @@ from r001_define_config import (
     RUNTIME_DATA_DIR,
     RUNTIME_LOG_DIR,
     TICK_TRIGGER_MODE,
+    ENTRY_TRIGGER_MODE,
+    TICK_COLLECTOR_AUTOSTART,
+    TICK_COLLECTOR_UNTIL,
+    TICK_COLLECTOR_RESTART_MIN_INTERVAL_SECONDS,
+    TICK_FEED_WARN_AFTER_SECONDS,
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
@@ -2224,8 +2239,9 @@ def _make_v2_shadow_runner(date_str: str):
 
 
 def _make_tick_trigger_feed():
-    """[2026-10-29] r013 tick-chart trigger feed or None (r001 TICK_TRIGGER_MODE). Needs g011_tick_collector running."""
-    if str(TICK_TRIGGER_MODE).lower() != "live":
+    """[2026-10-29] r013 tick-chart trigger feed or None (r001 TICK_TRIGGER_MODE). Needs g011_tick_collector running.
+    [2026-10-30] also created when ENTRY_TRIGGER_MODE="triple" (the triple-cross trigger requires the tick feed)."""
+    if str(TICK_TRIGGER_MODE).lower() != "live" and str(ENTRY_TRIGGER_MODE).lower() != "triple":
         return None
     try:
         import r001_define_config as _cfg_mod
@@ -2241,6 +2257,130 @@ def _make_tick_trigger_feed():
     except Exception as exc:
         log(f"  [TICK TRIG   ] init failed, tick trigger disabled: {exc}")
         return None
+
+
+# [2026-10-30] g011 tick collector supervision (r001 TICK_COLLECTOR_AUTOSTART).
+_TICK_COLLECTOR_SCRIPT = current_dir.parent / "data_simulation" / "g011_tick_collector.py"
+_TICK_COLLECTOR_STATE: dict = {"proc": None, "last_start": None, "last_warn": None, "reused_pid": None, "log_fh": None,
+                               "warned_codes": None}
+_TICK_COLLECTOR_MAX_CODES = 40  # g011 MAX_SUBSCRIPTIONS (KIS websocket limit per session)
+
+
+def _tick_collector_codes_of(pid: int) -> set[str] | None:
+    """--codes of a running g011 (None = no --codes, i.e. it subscribed the r004 file's first 40)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            argv = [a.decode("utf-8", "replace") for a in fh.read().split(b"\0") if a]
+    except OSError:
+        return None
+    if "--codes" not in argv:
+        return None
+    out = set()
+    for a in argv[argv.index("--codes") + 1:]:
+        if a.startswith("--"):
+            break
+        out.add(a.zfill(6))
+    return out
+
+
+def _find_running_tick_collector() -> int | None:
+    """PID of a g011_tick_collector.py process already running (started by hand or by an earlier r003), else None."""
+    me = os.getpid()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for name in entries:
+        if not name.isdigit() or int(name) == me:
+            continue
+        try:
+            with open(f"/proc/{name}/cmdline", "rb") as fh:
+                argv = fh.read().split(b"\0")
+        except OSError:
+            continue
+        if any(a.endswith(b"g011_tick_collector.py") for a in argv) and b"--dry-parse-test" not in argv:
+            return int(name)
+    return None
+
+
+def _tick_collector_until(now: datetime) -> datetime:
+    hh, mm = (int(x) for x in str(TICK_COLLECTOR_UNTIL).split(":"))
+    return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+
+def _supervise_tick_collector(now: datetime, codes: list[str]) -> None:
+    """Start g011 if it is not running (rate-limited), then warn when tick files stop updating in the regular session.
+    Never raises - the tick feed is optional for the loop (the triple trigger itself fails closed without it)."""
+    if not TICK_COLLECTOR_AUTOSTART:
+        return
+    if str(TICK_TRIGGER_MODE).lower() != "live" and str(ENTRY_TRIGGER_MODE).lower() != "triple":
+        return
+    st = _TICK_COLLECTOR_STATE
+    try:
+        if now < _tick_collector_until(now):
+            proc = st["proc"]
+            alive = proc is not None and proc.poll() is None
+            if proc is not None and not alive:
+                log(f"  [TICK COLL   ] g011 exited rc={proc.returncode} - will restart")
+                st["proc"] = None
+            if not alive:
+                pid = _find_running_tick_collector()
+                if pid is not None:
+                    if st["reused_pid"] != pid:
+                        st["reused_pid"] = pid
+                        log(f"  [TICK COLL   ] g011 already running pid={pid} - reusing (its code list is not changed)")
+                        have = _tick_collector_codes_of(pid)
+                        lacking = sorted({str(c).zfill(6) for c in codes} - have) if have is not None else []
+                        if lacking:
+                            log(f"  [TICK COLL   ] WARN running g011 does not subscribe {len(lacking)} watched codes "
+                                f"{lacking} - those codes cannot pass the tick/triple trigger (restart g011 to fix)")
+                elif (st["last_start"] is None
+                      or (now - st["last_start"]).total_seconds() >= TICK_COLLECTOR_RESTART_MIN_INTERVAL_SECONDS):
+                    st["last_start"] = now
+                    all_codes = [str(c).zfill(6) for c in codes]
+                    sub_codes = all_codes[:_TICK_COLLECTOR_MAX_CODES]
+                    if len(all_codes) > len(sub_codes):
+                        log(f"  [TICK COLL   ] WARN {len(all_codes)} watched codes > {_TICK_COLLECTOR_MAX_CODES} websocket "
+                            f"subscriptions - not collected (no tick/triple buys): {all_codes[len(sub_codes):]}")
+                    log_dir = RUNTIME_LOG_DIR / now.strftime("%Y%m%d")
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    if st["log_fh"] is not None:
+                        with contextlib.suppress(Exception):
+                            st["log_fh"].close()
+                    st["log_fh"] = open(log_dir / "g011_tick_collector.log", "a", encoding="utf-8")
+                    st["proc"] = subprocess.Popen(
+                        [sys.executable, str(_TICK_COLLECTOR_SCRIPT), "--codes", *sub_codes,
+                         "--until", str(TICK_COLLECTOR_UNTIL)],
+                        cwd=str(_TICK_COLLECTOR_SCRIPT.parent), stdin=subprocess.DEVNULL,
+                        stdout=st["log_fh"], stderr=subprocess.STDOUT, start_new_session=True,
+                    )
+                    st["reused_pid"] = None
+                    log(f"  [TICK COLL   ] started g011 pid={st['proc'].pid} codes={len(sub_codes)} "
+                        f"until={TICK_COLLECTOR_UNTIL}")
+        if REGULAR_START <= now.time() <= REGULAR_END and now >= now.replace(hour=9, minute=3, second=0, microsecond=0):
+            tick_dir = RUNTIME_DATA_DIR / "ticks" / now.strftime("%Y%m%d")
+            newest = None
+            if tick_dir.is_dir():
+                for f in tick_dir.glob("*.csv"):
+                    with contextlib.suppress(OSError):
+                        m = f.stat().st_mtime
+                        newest = m if newest is None or m > newest else newest
+            idle = None if newest is None else now.timestamp() - newest
+            if newest is not None and st["warned_codes"] is None:
+                # [Codex] one-time per-code check: subscribed codes still without a tick file after 09:03
+                missing = sorted(str(c).zfill(6) for c in codes[:_TICK_COLLECTOR_MAX_CODES]
+                                 if not (tick_dir / f"{str(c).zfill(6)}.csv").exists())
+                st["warned_codes"] = missing
+                if missing:
+                    log(f"  [TICK FEED   ] WARN no tick file yet for {len(missing)} codes {missing} "
+                        f"(no prints since open or subscription failed - see {tick_dir / '_collector.log'})")
+            if (idle is None or idle > TICK_FEED_WARN_AFTER_SECONDS) and (
+                    st["last_warn"] is None or (now - st["last_warn"]).total_seconds() >= 300):
+                st["last_warn"] = now
+                detail = "no tick files" if idle is None else f"newest tick file idle {idle:.0f}s"
+                log(f"  [TICK FEED   ] WARN {detail} in {tick_dir} - tick/triple trigger cannot pass (no buys)")
+    except Exception as exc:
+        log(f"  [TICK COLL   ] supervise failed: {exc}")
 
 
 def record_gate_decision(rec: dict) -> None:
@@ -5182,10 +5322,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     served_tick = datetime.now()
     regular_session_watchlist_reset_done = False
+    tick_collector_codes = list(watch_map.keys())
+    log(f"  [R003 MODE   ] ENTRY_TRIGGER_MODE={ENTRY_TRIGGER_MODE}")
 
     while True:
         current_dt = datetime.now()
         _ensure_log_date_for(current_dt)
+        _supervise_tick_collector(current_dt, tick_collector_codes)
 
         if current_dt.date() != current_trade_date:
             current_trade_date = current_dt.date()

@@ -1,6 +1,13 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-30] type=feat+fix owner=claude
+#     summary: 사용자 요청(326030 SK바이오팜 09:36 크로스 없는 continuation 매수 / 09:22 1분·60틱·120틱 골든크로스 미매수) -
+#       ENTRY_TRIGGER_MODE="triple" 신설: 1분 MA5>MA20 + 60틱 + 120틱 MA5>MA20 골든크로스가 모두 유효할 때만 매수(r005 _008),
+#       그때 3분 소프트 게이트(TRIPLE_CROSS_BYPASS_CONTEXT_GATES + 점수)는 건너뜀. HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY=False
+#       (legacy 모드에서도 continuation 진입 금지). TICK_COLLECTOR_AUTOSTART=True(r003이 g011 기동/감시).
+#     impact: live (r003) + g003(continuation 금지는 r002 공유라 백테스트에도 적용)
+#     compatibility: breaking (매수 감소 방향. 롤백: ENTRY_TRIGGER_MODE="legacy", HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY=True)
 # - [2026-10-29] type=feat owner=claude
 #     summary: 사용자 요청(003160 V자 반등 대응) - ENABLE_REBOUND_CONTEXT_EXCEPTION/REBOUND_MIN_DI_SPREAD/REBOUND_BB_SLOPE_FLOOR_PCT
 #       신설(r002 _rebound_confirmed: 반등 확인 시 3분 bb_slope_rising/stochastic_buy_signal 실패 통과). 20261029 로그 재생
@@ -1137,6 +1144,9 @@ HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS = 240.0
 # [2026-10-07] Codex 1차: 3분봉 컨텍스트 continuation 경로는 1분봉 종가가 BB중심선 아래여도 통과할 수 있었다 -
 # continuation(3분/1분) 경로도 1분봉 종가 > 1분봉 BB중심선을 요구한다.
 HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID = True
+# [2026-10-30] 사용자 요청(326030 SK바이오팜 09:36 - 크로스 없는 1MIN_UPTREND_CONTINUATION 매수 금지). False면 룩백 안에
+# 1분 BB중심선 크로스가 없을 때 3분/1분 uptrend_continuation 경로를 인정하지 않는다(r002, g003 공유). True면 기존 동작.
+HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY = False
 # [2026-10-28] 사용자 요청(091580 상신이디피 09:35 매수 - 1분/60틱/120틱 모두 하락 중 매수 후 -1.02% 손절) + Codex 검토.
 # 1분 트리거는 직전 "확정" 1분봉만 보므로 형성 중인 봉이 꺾여도 그 1분 내내 트리거가 유효했다(09:34:57 판정 시 확정봉
 # 09:33~09:34 종가 27,850 -> 실시간 27,650, -0.72%; 그 봉은 27,650 음봉으로 마감). 실시간가가 직전 확정 1분봉 종가보다
@@ -1167,6 +1177,31 @@ TICK_TRIGGER_FEED_STALE_SECONDS = 120.0
 # 틱 경로에는 적용하지 않는다(하락폭 0.4% 반려는 적용). True면 틱 경로도 1분 BB중심선 위를 요구.
 TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID = False
 TICK_DATA_DIR = RUNTIME_DATA_DIR / "ticks"
+
+# [2026-10-30] 사용자 요청(326030 SK바이오팜 - 09:36 크로스 없는 1MIN_UPTREND_CONTINUATION 매수 후 -0.89% 손절,
+# 09:22 1분/60틱/120틱 모두 골든크로스였는데 3분 컨텍스트(BB_MID_DOWNTREND/STOCH_D)에 막혀 미매수) + Codex 검토.
+# "triple": 1분봉 MA5>MA20 + 60틱봉 + 120틱봉 MA5>MA20 골든크로스가 모두 유효할 때만 매수 트리거 통과(r005 _008).
+#   - 틱 피드 없음/stale/예외면 매수 안 함(fail-closed). g011은 KRX 정규장 체결만 수집 -> NXT 프리/애프터 신규 매수 없음.
+#   - TRADING_STRATEGY_MODE="basic"이어도 triple이 우선(normal 조건 목록 사용).
+#   - 3중 크로스가 통과하면 아래 3분 소프트 게이트와 점수 임계값은 실패해도 통과(BYPASS로 사유에 기록).
+#     유지: 유동성(_015), ATR(_014), BB상단 여유(_012), 과상승(_018/_019), 개장갭(_020), Edge AI(_028), 2회 연속확인(_021) 등.
+# "legacy": 기존 1분 BB중심선 크로스 OR 틱 크로스(TICK_TRIGGER_MODE) 경로(롤백용).
+ENTRY_TRIGGER_MODE = "triple"              # "triple" | "legacy"
+TRIPLE_1MIN_MA_FAST = 5
+TRIPLE_1MIN_MA_SLOW = 20
+# 1분 MA 크로스 봉 확정 시각(봉 종료 라벨)부터의 유효시간 - 틱 크로스(TICK_TRIGGER_CROSS_MAX_AGE_SECONDS)와 같은 240초.
+TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS = 240.0
+# 3중 크로스 경로의 실시간 가드: 하락폭(HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT)은 항상, 1분 BB중심선 위 요구는 이 값.
+TRIPLE_REQUIRE_1MIN_ABOVE_MID = True
+# 3중 크로스일 때 실패해도 통과시키는 3분 컨텍스트 게이트(r002 HYBRID_3MIN_CONTEXT_GATES 이름). 점수 임계값은 아래 플래그.
+TRIPLE_CROSS_BYPASS_CONTEXT_GATES = ("bb_slope_rising", "bb_mid_downtrend_block", "stochastic_buy_signal", "di_spread_min")
+TRIPLE_CROSS_BYPASS_SCORE = True
+# r003이 시작 시 g011_tick_collector를 자식 프로세스로 띄우고(이미 실행 중이면 재사용) 루프마다 생존 확인, 죽으면 재기동.
+TICK_COLLECTOR_AUTOSTART = True
+TICK_COLLECTOR_UNTIL = "15:31"
+TICK_COLLECTOR_RESTART_MIN_INTERVAL_SECONDS = 60.0
+# 정규장 중 틱 피드 이상(파일 없음/stale)이 이 초 이상 이어지면 [TICK FEED] WARN (종목별 스로틀).
+TICK_FEED_WARN_AFTER_SECONDS = 180.0
 
 # =============================================================================================
 # [2026-10-07] 매매 전략 모드 - 사용자 요청. "normal" = 기존 조건 전체(그대로 보존), "basic" = 아래 기본 조건만으로 매매.

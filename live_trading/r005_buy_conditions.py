@@ -49,6 +49,15 @@ Behavior notes kept from the old inline code (do not "fix" them here - they are 
   order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-10-30] type=feat+fix owner=claude
+    summary: 사용자 요청(326030 SK바이오팜 09:36 크로스 없는 continuation 매수 / 09:22 3중 골든크로스 미매수) + Codex 검토.
+      r001 ENTRY_TRIGGER_MODE="triple"이면 _008이 1분 MA5>MA20(r002 find_1min_ma_golden_cross, 크로스 봉 확정 후
+      TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS 이내) AND 60틱 AND 120틱 MA5>MA20 골든크로스(r013 crosses 각각 ok)일 때만 통과.
+      틱 서비스 없음/예외/stale이면 반려(fail-closed). 1분 캔들/BB갭 추격가드(경과봉=1분 MA 크로스 이후 봉 수)와 실시간
+      가드는 유지. 통과 시 ctx.triple_cross=True -> _context_gate가 TRIPLE_CROSS_BYPASS_CONTEXT_GATES 실패를 통과 처리,
+      _017은 TRIPLE_CROSS_BYPASS_SCORE면 점수 미달도 통과(buy_reason에 BYPASS 게이트 기록). triple 모드는 basic보다 우선.
+    impact: live (r003)
+    compatibility: breaking (매수 조건 변경. 롤백: r001 ENTRY_TRIGGER_MODE="legacy")
 - [2026-10-29] type=feat owner=claude
     summary: _008에 틱 트리거 OR 추가(사용자 요청, 003160 디아이 10:42 사례) - services.tick_trigger(r013)가 60/120틱봉
       MA5>MA20 골든크로스를 보고하고 1분 쪽에 유효한 크로스가 없으면(크로스 없음/continuation BB중심선 아래/1분 크로스
@@ -118,7 +127,7 @@ Update log (append only):
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -155,6 +164,14 @@ from r001_define_config import (
     RUNTIME_DATA_DIR,
     TICK_TRIGGER_MODE,
     TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID,
+    ENTRY_TRIGGER_MODE,
+    TICK_TRIGGER_BAR_SIZES,
+    TRIPLE_1MIN_MA_FAST,
+    TRIPLE_1MIN_MA_SLOW,
+    TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
+    TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    TRIPLE_CROSS_BYPASS_CONTEXT_GATES,
+    TRIPLE_CROSS_BYPASS_SCORE,
 )
 from r008_strategy_v2 import krx_tick_size
 from r002_strategy_core_shared import (
@@ -168,6 +185,7 @@ from r002_strategy_core_shared import (
     check_buy_condition_1min_hybrid_trigger,
     check_1min_trigger_live_guard,
     evaluate_context_score,
+    find_1min_ma_golden_cross,
     gate_steps_diagnostic,
     passes_opening_gap_volume_gate,
     update_timed_condition_state,
@@ -267,6 +285,9 @@ class BuyContext:
     eval_mode: str = "live"
     # [2026-10-27] _008이 통과시킨 1분 트리거의 info(path/bars_since_cross) - _028 Edge AI 피처가 재계산 대신 사용
     trigger_info: dict | None = None
+    # [2026-10-30] _008 triple 모드에서 1분 MA + 60틱 + 120틱 골든크로스가 모두 통과했으면 True(3분 소프트 게이트 BYPASS 대상)
+    triple_cross: bool = False
+    bypassed_gates: list = field(default_factory=list)
 
     @property
     def norm_code(self) -> str:
@@ -334,6 +355,9 @@ def _context_gate(ctx: BuyContext, gate_name: str) -> bool:
     if gate is None:
         return True  # r002가 이 게이트를 HYBRID_3MIN_CONTEXT_GATES에서 뺀 경우(플래그 OFF) - 기존과 동일하게 건너뜀
     passed, ctx.eval_ctx, reason = gate.eval_fn(ctx.eval_ctx)
+    if not passed and ctx.triple_cross and gate_name in TRIPLE_CROSS_BYPASS_CONTEXT_GATES:
+        ctx.bypassed_gates.append(gate_name)  # [2026-10-30] 3중 골든크로스 - 소프트 게이트 실패를 통과 처리(사유에 기록)
+        return True
     if not passed:
         _reject_hybrid(ctx, f"HYBRID_3MIN_CTX_{reason}")
         return False
@@ -485,10 +509,11 @@ def _cross_age_seconds(ctx: BuyContext, cross_bar_time) -> float:
     return float("nan")
 
 
-def _evaluate_tick_trigger(ctx: BuyContext):
-    """r013 틱 트리거 결과(TickTriggerResult) 또는 None(모드 off / 서비스 미주입 / 예외)."""
+def _evaluate_tick_trigger(ctx: BuyContext, required: bool = False):
+    """r013 틱 트리거 결과(TickTriggerResult) 또는 None(모드 off / 서비스 미주입 / 예외).
+    required=True(triple 모드)면 TICK_TRIGGER_MODE와 무관하게 서비스가 있으면 평가한다."""
     fn = getattr(ctx.services, "tick_trigger", None)
-    if fn is None or TICK_TRIGGER_MODE != "live":
+    if fn is None or (not required and TICK_TRIGGER_MODE != "live"):
         return None
     try:
         return fn(ctx.norm_code, ctx.current_dt)
@@ -506,13 +531,14 @@ def _tick_may_replace_1min(ctx: BuyContext, trigger_ok: bool, trigger_reason: st
     return trigger_reason in ("1MIN_NO_BB_MID_GOLDEN_CROSS", "1MIN_CONTINUATION_BELOW_BB_MID")
 
 
-def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
+def _load_entry_frame_1min(ctx: BuyContext) -> pd.DataFrame | None:
+    """_008 공통: 진입 판단용 1분봉(직전 확정분까지 최신) 또는 None(반려 로그 완료)."""
     frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
     if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
         ctx.trigger_flag = "-"
         ctx.steps_text = _steps_text(ctx)
         _reject_hybrid(ctx, "HYBRID_1MIN_FRAME_UNAVAILABLE")
-        return False
+        return None
 
     # [2026-10-07 Codex 1/2차] 진입 판단용 1분봉은 직전 확정분까지 반드시 있어야 한다(캐시가 한 봉 늦으면 이전 봉으로 매수).
     # KIS는 무거래 분도 거래량 0 행을 주므로(실측) 마지막 라벨이 기대 라벨과 정확히 같아야 한다. 미래 라벨도 반려.
@@ -531,7 +557,98 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
                 f"HYBRID_1MIN_FRAME_STALE_last={last_label:%H:%M}_expected={expected_label:%H:%M}"
                 if last_label is not None and not pd.isna(last_label) else "HYBRID_1MIN_FRAME_STALE_last=NA",
             )
-            return False
+            return None
+    return frame_1min
+
+
+def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool:
+    """[2026-10-30] triple 모드 트리거: 1분 MA5>MA20 + 60틱 + 120틱 MA5>MA20 골든크로스가 모두 유효할 때만 통과.
+
+    - 1분: r002 find_1min_ma_golden_cross, 크로스 봉 라벨(종료시각)부터 TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS 이내.
+    - 틱: r013 TickTriggerResult.crosses의 각 봉 크기(TICK_TRIGGER_BAR_SIZES)가 모두 ok(나이는 r013이 판정).
+      틱 서비스 없음/예외/ABSTAIN(파일 없음, stale)이면 반려(fail-closed).
+    - 그 다음 1분 캔들/BB갭 추격가드(r002, 경과봉 = 1분 MA 크로스 이후 봉 수)와 실시간 가드(하락폭 + 1분 BB중심선 위)를 적용.
+    continuation/연속유효 타이머는 쓰지 않는다 - 세 크로스 각각의 나이 상한이 신호 수명을 대신한다.
+    """
+    ma = find_1min_ma_golden_cross(frame_1min, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW)
+    missing: list[str] = []
+    ma_age = float("nan")
+    if not ma["ok"]:
+        missing.append(ma["reason"])
+    else:
+        ma_age = _cross_age_seconds(ctx, ma["cross_bar_time"])
+        if pd.isna(ma_age) or ma_age < 0:
+            missing.append(f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_TIME_INVALID")
+        elif ma_age > TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS:
+            missing.append(
+                f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_EXPIRED_{ma_age:.0f}s"
+                f"_cross={pd.Timestamp(ma['cross_bar_time']):%H:%M}"
+            )
+    tick_result = _evaluate_tick_trigger(ctx, required=True)
+    tick_cross_times: dict[int, object] = {}
+    if tick_result is None:
+        missing.append("TICK_FEED_UNAVAILABLE")
+    else:
+        crosses = getattr(tick_result, "crosses", None) or {}
+        if not crosses:
+            missing.append(tick_result.reason or "TICK_NO_RESULT")
+        for n in TICK_TRIGGER_BAR_SIZES:
+            c = crosses.get(int(n))
+            if c is None:
+                if crosses:
+                    missing.append(f"TICK{n}_NOT_EVALUATED")
+            elif not c.ok:
+                missing.append(c.reason)
+            else:
+                tick_cross_times[int(n)] = c.cross_time
+    ctx.trigger_flag = "F" if missing else "P"
+    ctx.steps_text = _steps_text(ctx)
+    if missing:
+        _reject_hybrid(ctx, f"TRIPLE_CROSS_MISSING_{'|'.join(missing)}")
+        return False
+
+    label = f"TRIPLE_CROSS_1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}+" + "+".join(
+        f"TICK{n}" for n in TICK_TRIGGER_BAR_SIZES
+    )
+    guard_info: dict = {}
+    guard_ok, guard_reason = check_buy_condition_1min_hybrid_trigger(
+        frame_1min, info=guard_info, tick_cross_label=label,
+        external_bars_since_cross=int(ma["bars_since_cross"] or 0),
+    )
+    if not guard_ok:
+        _reject_hybrid(ctx, f"TRIPLE_CROSS_{guard_reason}")
+        return False
+    live_ok, live_reason = check_1min_trigger_live_guard(
+        frame_1min, ctx.price, require_above_mid=TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    )
+    if not live_ok:
+        _reject_hybrid(ctx, f"TRIPLE_CROSS_{live_reason}")
+        return False
+    trigger_info = {
+        "path": "triple", "cross_bar_time": ma["cross_bar_time"], "bars_since_cross": ma["bars_since_cross"],
+        "run_start_time": guard_info.get("run_start_time"),
+        "tick_cross_times": {n: _ts_text(t) for n, t in tick_cross_times.items()},
+    }
+    _record_trigger_age(
+        ctx, "TRIPLE_CROSS_PASS", ma["cross_bar_time"], path="triple", trigger=guard_reason,
+        cross_bar_time=ma["cross_bar_time"], cross_age_s=round(ma_age, 1),
+        bars_since_cross=ma["bars_since_cross"], tick_cross_times=trigger_info["tick_cross_times"],
+        last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
+    )
+    ctx.triple_cross = True
+    ctx.trigger_reason = guard_reason
+    ctx.trigger_info = trigger_info
+    return True
+
+
+def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
+    ctx.triple_cross = False
+    ctx.bypassed_gates = []
+    frame_1min = _load_entry_frame_1min(ctx)
+    if frame_1min is None:
+        return False
+    if str(ENTRY_TRIGGER_MODE).lower() == "triple":
+        return _008_triple_cross_trigger(ctx, frame_1min)
 
     # [2026-09-09] 3분 컨텍스트가 이미 uptrend_continuation으로 판정한 상태면 그 신호를 1분 트리거에도
     # 그대로 전달한다 - 452190 한빛레이저 사례(1분 트리거가 룩백 밖의 오래/강하게 지속된 랠리를 계속 놓침)
@@ -693,6 +810,15 @@ def _016_di_spread_min(ctx: BuyContext) -> bool:
 
 def _017_context_score_threshold(ctx: BuyContext) -> bool:
     ok, reason = evaluate_context_score(ctx.eval_ctx, ctx.current_dt, ctx.config)
+    if ctx.triple_cross:
+        # [2026-10-30] 3중 골든크로스 경로 - 점수 미달은 TRIPLE_CROSS_BYPASS_SCORE일 때만 통과. 사유에 BYPASS 게이트를 남긴다.
+        if not ok and not TRIPLE_CROSS_BYPASS_SCORE:
+            _reject_hybrid(ctx, reason)
+            return False
+        bypassed = list(ctx.bypassed_gates) + ([] if ok else ["score"])
+        bypass_txt = f"+BYPASS({','.join(bypassed)})" if bypassed else ""
+        ctx.buy_reason = f"{ctx.trigger_reason}+{reason}{bypass_txt}"
+        return True
     if not ok:
         _reject_hybrid(ctx, reason)
         return False
@@ -1107,6 +1233,9 @@ if not _registered_gate_names - set(_GATES_BY_NAME) <= _OPTIONAL_CONTEXT_GATES:
 
 def active_buy_conditions() -> tuple[BuyCondition, ...]:
     """[2026-10-07] TRADING_STRATEGY_MODE에 따른 매수 조건 목록 ("basic"이면 기본 조건, 그 외 기존 normal)."""
+    # [2026-10-30] ENTRY_TRIGGER_MODE="triple"이면 basic보다 우선(basic 트리거는 3중 크로스를 강제하지 않음 - Codex 검토)
+    if str(ENTRY_TRIGGER_MODE).lower() == "triple":
+        return BUY_CONDITIONS
     return BASIC_BUY_CONDITIONS if str(TRADING_STRATEGY_MODE).lower() == "basic" else BUY_CONDITIONS
 
 

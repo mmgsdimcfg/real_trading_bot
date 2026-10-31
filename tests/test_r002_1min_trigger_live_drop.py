@@ -93,6 +93,7 @@ class TestR005Wiring(unittest.TestCase):
         logs: list = []
         patches = [
             mock.patch.object(r005, "ENTRY_1MIN_FRAME_REQUIRE_LATEST", False),
+            mock.patch.object(r005, "ENTRY_TRIGGER_MODE", "legacy"),  # legacy 1-min path (2026-10-30 default = triple)
             mock.patch.object(r005, "_steps_text", lambda ctx: ""),
             mock.patch.object(r005, "check_buy_condition_1min_hybrid_trigger",
                               lambda *a, **k: (True, "1MIN_UPTREND_CONTINUATION")),
