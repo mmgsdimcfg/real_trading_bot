@@ -29,7 +29,7 @@ from pathlib import Path
 
 # 프로젝트 루트 및 모듈 경로 설정
 current_dir = Path(__file__).resolve().parent
-project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
+project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[2] / "open-trading-api")))
 
 sys.path.insert(0, str(project_root / "examples_llm"))
 sys.path.insert(0, str(project_root / "examples_user" / "domestic_stock"))
