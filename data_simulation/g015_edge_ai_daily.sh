@@ -4,7 +4,7 @@
 #   2) g014: walk-forward re-validation, threshold re-selection, promotion check, publish current_* model
 # r003 (r011) hot-reloads runtime/edge_ai/current_meta.json within 60 s - no bot restart needed.
 #
-# crontab example:  30 21 * * 1-5  /home/xgraph/git/auto_trading_src/data_simulation/g015_edge_ai_daily.sh
+# crontab example:  30 21 * * 1-5  /data/srv/autobot/auto_trading_src/data_simulation/g015_edge_ai_daily.sh
 #
 # Update log:
 # - [2026-10-26] type=feat owner=claude

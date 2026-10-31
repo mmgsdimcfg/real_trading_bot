@@ -278,7 +278,7 @@ import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "live_trading"))  # r001_define_config, r002_strategy_core_shared
-PROJECT_ROOT = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
+PROJECT_ROOT = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[2] / "open-trading-api")))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_user" / "domestic_stock"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm" / "domestic_stock" / "inquire_time_dailychartprice"))

@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 # 절대경로 설정
-project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path.home() / "git" / "open-trading-api")))
+project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[3] / "open-trading-api")))
 sys.path.insert(0, str(project_root / "examples_llm"))
 
 import kis_auth as ka
