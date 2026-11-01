@@ -38,6 +38,12 @@ Order                                        Kind        Old r003 inline block (
   _022 shared reversal sell                  EXIT        5058-5099  (r002 check_sell_condition)
 
 Update log (append only):
+- [2026-10-31] type=feat owner=claude
+    summary: 사용자 결정 - 손실 매도 조건 삭제(OFF). _013/_014 시그널 매도에 r001 ENABLE_SIGNAL_EXIT_STOCH_K_LT_D/
+      ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN(기본 False) 킬스위치 추가, _011 1분봉 데드크로스 매도는 기존
+      ENABLE_HYBRID_1MIN_DEADCROSS_EXIT=False. 실매매 09-23 이후 세 조건 합계 승률 0~1.3% (r001 Update log 2026-10-31).
+    impact: live (r003)
+    compatibility: breaking (롤백: r001 세 플래그 True)
 - [2026-10-15] type=fix owner=claude
     summary: Codex 2~3차 검토 지적 - _003 peak_next_bar_bearish_exit의 고점봉 off-by-one 수정. 3분봉은 종료시각
       라벨(r003 fetch_3min_frame: label/closed="right")이고 ctx.bar_time은 마지막 '확정봉'인데, _002가 실시간 틱 신고점에
@@ -105,6 +111,8 @@ from r001_define_config import (
     BREAKEVEN_FAIL_CONFIRM_SECONDS,
     BREAKEVEN_FAIL_GIVEBACK_PCT,
     ENABLE_HYBRID_1MIN_DEADCROSS_EXIT,
+    ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN,
+    ENABLE_SIGNAL_EXIT_STOCH_K_LT_D,
     ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT,
     ENABLE_PYRAMIDING,
     ENABLE_STAGED_TAKE_PROFIT,
@@ -996,6 +1004,8 @@ def _012_peak_retracement_guard(ctx: SellContext) -> bool:
 
 
 def _013_signal_exit_stoch_k_lt_d(ctx: SellContext) -> bool:
+    if not ENABLE_SIGNAL_EXIT_STOCH_K_LT_D:
+        return False
     code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
     s = _signal_trend_inputs(ctx)
     k_now, d_now = s["k_now"], s["d_now"]
@@ -1021,6 +1031,8 @@ def _013_signal_exit_stoch_k_lt_d(ctx: SellContext) -> bool:
 
 
 def _014_signal_exit_macd_hist_down(ctx: SellContext) -> bool:
+    if not ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN:
+        return False
     code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
     s = _signal_trend_inputs(ctx)
     hist_now, hist_prev, hist_prev2 = s["hist_now"], s["hist_prev"], s["hist_prev2"]
@@ -1386,10 +1398,10 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
                    "PEAK_RETRACE_GUARD_ATR_MULT", "PEAK_RETRACE_GUARD_CONFIRM_SECONDS"), _012_peak_retracement_guard),
     SellCondition(13, "_013_signal_exit_stoch_k_lt_d", "EXIT", "시그널 청산: 스토캐스틱 K<D",
                   "%K<%D이면 전량 청산. 강한 상승추세/최소 보유시간 미달/수익 충분 시에는 억제(로그만)",
-                  ("SIGNAL_EXIT_MIN_HOLD_SECONDS", "SIGNAL_EXIT_STRONG_TREND_ADX_MIN", "SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN"), _013_signal_exit_stoch_k_lt_d),
+                  ("ENABLE_SIGNAL_EXIT_STOCH_K_LT_D", "SIGNAL_EXIT_MIN_HOLD_SECONDS", "SIGNAL_EXIT_STRONG_TREND_ADX_MIN", "SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN"), _013_signal_exit_stoch_k_lt_d),
     SellCondition(14, "_014_signal_exit_macd_hist_down", "EXIT", "시그널 청산: MACD 히스토그램 2봉 하락",
                   "MACD_HIST 2봉 연속 하락 + 상승추세 아님 + 최소 보유시간 + 손익 <= SIGNAL_EXIT_MACD_PNL_MAX 이면 전량 청산",
-                  ("SIGNAL_EXIT_MACD_PNL_MAX", "SIGNAL_EXIT_MIN_HOLD_SECONDS"), _014_signal_exit_macd_hist_down),
+                  ("ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN", "SIGNAL_EXIT_MACD_PNL_MAX", "SIGNAL_EXIT_MIN_HOLD_SECONDS"), _014_signal_exit_macd_hist_down),
     SellCondition(15, "_015_atr_take_profit", "EXIT", "ATR 익절선 도달",
                   "손익 >= ATR 익절선: 트레일 확장 모드면 로그만(트레일 무장), 아니면 전량 익절",
                   ("ATR_TAKE_PROFIT_MULTIPLIER", "ENABLE_TP_EXTENSION_TRAILING", "TP_EXTENSION_TRAIL_FROM_PEAK"), _015_atr_take_profit),
