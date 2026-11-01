@@ -84,6 +84,7 @@ FAIL_REASON_DESC = {
     "bearish_candle_dominant": ("최근 10일 중 음봉 60% 이상", "60% or more bearish candles in the last 10 days"),
     "box_range_no_progress": ("최근 10일 변동폭 8% 이상인데 순변동 1% 미만(박스권 정체)", "Last 10 days: range >= 8% but net change < 1% (box-range stall)"),
     "big_bearish_candle": ("당일 장대음봉(몸통 2% 이상)", "Large bearish candle on the day (body >= 2%)"),
+    "2d_close_downtrend": ("당일 포함 2거래일 연속 종가 하락", "Close fell 2 trading days in a row (including the day)"),
     "down_trend": ("하락 추세(5일선 < 20일선, 5일선 하락)", "Downtrend (MA5 < MA20 and MA5 falling)"),
     "flat_trend": ("추세 미확정(상승도 하락도 아님)", "No confirmed trend (neither up nor down)"),
     "linreg_long_term_downtrend": ("20일 회귀선 기울기 -0.3%/일 이하이고 R² 0.5 이상(뚜렷한 장기 하락)", "20-day regression slope <= -0.3%/day with R² >= 0.5 (clear long-term decline)"),

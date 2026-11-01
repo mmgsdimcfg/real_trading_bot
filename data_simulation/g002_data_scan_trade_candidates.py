@@ -24,6 +24,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-01] type=tune owner=claude
+    summary: 사용자 결정 - 대상일 포함 2거래일 연속 종가 하락 종목 하드 제외(2d_close_downtrend, 반전 예외/패턴 override/
+      보충 구제 없음). 20261029 디케이티(290550)가 10/28·10/29 연속 하락인데 비패턴 보충으로 선정된 사례. 상승추세 유동
+      종목 D+1 시가->종가: 9/22 이후 해당 -0.97% vs 나머지 -0.45%, 이전은 차이 없음. 롤백: EXCLUDE_2D_CLOSE_DOWNTREND=False.
+    impact: scanner (선정 종목 감소, g008 탈락 사유 문구 추가)
+    compatibility: breaking (선정 기준 강화)
 - [2026-10-29] type=feat owner=claude
     summary: --notify-email 추가 - 스캔 종료 시 g016_email_notify로 종목 리스트(본문)와 picks/ranked/scanner_report/
       선정이유(ko) 파일(첨부)을 메일 전송. 설정은 ~/.mail/mail_config.json. 전송 실패는 스캔 결과에 영향 없음.
@@ -656,6 +662,11 @@ FALLBACK_NON_PATTERN_MAX_VS_MA20 = 0.10
 # 하드필터로 계속 제외되고, 당일 음봉은 점수에서 -4점(last_bearish)으로 반영된다. 52거래일 재현(장중 ATR 적용, MA120 -2%
 # 기준): 보충분 하루 +4종목(23.1 -> 27.3, 10월 13.4 -> 16.2), D+1 시가->종가 +0.10% -> +0.19%. 롤백: False.
 FALLBACK_ALLOW_LAST_BEARISH = True
+# [2026-11-01] 대상일 포함 2거래일 연속 종가 하락(c[-3] > c[-2] > c[-1]) 하드 제외(사용자 결정, 20261029 디케이티
+# 290550이 10/28 -1.6%, 10/29 -3.2% 연속 하락인데 보충으로 선정된 사례). 반전 예외/패턴 override 없음.
+# 상승추세 유동 종목(거래대금 50억+, 종가>MA20, MA20 상승) D+1 시가->종가: 9/22 이후 해당 -0.97% vs 나머지 -0.45%
+# (480건), 이전 -0.62% vs -0.64%(차이 없음). 롤백: False.
+EXCLUDE_2D_CLOSE_DOWNTREND = True
 
 
 # ---------------------------------------------------------------------------
@@ -1118,6 +1129,12 @@ def _is_3d_close_downtrend(df):
         return False
     tail = closes.tail(4).values
     return all(tail[i] > tail[i + 1] for i in range(3))
+
+
+def _is_2d_close_downtrend(closes) -> bool:
+    """True when the last 3 closes (target day last) fall twice in a row: c[-3] > c[-2] > c[-1]."""
+    tail = [float(c) for c in closes if c is not None and pd.notna(c)][-3:]
+    return len(tail) == 3 and tail[0] > tail[1] > tail[2]
 
 
 def _bb_lower_is_uptrend(df, lookback_days=3):
@@ -1948,6 +1965,15 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         _close_p = float(_last.get("close") or 0)
         if _open_p > 0 and _close_p < _open_p and (_open_p - _close_p) / _open_p >= 0.020:
             candidate["fail_reasons"].append("big_bearish_candle")
+
+    # [2026-11-01] 대상일 포함 2거래일 연속 종가 하락 하드 제외(EXCLUDE_2D_CLOSE_DOWNTREND). 서버 일봉에 대상일 행이
+    # 없으면 대상일 종가는 price(10s 집계 마지막 종가)로 붙인다.
+    if EXCLUDE_2D_CLOSE_DOWNTREND:
+        _closes = list(_check_df["close"].dropna().tail(3 if hist_is_current else 2))
+        if not hist_is_current:
+            _closes.append(price)
+        if _is_2d_close_downtrend(_closes):
+            candidate["fail_reasons"].append("2d_close_downtrend")
 
     # 이전 3 거래일 연속 종가 하락 (반전 신호 없을 때) - 소프트 경고로 완화 (2026-07-22)
     # 단, daily_5d_downtrend가 이미 잡혔다면 생략한다: 최근 5거래일 연속 하락(c[-5]>c[-4]>c[-3]>c[-2]>c[-1])은
