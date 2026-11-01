@@ -1,6 +1,14 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-10-31] type=feat owner=claude
+#     summary: 사용자 결정(실매매 09-23 이후 매도 141건 분석 + g019/g020 시뮬레이션 검토) - 손실 매도 조건 3개 삭제(OFF):
+#       1분봉 데드크로스 매도(76건 합계 -84,761원, 승률 1.3%) ENABLE_HYBRID_1MIN_DEADCROSS_EXIT=False,
+#       시그널 매도 스토캐스틱 K<D / MACD 히스토그램 2봉 하락(승률 0%) 신규 ENABLE_SIGNAL_EXIT_STOCH_K_LT_D/
+#       ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN=False (r006 _011/_013/_014, g003 동일 플래그). 손실 포지션은 남은 손절
+#       (하드/ATR/무추세/매수직후 급락/본전실패)과 당일 강제청산이 처리.
+#     impact: live (r003) + g003
+#     compatibility: breaking (매도 감소 방향. 롤백: 세 플래그 True)
 # - [2026-10-30] type=feat+fix owner=claude
 #     summary: 사용자 요청(326030 SK바이오팜 09:36 크로스 없는 continuation 매수 / 09:22 1분·60틱·120틱 골든크로스 미매수) -
 #       ENTRY_TRIGGER_MODE="triple" 신설: 1분 MA5>MA20 + 60틱 + 120틱 MA5>MA20 골든크로스가 모두 유효할 때만 매수(r005 _008),
@@ -948,6 +956,9 @@ SIGNAL_EXIT_MIN_HOLD_SECONDS = 600.0  # 시그널 기반 청산(스토캐스틱/
 SIGNAL_EXIT_STRONG_TREND_ADX_MIN = 28.0  # 이 값 초과 + DI+>DI- 이면 스토캐스틱 매도신호 억제
 SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN = -0.012  # 이 손익률 초과(덜 손해)면 스토캐스틱 매도신호 억제
 SIGNAL_EXIT_MACD_PNL_MAX = -0.008  # 이 손익률 이하여야 MACD 히스토그램 2봉 하락 매도 발동
+# [2026-10-31] 사용자 결정으로 시그널 매도 삭제(OFF) - 실매매 승률 0% (STOCH 8건 -20,170원, MACD 30건 -63,715원).
+ENABLE_SIGNAL_EXIT_STOCH_K_LT_D = False
+ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN = False
 ADX_BUY_MIN = 25.0  # 매수 진입용 ADX 최소값
 REQUIRE_ADX_RISING = True  # 매수 시 ADX가 직전봉 대비 우상향이어야 하는지 여부
 REQUIRE_DI_PLUS_DOMINANT = True  # 매수 시 +DI가 -DI보다 커야 하는지 여부
@@ -1238,7 +1249,7 @@ BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS = 3
 #     정상 상승추세 눌림목에서의 오매도(휩쏘) 방지. (5) 확인창(CONFIRM_SECONDS)으로 단일 틱 노이즈 방지 -
 #     HARD_STOP_CONFIRM_SECONDS/ATR_STOP_CONFIRM_SECONDS와 동일 패턴.
 # ENABLE 플래그로 명확한 킬스위치를 둔다(다른 상수처럼 <=0 암묵적 비활성보다 이 조건은 영향이 커서 명시적으로).
-ENABLE_HYBRID_1MIN_DEADCROSS_EXIT = True
+ENABLE_HYBRID_1MIN_DEADCROSS_EXIT = False  # [2026-10-31] 사용자 결정으로 삭제(OFF): 09-23 이후 76건 -84,761원, 승률 1.3%
 HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS = 5          # 매수측(12봉)보다 좁힘 - 손절/추세이탈 반응은 빠르게
 HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS = 60.0    # 매수 직후 최소 유예(초) - 기존 시그널 청산군(600초)보다 훨씬 짧음
 HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS = 15.0     # 노이즈 방지 확인창(초) - HARD_STOP(10s)~ATR_STOP(20s) 사이
