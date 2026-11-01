@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""g002 2-day consecutive close decline exclusion (2026-11-01, 20261029 290550 case)."""
+"""g002 selection filters: 2-day close decline exclusion + near-miss fallback (2026-11-01)."""
 from __future__ import annotations
 
 import sys
@@ -37,6 +37,13 @@ class TestTwoDayCloseDowntrend(unittest.TestCase):
         self.assertTrue(g002.EXCLUDE_2D_CLOSE_DOWNTREND)
         self.assertNotIn("2d_close_downtrend", g002.PATTERN_OVERRIDABLE_TREND_FAILS)
         self.assertNotIn("2d_close_downtrend", g002.FALLBACK_RELAXABLE_FAIL_REASONS)
+
+    def test_near_miss_fallback_reasons(self):
+        # 2026-11-01 메리츠형/롯데렌탈형 보충 허용 - 2d_close_downtrend 같은 비패턴 하드필터는 포함하지 않는다
+        self.assertEqual(
+            set(g002.FALLBACK_NEAR_MISS_PATTERN_FAILS), {"pattern_no_bullish_close", "pattern_bearish_candles"}
+        )
+        self.assertTrue(all(r.startswith("pattern_") for r in g002.FALLBACK_NEAR_MISS_PATTERN_FAILS))
 
     def test_report_label(self):
         self.assertIn("2d_close_downtrend", g008.FAIL_REASON_DESC)
