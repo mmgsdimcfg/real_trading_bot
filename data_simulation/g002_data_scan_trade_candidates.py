@@ -25,6 +25,14 @@ Update log format (append only):
 
 Update log:
 - [2026-11-01] type=tune owner=claude
+    summary: 사용자 결정 - 아깝게 탈락한 보충 후보 허용(FALLBACK_NEAR_MISS_PATTERN_FAILS): 패턴 조건 중
+      pattern_no_bullish_close(메리츠형) 또는 pattern_bearish_candles(롯데렌탈형) 하나에만 걸리고 20일 평균 거래대금
+      50억 이상이면 보충 시 trend_state up 요구와 거래대금 이원 기준(보충 100억)을 면제. 이격 +10%/점수/장중 ATR/
+      하드필터는 유지. 14거래일 재현 하루 약 +3종목, D+1 시가->종가 -0.43%(현재 선정 -0.34%) - 성과 개선 근거는
+      약함(사용자 판단으로 적용). 롤백: FALLBACK_NEAR_MISS_PATTERN_FAILS=().
+    impact: scanner (보충 종목 증가)
+    compatibility: breaking (보충 기준 완화)
+- [2026-11-01] type=tune owner=claude
     summary: 사용자 결정 - 대상일 포함 2거래일 연속 종가 하락 종목 하드 제외(2d_close_downtrend, 반전 예외/패턴 override/
       보충 구제 없음). 20261029 디케이티(290550)가 10/28·10/29 연속 하락인데 비패턴 보충으로 선정된 사례. 상승추세 유동
       종목 D+1 시가->종가: 9/22 이후 해당 -0.97% vs 나머지 -0.45%, 이전은 차이 없음. 롤백: EXCLUDE_2D_CLOSE_DOWNTREND=False.
@@ -667,6 +675,12 @@ FALLBACK_ALLOW_LAST_BEARISH = True
 # 상승추세 유동 종목(거래대금 50억+, 종가>MA20, MA20 상승) D+1 시가->종가: 9/22 이후 해당 -0.97% vs 나머지 -0.45%
 # (480건), 이전 -0.62% vs -0.64%(차이 없음). 롤백: False.
 EXCLUDE_2D_CLOSE_DOWNTREND = True
+# [2026-11-01] 아깝게 탈락한 보충 후보(사용자 결정): 패턴 조건 중 아래 하나에만 걸린 종목(메리츠형 = 당일 양봉 아님,
+# 롯데렌탈형 = 최근 5일 음봉 2개 이상)은 보충 시 trend_state == "up" 요구를 면제하고, 거래대금 이원 기준 미달도
+# 20일 평균 거래대금 50억(PATTERN_LIQUIDITY_MIN_AMOUNT) 이상이면 허용한다. MA20 이격 +10% 이내, SCORE_CUTOFF,
+# 장중 3분봉 ATR 하한, 그 외 하드필터는 그대로. 10/12~10/29 14거래일 재현: 하루 약 +3종목, D+1 시가->종가 -0.43%
+# (현재 선정 -0.34%, 이격 제한 없이 +0.33%였으나 소수 급등 종목 의존 - 중앙값 -0.61%). 롤백: 빈 tuple.
+FALLBACK_NEAR_MISS_PATTERN_FAILS = ("pattern_no_bullish_close", "pattern_bearish_candles")
 
 
 # ---------------------------------------------------------------------------
@@ -3385,11 +3399,20 @@ def scan(
             ratio = row.get("close_ma20_ratio")
             return ratio is not None and ratio <= FALLBACK_NON_PATTERN_MAX_VS_MA20
 
+        def _near_miss(row) -> bool:
+            # [2026-11-01] 패턴 조건 하나(FALLBACK_NEAR_MISS_PATTERN_FAILS)에만 걸리고 거래대금 50억 이상
+            extra = set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS
+            return (
+                len(extra) == 1
+                and next(iter(extra)) in FALLBACK_NEAR_MISS_PATTERN_FAILS
+                and (row.get("amount_ma20") or 0.0) >= PATTERN_LIQUIDITY_MIN_AMOUNT
+            )
+
         fallback_rows = [
             row for row in candidates
             if is_scorable_candidate(row)
-            # Keep fallback defensive: only clear up-trend names.
-            and row.get("trend_state") == "up"
+            # Keep fallback defensive: only clear up-trend names (near-miss 패턴 후보는 예외).
+            and (row.get("trend_state") == "up" or _near_miss(row))
             and (FALLBACK_ALLOW_LAST_BEARISH or not bool(row.get("is_last_bearish")))
             # 장중 지표를 아직 안 읽은 보충 후보는 VWAP 마감 가점(최대 2점, 강세섹터 +10% 포함 2.2점)을 받기 전이라
             # 그만큼 낮춰 1차로 거르고, 아래에서 지표 반영 후 재채점해 SCORE_CUTOFF를 다시 확인한다(Codex 5차 검토).
@@ -3400,6 +3423,7 @@ def scan(
             and (
                 "liquidity_below_market_dual" not in row.get("fail_reasons", [])
                 or (row.get("amount_ma20") or 0.0) >= LIQUIDITY_FALLBACK_MIN_AMOUNT
+                or _near_miss(row)
             )
             and row["code"] not in selected_codes
         ]
