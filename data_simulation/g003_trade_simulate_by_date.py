@@ -16,6 +16,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-10-31] type=feat owner=claude
+    summary: r006 parity - 시그널 매도(STOCH_K_LT_D/MACD_HIST_DOWN_2BARS)에 r001 ENABLE_SIGNAL_EXIT_STOCH_K_LT_D/
+      ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN 적용(기본 False). 세 삭제 조건(+ENABLE_HYBRID_1MIN_DEADCROSS_EXIT)은 같은 이름의
+      환경변수(0/1)로 시뮬레이션만 덮어쓸 수 있음(A/B: 삭제 전 재현 = 세 변수 1). 매수 게이트 ENABLE_MIN_ENTRY_ATR_FILTER/
+      ENABLE_STOCHASTIC_BUY_GATE(r002 _014/_013)도 같은 방식으로 덮어쓸 수 있음.
+    impact: sim
+    compatibility: breaking (기본 실행 시 세 매도 조건 OFF)
 - [2026-10-28] type=fix owner=claude
     summary: r003 parity - ENABLE_INTRABAR_LIVE_ENTRY_FILTER 기본값을 하드코딩 False 대신 r001 값(현재 True)으로 변경.
       환경변수 ENABLE_INTRABAR_LIVE_ENTRY_FILTER=0/1로 시뮬레이션만 덮어쓸 수 있음(기존과 동일).
@@ -322,6 +329,8 @@ from r001_define_config import (
     PRIOR_DAY_WARMUP_MAX_LOOKBACK_DAYS,
     PRIOR_DAY_WARMUP_MAX_BASE_DIFF_PCT,
     ENABLE_HYBRID_1MIN_DEADCROSS_EXIT,
+    ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN,
+    ENABLE_SIGNAL_EXIT_STOCH_K_LT_D,
     HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
     HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS,
     HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS,
@@ -549,6 +558,14 @@ SIM_MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = _env_float(
 
 # Intrabar filter: follows r001 like live (env ENABLE_INTRABAR_LIVE_ENTRY_FILTER=0 turns it off for the sim only).
 ENABLE_INTRABAR_LIVE_ENTRY_FILTER = _env_bool("ENABLE_INTRABAR_LIVE_ENTRY_FILTER", ENABLE_INTRABAR_LIVE_ENTRY_FILTER)
+# [2026-10-31] 매도 조건 삭제 A/B용 (기본 r001: 세 조건 모두 OFF)
+ENABLE_HYBRID_1MIN_DEADCROSS_EXIT = _env_bool("ENABLE_HYBRID_1MIN_DEADCROSS_EXIT", ENABLE_HYBRID_1MIN_DEADCROSS_EXIT)
+ENABLE_SIGNAL_EXIT_STOCH_K_LT_D = _env_bool("ENABLE_SIGNAL_EXIT_STOCH_K_LT_D", ENABLE_SIGNAL_EXIT_STOCH_K_LT_D)
+ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN = _env_bool("ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN", ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN)
+# [2026-10-31] 매수 게이트 A/B용 - 게이트 함수가 r002 모듈 전역을 읽으므로 r002 쪽 값을 덮어쓴다.
+import r002_strategy_core_shared as _r002_mod  # noqa: E402
+_r002_mod.ENABLE_MIN_ENTRY_ATR_FILTER = _env_bool("ENABLE_MIN_ENTRY_ATR_FILTER", _r002_mod.ENABLE_MIN_ENTRY_ATR_FILTER)
+_r002_mod.ENABLE_STOCHASTIC_BUY_GATE = _env_bool("ENABLE_STOCHASTIC_BUY_GATE", _r002_mod.ENABLE_STOCHASTIC_BUY_GATE)
 INTRABAR_MIN_ELAPSED_SECONDS = _env_float("INTRABAR_MIN_ELAPSED_SECONDS", INTRABAR_MIN_ELAPSED_SECONDS)
 INTRABAR_MFI_MIN = _env_float("INTRABAR_MFI_MIN", INTRABAR_MFI_MIN)
 INTRABAR_MFI_MAX = _env_float("INTRABAR_MFI_MAX", INTRABAR_MFI_MAX)
@@ -2951,7 +2968,7 @@ def simulate_date(
                     peak_retrace_guard_state.pop(code, None)
 
                 # 4. Signal exit: Stoch K < D (r006 parity: requires held>=600s and pnl<=-0.8%, unless strong uptrend)
-                if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
+                if ENABLE_SIGNAL_EXIT_STOCH_K_LT_D and not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
                     if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or profit_pct > -0.012:
                         log(
                             f"  [SELL_SKIP] {code} | STOCH_K_LT_D suppressed | "
@@ -2968,7 +2985,8 @@ def simulate_date(
                 # 5. Signal exit: MACD histogram declining 2 consecutive bars
                 # (r006 parity: requires held>=600s, pnl<=-0.5%, and not strong uptrend)
                 if (
-                    not any(pd.isna(v) for v in (hist_now, hist_prev_v, hist_prev2_v))
+                    ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN
+                    and not any(pd.isna(v) for v in (hist_now, hist_prev_v, hist_prev2_v))
                     and hist_now < hist_prev_v < hist_prev2_v
                     and not _strong_uptrend
                     and _sig_held_seconds >= _signal_min_hold_seconds
