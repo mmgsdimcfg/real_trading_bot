@@ -21,6 +21,11 @@ This module never raises into the caller: TickTriggerFeed.evaluate() turns any e
 1-min trigger keeps working when the tick feed is broken.
 
 Update log:
+- [2026-11-02] type=feat owner=claude
+    summary: TickReplayFeed 신규 - g003 3중 트리거 재현용. 하루치 g011 파일을 한 번에 읽어 과거 시각 now 기준으로 판정
+      (봉은 tick_ma_golden_cross가 available_at <= now로 거르고, stale은 now 이전 마지막 수신 시각 기준). 라이브 미사용.
+    impact: sim (g003)
+    compatibility: backward-compatible (신규 클래스)
 - [2026-10-29] type=feat owner=claude
     summary: 신규 - 60/120틱봉 MA5/MA20 골든크로스 판정 + g011 수집 파일 증분 리더(사용자 요청, 003160 디아이 10:42 사례).
     impact: live (r003 -> r005 _008, r001 TICK_TRIGGER_MODE="live")
@@ -28,6 +33,7 @@ Update log:
 """
 from __future__ import annotations
 
+import bisect
 import csv
 import math
 import os
@@ -36,7 +42,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from r009_tick_bars import TickBar, TickBarBuilder, parse_tick_row
+from r009_tick_bars import TickBar, TickBarBuilder, iter_tick_file, parse_tick_row
 
 _TAIL_CHECK_BYTES = 256  # > one CSV row, so a rewrite of the last read row is always noticed
 
@@ -224,3 +230,64 @@ class TickTriggerFeed:
         fmt = lambda v: "nan" if math.isnan(v) else f"{v:,.1f}"  # noqa: E731
         self.log(f"  [TICK CROSS  ] {code} | tick{c.n} MA{self.fast}>MA{self.slow} at {c.cross_time:%H:%M:%S} "
                  f"ma{self.fast}={fmt(c.ma_fast)} ma{self.slow}={fmt(c.ma_slow)} bars={c.bars}")
+
+
+class TickReplayFeed:
+    """Simulation counterpart of TickTriggerFeed (g003): each code's whole-day g011 file is read once in file (= receive)
+    order, then evaluate(code, now) answers as the live feed would have at `now` - same cross rule and abstain reasons.
+    Completed bars are filtered by available_at <= now inside tick_ma_golden_cross; the stale check uses the last print
+    received at or before `now`."""
+
+    def __init__(self, data_dir: Path, sizes: tuple[int, ...], fast: int, slow: int, max_age_s: float,
+                 stale_s: float):
+        self.data_dir = Path(data_dir)
+        self.sizes = tuple(int(n) for n in sizes)
+        self.fast = int(fast)
+        self.slow = int(slow)
+        self.max_age_s = float(max_age_s)
+        self.stale_s = float(stale_s)
+        self._loaded: dict[tuple[str, str], tuple[dict[int, TickBarBuilder], list[datetime]] | None] = {}
+
+    def _load(self, code: str, day: str):
+        key = (code, day)
+        if key not in self._loaded:
+            path = self.data_dir / day / f"{code}.csv"
+            if not path.exists():
+                self._loaded[key] = None
+            else:
+                builders = {n: TickBarBuilder(code=code, n=n) for n in self.sizes}
+                recvs: list[datetime] = []
+                for tick in iter_tick_file(path):
+                    if tick.recv is not None:
+                        recvs.append(tick.recv)
+                    for b in builders.values():
+                        b.ingest(tick)
+                recvs.sort()
+                self._loaded[key] = (builders, recvs)
+        return self._loaded[key]
+
+    def evaluate(self, code: str, now: datetime) -> TickTriggerResult:
+        try:
+            return self._evaluate(str(code).zfill(6), now)
+        except Exception as exc:
+            return TickTriggerResult(False, reason=f"TICK_ERROR_{type(exc).__name__}")
+
+    def _evaluate(self, code: str, now: datetime) -> TickTriggerResult:
+        loaded = self._load(code, now.strftime("%Y%m%d"))
+        if loaded is None:
+            return TickTriggerResult(False, reason="TICK_ABSTAIN_NO_FILE")
+        builders, recvs = loaded
+        i = bisect.bisect_right(recvs, now)
+        if i == 0:
+            return TickTriggerResult(False, reason="TICK_ABSTAIN_NO_TICKS")
+        idle = (now - recvs[i - 1]).total_seconds()
+        if idle > self.stale_s:
+            return TickTriggerResult(False, reason=f"TICK_ABSTAIN_FEED_STALE_{idle:.0f}s")
+        result = TickTriggerResult(False)
+        for n in self.sizes:
+            c = tick_ma_golden_cross(builders[n].bars, now, n, self.fast, self.slow, self.max_age_s)
+            result.crosses[n] = c
+            if c.ok and not result.ok:
+                result.ok, result.label, result.cross_time = True, f"TICK{n}_MA{self.fast}_MA{self.slow}", c.cross_time
+        result.reason = "|".join(c.reason for c in result.crosses.values())
+        return result

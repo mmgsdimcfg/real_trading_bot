@@ -16,6 +16,15 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-02] type=feat owner=claude
+    summary: r005 _008 triple 모드 재현 - 해당 날짜에 g011 틱 파일(runtime/data/ticks/<date>)이 있으면 1분 MA5>MA20 +
+      60틱 + 120틱 골든크로스(r013 TickReplayFeed) + 1분 캔들/BB갭 가드 + 실시간 가드(TRIPLE_REQUIRE_1MIN_ABOVE_MID)로
+      진입하고, 3분 컨텍스트는 TRIPLE_CROSS_BYPASS_CONTEXT_GATES 실패/점수 미달(TRIPLE_CROSS_BYPASS_SCORE)을 통과 처리
+      (사유에 +BYPASS(...) 기록). 틱 파일이 없으면 기존 레거시 1분 트리거. 환경변수 ENTRY_TRIGGER_MODE_SIM=auto(기본)|
+      triple|legacy. triple은 legacy의 1분 트리거 유효시간/크로스 나이(--cross-max-age)를 쓰지 않는다(r005와 동일).
+      한계: 진입 가격은 기존처럼 확정 1분봉 종가 ffill이고 틱 가격이 아니다.
+    impact: sim
+    compatibility: breaking (틱 파일이 있는 날짜(2026-10-30~)는 기본 triple 진입)
 - [2026-10-31] type=feat owner=claude
     summary: r006 parity - 시그널 매도(STOCH_K_LT_D/MACD_HIST_DOWN_2BARS)에 r001 ENABLE_SIGNAL_EXIT_STOCH_K_LT_D/
       ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN 적용(기본 False). 세 삭제 조건(+ENABLE_HYBRID_1MIN_DEADCROSS_EXIT)은 같은 이름의
@@ -298,6 +307,19 @@ except ModuleNotFoundError as exc:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r001_define_config, r002_strategy_core_shared
 
 from r001_define_config import (
+    ENTRY_TRIGGER_MODE,
+    TICK_DATA_DIR,
+    TICK_TRIGGER_BAR_SIZES,
+    TICK_TRIGGER_CROSS_MAX_AGE_SECONDS,
+    TICK_TRIGGER_FEED_STALE_SECONDS,
+    TICK_TRIGGER_MA_FAST,
+    TICK_TRIGGER_MA_SLOW,
+    TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
+    TRIPLE_1MIN_MA_FAST,
+    TRIPLE_1MIN_MA_SLOW,
+    TRIPLE_CROSS_BYPASS_CONTEXT_GATES,
+    TRIPLE_CROSS_BYPASS_SCORE,
+    TRIPLE_REQUIRE_1MIN_ABOVE_MID,
     ADX_BUY_MIN,
     ADX_MIN_TREND,
     ADX_PERIOD,
@@ -488,6 +510,10 @@ from r002_strategy_core_shared import (
     check_buy_condition_1min_hybrid_trigger,
     check_1min_trigger_live_guard,
     check_1min_dead_cross,
+    find_1min_ma_golden_cross,
+    build_context_eval,
+    evaluate_context_score,
+    HYBRID_3MIN_CONTEXT_GATES,
     passes_opening_gap_volume_gate,
     run_3min_context_pipeline,
     update_timed_condition_state,
@@ -500,6 +526,7 @@ from r002_strategy_core_shared import (
     _evaluate_bb_mid_cross,
 )
 # [2026-10-28] 원본 분봉 복원 헬퍼는 import 부작용 없는 r012로 이동(r003 전일 warmup과 공유) - 기존 이름 그대로 사용.
+from r013_tick_trigger import TickReplayFeed  # noqa: E402
 from r012_prior_day_warmup import (  # noqa: E402
     causal_3min_slot_counts as _causal_3min_slot_counts,
     causal_minute_frames as _causal_minute_frames,
@@ -642,6 +669,46 @@ SIM_BAR_SEMANTICS = "causal"
 CAUSAL_SKIPPED_CODES: list[str] = []
 # [2026-10-07] r005 _008 크로스 나이 parity - CLI --cross-max-age로 A/B (<=0 비활성)
 CROSS_MAX_AGE_SIM = float(HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS)
+# [2026-11-02] 진입 트리거 모드: auto = 날짜 틱 폴더에 csv가 있고 r001 ENTRY_TRIGGER_MODE가 triple이면 triple, 아니면 legacy
+ENTRY_TRIGGER_MODE_SIM = os.environ.get("ENTRY_TRIGGER_MODE_SIM", "auto").strip().lower()
+if ENTRY_TRIGGER_MODE_SIM not in ("auto", "triple", "legacy"):
+    raise SystemExit(f"ENTRY_TRIGGER_MODE_SIM must be auto|triple|legacy, got {ENTRY_TRIGGER_MODE_SIM!r}")
+
+
+def resolve_entry_trigger_mode(date_str: str, tick_root: Path = TICK_DATA_DIR) -> str:
+    """'triple' | 'legacy' for one simulated date (see ENTRY_TRIGGER_MODE_SIM)."""
+    if ENTRY_TRIGGER_MODE_SIM != "auto":
+        return ENTRY_TRIGGER_MODE_SIM
+    if str(ENTRY_TRIGGER_MODE).lower() != "triple":
+        return "legacy"
+    day_dir = Path(tick_root) / date_str
+    return "triple" if day_dir.is_dir() and any(day_dir.glob("*.csv")) else "legacy"
+
+
+def run_3min_context_pipeline_triple(
+    frame: pd.DataFrame, now: pd.Timestamp, live_price: float, cross_info: dict, config: StrategyConfig,
+) -> tuple[bool, str, list[str]]:
+    """r005 _context_gate/_017 parity for the triple path: soft-gate failures in TRIPLE_CROSS_BYPASS_CONTEXT_GATES and a
+    low score (TRIPLE_CROSS_BYPASS_SCORE) pass; any other gate failure rejects. Returns (ok, reason, bypassed)."""
+    ctx, reason = build_context_eval(frame, now, live_price, cross_info, config)
+    if ctx is None:
+        return False, reason, []
+    bypassed: list[str] = []
+    for gate in HYBRID_3MIN_CONTEXT_GATES:
+        passed, ctx, reason = gate.eval_fn(ctx)
+        if not passed:
+            if gate.name in TRIPLE_CROSS_BYPASS_CONTEXT_GATES:
+                bypassed.append(gate.name)
+                continue
+            return False, f"HYBRID_3MIN_CTX_{reason}", bypassed
+    ok, reason = evaluate_context_score(ctx, now, config)
+    if not ok:
+        if not TRIPLE_CROSS_BYPASS_SCORE:
+            return False, reason, bypassed
+        bypassed.append("score")
+    return True, reason, bypassed
+
+
 # causal 모드에서 봉 공개 지연(r003 CANDLE_CONFIRM_DELAY_SECONDS parity): 라벨+지연 <= ts 인 봉만 사용
 SIM_BAR_AVAIL_DELAY_SECONDS = 2.0
 # 게이트 판정 기록 파일(main에서 data_root/YYYYMMDD/YYYYMMDD_gate_decisions.jsonl로 설정, None이면 기록 안 함)
@@ -2186,6 +2253,63 @@ def _load_nxt_flags(data_dir: Path) -> dict[str, bool]:
 
 
 
+def _triple_entry_decision(
+    code: str, ts: pd.Timestamp, price: float, buy_available: pd.DataFrame, frame_1min: pd.DataFrame,
+    cross_info: dict, tick_replay: TickReplayFeed,
+) -> tuple[bool, str]:
+    """r005 _008_triple_cross_trigger + 3분 컨텍스트(BYPASS) parity. Returns (should_buy, reason)."""
+    if ENTRY_1MIN_FRAME_REQUIRE_LATEST and len(frame_1min) > 0:
+        exp_label = (ts - pd.Timedelta(seconds=SIM_BAR_AVAIL_DELAY_SECONDS)).floor("1min")
+        if pd.Timestamp(frame_1min.index[-1]) != exp_label:
+            return False, (f"HYBRID_1MIN_FRAME_STALE_last={pd.Timestamp(frame_1min.index[-1]):%H:%M}"
+                           f"_expected={exp_label:%H:%M}")
+    ma = find_1min_ma_golden_cross(frame_1min, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW)
+    missing: list[str] = []
+    if not ma["ok"]:
+        missing.append(ma["reason"])
+    else:
+        cbt = ma["cross_bar_time"]
+        ma_age = (ts - pd.Timestamp(cbt)).total_seconds() if cbt is not None and not pd.isna(cbt) else float("nan")
+        if pd.isna(ma_age) or ma_age < 0:
+            missing.append(f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_TIME_INVALID")
+        elif ma_age > TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS:
+            missing.append(f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_EXPIRED_{ma_age:.0f}s"
+                           f"_cross={pd.Timestamp(cbt):%H:%M}")
+    tick_result = tick_replay.evaluate(code, ts.to_pydatetime())
+    crosses = tick_result.crosses or {}
+    if not crosses:
+        missing.append(tick_result.reason or "TICK_NO_RESULT")
+    for n in TICK_TRIGGER_BAR_SIZES:
+        c = crosses.get(int(n))
+        if c is None:
+            if crosses:
+                missing.append(f"TICK{n}_NOT_EVALUATED")
+        elif not c.ok:
+            missing.append(c.reason)
+    if missing:
+        return False, f"TRIPLE_CROSS_MISSING_{'|'.join(missing)}"
+    label = f"TRIPLE_CROSS_1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}+" + "+".join(
+        f"TICK{n}" for n in TICK_TRIGGER_BAR_SIZES
+    )
+    guard_ok, guard_reason = check_buy_condition_1min_hybrid_trigger(
+        frame_1min, tick_cross_label=label, external_bars_since_cross=int(ma["bars_since_cross"] or 0),
+    )
+    if not guard_ok:
+        return False, f"TRIPLE_CROSS_{guard_reason}"
+    live_ok, live_reason = check_1min_trigger_live_guard(
+        frame_1min, price, require_above_mid=TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    )
+    if not live_ok:
+        return False, f"TRIPLE_CROSS_{live_reason}"
+    ok, ctx_reason, bypassed = run_3min_context_pipeline_triple(
+        buy_available, ts, price, cross_info, SHARED_STRATEGY_CONFIG,
+    )
+    if not ok:
+        return False, ctx_reason
+    bypass_txt = f"+BYPASS({','.join(bypassed)})" if bypassed else ""
+    return True, f"{guard_reason}+{ctx_reason}{bypass_txt}"
+
+
 def simulate_date(
     date_str: str,
     data_root: Path,
@@ -2218,6 +2342,15 @@ def simulate_date(
     if not data_dir.exists():
         log(f"ERROR: Data directory not found: {data_dir}")
         return 1
+    entry_trigger_mode = resolve_entry_trigger_mode(date_str)
+    tick_replay = None
+    if entry_trigger_mode == "triple":
+        tick_replay = TickReplayFeed(
+            TICK_DATA_DIR, TICK_TRIGGER_BAR_SIZES, TICK_TRIGGER_MA_FAST, TICK_TRIGGER_MA_SLOW,
+            TICK_TRIGGER_CROSS_MAX_AGE_SECONDS, TICK_TRIGGER_FEED_STALE_SECONDS,
+        )
+    log(f"Entry trigger   : {entry_trigger_mode} (ENTRY_TRIGGER_MODE_SIM={ENTRY_TRIGGER_MODE_SIM}, "
+        f"ticks={TICK_DATA_DIR / date_str})")
 
     csv_files: dict[str, Path] = {}
     for path in sorted(data_dir.glob("*.txt")):
@@ -3264,6 +3397,10 @@ def simulate_date(
             # 자체 기준으로 트리거를 먼저 확인하고, 통과 시에만 3분봉 컨텍스트로 재확인한다.
             if buy_available_1min is None:
                 should_buy, reason = False, "HYBRID_1MIN_FRAME_UNAVAILABLE"
+            elif entry_trigger_mode == "triple":
+                should_buy, reason = _triple_entry_decision(
+                    code, ts, price, buy_available, buy_available_1min, cross_info, tick_replay,
+                )
             else:
                 # [2026-09-09] r003과 동일 - 3분 컨텍스트가 이미 uptrend_continuation으로
                 # 판정한 상태면 그 신호를 1분 트리거에도 전달한다 (452190 한빛레이저 사례).
