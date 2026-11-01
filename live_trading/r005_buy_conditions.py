@@ -1162,7 +1162,7 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  "BB 중심선 최근 N봉 연속 하락이면 차단(가격이 이미 돌파했으면 해제). ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK=False면 건너뜀",
                  ("BB_MID_DOWNTREND_BARS", "ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK"), _011_bb_mid_downtrend_block),
     BuyCondition(12, "_012_bb_upper_gap_min", "CONTEXT", "BB 상단 여유",
-                 "BB 상단까지 남은 폭 >= BB_UPPER_GAP_MIN_PCT (호가 1틱% 구간별 BB_UPPER_GAP_MIN_PCT_BY_TICK)", ("BB_UPPER_GAP_MIN_PCT", "BB_UPPER_GAP_MIN_PCT_BY_TICK"), _012_bb_upper_gap_min),
+                 "BB 상단까지 남은 폭 >= BB_UPPER_GAP_MIN_PCT (호가 1틱% 구간별 BB_UPPER_GAP_MIN_PCT_BY_TICK)", ("ENABLE_BB_UPPER_GAP_GATE", "BB_UPPER_GAP_MIN_PCT", "BB_UPPER_GAP_MIN_PCT_BY_TICK"), _012_bb_upper_gap_min),
     BuyCondition(13, "_013_stochastic_buy_signal", "CONTEXT", "스토캐스틱(+윌리엄스) 매수신호",
                  "%K>%D(골든크로스 포함) + %D>=STOCH_D_BUY_MIN + %K 30~90 밴드",
                  ("STOCH_BUY_MIN", "STOCH_D_BUY_MIN", "WILLIAMS_BUY_FLOOR", "WILLIAMS_OVERBOUGHT_CEIL"), _013_stochastic_buy_signal),

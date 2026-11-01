@@ -29,7 +29,7 @@ Update log:
     summary: r006 parity - 시그널 매도(STOCH_K_LT_D/MACD_HIST_DOWN_2BARS)에 r001 ENABLE_SIGNAL_EXIT_STOCH_K_LT_D/
       ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN 적용(기본 False). 세 삭제 조건(+ENABLE_HYBRID_1MIN_DEADCROSS_EXIT)은 같은 이름의
       환경변수(0/1)로 시뮬레이션만 덮어쓸 수 있음(A/B: 삭제 전 재현 = 세 변수 1). 매수 게이트 ENABLE_MIN_ENTRY_ATR_FILTER/
-      ENABLE_STOCHASTIC_BUY_GATE(r002 _014/_013)도 같은 방식으로 덮어쓸 수 있음.
+      ENABLE_STOCHASTIC_BUY_GATE/ENABLE_BB_UPPER_GAP_GATE(r002 _014/_013/_012)도 같은 방식으로 덮어쓸 수 있음.
     impact: sim
     compatibility: breaking (기본 실행 시 세 매도 조건 OFF)
 - [2026-10-28] type=fix owner=claude
@@ -593,6 +593,7 @@ ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN = _env_bool("ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN
 import r002_strategy_core_shared as _r002_mod  # noqa: E402
 _r002_mod.ENABLE_MIN_ENTRY_ATR_FILTER = _env_bool("ENABLE_MIN_ENTRY_ATR_FILTER", _r002_mod.ENABLE_MIN_ENTRY_ATR_FILTER)
 _r002_mod.ENABLE_STOCHASTIC_BUY_GATE = _env_bool("ENABLE_STOCHASTIC_BUY_GATE", _r002_mod.ENABLE_STOCHASTIC_BUY_GATE)
+_r002_mod.ENABLE_BB_UPPER_GAP_GATE = _env_bool("ENABLE_BB_UPPER_GAP_GATE", _r002_mod.ENABLE_BB_UPPER_GAP_GATE)
 INTRABAR_MIN_ELAPSED_SECONDS = _env_float("INTRABAR_MIN_ELAPSED_SECONDS", INTRABAR_MIN_ELAPSED_SECONDS)
 INTRABAR_MFI_MIN = _env_float("INTRABAR_MFI_MIN", INTRABAR_MFI_MIN)
 INTRABAR_MFI_MAX = _env_float("INTRABAR_MFI_MAX", INTRABAR_MFI_MAX)
@@ -1792,7 +1793,7 @@ def collect_buy_reject_reasons_sim(
         reasons.append("CANDLE_OPEN_MISSING")
 
     # BB upper gap
-    if live_price > 0 and not pd.isna(cur_bb_upper):
+    if _r002_mod.ENABLE_BB_UPPER_GAP_GATE and live_price > 0 and not pd.isna(cur_bb_upper):
         bb_upper_gap_pct = (cur_bb_upper - live_price) / live_price * 100.0
         if bb_upper_gap_pct < BB_UPPER_GAP_MIN_PCT:
             reasons.append(f"BB_UPPER_GAP_TOO_SMALL_{bb_upper_gap_pct:.2f}%")

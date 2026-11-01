@@ -20,7 +20,7 @@
 | 3 | `bb_mid_cross_up` | BB 중앙선 상향 돌파: 실시간 크로스 신호 OR 종가 기준 크로스(5봉 룩백) OR 크로스 없이도 강한 우상향 추세 지속(uptrend_continuation) 중 하나라도 만족 | - |
 | 4 | `pre_cross_accumulation_bar` | 돌파 직전 "매집봉"(BB중간값 포함 + 양봉 + 거래량이 VOL_MA20 대비 증가) 존재 확인 | `ENABLE_PRE_CROSS_ACCUM_BAR_CHECK`=True, `PRE_CROSS_ACCUM_LOOKBACK_BARS`=8봉, `PRE_CROSS_ACCUM_VOL_RATIO_MIN`=0.8 |
 | 5 | `candle_bullish_and_chase_guard` | 현재봉이 양봉인지 + 추격매수 방지 2건(인트라바 급등 차단, BB중간선 대비 가격 갭 과도 차단 — uptrend_continuation 경로는 RSI/갭 별도 기준 적용) | `CANDLE_GAIN_MIN_PCT`=-0.1%, `CANDLE_GAIN_MAX_PCT`=0.8%, `BB_MID_CHASE_MAX_GAP_PCT`=0.35%, `UPTREND_CONT_CHASE_MAX_GAP_PCT`=0.6%, `UPTREND_CONT_CHASE_RSI_MAX`=75.0 |
-| 6 | `bb_upper_gap_min` | BB 상단까지 충분한 상승 여력(공간) 확보 | `BB_UPPER_GAP_MIN_PCT`=0.25% |
+| 6 | `bb_upper_gap_min` | BB 상단까지 충분한 상승 여력(공간) 확보 | `ENABLE_BB_UPPER_GAP_GATE`=False (2026-11-02 OFF), `BB_UPPER_GAP_MIN_PCT`=0.25% |
 | 7 | `stochastic_buy_signal` | 스토캐스틱 매수신호: %K가 %D를 상향 돌파, 또는 %K>%D이면서 진짜 과열 구간이 아님 | `STOCH_BUY_MIN`=20.0, `STOCH_OVERBOUGHT`(프로파일)=96.0 |
 | 8 | `williams_r_buy_signal` | 윌리엄스 %R 매수신호: 상승 중이면서 바닥권 탈출~과열 직전 구간 | `WILLIAMS_BUY_FLOOR`=-70.0, `WILLIAMS_OVERBOUGHT_CEIL`=-10 |
 | 9 | `min_liquidity_safety` | 저유동성 종목 차단 (거래량/거래량이동평균 절대치 및 비율 최소치) | `MIN_ENTRY_VOL_MA`=1,000, `MIN_ENTRY_VOLUME`=1,500 |
