@@ -478,6 +478,7 @@ from r001_define_config import (
     MIN_ENTRY_VOLUME,
     MIN_ENTRY_TURNOVER_KRW,
     ENABLE_MIN_ENTRY_ATR_FILTER,
+    ENABLE_STOCHASTIC_BUY_GATE,
     MIN_ENTRY_ATR_TO_TP1_RATIO,
     STAGED_TP1_PCT,
     REQUIRE_OBV_SIGNAL_CROSS,
@@ -1464,6 +1465,8 @@ def _gate_bb_upper_gap_min(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, s
 
 def _gate_stochastic_buy_signal(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
     # [2026-10-29] 반등 확인(_rebound_confirmed) 시 스토캐스틱 실패(과열/K<D/D 하한/윌리엄스 밴드)를 통과 처리.
+    if not ENABLE_STOCHASTIC_BUY_GATE:   # [2026-10-31] r001 킬스위치
+        return True, ctx, None
     passed, ctx, reason = _stochastic_buy_signal_core(ctx)
     if not passed and reason != "STOCH_DATA_MISSING" and _rebound_confirmed(ctx):
         return True, ctx, None
