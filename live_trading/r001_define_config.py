@@ -680,6 +680,11 @@ ATR_STOP_MULTIPLIER = 1.5  # ATR 기반 손절 배수
 # 못 미치는 저변동 종목도 그대로 진입 게이트를 통과했다. 일반적인 변동성 필터 관행(진입 시
 # ATR이 가격 대비 최소 임계치 이상이어야 함)을 참고해, TP1 대비 ATR 비율 최소 하한을 둔다.
 ENABLE_MIN_ENTRY_ATR_FILTER = True
+# [2026-10-31] 3분 스토캐스틱(+윌리엄스, %D 하한) 매수 게이트 킬스위치(r002 _gate_stochastic_buy_signal, r005 _013).
+# 10월 실매매 로그: 이 게이트가 막은 후보의 15:15 사후수익률(+0.31~0.59%)이 실제 매수(-0.32%)보다 좋았음.
+# 그러나 g003 A/B(10/01,02,06,07, 매도 3조건 OFF 기준)에서 _013/_014를 끄면 추가 매도 150건이 비용(왕복 0.25%) 차감 후
+# -57,560원(ATR 손절 49건) -> ON 유지 (gate_adjustment_proposal_20261102.md).
+ENABLE_STOCHASTIC_BUY_GATE = True
 MIN_ENTRY_ATR_TO_TP1_RATIO = 0.2  # ATR% >= STAGED_TP1_PCT * 0.2 (0.3->0.2) 이어야 진입 허용 - 20260908 로그 분석 결과 0.3(0.90%)이 정상 신호까지 과도 차단(위 Update log 참조)
 
 ATR_STOP_CONFIRM_SECONDS = 20.0  # ATR 손절 조건이 이 시간 이상 연속 유지돼야 실제 매도 (033790 피노
