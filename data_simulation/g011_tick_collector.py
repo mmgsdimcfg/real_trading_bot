@@ -22,8 +22,16 @@ Run:
   python g011_tick_collector.py                       # codes from live_trading/r004_trade_watchlist_today.txt
   python g011_tick_collector.py --codes 089890 253590 --until 15:31
   python g011_tick_collector.py --dry-parse-test      # offline parser self-test, no network
+  python g011_tick_collector.py --fill-from-scan      # r004 codes first, then top-ranked g002 candidates up to 40
+  (daily schedule without r003: g022_tick_collect_daily.sh)
 
 Update log:
+- [2026-11-02] type=feat owner=claude
+    summary: --fill-from-scan - r004 감시 종목 뒤에 가장 최근 g002 스캔(_<date>_scan_all.md)의 순위 순 후보를 40종목까지
+      채워 구독(3중 트리거 재현/연구용 틱 확보). r004 종목이 항상 앞이므로 r003이 --codes 없는 g011을 재사용해도 감시
+      종목은 모두 구독된다. g022_tick_collect_daily.sh가 r003과 별개로 매일 기동.
+    impact: collector
+    compatibility: backward-compatible (옵션 미지정 시 기존 동일)
 - [2026-10-23] type=feat owner=claude
     summary: 신규 - KIS 웹소켓 실시간체결(H0STCNT0) 건별 수집기(다건 프레임 분리, 재접속, 40종목 상한).
     impact: collector (주문 없음, r003과 독립 실행)
@@ -169,6 +177,24 @@ def load_codes(args) -> list[str]:
     return uniq[:MAX_SUBSCRIPTIONS]
 
 
+def scan_fill_codes(data_dir: Path, today: str) -> tuple[str, list[str]]:
+    """(scan date, codes in rank order) of the newest g002 _<date>_scan_all.md dated <= today, else ("", [])."""
+    dates = sorted((d.name for d in Path(data_dir).iterdir() if d.is_dir() and d.name.isdigit()
+                    and len(d.name) == 8 and d.name <= today), reverse=True) if Path(data_dir).is_dir() else []
+    for day in dates:
+        path = Path(data_dir) / day / f"_{day}_scan_all.md"
+        if not path.exists():
+            continue
+        codes = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            cols = [c.strip() for c in line.strip().strip("|").split("|")]
+            # | rank | picked | code | name | ...
+            if len(cols) >= 3 and cols[0].isdigit() and cols[2].isdigit() and len(cols[2]) == 6:
+                codes.append(cols[2])
+        return day, codes
+    return "", []
+
+
 async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -> None:
     import websockets  # imported lazily so --dry-parse-test works without network deps
 
@@ -282,11 +308,19 @@ def main() -> None:
     ap.add_argument("--codes", nargs="*", default=None)
     ap.add_argument("--until", default="15:31", help="HH:MM local time to stop")
     ap.add_argument("--dry-parse-test", action="store_true")
+    ap.add_argument("--fill-from-scan", action="store_true",
+                    help="after the watchlist codes, fill up to 40 with the newest g002 scan's ranked candidates")
     args = ap.parse_args()
     if args.dry_parse_test:
         _self_test()
         return
     codes = load_codes(args)
+    fill_note = ""
+    if args.fill_from_scan and len(codes) < MAX_SUBSCRIPTIONS:
+        scan_day, ranked = scan_fill_codes(RUNTIME_DATA_DIR, datetime.now().strftime("%Y%m%d"))
+        extra = [c for c in ranked if c not in codes][:MAX_SUBSCRIPTIONS - len(codes)]
+        codes += extra
+        fill_note = f" (watchlist {len(codes) - len(extra)} + scan {scan_day or 'none'} {len(extra)})"
     if not codes:
         print("no codes to subscribe")
         return
@@ -303,7 +337,7 @@ def main() -> None:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    log(f"START codes={len(codes)} until={until:%H:%M} out={out_dir}")
+    log(f"START codes={len(codes)}{fill_note} until={until:%H:%M} out={out_dir}")
     asyncio.run(run_collector(codes, until, out_dir, log))
 
 
