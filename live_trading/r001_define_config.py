@@ -900,6 +900,10 @@ BB_MID_DOWNTREND_BARS = 5       # BB 중간선 우하향 감지 봉 수 (3분봉
 # 이 정도로는 켜둔 채 유지하고, 바꾸려면 더 많은 일자 백테스트/섀도 검증 후 결정. 비하이브리드
 # 3분봉 단독 경로(g003 비교 트래커)에는 영향 없음.
 ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK = True
+# [2026-11-02] BB 상단 여유 매수 게이트(r002 _gate_bb_upper_gap_min, r005 _012) 킬스위치 - 사용자 요청으로 OFF.
+# g021(82일 ma_cross 이벤트): 이 게이트에 막힌 후보가 통과 후보보다 train/holdout 모두 성과가 좋음(INVERTED,
+# runtime/edge_ai/gate_scan/report_20261101_001817.md). 롤백: True.
+ENABLE_BB_UPPER_GAP_GATE = False
 BB_UPPER_GAP_MIN_PCT = 0.25      # BB 상단 여유 최소치 (%) - 상단까지 여유 없으면 매수 차단 (0.5->0.25->0.5->0.25)
 # [2026-10-02] 호가 1틱 폭(1틱/현재가 %)별 BB 상단 여유 최소치 분리 적용. (1틱% 하한, 상단 여유 최소 %)를
 # 1틱%가 큰 구간부터 나열 - 현재가의 1틱%가 하한 이상인 첫 구간 값을 쓰고, 어느 구간에도 안 걸리면

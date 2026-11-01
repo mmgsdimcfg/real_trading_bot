@@ -479,6 +479,7 @@ from r001_define_config import (
     MIN_ENTRY_TURNOVER_KRW,
     ENABLE_MIN_ENTRY_ATR_FILTER,
     ENABLE_STOCHASTIC_BUY_GATE,
+    ENABLE_BB_UPPER_GAP_GATE,
     MIN_ENTRY_ATR_TO_TP1_RATIO,
     STAGED_TP1_PCT,
     REQUIRE_OBV_SIGNAL_CROSS,
@@ -1451,6 +1452,8 @@ def bb_upper_gap_min_pct_for_price(price: float) -> tuple[float, float]:
 
 
 def _gate_bb_upper_gap_min(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
+    if not ENABLE_BB_UPPER_GAP_GATE:   # [2026-11-02] r001 킬스위치
+        return True, ctx, None
     live_price, cur_bb_upper = ctx.live_price, ctx.cur_bb_upper
     if live_price <= 0:
         return False, ctx, "LIVE_PRICE_INVALID"
@@ -1622,7 +1625,7 @@ BUY_GATE_CONDITIONS: list[BuyGateCondition] = [
     BuyGateCondition(
         "bb_upper_gap_min",
         "BB 상단까지 충분한 공간 확보 (호가 1틱 폭별 최소치 분리)",
-        ("BB_UPPER_GAP_MIN_PCT", "BB_UPPER_GAP_MIN_PCT_BY_TICK"),
+        ("ENABLE_BB_UPPER_GAP_GATE", "BB_UPPER_GAP_MIN_PCT", "BB_UPPER_GAP_MIN_PCT_BY_TICK"),
         _gate_bb_upper_gap_min,
     ),
     BuyGateCondition(

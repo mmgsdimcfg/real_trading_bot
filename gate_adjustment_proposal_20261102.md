@@ -42,8 +42,8 @@ g003은 레거시 1분 트리거로 진입한다(틱 데이터가 10/30부터만
 2. **_013 스토캐스틱(ENABLE_STOCHASTIC_BUY_GATE) / _014 ATR(ENABLE_MIN_ENTRY_ATR_FILTER) 게이트 ON 유지.**
    킬스위치는 남겨 두고 값은 바꾸지 않는다.
 3. **bb_mid_downtrend_block, di_spread_min 유지.**
-4. **bb_upper_gap_min 완화는 보류** - g021 INVERTED지만 정책 A/B가 없다. 다음 실험 후보:
-   g003에 BB_UPPER_GAP 게이트 환경변수 오버라이드를 추가해 new 대비 단독 OFF A/B를 같은 4일로 실행.
+4. **bb_upper_gap_min OFF (2026-11-02 사용자 결정으로 반영)** - g021 INVERTED(train/holdout 모두 막힌 쪽이 더 좋음).
+   r001 ENABLE_BB_UPPER_GAP_GATE=False. g003 A/B는 환경변수 ENABLE_BB_UPPER_GAP_GATE=1(종전) / 0(신규)로 사후 검증 가능.
 5. MIXED 게이트는 변경하지 않는다.
 6. 재시작 후 5거래일 동안 라이브(3중 트리거) 매도 사유별 손익을 집계해 new 시뮬레이션과 비교한다.
    특히 데드크로스 매도가 사라진 대신 ATR_STOP / LIVE_PRICE_BB_DOWN_CROSS 손실이 커지는지 확인한다.
