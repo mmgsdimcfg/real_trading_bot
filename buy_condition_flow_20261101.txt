@@ -1,0 +1,255 @@
+=================================================================
+ 자동매매 - 매수 조건 플로우 정리 (2026-11-01 기준, 실전 코드 검증)
+=================================================================
+
+기준 파일 (작업 트리 기준 - 미커밋 변경 포함, 실전 반영은 r003 재시작 후):
+  - live_trading/r001_define_config.py   (설정값/임계치, risk_profiles/neutral.json 이 일부 덮어씀)
+  - live_trading/r002_strategy_core_shared.py (판정 로직 - 1분봉 가드/3분봉 게이트/점수/개장 갭 게이트, 실전+백테스트 공용)
+  - live_trading/r005_buy_conditions.py  (번호 붙은 매수 조건 목록, check_buy_conditions)
+  - live_trading/r013_tick_trigger.py    (60/120틱봉 MA5>MA20 골든크로스 판정)
+  - live_trading/r011_edge_ai.py         (Edge AI 메타 라벨 필터, 현재 shadow)
+  - live_trading/r003_trade_live_execute.py   (실전 실행 루프, 주문, g011 틱 수집기 자동 기동)
+  - data_simulation/g002_data_scan_trade_candidates.py (감시 종목 선별)
+  - data_simulation/g003_trade_simulate_by_date.py (백테스트 - r002 판정 함수 공용. 단 틱 데이터가 없어 3중 크로스
+    경로는 재현 불가, g003은 legacy 1분 트리거로 돈다)
+
+[2026-09-20 대비 주요 변경 요약]
+  1) 매수 트리거가 "3중 골든크로스"로 바뀜 (ENTRY_TRIGGER_MODE="triple", 2026-10-30):
+     1분봉 MA5>MA20 + 60틱봉 MA5>MA20 + 120틱봉 MA5>MA20 골든크로스가 모두 유효해야 통과.
+     기존 1분 BB중심선 크로스/우상향 지속 경로는 롤백용("legacy")으로만 남음.
+  2) 3중 크로스 통과 시 3분봉 소프트 게이트 4개(bb_slope_rising, bb_mid_downtrend_block,
+     stochastic_buy_signal, di_spread_min)와 가점 임계값은 실패해도 통과(BYPASS로 사유에 기록).
+  3) 신규 조건: _019 당일 과열(추격) 차단, _025 일일 손실 한도(OFF), _026 동시 보유 상한(OFF),
+     _027 호가 스프레드(OFF), _028 Edge AI 메타 필터(shadow = 기록만). 개장갭 게이트는 _019 -> _020으로,
+     연속확인/수량/현재가/호가는 _021~_024로 번호가 밀림.
+  4) 1분 트리거 가드 강화: 트리거 만료(300초/크로스 240초), 1분봉 캐시가 직전 확정분이 아니면 반려,
+     실시간가가 확정 1분봉 종가 대비 0.4% 넘게 하락하거나 1분 BB중심선 이하면 반려(2026-10-28 091580 사례).
+  5) 장 시작 지표 워밍업: 전일 분봉으로 지표를 미리 채움(r012, ENABLE_PRIOR_DAY_INDICATOR_WARMUP=True).
+  6) g002 선별: 상승 초입 패턴(A/B) 필수 + 비패턴 보충, 장중 3분봉 ATR 하한, 2026-11-01 이틀 연속 종가 하락 제외,
+     아깝게 탈락한 보충 후보(메리츠형/롯데렌탈형) 허용.
+  7) 매도 쪽 변경(2026-10-31, 미커밋): 1분봉 데드크로스 청산(_011), 스토캐스틱 K<D 청산(_013),
+     MACD 히스토그램 하락 청산(_014) OFF.
+
+매수 경로 요약:
+  [감시종목 선정(g002)] → [매 폴링, 매 턴 즉시 재평가]
+  → 상태 조건(_001~_007, _025, _026) → 3중 골든크로스 트리거 + 1분 추격/실시간 가드(_008)
+  → 3분봉 컨텍스트(_009~_016, 3중 크로스면 4개는 BYPASS) → 가점 임계값(_017, 3중 크로스면 BYPASS)
+  → 주문 직전 검사(_018~_020, _028, _027) → 2회 연속 확인(_021) → 수량/현재가/호가(_022~_024) → 주문
+
+  매수 조건 (위에서 아래 순서로 검사, 처음 통과하지 못한 조건에서 멈춤 - 번호가 아니라 목록 순서가 검사 순서)
+    _001_entry_time_window                   [상태] 신규 진입 허용 시간대
+    _002_session_open_warmup                 [상태] 세션 개장 워밍업
+    _003_trade_cooldown                      [상태] 종목 거래 쿨다운
+    _004_same_bar_signal_dedup               [상태] 같은 봉 재신호 차단
+    _005_no_open_buy_exposure                [상태] 미청산 매수 노출 없음
+    _006_hard_stop_reentry_block             [상태] 손절 종목 당일 재진입 차단
+    _007_stoploss_circuit_breaker            [상태] 손절 누적 서킷브레이커
+    _025_daily_loss_limit                    [상태] 일일 손실 한도 (ENABLE_DAILY_LOSS_LIMIT_GATE=False, OFF)
+    _026_max_open_positions                  [상태] 동시 보유 종목 수 상한 (ENABLE_MAX_OPEN_POSITIONS_GATE=False, OFF)
+    _008_hybrid_1min_trigger                 [트리거] 3중 골든크로스 + 1분 추격/실시간 가드
+    _009_context_frame_ready                 [3분컨텍스트] 3분봉 컨텍스트 준비
+    _010_bb_slope_rising                     [3분컨텍스트] BB 중심선 상승 기울기        (3중 크로스면 BYPASS)
+    _011_bb_mid_downtrend_block              [3분컨텍스트] BB 중심선 연속 하락 차단     (3중 크로스면 BYPASS)
+    _012_bb_upper_gap_min                    [3분컨텍스트] BB 상단 여유
+    _013_stochastic_buy_signal               [3분컨텍스트] 스토캐스틱(+윌리엄스) 매수신호 (3중 크로스면 BYPASS)
+    _014_min_entry_atr_volatility            [3분컨텍스트] 최소 변동성(ATR%)
+    _015_min_liquidity_safety                [3분컨텍스트] 최소 유동성
+    _016_di_spread_min                       [3분컨텍스트] DI 스프레드                  (3중 크로스면 BYPASS)
+    _017_context_score_threshold             [3분컨텍스트] 가점 합계 임계값             (3중 크로스면 BYPASS)
+    _018_excessive_rise_from_prev_close      [주문직전] 전일 종가 대비 과도 상승
+    _019_anti_chase_day_extension            [주문직전] 당일 과열(추격) 차단
+    _020_opening_gap_volume_gate             [주문직전] 개장 초반 갭/거래량 게이트
+    _028_edge_ai_meta_filter                 [주문직전] Edge AI 메타 라벨 필터 (EDGE_AI_MODE="shadow", 기록만)
+    _027_entry_spread                        [주문직전] 호가 스프레드 (ENABLE_SPREAD_GATE=False, OFF)
+    _021_consecutive_poll_confirm            [주문직전] 연속 폴링 확인
+    _022_affordable_buy_qty                  [주문직전] 매수 가능 수량
+    _023_fresh_live_price                    [주문직전] 신선한 현재가
+    _024_orderbook_ask_not_thin              [주문직전] 호가 잔량 확인
+
+  매도 조건 (참고, 번호 순서대로 검사, '처리 종료'를 반환한 첫 조건에서 그 종목의 이번 틱이 끝남)
+    _001_stale_live_price_guard              [GUARD] stale 현재가 보호
+    _002_update_position_tracking            [UPDATE] 포지션 추적 갱신
+    _003_peak_next_bar_bearish_exit          [EXIT] 고점 다음봉 음봉 즉시 청산
+    _004_hard_stop_loss                      [EXIT] 하드 손절 (-1.7%, 최소 보유 240초, 확인 10초)
+    _005_pyramid_add_entry                   [ADD_ENTRY] 불타기 (ENABLE_PYRAMIDING=False, OFF)
+    _006_staged_tp1_partial                  [EXIT] 1차 분할익절
+    _007_surge_ladder_tp                     [EXIT] 급등 사다리 익절(TP2/TP3)
+    _008_staged_tp2_partial                  [EXIT] 2차 분할익절
+    _009_tp3_trail_arm                       [STATE] 3차 트레일 무장
+    _010_legacy_tp_full_and_partial          [EXIT] 구형 익절(비활성 시에만)
+    _011_hybrid_1min_dead_cross_exit         [EXIT] 1분봉 BB중심선 데드크로스 청산 - 2026-10-31 OFF
+                                                     (ENABLE_HYBRID_1MIN_DEADCROSS_EXIT=False, 09-23 이후 76건 -84,761원)
+    _012_peak_retracement_guard              [EXIT] 고점 대비 되돌림 익절가드
+    _013_signal_exit_stoch_k_lt_d            [EXIT] 시그널 청산: 스토캐스틱 K<D - 2026-10-31 OFF
+    _014_signal_exit_macd_hist_down          [EXIT] 시그널 청산: MACD 히스토그램 2봉 하락 - 2026-10-31 OFF
+    _015_atr_take_profit                     [EXIT] ATR 익절선 도달
+    _016_post_buy_entry_drop_guard           [EXIT] 매수 직후 진입가 이탈 가드
+    _017_breakeven_fail_guard                [EXIT] 본전 이탈 가드
+    _018_no_trend_time_exit                  [EXIT] 무추세 시간 청산
+    _019_atr_stop_loss                       [EXIT] ATR 손절
+    _020_trailing_stop                       [EXIT] 트레일링 스탑
+    _021_same_bar_sell_dedup                 [GUARD] 같은 봉 재매도 차단
+    _022_shared_reversal_sell                [EXIT] 반전 신호 매도(r002) - 수익 보호 전용
+
+-----------------------------------------------------------------
+0단계. 감시 종목은 어떻게 정해지나 (g002 -> r004 -> r003)
+-----------------------------------------------------------------
+1) g002 스캐너가 장 마감 후 일봉/장중 데이터로 최대 50종목(max_picks=50)을 선정해
+   live_trading/r004_trade_watchlist_today.txt 로 내보낸다(기본 ON, --no-export-watchlist로 끔).
+   선정 순서:
+     a. 상승 초입 패턴(필수) A/B등급 - 장기 우상향(MA120 20일 변화 > -3%) + MA60/MA120 -2% 이내 위 + MA20 위
+        + MA20 5일 하락폭 1% 이내 + 직전 10일 중 한 번은 MA20 +5% 이내(눌림/바닥 출발)
+        + 과열 아님(MA20 +15% 이하, RSI 70 이하) + 매수신호 2개 이상(MACD 상승전환/스토캐스틱 골든크로스/
+        DI+ 우위/RSI 50~68/거래량 1.3배+/OBV 상승) + 당일 양봉
+        A = 직전 5일 종가 고점 돌파, B = 최근 5일 음봉 1개 이하 + MA20 +10% 이내
+     b. 레거시 추세/캔들 하드필터(하락/횡보 추세, 박스권, 10일 음봉 60%+, 20일 회귀 하락, 장대 음봉 -2%+,
+        연속 상한가 후 급락 등) - A/B 종목은 일부를 감점으로만 처리
+     c. [2026-11-01] 당일 포함 2거래일 연속 종가 하락이면 무조건 제외(2d_close_downtrend)
+     d. 장중 3분봉 ATR 중앙값 0.40% 미만 제외(장중 변동성 부족)
+     e. 패턴 종목이 50개에 못 미치면 보충(fallback): 패턴 조건에만 걸리고 MA20 +10% 이내, 점수 15 이상,
+        단기 추세 up. [2026-11-01] 패턴 조건 중 "당일 양봉 아님"(메리츠형) 또는 "최근 5일 음봉 2개+"(롯데렌탈형)
+        하나에만 걸리고 20일 평균 거래대금 50억 이상이면 추세 up 요구와 거래대금 이원 기준(100억)을 면제.
+2) r003는 r004 중 점수 상위 50종목(ACTIVE_WATCHLIST_SIZE=50)을 "active_set"(실시간 폴링 대상)으로 삼고,
+   나머지는 "backup_pool"(대기)로 둔다 (현재 g002 선정이 50개 이하라 보통 전부 active_set).
+3) active_set 종목이 빠지면 backup_pool 맨 앞 종목이 승격(ENABLE_WATCHLIST_ROTATION=True):
+     - 매수 체결(졸업 - 청산 뒤에도 되돌리지 않음) / HARD_STOP / 갭차단
+     - TIME_LIMIT: 60분 경과 후 박스권 확인되면 교체 / HARD_TIME_LIMIT: 120분 지나면 강제 교체
+   * 보유 중인 포지션은 active_set 소속 여부와 무관하게 항상 감시 대상.
+4) r003 시작 시 g011 틱 수집기를 자식 프로세스로 띄운다(TICK_COLLECTOR_AUTOSTART=True, 15:31까지,
+   죽으면 60초 간격으로 재기동). 웹소켓 한도로 최대 40종목. g011은 KRX 정규장 체결만 받으므로
+   NXT 프리/애프터에는 틱 크로스가 성립하지 않아 3중 크로스 모드에서는 NXT 신규 매수가 사실상 없다.
+
+-----------------------------------------------------------------
+1단계. 폴링 루프와 상태 조건 (_001~_007, _025, _026)
+-----------------------------------------------------------------
+- 메인 루프는 active_set 전 종목을 한 바퀴 돌고 곧바로 다음 턴(최소 간격 MAIN_LOOP_MIN_CYCLE_SECONDS=1초).
+- _001 신규 진입 시간: 정규장 15:20(REGULAR_NEW_ENTRY_CUTOFF) 전. 점심 금지(11:30~14:00)와
+  정규장 진입 허용창(09:30~11:00)은 둘 다 OFF(ENABLE_MIDDAY_NO_ENTRY / ENABLE_REGULAR_ENTRY_WINDOW=False).
+  NXT 프리 08:00~08:50, 애프터 15:30~19:59 (ENABLE_NXT_SESSION=True, NXT 거래 가능 종목만).
+- _002 세션 시작 후 90초(STARTUP_WARMUP_SECONDS)는 신규 진입 안 함.
+- _003 직전 주문 후 3분(TRADE_COOLDOWN_MINUTES) 쿨다운.
+- _004 같은 3분봉에서 이미 매수 신호를 낸 종목은 건너뜀.
+- _005 보유 중이거나 미체결 매수가 있으면 차단.
+- _006 오늘 HARD_STOP/ATR 손절이 난 종목은 재진입 금지.
+- _007 손절 3회 누적 시 60분간 전체 신규 매수 정지.
+- _025 일일 손실 한도(-150,000원), _026 동시 보유 6종목 상한 - 둘 다 OFF.
+- 같은 날 같은 종목 재매수: 명시적 금지 규칙은 없지만 매수 체결 종목은 active_set에서 졸업하므로 실전에서는
+  그날 다시 평가하지 않는다(g003 백테스트는 쿨다운 뒤 재진입 허용 - 차이 유의).
+
+-----------------------------------------------------------------
+2단계. 트리거 - 3중 골든크로스 (r005 _008_triple_cross_trigger)
+-----------------------------------------------------------------
+먼저 1분봉 프레임 확인: 1분봉 캐시의 마지막 봉이 직전 확정분(현재-확정지연, 1분 단위)과 정확히 같아야 함
+(ENTRY_1MIN_FRAME_REQUIRE_LATEST=True, 한 봉 늦은 캐시로 매수하는 것 방지).
+
+아래 세 크로스가 "모두" 유효해야 통과. 하나라도 없으면 REJECT (TRIPLE_CROSS_MISSING_...):
+  1) 1분봉 MA5 > MA20 골든크로스 - 크로스 봉 확정 시각부터 240초(TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS) 이내
+  2) 60틱봉 MA5 > MA20 골든크로스 - 240초(TICK_TRIGGER_CROSS_MAX_AGE_SECONDS) 이내
+  3) 120틱봉 MA5 > MA20 골든크로스 - 240초 이내
+  * 틱 피드 없음/파일 없음/120초(TICK_TRIGGER_FEED_STALE_SECONDS) 이상 갱신 없음/예외 -> 매수 안 함(fail-closed).
+
+세 크로스가 모두 있으면 1분봉 추격 가드(r002 check_buy_condition_1min_hybrid_trigger, 경과봉 = 1분 MA 크로스 이후 봉 수):
+  - 현재 1분봉 양봉, 상승폭 -0.4% ~ +1.8% (너무 급등이면 추격매수로 보고 REJECT)
+  - 현재가와 1분 BB중심선 괴리: 기본 0.8% + 경과봉당 0.15%p 완화, 상한 1.1%
+그 다음 실시간 가드(r002 check_1min_trigger_live_guard):
+  - 실시간가가 확정 1분봉 종가 대비 0.4%(HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT) 넘게 하락했으면 REJECT
+  - 실시간가가 1분 BB중심선 이하이면 REJECT (TRIPLE_REQUIRE_1MIN_ABOVE_MID=True)
+통과하면 triple_cross=True 로 표시되어 3단계/4단계의 BYPASS가 적용된다.
+
+  [롤백용 legacy 경로 - ENTRY_TRIGGER_MODE="legacy"일 때만]
+  1분 BB중심선 골든크로스(최근 12봉 룩백, 크로스 확정 후 240초/트리거 유효 300초)
+  OR 60/120틱 크로스(TICK_TRIGGER_MODE="live"). 크로스 없는 "우상향 지속" 진입은
+  HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY=False로 금지(2026-10-30 326030 사례). 우상향 지속 경로 괴리 상한 2.2%.
+  TRADING_STRATEGY_MODE="basic"(기본 조건만)은 현재 "normal"이며, triple 모드가 basic보다 우선한다.
+
+-----------------------------------------------------------------
+3단계. 3분봉 컨텍스트 재확인 (_009~_016)
+-----------------------------------------------------------------
+트리거를 통과하면 3분봉에서 추세/유동성 배경을 확인한다. 순서대로 통과해야 하며 하나라도 실패하면 REJECT.
+단, 3중 크로스 통과 종목은 [BYPASS] 표시 게이트가 실패해도 통과(사유에 BYPASS 게이트가 기록됨).
+
+  _009 context_frame_ready      3분봉 2개 이상 + BB 지표 산출 완료
+  _010 bb_slope_rising          BB중앙선 기울기가 최근 20봉 대비 -2.0% 초과           [BYPASS]
+  _011 bb_mid_downtrend_block   BB중앙선 5봉 연속 하락이면 차단(가격이 이미 위면 해제) [BYPASS]
+                                (ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK=True)
+  _012 bb_upper_gap_min         BB상단까지 여유 0.25% 이상 (호가 1틱% 구간별 기준 BB_UPPER_GAP_MIN_PCT_BY_TICK)
+  _013 stochastic_buy_signal    %K>%D(골든크로스 포함) + %D>=40 + %K 30~90 밴드           [BYPASS]
+                                (2026-10-31 킬스위치 ENABLE_STOCHASTIC_BUY_GATE 추가, 현재 True)
+  _014 min_entry_atr_volatility ATR% >= 3.0%(STAGED_TP1_PCT) x 0.2 = 0.6% (ENABLE_MIN_ENTRY_ATR_FILTER=True)
+  _015 min_liquidity_safety     유일한 거래량/거래대금 하한 (VOL_MA20>=1,000, 거래량>=1,500, 거래대금>=1천만원)
+  _016 di_spread_min            +DI - (-DI) >= 10                                          [BYPASS]
+
+  참고(2026-11-01 g021 게이트 분석, 82일 ma_cross 이벤트): bb_mid_downtrend_block/di_spread_min은 나쁜 진입을
+  실제로 걸러냄(유지 권고), bb_upper_gap_min/min_entry_atr_volatility는 막힌 쪽이 더 좋았음(역효과),
+  나머지는 기간마다 엇갈림. 게이트 조정안은 10월 g003 A/B 결과와 함께 별도 정리 예정.
+
+-----------------------------------------------------------------
+4단계. 가점 점수 합산 (_017, BUY_SCORE_RULES 3분봉 기준, 최대 24점)
+-----------------------------------------------------------------
+  항목                    배점    조건
+  ----------------------  ------  ------------------------------------------
+  rsi_band                최대2   RSI 50~65=2점, 45~50/65~70=1점
+  ema_trend_align         2       EMA20 > EMA60
+  volume_ratio            최대3   거래량/VOL_MA20: >=2.0배=3, >=1.5배=2, >=0.7배=1
+  adx_strength            최대3   +DI>-DI 이고 ADX>=30&스프레드>=15=3점, ADX>=25=2점
+  vwap_position           최대2   VWAP*1.002 초과=2점, VWAP 초과=1점
+  bb_width_expansion      1       BB 밴드폭이 직전봉보다 확장
+  ma5_short_term_up       1       MA5가 직전봉보다 상승
+  macd_golden_cross       2       MACD > MACD_SIGNAL
+  bb_mid_slope_strength   최대3   BB중앙선 기울기: >=1.5%=3, >=1.0%=2, >=0.5%=1
+  obv_breakout            2       OBV가 최근 5봉 내 OBV_MA를 상향 돌파
+  pre_cross_accumulation  1       돌파 직전 8봉 이내 매집봉
+  bb_upper_room_atr       최대2   BB상단 여유/ATR: >=1.5=2점, >=0.8=1점
+  ----------------------  ------
+  임계값: 10점 이상(BB_BUY_SCORE_THRESHOLD), 09:00~09:14는 12점 이상(OPENING_GUARD_*).
+  3중 크로스 통과 종목은 점수 미달이어도 통과(TRIPLE_CROSS_BYPASS_SCORE=True) - 점수는 기록용.
+
+-----------------------------------------------------------------
+5단계. 주문 직전 검사 (_018 ~ _020, _028, _027) - 3중 크로스여도 BYPASS 없음
+-----------------------------------------------------------------
+  _018 전일 종가 대비 상승률 23% 이상이면 차단 (MAX_BUY_RISE_PCT_FROM_PREV_CLOSE)
+  _019 당일 과열(추격) 차단 (ENABLE_ANTI_CHASE_DAY_GATE=True):
+       현재가 >= 당일 시가 x 1.08 또는 >= 당일 VWAP x 1.03 이면 차단 (시세 조회 실패 시 통과)
+  _020 개장 초반(5분 이내) 갭/거래량 게이트: 시가 갭이 0~+5% 밖이면 차단, -2% 미만 갭하락은 그날 종일 차단,
+       초반 거래량이 평소 대비 1.5배 미만이면 차단
+  _028 Edge AI 메타 라벨 필터(r011 LightGBM): 예측한 P(비용 차감 순수익>0)이 임계값 미만이면 차단.
+       현재 EDGE_AI_MODE="shadow" - 예측만 기록하고 차단하지 않음. 모델 없음/오류는 통과.
+  _027 호가 스프레드 (매도1-매수1)/호가단위 > 2틱이면 차단 - OFF
+
+-----------------------------------------------------------------
+6단계. 연속 재확인 (_021, BUY_CONSECUTIVE_CONFIRM_COUNT=2)
+-----------------------------------------------------------------
+- 위 조건이 2회 연속 통과해야 주문을 진행한다.
+- 직전 통과와 45초(BUY_CONFIRM_MAX_GAP_SECONDS) 넘게 벌어지거나, 3분봉이 바뀌거나(BUY_CONFIRM_REQUIRE_SAME_BAR),
+  실시간가가 직전 확인 대비 0.3%(BUY_CONFIRM_MAX_PRICE_DRIFT_PCT) 넘게 움직이면 처음부터 다시 센다.
+  어긋나면 [BUY HOLD] 로그 끝에 confirm_reset=GAP_.../BAR_CHANGED/PRICE_DRIFT_... 사유가 붙는다.
+- 중간에 REJECT로 바뀌면 카운트 초기화.
+
+-----------------------------------------------------------------
+7단계. 최종 안전장치 (_022 ~ _024)
+-----------------------------------------------------------------
+  _022 매수 가능 수량: 예수금/1회 주문 한도(MAX_ORDER_AMOUNT_KRW=500,000원, neutral 프로필)로 1주 이상.
+       조회 실패 시 매수하지 않음(fail-closed, 2026-10 수정).
+  _023 현재가가 stale 캐시/봉 종가 대체값이 아닌가 (LIVE_PRICE_STALE_TTL_SECONDS=20초)
+  _024 매도호가 총잔량 >= 매수호가 총잔량 x 0.5 (얇은 호가창 방지). 통과 시 매수 예약 상태로 남음.
+
+-----------------------------------------------------------------
+8단계. 실제 주문 실행
+-----------------------------------------------------------------
+- 신규 진입 수량을 시장가/지정가 두 조각으로 분할(ENABLE_BUY_SPLIT_MARKET_LIMIT=True, 시장가 비율 0.5,
+  1주뿐이면 전량 시장가).
+- 지정가 조각이 10초(BUY_ORDER_REPRICE_AFTER_SECONDS) 안에 체결되지 않으면 재호가, 최대 3회
+  (매수1호가 -> 매도호가 -> 사실상 시장가).
+- 재호가 중 가격이 최초 신호가 대비 0.5%(BUY_ORDER_REPRICE_MAX_CHASE_PCT) 넘게 오르면 주문 포기(추격 상한).
+- 불타기(추가 매수)는 OFF(ENABLE_PYRAMIDING=False). 물타기(평균단가 낮추기) 로직은 없음.
+
+===================================================================
+참고 1: 매도 조건은 위 목록만 참고용으로 적었습니다. 2026-10-31 사용자 결정으로 _011/_013/_014 매도 청산 3개를
+       껐고(미커밋, r003 재시작 후 반영), 익절 사다리(+2%/+4%/트레일) 변경은 적용하지 않았습니다.
+
+참고 2: 3중 크로스 트리거는 틱 데이터가 2026-10-30부터만 쌓여 아직 백테스트로 검증되지 않았습니다.
+       g003 백테스트는 legacy 1분 트리거로 돌기 때문에 실전과 매수 경로가 다릅니다.
+
+참고 3: 값이 자주 바뀝니다. 이 문서는 2026-11-01 시점 스냅샷이며, 정확한 최신값은 항상
+       r001_define_config.py 와 risk_profiles/*.json 원본을 기준으로 확인하세요.
+===================================================================
