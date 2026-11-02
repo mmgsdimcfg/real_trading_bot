@@ -224,7 +224,13 @@ def _stats(net: np.ndarray) -> dict:
 
 def report(args) -> Path:
     files = sorted(OUT_DIR.glob("events_*.csv.gz"))
-    df = pd.concat([pd.read_csv(f, dtype={"code": str}) for f in files if f.stat().st_size > 30], ignore_index=True)
+    frames = []
+    for f in files:
+        try:
+            frames.append(pd.read_csv(f, dtype={"code": str}))
+        except pd.errors.EmptyDataError:  # empty gzip (no events that day) is still > 30 bytes
+            continue
+    df = pd.concat(frames, ignore_index=True)
     dates = sorted(df["date"].astype(str).unique())
     cut = dates[int(len(dates) * args.train_frac)] if len(dates) > 1 else dates[-1]
     df["split"] = np.where(df["date"].astype(str) < cut, "train", "hold")
