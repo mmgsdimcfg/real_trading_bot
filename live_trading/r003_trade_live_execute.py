@@ -2942,6 +2942,7 @@ def _serialize_live_state(live_state: dict) -> dict:
             "surge_ladder": _sanitize_surge_ladder(meta.get("surge_ladder")),
             "dc_regime_hold": bool(meta.get("dc_regime_hold", False)),
             "basic_tp3_ext": bool(meta.get("basic_tp3_ext", False)),
+            "profit_lock_done": bool(meta.get("profit_lock_done", False)),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
     return {"positions_meta": positions_meta, "traded_today": traded,
@@ -3021,6 +3022,7 @@ def load_live_state(date_str: str) -> dict:
             "surge_ladder": _sanitize_surge_ladder((meta or {}).get("surge_ladder")),
             "dc_regime_hold": bool((meta or {}).get("dc_regime_hold", False)),
             "basic_tp3_ext": bool((meta or {}).get("basic_tp3_ext", False)),
+            "profit_lock_done": bool((meta or {}).get("profit_lock_done", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
     try:
@@ -3372,6 +3374,7 @@ class TradingAPI:
             pos["surge_ladder"] = _sanitize_surge_ladder(meta.get("surge_ladder") or pos.get("surge_ladder"))
             pos["dc_regime_hold"] = bool(meta.get("dc_regime_hold", pos.get("dc_regime_hold", False)))
             pos["basic_tp3_ext"] = bool(meta.get("basic_tp3_ext", pos.get("basic_tp3_ext", False)))
+            pos["profit_lock_done"] = bool(meta.get("profit_lock_done", pos.get("profit_lock_done", False)))
 
     def _record_position_meta(self, code: str, pos: dict) -> None:
         meta_map = self.live_state.setdefault("positions_meta", {})
@@ -3388,6 +3391,7 @@ class TradingAPI:
             "surge_ladder": _sanitize_surge_ladder(pos.get("surge_ladder")),
             "dc_regime_hold": bool(pos.get("dc_regime_hold", False)),
             "basic_tp3_ext": bool(pos.get("basic_tp3_ext", False)),
+            "profit_lock_done": bool(pos.get("profit_lock_done", False)),
         }
 
     def _sync_live_state_from_positions(self) -> None:
@@ -3492,6 +3496,7 @@ class TradingAPI:
                 "surge_ladder": _sanitize_surge_ladder(prev.get("surge_ladder") or persisted.get("surge_ladder")),
                 "dc_regime_hold": bool(prev.get("dc_regime_hold", persisted.get("dc_regime_hold", False))),
                 "basic_tp3_ext": bool(prev.get("basic_tp3_ext", persisted.get("basic_tp3_ext", False))),
+                "profit_lock_done": bool(prev.get("profit_lock_done", persisted.get("profit_lock_done", False))),
             }
             self._record_position_meta(code, updated[code])
 
@@ -3684,6 +3689,7 @@ class TradingAPI:
         pos["surge_ladder"] = None
         pos["dc_regime_hold"] = False  # [2026-10-06] 새 진입은 3분봉 연동 보류(armed) 상태를 물려받지 않는다
         pos["basic_tp3_ext"] = False  # [2026-10-07] basic 3차 목표 상향 여부도 새 진입마다 초기화
+        pos["profit_lock_done"] = False  # [2026-11-02] r006 _023 이익 잠금도 새 진입마다 초기화
         pos["entry_quantity"] = max(int(pos.get("entry_quantity", 0) or 0), filled_qty)
         if fill_price > 0:
             pos["buy_price"] = fill_price

@@ -132,6 +132,11 @@ from r001_define_config import (
     HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT,
     HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
     ENABLE_PEAK_RETRACE_GUARD,
+    ENABLE_PROFIT_LOCK,
+    PROFIT_LOCK_ARM_PNL,
+    PROFIT_LOCK_GIVEBACK_PCT,
+    PROFIT_LOCK_RATIO,
+    PROFIT_LOCK_REST_BREAKEVEN,
     PEAK_RETRACE_GUARD_ARM_PNL,
     PEAK_RETRACE_GUARD_MIN_PCT,
     PEAK_RETRACE_GUARD_ATR_MULT,
@@ -943,6 +948,55 @@ def _011_regime_armed_step(ctx: SellContext, frame_1min: pd.DataFrame | None) ->
     return True
 
 
+def _023_profit_lock(ctx: SellContext) -> bool:
+    """[2026-11-02] 이익 잠금(사용자 요청, 091580 20261102): TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 이후 현재가가
+    고점 x (1 - PROFIT_LOCK_GIVEBACK_PCT) 이하이면 진입수량의 PROFIT_LOCK_RATIO를 시장가 매도(포지션당 1회, profit_lock_done
+    저장). 그 뒤 잔량은 손익 <= 0이면 전량 시장가 매도(PROFIT_LOCK_REST_BREAKEVEN). TP1 이후는 기존 트레일이 담당.
+    매도 주문 대기 중이면 r003 place_sell_order가 추가 매도를 거부하므로 1차/잔량 매도가 겹치지 않는다."""
+    if not ENABLE_PROFIT_LOCK:
+        return False
+    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
+    if bool(pos.get("tp1_done", False)) or price <= 0 or ctx.entry_price <= 0:
+        return False
+    qty_now = int(pos.get("quantity", 0) or 0)
+    if qty_now <= 0:
+        return False
+    if bool(pos.get("profit_lock_done", False)):
+        if not PROFIT_LOCK_REST_BREAKEVEN or ctx.pnl_pct > 0:
+            return False
+        reason = "PROFIT_LOCK_REST_BREAKEVEN"
+        ctx.log(
+            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | qty={qty_now} price={price:,.0f} "
+            f"entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% peak={ctx.highest_price:,.0f}"
+        )
+        if api.place_sell_order(code, qty_now, ctx.current_dt, reason, ctx.nxt_tradeable, price=price,
+                                code_name=ctx.name, market_order=True):
+            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={qty_now} price={price:,.0f}")
+        return True
+    if ctx.peak_pnl_pct < PROFIT_LOCK_ARM_PNL or ctx.highest_price <= 0:
+        return False
+    lock_px = ctx.highest_price * (1.0 - PROFIT_LOCK_GIVEBACK_PCT)
+    if price > lock_px:
+        return False
+    _staged_targets(ctx)
+    entry_qty = ctx.entry_qty
+    lock_qty = min(max(1, int(round(entry_qty * PROFIT_LOCK_RATIO))), qty_now)
+    reason = f"PROFIT_LOCK_{PROFIT_LOCK_RATIO*100:.0f}PCT_GIVEBACK_{PROFIT_LOCK_GIVEBACK_PCT*100:.1f}PCT"
+    ctx.log(
+        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | qty={lock_qty}/{qty_now} price={price:,.0f} "
+        f"entry={ctx.entry_price:,.0f} peak={ctx.highest_price:,.0f} lock_px={lock_px:,.0f} "
+        f"pnl={ctx.pnl_pct*100:.2f}% peak_pnl={ctx.peak_pnl_pct*100:.2f}%"
+    )
+    if api.place_sell_order(code, lock_qty, ctx.current_dt, reason, ctx.nxt_tradeable, price=price,
+                            code_name=ctx.name, market_order=True):
+        pos["profit_lock_done"] = True
+        pos["entry_quantity"] = entry_qty
+        api._record_position_meta(code, pos)
+        api.persist_live_state(date_str=ctx.date_str)
+        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={lock_qty} price={price:,.0f}")
+    return True
+
+
 def _012_peak_retracement_guard(ctx: SellContext) -> bool:
     """[2026-09-23] 사용자 요청("급등 후 꺾이면 고점 대비 -0.8%서 익절") + Codex 설계검토. TP1(+3.0%)/
     ATR익절선 도달 전 구간은 현재 아무 보호장치가 없다 - 그 밑에서 고점을 찍고 반납해도 하드손절이나
@@ -1391,6 +1445,12 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
                   ("ENABLE_HYBRID_1MIN_DEADCROSS_EXIT", "HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS",
                    "HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS", "HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS",
                    "HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX"), _011_hybrid_1min_dead_cross_exit),
+    # [2026-11-02] 번호는 23(기존 번호 유지), 평가 순서는 _012 앞
+    SellCondition(23, "_023_profit_lock", "EXIT", "이익 잠금(고점 대비 하락 1차 매도 + 잔량 본전 청산)",
+                  "TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 후 고점 대비 PROFIT_LOCK_GIVEBACK_PCT 하락 시 진입수량의 "
+                  "PROFIT_LOCK_RATIO 시장가 매도(1회), 이후 잔량은 손익 <= 0이면 전량 시장가 매도",
+                  ("ENABLE_PROFIT_LOCK", "PROFIT_LOCK_ARM_PNL", "PROFIT_LOCK_GIVEBACK_PCT", "PROFIT_LOCK_RATIO",
+                   "PROFIT_LOCK_REST_BREAKEVEN"), _023_profit_lock),
     SellCondition(12, "_012_peak_retracement_guard", "EXIT", "고점 대비 되돌림 익절가드",
                   "TP1/ATR익절선 도달 전, 고점(peak_pnl>=ARM_PNL) 대비 되돌림이 max(MIN_PCT, ATR%xATR_MULT) "
                   "이상 지속되면 전량 시장가 익절 청산",

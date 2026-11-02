@@ -2,6 +2,11 @@
 
 # Update log
 # - [2026-11-02] type=feat owner=claude
+#     summary: 사용자 요청(091580 상신이디피 고점 +1.12% 후 -1.12% 손절) - 이익 잠금 ENABLE_PROFIT_LOCK(r006 _023): TP1 전
+#       고점 +1.0% 이후 고점 대비 -0.5%면 진입수량 50% 시장가 매도, 잔량은 본전에서 청산. g023 샘플 train/holdout 모두 개선.
+#     impact: live (r003) - g003 미반영(검증은 g023)
+#     compatibility: breaking (매도 증가 방향. 롤백: ENABLE_PROFIT_LOCK=False)
+# - [2026-11-02] type=feat owner=claude
 #     summary: 사용자 요청(20261102 091580/105740/032830/326030 60틱 골든크로스인데 매수 트리거 없음) - (1) 틱봉 전일 이어붙이기
 #       TICK_TRIGGER_PRIOR_DAY_WARMUP=True, (2) 3중 조건 완화 TRIPLE_1MIN_CONDITION="above"(1분 MA5>MA20 상태),
 #       TRIPLE_TICK_CONDITION="any"(60틱 또는 120틱 골든크로스). 3분 소프트 게이트 BYPASS는 이 완화된 트리거에도 그대로 적용.
@@ -1308,6 +1313,17 @@ HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS = 300.0  # 확정 3분봉 나�
 # 본전 이상 회복)은 고정 0.8% 되돌림처럼 좁은 문턱이 정상적인 되돌림도 조기청산할 위험을 보여준다 -
 # Codex 권고대로 ATR% 기반으로 문턱을 정해(고정 MIN_PCT는 하한선일 뿐) 변동성 큰 종목은 자동으로 문턱이
 # 넓어지게 한다. 아직 백테스트로 정확한 값을 검증하지 않은 탐색적 구현 - 실거래 관찰 후 조정 필요.
+# [2026-11-02] 사용자 요청(091580 상신이디피 10:24 고점 +1.12% -> TP1(+3%) 미도달, 트레일(-1.2%)/되돌림 가드(-0.8%, 30초)는
+# 고점 +1.12%에선 수익 구간이 거의 없어 발동 불가 -> -1.12% 손절). TP1 전, 고점 손익 >= ARM_PNL이 된 뒤 고점 대비
+# GIVEBACK_PCT 하락하면 진입수량의 RATIO를 시장가 1차 매도(1회), 이후 잔량은 손익 <= 0(본전)이면 시장가 전량 매도.
+# g023(12일 샘플, ma_cross 17,171건, 비용 포함): arm 1.0/g 0.5/50%/본전 -> 거래당 train +0.011%p, holdout +0.019%p
+# (승률 22% -> 27%), 절대 손익은 여전히 음수(진입 엣지 없음). 82일 전체 결과는 runtime/edge_ai/profit_lock/report_*.md.
+# 롤백: ENABLE_PROFIT_LOCK=False.
+ENABLE_PROFIT_LOCK = True
+PROFIT_LOCK_ARM_PNL = 0.010        # 고점 손익 +1.0% 이상이어야 활성화
+PROFIT_LOCK_GIVEBACK_PCT = 0.005   # 고점 대비 -0.5% (고점가 기준)
+PROFIT_LOCK_RATIO = 0.50           # 진입수량의 50% 1차 매도
+PROFIT_LOCK_REST_BREAKEVEN = True  # 1차 매도 후 잔량은 본전(손익 <= 0)에서 전량 매도
 ENABLE_PEAK_RETRACE_GUARD = True
 PEAK_RETRACE_GUARD_ARM_PNL = 0.010        # +1.0% 이상 찍어야 활성화 (BREAKEVEN_FAIL_ARM_PNL과 동일)
 PEAK_RETRACE_GUARD_MIN_PCT = 0.008        # 0.8%: 문턱 하한(사용자 요청값 그대로, ATR가 이보다 작을 때 하한 역할)
