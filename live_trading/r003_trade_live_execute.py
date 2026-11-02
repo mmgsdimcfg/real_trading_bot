@@ -2250,8 +2250,10 @@ def _make_tick_trigger_feed():
             _cfg_mod.TICK_DATA_DIR, _cfg_mod.TICK_TRIGGER_BAR_SIZES, _cfg_mod.TICK_TRIGGER_MA_FAST,
             _cfg_mod.TICK_TRIGGER_MA_SLOW, _cfg_mod.TICK_TRIGGER_CROSS_MAX_AGE_SECONDS,
             _cfg_mod.TICK_TRIGGER_FEED_STALE_SECONDS, log,
+            prior_day_warmup=getattr(_cfg_mod, "TICK_TRIGGER_PRIOR_DAY_WARMUP", False),
         )
         log(f"  [TICK TRIG   ] enabled | sizes={feed.sizes} MA{feed.fast}/MA{feed.slow} dir={feed.data_dir} "
+            f"prior_day_warmup={feed.prior_day_warmup} "
             f"(g011_tick_collector must be running, otherwise only the 1-min trigger is used)")
         return feed
     except Exception as exc:

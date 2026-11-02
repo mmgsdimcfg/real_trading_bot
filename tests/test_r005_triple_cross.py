@@ -141,7 +141,14 @@ class TestR005Triple(unittest.TestCase):
         ctx = self._ctx(_sk_frame(last_label), now, price, tick_fn, logs, recs)
         return r005._008_hybrid_1min_trigger(ctx), ctx, logs, recs
 
+    def _legacy(self):
+        # pre-2026-11-02 rule: fresh 1-min cross AND every tick size
+        for p in (mock.patch.object(r005, "TRIPLE_1MIN_CONDITION", "cross"),
+                  mock.patch.object(r005, "TRIPLE_TICK_CONDITION", "all")):
+            p.start()
+
     def test_0922_all_three_crosses_pass(self):
+        self._legacy()
         now = datetime(2026, 10, 30, 9, 22, 13)
         ok, ctx, logs, recs = self._run("2026-10-30 09:22", now, 77300.0, _tick(now))
         self.assertTrue(ok, logs)
@@ -152,6 +159,7 @@ class TestR005Triple(unittest.TestCase):
         self.assertEqual([r["result"] for r in recs], ["TRIPLE_CROSS_PASS"])
 
     def test_0936_no_fresh_1min_cross_rejected(self):
+        self._legacy()
         now = datetime(2026, 10, 30, 9, 36, 39)
         ok, ctx, logs, _ = self._run("2026-10-30 09:36", now, 78300.0, _tick(now))
         self.assertFalse(ok)
@@ -170,12 +178,45 @@ class TestR005Triple(unittest.TestCase):
         self.assertIn("TICK_ABSTAIN_NO_FILE", logs[-1])
 
     def test_one_tick_size_missing_rejects(self):
+        self._legacy()
         now = datetime(2026, 10, 30, 9, 22, 13)
         for tick, missing in ((_tick(now, ok120=False), "TICK120_MA5_NOT_ABOVE_MA20"),
                               (_tick(now, ok60=False), "TICK60_MA5_NOT_ABOVE_MA20")):
             ok, _, logs, _ = self._run("2026-10-30 09:22", now, 77300.0, tick)
             self.assertFalse(ok)
             self.assertIn(missing, logs[-1])
+
+    def test_above_any_default(self):
+        self.assertEqual((r005.TRIPLE_1MIN_CONDITION, r005.TRIPLE_TICK_CONDITION), ("above", "any"))
+
+    def test_above_mode_passes_without_fresh_1min_cross(self):
+        # 09:36: 1-min MA5 above MA20 since 09:21 (cross expired) - "above" accepts the state
+        now = datetime(2026, 10, 30, 9, 36, 39)
+        ok, ctx, logs, recs = self._run("2026-10-30 09:36", now, 78300.0, _tick(now))
+        self.assertTrue(ok, logs)
+        self.assertTrue(ctx.trigger_reason.startswith("TRIPLE_CROSS_1MIN_MA5_ABOVE_MA20+TICK60+TICK120"), ctx.trigger_reason)
+        self.assertEqual(recs[-1]["result"], "TRIPLE_CROSS_PASS")
+
+    def test_any_mode_one_tick_size_is_enough(self):
+        now = datetime(2026, 10, 30, 9, 22, 13)
+        for tick, label in ((_tick(now, ok120=False), "+TICK60_"), (_tick(now, ok60=False), "+TICK120_")):
+            ok, ctx, logs, _ = self._run("2026-10-30 09:22", now, 77300.0, tick)
+            self.assertTrue(ok, logs)
+            self.assertIn(label, ctx.trigger_reason)
+        ok, _, logs, _ = self._run("2026-10-30 09:22", now, 77300.0, _tick(now, ok60=False, ok120=False))
+        self.assertFalse(ok)
+        self.assertIn("TICK60_MA5_NOT_ABOVE_MA20|TICK120_MA5_NOT_ABOVE_MA20", logs[-1])
+
+    def test_above_mode_no_cross_in_frame_uses_lookback_gap(self):
+        out = r002.evaluate_triple_trigger(
+            {"ok": False, "reason": "1MIN_MA5_MA20_NO_CROSS_IN_FRAME", "bars_since_cross": None, "cross_bar_time": None},
+            float("nan"), {60: TickCross(True, "x", 60)}, (60, 120), "above", "any")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["bars_since_cross"], r002.HYBRID_1MIN_TRIGGER_LOOKBACK_BARS)
+        out = r002.evaluate_triple_trigger(
+            {"ok": False, "reason": "1MIN_MA5_MA20_NO_CROSS_IN_FRAME", "bars_since_cross": None, "cross_bar_time": None},
+            float("nan"), {60: TickCross(True, "x", 60)}, (60, 120), "cross", "any")
+        self.assertFalse(out["ok"])
 
     def test_ticks_without_1min_cross_rejects(self):
         now = datetime(2026, 10, 30, 9, 18, 30)
