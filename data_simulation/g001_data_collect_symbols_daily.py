@@ -44,6 +44,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-02] type=feat owner=claude
+    summary: 완료 표식 {date}/_g001_done.json(scope/symbols/saved/empty/failed/finished_at). 전체 유니버스 수집
+      (기본 g004 목록, --code/--watchlist-only 미지정)만 시작 시 삭제하고 정상 종료 시 기록 - g013(g015 cron)이
+      "마지막 수정 후 30분"만으로 판단해 수집 중단/재실행 중인 날짜를 불완전한 채 학습 데이터로 확정하던 문제(Codex 검토)
+      방지. 날짜 폴더 잠금 {date}/.g001.lock을 수집 동안 유지(동시 실행은 대기 없이 거부, g013은 잠긴 날짜를 건너뜀).
+      실패 종목이 있으면 failed>0으로 남아 g013이 건너뜀.
+    impact: collector / g013
+    compatibility: backward-compatible (신규 파일 1개, g002/g003 glob(*_10s.txt, *_daily.csv)에 안 걸림)
 - [2026-10-11] type=perf owner=claude
     summary: 종목 병렬 수집(--workers, 기본 4, 1이면 기존 순차). 종목 처리 본문을 _process_symbol로 분리해 스레드풀로 실행.
       공유 상태 보호: 요청 간격 슬롯 예약(_KisRequestsProxy._throttle, 잠금), 진행기록 추가(_PROGRESS_LOCK), 건수/목록
@@ -261,6 +269,7 @@ Update log:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import json
 import math
@@ -469,6 +478,8 @@ def parse_args() -> argparse.Namespace:
 # their nxt/w52 values, so the end-of-run aggregates (nxt_flags/_52w/_daily_close/picks)
 # still cover every symbol, not just the ones fetched in the latest run.
 RESUME_PROGRESS_FILE = "_g001_progress.jsonl"
+DONE_MARKER_FILE = "_g001_done.json"  # written only when a full-universe run for the date finishes
+DATE_LOCK_FILE = ".g001.lock"         # held (flock EX) while a date folder is being collected; g013 checks it
 RESUME_CLOSE_MARGIN_MIN = 10  # files written before close+margin may hold a partial day
 
 
@@ -1933,6 +1944,9 @@ def main() -> None:
 
     ka.auth(svr="prod" if args.env == "real" else "vps")
     selected_codes = _parse_code_filter(args.code)
+    # Only a run over the whole default universe may (re)issue the done marker g013 relies on.
+    full_universe = (not selected_codes and not args.watchlist_only
+                     and symbols_file.resolve() == (SCRIPT_DIR / "g004_universe_symbols_master.txt").resolve())
     if selected_codes:
         symbols = [(code, name) for code, name in symbols if code in selected_codes]
         if not symbols:
@@ -1945,8 +1959,16 @@ def main() -> None:
     for target_date in target_dates:
         output_dir = data_root_path / target_date
         output_dir.mkdir(parents=True, exist_ok=True)
+        date_lock = open(output_dir / DATE_LOCK_FILE, "a")  # released when this loop iteration rebinds/ends
+        try:
+            fcntl.flock(date_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            date_lock.close()
+            raise SystemExit(f"another g001 is collecting {target_date} ({output_dir / DATE_LOCK_FILE}) - aborting")
 
         logger.info("collect start: date=%s, symbols=%d, include_nxt=%s", target_date, len(symbols), include_nxt)
+        if full_universe:
+            (output_dir / DONE_MARKER_FILE).unlink(missing_ok=True)
 
         # 시장 레짐/RS(상대강도) 계산용 KOSPI/KOSDAQ 일자별 지수 스냅샷 (KIS API, 종목당
         # 아니라 날짜당 1회만 조회). g002가 이 파일을 우선 사용하고, 없으면 기존 pykrx로 폴백.
@@ -2333,6 +2355,15 @@ def main() -> None:
 
         logger.info("done: date=%s saved=%d, empty=%d, failed=%d, out=%s",
                     target_date, saved_count, empty_count, counters["failed"], output_dir)
+        if full_universe and not STOP_EVENT.is_set():
+            tmp_marker = output_dir / (DONE_MARKER_FILE + ".tmp")
+            tmp_marker.write_text(json.dumps({
+                "date": target_date, "scope": "full", "symbols": len(symbols), "saved": saved_count,
+                "empty": empty_count, "failed": counters["failed"],
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+            }, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_marker, output_dir / DONE_MARKER_FILE)
+        date_lock.close()
         if failed_codes:
             total_failed.extend(f"{target_date}:{c}" for c in failed_codes)
             logger.error("unexpected errors on %d symbols (refetched on next run): %s",

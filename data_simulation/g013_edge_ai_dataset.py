@@ -31,6 +31,15 @@ Run:
   ~/venv/bin/python data_simulation/g013_edge_ai_dataset.py --dates 20261022 --rebuild
 
 Update log:
+- [2026-11-02] type=fix owner=claude
+    summary: 날짜 확정 조건에 g001 완료 표식(_g001_done.json, failed==0) 추가 - 20261103부터 표식 없는 날짜는
+      "g001 미완료"로 건너뛰고 다음 실행에서 다시 본다(Codex 검토: 30분 무수정만으로는 중단/재실행 중인 날을 불완전한
+      채 확정). 표식은 scope=full, failed=0(정수)이어야 하고, g001이 날짜 폴더 잠금(.g001.lock)을 쥐고 있으면 건너뜀.
+      잘못된 표식은 그 날짜만 건너뛴다. 그 이전 날짜는 표식이 없으므로 기존 30분 규칙 유지.
+      build_day는 읽기 전후 원본 상태(잠금/표식/10s 최신 수정 시각)를 비교해 그 사이 g001이 다시 쓰기 시작했으면
+      결과 파일을 확정하지 않는다(events=-1, 다음 실행에서 재시도) - g001을 막지 않는 낙관적 검사.
+    impact: sim (g015 cron)
+    compatibility: backward-compatible (20261102 이전 날짜 동작 불변)
 - [2026-10-26] type=feat owner=claude
     summary: 신규 - Edge AI(LightGBM 메타 라벨링) 학습 데이터 생성기.
     impact: sim
@@ -49,6 +58,7 @@ Update log:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -413,6 +423,7 @@ def build_day(task) -> tuple[str, int, float]:
     panel = load_panel(EDGE_AI_DIR / "cache" / "turnover_panel.csv")
     codes = universe_for(trade_date, panel, args)
     day_dir = DATA_ROOT / trade_date
+    source_before = _source_state(day_dir)
     prev_dir = find_prev_data_dir(DATA_ROOT, trade_date)
     minute_files = _index_dir(day_dir, "_10s.txt")
     daily_files = _index_dir(prev_dir, "_daily.csv")
@@ -428,12 +439,71 @@ def build_day(task) -> tuple[str, int, float]:
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(".tmp.gz")
     df.to_csv(tmp, index=False, compression="gzip")
+    if _g001_collecting(day_dir) or _source_state(day_dir) != source_before:
+        tmp.unlink(missing_ok=True)  # g001 rewrote the day while it was read - retry on the next run
+        print(f"[WARN] {trade_date}: g001 changed the source while building - not saved", flush=True)
+        return trade_date, -1, time.time() - started
     os.replace(tmp, out_path)
     return trade_date, len(df), time.time() - started
 
 
-def _day_settled(day_dir: Path, settle_minutes: int) -> bool:
-    """True when the folder has 10s files and none was modified in the last settle_minutes."""
+G001_DONE_MARKER = "_g001_done.json"
+G001_MARKER_REQUIRED_FROM = "20261103"  # g001 writes the marker since 2026-11-02; older days never have one
+
+
+def _g001_finished(day_dir: Path) -> tuple[bool, str]:
+    """(finished, reason). From G001_MARKER_REQUIRED_FROM a day needs g001's done marker with failed == 0."""
+    if _g001_collecting(day_dir):
+        return False, "g001 is collecting this day (.g001.lock held)"
+    if day_dir.name < G001_MARKER_REQUIRED_FROM:
+        return True, "legacy"
+    marker = day_dir / G001_DONE_MARKER
+    try:
+        info = json.loads(marker.read_text(encoding="utf-8"))
+    except OSError:
+        return False, "g001 not finished (no done marker)"
+    except ValueError:
+        return False, "g001 done marker is not valid JSON"
+    if not isinstance(info, dict) or info.get("scope") != "full":
+        return False, "g001 done marker is not from a full-universe run"
+    failed = info.get("failed")
+    if not isinstance(failed, int) or isinstance(failed, bool) or failed < 0:
+        return False, f"g001 done marker has invalid failed={failed!r}"
+    if failed:
+        return False, f"g001 finished with {failed} failed symbol(s) - rerun g001"
+    return True, "ok"
+
+
+def _source_state(day_dir: Path) -> tuple:
+    """(done-marker mtime, newest 10s mtime, 10s file count) - changes when g001 deletes/rewrites the day."""
+    marker = day_dir / G001_DONE_MARKER
+    try:
+        mtimes = [e.stat().st_mtime_ns for e in os.scandir(day_dir) if e.name.endswith("_10s.txt")]
+    except OSError:
+        mtimes = []
+    return (marker.stat().st_mtime_ns if marker.exists() else None, max(mtimes, default=None), len(mtimes))
+
+
+def _g001_collecting(day_dir: Path) -> bool:
+    """True while a g001 run holds the date folder lock (g001 DATE_LOCK_FILE)."""
+    path = day_dir / ".g001.lock"
+    if not path.exists():
+        return False
+    try:
+        with open(path, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    return False
+
+
+def _day_settled(day_dir: Path, settle_minutes: int, verbose: bool = False) -> bool:
+    """True when g001 finished the day (see _g001_finished) and no 10s file was modified in the last settle_minutes."""
+    finished, reason = _g001_finished(day_dir)
+    if not finished:
+        if verbose:
+            print(f"  skip {day_dir.name}: {reason}", flush=True)
+        return False
     try:
         newest = max((e.stat().st_mtime for e in os.scandir(day_dir) if e.name.endswith("_10s.txt")), default=None)
     except OSError:
@@ -465,7 +535,7 @@ def main() -> None:
     out_dir = EDGE_AI_DIR / "dataset" / dataset_tag(args)
     if not args.rebuild:
         days = [d for d in days if not (out_dir / f"events_{d}.csv.gz").exists()]
-    days = [d for d in days if _day_settled(DATA_ROOT / d, args.settle_minutes)]
+    days = [d for d in days if _day_settled(DATA_ROOT / d, args.settle_minutes, verbose=True)]
     if args.live:
         for d in sorted(p.name.split("_")[-1].split(".")[0] for p in (EDGE_AI_DIR / "live").glob("edge_ai_*.jsonl")):
             if args.dates and d not in set(args.dates):
