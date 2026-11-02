@@ -49,6 +49,11 @@ Behavior notes kept from the old inline code (do not "fix" them here - they are 
   order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-11-02] type=feat owner=claude
+    summary: 사용자 요청(20261102 091580/105740 등 60틱 크로스 미매수) - _008 3중 트리거를 r002 evaluate_triple_trigger로 판정,
+      r001 TRIPLE_1MIN_CONDITION("above": 1분 MA5>MA20 상태) / TRIPLE_TICK_CONDITION("any": 60틱 또는 120틱) 적용.
+    impact: live (r003)
+    compatibility: breaking (매수 증가 방향. 롤백: "cross" / "all")
 - [2026-10-30] type=feat+fix owner=claude
     summary: 사용자 요청(326030 SK바이오팜 09:36 크로스 없는 continuation 매수 / 09:22 3중 골든크로스 미매수) + Codex 검토.
       r001 ENTRY_TRIGGER_MODE="triple"이면 _008이 1분 MA5>MA20(r002 find_1min_ma_golden_cross, 크로스 봉 확정 후
@@ -169,6 +174,8 @@ from r001_define_config import (
     TRIPLE_1MIN_MA_FAST,
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
+    TRIPLE_1MIN_CONDITION,
+    TRIPLE_TICK_CONDITION,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
     TRIPLE_CROSS_BYPASS_CONTEXT_GATES,
     TRIPLE_CROSS_BYPASS_SCORE,
@@ -186,6 +193,7 @@ from r002_strategy_core_shared import (
     check_1min_trigger_live_guard,
     evaluate_context_score,
     find_1min_ma_golden_cross,
+    evaluate_triple_trigger,
     gate_steps_diagnostic,
     passes_opening_gap_volume_gate,
     update_timed_condition_state,
@@ -569,51 +577,34 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
       틱 서비스 없음/예외/ABSTAIN(파일 없음, stale)이면 반려(fail-closed).
     - 그 다음 1분 캔들/BB갭 추격가드(r002, 경과봉 = 1분 MA 크로스 이후 봉 수)와 실시간 가드(하락폭 + 1분 BB중심선 위)를 적용.
     continuation/연속유효 타이머는 쓰지 않는다 - 세 크로스 각각의 나이 상한이 신호 수명을 대신한다.
+    [2026-11-02] r001 TRIPLE_1MIN_CONDITION="above"면 1분은 MA5>MA20 상태만, TRIPLE_TICK_CONDITION="any"면 틱은 60/120 중 하나만
+    요구(r002 evaluate_triple_trigger). 크로스가 1분 프레임 밖이면 BB갭 가드 경과봉 = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS.
     """
     ma = find_1min_ma_golden_cross(frame_1min, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW)
-    missing: list[str] = []
-    ma_age = float("nan")
-    if not ma["ok"]:
-        missing.append(ma["reason"])
-    else:
-        ma_age = _cross_age_seconds(ctx, ma["cross_bar_time"])
-        if pd.isna(ma_age) or ma_age < 0:
-            missing.append(f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_TIME_INVALID")
-        elif ma_age > TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS:
-            missing.append(
-                f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_EXPIRED_{ma_age:.0f}s"
-                f"_cross={pd.Timestamp(ma['cross_bar_time']):%H:%M}"
-            )
+    ma_age = _cross_age_seconds(ctx, ma["cross_bar_time"]) if ma["ok"] else float("nan")
     tick_result = _evaluate_tick_trigger(ctx, required=True)
-    tick_cross_times: dict[int, object] = {}
-    if tick_result is None:
-        missing.append("TICK_FEED_UNAVAILABLE")
-    else:
-        crosses = getattr(tick_result, "crosses", None) or {}
-        if not crosses:
-            missing.append(tick_result.reason or "TICK_NO_RESULT")
-        for n in TICK_TRIGGER_BAR_SIZES:
-            c = crosses.get(int(n))
-            if c is None:
-                if crosses:
-                    missing.append(f"TICK{n}_NOT_EVALUATED")
-            elif not c.ok:
-                missing.append(c.reason)
-            else:
-                tick_cross_times[int(n)] = c.cross_time
+    crosses = (getattr(tick_result, "crosses", None) or {}) if tick_result is not None else {}
+    # [2026-11-02] 1분/틱 조건 판정은 r002 evaluate_triple_trigger(g003 공용) - TRIPLE_1MIN_CONDITION / TRIPLE_TICK_CONDITION
+    trig = evaluate_triple_trigger(
+        ma, ma_age, crosses, TICK_TRIGGER_BAR_SIZES, TRIPLE_1MIN_CONDITION, TRIPLE_TICK_CONDITION,
+        TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW,
+    )
+    missing = list(trig["missing"])
+    if not crosses:  # 피드 없음/ABSTAIN: 봉 크기별 사유 대신 피드 사유 하나
+        missing = [m for m in missing if not m.startswith("TICK")]
+        missing.append("TICK_FEED_UNAVAILABLE" if tick_result is None else (tick_result.reason or "TICK_NO_RESULT"))
+    tick_cross_times = trig["tick_cross_times"]
     ctx.trigger_flag = "F" if missing else "P"
     ctx.steps_text = _steps_text(ctx)
     if missing:
         _reject_hybrid(ctx, f"TRIPLE_CROSS_MISSING_{'|'.join(missing)}")
         return False
 
-    label = f"TRIPLE_CROSS_1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}+" + "+".join(
-        f"TICK{n}" for n in TICK_TRIGGER_BAR_SIZES
-    )
+    label = trig["label"]
     guard_info: dict = {}
     guard_ok, guard_reason = check_buy_condition_1min_hybrid_trigger(
         frame_1min, info=guard_info, tick_cross_label=label,
-        external_bars_since_cross=int(ma["bars_since_cross"] or 0),
+        external_bars_since_cross=trig["bars_since_cross"],
     )
     if not guard_ok:
         _reject_hybrid(ctx, f"TRIPLE_CROSS_{guard_reason}")
@@ -625,14 +616,14 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
         _reject_hybrid(ctx, f"TRIPLE_CROSS_{live_reason}")
         return False
     trigger_info = {
-        "path": "triple", "cross_bar_time": ma["cross_bar_time"], "bars_since_cross": ma["bars_since_cross"],
+        "path": "triple", "cross_bar_time": ma["cross_bar_time"], "bars_since_cross": trig["bars_since_cross"],
         "run_start_time": guard_info.get("run_start_time"),
         "tick_cross_times": {n: _ts_text(t) for n, t in tick_cross_times.items()},
     }
     _record_trigger_age(
         ctx, "TRIPLE_CROSS_PASS", ma["cross_bar_time"], path="triple", trigger=guard_reason,
-        cross_bar_time=ma["cross_bar_time"], cross_age_s=round(ma_age, 1),
-        bars_since_cross=ma["bars_since_cross"], tick_cross_times=trigger_info["tick_cross_times"],
+        cross_bar_time=ma["cross_bar_time"], cross_age_s=None if pd.isna(ma_age) else round(ma_age, 1),
+        bars_since_cross=trig["bars_since_cross"], tick_cross_times=trigger_info["tick_cross_times"],
         last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
     )
     ctx.triple_cross = True

@@ -17,6 +17,11 @@ Update log format (append only):
 
 Update log:
 - [2026-11-02] type=feat owner=claude
+    summary: r005 parity - triple 판정을 r002 evaluate_triple_trigger로(TRIPLE_1MIN_CONDITION/TRIPLE_TICK_CONDITION),
+      TickReplayFeed prior_day_warmup=TICK_TRIGGER_PRIOR_DAY_WARMUP(직전 수집일 틱으로 틱봉 이어붙이기).
+    impact: sim
+    compatibility: breaking (triple 날짜 매수 증가 방향, r001 값으로 롤백)
+- [2026-11-02] type=feat owner=claude
     summary: r005 _008 triple 모드 재현 - 해당 날짜에 g011 틱 파일(runtime/data/ticks/<date>)이 있으면 1분 MA5>MA20 +
       60틱 + 120틱 골든크로스(r013 TickReplayFeed) + 1분 캔들/BB갭 가드 + 실시간 가드(TRIPLE_REQUIRE_1MIN_ABOVE_MID)로
       진입하고, 3분 컨텍스트는 TRIPLE_CROSS_BYPASS_CONTEXT_GATES 실패/점수 미달(TRIPLE_CROSS_BYPASS_SCORE)을 통과 처리
@@ -315,6 +320,9 @@ from r001_define_config import (
     TICK_TRIGGER_MA_FAST,
     TICK_TRIGGER_MA_SLOW,
     TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
+    TRIPLE_1MIN_CONDITION,
+    TRIPLE_TICK_CONDITION,
+    TICK_TRIGGER_PRIOR_DAY_WARMUP,
     TRIPLE_1MIN_MA_FAST,
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_CROSS_BYPASS_CONTEXT_GATES,
@@ -511,6 +519,7 @@ from r002_strategy_core_shared import (
     check_1min_trigger_live_guard,
     check_1min_dead_cross,
     find_1min_ma_golden_cross,
+    evaluate_triple_trigger,
     build_context_eval,
     evaluate_context_score,
     HYBRID_3MIN_CONTEXT_GATES,
@@ -2265,35 +2274,23 @@ def _triple_entry_decision(
             return False, (f"HYBRID_1MIN_FRAME_STALE_last={pd.Timestamp(frame_1min.index[-1]):%H:%M}"
                            f"_expected={exp_label:%H:%M}")
     ma = find_1min_ma_golden_cross(frame_1min, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW)
-    missing: list[str] = []
-    if not ma["ok"]:
-        missing.append(ma["reason"])
-    else:
-        cbt = ma["cross_bar_time"]
-        ma_age = (ts - pd.Timestamp(cbt)).total_seconds() if cbt is not None and not pd.isna(cbt) else float("nan")
-        if pd.isna(ma_age) or ma_age < 0:
-            missing.append(f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_TIME_INVALID")
-        elif ma_age > TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS:
-            missing.append(f"1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}_CROSS_EXPIRED_{ma_age:.0f}s"
-                           f"_cross={pd.Timestamp(cbt):%H:%M}")
+    cbt = ma["cross_bar_time"]
+    ma_age = ((ts - pd.Timestamp(cbt)).total_seconds()
+              if ma["ok"] and cbt is not None and not pd.isna(cbt) else float("nan"))
     tick_result = tick_replay.evaluate(code, ts.to_pydatetime())
     crosses = tick_result.crosses or {}
+    trig = evaluate_triple_trigger(
+        ma, ma_age, crosses, TICK_TRIGGER_BAR_SIZES, TRIPLE_1MIN_CONDITION, TRIPLE_TICK_CONDITION,
+        TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW,
+    )
+    missing = list(trig["missing"])
     if not crosses:
+        missing = [m for m in missing if not m.startswith("TICK")]
         missing.append(tick_result.reason or "TICK_NO_RESULT")
-    for n in TICK_TRIGGER_BAR_SIZES:
-        c = crosses.get(int(n))
-        if c is None:
-            if crosses:
-                missing.append(f"TICK{n}_NOT_EVALUATED")
-        elif not c.ok:
-            missing.append(c.reason)
     if missing:
         return False, f"TRIPLE_CROSS_MISSING_{'|'.join(missing)}"
-    label = f"TRIPLE_CROSS_1MIN_MA{TRIPLE_1MIN_MA_FAST}_MA{TRIPLE_1MIN_MA_SLOW}+" + "+".join(
-        f"TICK{n}" for n in TICK_TRIGGER_BAR_SIZES
-    )
     guard_ok, guard_reason = check_buy_condition_1min_hybrid_trigger(
-        frame_1min, tick_cross_label=label, external_bars_since_cross=int(ma["bars_since_cross"] or 0),
+        frame_1min, tick_cross_label=trig["label"], external_bars_since_cross=trig["bars_since_cross"],
     )
     if not guard_ok:
         return False, f"TRIPLE_CROSS_{guard_reason}"
@@ -2349,6 +2346,7 @@ def simulate_date(
         tick_replay = TickReplayFeed(
             TICK_DATA_DIR, TICK_TRIGGER_BAR_SIZES, TICK_TRIGGER_MA_FAST, TICK_TRIGGER_MA_SLOW,
             TICK_TRIGGER_CROSS_MAX_AGE_SECONDS, TICK_TRIGGER_FEED_STALE_SECONDS,
+            prior_day_warmup=TICK_TRIGGER_PRIOR_DAY_WARMUP,
         )
     log(f"Entry trigger   : {entry_trigger_mode} (ENTRY_TRIGGER_MODE_SIM={ENTRY_TRIGGER_MODE_SIM}, "
         f"ticks={TICK_DATA_DIR / date_str})")

@@ -1,6 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-02] type=feat owner=claude
+#     summary: 사용자 요청(20261102 091580/105740/032830/326030 60틱 골든크로스인데 매수 트리거 없음) - (1) 틱봉 전일 이어붙이기
+#       TICK_TRIGGER_PRIOR_DAY_WARMUP=True, (2) 3중 조건 완화 TRIPLE_1MIN_CONDITION="above"(1분 MA5>MA20 상태),
+#       TRIPLE_TICK_CONDITION="any"(60틱 또는 120틱 골든크로스). 3분 소프트 게이트 BYPASS는 이 완화된 트리거에도 그대로 적용.
+#     impact: live (r003) + g003
+#     compatibility: breaking (매수 증가 방향. 롤백: False / "cross" / "all")
 # - [2026-10-31] type=feat owner=claude
 #     summary: 사용자 결정(실매매 09-23 이후 매도 141건 분석 + g019/g020 시뮬레이션 검토) - 손실 매도 조건 3개 삭제(OFF):
 #       1분봉 데드크로스 매도(76건 합계 -84,761원, 승률 1.3%) ENABLE_HYBRID_1MIN_DEADCROSS_EXIT=False,
@@ -1197,6 +1203,12 @@ TICK_TRIGGER_FEED_STALE_SECONDS = 120.0
 # 틱 경로에는 적용하지 않는다(하락폭 0.4% 반려는 적용). True면 틱 경로도 1분 BB중심선 위를 요구.
 TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID = False
 TICK_DATA_DIR = RUNTIME_DATA_DIR / "ticks"
+# [2026-11-02] 사용자 요청(091580/105740/032830/326030 장 초반 60틱 골든크로스 미인식) - 틱봉을 오늘 체결만으로 만들면
+# MA20에 봉 21개(60틱봉 = 체결 ~1,260건)가 필요해 저유동 종목은 장 초반 30분~1시간 넘게 FEW_BARS로 판정 불가였다.
+# True: 직전 수집일(TICK_DATA_DIR 아래 오늘보다 앞선 가장 최근 날짜 폴더)의 같은 종목 파일로 틱봉을 먼저 채워 HTS처럼
+# 전일 봉에 이어서 MA를 계산한다(r013 TickTriggerFeed/TickReplayFeed). 그 폴더에 종목 파일이 없으면 오늘 봉만 사용.
+# False면 종전(오늘 봉만) - 롤백.
+TICK_TRIGGER_PRIOR_DAY_WARMUP = True
 
 # [2026-10-30] 사용자 요청(326030 SK바이오팜 - 09:36 크로스 없는 1MIN_UPTREND_CONTINUATION 매수 후 -0.89% 손절,
 # 09:22 1분/60틱/120틱 모두 골든크로스였는데 3분 컨텍스트(BB_MID_DOWNTREND/STOCH_D)에 막혀 미매수) + Codex 검토.
@@ -1211,6 +1223,13 @@ TRIPLE_1MIN_MA_FAST = 5
 TRIPLE_1MIN_MA_SLOW = 20
 # 1분 MA 크로스 봉 확정 시각(봉 종료 라벨)부터의 유효시간 - 틱 크로스(TICK_TRIGGER_CROSS_MAX_AGE_SECONDS)와 같은 240초.
 TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS = 240.0
+# [2026-11-02] 사용자 요청(105740 디케이락 09:27~09:29 60틱+120틱 크로스인데 1분 MA5가 이미 MA20 위라 "새 1분 크로스" 없음으로 반려,
+# 091580 동일) - 3중 조건 완화. 백테스트 미검증, 사용자 결정으로 live.
+#   TRIPLE_1MIN_CONDITION: "above" = 1분 MA5 > MA20 상태면 통과(크로스 시점/나이 무관), "cross" = 종전(240초 내 새 크로스).
+#   TRIPLE_TICK_CONDITION: "any" = TICK_TRIGGER_BAR_SIZES 중 하나라도 유효 골든크로스면 통과, "all" = 종전(모두).
+# 롤백: "cross" / "all".
+TRIPLE_1MIN_CONDITION = "above"         # "above" | "cross"
+TRIPLE_TICK_CONDITION = "any"           # "any" | "all"
 # 3중 크로스 경로의 실시간 가드: 하락폭(HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT)은 항상, 1분 BB중심선 위 요구는 이 값.
 TRIPLE_REQUIRE_1MIN_ABOVE_MID = True
 # 3중 크로스일 때 실패해도 통과시키는 3분 컨텍스트 게이트(r002 HYBRID_3MIN_CONTEXT_GATES 이름). 점수 임계값은 아래 플래그.

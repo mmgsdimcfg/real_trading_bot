@@ -2037,6 +2037,60 @@ def find_1min_ma_golden_cross(frame_1min: pd.DataFrame, fast: int = 5, slow: int
     return out
 
 
+def evaluate_triple_trigger(
+    ma: dict, ma_age_s: float, crosses: dict, sizes: tuple[int, ...], one_min_condition: str = "cross",
+    tick_condition: str = "all", max_age_s: float = 240.0, fast: int = 5, slow: int = 20,
+) -> dict:
+    """[2026-11-02] r005 _008 3중 트리거 / g003 공용 판정 - 1분 조건 + 틱 조건 -> missing(반려 사유 목록)과 가드용 값.
+
+    ma: find_1min_ma_golden_cross 결과, ma_age_s: 그 크로스 봉 나이(초, 크로스 없으면 nan), crosses: r013 TickTriggerResult.crosses.
+    one_min_condition "cross" = ma_age_s <= max_age_s인 새 크로스(종전), "above" = 마지막 봉 MA_fast > MA_slow 상태면 통과
+      (크로스가 프레임 밖이면 bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS - continuation 경로와 같은 BB갭 완화).
+    tick_condition "all" = sizes 모두 ok(종전), "any" = 하나라도 ok.
+    반환: ok, missing, bars_since_cross(BB갭 가드용), tick_cross_times({n: time} ok인 봉 크기만), label.
+    """
+    tag = f"1MIN_MA{fast}_MA{slow}"
+    missing: list[str] = []
+    bars_since_cross = int(ma.get("bars_since_cross") or 0)
+    if str(one_min_condition).lower() == "above":
+        if ma.get("ok"):
+            pass  # MA_fast > MA_slow (cross age irrelevant)
+        elif str(ma.get("reason", "")).endswith("_NO_CROSS_IN_FRAME"):
+            bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
+        else:
+            missing.append(ma.get("reason") or f"{tag}_NOT_ABOVE")
+        one_min_label = f"1MIN_MA{fast}_ABOVE_MA{slow}"
+    else:
+        if not ma.get("ok"):
+            missing.append(ma.get("reason") or f"{tag}_NO_CROSS")
+        elif pd.isna(ma_age_s) or ma_age_s < 0:
+            missing.append(f"{tag}_CROSS_TIME_INVALID")
+        elif ma_age_s > max_age_s:
+            missing.append(f"{tag}_CROSS_EXPIRED_{ma_age_s:.0f}s_cross={pd.Timestamp(ma['cross_bar_time']):%H:%M}")
+        one_min_label = f"1MIN_MA{fast}_MA{slow}"
+    tick_missing: list[str] = []
+    tick_cross_times: dict[int, object] = {}
+    crosses = crosses or {}
+    for n in sizes:
+        c = crosses.get(int(n))
+        if c is None:
+            tick_missing.append(f"TICK{n}_NOT_EVALUATED")
+        elif not c.ok:
+            tick_missing.append(c.reason)
+        else:
+            tick_cross_times[int(n)] = c.cross_time
+    if str(tick_condition).lower() == "any":
+        if not tick_cross_times:
+            missing.extend(tick_missing)
+    else:
+        missing.extend(tick_missing)
+    label = f"TRIPLE_CROSS_{one_min_label}+" + "+".join(
+        f"TICK{n}" for n in (tick_cross_times if str(tick_condition).lower() == "any" else sizes)
+    )
+    return {"ok": not missing, "missing": missing, "bars_since_cross": bars_since_cross,
+            "tick_cross_times": tick_cross_times, "label": label}
+
+
 def check_1min_trigger_live_guard(
     frame_1min: pd.DataFrame, live_price: float | None, require_above_mid: bool = True,
 ) -> tuple[bool, str]:

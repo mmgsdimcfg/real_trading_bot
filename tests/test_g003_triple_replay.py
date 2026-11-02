@@ -6,6 +6,7 @@ pick the mode per date and apply the r005 BYPASS rules for the 3-min context."""
 from __future__ import annotations
 
 import csv
+import os
 import sys
 import tempfile
 import unittest
@@ -93,6 +94,60 @@ class TestTickReplayParity(unittest.TestCase):
         replay = TickReplayFeed(self.full_dir, (3,), 2, 4, 240, 120)
         self.assertEqual(replay.evaluate("000001", T0).reason, "TICK_ABSTAIN_NO_FILE")
         self.assertEqual(replay.evaluate("003160", T0 - timedelta(seconds=1)).reason, "TICK_ABSTAIN_NO_TICKS")
+
+
+class TestPriorDayWarmup(unittest.TestCase):
+    """[2026-11-02] prior-day tick file seeds the bars so the MAs work from the first prints of the day (HTS-like)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        for d in ("20261030", "20261102"):
+            (self.dir / d).mkdir()
+        prev = datetime(2026, 10, 30, 15, 0, 0)
+        _write(self.dir / "20261030" / "003160.csv", _rows([42000 - 10 * i for i in range(30)], prev), header=True)
+        # today: 3 falling-then-rising bars only - not enough for MA4 on its own
+        self.today_rows = _rows([41700, 41700, 41700, 41800, 41900, 42000, 42100, 42200, 42300], T0)
+        _write(self.dir / "20261102" / "003160.csv", self.today_rows, header=True)
+        self.now = T0 + timedelta(seconds=9)
+
+    def test_without_warmup_few_bars(self):
+        r = TickTriggerFeed(self.dir, (3,), 2, 4, 240, 120).evaluate("003160", self.now)
+        self.assertIn("TICK3_ABSTAIN_FEW_BARS_3", r.reason)
+
+    def test_warmup_live_and_replay_agree_and_cross(self):
+        live = TickTriggerFeed(self.dir, (3,), 2, 4, 240, 120, prior_day_warmup=True)
+        replay = TickReplayFeed(self.dir, (3,), 2, 4, 240, 120, prior_day_warmup=True)
+        a, b = live.evaluate("003160", self.now), replay.evaluate("003160", self.now)
+        self.assertEqual((a.ok, a.reason, a.cross_time), (b.ok, b.reason, b.cross_time))
+        self.assertTrue(a.ok, a.reason)
+        self.assertEqual(a.cross_time.date(), T0.date())  # the cross itself is today's bar
+
+    def test_warmup_survives_file_replacement(self):
+        live = TickTriggerFeed(self.dir, (3,), 2, 4, 240, 120, prior_day_warmup=True)
+        before = live.evaluate("003160", self.now)
+        path = self.dir / "20261102" / "003160.csv"
+        tmp = path.with_suffix(".new")
+        _write(tmp, self.today_rows, header=True)
+        os.replace(tmp, path)  # new inode -> reader resets
+        after = live.evaluate("003160", self.now)
+        self.assertEqual((before.ok, before.reason, before.cross_time), (after.ok, after.reason, after.cross_time))
+        self.assertGreater(len(live._feeds["003160"].builders[3].bars), 5)
+
+    def test_prior_tail_is_bounded(self):
+        from r013_tick_trigger import iter_prior_tail
+        ticks = list(iter_prior_tail(self.dir / "20261030" / "003160.csv", 7))
+        self.assertEqual(len(ticks), 7)
+        self.assertEqual(ticks[-1].price, 42000 - 10 * 29)
+
+    def test_prior_file_only_from_latest_earlier_day(self):
+        from r013_tick_trigger import find_prior_tick_file
+        self.assertEqual(find_prior_tick_file(self.dir, "20261102", "003160"), self.dir / "20261030" / "003160.csv")
+        self.assertIsNone(find_prior_tick_file(self.dir, "20261102", "000001"))
+        self.assertIsNone(find_prior_tick_file(self.dir, "20261030", "003160"))
+        (self.dir / "20261031").mkdir()  # latest earlier day without the code -> no warmup (no older fallback)
+        self.assertIsNone(find_prior_tick_file(self.dir, "20261102", "003160"))
 
 
 class TestEntryTriggerMode(unittest.TestCase):

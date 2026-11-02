@@ -389,3 +389,24 @@ class TestR005TickOr(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSessionEdgeBars(unittest.TestCase):
+    """[2026-11-02] prior-day warmup drops only invalid bars at a day edge."""
+
+    def _bar(self, ts, invalid=False):
+        return TickBar("326030", ts, ts, 1.0, 1.0, 1.0, 1.0, n_ticks=60, closed_at=ts, invalid=invalid)
+
+    def test_edges_dropped_inner_gap_kept(self):
+        from r013_tick_trigger import _drop_session_edge_bars
+        d1, d2 = datetime(2026, 10, 30, 13, 51), datetime(2026, 11, 2, 9, 0, 8)
+        bars = ([self._bar(d1, True)] + [self._bar(d1 + timedelta(minutes=i)) for i in range(1, 4)]
+                + [self._bar(d1 + timedelta(minutes=5), True)]               # prior day's unfinished last bar
+                + [self._bar(d2, True)]                                       # opening-auction print
+                + [self._bar(d2 + timedelta(minutes=i)) for i in range(1, 3)]
+                + [self._bar(d2 + timedelta(minutes=3), True)]               # gap inside today's session
+                + [self._bar(d2 + timedelta(minutes=4))])
+        out = _drop_session_edge_bars(bars, d2.date())
+        self.assertEqual(len(out), len(bars) - 3)
+        self.assertEqual(sum(b.invalid for b in out), 1)
+        self.assertTrue(any(b.invalid and b.end_ts == d2 + timedelta(minutes=3) for b in out))

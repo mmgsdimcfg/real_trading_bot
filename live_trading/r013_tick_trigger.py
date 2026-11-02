@@ -22,6 +22,12 @@ This module never raises into the caller: TickTriggerFeed.evaluate() turns any e
 
 Update log:
 - [2026-11-02] type=feat owner=claude
+    summary: 사용자 요청(20261102 장 초반 60틱 크로스 FEW_BARS 미인식) - prior_day_warmup: 직전 수집일 파일(find_prior_tick_file)로
+      틱봉을 먼저 채워 HTS처럼 전일 봉에 이어 MA 계산(tick_ma_golden_cross same_day_only=False). r001 TICK_TRIGGER_PRIOR_DAY_WARMUP.
+      일자 경계의 무효 봉(전일 마지막 미완성 봉 / 당일 첫 봉 = 동시호가 체결)은 _drop_session_edge_bars로 제외.
+    impact: live (r003) + sim (g003)
+    compatibility: breaking (장 초반 틱 크로스 판정 가능 -> 매수 증가 방향. 롤백: TICK_TRIGGER_PRIOR_DAY_WARMUP=False)
+- [2026-11-02] type=feat owner=claude
     summary: TickReplayFeed 신규 - g003 3중 트리거 재현용. 하루치 g011 파일을 한 번에 읽어 과거 시각 now 기준으로 판정
       (봉은 tick_ma_golden_cross가 available_at <= now로 거르고, stale은 now 이전 마지막 수신 시각 기준). 라이브 미사용.
     impact: sim (g003)
@@ -67,10 +73,30 @@ class TickTriggerResult:
     crosses: dict[int, TickCross] = field(default_factory=dict)
 
 
+def _drop_session_edge_bars(bars: list[TickBar], today) -> list[TickBar]:
+    """Prior-day warmup: drop INVALID bars that exist only because of a session edge - the first bar of each day
+    (collection started mid-bar / opening-auction print without counts) and the last bar of an earlier day (unfinished
+    at the close / closing-auction print). Without this every cross in the first ~slow bars of the day abstains on
+    INVALID_BAR. Invalid bars inside a session are kept (a real gap still abstains)."""
+    out: list[TickBar] = []
+    for i, b in enumerate(bars):
+        if b.invalid:
+            d = b.end_ts.date()
+            first_of_day = i == 0 or bars[i - 1].end_ts.date() != d
+            last_of_prior_day = d < today and (i == len(bars) - 1 or bars[i + 1].end_ts.date() != d)
+            if first_of_day or last_of_prior_day:
+                continue
+        out.append(b)
+    return out
+
+
 def tick_ma_golden_cross(bars: list[TickBar], now: datetime, n: int, fast: int, slow: int,
-                         max_age_s: float) -> TickCross:
+                         max_age_s: float, same_day_only: bool = True) -> TickCross:
     tag = f"TICK{n}"
-    recent = [b for b in bars if b.available_at <= now and b.end_ts.date() == now.date()]
+    # same_day_only=False: prior-day bars loaded by the prior-day warmup also feed the MAs (HTS-like continuity)
+    recent = [b for b in bars if b.available_at <= now and (not same_day_only or b.end_ts.date() == now.date())]
+    if not same_day_only:
+        recent = _drop_session_edge_bars(recent, now.date())
     if len(recent) < slow + 1:
         return TickCross(False, f"{tag}_ABSTAIN_FEW_BARS_{len(recent)}", n, bars=len(recent))
     closes = [b.close for b in recent]
@@ -107,12 +133,51 @@ def tick_ma_golden_cross(bars: list[TickBar], now: datetime, n: int, fast: int, 
     return TickCross(True, f"{tag}_MA{fast}_MA{slow}_GOLDEN_CROSS", n, cross_bar.available_at, f_last, s_last, len(recent))
 
 
+def find_prior_tick_file(data_dir: Path, day: str, code: str) -> Path | None:
+    """<data_dir>/<D>/<code>.csv of the latest collection day D < day (None if that day has no file for the code)."""
+    try:
+        days = sorted((p.name for p in Path(data_dir).iterdir()
+                       if p.is_dir() and len(p.name) == 8 and p.name.isdigit() and p.name < day), reverse=True)
+    except OSError:
+        return None
+    if not days:
+        return None
+    path = Path(data_dir) / days[0] / f"{code}.csv"
+    return path if path.exists() else None
+
+
+def iter_prior_tail(path: Path, max_ticks: int):
+    """Last max_ticks prints of a prior-day g011 file (file order). Only the tail is csv-parsed so a large file does not
+    block the trading loop; a bar cut by the tail start is invalid + first of its day -> dropped by the edge rule."""
+    from collections import deque
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        header_line = f.readline()
+        tail = deque(f, maxlen=max(1, int(max_ticks)))
+    header = next(csv.reader([header_line]))
+    for line in tail:
+        fields = next(csv.reader([line]))
+        if len(fields) != len(header):
+            continue
+        tick = parse_tick_row(dict(zip(header, fields)))
+        if tick is not None:
+            yield tick
+
+
+def prior_tail_ticks(sizes: tuple[int, ...], slow: int) -> int:
+    # enough prints for slow+1 bars of the largest size, twice over (missed prints / edge bar)
+    return 2 * (int(slow) + 1) * max(int(n) for n in sizes)
+
+
 class _CodeFeed:
     """Incremental reader of one g011 tick file + one TickBarBuilder per bar size."""
 
-    def __init__(self, code: str, path: Path, sizes: tuple[int, ...]):
+    def __init__(self, code: str, path: Path, sizes: tuple[int, ...], prior_path: Path | None = None,
+                 prior_ticks: int = 0):
         self.code = code
         self.path = path
+        self.prior_path = prior_path
+        self.prior_ticks = prior_ticks  # prior-day file ingested once before today's prints (bars only, no last_recv)
+        self.prior_loaded = False
         self.offset = 0
         self.pending = b""
         self.header: list[str] | None = None
@@ -122,7 +187,15 @@ class _CodeFeed:
         self.tail = b""  # last bytes before offset - detects an in-place rewrite of already-read content
 
     def _reset(self) -> None:
-        self.__init__(self.code, self.path, tuple(self.builders))
+        self.__init__(self.code, self.path, tuple(self.builders), self.prior_path, self.prior_ticks)
+
+    def _load_prior(self) -> None:
+        self.prior_loaded = True
+        if self.prior_path is None:
+            return
+        for tick in iter_prior_tail(self.prior_path, self.prior_ticks):
+            for b in self.builders.values():
+                b.ingest(tick)
 
     def poll(self) -> None:
         try:
@@ -141,6 +214,8 @@ class _CodeFeed:
                 if f.read(len(self.tail)) != self.tail:
                     self._reset()  # rewritten in place (same or larger size)
             self.file_id = file_id
+            if not self.prior_loaded:
+                self._load_prior()  # also right after a _reset above: prior-day bars must precede today's prints
             if st.st_size == self.offset:
                 return
             f.seek(self.offset)
@@ -171,8 +246,9 @@ class _CodeFeed:
 
 class TickTriggerFeed:
     def __init__(self, data_dir: Path, sizes: tuple[int, ...], fast: int, slow: int, max_age_s: float,
-                 stale_s: float, log: Callable[[str], None] | None = None):
+                 stale_s: float, log: Callable[[str], None] | None = None, prior_day_warmup: bool = False):
         self.data_dir = Path(data_dir)
+        self.prior_day_warmup = bool(prior_day_warmup)
         self.sizes = tuple(int(n) for n in sizes)
         self.fast = int(fast)
         self.slow = int(slow)
@@ -191,7 +267,9 @@ class TickTriggerFeed:
             self._logged.clear()
         feed = self._feeds.get(code)
         if feed is None:
-            feed = _CodeFeed(code, self.data_dir / day / f"{code}.csv", self.sizes)
+            prior = find_prior_tick_file(self.data_dir, day, code) if self.prior_day_warmup else None
+            feed = _CodeFeed(code, self.data_dir / day / f"{code}.csv", self.sizes, prior,
+                             prior_tail_ticks(self.sizes, self.slow))
             self._feeds[code] = feed
         return feed
 
@@ -213,7 +291,8 @@ class TickTriggerFeed:
             return TickTriggerResult(False, reason=f"TICK_ABSTAIN_FEED_STALE_{idle:.0f}s")
         result = TickTriggerResult(False)
         for n in self.sizes:
-            c = tick_ma_golden_cross(feed.builders[n].bars, now, n, self.fast, self.slow, self.max_age_s)
+            c = tick_ma_golden_cross(feed.builders[n].bars, now, n, self.fast, self.slow, self.max_age_s,
+                                     same_day_only=not self.prior_day_warmup)
             result.crosses[n] = c
             if c.ok:
                 self._log_cross(code, c)
@@ -239,8 +318,9 @@ class TickReplayFeed:
     received at or before `now`."""
 
     def __init__(self, data_dir: Path, sizes: tuple[int, ...], fast: int, slow: int, max_age_s: float,
-                 stale_s: float):
+                 stale_s: float, prior_day_warmup: bool = False):
         self.data_dir = Path(data_dir)
+        self.prior_day_warmup = bool(prior_day_warmup)
         self.sizes = tuple(int(n) for n in sizes)
         self.fast = int(fast)
         self.slow = int(slow)
@@ -257,6 +337,11 @@ class TickReplayFeed:
             else:
                 builders = {n: TickBarBuilder(code=code, n=n) for n in self.sizes}
                 recvs: list[datetime] = []
+                prior = find_prior_tick_file(self.data_dir, day, code) if self.prior_day_warmup else None
+                if prior is not None:  # same order as the live feed: prior-day bars first, no receive times
+                    for tick in iter_prior_tail(prior, prior_tail_ticks(self.sizes, self.slow)):
+                        for b in builders.values():
+                            b.ingest(tick)
                 for tick in iter_tick_file(path):
                     if tick.recv is not None:
                         recvs.append(tick.recv)
@@ -285,7 +370,8 @@ class TickReplayFeed:
             return TickTriggerResult(False, reason=f"TICK_ABSTAIN_FEED_STALE_{idle:.0f}s")
         result = TickTriggerResult(False)
         for n in self.sizes:
-            c = tick_ma_golden_cross(builders[n].bars, now, n, self.fast, self.slow, self.max_age_s)
+            c = tick_ma_golden_cross(builders[n].bars, now, n, self.fast, self.slow, self.max_age_s,
+                                     same_day_only=not self.prior_day_warmup)
             result.crosses[n] = c
             if c.ok and not result.ok:
                 result.ok, result.label, result.cross_time = True, f"TICK{n}_MA{self.fast}_MA{self.slow}", c.cross_time
