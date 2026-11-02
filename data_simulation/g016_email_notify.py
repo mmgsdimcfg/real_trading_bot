@@ -3,6 +3,11 @@ g016_email_notify.py
 
 g002 스캔 결과를 메일로 전송한다(종목 리스트는 본문, 리포트 파일은 첨부).
 g002 --notify-email 로 스캔 마지막에 호출된다. Python 표준 smtplib만 사용.
+send_text(subject, body)는 운영 점검 알림(g024)용 일반 텍스트 메일.
+
+Update log:
+- [2026-11-02] type=feat owner=claude
+    summary: send_text 추가(g024 틱 수집/AI 학습 점검 알림). SMTP 전송부를 _send로 분리 - send_scan_report 동작 불변.
 
 최초 1회 설정
 -------------
@@ -30,14 +35,14 @@ from pathlib import Path
 CONFIG_PATH = Path.home() / ".mail" / "mail_config.json"
 
 
-def send_scan_report(picks: list[str], label: str, attachments: list[Path]) -> bool:
-    """picks(['코드_종목명', ...])를 본문에, attachments 파일을 첨부해 전송한다. 실패해도 예외 없이 False."""
+def _send(subject: str, body: str, attachments: list[Path] = ()) -> bool:
+    """설정 파일의 계정으로 전송. 실패해도 예외 없이 False."""
     try:
         cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         msg = EmailMessage()
-        msg["Subject"] = f"[g002] {label} 감시종목 {len(picks)}종목"
+        msg["Subject"] = subject
         msg["From"], msg["To"] = cfg["user"], cfg["to"]
-        msg.set_content("\n".join(picks) if picks else "선정 없음")
+        msg.set_content(body)
         for p in attachments:
             if p.exists():
                 msg.add_attachment(p.read_bytes(), maintype="text", subtype="plain", filename=p.name)
@@ -49,6 +54,16 @@ def send_scan_report(picks: list[str], label: str, attachments: list[Path]) -> b
     except Exception as exc:
         print(f"[EMAIL] 전송 실패: {exc}")
         return False
+
+
+def send_scan_report(picks: list[str], label: str, attachments: list[Path]) -> bool:
+    """picks(['코드_종목명', ...])를 본문에, attachments 파일을 첨부해 전송한다. 실패해도 예외 없이 False."""
+    return _send(f"[g002] {label} 감시종목 {len(picks)}종목", "\n".join(picks) if picks else "선정 없음", attachments)
+
+
+def send_text(subject: str, body: str) -> bool:
+    """일반 텍스트 알림 메일(첨부 없음). 실패해도 예외 없이 False."""
+    return _send(subject, body)
 
 
 if __name__ == "__main__":
