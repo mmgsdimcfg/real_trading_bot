@@ -16,6 +16,11 @@ Tick count vs volume: a "tick" is one execution print (count), CNTG_VOL is share
 aligned with the exchange tape; such bars carry gap_ticks > 0 and the momentum filter abstains on them.
 
 Update log:
+- [2026-11-02] type=fix owner=claude
+    summary: iter_tick_file가 열 수가 다른 줄(수집기 강제 종료로 잘린 반쪽 줄)을 건너뜀 - 기존에는 빈 필드를 0으로
+      읽어 거래량 0/누적거래량 0 틱으로 수락했음(Codex 재현). r013 실시간 리더는 이미 열 수 검사.
+    impact: sim(g003 틱 재생) / r013 전일 이어붙이기(iter_tick_file 사용 시)
+    compatibility: backward-compatible (정상 줄 결과 불변)
 - [2026-10-23] type=feat owner=claude
     summary: 신규 - 60/120틱 봉 생성기(누락/중복/순서역전 처리) + 틱 모멘텀 보조 필터 + 수집 파일 로더.
     impact: sim(g012 strategy B/C) / collector(g011)
@@ -369,6 +374,8 @@ def iter_tick_file(path: Path) -> Iterator[Tick]:
     """Yields ticks in RECEIVE order (file order). The builder handles duplicates / reordering."""
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            if None in row or None in row.values():  # short / long row (torn write) - not a real print
+                continue
             t = parse_tick_row(row)
             if t is not None:
                 yield t
