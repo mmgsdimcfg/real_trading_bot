@@ -13,7 +13,13 @@ Integrity
   record count field. Each record is written as-is with the receive timestamp; dedup / reorder / gap handling
   happens at read time in r009_tick_bars.TickBarBuilder (ACML_VOL + cumulative execution counts).
 - Reconnect with exponential backoff; every reconnect is logged so downstream can mark gaps.
+  A connection that stays open but delivers nothing (no subscribe ACK within SUB_ACK_TIMEOUT_SECONDS, or no
+  execution at all for IDLE_RECONNECT_SECONDS during continuous trading) is treated as dead and reconnected.
 - KIS limit: <= 40 subscriptions per websocket session -> codes are capped at 40.
+- Single instance: the process holds an exclusive flock on <runtime>/data/ticks/.g011.lock for its whole life,
+  so r003's supervisor and the g022 cron can never run two collectors (the loser exits with rc 3).
+- A row cut by a crash is closed with a newline before appending again, so it cannot swallow the next print
+  (r009 then drops the short row).
 
 Output: <runtime>/data/ticks/YYYYMMDD/<code>.csv (columns = r009_tick_bars.TICK_FILE_COLUMNS)
         <runtime>/data/ticks/YYYYMMDD/_collector.log
@@ -24,8 +30,17 @@ Run:
   python g011_tick_collector.py --dry-parse-test      # offline parser self-test, no network
   python g011_tick_collector.py --fill-from-scan      # r004 codes first, then top-ranked g002 candidates up to 40
   (daily schedule without r003: g022_tick_collect_daily.sh)
+  --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-02] type=fix owner=claude
+    summary: Codex cron 검토 반영 - (1) 단일 실행 flock(.g011.lock, 실패 시 rc 3) (2) 승인키 요청 타임아웃
+      (kis_auth.requests 래핑) (3) 30초 안에 ACK가 안 온 종목이 하나라도 있거나 장중 전 종목 무체결 120초면 재접속
+      (ACK 누락 재접속은 연속 3회까지 - 이후엔 로그만) (4) 백오프는 체결 수신 후에만 초기화 + jitter (5) 이어쓰기 전
+      반쪽 줄 개행 마감 (6) --until 기본값을 r014 특수일 마감+1분, 휴장일은 즉시 종료 (7) START 다음 줄에
+      "CODES a,b,..."로 구독 요청 목록 기록(g024가 파일 없는 종목 대조).
+    impact: collector (r003이 띄우는 g011 포함 - r003 재시작 후 반영)
+    compatibility: backward-compatible (--until 명시 시 기존 동일, 출력 형식 불변)
 - [2026-11-02] type=feat owner=claude
     summary: --fill-from-scan - r004 감시 종목 뒤에 가장 최근 g002 스캔(_<date>_scan_all.md)의 순위 순 후보를 40종목까지
       채워 구독(3중 트리거 재현/연구용 틱 확보). r004 종목이 항상 앞이므로 r003이 --codes 없는 g011을 재사용해도 감시
@@ -42,12 +57,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import fcntl
 import json
 import os
+import random
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -56,6 +73,7 @@ sys.path.insert(0, str(LIVE_DIR))
 
 from r001_define_config import RUNTIME_DATA_DIR, DEFINE_TODAY_CODE_PATH  # noqa: E402
 from r009_tick_bars import TICK_FILE_COLUMNS  # noqa: E402
+from r014_market_calendar import session_hours  # noqa: E402
 
 # H0STCNT0 record layout (open-trading-api domestic_stock_functions_ws.ccnl_krx)
 H0STCNT0_COLUMNS = [
@@ -76,6 +94,65 @@ NCOL = len(H0STCNT0_COLUMNS)
 _IDX = {c: i for i, c in enumerate(H0STCNT0_COLUMNS)}
 MAX_SUBSCRIPTIONS = 40
 TR_ID = "H0STCNT0"
+LOCK_NAME = ".g011.lock"           # in <runtime>/data/ticks/ (date-independent: one collector per machine)
+EXIT_ALREADY_RUNNING = 3
+AUTH_TIMEOUT_SECONDS = (5.0, 10.0)  # (connect, read) for /oauth2/Approval - kis_auth sets no timeout
+SUB_ACK_TIMEOUT_SECONDS = 30.0      # a requested code without any ACK (ok or error) after this -> reconnect
+MAX_ACK_RECONNECTS = 3              # consecutive ACK-loss reconnects; afterwards keep the connection and only log
+IDLE_RECONNECT_SECONDS = 120.0      # no execution for ANY code during continuous trading -> reconnect
+IDLE_OPEN_GRACE_MINUTES = 2         # idle check starts open+2m ...
+IDLE_CLOSE_AUCTION_MINUTES = 10     # ... and stops at close-10m (closing call auction prints only at the close)
+MAX_BACKOFF_SECONDS = 60.0
+
+
+class _Reconnect(Exception):
+    """Raised inside the receive loop to drop a connection that is open but not delivering."""
+
+
+class _RequestsWithTimeout:
+    """Stand-in for kis_auth's `requests` that adds a timeout to calls without one (auth_ws has none, so a hung
+    approval request would freeze the collector forever). Only the name inside kis_auth is replaced."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def post(self, url, *args, **kwargs):
+        kwargs.setdefault("timeout", AUTH_TIMEOUT_SECONDS)
+        return self._real.post(url, *args, **kwargs)
+
+    def get(self, url, *args, **kwargs):
+        kwargs.setdefault("timeout", AUTH_TIMEOUT_SECONDS)
+        return self._real.get(url, *args, **kwargs)
+
+
+def acquire_single_instance_lock(lock_dir: Path):
+    """Open + exclusively flock the lock file; returns the open file (keep it for the process lifetime) or None
+    when another collector holds it. Python fds are non-inheritable, so children never keep the lock."""
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / LOCK_NAME, "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"{os.getpid()} {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    fh.flush()
+    return fh
+
+
+def idle_check_window(day: datetime) -> tuple[datetime, datetime] | None:
+    """[start, end) in which a feed with zero executions is considered dead, from the r014 calendar."""
+    hours = session_hours(day)
+    if hours is None:
+        return None
+    start = datetime.combine(day.date(), hours[0]) + timedelta(minutes=IDLE_OPEN_GRACE_MINUTES)
+    end = datetime.combine(day.date(), hours[1]) - timedelta(minutes=IDLE_CLOSE_AUCTION_MINUTES)
+    return start, end
 
 
 def parse_frame(raw: str) -> list[dict] | None:
@@ -125,6 +202,7 @@ class TickWriter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self._files: dict[str, tuple] = {}
         self.rows = 0
+        self.torn_rows = 0
 
     def write(self, recv_ts: str, rec: dict) -> None:
         code = str(rec["code"]).zfill(6)
@@ -132,7 +210,11 @@ class TickWriter:
         if fh is None:
             path = self.out_dir / f"{code}.csv"
             new = not path.exists() or path.stat().st_size == 0
+            torn = not new and not _ends_with_newline(path)
             f = open(path, "a", newline="", encoding="utf-8")
+            if torn:
+                f.write("\n")  # close the row cut by a crash; r009 drops it as a short row
+                self.torn_rows += 1
             w = csv.DictWriter(f, fieldnames=TICK_FILE_COLUMNS)
             if new:
                 w.writeheader()
@@ -153,6 +235,12 @@ class TickWriter:
             except Exception:
                 pass
         self._files.clear()
+
+
+def _ends_with_newline(path: Path) -> bool:
+    with open(path, "rb") as f:
+        f.seek(-1, os.SEEK_END)
+        return f.read(1) == b"\n"
 
 
 def load_codes(args) -> list[str]:
@@ -204,8 +292,12 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
     import kis_auth as ka  # noqa: E402
     from domestic_stock_functions_ws import ccnl_krx  # noqa: E402
 
+    if not isinstance(ka.requests, _RequestsWithTimeout):
+        ka.requests = _RequestsWithTimeout(ka.requests)
+    idle_window = idle_check_window(datetime.now())
     writer = TickWriter(out_dir)
     backoff = 1.0
+    ack_reconnects = 0
     stop = asyncio.Event()
 
     def _stop(*_a):
@@ -232,9 +324,28 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                     sub_ok: set = set()
                     sub_fail: set = set()
                     sub_reported = False
-                    backoff = 1.0
-                    last_flush = time.monotonic()
+                    ack_checked = False
+                    got_data = False
+                    connected_at = last_data = last_flush = time.monotonic()
                     while not stop.is_set() and datetime.now() < until:
+                        mono = time.monotonic()
+                        if not ack_checked and mono - connected_at >= SUB_ACK_TIMEOUT_SECONDS:
+                            ack_checked = True
+                            missing = sorted(set(codes) - sub_ok - sub_fail)
+                            if missing:
+                                if ack_reconnects < MAX_ACK_RECONNECTS:
+                                    ack_reconnects += 1
+                                    raise _Reconnect(f"no subscribe ACK in {SUB_ACK_TIMEOUT_SECONDS:.0f}s for "
+                                                     f"{len(missing)} code(s) {missing[:10]} (ok={len(sub_ok)} "
+                                                     f"failed={len(sub_fail)}, try {ack_reconnects}/{MAX_ACK_RECONNECTS})")
+                                log(f"WARN still no subscribe ACK for {len(missing)} code(s) {missing[:10]} after "
+                                    f"{MAX_ACK_RECONNECTS} reconnects - keeping this connection")
+                            else:
+                                ack_reconnects = 0
+                        now_dt = datetime.now()
+                        if (idle_window is not None and idle_window[0] <= now_dt < idle_window[1]
+                                and mono - last_data >= IDLE_RECONNECT_SECONDS):
+                            raise _Reconnect(f"IDLE no execution for {mono - last_data:.0f}s")
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                         except asyncio.TimeoutError:
@@ -261,8 +372,14 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                                     sub_ok.add(key)
                                 if len(sub_ok) + len(sub_fail) == len(codes) and not sub_reported:
                                     sub_reported = True
+                                    ack_reconnects = 0  # every code answered (also when it arrives after the WARN)
                                     log(f"SUBSCRIPTIONS ok={len(sub_ok)} failed={len(sub_fail)} {sorted(sub_fail)}")
                             continue
+                        if recs:
+                            last_data = time.monotonic()
+                            if not got_data:
+                                got_data = True
+                                backoff = 1.0  # reset only once the feed really delivers (not on a bare connect)
                         for rec in recs:
                             writer.write(recv_ts, rec)
                         if time.monotonic() - last_flush >= 1.0:
@@ -270,15 +387,16 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                             last_flush = time.monotonic()
             except Exception as exc:  # network / auth errors: back off and reconnect (gap is visible via ACML_VOL)
                 writer.flush()
-                log(f"DISCONNECTED {type(exc).__name__}: {exc} | retry in {backoff:.0f}s")
+                wait = backoff * random.uniform(1.0, 1.3)
+                log(f"DISCONNECTED {type(exc).__name__}: {exc} | retry in {wait:.0f}s")
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=backoff)
+                    await asyncio.wait_for(stop.wait(), timeout=wait)
                 except asyncio.TimeoutError:
                     pass
-                backoff = min(backoff * 2.0, 60.0)
+                backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
     finally:
         writer.close()
-        log(f"STOPPED rows={writer.rows}")
+        log(f"STOPPED rows={writer.rows}" + (f" torn_rows_closed={writer.torn_rows}" if writer.torn_rows else ""))
 
 
 def _self_test() -> None:
@@ -306,7 +424,8 @@ def _self_test() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--codes", nargs="*", default=None)
-    ap.add_argument("--until", default="15:31", help="HH:MM local time to stop")
+    ap.add_argument("--until", default=None,
+                    help="HH:MM local time to stop (default: r014 calendar close + 1 min, i.e. 15:31 normally)")
     ap.add_argument("--dry-parse-test", action="store_true")
     ap.add_argument("--fill-from-scan", action="store_true",
                     help="after the watchlist codes, fill up to 40 with the newest g002 scan's ranked candidates")
@@ -325,8 +444,20 @@ def main() -> None:
         print("no codes to subscribe")
         return
     now = datetime.now()
-    hh, mm = (int(x) for x in args.until.split(":"))
-    until = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if args.until:
+        hh, mm = (int(x) for x in args.until.split(":"))
+        until = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    else:
+        hours = session_hours(now)
+        if hours is None:
+            print(f"{now:%Y-%m-%d %H:%M:%S} market closed today (r014 calendar) - not collecting", flush=True)
+            return
+        until = datetime.combine(now.date(), hours[1]) + timedelta(minutes=1)
+    lock_fh = acquire_single_instance_lock(RUNTIME_DATA_DIR / "ticks")
+    if lock_fh is None:
+        print(f"{now:%Y-%m-%d %H:%M:%S} another g011 holds {RUNTIME_DATA_DIR / 'ticks' / LOCK_NAME} - exiting",
+              flush=True)
+        sys.exit(EXIT_ALREADY_RUNNING)
     out_dir = RUNTIME_DATA_DIR / "ticks" / now.strftime("%Y%m%d")
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / "_collector.log"
@@ -338,6 +469,7 @@ def main() -> None:
             f.write(line + "\n")
 
     log(f"START codes={len(codes)}{fill_note} until={until:%H:%M} out={out_dir}")
+    log("CODES " + ",".join(codes))
     asyncio.run(run_collector(codes, until, out_dir, log))
 
 
