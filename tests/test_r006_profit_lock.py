@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "live_trading"))
@@ -50,6 +51,7 @@ class TestProfitLock(unittest.TestCase):
         )
         return r006._023_profit_lock(ctx)
 
+    @mock.patch.multiple(r006, PROFIT_LOCK_GIVEBACK_PCT=0.005, PROFIT_LOCK_RATIO=0.50, PROFIT_LOCK_REST_BREAKEVEN=True)
     def test_091580_path_locks_half_then_breakeven(self):
         fired = [(p, self._tick(p)) for p in (26800, 26950, 27050, 27000, 26950)]
         self.assertFalse(any(f for _, f in fired))  # 26,950 > lock 26,915
@@ -61,6 +63,16 @@ class TestProfitLock(unittest.TestCase):
         self.assertFalse(self._tick(26850))  # still in profit -> rest held
         self.assertTrue(self._tick(26750))   # breakeven
         self.assertEqual(self.api.orders[-1], (9, "PROFIT_LOCK_REST_BREAKEVEN", True))
+
+    def test_live_config_sells_all_at_giveback_04(self):
+        self.assertEqual((r006.PROFIT_LOCK_GIVEBACK_PCT, r006.PROFIT_LOCK_RATIO), (0.004, 1.0))  # 2026-11-03 user decision
+        for p in (26950, 27050, 26950):  # 26,950 > lock 26,942
+            self.assertFalse(self._tick(p))
+        self.assertTrue(self._tick(26900))
+        self.assertEqual(self.api.orders[-1], (18, "PROFIT_LOCK_100PCT_GIVEBACK_0.4PCT", True))
+        self.pos["quantity"] = 0  # fully filled
+        self.assertFalse(self._tick(26700))
+        self.assertEqual(len(self.api.orders), 1)
 
     def test_not_armed_below_arm_pnl(self):
         for p in (26900, 27000, 26850, 26700):  # peak +0.93% < 1.0%

@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-03] type=tune owner=claude
+#     summary: 사용자 결정 - 이익 잠금 giveback 0.5% -> 0.4%, 1차 50% -> 전량(100%) 매도. g023 82일(ma_cross 37,252건 holdout,
+#       비용 포함): 기존 -0.621%/승률 34.6% -> -0.600%/42.9% (없음 -0.632%), train도 같은 순서.
+#     impact: live (r003 재시작 후) - 전량 매도라 PROFIT_LOCK_REST_BREAKEVEN은 사실상 미사용
+#     compatibility: compatible (롤백: GIVEBACK 0.005 / RATIO 0.50)
 # - [2026-11-02] type=feat owner=claude
 #     summary: 사용자 요청(091580 상신이디피 고점 +1.12% 후 -1.12% 손절) - 이익 잠금 ENABLE_PROFIT_LOCK(r006 _023): TP1 전
 #       고점 +1.0% 이후 고점 대비 -0.5%면 진입수량 50% 시장가 매도, 잔량은 본전에서 청산. g023 샘플 train/holdout 모두 개선.
@@ -1318,12 +1323,14 @@ HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS = 300.0  # 확정 3분봉 나�
 # GIVEBACK_PCT 하락하면 진입수량의 RATIO를 시장가 1차 매도(1회), 이후 잔량은 손익 <= 0(본전)이면 시장가 전량 매도.
 # g023(12일 샘플, ma_cross 17,171건, 비용 포함): arm 1.0/g 0.5/50%/본전 -> 거래당 train +0.011%p, holdout +0.019%p
 # (승률 22% -> 27%), 절대 손익은 여전히 음수(진입 엣지 없음). 82일 전체 결과는 runtime/edge_ai/profit_lock/report_*.md.
+# [2026-11-03] g023 82일 전체(holdout 20260922~, ma_cross 37,252건): g 0.4%/전량 -0.600%(승률 42.9%) > g 0.5%/50%/본전
+# -0.621%(34.6%) > 없음 -0.632%(29.5%). 사용자 결정으로 g 0.4%/전량 적용(report_20261103_071157.md).
 # 롤백: ENABLE_PROFIT_LOCK=False.
 ENABLE_PROFIT_LOCK = True
 PROFIT_LOCK_ARM_PNL = 0.010        # 고점 손익 +1.0% 이상이어야 활성화
-PROFIT_LOCK_GIVEBACK_PCT = 0.005   # 고점 대비 -0.5% (고점가 기준)
-PROFIT_LOCK_RATIO = 0.50           # 진입수량의 50% 1차 매도
-PROFIT_LOCK_REST_BREAKEVEN = True  # 1차 매도 후 잔량은 본전(손익 <= 0)에서 전량 매도
+PROFIT_LOCK_GIVEBACK_PCT = 0.004   # 고점 대비 -0.4% (고점가 기준)
+PROFIT_LOCK_RATIO = 1.00           # 진입수량 전량 매도 (잔량 없음)
+PROFIT_LOCK_REST_BREAKEVEN = True  # RATIO < 1일 때만 의미: 1차 매도 후 잔량은 본전(손익 <= 0)에서 전량 매도
 ENABLE_PEAK_RETRACE_GUARD = True
 PEAK_RETRACE_GUARD_ARM_PNL = 0.010        # +1.0% 이상 찍어야 활성화 (BREAKEVEN_FAIL_ARM_PNL과 동일)
 PEAK_RETRACE_GUARD_MIN_PCT = 0.008        # 0.8%: 문턱 하한(사용자 요청값 그대로, ATR가 이보다 작을 때 하한 역할)
