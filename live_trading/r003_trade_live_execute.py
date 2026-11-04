@@ -21,6 +21,14 @@ Update log format (append only):
 
 Update log:
 - [2026-11-04] type=feat owner=claude
+    summary: 사용자 승인(Codex 2차 안전 점검 + 시장 추세) - (1) 부분체결 매수: 메인 루프가 pending 매수라도 보유수량>0이면
+      손절/익절 감시 계속, refresh_pending_orders가 PARTIAL_BUY_CANCEL_AFTER_SECONDS 뒤 잔량 취소(_cancel_buy_remainder).
+      (2) place_sell_order API 예외 시 접수 불명 pending 등록(_reconcile_unknown_sell이 확인) - 중복 매도 방지.
+      (3) account_sync_age_seconds + BuyServices.account_sync_age. (4) fetch_live_price 응답 상태 필드 보관(get_quote_status).
+      (5) 시장 추세: g004 market map + _compute_market_regime(지수 ETF 1분봉, 루프 1회) -> BuyServices.market_regime.
+    impact: live
+    compatibility: breaking (매수 감소 방향. 롤백: r001 플래그 / git revert)
+- [2026-11-04] type=feat owner=claude
     summary: r013 TickTriggerFeed에 틱 밀도 하한(r001 TICK_MIN_PRINTS_PER_MIN/_WINDOW_MINUTES) 전달, r005 BuyState에
       tick_nofile_logged(개장 전 NO_FILE 1회 로그) 하루 단위 유지.
     impact: live
@@ -767,6 +775,11 @@ from pathlib import Path
 import pandas as pd
 from r001_define_config import (
     HARD_STOP_BLOCK_REENTRY_TODAY,
+    PARTIAL_BUY_CANCEL_AFTER_SECONDS,
+    ENABLE_MARKET_REGIME_GATE,
+    MARKET_REGIME_ETF,
+    MARKET_REGIME_MA_FAST,
+    MARKET_REGIME_MA_SLOW,
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
@@ -879,6 +892,8 @@ from r001_define_config import (
     V2_LIVE_MODE,
 )
 from r002_strategy_core_shared import (
+    load_symbol_market_map,
+    market_regime_ok,
     StrategyConfig,
     is_regular_new_entry_blocked_time,
     is_midday_no_entry_time,
@@ -1054,6 +1069,30 @@ def _sanitize_log_filename(name: str) -> str:
     cleaned = _INVALID_FILENAME_CHARS.sub("_", str(name).strip())
     cleaned = cleaned.rstrip(" .")
     return cleaned or "UNKNOWN"
+
+
+_SYMBOL_MARKET_MAP: dict[str, str] = {}
+_SYMBOLS_MASTER_PATH = current_dir.parent / "data_simulation" / "g004_universe_symbols_master.txt"
+
+
+def _load_symbol_market_map() -> dict[str, str]:
+    """[2026-11-04] r005 _029 시장 추세 게이트용 code -> KOSPI/KOSDAQ (g004 master). 실패 시 빈 사전(시장 미상 = fail-open)."""
+    _SYMBOL_MARKET_MAP.clear()
+    _SYMBOL_MARKET_MAP.update(load_symbol_market_map(_SYMBOLS_MASTER_PATH))
+    return _SYMBOL_MARKET_MAP
+
+
+def _compute_market_regime(current_dt: datetime, frame_cache_1min: dict, frame_last_refresh_at_1min: dict) -> dict[str, tuple]:
+    """지수 ETF(MARKET_REGIME_ETF)별 1분봉 MA5>MA20 판정 - 루프 1회당 1번 계산. {market: (ok|None, detail)}"""
+    out: dict[str, tuple] = {}
+    for market, etf in MARKET_REGIME_ETF.items():
+        try:
+            frame = _get_or_refresh_1min_frame(str(etf).zfill(6), current_dt, False, frame_cache_1min, frame_last_refresh_at_1min)
+            ok, detail = market_regime_ok(frame, MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW)
+        except Exception as exc:
+            ok, detail = None, f"ERROR_{type(exc).__name__}"
+        out[market] = (ok, f"{market}_{etf}_{detail}")
+    return out
 
 
 def register_symbol_names(symbol_name_map: dict[str, str]) -> None:
@@ -2079,11 +2118,30 @@ def fetch_live_price(code: str, now: datetime, nxt_tradeable: bool) -> float | N
             except (TypeError, ValueError):
                 continue
             if value > 0:
+                _record_quote_status(code, row)
                 if ENABLE_LIVE_QUOTE_LOG:
                     record_live_quote(code, market_div, row)
                 return value
 
     return None
+
+
+# [2026-11-04] r005 _031 시세 상태 게이트용 - fetch_live_price 응답의 상태 필드만 종목별로 보관(추가 호출 없음).
+_QUOTE_STATUS_FIELDS = ("vi_cls_code", "mrkt_warn_cls_code", "temp_stop_yn", "short_over_yn", "iscd_stat_cls_code")
+_LAST_QUOTE_STATUS: dict[str, dict] = {}
+
+
+def _record_quote_status(code: str, row) -> None:
+    try:
+        st = {k: str(row.get(k, "") if row.get(k, "") is not None else "").strip() for k in _QUOTE_STATUS_FIELDS}
+        st["at"] = datetime.now()
+        _LAST_QUOTE_STATUS[str(code).zfill(6)] = st
+    except Exception:
+        pass
+
+
+def get_quote_status(code: str) -> dict | None:
+    return _LAST_QUOTE_STATUS.get(str(code).zfill(6))
 
 
 # [2026-10-10] r001 ENABLE_LIVE_QUOTE_LOG - fetch_live_price가 받은 inquire_price 응답 기록(추가 호출 없음).
@@ -3434,6 +3492,12 @@ class TradingAPI:
         if elapsed >= LIVE_STATE_SAVE_INTERVAL_SECONDS:
             self.persist_live_state(date_str=date_str)
 
+    def account_sync_age_seconds(self) -> float | None:
+        """[2026-11-04] 마지막 성공 잔고 동기화 이후 초(없으면 None) - r005 _030 계좌 신선도 게이트."""
+        if self._last_sync_at is None:
+            return None
+        return max(0.0, (datetime.now() - self._last_sync_at).total_seconds())
+
     def sync_positions_from_account(self, force: bool = False) -> None:
         if not force and self._last_sync_at is not None:
             elapsed = (datetime.now() - self._last_sync_at).total_seconds()
@@ -3880,6 +3944,16 @@ class TradingAPI:
 
                 if pos is not None and pos.get("quantity", 0) > 0:
                     if status and int(status.get("remaining_qty", 0)) > 0:
+                        # [2026-11-04 Codex #15] 부분체결 잔량이 PARTIAL_BUY_CANCEL_AFTER_SECONDS 이상 남아 있으면 취소
+                        _sub_at = pending.get("submitted_at")
+                        if (
+                            PARTIAL_BUY_CANCEL_AFTER_SECONDS > 0
+                            and isinstance(_sub_at, datetime)
+                            and not pending.get("cancel_inflight")
+                            and (now - _sub_at).total_seconds() >= PARTIAL_BUY_CANCEL_AFTER_SECONDS
+                        ):
+                            self._cancel_buy_remainder(code, pending, int(status.get("filled_qty", 0)),
+                                                       int(status.get("remaining_qty", 0)))
                         self._maybe_log_pending_progress(
                             pending,
                             f"  [BUY PARTIAL ] {_sym_label(code)} | filled={int(status.get('filled_qty', 0))}/{int(status.get('order_qty', pending.get('quantity', 0)))} "
@@ -4342,6 +4416,35 @@ class TradingAPI:
             f"{_symbol_log_label(code, str(leg.get('code_name', '')))} | BUY REPRICE RESUBMIT | qty={qty} | "
             f"leg={leg.get('role')} | mode={price_mode} | price={new_price:,.0f} | order_no={leg['order_no'] or 'UNKNOWN'}"
         )
+
+    def _cancel_buy_remainder(self, code: str, pending: dict, filled_qty: int, remaining_qty: int) -> None:
+        """[2026-11-04 Codex #15] 부분체결 매수 주문의 잔량 취소(재주문 없음). 취소가 확인되면 refresh_pending_orders의
+        terminal 경로가 체결분으로 _confirm_pending_buy를 호출한다."""
+        order_no = str(pending.get("order_no", ""))
+        order_org_no = str(pending.get("order_org_no", ""))
+        if not order_no or not order_org_no:
+            return
+        exchange = str(pending.get("exchange", "KRX"))
+        if self.dry_run:
+            cancel_result = {"rt_cd": "0"}
+        else:
+            try:
+                cancel_result = dsf.order_rvsecncl(
+                    env_dv=self.env_dv, cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
+                    krx_fwdg_ord_orgno=order_org_no, orgn_odno=order_no, ord_dvsn="00", rvse_cncl_dvsn_cd="02",
+                    ord_qty=str(int(remaining_qty or pending.get("quantity", 0))), ord_unpr="0", qty_all_ord_yn="Y",
+                    excg_id_dvsn_cd=exchange,
+                )
+            except Exception as exc:
+                log(f"  [BUY PART CXL] {_sym_label(code)} | cancel error: {exc}")
+                return
+        if not _order_succeeded(cancel_result):
+            log(f"  [BUY PART CXL] {_sym_label(code)} | cancel rejected: {_extract_order_error_detail(cancel_result)}")
+            return
+        pending["cancel_inflight"] = True
+        pending["reprice_pending"] = False
+        log(f"  [BUY PART CXL] {_sym_label(code)} | filled={filled_qty} remaining={remaining_qty} | "
+            f"{PARTIAL_BUY_CANCEL_AFTER_SECONDS:.0f}s 경과 - 잔량 취소 요청 (체결분은 보유 유지)")
 
     def _request_buy_reprice(self, code: str, pending: dict, now: datetime) -> None:
         """미체결 매수 지정가 주문을 취소 요청한다. 취소가 확인되면(closed without fill,
@@ -4928,7 +5031,18 @@ class TradingAPI:
                     excg_id_dvsn_cd=order_spec["exchange"],
                 )
             except Exception as exc:
-                log(f"  [SELL ERROR  ] {_sym_label(code)} | {exc}")
+                # [2026-11-04 Codex #16] 응답 불명: 브로커가 접수했을 수도 있으므로 바로 재매도하지 않고 접수 불명 pending으로
+                # 등록해 refresh_pending_orders -> _reconcile_unknown_sell이 당일 주문 조회로 확인한다(접수됐으면 추적 재개,
+                # SELL_UNKNOWN_RECONCILE_SECONDS 내 없으면 해제). 그동안 이 종목의 새 매도는 차단된다. 호출측에는 False.
+                log(f"  [SELL ERROR  ] {_sym_label(code)} | {exc} | 접수 불명 - 당일 주문 조회로 확인 (중복 매도 방지)")
+                self.pending_orders[norm_code] = {
+                    "side": "sell", "quantity": int(qty), "submitted_at": now, "requested_price": float(current_price),
+                    "exchange": order_spec["exchange"], "order_no": "", "order_org_no": "", "order_time": "",
+                    "reason": reason, "code_name": code_name, "buy_price": float(pos.get("buy_price", 0.0)),
+                    "buy_time": pos.get("buy_time"), "pre_submit_qty": int(pos.get("quantity", qty)),
+                    "allow_reprice": False, "submission_unknown": True, "unknown_since": now,
+                    "unknown_exclude_order_nos": [],
+                }
                 return False
 
         if not _order_succeeded(order_result):
@@ -5338,7 +5452,22 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         format_reject_detail=_buy_reject_detail,
         record_gate_decision=record_gate_decision if ENABLE_GATE_DECISION_LOG else None,
         fetch_bid_ask=_fetch_bid_ask_price,
+        account_sync_age=api.account_sync_age_seconds,
+        quote_status=get_quote_status,
     )
+    # [2026-11-04] 시장 추세 게이트 - 루프마다 _compute_market_regime으로 갱신, 종목 시장은 g004 master
+    market_regime_state: dict[str, tuple] = {}
+    if ENABLE_MARKET_REGIME_GATE:
+        _load_symbol_market_map()
+        log(f"  [MKT REGIME  ] enabled | etf={MARKET_REGIME_ETF} ma={MARKET_REGIME_MA_FAST}/{MARKET_REGIME_MA_SLOW} "
+            f"market_map={len(_SYMBOL_MARKET_MAP)} codes")
+
+        def _market_regime_for(code: str) -> tuple:
+            mkt = _SYMBOL_MARKET_MAP.get(str(code).zfill(6))
+            if mkt not in market_regime_state:
+                return None, f"MARKET_UNKNOWN_{mkt}"
+            return market_regime_state[mkt]
+        buy_services.market_regime = _market_regime_for
     tick_feed = _make_tick_trigger_feed()
     if tick_feed is not None:
         buy_services.tick_trigger = tick_feed.evaluate
@@ -5486,6 +5615,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         except Exception as exc:
                             log(f"  [GAPDIP SHDW ] {_sym_label(_gc)} off-watchlist tracking error: {exc}")
 
+            if ENABLE_MARKET_REGIME_GATE and is_regular_session(current_dt):
+                _new_regime = _compute_market_regime(current_dt, frame_cache_1min, frame_last_refresh_at_1min)
+                for _mk, _st in _new_regime.items():
+                    if market_regime_state.get(_mk, (None, ""))[0] != _st[0]:
+                        log(f"  [MKT REGIME  ] {_mk} -> {'UP' if _st[0] else ('DOWN' if _st[0] is False else 'N/A')} | {_st[1]}")
+                market_regime_state.clear()
+                market_regime_state.update(_new_regime)
             for code in iter_codes:
                 if _nxt_force_exit_pending(datetime.now(), liquidation_state):
                     break  # [2026-10-05] NXT 당일 청산 대기 구간 진입 - 다음 턴에서 대기 후 청산
@@ -5628,20 +5764,21 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     pending_side = str(pending.get("side", "")).upper() or "UNKNOWN"
                     pending_qty = int(pending.get("quantity", 0))
                     pending_time = pending.get("submitted_at", current_dt)
-                    is_pyramid_pending = (
-                        bool(pending.get("pyramid"))
+                    # [2026-11-04 Codex #15] 매수 주문이 부분 체결된 채 대기 중이면(보유수량>0) 체결분의 손절/익절 감시를
+                    # 계속한다(종전엔 피라미딩만 예외라 체결분이 감시 공백에 놓였다). 잔량은 refresh_pending_orders가
+                    # PARTIAL_BUY_CANCEL_AFTER_SECONDS 뒤 취소한다.
+                    is_partial_buy_pending = (
+                        pending_side == "BUY"
                         and pos is not None
                         and int(pos.get("quantity", 0) or 0) > 0
                     )
                     log(
                         f"  [PENDING     ] {symbol_label} | side={pending_side} qty={pending_qty} "
                         f"submitted={pending_time:%H:%M:%S} | order_no={pending.get('order_no', '') or 'UNKNOWN'}"
-                        + (" | PYRAMID_ADD_IN_FLIGHT - position monitoring continues" if is_pyramid_pending else "")
+                        + (" | BUY_PARTIAL_IN_FLIGHT - position monitoring continues" if is_partial_buy_pending else "")
                     )
-                    if not is_pyramid_pending:
+                    if not is_partial_buy_pending:
                         continue
-                    # 피라미딩 추가매수 체결 대기 중에도 기존 보유수량에 대한 손절/익절 감시는
-                    # 계속 진행한다 (아래 포지션 관리 블록으로 그대로 진입).
 
                 log(
                     f"  [CHECK       ] {symbol_label} | bars={len(frame)} live={price:,.0f}  bar_close={float(cur['close']):,.0f} | "

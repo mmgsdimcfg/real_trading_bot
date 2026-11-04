@@ -1,6 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-04] type=feat owner=claude
+#     summary: 사용자 승인(Codex 2차 검토 안전 점검 4건 + 시장 추세 게이트) - PARTIAL_BUY_CANCEL_AFTER_SECONDS(부분체결 잔량 취소),
+#       ACCOUNT_SYNC_MAX_STALE_SECONDS/DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED(계좌 신선도·평가손익 포함 한도), ENABLE_QUOTE_STATUS_GATE
+#       (VI/정지/경고 차단), ENABLE_MARKET_REGIME_GATE(지수 ETF 1분 MA5>MA20). 매도 응답 불명은 r003 pending 등록(상수 없음).
+#     impact: live (r003 재시작 후) + g003(시장 추세 게이트만)
+#     compatibility: breaking (매수 감소 방향. 롤백: 각 플래그 False)
 # - [2026-11-04] type=tune owner=claude
 #     summary: 사용자 결정 - 기본 안전장치 켜기 ENABLE_DAILY_LOSS_LIMIT_GATE/ENABLE_MAX_OPEN_POSITIONS_GATE/ENABLE_SPREAD_GATE
 #       = True(r005 _025/_026/_027), Edge AI 메타 필터 EDGE_AI_MODE "shadow" -> "gate"(r005 _028, shadow 통계 근거).
@@ -1789,6 +1795,35 @@ MAX_ENTRY_SPREAD_TICKS = 2
 EDGE_AI_MODE = "gate"
 EDGE_AI_DIR = RUNTIME_ROOT / "edge_ai"
 EDGE_AI_MIN_PROB_OVERRIDE = 0.0  # >0이면 모델 메타의 임계값 대신 이 값 사용
+
+# =============================================================================
+# [2026-11-04] 주문/계좌 안전 점검 (Codex 2차 검토 #15~#18) + 시장 추세 게이트 - 사용자 승인
+# =============================================================================
+# (1) 부분체결 매수 잔량: 매수 주문이 일부만 체결된 채 이 시간 이상 남아 있으면 잔량을 취소한다(r003 refresh_pending_orders
+#     [BUY PART CXL]). 체결분은 pending 중에도 일반 포지션으로 손절/익절 감시(메인 루프가 더 이상 pending 매수 종목을 건너뛰지 않음).
+PARTIAL_BUY_CANCEL_AFTER_SECONDS = 60.0
+# (2) 매도 주문 응답 불명(API 예외): 종전엔 False만 반환해 다음 틱에 같은 매도를 다시 낼 수 있었다 -> 접수 불명 pending으로 등록해
+#     SELL_UNKNOWN_RECONCILE_SECONDS 동안 당일 주문 조회로 접수 여부를 확인(_reconcile_unknown_sell 재사용). 상수 추가 없음.
+# (3) 계좌 동기화 신선도: 마지막 성공 잔고 조회가 이보다 오래됐으면(또는 한 번도 없으면) 신규 매수 차단(fail-closed, r005 _030).
+ACCOUNT_SYNC_MAX_STALE_SECONDS = 600.0
+#     일일 손실 한도(_025)는 실현손익 + 당일 봇 보유 포지션 평가손익(현재가 기준)으로 판정.
+DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED = True
+# (4) 시세 상태(r005 _031): 현재가 응답의 VI 발동(vi_cls_code=Y)/임시정지(temp_stop_yn=Y)/시장경고(mrkt_warn_cls_code 02 투자경고,
+#     03 투자위험)/종목상태(iscd_stat_cls_code 51 관리, 52 투자위험, 53 투자경고, 58 거래정지, 59 단기과열)이면 신규 매수 차단.
+#     마지막 응답이 QUOTE_STATUS_MAX_AGE_SECONDS보다 오래됐거나 없으면 통과(fail-open - 가격 신선도는 _023이 별도 검사).
+ENABLE_QUOTE_STATUS_GATE = True
+QUOTE_STATUS_BLOCK_WARN_CODES = ("02", "03")
+QUOTE_STATUS_BLOCK_STAT_CODES = ("51", "52", "53", "58", "59")
+QUOTE_STATUS_MAX_AGE_SECONDS = 120.0
+# (5) 시장 추세 게이트(r005 _029 / g003): 종목 시장(KOSPI/KOSDAQ, g004 master의 market 열)의 지수 ETF 1분봉 MA5 > MA20일 때만
+#     신규 매수 허용. 11/04 오전 손절 집중(8건 중 6패)·오후 재진입 다수 승 = 종목이 아니라 시장 방향이 갈랐다는 관찰에서 출발.
+#     ETF 1분봉 없음/오류/시장 미상이면 MARKET_REGIME_FAIL_OPEN에 따라 통과. 검증: ETF 10초 데이터는 2026-11-04부터만 있어
+#     g003 A/B는 11/04 1일 - 다중일 검증 전까지는 롤백 플래그로 관리. 롤백: ENABLE_MARKET_REGIME_GATE=False.
+ENABLE_MARKET_REGIME_GATE = True
+MARKET_REGIME_ETF = {"KOSPI": "069500", "KOSDAQ": "229200"}   # KODEX 200 / KODEX 코스닥150
+MARKET_REGIME_MA_FAST = 5
+MARKET_REGIME_MA_SLOW = 20
+MARKET_REGIME_FAIL_OPEN = True
 
 
 def _apply_risk_profile_overrides() -> None:

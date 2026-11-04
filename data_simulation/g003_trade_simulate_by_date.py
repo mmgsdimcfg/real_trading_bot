@@ -16,6 +16,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-04] type=feat owner=claude
+    summary: r005 _029 시장 추세 게이트 parity - 지수 ETF(MARKET_REGIME_ETF) 10초 파일이 있으면 1분봉 MA5>MA20을 ts마다 판정해
+      매수 직전(과열 차단 앞)에서 차단. ETF 파일 없음/시장 미상은 MARKET_REGIME_FAIL_OPEN. env ENABLE_MARKET_REGIME_GATE(A/B).
+    impact: sim
+    compatibility: backward-compatible (ETF 데이터 없는 날짜는 종전과 동일)
 - [2026-11-04] type=refactor owner=claude
     summary: r005 매수 소프트 게이트/BYPASS 삭제 parity - 3분 컨텍스트는 양 경로(triple/legacy) 모두 r002
       run_3min_context_decision(ATR 하한 + 유동성, 점수는 기록만). run_3min_context_pipeline_triple 삭제.
@@ -345,6 +350,11 @@ from r001_define_config import (
     TRIPLE_1MIN_MA_FAST,
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    ENABLE_MARKET_REGIME_GATE,
+    MARKET_REGIME_ETF,
+    MARKET_REGIME_MA_FAST,
+    MARKET_REGIME_MA_SLOW,
+    MARKET_REGIME_FAIL_OPEN,
     ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     TRIPLE_CHASE_FROM_CROSS_MAX_PCT,
     TICK_MIN_PRINTS_PER_MIN,
@@ -527,6 +537,8 @@ from r002_strategy_core_shared import (
     find_1min_ma_golden_cross,
     evaluate_triple_trigger,
     check_chase_from_cross,
+    load_symbol_market_map,
+    market_regime_ok,
     build_context_eval,
     run_3min_context_decision,
     passes_opening_gap_volume_gate,
@@ -625,6 +637,8 @@ REENTRY_MAX_PER_CODE_AFTER_PROFIT = _env_int("REENTRY_MAX_PER_CODE_AFTER_PROFIT"
 ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD = _env_bool("ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD", ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD)
 TRIPLE_CHASE_FROM_CROSS_MAX_PCT = _env_float("TRIPLE_CHASE_FROM_CROSS_MAX_PCT", TRIPLE_CHASE_FROM_CROSS_MAX_PCT)
 TICK_MIN_PRINTS_PER_MIN = _env_float("TICK_MIN_PRINTS_PER_MIN", TICK_MIN_PRINTS_PER_MIN)
+ENABLE_MARKET_REGIME_GATE = _env_bool("ENABLE_MARKET_REGIME_GATE", ENABLE_MARKET_REGIME_GATE)
+SYMBOL_MARKET_MAP: dict[str, str] = {}  # [2026-11-04] main()이 --symbols-file에서 채움 (r005 _029 parity)
 INTRABAR_MIN_ELAPSED_SECONDS = _env_float("INTRABAR_MIN_ELAPSED_SECONDS", INTRABAR_MIN_ELAPSED_SECONDS)
 INTRABAR_MFI_MIN = _env_float("INTRABAR_MFI_MIN", INTRABAR_MFI_MIN)
 INTRABAR_MFI_MAX = _env_float("INTRABAR_MFI_MAX", INTRABAR_MFI_MAX)
@@ -2554,6 +2568,31 @@ def simulate_date(
     else:
         log(f"INFO: _prev_close.json not found in {data_dir} (run r001 to generate it)")
 
+    # [2026-11-04] r005 _029 시장 추세 게이트 parity - 지수 ETF 1분봉(10초 파일이 있을 때만, 없으면 fail-open 1회 로그)
+    regime_frames_1min: dict[str, pd.DataFrame] = {}
+    if ENABLE_MARKET_REGIME_GATE:
+        for _mkt, _etf in MARKET_REGIME_ETF.items():
+            _etf = str(_etf).zfill(6)
+            _p = _find_code_txt_path_finest(data_dir, _etf, require_10s=require_10s_file)
+            _raw = read_ohlc_csv(_p) if _p is not None else None
+            if _raw is None or _raw.empty:
+                log(f"MARKET REGIME | {_mkt} {_etf} | no intraday file - gate {'passes (fail-open)' if MARKET_REGIME_FAIL_OPEN else 'BLOCKS'}")
+                continue
+            _raw = _raw[_raw.index.date == target_date]
+            _m1 = normalize_to_strategy_bars_1min(_raw) if not _raw.empty else None
+            _f1 = calculate_indicators_with_warmup(_m1, None) if _m1 is not None and not _m1.empty else None
+            if _f1 is not None and not _f1.empty:
+                regime_frames_1min[_mkt] = _f1
+                log(f"MARKET REGIME | {_mkt} {_etf} | 1min bars={len(_f1)}")
+
+    def _market_regime_at(code: str, cut) -> tuple:
+        mkt = SYMBOL_MARKET_MAP.get(str(code).zfill(6))
+        fr = regime_frames_1min.get(mkt) if mkt else None
+        if fr is None:
+            return None, f"{mkt}_NO_ETF_FRAME"
+        ok, detail = market_regime_ok(fr[fr.index <= cut], MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW)
+        return ok, f"{mkt}_{detail}"
+
     def _is_nxt_tradeable(code: str) -> bool:
         if code in nxt_flags_from_file:
             return nxt_flags_from_file[code]
@@ -3237,6 +3276,14 @@ def simulate_date(
                     if should_buy:
                         reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{reason}"
 
+            if should_buy and ENABLE_MARKET_REGIME_GATE:  # [2026-11-04] r005 _029 parity
+                _rg_ok, _rg_detail = _market_regime_at(code, _avail_cut)
+                if _rg_ok is None and not MARKET_REGIME_FAIL_OPEN:
+                    _rg_ok = False
+                if _rg_ok is False:
+                    buy_confirm_state.pop(code, None)
+                    log_detail(f"  [REJECT] {code} | MARKET_REGIME_DOWN_{_rg_detail} | price={price:,.0f}")
+                    should_buy = False
             if should_buy and classify_buy_session(ts) == "regular":
                 # [2026-10-04/05] r005 _019_anti_chase_day_extension parity (당일 시가/VWAP 대비 과열 차단).
                 # [2026-10-05 Codex 2차] 실전과 같은 위치(트리거/컨텍스트 통과 후, 연속 확인 전)로 옮기고 차단 시
@@ -3811,6 +3858,7 @@ def main() -> None:
     )
 
     names = load_symbols_name_map(Path(args.symbols_file))
+    SYMBOL_MARKET_MAP.update(load_symbol_market_map(Path(args.symbols_file)))  # [2026-11-04] 시장 추세 게이트용
     names_from_today = load_code_name_map(Path(args.today_code_file))
     for code, name in names_from_today.items():
         names.setdefault(code, name)
