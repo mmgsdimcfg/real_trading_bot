@@ -34,12 +34,23 @@ def _ctx(realized=0.0, traded=(), exposure=(), bid=10000, ask=10010):
 
 
 class TestPortfolioGates(unittest.TestCase):
-    def test_default_off_pass_everything(self):
+    def test_flags_off_pass_everything(self):
+        # [2026-11-04] 기본값이 ON으로 바뀜(사용자 결정) - OFF일 때 모두 통과하는지만 검증
         ctx, _ = _ctx(realized=-1e9, traded={"1", "2", "3", "4", "5", "6", "7"}, exposure={"1", "2", "3", "4", "5", "6", "7"},
                       bid=10000, ask=11000)
-        self.assertTrue(r005._025_daily_loss_limit(ctx))
-        self.assertTrue(r005._026_max_open_positions(ctx))
-        self.assertTrue(r005._027_entry_spread(ctx))
+        with mock.patch.object(r005, "ENABLE_DAILY_LOSS_LIMIT_GATE", False), \
+                mock.patch.object(r005, "ENABLE_MAX_OPEN_POSITIONS_GATE", False), \
+                mock.patch.object(r005, "ENABLE_SPREAD_GATE", False):
+            self.assertTrue(r005._025_daily_loss_limit(ctx))
+            self.assertTrue(r005._026_max_open_positions(ctx))
+            self.assertTrue(r005._027_entry_spread(ctx))
+
+    def test_defaults_are_on(self):
+        import r001_define_config as r001
+        self.assertTrue(r001.ENABLE_DAILY_LOSS_LIMIT_GATE)
+        self.assertTrue(r001.ENABLE_MAX_OPEN_POSITIONS_GATE)
+        self.assertTrue(r001.ENABLE_SPREAD_GATE)
+        self.assertEqual(r001.EDGE_AI_MODE, "gate")
 
     def test_daily_loss_limit(self):
         with mock.patch.object(r005, "ENABLE_DAILY_LOSS_LIMIT_GATE", True), mock.patch.object(r005, "DAILY_LOSS_LIMIT_KRW", 100_000):
