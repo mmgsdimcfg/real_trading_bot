@@ -64,7 +64,8 @@ class TestPortfolioGates(unittest.TestCase):
 
     def test_registration_order(self):
         names = [c.func_name for c in r005.BUY_CONDITIONS]
-        self.assertLess(names.index("_007_stoploss_circuit_breaker"), names.index("_025_daily_loss_limit"))
+        self.assertNotIn("_007_stoploss_circuit_breaker", names)  # removed 2026-11-04
+        self.assertLess(names.index("_006_hard_stop_reentry_block"), names.index("_025_daily_loss_limit"))
         self.assertLess(names.index("_026_max_open_positions"), names.index("_008_hybrid_1min_trigger"))
         self.assertLess(names.index("_027_entry_spread"), names.index("_021_consecutive_poll_confirm"))
         self.assertEqual(len({c.no for c in r005.BUY_CONDITIONS}), len(r005.BUY_CONDITIONS))

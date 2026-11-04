@@ -1,6 +1,15 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-04] type=feat owner=claude
+#     summary: 사용자 요청(20261104 12:55/13:44 60·120틱 골든크로스 무매수 분석) - (1) 손절 누적 서킷브레이커 삭제
+#       (HARD_STOP_CIRCUIT_BREAKER_COUNT/COOLDOWN_MIN, r005 _007, r006 차단 설정 제거 - 11:24~13:02 전 종목 매수 차단),
+#       (2) 직전 청산이 순수익(비용 차감)인 종목 재진입 한도 1 -> 5회(REENTRY_MAX_PER_CODE_AFTER_PROFIT, r003/g003),
+#       (3) 진입 ATR 하한 완화 - 트리플 크로스 경로 또는 RELAXED_ENTRY_ATR_FROM(12:00) 이후 0.60% -> 0.40%
+#       (RELAXED_ENTRY_ATR_MIN_PCT, r002 _gate_min_entry_atr_volatility). 당일 손절 종목 재진입 차단(_006)은 유지.
+#     impact: live (r003 재시작 후) + g003
+#     compatibility: breaking (매수 증가 방향. 롤백: REENTRY_MAX_PER_CODE_AFTER_PROFIT=1, ENABLE_RELAXED_ENTRY_ATR=False,
+#       서킷브레이커는 git revert)
 # - [2026-11-03] type=tune owner=claude
 #     summary: 사용자 결정 - 이익 잠금 giveback 0.5% -> 0.4%, 1차 50% -> 전량(100%) 매도. g023 82일(ma_cross 37,252건 holdout,
 #       비용 포함): 기존 -0.621%/승률 34.6% -> -0.600%/42.9% (없음 -0.632%), train도 같은 순서.
@@ -702,6 +711,12 @@ ENABLE_MIN_ENTRY_ATR_FILTER = True
 # -57,560원(ATR 손절 49건) -> ON 유지 (gate_adjustment_proposal_20261102.md).
 ENABLE_STOCHASTIC_BUY_GATE = True
 MIN_ENTRY_ATR_TO_TP1_RATIO = 0.2  # ATR% >= STAGED_TP1_PCT * 0.2 (0.3->0.2) 이어야 진입 허용 - 20260908 로그 분석 결과 0.3(0.90%)이 정상 신호까지 과도 차단(위 Update log 참조)
+# [2026-11-04] 사용자 결정: 트리플 크로스(1분+60/120틱) 경로 또는 오후(RELAXED_ENTRY_ATR_FROM 이후)에는 진입 ATR 하한을
+# STAGED_TP1_PCT*MIN_ENTRY_ATR_TO_TP1_RATIO(0.60%) 대신 RELAXED_ENTRY_ATR_MIN_PCT로 낮춘다. 20261104 오후 LOW_ENTRY_ATR
+# 거절이 0.40~0.52%(삼성물산/SK/동국제약)였음. 비율 표기(0.004 = 0.40%). 롤백: ENABLE_RELAXED_ENTRY_ATR=False.
+ENABLE_RELAXED_ENTRY_ATR = True
+RELAXED_ENTRY_ATR_MIN_PCT = 0.004
+RELAXED_ENTRY_ATR_FROM = "12:00"  # HH:MM (이 시각 이후 모든 경로에 완화 하한 적용)
 
 ATR_STOP_CONFIRM_SECONDS = 20.0  # ATR 손절 조건이 이 시간 이상 연속 유지돼야 실제 매도 (033790 피노
 # 2026-08-31 13:35 사례: sl=7,434 대비 단 한 틱(7,430, 폴링 1회)만 하회하고 다음 폴링(20초 후)엔
@@ -1025,10 +1040,9 @@ INTRABAR_RSI_MAX = 65.0
 INTRABAR_RSI_EXT_MAX = 75.0
 INTRABAR_ADX_MIN = 20.0
 
-# --- 10. 리스크 서킷브레이커 / 재진입 & 안전장치 -----------------------------
-# HARD_STOP이 N번 연속 발생하면 N분간 신규 매수 차단 (6/22, 6/23 전손절 방지)
-HARD_STOP_CIRCUIT_BREAKER_COUNT = 3      # 연속 HARD_STOP 발생 횟수 임계치
-HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN = 60  # 서킷브레이커 발동 시 신규 매수 차단 시간(분)
+# --- 10. 재진입 & 안전장치 -----------------------------
+# [2026-11-04] 손절 누적 서킷브레이커(HARD_STOP_CIRCUIT_BREAKER_COUNT=3 / COOLDOWN_MIN=60) 삭제 - 사용자 결정.
+# 실제 구현은 "연속"이 아니라 당일 누적이었고 차단 중 손절마다 60분이 재연장돼 20261104 11:24~13:02 전 종목 매수가 막혔다.
 # 당일 HARD_STOP_LOSS 발생 종목 재진입 차단 여부 (같은 날 같은 종목 손절 후 재매수 금지)
 HARD_STOP_BLOCK_REENTRY_TODAY = True
 # 같은 날 같은 종목 재매수를 막는 명시적 규칙은 두지 않는다(2026-09-20 사용자 결정 - 종전
@@ -1048,6 +1062,10 @@ TRADE_COOLDOWN_MINUTES = 3
 # HARD_STOP 종목은 모드와 무관하게 기존 HARD_STOP_BLOCK_REENTRY_TODAY(_006)가 계속 차단한다.
 REENTRY_MODE = "live"  # [2026-10-02] 사용자 요청으로 shadow -> live 전환 (롤백: "shadow" 또는 "off")
 REENTRY_MAX_PER_CODE = 1   # 종목당 당일 재진입(=두 번째 이후 매수) 최대 횟수 (live/shadow 공통 재편입 한도)
+# [2026-11-04] 사용자 결정: 직전 청산(전량)의 실현손익이 비용 추정(수수료+세금) 차감 후 + 인 종목은 재진입 한도를
+# 이 값까지 늘린다(20261104 OCI홀딩스 13:13 +1.63% 익절 후 13:40~14:03 +4% 상승 재진입 불가). 직전 청산이 손실이면
+# REENTRY_MAX_PER_CODE가 그대로 적용된다(사용횟수는 공통 누적). 손절(HARD/ATR) 종목은 한도와 무관하게 _006이 차단.
+REENTRY_MAX_PER_CODE_AFTER_PROFIT = 5
 # 한도는 '재진입 주문 시도' 기준(live: place_buy_order 접수 성공 시, shadow: 신호 1회 기록 시 소진) - 미체결
 # 취소로 끝난 재진입 주문도 1회로 센다(보수적). shadow는 가상 보유를 추적하지 않아 첫 재진입 신호 1회만 기록한다.
 # 재진입 판정 = 봇이 당일 매수 예약(traded_today)했고 실제 보유수량>0이 관측된 뒤 전량 청산된 종목. 상태는

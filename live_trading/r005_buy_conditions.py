@@ -11,6 +11,8 @@ Overview
 - [2026-09-22] `_021`(당시 `_020`) now also requires the same 3-min bar and a bounded price drift between the two consecutive
   passes, and its gap window is 45 s (r001 BUY_CONFIRM_MAX_GAP_SECONDS / _REQUIRE_SAME_BAR / _MAX_PRICE_DRIFT_PCT).
   That is the only behavior change in this file since the refactor.
+- [2026-11-04] `_007` stop-loss circuit breaker removed (user decision); `_009` marks the 3-min eval context with
+  `triple_cross` so r002 can apply the relaxed entry-ATR floor (r001 ENABLE_RELAXED_ENTRY_ATR).
 - No broker imports: everything that talks to the broker / clock is injected through `BuyServices` and `ctx.api`, so the
   whole checklist can be unit-tested without authenticating.
 
@@ -21,7 +23,7 @@ Order (stage)                                     Old r003 inline block
             _004 same-bar signal dedup            signal_buy_bar
             _005 no open buy exposure             api.has_buy_exposure
             _006 hard-stop re-entry block         hard_stop_today_codes
-            _007 stop-loss circuit breaker        RiskState.circuit_breaker_until
+            (_007 stop-loss circuit breaker - removed 2026-11-04, number kept free)
   TRIGGER   _008 hybrid 1-min trigger             check_buy_condition_1min_hybrid_trigger
   CONTEXT   _009 3-min context frame ready        run_3min_context_pipeline (prefix)
             _010 bb_slope_rising                  HYBRID_3MIN_CONTEXT_GATES
@@ -132,7 +134,7 @@ Update log (append only):
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, is_dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -206,17 +208,16 @@ from r002_strategy_core_shared import (
 
 @dataclass
 class RiskState:
-    """당일 손절 누적 상태. r003 run() 수명 동안 인스턴스 하나를 매수(_007 읽기)/매도(손절 조건 갱신)가 공유한다.
+    """당일 손절 누적 상태. r003 run() 수명 동안 인스턴스 하나를 매도(손절 조건 갱신)가 공유한다(2026-11-04 서킷브레이커
+    삭제 후 카운트는 기록/로그용).
 
     기존에는 run()의 재바인딩되는 지역변수 2개(hard_stop_daily_count, hard_stop_circuit_breaker_until)였다.
     날짜가 바뀌면 reset()으로 초기화한다(새 객체로 갈아끼우지 않는다 - 양쪽이 같은 인스턴스를 봐야 함)."""
 
     hard_stop_daily_count: int = 0
-    circuit_breaker_until: datetime | None = None
 
     def reset(self) -> None:
         self.hard_stop_daily_count = 0
-        self.circuit_breaker_until = None
 
 
 @dataclass
@@ -334,10 +335,10 @@ class BuyDecision:
 # helpers
 # ---------------------------------------------------------------------------
 
-def _steps_text(ctx: BuyContext) -> str:
+def _steps_text(ctx: BuyContext, triple_cross: bool = False) -> str:
     ctx_steps = gate_steps_diagnostic(
         ctx.buy_frame, ctx.current_dt, ctx.price, ctx.cross_info, ctx.config,
-        gates=HYBRID_3MIN_CONTEXT_GATES,
+        gates=HYBRID_3MIN_CONTEXT_GATES, triple_cross=triple_cross,
     )
     return f"1min_trigger({ctx.trigger_flag}) {ctx_steps}"
 
@@ -417,19 +418,11 @@ def _006_hard_stop_reentry_block(ctx: BuyContext) -> bool:
     return True
 
 
-def _007_stoploss_circuit_breaker(ctx: BuyContext) -> bool:
-    # 연속 HARD_STOP 서킷브레이커 활성 시 신규 매수 차단
-    until = ctx.risk.circuit_breaker_until
-    if until is not None and ctx.current_dt < until:
-        ctx.log(
-            f"  [BUY SKIP    ] {ctx.symbol_label} | CIRCUIT_BREAKER_ACTIVE until={until:%H:%M:%S} "
-            f"count={ctx.risk.hard_stop_daily_count}"
-        )
-        return False
-    return True
+# [2026-11-04] _007_stoploss_circuit_breaker 삭제(사용자 결정) - 손절 3회 누적 시 60분 신규 매수 차단이 20261104
+# 11:24~13:02 동안 모든 감시 종목 매수를 막았다. 번호 7은 비워 둔다(로그/분석 번호 안정성).
 
 
-# [2026-10-23] Portfolio guards (r001 ENABLE_*_GATE, all OFF by default). Evaluated right after _007 / before _021
+# [2026-10-23] Portfolio guards (r001 ENABLE_*_GATE, all OFF by default). Evaluated right after _006 (was _007, removed 2026-11-04) / before _021
 # so a block never leaves confirm/reservation side effects behind. Numbers 25-27 keep the existing 1-24 stable.
 def _025_daily_loss_limit(ctx: BuyContext) -> bool:
     if not ENABLE_DAILY_LOSS_LIMIT_GATE:
@@ -595,7 +588,7 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
         missing.append("TICK_FEED_UNAVAILABLE" if tick_result is None else (tick_result.reason or "TICK_NO_RESULT"))
     tick_cross_times = trig["tick_cross_times"]
     ctx.trigger_flag = "F" if missing else "P"
-    ctx.steps_text = _steps_text(ctx)
+    ctx.steps_text = _steps_text(ctx, triple_cross=True)  # triple 경로: 3분 게이트는 완화 ATR 하한으로 판정됨
     if missing:
         _reject_hybrid(ctx, f"TRIPLE_CROSS_MISSING_{'|'.join(missing)}")
         return False
@@ -767,7 +760,8 @@ def _009_context_frame_ready(ctx: BuyContext) -> bool:
     if eval_ctx is None:
         _reject_hybrid(ctx, reason)
         return False
-    ctx.eval_ctx = eval_ctx
+    # [2026-11-04] triple 경로 표시 - r002 진입 ATR 하한 완화(min_entry_atr_threshold_pct)
+    ctx.eval_ctx = replace(eval_ctx, triple_cross=bool(ctx.triple_cross)) if is_dataclass(eval_ctx) else eval_ctx
     return True
 
 
@@ -1126,9 +1120,6 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  "당일 매수 후 아직 매도되지 않았거나 미체결 매수가 있으면 차단 (has_buy_exposure)", (), _005_no_open_buy_exposure),
     BuyCondition(6, "_006_hard_stop_reentry_block", "STATE", "손절 종목 당일 재진입 차단",
                  "HARD_STOP/ATR 손절이 난 종목은 당일 재진입 금지", ("HARD_STOP_BLOCK_REENTRY_TODAY",), _006_hard_stop_reentry_block),
-    BuyCondition(7, "_007_stoploss_circuit_breaker", "STATE", "손절 누적 서킷브레이커",
-                 "손절이 HARD_STOP_CIRCUIT_BREAKER_COUNT회 누적되면 COOLDOWN_MIN분간 신규 매수 중단",
-                 ("HARD_STOP_CIRCUIT_BREAKER_COUNT", "HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN"), _007_stoploss_circuit_breaker),
     _COND_025,
     _COND_026,
     BuyCondition(8, "_008_hybrid_1min_trigger", "TRIGGER", "1분봉 트리거",
@@ -1282,11 +1273,11 @@ def describe_buy_conditions() -> list[dict[str, object]]:
     ]
 
 
-# [2026-10-07] basic 모드 매수 조건 - normal의 운영 안전 조건(_001~_007, _022~_024)은 같은 함수 그대로 재사용하고
+# [2026-10-07] basic 모드 매수 조건 - normal의 운영 안전 조건(_001~_006, _022~_024)은 같은 함수 그대로 재사용하고
 # 전략 필터(_008~_021: 1분 트리거 룩백/3분봉 컨텍스트/추격·갭 차단/연속확인)는 basic 트리거 하나로 대체한다.
 _NORMAL_BY_NO = {c.no: c for c in BUY_CONDITIONS}
 BASIC_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
-    [_NORMAL_BY_NO[n] for n in range(1, 8)]
+    [_NORMAL_BY_NO[n] for n in range(1, 7)]  # _007 삭제(2026-11-04)
     + [_COND_025, _COND_026]
     + [BuyCondition(8, "_b08_basic_1min_golden_cross", "TRIGGER", "[basic] 1분봉 BB중심선 골든크로스",
                     "최신 확정 1분봉이 BB중심선을 아래->위로 돌파 + 현재가 중심선 위 (1분봉 캐시 최신 필수)",

@@ -20,6 +20,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-04] type=feat owner=claude
+    summary: 사용자 결정(20261104 OCI홀딩스 익절 후 재상승 재진입 불가) - 재진입 한도를 직전 청산 실현손익으로 결정:
+      전량 청산 시 그 포지션의 순실현손익(수수료+세금 추정 차감, 분할매도 합산)이 + 이면 reentry_state[code]
+      last_exit_profit=True -> 한도 REENTRY_MAX_PER_CODE_AFTER_PROFIT(5), 아니면 REENTRY_MAX_PER_CODE(1) (_reentry_limit).
+      reentry_state에 pos_net_krw/last_exit_profit 저장(재시작 복원). 손절 종목 차단(hard_stop_today_codes)은 그대로.
+      서킷브레이커 삭제(r005 _007/r006)로 RiskState는 손절 카운트만 유지.
+    impact: live
+    compatibility: breaking (매수 증가 방향. 롤백: r001 REENTRY_MAX_PER_CODE_AFTER_PROFIT=1)
 - [2026-10-29] type=fix owner=claude
     summary: 사용자 요청(UNKNOWN_ORDER_ERROR 원인 분석) - 20261029 11:54~12:00 105740(20+20주)/003160(6+5주)이 주문가능
       현금(약 19만원)을 넘는 예산 수량(MAX_ORDER_AMOUNT_KRW 50만원)으로 주문해 연속 거부. get_affordable_buy_qty가
@@ -799,6 +807,7 @@ from r001_define_config import (
     TRADE_COOLDOWN_MINUTES,
     REENTRY_MODE,
     REENTRY_MAX_PER_CODE,
+    REENTRY_MAX_PER_CODE_AFTER_PROFIT,
     GAPDIP_COST_PCT,
     GAPDIP_MODE,
     GAPDIP_WINDOW_END,
@@ -2962,6 +2971,14 @@ def _serialize_gapdip_state(raw) -> dict:
     return out
 
 
+def _reentry_limit(st: dict | None) -> int:
+    """[2026-11-04] 종목별 당일 재진입 한도: 직전 전량 청산이 순수익(last_exit_profit)이면 REENTRY_MAX_PER_CODE_AFTER_PROFIT,
+    아니면 REENTRY_MAX_PER_CODE. 사용횟수(used)는 공통 누적 - 손실 청산이 나오면 이미 1회 이상 쓴 종목은 더 못 들어간다."""
+    if st and st.get("last_exit_profit"):
+        return max(int(REENTRY_MAX_PER_CODE), int(REENTRY_MAX_PER_CODE_AFTER_PROFIT))
+    return int(REENTRY_MAX_PER_CODE)
+
+
 def _serialize_reentry_state(raw) -> dict:
     """[2026-09-29] REENTRY 상태(졸업/재편입/사용횟수)를 JSON 안전 형태로. 재시작 후에도 당일 재진입 한도와
     '봇이 이미 산 종목' 분류가 유지되도록 live_state에 함께 저장한다(traded_today는 전량 매도 시 지워지므로
@@ -2976,6 +2993,8 @@ def _serialize_reentry_state(raw) -> dict:
             "readded": bool(st.get("readded", False)),
             "bot": bool(st.get("bot", False)),
             "filled": bool(st.get("filled", False)),
+            "pos_net_krw": float(st.get("pos_net_krw", 0.0) or 0.0),
+            "last_exit_profit": bool(st.get("last_exit_profit", False)),
         }
     return out
 
@@ -3157,7 +3176,7 @@ def _rebalance_active_watchlist(
                 continue
             if code in hard_stop_today_codes or code in gap_blocked_codes:
                 continue
-            if int(st.get("used", 0)) >= REENTRY_MAX_PER_CODE:
+            if int(st.get("used", 0)) >= _reentry_limit(st):
                 continue
             st["graduated"] = False
             st["readded"] = True
@@ -3211,7 +3230,8 @@ def _rebalance_active_watchlist(
         st = reentry_state[code]
         log(
             f"  [ACT REENTER ] {_symbol_log_label(code, watch_map.get(code, ""))} | mode={REENTRY_MODE} "
-            f"bot={st.get('bot')} filled={st.get('filled')} used={st.get('used', 0)}/{REENTRY_MAX_PER_CODE} | "
+            f"bot={st.get('bot')} filled={st.get('filled')} used={st.get('used', 0)}/{_reentry_limit(st)} "
+            f"last_exit_profit={bool(st.get('last_exit_profit'))} | "
             f"active={len(active_set)} backup={len(backup_pool)}"
         )
         history_lines.append(f"[REENTER] {code}_{watch_map.get(code, code)} | mode={REENTRY_MODE}")
@@ -3761,6 +3781,16 @@ class TradingAPI:
             est_costs = (fill_price * filled_qty * (V2_COMMISSION_PCT + V2_SELL_TAX_PCT)
                          + buy_price * filled_qty * V2_COMMISSION_PCT) / 100.0
             self.live_state["realized_pnl_krw"] = float(self.live_state.get("realized_pnl_krw", 0.0) or 0.0) + profit_amount - est_costs
+        # [2026-11-04] 재진입 한도용 포지션 순실현손익(분할매도 합산) - 봇이 산(reentry_state에 있는) 종목만 기록
+        _re_st = (self.live_state.get("reentry") or {}).get(str(code).zfill(6))
+        if isinstance(_re_st, dict):
+            if pd.notna(profit_amount):
+                _re_st["pos_net_krw"] = float(_re_st.get("pos_net_krw", 0.0) or 0.0) + profit_amount - est_costs
+            if remaining_qty <= 0:
+                _re_st["last_exit_profit"] = float(_re_st.get("pos_net_krw", 0.0) or 0.0) > 0
+                _re_st["pos_net_krw"] = 0.0
+                log(f"  [REENTRY PNL ] {_sym_label(code)} | last_exit_profit={_re_st['last_exit_profit']} "
+                    f"limit={_reentry_limit(_re_st)} used={int(_re_st.get('used', 0) or 0)}")
         if remaining_qty <= 0:
             self.buy_inflight_codes.discard(str(code).zfill(6))
             self.startup_position_codes.discard(str(code).zfill(6))
@@ -5695,7 +5725,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             # 검토 E-1: 한도>=2에서 같은 상승구간 반복 신호를 별개 재진입으로 세는 문제 방지).
                             # _024가 걸어 둔 traded_today 예약은 실제 주문이 없으니 되돌린다(전량 매도 시 이미
                             # 지워졌던 상태로 복귀).
-                            _re_st["used"] = max(int(_re_st.get("used", 0)) + 1, REENTRY_MAX_PER_CODE)
+                            _re_st["used"] = max(int(_re_st.get("used", 0)) + 1, _reentry_limit(_re_st))
                             traded_today.discard(norm_code)
                             api.live_state["traded_today"] = traded_today
                             _re_st["readded"] = False
@@ -5707,7 +5737,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             api._mark_trade_lock(code, current_dt)
                             _shadow_msg = (
                                 f"[REENTRY SHDW] {_sym_label(code)}({name}) | would BUY qty={qty} price={price:,.0f} "
-                                f"session={session} used={_re_st['used']}/{REENTRY_MAX_PER_CODE} | reason={buy_reason}"
+                                f"session={session} used={_re_st['used']}/{_reentry_limit(_re_st)} | reason={buy_reason}"
                             )
                             log(f"  {_shadow_msg}")
                             log_trade(_shadow_msg)
@@ -5728,9 +5758,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             if _is_reentry:
                                 _re_st["used"] = int(_re_st.get("used", 0)) + 1
                                 _re_st["readded"] = False
+                                # [2026-11-04] 새 포지션 시작 - 직전 청산의 수익 플래그/손익 누계를 지운다. 매도 확정 전
+                                # 재시작으로 청산 손익이 누락되면 플래그가 False로 남아 한도가 1로 보수 적용된다(Codex HIGH).
+                                _re_st["last_exit_profit"] = False
+                                _re_st["pos_net_krw"] = 0.0
                                 log_trade(
                                     f"[REENTRY LIVE] {_sym_label(code)}({name}) | BUY qty={qty} price={price:,.0f} "
-                                    f"used={_re_st['used']}/{REENTRY_MAX_PER_CODE} | reason={buy_reason}"
+                                    f"used={_re_st['used']}/{_reentry_limit(_re_st)} | reason={buy_reason}"
                                 )
                             buy_confirm_state.pop(code, None)
                             buy_trigger_age_state.pop(code, None)
