@@ -4,6 +4,13 @@ g010_universe_update.py
 g004_universe_symbols_master.txt(수집/스캔 대상 종목 목록)를 한국투자 종목마스터(kospi_code.mst /
 kosdaq_code.mst, API 키 불필요, 매일 갱신)와 맞춘다.
 
+- ETF(코스피 마스터 그룹 "EF"): 주식형 + 레버리지/인버스만 대상. 채권·금리·MMF·커버드콜·
+  혼합형(ETF_EXCLUDE_NAME_RE)은 하루 변동이 작아 진입 ATR 하한을 못 넘으므로 제외.
+  대상 ETF 중 파일에 없는 것은 상장일과 무관하게 모두 추가(주식의 "기준일 이후" 규칙 없음).
+  특정 ETF를 빼려면 줄을 지우지 말고 "#"로 막는다(지우면 다음 실행에 다시 추가됨).
+  --new-since를 주면 ETF도 그 날짜 이후 상장분만 추가. 시장 표기는 KOSPI.
+  위험 체크(거래정지/관리/정리매매/투자경고/신규상장 등)는 주식과 동일. --no-etf로 끔.
+
 - 신규상장: 목록에 없고, 목록 안 종목 중 가장 최근 상장일 이후 상장된 종목을 추가
   (주권/외국주권/DR/리츠만, 스팩/ETF/ETN 제외). 삼성전자처럼 오래전 상장인데 목록에 없는
   종목은 의도적 제외로 보고 추가하지 않음. 첫 실행 등 기준을 바꾸려면 --new-since.
@@ -22,6 +29,7 @@ Run examples:
 - python g010_universe_update.py --dry-run          (변경 내역만 출력)
 - python g010_universe_update.py                    (g004 파일 갱신)
 - python g010_universe_update.py --new-since 20260601
+- python g010_universe_update.py --no-etf           (ETF 신규 추가 안 함)
 
 권장 실행 시점: g001 수집 전(마스터 파일은 매일 새벽 갱신됨).
 
@@ -40,6 +48,13 @@ Update log:
     impact: collector, scanner
     compatibility: backward-compatible (파일 형식 code,name,market 유지; 주석 줄은 g001/g002가
       comment="#"로 건너뜀)
+- [2026-11-04] type=feat owner=claude
+    summary: 국내 ETF 추가(주식형+레버리지/인버스, 채권·금리·MMF·커버드콜·혼합형 제외).
+      대상 ETF 중 파일에 없는 것은 모두 추가(빼려면 "#"). 위험 체크는
+      주식과 동일. --no-etf 옵션.
+    impact: collector, scanner
+    compatibility: backward-compatible (형식 동일, market=KOSPI). 유니버스 약 +880줄 -> g001 수집 시간 증가.
+      레버리지/인버스 ETF 실매수는 계좌의 사전교육·기본예탁금 요건 필요.
 """
 
 from __future__ import annotations
@@ -70,6 +85,11 @@ DOWNLOAD_RETRIES = 3
 MIN_STOCK_ROWS = {"KOSPI": 500, "KOSDAQ": 1000}
 
 NEW_LISTING_GROUPS = {"ST", "FS", "DR", "RT"}  # 주권, 외국주권, 주식예탁증서, 리츠
+ETF_GROUP = "EF"
+# 변동이 작아 단타 대상이 아닌 ETF(채권/금리/MMF/커버드콜/혼합형 등) - 이름으로 거른다.
+ETF_EXCLUDE_NAME_RE = re.compile(
+    r"채권|국채|국고채|회사채|단기채|금융채|은행채|특수채|통안채|물가채|전단채|크레딧|채\b|채\(|채액티브|채플러스"
+    r"|금리|CD|KOFR|SOFR|머니마켓|MMF|머니|단기자금|커버드콜|밸런스|TDF|TIF|혼합|인컴|프리미엄|타겟데일리|위클리")
 NEW_LISTING_COOLDOWN_DAYS = 7                  # 상장 직후 급등락 구간(달력일)
 AUTO_TAG = "# auto:"
 
@@ -223,7 +243,12 @@ def parse_universe(path: Path) -> tuple[list[Line], list[str]]:
     return lines, fixes
 
 
-def update_universe(lines: list[Line], master: dict[str, dict], today: datetime, new_since: str | None) -> dict:
+def is_target_etf(rec: dict) -> bool:
+    return rec.get("grp") == ETF_GROUP and not ETF_EXCLUDE_NAME_RE.search(rec.get("name", ""))
+
+
+def update_universe(lines: list[Line], master: dict[str, dict], today: datetime, new_since: str | None,
+                    include_etf: bool = True) -> dict:
     report: dict[str, list] = {k: [] for k in
                                ("added", "removed", "renamed", "market", "commented", "uncommented",
                                 "reasons_changed", "duplicate", "fixes")}
@@ -265,10 +290,17 @@ def update_universe(lines: list[Line], master: dict[str, dict], today: datetime,
         (master[c]["listed"] for c in seen if c in master and master[c]["grp"] in NEW_LISTING_GROUPS),
         default="99999999",
     )
+    # ETFs: every target ETF missing from the file is added (no "listed after" baseline - some ETFs were
+    # added by hand, so the newest one says nothing). Exclude one by "#"-commenting its line.
+    etf_baseline = new_since or "00000000"
     new_lines: list[Line] = []
     for rec in sorted(master.values(), key=lambda r: (r["listed"], r["code"])):
-        if (rec["code"] in present or rec["grp"] not in NEW_LISTING_GROUPS or rec.get("spac") == "Y"
-                or rec["listed"] <= baseline or len(rec["code"]) != 6):
+        if rec["code"] in present or len(rec["code"]) != 6:
+            continue
+        if rec["grp"] == ETF_GROUP:
+            if not include_etf or not is_target_etf(rec) or rec["listed"] <= etf_baseline:
+                continue
+        elif rec["grp"] not in NEW_LISTING_GROUPS or rec.get("spac") == "Y" or rec["listed"] <= baseline:
             continue
         reasons = risk_reasons(rec, today)
         new_lines.append(Line("auto" if reasons else "active", "", rec["code"], rec["name"], rec["market"], reasons))
@@ -279,6 +311,7 @@ def update_universe(lines: list[Line], master: dict[str, dict], today: datetime,
 
     lines[:] = kept
     report["baseline"] = baseline
+    report["etf_baseline"] = etf_baseline if include_etf else "-"
     return report
 
 
@@ -299,6 +332,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print changes without writing")
     parser.add_argument("--new-since", default=None,
                         help="YYYYMMDD: add stocks listed after this date (default: newest listing already in file)")
+    parser.add_argument("--no-etf", action="store_true", help="Do not add ETFs (existing ETF lines are still synced)")
     args = parser.parse_args()
 
     if args.new_since:
@@ -315,13 +349,13 @@ def main() -> None:
 
     lines, fixes = parse_universe(path)
     today = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None)
-    report = update_universe(lines, master, today, args.new_since)
+    report = update_universe(lines, master, today, args.new_since, include_etf=not args.no_etf)
     report["fixes"] = fixes
 
     titles = [("added", "신규상장 추가"), ("removed", "상장폐지(마스터 없음) 삭제"), ("renamed", "종목명 변경"),
               ("market", "시장 변경"), ("commented", "위험종목 주석 처리"), ("uncommented", "위험 해제 - 주석 해제"),
               ("reasons_changed", "주석 사유 변경"), ("duplicate", "중복 줄 삭제"), ("fixes", "기타 정리")]
-    print(f"[INFO] 신규상장 기준일: {report['baseline']} 이후 상장")
+    print(f"[INFO] 신규상장 기준일: 주식 {report['baseline']} / ETF {report['etf_baseline']} 이후 상장")
     for key, title in titles:
         items = report[key]
         print(f"\n[{title}] {len(items)}")
@@ -331,7 +365,8 @@ def main() -> None:
     n_active = sum(1 for ln in lines if ln.kind == "active")
     n_auto = sum(1 for ln in lines if ln.kind == "auto")
     n_manual = sum(1 for ln in lines if ln.kind == "manual")
-    print(f"\n[INFO] 결과: 수집 대상 {n_active} / 자동 주석 {n_auto} / 수동 주석 {n_manual}")
+    n_etf = sum(1 for ln in lines if ln.kind == "active" and master.get(ln.code, {}).get("grp") == ETF_GROUP)
+    print(f"\n[INFO] 결과: 수집 대상 {n_active} (ETF {n_etf}) / 자동 주석 {n_auto} / 수동 주석 {n_manual}")
 
     text = "\n".join(ln.render() for ln in lines) + "\n"
     if args.dry_run:
