@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-04] type=fix owner=claude
+#     summary: 매수 직후 이탈 가드 활성 구간 POST_BUY_BB_DROP_ARMED_SECONDS 180 -> 240s (하드/ATR 손절 최소 보유 240s와 연결 -
+#       180~240s 가격 손절 공백 제거, Codex 검토 #8).
+#     impact: live (r003 재시작 후) + g003
+#     compatibility: breaking (롤백: 180.0)
 # - [2026-11-04] type=feat owner=claude
 #     summary: 사용자 요청(20261104 12:55/13:44 60·120틱 골든크로스 무매수 분석) - (1) 손절 누적 서킷브레이커 삭제
 #       (HARD_STOP_CIRCUIT_BREAKER_COUNT/COOLDOWN_MIN, r005 _007, r006 차단 설정 제거 - 11:24~13:02 전 종목 매수 차단),
@@ -784,7 +789,9 @@ SURGE_TP2_RATIO = 0.30          # 2단계 청산 수량 = 진입수량 x 30% (TP
 # POST_BUY_BB_DROP_PCT 이상 낮은 상태가 POST_BUY_DROP_CONFIRM_SECONDS 동안
 # 유지되면 손절 이전에 조기 매도한다.
 POST_BUY_BB_DROP_PCT = 0.014  # 매수가 대비 이탈 임계치 (-1.0%->-1.4%: 백테스트 결과 12건 중 83.3%가 본전 이상 회복, 58.3%는 +2%까지 회복(평균 최대회복 +4.17%) - 매수직후 정상 노이즈 조기청산 완화)
-POST_BUY_BB_DROP_ARMED_SECONDS = 180.0  # 매수 후 가드 활성 구간 (3분, 하드스탑 활성 전까지)
+# [2026-11-04] 180 -> 240: 하드/ATR 손절은 보유 HARD_STOP_MIN_HOLD_SECONDS(240s) 이후에만 발동하는데 이 가드는 180s까지만 활성이라
+# 180~240s 구간에 가격 손절이 전혀 없었다(Codex 검토 #8, 159010 20261104 -2.1%까지 하락). 가드 창을 손절 활성 시점까지 잇는다.
+POST_BUY_BB_DROP_ARMED_SECONDS = 240.0  # 매수 후 가드 활성 구간 (= HARD_STOP_MIN_HOLD_SECONDS, 하드스탑 활성 전까지)
 POST_BUY_DROP_CONFIRM_SECONDS = 90.0  # 급락 지속 확인 시간 (60초->90초)
 
 # 초기 수익 반납 실패 보호 (본전 부근에서 반납 시 조기 청산)
