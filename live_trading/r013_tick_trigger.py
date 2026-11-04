@@ -21,6 +21,13 @@ This module never raises into the caller: TickTriggerFeed.evaluate() turns any e
 1-min trigger keeps working when the tick feed is broken.
 
 Update log:
+- [2026-11-04] type=feat owner=claude
+    summary: (1) TickCross.cross_close(크로스 봉 종가) - r002 evaluate_triple_trigger가 가장 최근 통과 크로스의 종가를
+      cross_ref_price로 넘겨 r005/g003 추격폭 가드에 쓴다. (2) 틱 밀도 하한 - prints_per_minute/density_abstain: 최근
+      N분(TICK_MIN_PRINTS_WINDOW_MINUTES) 체결/분 < TICK_MIN_PRINTS_PER_MIN이면 TICK_LOW_DENSITY 기권(live/replay 공용,
+      개장 5분 미만 미적용, 전일 워밍업 봉 제외). TickTriggerResult.prints_per_min 기록.
+    impact: live + sim
+    compatibility: backward-compatible (min_prints_per_min 기본 0 = 비활성; r003/g003은 r001 값 전달)
 - [2026-11-02] type=feat owner=claude
     summary: 사용자 요청(20261102 장 초반 60틱 크로스 FEW_BARS 미인식) - prior_day_warmup: 직전 수집일 파일(find_prior_tick_file)로
       틱봉을 먼저 채워 HTS처럼 전일 봉에 이어 MA 계산(tick_ma_golden_cross same_day_only=False). r001 TICK_TRIGGER_PRIOR_DAY_WARMUP.
@@ -44,7 +51,7 @@ import csv
 import math
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -62,6 +69,7 @@ class TickCross:
     ma_fast: float = float("nan")
     ma_slow: float = float("nan")
     bars: int = 0
+    cross_close: float = float("nan")  # [2026-11-04] close of the cross bar (chase-from-cross guard reference)
 
 
 @dataclass
@@ -71,6 +79,7 @@ class TickTriggerResult:
     reason: str = ""                    # per-size reasons joined by "|"
     cross_time: datetime | None = None
     crosses: dict[int, TickCross] = field(default_factory=dict)
+    prints_per_min: float = float("nan")  # [2026-11-04] recent print density (nan = not enough session elapsed)
 
 
 def _drop_session_edge_bars(bars: list[TickBar], today) -> list[TickBar]:
@@ -130,7 +139,40 @@ def tick_ma_golden_cross(bars: list[TickBar], now: datetime, n: int, fast: int, 
     # MA_slow at i-1 uses bars i-slow .. i-1, so every bar from i-slow on decides this cross
     if any(b.invalid for b in recent[i - slow:]):
         return TickCross(False, f"{tag}_ABSTAIN_INVALID_BAR", n, cross_bar.available_at, f_last, s_last, len(recent))
-    return TickCross(True, f"{tag}_MA{fast}_MA{slow}_GOLDEN_CROSS", n, cross_bar.available_at, f_last, s_last, len(recent))
+    return TickCross(True, f"{tag}_MA{fast}_MA{slow}_GOLDEN_CROSS", n, cross_bar.available_at, f_last, s_last, len(recent),
+                     cross_close=float(cross_bar.close))
+
+
+_DENSITY_MIN_ELAPSED_MIN = 5.0
+
+
+def prints_per_minute(bars: list[TickBar], now: datetime, window_min: float) -> float:
+    """[2026-11-04] Print density over the last `window_min` minutes of today's session (prints counted from completed
+    bars, incl. missed prints). nan when less than _DENSITY_MIN_ELAPSED_MIN minutes of today's bars exist (session just
+    opened) so the floor never blocks the first minutes. Shared by the live feed and the g003 replay feed."""
+    today = now.date()
+    todays = [b for b in bars if b.end_ts.date() == today and b.available_at <= now]
+    if not todays:
+        return float("nan")
+    first = min(b.start_ts for b in todays)
+    elapsed = min(float(window_min), (now - first).total_seconds() / 60.0)
+    if elapsed < _DENSITY_MIN_ELAPSED_MIN:
+        return float("nan")
+    cutoff = now - timedelta(minutes=elapsed)
+    prints = sum(int(b.n_ticks) for b in todays if b.end_ts > cutoff)
+    return prints / elapsed if elapsed > 0 else float("nan")
+
+
+def density_abstain(builders: dict, now: datetime, floor: float, window_min: float) -> TickTriggerResult | None:
+    """TickTriggerResult(False, TICK_LOW_DENSITY_...) when the recent print density is below `floor`, else None."""
+    if floor <= 0 or not builders:
+        return None
+    d = prints_per_minute(builders[min(builders)].bars, now, window_min)
+    if d != d:  # nan - not enough session elapsed
+        return None
+    if d < floor:
+        return TickTriggerResult(False, reason=f"TICK_LOW_DENSITY_{d:.0f}/min_LT_{floor:.0f}", prints_per_min=d)
+    return None
 
 
 def find_prior_tick_file(data_dir: Path, day: str, code: str) -> Path | None:
@@ -246,9 +288,12 @@ class _CodeFeed:
 
 class TickTriggerFeed:
     def __init__(self, data_dir: Path, sizes: tuple[int, ...], fast: int, slow: int, max_age_s: float,
-                 stale_s: float, log: Callable[[str], None] | None = None, prior_day_warmup: bool = False):
+                 stale_s: float, log: Callable[[str], None] | None = None, prior_day_warmup: bool = False,
+                 min_prints_per_min: float = 0.0, density_window_min: float = 30.0):
         self.data_dir = Path(data_dir)
         self.prior_day_warmup = bool(prior_day_warmup)
+        self.min_prints_per_min = float(min_prints_per_min)  # [2026-11-04] 0 = no density floor
+        self.density_window_min = float(density_window_min)
         self.sizes = tuple(int(n) for n in sizes)
         self.fast = int(fast)
         self.slow = int(slow)
@@ -289,7 +334,11 @@ class TickTriggerFeed:
         idle = (now - feed.last_recv).total_seconds()
         if idle > self.stale_s:
             return TickTriggerResult(False, reason=f"TICK_ABSTAIN_FEED_STALE_{idle:.0f}s")
+        low = density_abstain(feed.builders, now, self.min_prints_per_min, self.density_window_min)
+        if low is not None:
+            return low
         result = TickTriggerResult(False)
+        result.prints_per_min = prints_per_minute(feed.builders[min(feed.builders)].bars, now, self.density_window_min)
         for n in self.sizes:
             c = tick_ma_golden_cross(feed.builders[n].bars, now, n, self.fast, self.slow, self.max_age_s,
                                      same_day_only=not self.prior_day_warmup)
@@ -318,9 +367,12 @@ class TickReplayFeed:
     received at or before `now`."""
 
     def __init__(self, data_dir: Path, sizes: tuple[int, ...], fast: int, slow: int, max_age_s: float,
-                 stale_s: float, prior_day_warmup: bool = False):
+                 stale_s: float, prior_day_warmup: bool = False, min_prints_per_min: float = 0.0,
+                 density_window_min: float = 30.0):
         self.data_dir = Path(data_dir)
         self.prior_day_warmup = bool(prior_day_warmup)
+        self.min_prints_per_min = float(min_prints_per_min)
+        self.density_window_min = float(density_window_min)
         self.sizes = tuple(int(n) for n in sizes)
         self.fast = int(fast)
         self.slow = int(slow)
@@ -368,7 +420,11 @@ class TickReplayFeed:
         idle = (now - recvs[i - 1]).total_seconds()
         if idle > self.stale_s:
             return TickTriggerResult(False, reason=f"TICK_ABSTAIN_FEED_STALE_{idle:.0f}s")
+        low = density_abstain(builders, now, self.min_prints_per_min, self.density_window_min)
+        if low is not None:
+            return low
         result = TickTriggerResult(False)
+        result.prints_per_min = prints_per_minute(builders[min(builders)].bars, now, self.density_window_min)
         for n in self.sizes:
             c = tick_ma_golden_cross(builders[n].bars, now, n, self.fast, self.slow, self.max_age_s,
                                      same_day_only=not self.prior_day_warmup)

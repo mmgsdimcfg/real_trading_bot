@@ -345,6 +345,10 @@ from r001_define_config import (
     TRIPLE_1MIN_MA_FAST,
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
+    TRIPLE_CHASE_FROM_CROSS_MAX_PCT,
+    TICK_MIN_PRINTS_PER_MIN,
+    TICK_MIN_PRINTS_WINDOW_MINUTES,
     ADX_BUY_MIN,
     ADX_MIN_TREND,
     ADX_PERIOD,
@@ -522,6 +526,7 @@ from r002_strategy_core_shared import (
     check_1min_trigger_live_guard,
     find_1min_ma_golden_cross,
     evaluate_triple_trigger,
+    check_chase_from_cross,
     build_context_eval,
     run_3min_context_decision,
     passes_opening_gap_volume_gate,
@@ -616,6 +621,10 @@ _r002_mod.ENABLE_BB_UPPER_GAP_GATE = _env_bool("ENABLE_BB_UPPER_GAP_GATE", _r002
 HARD_STOP_BLOCK_REENTRY_TODAY = _env_bool("HARD_STOP_BLOCK_REENTRY_TODAY", HARD_STOP_BLOCK_REENTRY_TODAY)
 REENTRY_MAX_PER_CODE = _env_int("REENTRY_MAX_PER_CODE", REENTRY_MAX_PER_CODE)
 REENTRY_MAX_PER_CODE_AFTER_PROFIT = _env_int("REENTRY_MAX_PER_CODE_AFTER_PROFIT", REENTRY_MAX_PER_CODE_AFTER_PROFIT)
+# [2026-11-04] 추격폭 가드 / 틱 밀도 하한 A/B용 replay 오버라이드
+ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD = _env_bool("ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD", ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD)
+TRIPLE_CHASE_FROM_CROSS_MAX_PCT = _env_float("TRIPLE_CHASE_FROM_CROSS_MAX_PCT", TRIPLE_CHASE_FROM_CROSS_MAX_PCT)
+TICK_MIN_PRINTS_PER_MIN = _env_float("TICK_MIN_PRINTS_PER_MIN", TICK_MIN_PRINTS_PER_MIN)
 INTRABAR_MIN_ELAPSED_SECONDS = _env_float("INTRABAR_MIN_ELAPSED_SECONDS", INTRABAR_MIN_ELAPSED_SECONDS)
 INTRABAR_MFI_MIN = _env_float("INTRABAR_MFI_MIN", INTRABAR_MFI_MIN)
 INTRABAR_MFI_MAX = _env_float("INTRABAR_MFI_MAX", INTRABAR_MFI_MAX)
@@ -2300,6 +2309,11 @@ def _triple_entry_decision(
     )
     if not live_ok:
         return False, f"TRIPLE_CROSS_{live_reason}"
+    if ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD:  # [2026-11-04] r005 parity - 크로스 봉 종가 대비 추격폭 가드
+        chase_ok, chase_reason = check_chase_from_cross(price, trig.get("cross_ref_price", float("nan")),
+                                                        TRIPLE_CHASE_FROM_CROSS_MAX_PCT)
+        if not chase_ok:
+            return False, f"TRIPLE_CROSS_{chase_reason}"
     ok, ctx_reason = run_3min_context_decision(
         buy_available, ts, price, cross_info, SHARED_STRATEGY_CONFIG, triple_cross=True,
     )
@@ -2347,6 +2361,7 @@ def simulate_date(
             TICK_DATA_DIR, TICK_TRIGGER_BAR_SIZES, TICK_TRIGGER_MA_FAST, TICK_TRIGGER_MA_SLOW,
             TICK_TRIGGER_CROSS_MAX_AGE_SECONDS, TICK_TRIGGER_FEED_STALE_SECONDS,
             prior_day_warmup=TICK_TRIGGER_PRIOR_DAY_WARMUP,
+            min_prints_per_min=TICK_MIN_PRINTS_PER_MIN, density_window_min=TICK_MIN_PRINTS_WINDOW_MINUTES,
         )
     log(f"Entry trigger   : {entry_trigger_mode} (ENTRY_TRIGGER_MODE_SIM={ENTRY_TRIGGER_MODE_SIM}, "
         f"ticks={TICK_DATA_DIR / date_str})")

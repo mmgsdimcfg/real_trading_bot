@@ -20,6 +20,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-04] type=feat owner=claude
+    summary: r013 TickTriggerFeed에 틱 밀도 하한(r001 TICK_MIN_PRINTS_PER_MIN/_WINDOW_MINUTES) 전달, r005 BuyState에
+      tick_nofile_logged(개장 전 NO_FILE 1회 로그) 하루 단위 유지.
+    impact: live
+    compatibility: backward-compatible
 - [2026-11-04] type=fix owner=claude
     summary: 손절 종목 집합(hard_stop_today_codes) 재시작 보존 - 종전 메모리 set이라 r003 재시작(20261104 14:56) 직후 당일
       손절 4종목이 [ACT REENTER] used=0/1로 감시 복귀했다(Codex 검토 #4). 이제 live_state["hard_stop_today"] 그 자체를
@@ -2268,6 +2273,8 @@ def _make_tick_trigger_feed():
             _cfg_mod.TICK_TRIGGER_MA_SLOW, _cfg_mod.TICK_TRIGGER_CROSS_MAX_AGE_SECONDS,
             _cfg_mod.TICK_TRIGGER_FEED_STALE_SECONDS, log,
             prior_day_warmup=getattr(_cfg_mod, "TICK_TRIGGER_PRIOR_DAY_WARMUP", False),
+            min_prints_per_min=getattr(_cfg_mod, "TICK_MIN_PRINTS_PER_MIN", 0.0),
+            density_window_min=getattr(_cfg_mod, "TICK_MIN_PRINTS_WINDOW_MINUTES", 30),
         )
         log(f"  [TICK TRIG   ] enabled | sizes={feed.sizes} MA{feed.fast}/MA{feed.slow} dir={feed.data_dir} "
             f"prior_day_warmup={feed.prior_day_warmup} "
@@ -5256,6 +5263,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     if hard_stop_today_codes:
         log(f"HARD_STOP codes restored | codes={sorted(hard_stop_today_codes)} block_reentry={HARD_STOP_BLOCK_REENTRY_TODAY}")
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목
+    tick_nofile_logged: set[str] = set()  # [2026-11-04] 개장 전 틱 파일 없음 1회 로그(r005 _008)
     # [2026-09-29] 졸업/재편입/재진입 사용횟수 (REENTRY_MODE) - live_state["reentry"]를 그대로 참조해 주기
     # 저장(persist_live_state)에 함께 실리고 재시작 시 복원된다.
     reentry_state: dict[str, dict] = api.live_state.setdefault("reentry", {})
@@ -5374,6 +5382,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             hard_stop_today_codes.update(api.live_state.get("hard_stop_today") or set())
             api.live_state["hard_stop_today"] = hard_stop_today_codes
             gap_blocked_codes.clear()
+            tick_nofile_logged.clear()
             reentry_state = api.live_state.setdefault("reentry", {})  # 새 날짜 live_state 기준으로 재바인딩
             v2_shadow = _make_v2_shadow_runner(date_str)  # [2026-10-23] V2 shadow state is per day
             risk.reset()
@@ -5680,7 +5689,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             buy_confirm_state=buy_confirm_state, buy_trigger_age_state=buy_trigger_age_state,
                             signal_buy_bar=signal_buy_bar,
                             hard_stop_today_codes=hard_stop_today_codes, gap_blocked_codes=gap_blocked_codes,
-                            traded_today=traded_today,
+                            traded_today=traded_today, tick_nofile_logged=tick_nofile_logged,
                         ),
                         risk=risk, services=buy_services,
                     )

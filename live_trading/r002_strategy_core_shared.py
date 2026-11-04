@@ -2124,6 +2124,8 @@ def evaluate_triple_trigger(
         one_min_label = f"1MIN_MA{fast}_MA{slow}"
     tick_missing: list[str] = []
     tick_cross_times: dict[int, object] = {}
+    cross_ref_price = float("nan")  # [2026-11-04] close of the freshest passing cross bar (chase-from-cross guard)
+    cross_ref_time = None
     crosses = crosses or {}
     for n in sizes:
         c = crosses.get(int(n))
@@ -2133,6 +2135,9 @@ def evaluate_triple_trigger(
             tick_missing.append(c.reason)
         else:
             tick_cross_times[int(n)] = c.cross_time
+            _cc = float(getattr(c, "cross_close", float("nan")) or float("nan"))
+            if _cc == _cc and _cc > 0 and (cross_ref_time is None or (c.cross_time is not None and c.cross_time > cross_ref_time)):
+                cross_ref_price, cross_ref_time = _cc, c.cross_time
     if str(tick_condition).lower() == "any":
         if not tick_cross_times:
             missing.extend(tick_missing)
@@ -2142,7 +2147,17 @@ def evaluate_triple_trigger(
         f"TICK{n}" for n in (tick_cross_times if str(tick_condition).lower() == "any" else sizes)
     )
     return {"ok": not missing, "missing": missing, "bars_since_cross": bars_since_cross,
-            "tick_cross_times": tick_cross_times, "label": label}
+            "tick_cross_times": tick_cross_times, "label": label, "cross_ref_price": cross_ref_price}
+
+
+def check_chase_from_cross(live_price: float, cross_ref_price: float, max_pct: float) -> tuple[bool, str]:
+    """[2026-11-04] 틱 크로스 봉 종가 대비 추격폭 가드 (r005 _008 triple / g003 공용). max_pct <= 0, 기준가/현재가 없음이면 통과."""
+    if max_pct <= 0 or cross_ref_price != cross_ref_price or cross_ref_price <= 0 or live_price is None or live_price <= 0:
+        return True, ""
+    chase_pct = (float(live_price) / float(cross_ref_price) - 1.0) * 100.0
+    if chase_pct > max_pct:
+        return False, f"CHASE_FROM_CROSS_{chase_pct:.2f}%_GT_{max_pct:.2f}%"
+    return True, ""
 
 
 def check_1min_trigger_live_guard(
