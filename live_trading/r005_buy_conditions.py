@@ -51,6 +51,13 @@ Behavior notes kept from the old inline code (do not "fix" them here - they are 
   order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-11-04] type=feat owner=claude
+    summary: 로그 패턴 제안 적용 - (1) _008 triple: 틱 크로스 봉 종가 대비 추격폭 가드(r001 ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD/
+      TRIPLE_CHASE_FROM_CROSS_MAX_PCT, r002 check_chase_from_cross, 사유 TRIPLE_CROSS_CHASE_FROM_CROSS_x%_GT_y%).
+      (2) 정규장 개장 전 TICK_ABSTAIN_NO_FILE는 종목당 1회만 로그하고 조용히 반려(BuyState.tick_nofile_logged, 11/04 3,057건/일).
+      틱 밀도 하한은 r013 피드(TICK_LOW_DENSITY 기권)가 담당.
+    impact: live
+    compatibility: breaking (매수 감소 방향. 롤백: ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD=False)
 - [2026-11-02] type=feat owner=claude
     summary: 사용자 요청(20261102 091580/105740 등 60틱 크로스 미매수) - _008 3중 트리거를 r002 evaluate_triple_trigger로 판정,
       r001 TRIPLE_1MIN_CONDITION("above": 1분 MA5>MA20 상태) / TRIPLE_TICK_CONDITION("any": 60틱 또는 120틱) 적용.
@@ -179,6 +186,9 @@ from r001_define_config import (
     TRIPLE_1MIN_CONDITION,
     TRIPLE_TICK_CONDITION,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
+    TRIPLE_CHASE_FROM_CROSS_MAX_PCT,
+    REGULAR_START,
 )
 from r008_strategy_v2 import krx_tick_size
 from r002_strategy_core_shared import (
@@ -195,6 +205,7 @@ from r002_strategy_core_shared import (
     check_1min_trigger_live_guard,
     find_1min_ma_golden_cross,
     evaluate_triple_trigger,
+    check_chase_from_cross,
     gate_steps_diagnostic,
     passes_opening_gap_volume_gate,
     update_timed_condition_state,
@@ -230,6 +241,7 @@ class BuyState:
     hard_stop_today_codes: set[str]
     gap_blocked_codes: set[str]
     traded_today: set[str]
+    tick_nofile_logged: set[str] = field(default_factory=set)  # [2026-11-04] 개장 전 NO_FILE 1회 로그용 (r003이 하루 동안 유지)
 
 
 @dataclass
@@ -579,6 +591,15 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     if not crosses:  # 피드 없음/ABSTAIN: 봉 크기별 사유 대신 피드 사유 하나
         missing = [m for m in missing if not m.startswith("TICK")]
         missing.append("TICK_FEED_UNAVAILABLE" if tick_result is None else (tick_result.reason or "TICK_NO_RESULT"))
+        # [2026-11-04] 정규장 개장 전(NXT 프리마켓)에는 당일 틱 파일이 아직 없어 매 폴링마다 TICK_ABSTAIN_NO_FILE 리젝이
+        # 쌓였다(11/04 3,057건/일). 개장 전 NO_FILE은 종목당 1회만 로그하고 조용히 반려한다.
+        if (tick_result is not None and str(tick_result.reason).startswith("TICK_ABSTAIN_NO_FILE")
+                and ctx.current_dt.time() < REGULAR_START):
+            ctx.state.buy_confirm_state.pop(ctx.code, None)
+            if ctx.norm_code not in ctx.state.tick_nofile_logged:
+                ctx.state.tick_nofile_logged.add(ctx.norm_code)
+                ctx.log(f"  [TICK TRIG   ] {ctx.symbol_label} | no tick file before {REGULAR_START:%H:%M} - triple trigger idle (logged once)")
+            return False
     tick_cross_times = trig["tick_cross_times"]
     ctx.trigger_flag = "F" if missing else "P"
     ctx.steps_text = _steps_text(ctx, triple_cross=True)  # triple 경로: 3분 게이트는 완화 ATR 하한으로 판정됨
@@ -601,6 +622,12 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     if not live_ok:
         _reject_hybrid(ctx, f"TRIPLE_CROSS_{live_reason}")
         return False
+    if ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD:  # [2026-11-04] 크로스 봉 종가 대비 추격폭 가드
+        chase_ok, chase_reason = check_chase_from_cross(ctx.price, trig.get("cross_ref_price", float("nan")),
+                                                        TRIPLE_CHASE_FROM_CROSS_MAX_PCT)
+        if not chase_ok:
+            _reject_hybrid(ctx, f"TRIPLE_CROSS_{chase_reason}")
+            return False
     trigger_info = {
         "path": "triple", "cross_bar_time": ma["cross_bar_time"], "bars_since_cross": trig["bars_since_cross"],
         "run_start_time": guard_info.get("run_start_time"),

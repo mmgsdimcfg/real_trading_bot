@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-04] type=feat owner=claude
+#     summary: 사용자 결정(로그 패턴 제안 적용) - (1) 틱 크로스 봉 종가 대비 추격폭 가드 ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD/
+#       TRIPLE_CHASE_FROM_CROSS_MAX_PCT(0.5%), (2) 틱 밀도 하한 TICK_MIN_PRINTS_PER_MIN(15/분, 30분 창) - r013/r005/g003.
+#     impact: live (r003 재시작 후) + g003
+#     compatibility: breaking (매수 감소 방향. 롤백: ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD=False, TICK_MIN_PRINTS_PER_MIN=0)
 # - [2026-11-04] type=refactor owner=claude
 #     summary: 사용자 결정(매수/매도 조건 전면 검토) - 항상 BYPASS되던 3분 소프트 게이트(r005 _010/_011/_012/_013/_016)와
 #       점수 임계값(_017) 매수 조건에서 삭제, TRIPLE_CROSS_BYPASS_* 상수 제거. 판정 게이트 = r002 DECISION_CONTEXT_GATES(ATR 하한,
@@ -1259,6 +1264,19 @@ TRIPLE_1MIN_CONDITION = "above"         # "above" | "cross"
 TRIPLE_TICK_CONDITION = "any"           # "any" | "all"
 # 3중 크로스 경로의 실시간 가드: 하락폭(HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT)은 항상, 1분 BB중심선 위 요구는 이 값.
 TRIPLE_REQUIRE_1MIN_ABOVE_MID = True
+# [2026-11-04] (1) 틱 크로스 가격 대비 추격폭 가드 - 통과한 틱 크로스 중 가장 최근 크로스 봉의 종가(r013 TickCross.cross_close)
+# 대비 현재가 상승폭이 TRIPLE_CHASE_FROM_CROSS_MAX_PCT(%)를 넘으면 반려(r005 _008 triple / g003 parity). 근거(11/04 실매매):
+# 손절 5건의 크로스 MA5 대비 추격 +0.04~+1.18%, 승 5건 +0.08~+0.78% - 0.5%면 손실 4건 차단/승 4건 통과(1일 표본, g003 A/B로 검증).
+# 기존 1분 BB갭 가드(159010 BB갭 2.2%를 경과봉 완화로 통과)와 ANTI_CHASE(시가/VWAP 대비)는 이 경우를 못 잡는다.
+# 롤백: ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD=False.
+ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD = True
+TRIPLE_CHASE_FROM_CROSS_MAX_PCT = 0.5
+# (2) 틱 밀도 하한 - 최근 TICK_MIN_PRINTS_WINDOW_MINUTES분 체결 건수/분이 TICK_MIN_PRINTS_PER_MIN 미만이면 틱 트리거 기권
+# (TICK_LOW_DENSITY, r013 live/replay 공용). 11/04 체결/분: 010060 195, 017900 154 ... 159010 13, 204620 10, 434480 3 -
+# 60틱봉이 종목마다 18초~20분으로 시간 척도가 100배 다르고 저밀도 종목은 FEED_STALE 기권이 반복된다(11/03 12,926건).
+# 개장 후 5분(r013 _DENSITY_MIN_ELAPSED_MIN) 미만은 미적용. 0 이하면 비활성. 롤백: TICK_MIN_PRINTS_PER_MIN=0.
+TICK_MIN_PRINTS_PER_MIN = 15.0
+TICK_MIN_PRINTS_WINDOW_MINUTES = 30
 # 3중 크로스일 때 실패해도 통과시키는 3분 컨텍스트 게이트(r002 HYBRID_3MIN_CONTEXT_GATES 이름). 점수 임계값은 아래 플래그.
 # [2026-11-04] TRIPLE_CROSS_BYPASS_CONTEXT_GATES / TRIPLE_CROSS_BYPASS_SCORE 삭제 - 소프트 게이트(_010/_011/_012/_013/_016)와
 # 점수 임계값 자체를 매수 조건에서 제거(r002 DECISION_CONTEXT_GATES = ATR 하한 + 유동성만 판정).
