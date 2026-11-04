@@ -2150,6 +2150,39 @@ def evaluate_triple_trigger(
             "tick_cross_times": tick_cross_times, "label": label, "cross_ref_price": cross_ref_price}
 
 
+def load_symbol_market_map(path) -> dict[str, str]:
+    """[2026-11-04] g004_universe_symbols_master.txt(code,name,market; '#' 주석 행)에서 code -> market(KOSPI/KOSDAQ) 사전.
+    파일 없음/오류면 빈 사전(호출측은 시장 미상 = fail-open)."""
+    out: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 3 or not parts[0].isdigit():
+                    continue
+                out[parts[0].zfill(6)] = parts[2].upper()
+    except Exception:
+        return {}
+    return out
+
+
+def market_regime_ok(frame_1min: pd.DataFrame | None, fast: int, slow: int) -> tuple[bool | None, str]:
+    """[2026-11-04] 시장 추세 게이트(r005 _029 / g003 공용): 지수 ETF 1분봉 MA_fast > MA_slow(마지막 확정봉)면 (True, 사유),
+    아니면 (False, 사유). 프레임 없음/봉 부족이면 (None, 사유) - 호출측이 MARKET_REGIME_FAIL_OPEN으로 처리."""
+    if frame_1min is None or len(frame_1min) < slow + 1:
+        return None, f"ETF_1MIN_BARS_{0 if frame_1min is None else len(frame_1min)}_LT_{slow + 1}"
+    ma = find_1min_ma_golden_cross(frame_1min, fast, slow)
+    if ma.get("ok"):
+        return True, f"MA{fast}_ABOVE_MA{slow}"
+    reason = str(ma.get("reason") or "")
+    if reason.endswith("_NO_CROSS_IN_FRAME"):  # above since frame start = still above
+        return True, f"MA{fast}_ABOVE_MA{slow}_SINCE_FRAME_START"
+    return False, reason or f"MA{fast}_NOT_ABOVE_MA{slow}"
+
+
 def check_chase_from_cross(live_price: float, cross_ref_price: float, max_pct: float) -> tuple[bool, str]:
     """[2026-11-04] 틱 크로스 봉 종가 대비 추격폭 가드 (r005 _008 triple / g003 공용). max_pct <= 0, 기준가/현재가 없음이면 통과."""
     if max_pct <= 0 or cross_ref_price != cross_ref_price or cross_ref_price <= 0 or live_price is None or live_price <= 0:

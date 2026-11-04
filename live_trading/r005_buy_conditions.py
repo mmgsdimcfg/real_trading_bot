@@ -28,6 +28,7 @@ Order (stage)                                     Old r003 inline block
             _006 hard-stop re-entry block         hard_stop_today_codes
             (_007 stop-loss circuit breaker - removed 2026-11-04, number kept free)
   TRIGGER   _008 hybrid 1-min trigger             check_buy_condition_1min_hybrid_trigger
+  CONTEXT   _029 market regime (index ETF)        (2026-11-04 신규) r002 market_regime_ok
   CONTEXT   _009 3-min context frame ready        run_3min_context_pipeline (prefix)
             (_010 bb_slope_rising / _011 bb_mid_downtrend_block / _012 bb_upper_gap_min / _013 stochastic_buy_signal /
              _016 di_spread_min - removed 2026-11-04: always BYPASSed on the triple path, numbers kept free)
@@ -37,6 +38,8 @@ Order (stage)                                     Old r003 inline block
   PRE_ORDER _018 excessive rise from prev close   MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
             _019 anti-chase day extension         (2026-10-04 신규) 당일 시가/VWAP 대비 과열 차단
             _020 opening gap / volume gate        passes_opening_gap_volume_gate
+            _031 quote status (VI/halt/warning)   (2026-11-04 신규) 현재가 응답 상태 코드 차단
+            _030 account sync freshness           (2026-11-04 신규) 잔고 동기화 오래되면 매수 차단
             _028 edge AI meta-label filter        (2026-10-26 신규) r011 LightGBM P(승) - 기본 shadow(기록만)
             _021 consecutive poll confirm         BUY_CONSECUTIVE_CONFIRM_COUNT
             _022 affordable buy qty               api.get_affordable_buy_qty
@@ -51,6 +54,12 @@ Behavior notes kept from the old inline code (do not "fix" them here - they are 
   order-book query (_024) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-11-04] type=feat owner=claude
+    summary: 사용자 승인(Codex 2차 안전 점검 + 시장 추세) - _029 시장 추세(지수 ETF 1분 MA5>MA20, r002 market_regime_ok),
+      _030 계좌 동기화 신선도(fail-closed), _031 시세 상태(VI/임시정지/시장경고/종목상태), _025에 당일 봇 포지션 평가손익 포함.
+      BuyServices: account_sync_age/quote_status/market_regime 주입(None이면 통과).
+    impact: live
+    compatibility: breaking (매수 감소 방향. 롤백: r001 플래그)
 - [2026-11-04] type=feat owner=claude
     summary: 로그 패턴 제안 적용 - (1) _008 triple: 틱 크로스 봉 종가 대비 추격폭 가드(r001 ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD/
       TRIPLE_CHASE_FROM_CROSS_MAX_PCT, r002 check_chase_from_cross, 사유 TRIPLE_CROSS_CHASE_FROM_CROSS_x%_GT_y%).
@@ -187,6 +196,14 @@ from r001_define_config import (
     TRIPLE_TICK_CONDITION,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
     ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
+    ENABLE_MARKET_REGIME_GATE,
+    MARKET_REGIME_FAIL_OPEN,
+    ACCOUNT_SYNC_MAX_STALE_SECONDS,
+    DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED,
+    ENABLE_QUOTE_STATUS_GATE,
+    QUOTE_STATUS_BLOCK_WARN_CODES,
+    QUOTE_STATUS_BLOCK_STAT_CODES,
+    QUOTE_STATUS_MAX_AGE_SECONDS,
     TRIPLE_CHASE_FROM_CROSS_MAX_PCT,
     REGULAR_START,
 )
@@ -266,6 +283,10 @@ class BuyServices:
     fetch_bid_ask: Callable[[str, str], tuple[float | None, float | None]] | None = None
     # [2026-10-29] r013 틱 트리거 (code, now) -> TickTriggerResult. None이면 틱 트리거 없음(1분 트리거만).
     tick_trigger: Callable[[str, datetime], Any] | None = None
+    # [2026-11-04] 안전 점검/시장 추세 (None이면 해당 조건 통과)
+    account_sync_age: Callable[[], float | None] | None = None      # 마지막 성공 잔고 동기화 이후 초 (None = 없음)
+    quote_status: Callable[[str], dict | None] | None = None         # 최근 현재가 응답의 상태 필드(VI/정지/경고/종목상태)
+    market_regime: Callable[[str], tuple[bool | None, str]] | None = None  # 종목 -> (지수 ETF 추세 OK, 사유)
 
 
 @dataclass
@@ -433,8 +454,25 @@ def _025_daily_loss_limit(ctx: BuyContext) -> bool:
     if not ENABLE_DAILY_LOSS_LIMIT_GATE:
         return True
     realized = float((ctx.api.live_state or {}).get("realized_pnl_krw", 0.0) or 0.0)
-    if realized <= -abs(float(DAILY_LOSS_LIMIT_KRW)):
-        ctx.log(f"  [BUY SKIP    ] {ctx.symbol_label} | DAILY_LOSS_LIMIT realized={realized:,.0f} limit=-{abs(DAILY_LOSS_LIMIT_KRW):,.0f}")
+    unrealized = 0.0
+    if DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED:  # [2026-11-04] 당일 봇 보유 포지션 평가손익(현재가 기준) 포함 (Codex #17)
+        positions = getattr(ctx.api, "positions", None) or {}
+        for _c in ctx.state.traded_today:
+            _pos = positions.get(_c) or positions.get(str(_c).zfill(6))
+            if not isinstance(_pos, dict):
+                continue
+            try:
+                _q = int(_pos.get("quantity", 0) or 0)
+                _bp = float(_pos.get("buy_price", 0.0) or 0.0)
+                _cp = float(_pos.get("current_price", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if _q > 0 and _bp > 0 and _cp > 0:
+                unrealized += (_cp - _bp) * _q
+    total = realized + unrealized
+    if total <= -abs(float(DAILY_LOSS_LIMIT_KRW)):
+        ctx.log(f"  [BUY SKIP    ] {ctx.symbol_label} | DAILY_LOSS_LIMIT realized={realized:,.0f} unrealized={unrealized:,.0f} "
+                f"limit=-{abs(DAILY_LOSS_LIMIT_KRW):,.0f}")
         return False
     return True
 
@@ -465,6 +503,71 @@ def _027_entry_spread(ctx: BuyContext) -> bool:
         ctx.log(f"  [REJECT      ] {ctx.symbol_label} | SPREAD_TOO_WIDE {ticks:.0f}ticks bid={bid:,.0f} ask={ask:,.0f} max={MAX_ENTRY_SPREAD_TICKS}")
         return False
     return True
+
+
+def _029_market_regime(ctx: BuyContext) -> bool:
+    """[2026-11-04] 시장 추세 게이트: 종목 시장의 지수 ETF 1분봉 MA5>MA20이 아니면 차단 (r002 market_regime_ok, r003 주입)."""
+    fn = ctx.services.market_regime
+    if not ENABLE_MARKET_REGIME_GATE or fn is None:
+        return True
+    try:
+        ok, detail = fn(ctx.norm_code)
+    except Exception as exc:  # 지수 프레임 오류가 매수 루프를 막으면 안 된다
+        ok, detail = None, f"ERROR_{type(exc).__name__}"
+    if ok is None:
+        if MARKET_REGIME_FAIL_OPEN:
+            return True
+        ok = False
+    if ok:
+        return True
+    ctx.state.buy_confirm_state.pop(ctx.code, None)
+    ctx.log(f"  [REJECT      ] {ctx.symbol_label} | MARKET_REGIME_DOWN_{detail}")
+    return False
+
+
+def _030_account_sync_fresh(ctx: BuyContext) -> bool:
+    """[2026-11-04] 계좌 동기화 신선도(Codex #17): 마지막 성공 잔고 조회가 ACCOUNT_SYNC_MAX_STALE_SECONDS보다 오래됐거나 없으면
+    신규 매수 차단(fail-closed). 서비스 미주입이면 통과."""
+    fn = ctx.services.account_sync_age
+    if fn is None or ACCOUNT_SYNC_MAX_STALE_SECONDS <= 0:
+        return True
+    age = fn()
+    if age is None or age > ACCOUNT_SYNC_MAX_STALE_SECONDS:
+        ctx.state.buy_confirm_state.pop(ctx.code, None)
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | ACCOUNT_SYNC_STALE age={'none' if age is None else f'{age:.0f}s'} "
+                f"max={ACCOUNT_SYNC_MAX_STALE_SECONDS:.0f}s")
+        return False
+    return True
+
+
+def _031_quote_status(ctx: BuyContext) -> bool:
+    """[2026-11-04] 시세 상태(Codex #18): 최근 현재가 응답의 VI/임시정지/시장경고/종목상태 코드가 차단 대상이면 반려.
+    응답 없음/오래됨은 통과(fail-open)."""
+    fn = ctx.services.quote_status
+    if not ENABLE_QUOTE_STATUS_GATE or fn is None:
+        return True
+    st = fn(ctx.norm_code)
+    if not isinstance(st, dict):
+        return True
+    at = st.get("at")
+    if isinstance(at, datetime) and (ctx.current_dt - at).total_seconds() > QUOTE_STATUS_MAX_AGE_SECONDS:
+        return True
+    reasons = []
+    if str(st.get("vi_cls_code", "")).strip().upper() == "Y":
+        reasons.append("VI_ACTIVE")
+    if str(st.get("temp_stop_yn", "")).strip().upper() == "Y":
+        reasons.append("TEMP_STOP")
+    warn = str(st.get("mrkt_warn_cls_code", "")).strip()
+    if warn in QUOTE_STATUS_BLOCK_WARN_CODES:
+        reasons.append(f"MARKET_WARN_{warn}")
+    stat = str(st.get("iscd_stat_cls_code", "")).strip()
+    if stat in QUOTE_STATUS_BLOCK_STAT_CODES:
+        reasons.append(f"STOCK_STATUS_{stat}")
+    if not reasons:
+        return True
+    ctx.state.buy_confirm_state.pop(ctx.code, None)
+    ctx.log(f"  [REJECT      ] {ctx.symbol_label} | QUOTE_STATUS_BLOCK_{'+'.join(reasons)}")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +1202,17 @@ _COND_028 = BuyCondition(28, "_028_edge_ai_meta_filter", "PRE_ORDER", "Edge AI �
 _COND_027 = BuyCondition(27, "_027_entry_spread", "PRE_ORDER", "호가 스프레드",
                          "(매도1호가-매수1호가)/호가단위 > MAX_ENTRY_SPREAD_TICKS면 차단, 호가 없음도 차단 (API: 호가 조회)",
                          ("ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"), _027_entry_spread)
+_COND_029 = BuyCondition(29, "_029_market_regime", "CONTEXT", "시장 추세(지수 ETF)",
+                         "종목 시장(KOSPI/KOSDAQ)의 지수 ETF 1분봉 MA5 > MA20이 아니면 차단. ETF 데이터 없으면 MARKET_REGIME_FAIL_OPEN",
+                         ("ENABLE_MARKET_REGIME_GATE", "MARKET_REGIME_ETF", "MARKET_REGIME_MA_FAST", "MARKET_REGIME_MA_SLOW",
+                          "MARKET_REGIME_FAIL_OPEN"), _029_market_regime)
+_COND_030 = BuyCondition(30, "_030_account_sync_fresh", "PRE_ORDER", "계좌 동기화 신선도",
+                         "마지막 성공 잔고 조회가 ACCOUNT_SYNC_MAX_STALE_SECONDS보다 오래됐거나 없으면 신규 매수 차단(fail-closed)",
+                         ("ACCOUNT_SYNC_MAX_STALE_SECONDS",), _030_account_sync_fresh)
+_COND_031 = BuyCondition(31, "_031_quote_status", "PRE_ORDER", "시세 상태(VI/정지/경고)",
+                         "최근 현재가 응답의 vi_cls_code=Y / temp_stop_yn=Y / 시장경고 02·03 / 종목상태 51·52·53·58·59면 차단 (오래된 응답은 통과)",
+                         ("ENABLE_QUOTE_STATUS_GATE", "QUOTE_STATUS_BLOCK_WARN_CODES", "QUOTE_STATUS_BLOCK_STAT_CODES",
+                          "QUOTE_STATUS_MAX_AGE_SECONDS"), _031_quote_status)
 
 BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     BuyCondition(1, "_001_entry_time_window", "STATE", "신규 진입 허용 시간대",
@@ -1129,6 +1243,7 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT", "TICK_TRIGGER_MODE", "TICK_TRIGGER_BAR_SIZES",
                   "TICK_TRIGGER_MA_FAST", "TICK_TRIGGER_MA_SLOW", "TICK_TRIGGER_CROSS_MAX_AGE_SECONDS",
                   "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID"), _008_hybrid_1min_trigger),
+    _COND_029,
     BuyCondition(9, "_009_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _009_context_frame_ready),
     BuyCondition(14, "_014_min_entry_atr_volatility", "CONTEXT", "최소 변동성(ATR%)",
@@ -1150,6 +1265,8 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  "개장 후 5분 이내: 갭 범위 + 거래량 폭발 확인, 큰 갭하락은 당일 영구 차단",
                  ("ENABLE_OPENING_GAP_VOLUME_GATE", "OPENING_GAP_GATE_WINDOW_MINUTES", "OPENING_GAP_MIN_PCT", "OPENING_GAP_MAX_PCT",
                   "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _020_opening_gap_volume_gate),
+    _COND_031,
+    _COND_030,
     _COND_028,
     _COND_027,
     BuyCondition(21, "_021_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
