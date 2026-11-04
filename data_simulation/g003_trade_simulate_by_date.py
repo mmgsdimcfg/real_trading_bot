@@ -3618,7 +3618,13 @@ def _backup_full_log(log_path: Path) -> None:
     for idx in range(1, 1000):
         backup = parent / f"{stem}_{idx:03d}{suffix}"
         if not backup.exists():
-            log_path.rename(backup)
+            try:
+                log_path.rename(backup)
+            except FileNotFoundError:
+                # [2026-11-04] 같은 날짜를 병렬로 돌리는 A/B(ab1104)에서 다른 프로세스가 먼저 회전시킨 경우 - 이미 백업됐으니 끝
+                return
+            except FileExistsError:
+                continue  # 다른 프로세스가 같은 번호를 먼저 썼다 - 다음 번호
             print(f"[INFO] Previous log backed up: {backup.name}")
             return
 
