@@ -17,6 +17,11 @@ Update log format (append only):
 
 Update log:
 - [2026-11-04] type=refactor owner=claude
+    summary: r005 매수 소프트 게이트/BYPASS 삭제 parity - 3분 컨텍스트는 양 경로(triple/legacy) 모두 r002
+      run_3min_context_decision(ATR 하한 + 유동성, 점수는 기록만). run_3min_context_pipeline_triple 삭제.
+    impact: sim
+    compatibility: breaking (legacy 경로도 소프트 게이트/점수 임계값을 더 이상 적용하지 않음)
+- [2026-11-04] type=refactor owner=claude
     summary: r006 2026-11-04 삭제 parity - 불타기(ENABLE_PYRAMIDING)/2차 익절(STAGED_TP2)/TP3 무장/구형 2단계 익절/
       1분 데드크로스 청산(+DC regime, --dc-regime-mode)/고점 되돌림 가드/시그널 청산(STOCH, MACD) 시뮬 블록 삭제.
       r006 _023 이익 잠금(ENABLE_PROFIT_LOCK, arm/giveback/ratio/rest-breakeven)을 이식해 매도 parity 확보(Codex 검토 #3).
@@ -339,8 +344,6 @@ from r001_define_config import (
     TICK_TRIGGER_PRIOR_DAY_WARMUP,
     TRIPLE_1MIN_MA_FAST,
     TRIPLE_1MIN_MA_SLOW,
-    TRIPLE_CROSS_BYPASS_CONTEXT_GATES,
-    TRIPLE_CROSS_BYPASS_SCORE,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
     ADX_BUY_MIN,
     ADX_MIN_TREND,
@@ -520,10 +523,8 @@ from r002_strategy_core_shared import (
     find_1min_ma_golden_cross,
     evaluate_triple_trigger,
     build_context_eval,
-    evaluate_context_score,
-    HYBRID_3MIN_CONTEXT_GATES,
+    run_3min_context_decision,
     passes_opening_gap_volume_gate,
-    run_3min_context_pipeline,
     update_timed_condition_state,
     compute_staged_tp1_target_pct,
     update_recent_price_samples,
@@ -703,32 +704,6 @@ def resolve_entry_trigger_mode(date_str: str, tick_root: Path = TICK_DATA_DIR) -
         return "legacy"
     day_dir = Path(tick_root) / date_str
     return "triple" if day_dir.is_dir() and any(day_dir.glob("*.csv")) else "legacy"
-
-
-def run_3min_context_pipeline_triple(
-    frame: pd.DataFrame, now: pd.Timestamp, live_price: float, cross_info: dict, config: StrategyConfig,
-) -> tuple[bool, str, list[str]]:
-    """r005 _context_gate/_017 parity for the triple path: soft-gate failures in TRIPLE_CROSS_BYPASS_CONTEXT_GATES and a
-    low score (TRIPLE_CROSS_BYPASS_SCORE) pass; any other gate failure rejects. Returns (ok, reason, bypassed)."""
-    ctx, reason = build_context_eval(frame, now, live_price, cross_info, config)
-    if ctx is None:
-        return False, reason, []
-    if dataclasses.is_dataclass(ctx):  # [2026-11-04] r005 _009 parity (진입 ATR 하한 완화)
-        ctx = dataclasses.replace(ctx, triple_cross=True)
-    bypassed: list[str] = []
-    for gate in HYBRID_3MIN_CONTEXT_GATES:
-        passed, ctx, reason = gate.eval_fn(ctx)
-        if not passed:
-            if gate.name in TRIPLE_CROSS_BYPASS_CONTEXT_GATES:
-                bypassed.append(gate.name)
-                continue
-            return False, f"HYBRID_3MIN_CTX_{reason}", bypassed
-    ok, reason = evaluate_context_score(ctx, now, config)
-    if not ok:
-        if not TRIPLE_CROSS_BYPASS_SCORE:
-            return False, reason, bypassed
-        bypassed.append("score")
-    return True, reason, bypassed
 
 
 # causal 모드에서 봉 공개 지연(r003 CANDLE_CONFIRM_DELAY_SECONDS parity): 라벨+지연 <= ts 인 봉만 사용
@@ -2293,7 +2268,7 @@ def _triple_entry_decision(
     code: str, ts: pd.Timestamp, price: float, buy_available: pd.DataFrame, frame_1min: pd.DataFrame,
     cross_info: dict, tick_replay: TickReplayFeed,
 ) -> tuple[bool, str]:
-    """r005 _008_triple_cross_trigger + 3분 컨텍스트(BYPASS) parity. Returns (should_buy, reason)."""
+    """r005 _008_triple_cross_trigger + 3분 컨텍스트(r002 run_3min_context_decision) parity. Returns (should_buy, reason)."""
     if ENTRY_1MIN_FRAME_REQUIRE_LATEST and len(frame_1min) > 0:
         exp_label = (ts - pd.Timedelta(seconds=SIM_BAR_AVAIL_DELAY_SECONDS)).floor("1min")
         if pd.Timestamp(frame_1min.index[-1]) != exp_label:
@@ -2325,13 +2300,12 @@ def _triple_entry_decision(
     )
     if not live_ok:
         return False, f"TRIPLE_CROSS_{live_reason}"
-    ok, ctx_reason, bypassed = run_3min_context_pipeline_triple(
-        buy_available, ts, price, cross_info, SHARED_STRATEGY_CONFIG,
+    ok, ctx_reason = run_3min_context_decision(
+        buy_available, ts, price, cross_info, SHARED_STRATEGY_CONFIG, triple_cross=True,
     )
     if not ok:
         return False, ctx_reason
-    bypass_txt = f"+BYPASS({','.join(bypassed)})" if bypassed else ""
-    return True, f"{guard_reason}+{ctx_reason}{bypass_txt}"
+    return True, f"{guard_reason}+{ctx_reason}"
 
 
 def simulate_date(
@@ -3242,8 +3216,8 @@ def simulate_date(
                     )
                     should_buy, reason = False, f"HYBRID_1MIN_TRIGGER_CROSS_EXPIRED_{_ca:.1f}s_GT_{CROSS_MAX_AGE_SIM:.0f}s"
                 else:
-                    should_buy, reason = run_3min_context_pipeline(
-                        buy_available, ts, price, cross_info, SHARED_STRATEGY_CONFIG,
+                    should_buy, reason = run_3min_context_decision(
+                        buy_available, ts, price, cross_info, SHARED_STRATEGY_CONFIG, triple_cross=False,
                     )
                     if should_buy:
                         reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{reason}"

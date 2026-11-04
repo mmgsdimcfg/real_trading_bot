@@ -13,6 +13,9 @@ Overview
   That is the only behavior change in this file since the refactor.
 - [2026-11-04] `_007` stop-loss circuit breaker removed (user decision); `_009` marks the 3-min eval context with
   `triple_cross` so r002 can apply the relaxed entry-ATR floor (r001 ENABLE_RELAXED_ENTRY_ATR).
+- [2026-11-04] soft gates `_010/_011/_012/_013/_016`, the score threshold of `_017` and the whole TRIPLE_CROSS_BYPASS
+  mechanism removed (user decision after the 11/04 review: 14 of 17 triple buys bypassed stochastic, so the gates decided
+  nothing). Decision gates are now r002 DECISION_CONTEXT_GATES (ATR floor + liquidity); `_017` only records the score.
 - No broker imports: everything that talks to the broker / clock is injected through `BuyServices` and `ctx.api`, so the
   whole checklist can be unit-tested without authenticating.
 
@@ -26,14 +29,11 @@ Order (stage)                                     Old r003 inline block
             (_007 stop-loss circuit breaker - removed 2026-11-04, number kept free)
   TRIGGER   _008 hybrid 1-min trigger             check_buy_condition_1min_hybrid_trigger
   CONTEXT   _009 3-min context frame ready        run_3min_context_pipeline (prefix)
-            _010 bb_slope_rising                  HYBRID_3MIN_CONTEXT_GATES
-            _011 bb_mid_downtrend_block           (skipped when ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK=False)
-            _012 bb_upper_gap_min
-            _013 stochastic_buy_signal
-            _014 min_entry_atr_volatility
+            (_010 bb_slope_rising / _011 bb_mid_downtrend_block / _012 bb_upper_gap_min / _013 stochastic_buy_signal /
+             _016 di_spread_min - removed 2026-11-04: always BYPASSed on the triple path, numbers kept free)
+            _014 min_entry_atr_volatility         r002 DECISION_CONTEXT_GATES
             _015 min_liquidity_safety
-            _016 di_spread_min
-            _017 context score threshold          run_3min_context_pipeline (suffix)
+            _017 context score record             score only, no threshold (2026-11-04)
   PRE_ORDER _018 excessive rise from prev close   MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
             _019 anti-chase day extension         (2026-10-04 신규) 당일 시가/VWAP 대비 과열 차단
             _020 opening gap / volume gate        passes_opening_gap_volume_gate
@@ -179,12 +179,12 @@ from r001_define_config import (
     TRIPLE_1MIN_CONDITION,
     TRIPLE_TICK_CONDITION,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
-    TRIPLE_CROSS_BYPASS_CONTEXT_GATES,
-    TRIPLE_CROSS_BYPASS_SCORE,
 )
 from r008_strategy_v2 import krx_tick_size
 from r002_strategy_core_shared import (
-    HYBRID_3MIN_CONTEXT_GATES,
+    BUY_SCORE_RULES,
+    DECISION_CONTEXT_GATES,
+    DECISION_CONTEXT_GATE_NAMES,
     _compute_bb_slope_pct,
     _evaluate_bb_mid_cross,
     _num,
@@ -193,7 +193,6 @@ from r002_strategy_core_shared import (
     build_context_eval,
     check_buy_condition_1min_hybrid_trigger,
     check_1min_trigger_live_guard,
-    evaluate_context_score,
     find_1min_ma_golden_cross,
     evaluate_triple_trigger,
     gate_steps_diagnostic,
@@ -296,7 +295,6 @@ class BuyContext:
     trigger_info: dict | None = None
     # [2026-10-30] _008 triple 모드에서 1분 MA + 60틱 + 120틱 골든크로스가 모두 통과했으면 True(3분 소프트 게이트 BYPASS 대상)
     triple_cross: bool = False
-    bypassed_gates: list = field(default_factory=list)
 
     @property
     def norm_code(self) -> str:
@@ -338,7 +336,7 @@ class BuyDecision:
 def _steps_text(ctx: BuyContext, triple_cross: bool = False) -> str:
     ctx_steps = gate_steps_diagnostic(
         ctx.buy_frame, ctx.current_dt, ctx.price, ctx.cross_info, ctx.config,
-        gates=HYBRID_3MIN_CONTEXT_GATES, triple_cross=triple_cross,
+        gates=DECISION_CONTEXT_GATES, triple_cross=triple_cross,
     )
     return f"1min_trigger({ctx.trigger_flag}) {ctx_steps}"
 
@@ -360,13 +358,8 @@ def _reject_hybrid(ctx: BuyContext, buy_reason: str) -> None:
 
 
 def _context_gate(ctx: BuyContext, gate_name: str) -> bool:
-    gate = _GATES_BY_NAME.get(gate_name)
-    if gate is None:
-        return True  # r002가 이 게이트를 HYBRID_3MIN_CONTEXT_GATES에서 뺀 경우(플래그 OFF) - 기존과 동일하게 건너뜀
+    gate = _GATES_BY_NAME[gate_name]  # [2026-11-04] 판정 게이트는 DECISION_CONTEXT_GATES 2개뿐 - 소프트 게이트/BYPASS 삭제
     passed, ctx.eval_ctx, reason = gate.eval_fn(ctx.eval_ctx)
-    if not passed and ctx.triple_cross and gate_name in TRIPLE_CROSS_BYPASS_CONTEXT_GATES:
-        ctx.bypassed_gates.append(gate_name)  # [2026-10-30] 3중 골든크로스 - 소프트 게이트 실패를 통과 처리(사유에 기록)
-        return True
     if not passed:
         _reject_hybrid(ctx, f"HYBRID_3MIN_CTX_{reason}")
         return False
@@ -627,7 +620,6 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
 
 def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
     ctx.triple_cross = False
-    ctx.bypassed_gates = []
     frame_1min = _load_entry_frame_1min(ctx)
     if frame_1min is None:
         return False
@@ -765,22 +757,6 @@ def _009_context_frame_ready(ctx: BuyContext) -> bool:
     return True
 
 
-def _010_bb_slope_rising(ctx: BuyContext) -> bool:
-    return _context_gate(ctx, "bb_slope_rising")
-
-
-def _011_bb_mid_downtrend_block(ctx: BuyContext) -> bool:
-    return _context_gate(ctx, "bb_mid_downtrend_block")
-
-
-def _012_bb_upper_gap_min(ctx: BuyContext) -> bool:
-    return _context_gate(ctx, "bb_upper_gap_min")
-
-
-def _013_stochastic_buy_signal(ctx: BuyContext) -> bool:
-    return _context_gate(ctx, "stochastic_buy_signal")
-
-
 def _014_min_entry_atr_volatility(ctx: BuyContext) -> bool:
     return _context_gate(ctx, "min_entry_atr_volatility")
 
@@ -789,25 +765,15 @@ def _015_min_liquidity_safety(ctx: BuyContext) -> bool:
     return _context_gate(ctx, "min_liquidity_safety")
 
 
-def _016_di_spread_min(ctx: BuyContext) -> bool:
-    return _context_gate(ctx, "di_spread_min")
-
-
-def _017_context_score_threshold(ctx: BuyContext) -> bool:
-    ok, reason = evaluate_context_score(ctx.eval_ctx, ctx.current_dt, ctx.config)
+def _017_context_score_record(ctx: BuyContext) -> bool:
+    """[2026-11-04] 가점 합계는 임계값 없이 매수 사유에 기록만 한다(종전 _017_context_score_threshold - triple 경로에서
+    TRIPLE_CROSS_BYPASS_SCORE로 항상 통과돼 판정 가치 0, 사용자 결정으로 삭제). 항상 True."""
+    score = sum(rule.eval_fn(ctx.eval_ctx) for rule in BUY_SCORE_RULES)
+    reason = f"HYBRID_3MIN_CTX_SCORE_{score}"
     if ctx.triple_cross:
-        # [2026-10-30] 3중 골든크로스 경로 - 점수 미달은 TRIPLE_CROSS_BYPASS_SCORE일 때만 통과. 사유에 BYPASS 게이트를 남긴다.
-        if not ok and not TRIPLE_CROSS_BYPASS_SCORE:
-            _reject_hybrid(ctx, reason)
-            return False
-        bypassed = list(ctx.bypassed_gates) + ([] if ok else ["score"])
-        bypass_txt = f"+BYPASS({','.join(bypassed)})" if bypassed else ""
-        ctx.buy_reason = f"{ctx.trigger_reason}+{reason}{bypass_txt}"
-        return True
-    if not ok:
-        _reject_hybrid(ctx, reason)
-        return False
-    ctx.buy_reason = f"HYBRID_1MIN_TRIGGER_{ctx.trigger_reason}+{reason}"
+        ctx.buy_reason = f"{ctx.trigger_reason}+{reason}"
+    else:
+        ctx.buy_reason = f"HYBRID_1MIN_TRIGGER_{ctx.trigger_reason}+{reason}"
     return True
 
 
@@ -1090,7 +1056,7 @@ def _b08_basic_1min_golden_cross(ctx: BuyContext) -> bool:
     return True
 
 
-_GATES_BY_NAME = {gate.name: gate for gate in HYBRID_3MIN_CONTEXT_GATES}
+_GATES_BY_NAME = {gate.name: gate for gate in DECISION_CONTEXT_GATES}
 
 # [2026-10-23] Portfolio guards - tuple position (not number) decides evaluation order.
 _COND_025 = BuyCondition(25, "_025_daily_loss_limit", "STATE", "일일 손실 한도",
@@ -1138,25 +1104,13 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID"), _008_hybrid_1min_trigger),
     BuyCondition(9, "_009_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _009_context_frame_ready),
-    BuyCondition(10, "_010_bb_slope_rising", "CONTEXT", "BB 중심선 상승 기울기",
-                 "BB_MIDDLE 최근 lookback봉 기울기 > BB_SLOPE_MIN_PCT", ("BB_SLOPE_LOOKBACK_BARS", "BB_SLOPE_MIN_PCT"), _010_bb_slope_rising),
-    BuyCondition(11, "_011_bb_mid_downtrend_block", "CONTEXT", "BB 중심선 연속 하락 차단",
-                 "BB 중심선 최근 N봉 연속 하락이면 차단(가격이 이미 돌파했으면 해제). ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK=False면 건너뜀",
-                 ("BB_MID_DOWNTREND_BARS", "ENABLE_HYBRID_BB_MID_DOWNTREND_BLOCK"), _011_bb_mid_downtrend_block),
-    BuyCondition(12, "_012_bb_upper_gap_min", "CONTEXT", "BB 상단 여유",
-                 "BB 상단까지 남은 폭 >= BB_UPPER_GAP_MIN_PCT (호가 1틱% 구간별 BB_UPPER_GAP_MIN_PCT_BY_TICK)", ("ENABLE_BB_UPPER_GAP_GATE", "BB_UPPER_GAP_MIN_PCT", "BB_UPPER_GAP_MIN_PCT_BY_TICK"), _012_bb_upper_gap_min),
-    BuyCondition(13, "_013_stochastic_buy_signal", "CONTEXT", "스토캐스틱(+윌리엄스) 매수신호",
-                 "%K>%D(골든크로스 포함) + %D>=STOCH_D_BUY_MIN + %K 30~90 밴드",
-                 ("STOCH_BUY_MIN", "STOCH_D_BUY_MIN", "WILLIAMS_BUY_FLOOR", "WILLIAMS_OVERBOUGHT_CEIL"), _013_stochastic_buy_signal),
     BuyCondition(14, "_014_min_entry_atr_volatility", "CONTEXT", "최소 변동성(ATR%)",
                  "ATR% >= STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO", ("ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO"), _014_min_entry_atr_volatility),
     BuyCondition(15, "_015_min_liquidity_safety", "CONTEXT", "최소 유동성",
                  "거래량/거래량MA/비율/거래대금 최소치", ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW"), _015_min_liquidity_safety),
-    BuyCondition(16, "_016_di_spread_min", "CONTEXT", "DI 스프레드",
-                 "+DI - -DI >= DI_SPREAD_MIN_REQUIRED", ("DI_SPREAD_MIN_REQUIRED",), _016_di_spread_min),
-    BuyCondition(17, "_017_context_score_threshold", "CONTEXT", "가점 합계 임계값",
-                 "가점 12항목 합계 >= BB_BUY_SCORE_THRESHOLD (개장 15분은 OPENING_GUARD_SCORE_THRESHOLD)",
-                 ("BB_BUY_SCORE_THRESHOLD", "OPENING_GUARD_MINUTES", "OPENING_GUARD_SCORE_THRESHOLD"), _017_context_score_threshold),
+    BuyCondition(17, "_017_context_score_record", "CONTEXT", "가점 합계 기록",
+                 "가점 12항목 합계를 매수 사유(HYBRID_3MIN_CTX_SCORE_n)에 기록만 한다 - 임계값 없음(2026-11-04 삭제)",
+                 (), _017_context_score_record),
     BuyCondition(18, "_018_excessive_rise_from_prev_close", "PRE_ORDER", "전일 종가 대비 과도 상승",
                  "전일 종가 대비 상승률 < MAX_BUY_RISE_PCT_FROM_PREV_CLOSE (API: 전일 종가 조회)",
                  ("MAX_BUY_RISE_PCT_FROM_PREV_CLOSE",), _018_excessive_rise_from_prev_close),
@@ -1186,30 +1140,17 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
 
 # r002에 3분 컨텍스트 게이트가 추가/삭제되면 위 번호 목록도 함께 고치도록 import 시점에 바로 실패시킨다.
 _CONTEXT_GATE_FUNC_TO_NAME = {
-    "_010_bb_slope_rising": "bb_slope_rising",
-    "_011_bb_mid_downtrend_block": "bb_mid_downtrend_block",
-    "_012_bb_upper_gap_min": "bb_upper_gap_min",
-    "_013_stochastic_buy_signal": "stochastic_buy_signal",
     "_014_min_entry_atr_volatility": "min_entry_atr_volatility",
     "_015_min_liquidity_safety": "min_liquidity_safety",
-    "_016_di_spread_min": "di_spread_min",
 }
 _registered_gate_names = {
     _CONTEXT_GATE_FUNC_TO_NAME[c.func_name] for c in BUY_CONDITIONS if c.func_name in _CONTEXT_GATE_FUNC_TO_NAME
 }
-# r002가 플래그로 HYBRID_3MIN_CONTEXT_GATES에서 뺄 수 있는(=r005에서 건너뛰는) 의도된 선택 게이트.
-_OPTIONAL_CONTEXT_GATES = {"bb_mid_downtrend_block"}
-if not set(_GATES_BY_NAME) <= _registered_gate_names:
+# [2026-11-04] r005 등록 게이트 == r002 DECISION_CONTEXT_GATE_NAMES (정확히 일치해야 한다).
+if _registered_gate_names != set(DECISION_CONTEXT_GATE_NAMES):
     raise RuntimeError(
-        "r005 BUY_CONDITIONS에 없는 3분 컨텍스트 게이트가 r002 HYBRID_3MIN_CONTEXT_GATES에 있음: "
-        f"{sorted(set(_GATES_BY_NAME) - _registered_gate_names)}"
-    )
-# 반대 방향(Codex 사후 검토): r002에서 삭제/이름 변경된 게이트를 r005가 계속 등록해 두면 번호 목록에는 있는데
-# 실제로는 조용히 건너뛰게 된다 - 선택 게이트를 뺀 나머지는 정확히 일치해야 한다.
-if not _registered_gate_names - set(_GATES_BY_NAME) <= _OPTIONAL_CONTEXT_GATES:
-    raise RuntimeError(
-        "r005 BUY_CONDITIONS에 등록됐지만 r002 HYBRID_3MIN_CONTEXT_GATES에 없는 게이트: "
-        f"{sorted(_registered_gate_names - set(_GATES_BY_NAME) - _OPTIONAL_CONTEXT_GATES)}"
+        "r005 BUY_CONDITIONS의 3분 컨텍스트 게이트와 r002 DECISION_CONTEXT_GATE_NAMES 불일치: "
+        f"{sorted(_registered_gate_names)} vs {sorted(DECISION_CONTEXT_GATE_NAMES)}"
     )
 
 
