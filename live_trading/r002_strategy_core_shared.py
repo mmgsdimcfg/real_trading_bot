@@ -481,6 +481,9 @@ from r001_define_config import (
     ENABLE_STOCHASTIC_BUY_GATE,
     ENABLE_BB_UPPER_GAP_GATE,
     MIN_ENTRY_ATR_TO_TP1_RATIO,
+    ENABLE_RELAXED_ENTRY_ATR,
+    RELAXED_ENTRY_ATR_FROM,
+    RELAXED_ENTRY_ATR_MIN_PCT,
     STAGED_TP1_PCT,
     REQUIRE_OBV_SIGNAL_CROSS,
     OBV_BREAKOUT_LOOKBACK_BARS,
@@ -786,6 +789,8 @@ class BuyEvalContext:
     cross_eval: dict[str, object] | None = None
     candle_gain_pct: float | None = None
     bb_mid_gap_pct: float | None = None
+    # [2026-11-04] r005/g003 triple 경로가 채움 - 진입 ATR 하한 완화(min_entry_atr_threshold_pct)에 사용
+    triple_cross: bool = False
 
 
 @dataclass(frozen=True)
@@ -1537,6 +1542,22 @@ def _stochastic_buy_signal_core(ctx: BuyEvalContext) -> tuple[bool, BuyEvalConte
     return True, ctx, None
 
 
+def min_entry_atr_threshold_pct(now, triple_cross: bool = False) -> float:
+    """[2026-11-04] 진입 최소 ATR%(비율). 기본 STAGED_TP1_PCT*MIN_ENTRY_ATR_TO_TP1_RATIO(0.60%), ENABLE_RELAXED_ENTRY_ATR이면
+    트리플 크로스 경로 또는 RELAXED_ENTRY_ATR_FROM(HH:MM) 이후에 RELAXED_ENTRY_ATR_MIN_PCT로 낮춘다(기본보다 높이지는 않음)."""
+    base = STAGED_TP1_PCT * MIN_ENTRY_ATR_TO_TP1_RATIO
+    if not ENABLE_RELAXED_ENTRY_ATR:
+        return base
+    relaxed = bool(triple_cross)
+    if not relaxed and now is not None:
+        try:
+            hh, mm = (int(x) for x in str(RELAXED_ENTRY_ATR_FROM).split(":"))
+            relaxed = (now.hour, now.minute) >= (hh, mm)
+        except (ValueError, AttributeError):
+            relaxed = False
+    return min(base, float(RELAXED_ENTRY_ATR_MIN_PCT)) if relaxed else base
+
+
 def _gate_min_entry_atr_volatility(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContext, str | None]:
     # [2026-09-07] 진입 최소 변동성(ATR%) 필터. 손절(ATR_STOP_MULTIPLIER)/1차 익절
     # (TP1_ATR_MULTIPLIER)은 ATR에 연동돼 있는데 정작 진입 게이트에는 ATR 확인이 전혀
@@ -1549,7 +1570,7 @@ def _gate_min_entry_atr_volatility(ctx: BuyEvalContext) -> tuple[bool, BuyEvalCo
     if pd.isna(atr_val) or not live_price or live_price <= 0:
         return True, ctx, None  # ATR 미산출 구간(초기 warmup)은 다른 게이트에 판단을 맡김
     atr_pct = atr_val / float(live_price)
-    min_atr_pct = STAGED_TP1_PCT * MIN_ENTRY_ATR_TO_TP1_RATIO
+    min_atr_pct = min_entry_atr_threshold_pct(ctx.now, ctx.triple_cross)
     if atr_pct < min_atr_pct:
         return False, ctx, f"LOW_ENTRY_ATR_{atr_pct*100:.2f}%_LT_{min_atr_pct*100:.2f}%"
     return True, ctx, None
@@ -2409,8 +2430,9 @@ def gate_steps_diagnostic(
     cross_info: dict[str, object],
     config: StrategyConfig,
     gates: list[BuyGateCondition] | None = None,
+    triple_cross: bool = False,
 ) -> str:
-    """로그 표시 전용 진단 함수. gates(기본값 BUY_GATE_CONDITIONS) 리스트의 각 게이트를
+    """로그 표시 전용 진단 함수. triple_cross: [2026-11-04] triple 경로 진입 ATR 하한 완화를 실제 판정과 맞춤. gates(기본값 BUY_GATE_CONDITIONS) 리스트의 각 게이트를
     run_buy_condition_pipeline_comment/run_3min_context_pipeline처럼 실제 매수 판정에
     쓰지 않고, 조기종료 없이 전부 평가해 "gate_name(P|F)" 형태로 이어붙여 반환한다.
     실제 판정 로직(순차 통과형)에는 전혀 영향을 주지 않는다 - 리젝된 종목이 어느
@@ -2431,7 +2453,7 @@ def gate_steps_diagnostic(
     ctx = BuyEvalContext(
         frame=frame, now=now, live_price=live_price, cross_info=cross_info, config=config,
         cur=cur, prev=prev, cur_bb=cur_bb, cur_bb_upper=cur_bb_upper, prev_bb=prev_bb,
-        bb_slope_pct=_compute_bb_slope_pct(frame),
+        bb_slope_pct=_compute_bb_slope_pct(frame), triple_cross=bool(triple_cross),
     )
 
     parts: list[str] = []

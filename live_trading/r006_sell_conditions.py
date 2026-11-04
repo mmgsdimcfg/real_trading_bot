@@ -38,6 +38,10 @@ Order                                        Kind        Old r003 inline block (
   _022 shared reversal sell                  EXIT        5058-5099  (r002 check_sell_condition)
 
 Update log (append only):
+- [2026-11-04] type=feat owner=claude
+    summary: 사용자 결정 - 손절 누적 서킷브레이커 삭제. _register_hard_stop은 당일 재진입 차단 등록 + 카운트 로그만 남김.
+    impact: live (r003)
+    compatibility: breaking (매수 증가 방향, 롤백: git revert)
 - [2026-10-31] type=feat owner=claude
     summary: 사용자 결정 - 손실 매도 조건 삭제(OFF). _013/_014 시그널 매도에 r001 ENABLE_SIGNAL_EXIT_STOCH_K_LT_D/
       ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN(기본 False) 킬스위치 추가, _011 1분봉 데드크로스 매도는 기존
@@ -84,7 +88,7 @@ Update log (append only):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Callable
 
 import pandas as pd
@@ -119,8 +123,6 @@ from r001_define_config import (
     ENABLE_SURGE_LADDER_TP,
     ENABLE_TP1_CAP_AT_ATR_TP,
     ENABLE_TP_EXTENSION_TRAILING,
-    HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN,
-    HARD_STOP_CIRCUIT_BREAKER_COUNT,
     HARD_STOP_CONFIRM_SECONDS,
     HARD_STOP_LOSS_PCT,
     HARD_STOP_MIN_HOLD_SECONDS,
@@ -383,15 +385,11 @@ def _staged_targets(ctx: SellContext) -> None:
 
 
 def _register_hard_stop(ctx: SellContext, label: str) -> None:
-    """손절 매도 성공 후: 당일 재진입 차단 등록 + 누적 카운트 + 서킷브레이커(기존 4561-4565/4988-4992)."""
+    """손절 매도 성공 후: 당일 재진입 차단 등록 + 누적 카운트(기록용).
+    [2026-11-04] 서킷브레이커(누적 N회 -> 60분 신규 매수 차단) 삭제 - 사용자 결정(r001 Update log 참조)."""
     ctx.state.hard_stop_today_codes.add(str(ctx.code).zfill(6))
     ctx.risk.hard_stop_daily_count += 1
-    if ctx.risk.hard_stop_daily_count >= HARD_STOP_CIRCUIT_BREAKER_COUNT:
-        ctx.risk.circuit_breaker_until = ctx.current_dt + timedelta(minutes=HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN)
-        ctx.log(
-            f"  [CIRCUIT BRK ] {label} {ctx.risk.hard_stop_daily_count}회 발생 → 신규 매수 "
-            f"{HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN}분 차단 until {ctx.risk.circuit_breaker_until:%H:%M:%S}"
-        )
+    ctx.log(f"  [STOP COUNT  ] {label} 당일 {ctx.risk.hard_stop_daily_count}회 (서킷브레이커 없음)")
 
 
 # ---------------------------------------------------------------------------
@@ -1420,8 +1418,8 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
                   "ATR 익절선 도달 후 고점봉 바로 다음 확정봉이 음봉이고 고점 대비 PEAK_NEXT_BAR_DROP_PCT 이상 하락하면 시장가 전량 청산",
                   ("ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT", "PEAK_NEXT_BAR_DROP_PCT"), _003_peak_next_bar_bearish_exit),
     SellCondition(4, "_004_hard_stop_loss", "EXIT", "하드 손절",
-                  "손익 <= -HARD_STOP_LOSS_PCT 이고 보유 HARD_STOP_MIN_HOLD_SECONDS 경과가 HARD_STOP_CONFIRM_SECONDS 지속되면 시장가 전량 청산 + 당일 재진입 차단/서킷브레이커 집계",
-                  ("HARD_STOP_LOSS_PCT", "HARD_STOP_MIN_HOLD_SECONDS", "HARD_STOP_CONFIRM_SECONDS", "HARD_STOP_CIRCUIT_BREAKER_COUNT", "HARD_STOP_CIRCUIT_BREAKER_COOLDOWN_MIN"), _004_hard_stop_loss),
+                  "손익 <= -HARD_STOP_LOSS_PCT 이고 보유 HARD_STOP_MIN_HOLD_SECONDS 경과가 HARD_STOP_CONFIRM_SECONDS 지속되면 시장가 전량 청산 + 당일 재진입 차단",
+                  ("HARD_STOP_LOSS_PCT", "HARD_STOP_MIN_HOLD_SECONDS", "HARD_STOP_CONFIRM_SECONDS"), _004_hard_stop_loss),
     SellCondition(5, "_005_pyramid_add_entry", "ADD_ENTRY", "불타기(추가 매수)",
                   "수익 PYRAMID_TRIGGER_PNL_PCT 이상 + MA5/BB중심선/ADX 상승 시 1회 추가 매수 (매도 아님)",
                   ("ENABLE_PYRAMIDING", "PYRAMID_TRIGGER_PNL_PCT"), _005_pyramid_add_entry),

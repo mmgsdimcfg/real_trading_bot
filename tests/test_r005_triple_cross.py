@@ -129,7 +129,7 @@ class TestR005Triple(unittest.TestCase):
 
     def setUp(self):
         for p in (mock.patch.object(r005, "ENTRY_1MIN_FRAME_REQUIRE_LATEST", False),
-                  mock.patch.object(r005, "_steps_text", lambda ctx: ""),
+                  mock.patch.object(r005, "_steps_text", lambda ctx, **kw: ""),
                   mock.patch.object(r005, "ENTRY_TRIGGER_MODE", "triple")):
             p.start()
         self.addCleanup(mock.patch.stopall)

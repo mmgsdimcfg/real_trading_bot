@@ -16,6 +16,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-04] type=feat owner=claude
+    summary: r003/r005 parity - (1) 재진입 한도: 직전 전량 청산(마지막 BUY 이후 SELL 합산)의 순손익(수수료+세금 추정 차감)이
+      + 이면 REENTRY_MAX_PER_CODE_AFTER_PROFIT, 아니면 REENTRY_MAX_PER_CODE. (2) triple 3분 컨텍스트 평가 시 eval ctx에
+      triple_cross=True -> r002 진입 ATR 하한 완화(ENABLE_RELAXED_ENTRY_ATR). 서킷브레이커는 g003에 원래 없음.
+    impact: sim
+    compatibility: breaking (재진입/저ATR 진입 증가 방향)
 - [2026-11-02] type=feat owner=claude
     summary: r005 parity - triple 판정을 r002 evaluate_triple_trigger로(TRIPLE_1MIN_CONDITION/TRIPLE_TICK_CONDITION),
       TickReplayFeed prior_day_warmup=TICK_TRIGGER_PRIOR_DAY_WARMUP(직전 수집일 틱으로 틱봉 이어붙이기).
@@ -296,6 +302,7 @@ import logging
 import os
 import re
 import sys
+import dataclasses
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -349,6 +356,9 @@ from r001_define_config import (
     HARD_STOP_BLOCK_REENTRY_TODAY,
     REENTRY_MODE,
     REENTRY_MAX_PER_CODE,
+    REENTRY_MAX_PER_CODE_AFTER_PROFIT,
+    V2_COMMISSION_PCT as _G003_COMMISSION_PCT,
+    V2_SELL_TAX_PCT as _G003_SELL_TAX_PCT,
     HARD_STOP_MIN_HOLD_SECONDS,
     HARD_STOP_CONFIRM_SECONDS,
     HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS,
@@ -703,6 +713,8 @@ def run_3min_context_pipeline_triple(
     ctx, reason = build_context_eval(frame, now, live_price, cross_info, config)
     if ctx is None:
         return False, reason, []
+    if dataclasses.is_dataclass(ctx):  # [2026-11-04] r005 _009 parity (진입 ATR 하한 완화)
+        ctx = dataclasses.replace(ctx, triple_cross=True)
     bypassed: list[str] = []
     for gate in HYBRID_3MIN_CONTEXT_GATES:
         passed, ctx, reason = gate.eval_fn(ctx)
@@ -1851,6 +1863,22 @@ def append_compare_result_csv(date_str: str, strategy_name: str, row: dict[str, 
         if write_header:
             writer.writeheader()
         writer.writerow(row)
+
+
+def _last_exit_net_profit(trade_log: list, code: str) -> bool:
+    """[2026-11-04] r003 last_exit_profit parity: 이 종목의 마지막 BUY 이후 SELL들의 순손익(수수료 양쪽+매도세 추정 차감) > 0."""
+    net, seen_sell = 0.0, False
+    for r in reversed(trade_log):
+        if r.code != code:
+            continue
+        if r.action == "BUY":
+            break
+        if r.action == "SELL" and r.pnl_krw is not None:
+            seen_sell = True
+            sell_val = float(r.price) * int(r.qty)
+            buy_val = sell_val - float(r.pnl_krw)
+            net += float(r.pnl_krw) - (sell_val * (_G003_COMMISSION_PCT + _G003_SELL_TAX_PCT) + buy_val * _G003_COMMISSION_PCT) / 100.0
+    return seen_sell and net > 0
 
 
 class TradeRecord:
@@ -3523,9 +3551,11 @@ def simulate_date(
                         for _r in sim.trade_log
                     )
                     _used = reentry_used.get(code, 0)
-                    if REENTRY_MODE not in ("shadow", "live") or _used >= REENTRY_MAX_PER_CODE or _hard_stopped:
+                    _limit = (max(REENTRY_MAX_PER_CODE, REENTRY_MAX_PER_CODE_AFTER_PROFIT)
+                              if _last_exit_net_profit(sim.trade_log, code) else REENTRY_MAX_PER_CODE)
+                    if REENTRY_MODE not in ("shadow", "live") or _used >= _limit or _hard_stopped:
                         log_detail(
-                            f"  [REENTRY BLOCK] {code} | mode={REENTRY_MODE} used={_used}/{REENTRY_MAX_PER_CODE} "
+                            f"  [REENTRY BLOCK] {code} | mode={REENTRY_MODE} used={_used}/{_limit} "
                             f"hard_stopped={_hard_stopped}"
                         )
                         continue
