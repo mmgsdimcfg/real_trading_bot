@@ -1,6 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-04] type=refactor owner=claude
+#     summary: 사용자 결정(매수/매도 조건 전면 검토) - 삭제된 매도 조건의 상수 제거: ENABLE_PYRAMIDING/PYRAMID_TRIGGER_PNL_PCT,
+#       STAGED_TP2_PCT/RATIO, ENABLE_HYBRID_1MIN_DEADCROSS_EXIT + HYBRID_1MIN_DEADCROSS_*(REGIME 포함), ENABLE_SIGNAL_EXIT_*/
+#       SIGNAL_EXIT_*, ENABLE_PEAK_RETRACE_GUARD/PEAK_RETRACE_GUARD_* (r006/g003 동시 삭제).
+#     impact: live + g003
+#     compatibility: breaking (롤백: git revert)
 # - [2026-11-04] type=fix owner=claude
 #     summary: 매수 직후 이탈 가드 활성 구간 POST_BUY_BB_DROP_ARMED_SECONDS 180 -> 240s (하드/ATR 손절 최소 보유 240s와 연결 -
 #       180~240s 가격 손절 공백 제거, Codex 검토 #8).
@@ -745,14 +751,11 @@ PEAK_NEXT_BAR_DROP_PCT = 0.005  # 고점 대비 하락폭 (0.5%)
 
 # 익절 단계 분할청산 (40%/60%, +3.0%/트레일링) - 기존 TP1(40%@1.0%)+TP2(30%@1.4%)+잔량(30%) 대체
 # [2026-08-23] 사용자 요청: 급등 구간에서 TP1(+1.0%)이 너무 일찍 40%를 털어 추세를 못 태운다는
-# 피드백에 따라 1차 익절 목표를 +1.0%->+3.0%로 상향. 2차 단계는 STAGED_TP2_RATIO=0으로 비활성화하고
-# 1차 이후 잔량(60%)은 곧바로 TP_EXTENSION_TRAIL_FROM_PEAK(고점대비 -1.0%) 트레일링에 위임한다.
-# False로 설정 시 즉시 기존 2단계 방식으로 롤백된다.
+# 피드백에 따라 1차 익절 목표를 +1.0%->+3.0%로 상향. 1차 이후 잔량(60%)은 곧바로 TP_EXTENSION_TRAIL_FROM_PEAK(고점대비 -1.0%)
+# 트레일링에 위임한다. [2026-11-04] 2차 익절(STAGED_TP2_*, r006 _008)과 구형 2단계 경로(_010)는 삭제 - 이 플래그는 _007 급등 사다리만 제어.
 ENABLE_STAGED_TAKE_PROFIT = True
 STAGED_TP1_PCT = 0.030   # 1차 익절 기준 (+3.0%, 기존 +1.0%) - 진입 수량의 40% 청산
 STAGED_TP1_RATIO = 0.40
-STAGED_TP2_PCT = 0.014   # 2차 익절 기준값 (STAGED_TP2_RATIO=0으로 비활성화되어 현재 미사용)
-STAGED_TP2_RATIO = 0.00  # 0.30 -> 0.00: 2차 분할청산 비활성화 (1차 이후 잔량은 트레일링으로 일괄 관리)
 # 1차 익절 목표를 고정 STAGED_TP1_PCT 대신 종목 변동성(ATR)에 연동해 동적으로 산출한다.
 # 목표익절 = max(STAGED_TP1_PCT, (ATR/entry_price) * TP1_ATR_MULTIPLIER)
 TP1_ATR_MULTIPLIER = 1.2
@@ -994,18 +997,6 @@ BB_UPPER_PROXIMITY_MAX = 1.05  # 0.85 -> 1.05 (BB 상단에서 충분히 진입 
 ADX_MIN_TREND = 15.0  # 20.0 -> 15.0 (ADX 최소값 완화)
 ADX_STRONG_TREND = 40.0
 
-# [2026-09-07] 시그널 매도 억제(_strong_uptrend) 판정에 쓰이던 하드코딩 리터럴을 상수로
-# 분리 - r003 매도 루프(Signal-based full exits)에 600.0/28/-0.012/-0.008이 그대로 박혀
-# 있어 r001만 보면 튜닝이 끝난다는 원칙과 어긋났다. SIGNAL_EXIT_STRONG_TREND_ADX_MIN(28)은
-# ADX_STRONG_TREND(40, 다른 곳에서 쓰이는 "매우 강한 추세" 기준)와 별개의, 시그널 매도
-# 억제 전용 기준값이라 이름을 구분한다.
-SIGNAL_EXIT_MIN_HOLD_SECONDS = 600.0  # 시그널 기반 청산(스토캐스틱/MACD) 최소 보유 시간(초)
-SIGNAL_EXIT_STRONG_TREND_ADX_MIN = 28.0  # 이 값 초과 + DI+>DI- 이면 스토캐스틱 매도신호 억제
-SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN = -0.012  # 이 손익률 초과(덜 손해)면 스토캐스틱 매도신호 억제
-SIGNAL_EXIT_MACD_PNL_MAX = -0.008  # 이 손익률 이하여야 MACD 히스토그램 2봉 하락 매도 발동
-# [2026-10-31] 사용자 결정으로 시그널 매도 삭제(OFF) - 실매매 승률 0% (STOCH 8건 -20,170원, MACD 30건 -63,715원).
-ENABLE_SIGNAL_EXIT_STOCH_K_LT_D = False
-ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN = False
 ADX_BUY_MIN = 25.0  # 매수 진입용 ADX 최소값
 REQUIRE_ADX_RISING = True  # 매수 시 ADX가 직전봉 대비 우상향이어야 하는지 여부
 REQUIRE_DI_PLUS_DOMINANT = True  # 매수 시 +DI가 -DI보다 커야 하는지 여부
@@ -1089,12 +1080,6 @@ MAX_ORDER_AMOUNT_KRW = 500_000  # 1회 매수 주문 최대 금액(KRW)
 ENABLE_BUY_SPLIT_MARKET_LIMIT = True
 BUY_SPLIT_MARKET_RATIO = 0.5  # 시장가 즉시체결 비중 (나머지는 매수1호가 지정가)
 
-# --- 11-b. 피라미딩(불타기) - 추세 지속 시 1회 추가 진입 ----------------------
-# 평균단가 대비 PYRAMID_TRIGGER_PNL_PCT 이상 이익이고 MA5/BB중간선/ADX가 모두
-# 상승(직전봉 대비) 중일 때 1회에 한해 추가 매수한다(같은 포지션당 최대 1회).
-# 추가매수 금액도 MAX_ORDER_AMOUNT_KRW 한도를 그대로 따른다.
-ENABLE_PYRAMIDING = False  # 2026-08-20: 보유중 종목 중복 재매수 방지 위해 비활성화
-PYRAMID_TRIGGER_PNL_PCT = 0.005  # 평균단가 대비 +0.5%
 
 # --- 12. (삭제됨 2026-09-20) 1분봉 골든크로스 단독 매수 / 1분봉 Entry Score 게이트 ---
 # 하이브리드(아래 12-c: 1분봉 트리거 + 3분봉 컨텍스트)가 유일한 매수 경로가 되면서 두 경로를 켜고
@@ -1301,48 +1286,6 @@ BASIC_PEAK_PROTECT_EXIT_PNL = 0.020  # 무장 후 손익이 이 미만으로 내
 BASIC_PEAK_PROTECT_CONFIRM_SECONDS = 10.0
 BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS = 3
 
-# [2026-09-23] 사용자 요청("매수/매도 컨셉 재검토") + Codex 설계검토 - r006 _011_hybrid_1min_dead_cross_exit.
-# 매수측 1분봉 골든크로스 트리거와 대칭되는 매도 조건. Codex의 5가지 권고를 반영:
-# (1) 신선한 크로스 또는 룩백+연속유지(check_1min_dead_cross, r002) - 매수측과 동일 패턴이나 룩백은 더
-#     짧게(빠른 반응 목적, 매수 12봉보다 좁힘). (2) 최소 보유시간(MIN_HOLD_SECONDS)으로 매수 직후 노이즈
-#     방지 - 이 구간은 _015_post_buy_entry_drop_guard가 별도 담당. (3) 손실 구간은 수익 요건 없이 즉시
-#     청산(LOSS_EXIT_PNL_MAX) - _021_shared_reversal_sell(AUX_REVERSAL_SCORE)의 "손실 포지션을 절대
-#     청산 못 하는" 구조적 결함(2026-09-23 컨셉 재검토 메모 참조)을 이 조건으로 해결한다. (4) 손실이
-#     아직 그 정도가 아니면(수익 중이거나 얕은 손실) BB중심선 자체 기울기(1분봉)도 꺾였는지 추가 확인 -
-#     정상 상승추세 눌림목에서의 오매도(휩쏘) 방지. (5) 확인창(CONFIRM_SECONDS)으로 단일 틱 노이즈 방지 -
-#     HARD_STOP_CONFIRM_SECONDS/ATR_STOP_CONFIRM_SECONDS와 동일 패턴.
-# ENABLE 플래그로 명확한 킬스위치를 둔다(다른 상수처럼 <=0 암묵적 비활성보다 이 조건은 영향이 커서 명시적으로).
-ENABLE_HYBRID_1MIN_DEADCROSS_EXIT = False  # [2026-10-31] 사용자 결정으로 삭제(OFF): 09-23 이후 76건 -84,761원, 승률 1.3%
-HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS = 5          # 매수측(12봉)보다 좁힘 - 손절/추세이탈 반응은 빠르게
-HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS = 60.0    # 매수 직후 최소 유예(초) - 기존 시그널 청산군(600초)보다 훨씬 짧음
-HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS = 15.0     # 노이즈 방지 확인창(초) - HARD_STOP(10s)~ATR_STOP(20s) 사이
-HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX = -0.003  # -0.3%: 이 손익 이하면 수익요건 없이 즉시 청산
-# [2026-10-06] TREND_FLIP(손실이 LOSS_EXIT_PNL_MAX보다 얕은 구간) 전용 이탈 깊이 문턱 - 최신 확정 1분봉 종가가
-# BB중심선보다 이 호가수(krx_tick_size 기준) 이상 아래일 때만 추세이탈로 인정. 066570 LG전자 2026-10-06 10:50
-# 사례: 229,000~230,500 2~3호가 박스 횡보 중 종가 229,500이 중심선 229,687보다 187원(1호가 500원 미만) 아래로
-# 내려간 것만으로 매도 -> 직후 231,000 급등. 고가주는 1호가 흔들림이 곧 크로스가 된다. LOSS 경로에는 미적용
-# (손절 공백 방지). 0 이하로 두면 비활성(기존과 동일).
-HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS = 1.0
-# [2026-10-06] 3분봉 추세(regime) 연동 1분봉 데드크로스 청산 - 사용자 승인 + Codex 1차 설계검토 반영.
-# 근거(약함, 하루 표본): 10/06 _011 데드크로스 청산 11건 중 8건은 매도 시점 확정 3분봉 종가가 3분봉 BB중심선
-# 위(상승 추세)였고, 그 8건의 매도 후 30분 종가는 평균 +0.60%(8건 중 5건 상승). 진입은 3분봉 맥락을 요구하는데
-# 청산은 1분봉 하나로 결정되는 비대칭을 줄이는 게 목적.
-# 규칙: _011이 매도하려는 순간 확정 3분봉이 UP(종가>BB중심선, 중심선>=직전 중심선, 봉 나이<=MAX_BAR_AGE)이고
-# 손익>DEEP_LOSS이고 1분봉 종가>=1분봉 BB하단이면 "보유 후보". live에서는 매도 대신 보유(armed)하고, armed 동안
-# (a) 손익<=DEEP_LOSS (b) 1분봉 종가<BB하단 (c) 3분봉 UP 해제+1분봉 종가<BB중심선 중 하나면 즉시 청산,
-# 1분봉 종가가 BB중심선 위로 회복하면 armed 해제. 하드손절/ATR손절 등 다른 조건은 그대로 동작.
-# "off" | "shadow"(매도는 기존 그대로, 판단만 로그/게이트 jsonl 기록) | "live". 검증 전까지 shadow 유지.
-HYBRID_1MIN_DEADCROSS_REGIME_MODE = "shadow"
-HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT = -0.008      # UP 추세여도 이 손익(현재가 기준) 이하면 청산
-HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS = 300.0  # 확정 3분봉 나이(초) 상한 - 넘으면 UP으로 인정 안 함
-
-# [2026-09-23] 사용자 요청("급등 후 꺾이면 고점 대비 -0.8%서 익절") + Codex 설계검토 - r006
-# _012_peak_retracement_guard. TP1(STAGED_TP1_PCT=3.0%)/ATR익절선 도달 전 구간은 현재 아무 보호장치가
-# 없다(그 밑에서 피크를 찍고 반납해도 하드손절/시그널청산까지 아무 것도 안 잡음) - 이 공백을 메운다.
-# 주의: 이 파일의 BREAKEVEN_FAIL_GIVEBACK_PCT 이력(0.8%->2.0%->2.8%로 점진 완화, 백테스트 근거: 92.9%가
-# 본전 이상 회복)은 고정 0.8% 되돌림처럼 좁은 문턱이 정상적인 되돌림도 조기청산할 위험을 보여준다 -
-# Codex 권고대로 ATR% 기반으로 문턱을 정해(고정 MIN_PCT는 하한선일 뿐) 변동성 큰 종목은 자동으로 문턱이
-# 넓어지게 한다. 아직 백테스트로 정확한 값을 검증하지 않은 탐색적 구현 - 실거래 관찰 후 조정 필요.
 # [2026-11-02] 사용자 요청(091580 상신이디피 10:24 고점 +1.12% -> TP1(+3%) 미도달, 트레일(-1.2%)/되돌림 가드(-0.8%, 30초)는
 # 고점 +1.12%에선 수익 구간이 거의 없어 발동 불가 -> -1.12% 손절). TP1 전, 고점 손익 >= ARM_PNL이 된 뒤 고점 대비
 # GIVEBACK_PCT 하락하면 진입수량의 RATIO를 시장가 1차 매도(1회), 이후 잔량은 손익 <= 0(본전)이면 시장가 전량 매도.
@@ -1356,11 +1299,8 @@ PROFIT_LOCK_ARM_PNL = 0.010        # 고점 손익 +1.0% 이상이어야 활성�
 PROFIT_LOCK_GIVEBACK_PCT = 0.004   # 고점 대비 -0.4% (고점가 기준)
 PROFIT_LOCK_RATIO = 1.00           # 진입수량 전량 매도 (잔량 없음)
 PROFIT_LOCK_REST_BREAKEVEN = True  # RATIO < 1일 때만 의미: 1차 매도 후 잔량은 본전(손익 <= 0)에서 전량 매도
-ENABLE_PEAK_RETRACE_GUARD = True
-PEAK_RETRACE_GUARD_ARM_PNL = 0.010        # +1.0% 이상 찍어야 활성화 (BREAKEVEN_FAIL_ARM_PNL과 동일)
-PEAK_RETRACE_GUARD_MIN_PCT = 0.008        # 0.8%: 문턱 하한(사용자 요청값 그대로, ATR가 이보다 작을 때 하한 역할)
-PEAK_RETRACE_GUARD_ATR_MULT = 1.0         # 문턱 = max(MIN_PCT, ATR% x 이 배수)
-PEAK_RETRACE_GUARD_CONFIRM_SECONDS = 30.0  # 노이즈 방지 확인창(초)
+
+
 
 # 3분봉 가점(_buy_support_score)용 장기 추세 정합성: EMA20 > EMA60이면 상위 추세가
 # 우상향이라는 뜻으로 +2점. EMA_20_PERIOD는 위 1분봉 게이트와 공유(같은 컬럼, 프레임만 다름).
