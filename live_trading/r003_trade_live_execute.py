@@ -2953,11 +2953,7 @@ def _serialize_live_state(live_state: dict) -> dict:
             "highest_price": _json_safe(meta.get("highest_price")),
             "entry_quantity": int(meta.get("entry_quantity", 0) or 0),
             "tp1_done": bool(meta.get("tp1_done", False)),
-            "tp2_done": bool(meta.get("tp2_done", False)),
-            "tp3_done": bool(meta.get("tp3_done", False)),
-            "pyramid_done": bool(meta.get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder(meta.get("surge_ladder")),
-            "dc_regime_hold": bool(meta.get("dc_regime_hold", False)),
             "basic_tp3_ext": bool(meta.get("basic_tp3_ext", False)),
             "profit_lock_done": bool(meta.get("profit_lock_done", False)),
         }
@@ -3045,11 +3041,7 @@ def load_live_state(date_str: str) -> dict:
             "highest_price": (meta or {}).get("highest_price"),
             "entry_quantity": int((meta or {}).get("entry_quantity", 0) or 0),
             "tp1_done": bool((meta or {}).get("tp1_done", False)),
-            "tp2_done": bool((meta or {}).get("tp2_done", False)),
-            "tp3_done": bool((meta or {}).get("tp3_done", False)),
-            "pyramid_done": bool((meta or {}).get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder((meta or {}).get("surge_ladder")),
-            "dc_regime_hold": bool((meta or {}).get("dc_regime_hold", False)),
             "basic_tp3_ext": bool((meta or {}).get("basic_tp3_ext", False)),
             "profit_lock_done": bool((meta or {}).get("profit_lock_done", False)),
         }
@@ -3399,11 +3391,7 @@ class TradingAPI:
                 )
             pos["entry_quantity"] = int(meta.get("entry_quantity", 0) or pos.get("entry_quantity", 0) or pos.get("quantity", 0) or 0)
             pos["tp1_done"] = bool(meta.get("tp1_done", pos.get("tp1_done", False)))
-            pos["tp2_done"] = bool(meta.get("tp2_done", pos.get("tp2_done", False)))
-            pos["tp3_done"] = bool(meta.get("tp3_done", pos.get("tp3_done", False)))
-            pos["pyramid_done"] = bool(meta.get("pyramid_done", pos.get("pyramid_done", False)))
             pos["surge_ladder"] = _sanitize_surge_ladder(meta.get("surge_ladder") or pos.get("surge_ladder"))
-            pos["dc_regime_hold"] = bool(meta.get("dc_regime_hold", pos.get("dc_regime_hold", False)))
             pos["basic_tp3_ext"] = bool(meta.get("basic_tp3_ext", pos.get("basic_tp3_ext", False)))
             pos["profit_lock_done"] = bool(meta.get("profit_lock_done", pos.get("profit_lock_done", False)))
 
@@ -3416,11 +3404,7 @@ class TradingAPI:
             "highest_price": pos.get("highest_price"),
             "entry_quantity": int(pos.get("entry_quantity", 0) or 0),
             "tp1_done": bool(pos.get("tp1_done", False)),
-            "tp2_done": bool(pos.get("tp2_done", False)),
-            "tp3_done": bool(pos.get("tp3_done", False)),
-            "pyramid_done": bool(pos.get("pyramid_done", False)),
             "surge_ladder": _sanitize_surge_ladder(pos.get("surge_ladder")),
-            "dc_regime_hold": bool(pos.get("dc_regime_hold", False)),
             "basic_tp3_ext": bool(pos.get("basic_tp3_ext", False)),
             "profit_lock_done": bool(pos.get("profit_lock_done", False)),
         }
@@ -3521,11 +3505,7 @@ class TradingAPI:
                 "highest_price": highest,
                 "entry_quantity": entry_quantity,
                 "tp1_done": bool(prev.get("tp1_done", persisted.get("tp1_done", False))),
-                "tp2_done": bool(prev.get("tp2_done", persisted.get("tp2_done", False))),
-                "tp3_done": bool(prev.get("tp3_done", persisted.get("tp3_done", False))),
-                "pyramid_done": bool(prev.get("pyramid_done", persisted.get("pyramid_done", False))),
                 "surge_ladder": _sanitize_surge_ladder(prev.get("surge_ladder") or persisted.get("surge_ladder")),
-                "dc_regime_hold": bool(prev.get("dc_regime_hold", persisted.get("dc_regime_hold", False))),
                 "basic_tp3_ext": bool(prev.get("basic_tp3_ext", persisted.get("basic_tp3_ext", False))),
                 "profit_lock_done": bool(prev.get("profit_lock_done", persisted.get("profit_lock_done", False))),
             }
@@ -3715,10 +3695,7 @@ class TradingAPI:
         pos["entry_buy_time"] = entry_time
         pos["buy_session"] = pending.get("session", pos.get("buy_session", "synced"))
         pos["tp1_done"] = False
-        pos["tp2_done"] = False
-        pos["tp3_done"] = False
         pos["surge_ladder"] = None
-        pos["dc_regime_hold"] = False  # [2026-10-06] 새 진입은 3분봉 연동 보류(armed) 상태를 물려받지 않는다
         pos["basic_tp3_ext"] = False  # [2026-10-07] basic 3차 목표 상향 여부도 새 진입마다 초기화
         pos["profit_lock_done"] = False  # [2026-11-02] r006 _023 이익 잠금도 새 진입마다 초기화
         pos["entry_quantity"] = max(int(pos.get("entry_quantity", 0) or 0), filled_qty)
@@ -5269,8 +5246,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     no_trend_exit_state: dict[str, dict] = {}
     atr_stop_confirm_state: dict[str, dict] = {}
     hard_stop_confirm_state: dict[str, dict] = {}  # [2026-09-23] _004 하드손절 확인창 상태
-    hybrid_1min_dead_cross_state: dict[str, dict] = {}  # [2026-09-23] _011 1분봉 데드크로스 확인창 상태
-    peak_retrace_guard_state: dict[str, dict] = {}  # [2026-09-23] _012 고점대비 익절가드 확인창 상태
     # 연속 HARD_STOP 서킷브레이커 상태
     # [2026-11-04] 당일 HARD_STOP/ATR 손절 종목(재진입 차단) - live_state["hard_stop_today"] 그 자체를 참조해 persist_live_state에
     # 함께 저장되고 재시작 시 복원된다(종전: 메모리 set -> 재시작 후 손절 종목이 [ACT REENTER]로 감시 복귀, 11/04 14:57 실제 발생).
@@ -5322,8 +5297,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         no_trend_exit_state=no_trend_exit_state,
         atr_stop_confirm_state=atr_stop_confirm_state,
         hard_stop_confirm_state=hard_stop_confirm_state,
-        hybrid_1min_dead_cross_state=hybrid_1min_dead_cross_state,
-        peak_retrace_guard_state=peak_retrace_guard_state,
         signal_sell_bar=signal_sell_bar,
         hard_stop_today_codes=hard_stop_today_codes,
     )
@@ -5409,8 +5382,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             no_trend_exit_state.clear()
             atr_stop_confirm_state.clear()
             hard_stop_confirm_state.clear()
-            hybrid_1min_dead_cross_state.clear()
-            peak_retrace_guard_state.clear()
             signal_buy_bar.clear()
             signal_sell_bar.clear()
             trailing_sell_confirm_state.clear()
@@ -5684,8 +5655,6 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     no_trend_exit_state.pop(code, None)
                     atr_stop_confirm_state.pop(code, None)
                     hard_stop_confirm_state.pop(code, None)
-                    hybrid_1min_dead_cross_state.pop(code, None)
-                    peak_retrace_guard_state.pop(code, None)
 
                 if pos is not None and pos.get("quantity", 0) > 0:
                     # 보유 종목: 번호 붙은 매도/포지션 관리 조건(r006_sell_conditions)을 순서대로 평가한다.

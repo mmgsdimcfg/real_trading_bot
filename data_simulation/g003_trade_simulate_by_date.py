@@ -16,6 +16,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-04] type=refactor owner=claude
+    summary: r006 2026-11-04 삭제 parity - 불타기(ENABLE_PYRAMIDING)/2차 익절(STAGED_TP2)/TP3 무장/구형 2단계 익절/
+      1분 데드크로스 청산(+DC regime, --dc-regime-mode)/고점 되돌림 가드/시그널 청산(STOCH, MACD) 시뮬 블록 삭제.
+      r006 _023 이익 잠금(ENABLE_PROFIT_LOCK, arm/giveback/ratio/rest-breakeven)을 이식해 매도 parity 확보(Codex 검토 #3).
+      SimPosition: tp2_done/tp3_trail_armed/pyramid_done 제거, profit_lock_done 추가.
+    impact: sim
+    compatibility: breaking (매도 경로 변경 - 종전 리포트와 직접 비교 불가)
 - [2026-11-04] type=feat owner=claude
     summary: r003/r005 parity - (1) 재진입 한도: 직전 전량 청산(마지막 BUY 이후 SELL 합산)의 순손익(수수료+세금 추정 차감)이
       + 이면 REENTRY_MAX_PER_CODE_AFTER_PROFIT, 아니면 REENTRY_MAX_PER_CODE. (2) triple 3분 컨텍스트 평가 시 eval ctx에
@@ -368,22 +375,6 @@ from r001_define_config import (
     PRIOR_DAY_WARMUP_MINUTES,
     PRIOR_DAY_WARMUP_MAX_LOOKBACK_DAYS,
     PRIOR_DAY_WARMUP_MAX_BASE_DIFF_PCT,
-    ENABLE_HYBRID_1MIN_DEADCROSS_EXIT,
-    ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN,
-    ENABLE_SIGNAL_EXIT_STOCH_K_LT_D,
-    HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
-    HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS,
-    HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS,
-    HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX,
-    HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS,
-    HYBRID_1MIN_DEADCROSS_REGIME_MODE,
-    HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT,
-    HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
-    ENABLE_PEAK_RETRACE_GUARD,
-    PEAK_RETRACE_GUARD_ARM_PNL,
-    PEAK_RETRACE_GUARD_MIN_PCT,
-    PEAK_RETRACE_GUARD_ATR_MULT,
-    PEAK_RETRACE_GUARD_CONFIRM_SECONDS,
     BUY_CONSECUTIVE_CONFIRM_COUNT,
     AUX_SELL_MIN_PNL_SCORE2,
     AUX_SELL_MIN_PNL_SCORE3,
@@ -492,10 +483,13 @@ from r001_define_config import (
     TECH_SELL_MIN_HOLD_SECONDS,
     MAX_BUY_RISE_PCT_FROM_PREV_CLOSE,
     ENABLE_STAGED_TAKE_PROFIT,
+    ENABLE_PROFIT_LOCK,
+    PROFIT_LOCK_ARM_PNL,
+    PROFIT_LOCK_GIVEBACK_PCT,
+    PROFIT_LOCK_RATIO,
+    PROFIT_LOCK_REST_BREAKEVEN,
     STAGED_TP1_PCT,
     STAGED_TP1_RATIO,
-    STAGED_TP2_PCT,
-    STAGED_TP2_RATIO,
     TP1_ATR_MULTIPLIER,
     ENABLE_TP1_CAP_AT_ATR_TP,
     ENABLE_SURGE_LADDER_TP,
@@ -507,16 +501,12 @@ from r001_define_config import (
     SURGE_TP2_PCT,
     SURGE_TP3_PCT,
     SURGE_TP2_RATIO,
-    ENABLE_PYRAMIDING,
-    PYRAMID_TRIGGER_PNL_PCT,
     ENABLE_OPENING_GAP_VOLUME_GATE,
     BUY_ORDER_REPRICE_AFTER_SECONDS,
     BUY_ORDER_REPRICE_MAX_CHASE_PCT,
 )
 from r002_strategy_core_shared import (
     krx_tick_size,
-    dc_regime_snapshot,
-    dc_regime_armed_action,
     StrategyConfig,
     anti_chase_day_gate,
     anti_chase_day_metrics,
@@ -527,7 +517,6 @@ from r002_strategy_core_shared import (
     check_sell_condition as shared_check_sell_condition,
     check_buy_condition_1min_hybrid_trigger,
     check_1min_trigger_live_guard,
-    check_1min_dead_cross,
     find_1min_ma_golden_cross,
     evaluate_triple_trigger,
     build_context_eval,
@@ -695,8 +684,6 @@ LOG_SUMMARY_MODE = False
 # [2026-10-05] 추격차단(_019 parity) 판정 가격: "tick" = 시뮬 현재가(10초 행, 보간값 포함 - 종전 동작),
 # "minute" = 그 시점까지 확정된 실제 1분봉 종가(Codex 2차: 보간가로 임계값을 넘는 판정 민감도 확인용).
 ANTI_CHASE_PRICE_MODE = "tick"
-# [2026-10-06] r006 _011 3분봉 추세 연동 parity - CLI --dc-regime-mode로 A/B (shadow는 off와 매매 동일, 로그만)
-DC_REGIME_MODE_SIM = str(HYBRID_1MIN_DEADCROSS_REGIME_MODE).lower()
 # [2026-10-06] 봉/가격 공개 시점 모드 (Codex 1차 검토): "causal"(기본) | "legacy"(기존 동작 재현용)
 SIM_BAR_SEMANTICS = "causal"
 CAUSAL_SKIPPED_CODES: list[str] = []
@@ -1935,11 +1922,9 @@ class SimPosition:
         self.buy_session = buy_session
         self.highest_price = buy_price
         self.tp1_done: bool = False
-        self.tp2_done: bool = False
-        self.tp3_trail_armed: bool = False
+        self.profit_lock_done: bool = False  # [2026-11-04] r006 _023 parity
         # 급등 사다리 익절 상태(r003 pos["surge_ladder"] 대응): {"base": TP1 체결가, "tp2_done": bool, "tp3_done": bool} 또는 None
         self.surge_ladder: dict | None = None
-        self.pyramid_done: bool = False
         self.entry_quantity: int = quantity
 
 
@@ -2620,9 +2605,6 @@ def simulate_date(
     no_trend_exit_state: dict[str, dict] = {}
     atr_stop_confirm_state: dict[str, dict] = {}
     hard_stop_confirm_state: dict[str, dict] = {}  # [2026-09-23] r006 _004 확인창 parity
-    hybrid_1min_dead_cross_state: dict[str, dict] = {}  # [2026-09-23] r006 _011 확인창 parity
-    dc_regime_armed: set[str] = set()  # [2026-10-06] r006 pos['dc_regime_hold'] parity (live 모드 armed 종목)
-    peak_retrace_guard_state: dict[str, dict] = {}  # [2026-09-23] r006 _012 확인창 parity
     trailing_sell_confirm_state: dict[str, dict] = {}
     # 급등 판정(detect_price_surge)용 종목별 최근 (시각, 가격) 표본 (r003 recent_price_samples 대응)
     recent_price_samples: dict[str, list[tuple[pd.Timestamp, float]]] = {}
@@ -2711,9 +2693,6 @@ def simulate_date(
                 no_trend_exit_state.pop(code, None)
                 atr_stop_confirm_state.pop(code, None)
                 hard_stop_confirm_state.pop(code, None)
-                hybrid_1min_dead_cross_state.pop(code, None)
-                peak_retrace_guard_state.pop(code, None)
-                dc_regime_armed.discard(code)
 
             entry_allowed = is_new_entry_allowed(ts, nxt_tradeable)
             if entry_allowed and is_startup_warmup_active(ts, nxt_tradeable):
@@ -2777,34 +2756,7 @@ def simulate_date(
                     atr_tp_price = pos.buy_price * (1.0 + atr_tp_pct)
                     atr_sl_price = pos.buy_price * (1.0 + atr_sl_pct)
 
-                # Signal indicators
-                k_now = _num(cur, "STOCH_K")
-                d_now = _num(cur, "STOCH_D")
-                hist_now = _num(cur, "MACD_HIST")
-                hist_prev_v = _num(buy_available.iloc[-2], "MACD_HIST") if len(buy_available) >= 2 else float("nan")
-                hist_prev2_v = _num(buy_available.iloc[-3], "MACD_HIST") if len(buy_available) >= 3 else float("nan")
-                adx_now = _num(cur, "ADX")
-                di_plus_now = _num(cur, "DI_PLUS")
-                di_minus_now = _num(cur, "DI_MINUS")
-                # r006 parity: strong-uptrend suppression uses ADX > 28 (was 45 here, drifted from live)
-                _adx_uptrend = (
-                    not pd.isna(adx_now) and adx_now > 28
-                    and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
-                    and di_plus_now > di_minus_now
-                )
-                # ADX 보완(live parity, 2026-08-27): ADX>28 도달 전에도 MA5 상승 + 가격이 BB_MID
-                # 위면 상승추세로 간주 - r003_trade_live_execute.py와 동일 로직
-                _ma5_now = _num(cur, "MA_5")
-                _ma5_prev_trend = _num(buy_available.iloc[-2], "MA_5") if len(buy_available) >= 2 else float("nan")
-                _bb_mid_now = _num(cur, "BB_MIDDLE")
-                _price_uptrend = (
-                    not any(pd.isna(v) for v in (_ma5_now, _ma5_prev_trend, _bb_mid_now))
-                    and _ma5_now > _ma5_prev_trend
-                    and price > _bb_mid_now
-                )
-                _strong_uptrend = _adx_uptrend or _price_uptrend
                 _sig_held_seconds = (ts - pos.buy_time).total_seconds() if isinstance(pos.buy_time, pd.Timestamp) else 9999.0
-                _signal_min_hold_seconds = 600.0  # signal exit min hold: 10 min (r006 parity)
 
                 # 1. Hard stop-loss: r006 parity - config-driven HARD_STOP_LOSS_PCT gated by HARD_STOP_MIN_HOLD_SECONDS
                 # (was hardcoded -0.8% with no min-hold gate here, drifted from live)
@@ -2831,348 +2783,131 @@ def simulate_date(
                     log(f"  [SELL_EXECUTED] {code} | {reason_hard_sl} | price={price:,.0f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s confirm={_hard_sl_hold_seconds:.0f}s")
                     continue
 
-                # ── PYRAMIDING (불타기): 추세 지속 시 1회 추가 진입 (r006 parity) ──────
-                if (
-                    ENABLE_PYRAMIDING
-                    and not pos.pyramid_done
-                    and profit_pct >= PYRAMID_TRIGGER_PNL_PCT
-                    and len(available) >= 2
-                ):
-                    _cur_pyr = available.iloc[-1]
-                    _prev_pyr = available.iloc[-2]
-                    _ma5_cur_pyr = _num(_cur_pyr, "MA_5")
-                    _ma5_prev_pyr = _num(_prev_pyr, "MA_5")
-                    _bb_mid_cur_pyr = _num(_cur_pyr, "BB_MIDDLE")
-                    _bb_mid_prev_pyr = _num(_prev_pyr, "BB_MIDDLE")
-                    _adx_cur_pyr = _num(_cur_pyr, "ADX")
-                    _adx_prev_pyr = _num(_prev_pyr, "ADX")
-                    _pyramid_ok = (
-                        not any(
-                            pd.isna(v) for v in (
-                                _ma5_cur_pyr, _ma5_prev_pyr, _bb_mid_cur_pyr,
-                                _bb_mid_prev_pyr, _adx_cur_pyr, _adx_prev_pyr,
-                            )
-                        )
-                        and _ma5_cur_pyr > _ma5_prev_pyr
-                        and _bb_mid_cur_pyr > _bb_mid_prev_pyr
-                        and _adx_cur_pyr > _adx_prev_pyr
-                    )
-                    if _pyramid_ok:
-                        pyr_qty = int(MAX_ORDER_AMOUNT_KRW / price) if price > 0 else 0
-                        if pyr_qty > 0:
-                            reason_pyr = f"PYRAMID_2ND_ENTRY_PNL_{profit_pct*100:.2f}PCT"
-                            pos.pyramid_done = True
-                            if sim.add_to_position(code, price, pyr_qty, ts, reason_pyr):
-                                log(
-                                    f"  [BUY EXECUTED] {code} | {reason_pyr} | "
-                                    f"add_qty={pyr_qty} price={price:,.0f} new_avg={pos.buy_price:,.0f} new_qty={pos.quantity} | "
-                                    f"MA5={_ma5_prev_pyr:.1f}->{_ma5_cur_pyr:.1f} BB_MID={_bb_mid_prev_pyr:.1f}->{_bb_mid_cur_pyr:.1f} "
-                                    f"ADX={_adx_prev_pyr:.1f}->{_adx_cur_pyr:.1f}"
-                                )
-                            else:
-                                pos.pyramid_done = False
-                            continue
-                # ── END PYRAMIDING ───────────────────────────────────────────────────
 
-                # 2-3. 익절 (r006 parity): ENABLE_STAGED_TAKE_PROFIT=True면 3단계 분할익절
-                # (1차 ATR동적목표@40% / 2차@30% / 3차는 고정청산 대신 트레일링 위임),
-                # False면 기존 2단계(50%@1.0% + 전량@2.0%)로 즉시 롤백.
-                if ENABLE_STAGED_TAKE_PROFIT:
-                    entry_qty = pos.entry_quantity if pos.entry_quantity > 0 else pos.quantity
+                # 2-3. 익절 (r006 parity): 1차 ATR동적목표@40%, 급등 사다리, 잔량은 트레일링 위임.
+                # [2026-11-04] 2차 익절(STAGED_TP2)/TP3 무장/구형 2단계(ENABLE_STAGED_TAKE_PROFIT=False) 경로 삭제 - r006 _008/_009/_010 삭제와 동일.
+                entry_qty = pos.entry_quantity if pos.entry_quantity > 0 else pos.quantity
 
-                    # r003 parity: max(STAGED_TP1_PCT, ATR%*TP1_ATR_MULTIPLIER)를 ATR 익절선(트레일 무장선)으로
-                    # 상한 처리(r002 compute_staged_tp1_target_pct 공용, r001 ENABLE_TP1_CAP_AT_ATR_TP 참조).
-                    tp1_target_pct, _atr_tp1_dynamic_pct = compute_staged_tp1_target_pct(
-                        atr_pct,
-                        atr_tp_pct,
-                        staged_tp1_pct=STAGED_TP1_PCT,
-                        tp1_atr_multiplier=TP1_ATR_MULTIPLIER,
-                        cap_at_atr_tp=ENABLE_TP1_CAP_AT_ATR_TP,
-                    )
-                    tp2_target_pct = tp1_target_pct + (STAGED_TP2_PCT - STAGED_TP1_PCT)
+                # r003 parity: max(STAGED_TP1_PCT, ATR%*TP1_ATR_MULTIPLIER)를 ATR 익절선(트레일 무장선)으로
+                # 상한 처리(r002 compute_staged_tp1_target_pct 공용, r001 ENABLE_TP1_CAP_AT_ATR_TP 참조).
+                tp1_target_pct, _atr_tp1_dynamic_pct = compute_staged_tp1_target_pct(
+                    atr_pct,
+                    atr_tp_pct,
+                    staged_tp1_pct=STAGED_TP1_PCT,
+                    tp1_atr_multiplier=TP1_ATR_MULTIPLIER,
+                    cap_at_atr_tp=ENABLE_TP1_CAP_AT_ATR_TP,
+                )
 
-                    # 1차 익절: entry_qty의 STAGED_TP1_RATIO(40%), tp1_target_pct(동적, 기본 1.0%) 도달 시
-                    if (not pos.tp1_done) and profit_pct >= tp1_target_pct:
-                        tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
-                        tp1_qty = min(tp1_qty, pos.quantity)
-                        # r003 parity: 급등 여부는 1차 익절 시점에 판정, 급등이면 잔량 사다리 익절 가동
-                        _surge_now = False
-                        _surge_detail = ""
-                        if ENABLE_SURGE_LADDER_TP:
-                            _surge_now, _surge_detail = detect_price_surge(
-                                recent_price_samples.get(code, []),
-                                ts,
-                                price,
-                                atr_pct,
-                                _num(cur, "BB_UPPER"),
-                                _num(cur, "volume"),
-                                _num(cur, "VOL_MA20"),
-                                lookback_seconds=SURGE_LOOKBACK_SECONDS,
-                                speed_min_pct=SURGE_SPEED_MIN_PCT,
-                                speed_atr_mult=SURGE_SPEED_ATR_MULT,
-                                volume_ratio_min=SURGE_VOLUME_RATIO_MIN,
-                                min_confirms=SURGE_MIN_CONFIRMS,
-                            )
-                        reason_tp1 = (
-                            f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{tp1_target_pct*100:.2f}PCT"
-                            + ("_SURGE" if _surge_now else "")
-                        )
-                        if ENABLE_SURGE_LADDER_TP:
-                            log(f"  [SURGE_CHECK] {code} | surge={_surge_now} [{_surge_detail}] | atr_tp={atr_tp_pct*100:.2f}% tp1_target={tp1_target_pct*100:.2f}%")
-                        if sim.sell(code, price, ts, reason_tp1, session, qty=tp1_qty):
-                            remaining = sim.positions.get(code)
-                            if remaining is not None:
-                                remaining.tp1_done = True
-                                remaining.entry_quantity = entry_qty
-                                if STAGED_TP2_RATIO <= 0:
-                                    remaining.tp2_done = True
-                                if _surge_now:
-                                    # 시뮬레이터는 슬리피지 없이 price로 체결하므로 TP1 체결가 = price
-                                    remaining.surge_ladder = {"base": float(price), "tp2_done": False, "tp3_done": False}
-                                    log(
-                                        f"  [SURGE_LADDER_ARMED] {code} | base={price:,.0f} "
-                                        f"TP2={price*(1.0+SURGE_TP2_PCT):,.0f}(+{SURGE_TP2_PCT*100:.1f}%) "
-                                        f"TP3={price*(1.0+SURGE_TP3_PCT):,.0f}(+{SURGE_TP3_PCT*100:.1f}%)"
-                                    )
-                        signal_sell_bar[code] = ts
-                        log(f"  [SELL_EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
-                        continue
-
-                    # ── SURGE LADDER (r003 parity): 급등 중 1차 익절을 한 포지션의 잔량 사다리 익절 ──
-                    _surge_ladder = pos.surge_ladder if ENABLE_SURGE_LADDER_TP else None
-                    if _surge_ladder is not None and pos.tp1_done:
-                        _ladder_step = next_surge_ladder_action(
+                # 1차 익절: entry_qty의 STAGED_TP1_RATIO(40%), tp1_target_pct(동적, 기본 1.0%) 도달 시
+                if (not pos.tp1_done) and profit_pct >= tp1_target_pct:
+                    tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
+                    tp1_qty = min(tp1_qty, pos.quantity)
+                    # r003 parity: 급등 여부는 1차 익절 시점에 판정, 급등이면 잔량 사다리 익절 가동
+                    _surge_now = False
+                    _surge_detail = ""
+                    if ENABLE_SURGE_LADDER_TP:
+                        _surge_now, _surge_detail = detect_price_surge(
+                            recent_price_samples.get(code, []),
+                            ts,
                             price,
-                            float(_surge_ladder["base"]),
-                            pos.quantity,
-                            entry_qty,
-                            bool(_surge_ladder["tp2_done"]),
-                            bool(_surge_ladder["tp3_done"]),
-                            tp2_pct=SURGE_TP2_PCT,
-                            tp3_pct=SURGE_TP3_PCT,
-                            tp2_ratio=SURGE_TP2_RATIO,
+                            atr_pct,
+                            _num(cur, "BB_UPPER"),
+                            _num(cur, "volume"),
+                            _num(cur, "VOL_MA20"),
+                            lookback_seconds=SURGE_LOOKBACK_SECONDS,
+                            speed_min_pct=SURGE_SPEED_MIN_PCT,
+                            speed_atr_mult=SURGE_SPEED_ATR_MULT,
+                            volume_ratio_min=SURGE_VOLUME_RATIO_MIN,
+                            min_confirms=SURGE_MIN_CONFIRMS,
                         )
-                        if _ladder_step is not None:
-                            _rung, _rung_qty, _rung_target = _ladder_step
-                            _rung_pct = SURGE_TP2_PCT if _rung == "TP2" else SURGE_TP3_PCT
-                            reason_ladder = f"{_rung}_SURGE_LADDER_{_rung_pct*100:.1f}PCT_OF_TP1"
-                            if sim.sell(code, price, ts, reason_ladder, session, qty=_rung_qty):
-                                _surge_ladder["tp2_done"] = True
-                                if _rung == "TP3":
-                                    _surge_ladder["tp3_done"] = True
-                            signal_sell_bar[code] = ts
-                            log(
-                                f"  [SELL_EXECUTED] {code} | {reason_ladder} | qty={_rung_qty} price={price:,.0f} "
-                                f"target={_rung_target:,.0f} (tp1_base={float(_surge_ladder['base']):,.0f}) pnl={profit_pct*100:.2f}%"
-                            )
-                            continue
-                    # ── END SURGE LADDER ──────────────────────────────────────────────
-
-                    # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
-                    # STAGED_TP2_RATIO<=0이면 2차 단계 자체를 건너뛴다 (1차 이후 잔량은 트레일링 위임).
-                    # 급등 사다리가 가동 중이면(_surge_ladder) 사다리가 2차 이후를 담당하므로 건너뛴다.
-                    if STAGED_TP2_RATIO > 0 and _surge_ladder is None and pos.tp1_done and (not pos.tp2_done) and profit_pct >= tp2_target_pct:
-                        tp2_qty = max(1, int(round(entry_qty * STAGED_TP2_RATIO)))
-                        tp2_qty = min(tp2_qty, pos.quantity)
-                        reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{tp2_target_pct*100:.2f}PCT"
-                        if sim.sell(code, price, ts, reason_tp2, session, qty=tp2_qty):
-                            remaining = sim.positions.get(code)
-                            if remaining is not None:
-                                remaining.tp2_done = True
-                        signal_sell_bar[code] = ts
-                        log(f"  [SELL_EXECUTED] {code} | {reason_tp2} | qty={tp2_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
-                        continue
-
-                    # 3차: 고정 목표가 전량청산 대신, 1/2차 완료 후 잔량(30%)을 트레일링 스탑에 위임 (Trail 30%)
-                    if pos.tp1_done and pos.tp2_done and _surge_ladder is None and not pos.tp3_trail_armed:
-                        pos.tp3_trail_armed = True
-                        log(
-                            f"  [TP3_TRAIL_ARMED] {code} | 1,2차 익절 완료 - 잔량 {pos.quantity}주 "
-                            f"고정청산 없이 트레일링 스탑에 위임 | price={price:,.0f} pnl={profit_pct*100:.2f}%"
-                        )
-                else:
-                    # 2. Full take-profit +2.0%
-                    if profit_pct >= 0.020:
-                        trailing_sell_confirm_state.pop(code, None)
-                        sim.sell(code, price, ts, "TP2_FULL_2.0PCT", session)
-                        signal_sell_bar[code] = ts
-                        log(f"  [SELL_EXECUTED] {code} | TP2_FULL_2.0PCT | price={price:,.0f} pnl={profit_pct*100:.2f}%")
-                        continue
-
-                    # 3. Partial take-profit +1.0% at 50%, one-time
-                    if (not pos.tp1_done) and profit_pct >= 0.010:
-                        partial_qty = max(1, int(pos.quantity * 0.5))
-                        partial_qty = min(partial_qty, pos.quantity)
-                        if sim.sell(code, price, ts, "TP1_PARTIAL_50PCT_1.0PCT", session, qty=partial_qty):
-                            remaining = sim.positions.get(code)
-                            if remaining is not None:
-                                remaining.tp1_done = True
-                        signal_sell_bar[code] = ts
-                        log(f"  [SELL_EXECUTED] {code} | TP1_PARTIAL_50PCT_1.0PCT | qty={partial_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
-                        continue
-
-                # 3.5. Hybrid 1min BB-mid dead-cross exit (r006 _011 parity, 2026-09-23) - 매수측
-                # _008_hybrid_1min_trigger의 대칭 매도판. 손실구간(<=LOSS_EXIT_PNL_MAX)은 즉시, 그 외는
-                # 1분봉 BB중심선 기울기가 꺾였는지 추가 확인(정상 눌림목 보호). r001/r006 Update log 참조.
-                _dc_armed_handled = False
-                if (
-                    ENABLE_HYBRID_1MIN_DEADCROSS_EXIT and _sig_held_seconds >= HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS
-                    and DC_REGIME_MODE_SIM == "live" and code in dc_regime_armed
-                ):
-                    # [2026-10-06] r006 _011_regime_armed_step parity - cross 감지와 무관하게 먼저 평가.
-                    _dc_armed_handled = True
-                    hybrid_1min_dead_cross_state.pop(code, None)
-                    _rg = dc_regime_snapshot(
-                        available, buy_available_1min, profit_pct, ts,
-                        HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
+                    reason_tp1 = (
+                        f"TP1_PARTIAL_{STAGED_TP1_RATIO*100:.0f}PCT_{tp1_target_pct*100:.2f}PCT"
+                        + ("_SURGE" if _surge_now else "")
                     )
-                    _rg_act = dc_regime_armed_action(_rg, profit_pct, HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT)
-                    if _rg_act == "DISARM":
-                        dc_regime_armed.discard(code)
-                        log(f"  [DC REGIME] {code} | DISARM | pnl={profit_pct*100:.2f}%")
-                    elif _rg_act.startswith("EXIT_"):
-                        reason_dc = "HYBRID_1MIN_DEAD_CROSS_" + ("REGIME_FLIP" if _rg_act == "EXIT_REGIME_FLIP" else _rg_act.replace("EXIT_", "REGIME_"))
-                        dc_regime_armed.discard(code)
-                        trailing_sell_confirm_state.pop(code, None)
-                        sim.sell(code, price, ts, reason_dc, session)
-                        signal_sell_bar[code] = ts
-                        log(f"  [SELL_EXECUTED] {code} | {reason_dc} | price={price:,.0f} pnl={profit_pct*100:.2f}%")
-                        continue
-                if (
-                    not _dc_armed_handled
-                    and ENABLE_HYBRID_1MIN_DEADCROSS_EXIT and _sig_held_seconds >= HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS
-                ):
-                    _dc_found, _dc_reason, _dc_bars = check_1min_dead_cross(
-                        buy_available_1min, HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
-                    )
-                    if not _dc_found:
-                        hybrid_1min_dead_cross_state.pop(code, None)
-                    else:
-                        _dc_is_loss = profit_pct <= HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX
-                        _dc_bb_slope_1min = float("nan")
-                        _dc_ok = True
-                        if not _dc_is_loss and HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS > 0:
-                            # [2026-10-06] r006 _011 parity - TREND_FLIP은 확정봉 종가가 BB중심선보다 N호가 이상 아래일 때만.
-                            _dc_close = pd.to_numeric(buy_available_1min.iloc[-1].get("close"), errors="coerce")
-                            _dc_bb = pd.to_numeric(buy_available_1min.iloc[-1].get("BB_MIDDLE"), errors="coerce")
-                            if (
-                                pd.isna(_dc_close) or pd.isna(_dc_bb) or _dc_close <= 0
-                                or (float(_dc_bb) - float(_dc_close))
-                                < HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS * krx_tick_size(float(_dc_close))
-                            ):
-                                hybrid_1min_dead_cross_state.pop(code, None)
-                                _dc_ok = False
-                        if _dc_ok and not _dc_is_loss:
-                            _dc_bb_slope_1min = _compute_bb_slope_pct(buy_available_1min)
-                            if pd.isna(_dc_bb_slope_1min) or _dc_bb_slope_1min > 0:
-                                hybrid_1min_dead_cross_state.pop(code, None)
-                                _dc_ok = False
-                        if _dc_ok:
-                            _dc_hold_seconds = update_timed_condition_state(
-                                hybrid_1min_dead_cross_state, code, pos.buy_time, ts, True,
-                            )
-                            _dc_regime_hold = False
-                            if _dc_hold_seconds >= HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS and DC_REGIME_MODE_SIM in ("shadow", "live"):
-                                _rg = dc_regime_snapshot(
-                                    available, buy_available_1min, profit_pct, ts,
-                                    HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
-                                )
+                    if ENABLE_SURGE_LADDER_TP:
+                        log(f"  [SURGE_CHECK] {code} | surge={_surge_now} [{_surge_detail}] | atr_tp={atr_tp_pct*100:.2f}% tp1_target={tp1_target_pct*100:.2f}%")
+                    if sim.sell(code, price, ts, reason_tp1, session, qty=tp1_qty):
+                        remaining = sim.positions.get(code)
+                        if remaining is not None:
+                            remaining.tp1_done = True
+                            remaining.entry_quantity = entry_qty
+                            if _surge_now:
+                                # 시뮬레이터는 슬리피지 없이 price로 체결하므로 TP1 체결가 = price
+                                remaining.surge_ladder = {"base": float(price), "tp2_done": False, "tp3_done": False}
                                 log(
-                                    f"  [DC REGIME] {code} | mode={DC_REGIME_MODE_SIM} "
-                                    f"decision={'HOLD' if _rg['hold_candidate'] else 'SELL'} | pnl={profit_pct*100:.2f}% "
-                                    f"regime_up={_rg['regime_up']} dist3={_rg['dist3_pct']:.2f}% slope3={_rg['slope3_pct']:.3f}%"
+                                    f"  [SURGE_LADDER_ARMED] {code} | base={price:,.0f} "
+                                    f"TP2={price*(1.0+SURGE_TP2_PCT):,.0f}(+{SURGE_TP2_PCT*100:.1f}%) "
+                                    f"TP3={price*(1.0+SURGE_TP3_PCT):,.0f}(+{SURGE_TP3_PCT*100:.1f}%)"
                                 )
-                                if DC_REGIME_MODE_SIM == "live" and _rg["hold_candidate"]:
-                                    _dc_regime_hold = True
-                                    dc_regime_armed.add(code)
-                                    hybrid_1min_dead_cross_state.pop(code, None)
-                            if _dc_hold_seconds >= HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS and not _dc_regime_hold:
-                                _dc_kind = "LOSS" if _dc_is_loss else "TREND_FLIP"
-                                reason_dc = f"HYBRID_1MIN_DEAD_CROSS_{_dc_kind}_{_dc_reason}"
-                                trailing_sell_confirm_state.pop(code, None)
-                                hybrid_1min_dead_cross_state.pop(code, None)
-                                sim.sell(code, price, ts, reason_dc, session)
-                                signal_sell_bar[code] = ts
-                                log(
-                                    f"  [SELL_EXECUTED] {code} | {reason_dc} | price={price:,.0f} "
-                                    f"pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s "
-                                    f"bars_since_cross={_dc_bars} bb_slope_1min={_dc_bb_slope_1min:.3f}% "
-                                    f"confirm={_dc_hold_seconds:.0f}s"
-                                )
-                                continue
-
-                # 3.6. Peak retracement guard (r006 _012 parity, 2026-09-23) - TP1/ATR익절선 도달 전
-                # 구간의 고점대비 되돌림 익절가드. r001/r006 Update log 참조.
-                if (
-                    ENABLE_PEAK_RETRACE_GUARD
-                    and not pos.tp1_done
-                    and not (not pd.isna(atr_tp_pct) and peak_pnl_pct >= atr_tp_pct)
-                    and profit_pct > 0
-                    and peak_pnl_pct >= PEAK_RETRACE_GUARD_ARM_PNL
-                ):
-                    _prg_threshold = max(
-                        PEAK_RETRACE_GUARD_MIN_PCT,
-                        (atr_pct * PEAK_RETRACE_GUARD_ATR_MULT) if not pd.isna(atr_pct) else 0.0,
-                    )
-                    _prg_condition = giveback >= _prg_threshold
-                    _prg_hold_seconds = update_timed_condition_state(
-                        peak_retrace_guard_state, code, pos.buy_time, ts, _prg_condition,
-                    )
-                    # _prg_condition도 함께 확인 - CONFIRM_SECONDS<=0에서 조건 False에도 발동하는 잠재 버그
-                    # 방지 (r006 2026-09-23 parity fix, _004_hard_stop_loss와 동일 패턴).
-                    if _prg_condition and _prg_hold_seconds >= PEAK_RETRACE_GUARD_CONFIRM_SECONDS:
-                        reason_prg = f"PEAK_RETRACE_GUARD_{_prg_threshold*100:.2f}pct"
-                        trailing_sell_confirm_state.pop(code, None)
-                        peak_retrace_guard_state.pop(code, None)
-                        sim.sell(code, price, ts, reason_prg, session)
-                        signal_sell_bar[code] = ts
-                        log(
-                            f"  [SELL_EXECUTED] {code} | {reason_prg} | price={price:,.0f} "
-                            f"pnl={profit_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}% giveback={giveback*100:.2f}% "
-                            f"atr_pct={(atr_pct*100 if not pd.isna(atr_pct) else float('nan')):.2f}% "
-                            f"confirm={_prg_hold_seconds:.0f}s"
-                        )
-                        continue
-                elif ENABLE_PEAK_RETRACE_GUARD:
-                    # [2026-09-23, Codex 재검토, r006 parity] 위 4개 자격조건 중 하나라도 깨지면(TP1 완료/
-                    # ATR익절선 도달/pnl<=0/peak<ARM) 진행 중이던 확인창도 함께 지운다 - 안 지우면 자격을
-                    # 잃었다 되찾는 사이 이전 타이머가 그대로 이어져 실제로는 불연속인 되돌림 구간에서도
-                    # CONFIRM_SECONDS를 즉시 만족해버릴 수 있다.
-                    peak_retrace_guard_state.pop(code, None)
-
-                # 4. Signal exit: Stoch K < D (r006 parity: requires held>=600s and pnl<=-0.8%, unless strong uptrend)
-                if ENABLE_SIGNAL_EXIT_STOCH_K_LT_D and not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-                    if _strong_uptrend or _sig_held_seconds < _signal_min_hold_seconds or profit_pct > -0.012:
-                        log(
-                            f"  [SELL_SKIP] {code} | STOCH_K_LT_D suppressed | "
-                            f"K={k_now:.1f} D={d_now:.1f} pnl={profit_pct*100:.2f}% held={_sig_held_seconds:.0f}s "
-                            f"uptrend(adx={_adx_uptrend},price={_price_uptrend})"
-                        )
-                    else:
-                        trailing_sell_confirm_state.pop(code, None)
-                        sim.sell(code, price, ts, "SIGNAL_EXIT_STOCH_K_LT_D", session)
-                        signal_sell_bar[code] = ts
-                        log(f"  [SELL_EXECUTED] {code} | SIGNAL_EXIT_STOCH_K_LT_D | K={k_now:.1f} D={d_now:.1f} pnl={profit_pct*100:.2f}%")
-                        continue
-
-                # 5. Signal exit: MACD histogram declining 2 consecutive bars
-                # (r006 parity: requires held>=600s, pnl<=-0.5%, and not strong uptrend)
-                if (
-                    ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN
-                    and not any(pd.isna(v) for v in (hist_now, hist_prev_v, hist_prev2_v))
-                    and hist_now < hist_prev_v < hist_prev2_v
-                    and not _strong_uptrend
-                    and _sig_held_seconds >= _signal_min_hold_seconds
-                    and profit_pct <= -0.008
-                ):
-                    trailing_sell_confirm_state.pop(code, None)
-                    sim.sell(code, price, ts, "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS", session)
                     signal_sell_bar[code] = ts
-                    log(
-                        f"  [SELL_EXECUTED] {code} | SIGNAL_EXIT_MACD_HIST_DOWN_2BARS | "
-                        f"HIST={hist_prev2_v:.3f}->{hist_prev_v:.3f}->{hist_now:.3f} pnl={profit_pct*100:.2f}%"
-                    )
+                    log(f"  [SELL_EXECUTED] {code} | {reason_tp1} | qty={tp1_qty} price={price:,.0f} pnl={profit_pct*100:.2f}%")
                     continue
+
+                # ── SURGE LADDER (r003 parity): 급등 중 1차 익절을 한 포지션의 잔량 사다리 익절 ──
+                _surge_ladder = pos.surge_ladder if ENABLE_SURGE_LADDER_TP else None
+                if _surge_ladder is not None and pos.tp1_done:
+                    _ladder_step = next_surge_ladder_action(
+                        price,
+                        float(_surge_ladder["base"]),
+                        pos.quantity,
+                        entry_qty,
+                        bool(_surge_ladder["tp2_done"]),
+                        bool(_surge_ladder["tp3_done"]),
+                        tp2_pct=SURGE_TP2_PCT,
+                        tp3_pct=SURGE_TP3_PCT,
+                        tp2_ratio=SURGE_TP2_RATIO,
+                    )
+                    if _ladder_step is not None:
+                        _rung, _rung_qty, _rung_target = _ladder_step
+                        _rung_pct = SURGE_TP2_PCT if _rung == "TP2" else SURGE_TP3_PCT
+                        reason_ladder = f"{_rung}_SURGE_LADDER_{_rung_pct*100:.1f}PCT_OF_TP1"
+                        if sim.sell(code, price, ts, reason_ladder, session, qty=_rung_qty):
+                            _surge_ladder["tp2_done"] = True
+                            if _rung == "TP3":
+                                _surge_ladder["tp3_done"] = True
+                        signal_sell_bar[code] = ts
+                        log(
+                            f"  [SELL_EXECUTED] {code} | {reason_ladder} | qty={_rung_qty} price={price:,.0f} "
+                            f"target={_rung_target:,.0f} (tp1_base={float(_surge_ladder['base']):,.0f}) pnl={profit_pct*100:.2f}%"
+                        )
+                        continue
+                # ── END SURGE LADDER ──────────────────────────────────────────────
+
+                # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후)
+                # STAGED_TP2_RATIO<=0이면 2차 단계 자체를 건너뛴다 (1차 이후 잔량은 트레일링 위임).
+                # 급등 사다리가 가동 중이면(_surge_ladder) 사다리가 2차 이후를 담당하므로 건너뛴다.
+
+                # 2-4. 이익 잠금 (r006 _023 parity, 2026-11-04 이식): TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 이후 현재가가
+                # 고점 x (1 - PROFIT_LOCK_GIVEBACK_PCT) 이하이면 진입수량의 PROFIT_LOCK_RATIO 매도(1회), 그 뒤 잔량은 손익 <= 0이면 전량.
+                # (삭제: 1분 데드크로스 _011 / 되돌림 가드 _012 / 시그널 청산 _013·_014 - r006과 동일하게 2026-11-04 제거)
+                if ENABLE_PROFIT_LOCK and not pos.tp1_done and pos.quantity > 0 and pos.buy_price > 0:
+                    if pos.profit_lock_done:
+                        if PROFIT_LOCK_REST_BREAKEVEN and profit_pct <= 0:
+                            reason_pl = "PROFIT_LOCK_REST_BREAKEVEN"
+                            trailing_sell_confirm_state.pop(code, None)
+                            sim.sell(code, price, ts, reason_pl, session)
+                            signal_sell_bar[code] = ts
+                            log(f"  [SELL_EXECUTED] {code} | {reason_pl} | qty={pos.quantity} price={price:,.0f} pnl={profit_pct*100:.2f}%")
+                            continue
+                    elif (
+                        peak_pnl_pct >= PROFIT_LOCK_ARM_PNL and pos.highest_price > 0
+                        and price <= pos.highest_price * (1.0 - PROFIT_LOCK_GIVEBACK_PCT)
+                    ):
+                        _entry_qty_pl = pos.entry_quantity if pos.entry_quantity > 0 else pos.quantity
+                        _lock_qty = min(max(1, int(round(_entry_qty_pl * PROFIT_LOCK_RATIO))), pos.quantity)
+                        reason_pl = f"PROFIT_LOCK_{PROFIT_LOCK_RATIO*100:.0f}PCT_GIVEBACK_{PROFIT_LOCK_GIVEBACK_PCT*100:.1f}PCT"
+                        trailing_sell_confirm_state.pop(code, None)
+                        if sim.sell(code, price, ts, reason_pl, session, qty=_lock_qty):
+                            remaining = sim.positions.get(code)
+                            if remaining is not None:
+                                remaining.profit_lock_done = True
+                                remaining.entry_quantity = _entry_qty_pl
+                        signal_sell_bar[code] = ts
+                        log(
+                            f"  [SELL_EXECUTED] {code} | {reason_pl} | qty={_lock_qty} price={price:,.0f} "
+                            f"peak={pos.highest_price:,.0f} pnl={profit_pct*100:.2f}% peak_pnl={peak_pnl_pct*100:.2f}%"
+                        )
+                        continue
 
                 # 6. ATR-based take-profit
                 if not pd.isna(atr_tp_pct) and profit_pct >= atr_tp_pct:
@@ -3902,7 +3637,7 @@ def main() -> None:
     global TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT, TRAILING_STOP_FROM_PEAK
     global LOG_SUMMARY_MODE, COMPARE_FEE_BUY_RATE, COMPARE_FEE_SELL_RATE, COMPARE_SLIPPAGE_RATE
     global ANTI_CHASE_PRICE_MODE, GATE_DECISION_PATH
-    global DC_REGIME_MODE_SIM, SIM_BAR_SEMANTICS, CROSS_MAX_AGE_SIM
+    global SIM_BAR_SEMANTICS, CROSS_MAX_AGE_SIM
 
     parser = argparse.ArgumentParser(description="Simulate the strategy using date CSV/TXT data (1-minute input supported)")
     parser.add_argument("--date", required=True, help="Simulation date in YYYYMMDD format")
@@ -3999,12 +3734,6 @@ def main() -> None:
         help="Allow fallback to non-10s TXT inputs (_1m/_20s/plain)",
     )
     parser.add_argument(
-        "--dc-regime-mode",
-        choices=("off", "shadow", "live"),
-        default=None,
-        help="[2026-10-06] 1분봉 데드크로스 청산의 3분봉 추세 연동 모드(기본: r001 HYBRID_1MIN_DEADCROSS_REGIME_MODE)",
-    )
-    parser.add_argument(
         "--cross-max-age",
         type=float,
         default=None,
@@ -4064,13 +3793,11 @@ def main() -> None:
 
     LOG_SUMMARY_MODE = bool(args.summary)
     ANTI_CHASE_PRICE_MODE = str(args.anti_chase_price)
-    if args.dc_regime_mode:
-        DC_REGIME_MODE_SIM = str(args.dc_regime_mode)
     SIM_BAR_SEMANTICS = str(args.bar_semantics)
     if args.cross_max_age is not None:
         CROSS_MAX_AGE_SIM = float(args.cross_max_age)
     log(
-        f"[SIM MODE] dc_regime_mode={DC_REGIME_MODE_SIM} bar_semantics={SIM_BAR_SEMANTICS} "
+        f"[SIM MODE] bar_semantics={SIM_BAR_SEMANTICS} "
         f"cross_max_age={CROSS_MAX_AGE_SIM:.0f}s entry_1min_require_latest={ENTRY_1MIN_FRAME_REQUIRE_LATEST}"
     )
     GATE_DECISION_PATH = log_dir / (

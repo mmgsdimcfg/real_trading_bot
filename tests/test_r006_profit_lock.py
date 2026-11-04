@@ -98,10 +98,17 @@ class TestProfitLock(unittest.TestCase):
         self.assertTrue(self._tick(26900))
         self.assertFalse(self.pos.get("profit_lock_done", False))
 
-    def test_condition_registered_before_012(self):
+    def test_condition_registered_after_tp1_before_atr_tp(self):
+        # [2026-11-04] _012 되돌림 가드 삭제 - 잠금은 TP1/사다리 뒤, ATR 익절선(_015) 앞에서 평가된다.
         names = [c.func_name for c in r006.SELL_CONDITIONS]
-        self.assertLess(names.index("_023_profit_lock"), names.index("_012_peak_retracement_guard"))
+        self.assertLess(names.index("_006_staged_tp1_partial"), names.index("_023_profit_lock"))
+        self.assertLess(names.index("_023_profit_lock"), names.index("_015_atr_take_profit"))
         self.assertEqual(len({c.no for c in r006.SELL_CONDITIONS}), len(r006.SELL_CONDITIONS))
+        for gone in ("_005_pyramid_add_entry", "_008_staged_tp2_partial", "_009_tp3_trail_arm", "_010_legacy_tp_full_and_partial",
+                     "_011_hybrid_1min_dead_cross_exit", "_012_peak_retracement_guard", "_013_signal_exit_stoch_k_lt_d",
+                     "_014_signal_exit_macd_hist_down"):
+            self.assertNotIn(gone, names)
+            self.assertFalse(hasattr(r006, gone), gone)
 
 
 if __name__ == "__main__":

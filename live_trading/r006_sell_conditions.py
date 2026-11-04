@@ -16,28 +16,31 @@ Order                                        Kind        Old r003 inline block (
   _002 update position tracking              UPDATE      4438-4471  (current_price, price samples, highest/peak)
   _003 peak next-bar bearish exit            EXIT        4473-4508
   _004 hard stop loss                        EXIT        4544-4567 (2026-09-23: added confirm window)
-  _005 pyramid add entry                     ADD_ENTRY   4569-4615  (add-on BUY, not a sell)
-  _006 staged TP1 partial                    EXIT        4617-4690  (ENABLE_STAGED_TAKE_PROFIT)
+  _006 staged TP1 partial                    EXIT        4617-4690
   _007 surge ladder TP2/TP3                  EXIT        4692-4732
-  _008 staged TP2 partial                    EXIT        4734-4751
-  _009 TP3 trail arm                         STATE       4753-4766  (flag + log only)
-  _010 legacy TP full / partial              EXIT        4767-4796  (only when ENABLE_STAGED_TAKE_PROFIT=False)
-  _011 hybrid 1min dead-cross exit           EXIT        (2026-09-23 신규, "매수/매도 컨셉 재검토" + Codex
-                                                            설계검토 - _008_hybrid_1min_trigger의 대칭 매도판)
-  _012 peak retracement guard                EXIT        (2026-09-23 신규 - TP1/ATR익절선 도달 전 구간의
-                                                            고점대비 되돌림 익절가드)
-  _013 signal exit: stochastic K<D           EXIT        4799-4816
-  _014 signal exit: MACD hist down 2 bars    EXIT        4817-4831
+  _023 profit lock                           EXIT        (2026-11-02 신규 - TP1 전 고점 대비 반납 시 전량 매도)
   _015 ATR take profit / TP extension        EXIT/LOG    4833-4850
   _016 post-buy entry drop guard             EXIT        4852-4886
-  _017 breakeven fail guard                  EXIT        4888-4920
+  _017 breakeven fail guard                  EXIT        4888-4920  (TP1 이후 잔량의 손실 방어)
   _018 no-trend time exit                    EXIT        4922-4957
   _019 ATR stop loss                         EXIT        4959-4994
   _020 trailing stop                         EXIT        4996-5053
   _021 same-bar sell dedup                   GUARD       5055-5056
   _022 shared reversal sell                  EXIT        5058-5099  (r002 check_sell_condition)
+  [2026-11-04 삭제] _005 불타기(OFF) / _008 TP2(비율 0) / _009 TP3 무장(로그만) / _010 구형 익절(비활성 경로) /
+    _011 1분 데드크로스(OFF) / _012 되돌림 가드(_023이 항상 먼저 발동) / _013 STOCH K<D(OFF) / _014 MACD(OFF).
+    번호는 재사용하지 않는다(로그/문서 호환).
 
 Update log (append only):
+- [2026-11-04] type=refactor owner=claude
+    summary: 사용자 결정(매수/매도 조건 전면 검토) - 10/01 이후 발동 0건이고 구조적으로 도달 불가/OFF인 매도 조건 8개 삭제:
+      _005 불타기, _008 TP2(STAGED_TP2_RATIO=0), _009 TP3 트레일 무장, _010 구형 익절, _011 1분 데드크로스(+DC regime 헬퍼),
+      _012 고점 되돌림 가드(_023 이익 잠금이 같은 arm에서 더 작은 반납으로 항상 먼저 전량 매도), _013/_014 시그널 청산.
+      SellState에서 hybrid_1min_dead_cross_state/peak_retrace_guard_state 제거, SellContext.tp2_target_pct 제거,
+      _006은 ENABLE_STAGED_TAKE_PROFIT 분기 없이 항상 평가(구형 경로 삭제). _003/_017/_023 잔량 본전 분기는 Codex 검토로
+      도달 가능이 확인돼 유지.
+    impact: live (r003 재시작 후) + g003
+    compatibility: breaking (동작: ENABLE_PROFIT_LOCK=True 전제에서 변화 0. 롤백: git revert)
 - [2026-11-04] type=fix owner=claude
     summary: _register_hard_stop이 손절 종목 등록 직후 api.persist_live_state로 저장한다 - hard_stop_today_codes는 r003
       live_state["hard_stop_today"]와 같은 집합(재시작 보존, Codex 검토 #4). api 없는 테스트 컨텍스트는 그대로 통과.
@@ -119,11 +122,7 @@ from r001_define_config import (
     BREAKEVEN_FAIL_ARM_PNL,
     BREAKEVEN_FAIL_CONFIRM_SECONDS,
     BREAKEVEN_FAIL_GIVEBACK_PCT,
-    ENABLE_HYBRID_1MIN_DEADCROSS_EXIT,
-    ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN,
-    ENABLE_SIGNAL_EXIT_STOCH_K_LT_D,
     ENABLE_PEAK_NEXT_BAR_BEARISH_EXIT,
-    ENABLE_PYRAMIDING,
     ENABLE_STAGED_TAKE_PROFIT,
     ENABLE_SURGE_LADDER_TP,
     ENABLE_TP1_CAP_AT_ATR_TP,
@@ -131,24 +130,11 @@ from r001_define_config import (
     HARD_STOP_CONFIRM_SECONDS,
     HARD_STOP_LOSS_PCT,
     HARD_STOP_MIN_HOLD_SECONDS,
-    HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS,
-    HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS,
-    HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX,
-    HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS,
-    HYBRID_1MIN_DEADCROSS_REGIME_MODE,
-    HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT,
-    HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
-    ENABLE_PEAK_RETRACE_GUARD,
     ENABLE_PROFIT_LOCK,
     PROFIT_LOCK_ARM_PNL,
     PROFIT_LOCK_GIVEBACK_PCT,
     PROFIT_LOCK_RATIO,
     PROFIT_LOCK_REST_BREAKEVEN,
-    PEAK_RETRACE_GUARD_ARM_PNL,
-    PEAK_RETRACE_GUARD_MIN_PCT,
-    PEAK_RETRACE_GUARD_ATR_MULT,
-    PEAK_RETRACE_GUARD_CONFIRM_SECONDS,
-    HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS,
     LIVE_PRICE_STALE_TTL_SECONDS,
     NO_TREND_EXIT_ARM_SECONDS,
     NO_TREND_EXIT_CONFIRM_SECONDS,
@@ -158,15 +144,8 @@ from r001_define_config import (
     POST_BUY_BB_DROP_ARMED_SECONDS,
     POST_BUY_BB_DROP_PCT,
     POST_BUY_DROP_CONFIRM_SECONDS,
-    PYRAMID_TRIGGER_PNL_PCT,
-    SIGNAL_EXIT_MACD_PNL_MAX,
-    SIGNAL_EXIT_MIN_HOLD_SECONDS,
-    SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN,
-    SIGNAL_EXIT_STRONG_TREND_ADX_MIN,
     STAGED_TP1_PCT,
     STAGED_TP1_RATIO,
-    STAGED_TP2_PCT,
-    STAGED_TP2_RATIO,
     SURGE_LOOKBACK_SECONDS,
     SURGE_MIN_CONFIRMS,
     SURGE_SPEED_ATR_MULT,
@@ -180,12 +159,8 @@ from r001_define_config import (
     TRAILING_STOP_FROM_PEAK,
 )
 from r002_strategy_core_shared import (
-    _compute_bb_slope_pct,
     _num,
     check_1min_dead_cross,
-    krx_tick_size,
-    dc_regime_snapshot,
-    dc_regime_armed_action,
     compute_staged_tp1_target_pct,
     detect_price_surge,
     next_surge_ladder_action,
@@ -212,8 +187,6 @@ class SellState:
     no_trend_exit_state: dict[str, dict]
     atr_stop_confirm_state: dict[str, dict]
     hard_stop_confirm_state: dict[str, dict]
-    hybrid_1min_dead_cross_state: dict[str, dict]
-    peak_retrace_guard_state: dict[str, dict]
     signal_sell_bar: dict[str, object]
     hard_stop_today_codes: set[str]
     basic_peak_protect_state: dict[str, dict] = field(default_factory=dict)  # [2026-10-07] basic 고점보호 확인창
@@ -277,10 +250,9 @@ class SellContext:
     peak_pnl_pct: float = 0.0
     profit_giveback: float = 0.0
 
-    # 스테이지드 익절 블록(_006~_009) 공유값
+    # 스테이지드 익절 블록(_006/_007/_023) 공유값
     entry_qty: int = 0
     tp1_target_pct: float = _NAN
-    tp2_target_pct: float = _NAN
     atr_tp1_dynamic_pct: float = _NAN
     surge_ladder: dict | None = None
 
@@ -327,46 +299,8 @@ def _hold_info(ctx: SellContext) -> tuple[datetime, object, float]:
     return buy_time, buy_token, held
 
 
-def _signal_trend_inputs(ctx: SellContext) -> dict[str, float | bool]:
-    """시그널 청산(_011/_012)이 공유하는 입력 - 기존 4510-4542."""
-    frame, cur, pos, price, current_dt = ctx.frame, ctx.cur, ctx.pos, ctx.price, ctx.current_dt
-    k_now = _num(cur, "STOCH_K")
-    d_now = _num(cur, "STOCH_D")
-    hist_now = _num(cur, "MACD_HIST")
-    hist_prev = _num(frame.iloc[-2], "MACD_HIST") if len(frame) >= 2 else float("nan")
-    hist_prev2 = _num(frame.iloc[-3], "MACD_HIST") if len(frame) >= 3 else float("nan")
-    adx_now = _num(cur, "ADX")
-    di_plus_now = _num(cur, "DI_PLUS")
-    di_minus_now = _num(cur, "DI_MINUS")
-    # 강한 상승 추세: ADX > 28 이고 +DI > -DI 이면 스토캐스틱 K<D 매도 신호 무시
-    sig_buy_time_raw = pos.get("buy_time")
-    sig_held_seconds = (current_dt - sig_buy_time_raw).total_seconds() if isinstance(sig_buy_time_raw, datetime) else 0.0
-    adx_uptrend = (
-        not pd.isna(adx_now) and adx_now > SIGNAL_EXIT_STRONG_TREND_ADX_MIN
-        and not pd.isna(di_plus_now) and not pd.isna(di_minus_now)
-        and di_plus_now > di_minus_now
-    )
-    # ADX 보완: ADX>28 도달 전(추세 초입)에도 가격이 이미 BB_MID 위에서 MA5가 상승 중이면 상승추세로 간주해
-    # 시그널 매도를 억제한다(000500 가온전선 2026-08-27 09:06 사례).
-    ma5_now = _num(cur, "MA_5")
-    ma5_prev_trend = _num(frame.iloc[-2], "MA_5") if len(frame) >= 2 else float("nan")
-    bb_mid_now = _num(cur, "BB_MIDDLE")
-    price_uptrend = (
-        not any(pd.isna(v) for v in (ma5_now, ma5_prev_trend, bb_mid_now))
-        and ma5_now > ma5_prev_trend
-        and price > bb_mid_now
-    )
-    return {
-        "k_now": k_now, "d_now": d_now,
-        "hist_now": hist_now, "hist_prev": hist_prev, "hist_prev2": hist_prev2,
-        "sig_held_seconds": sig_held_seconds,
-        "adx_uptrend": adx_uptrend, "price_uptrend": price_uptrend,
-        "strong_uptrend": adx_uptrend or price_uptrend,
-    }
-
-
 def _staged_targets(ctx: SellContext) -> None:
-    """스테이지드 익절 공유값(entry_qty/tp1_target_pct/tp2_target_pct)을 채운다 - 기존 4618-4634.
+    """스테이지드 익절 공유값(entry_qty/tp1_target_pct)을 채운다 - 기존 4618-4634. (2차 익절 _008은 2026-11-04 삭제)
     같은 틱에서 _006이 먼저 호출한다(트리거 시 pos를 바꾸고 STOP_SYMBOL이므로 이후 조건은 같은 값을 본다)."""
     pos = ctx.pos
     entry_qty = int(pos.get("entry_quantity", 0) or 0)
@@ -375,7 +309,6 @@ def _staged_targets(ctx: SellContext) -> None:
     # 1차 익절 목표를 종목 변동성(ATR)에 연동해 동적으로 산출한다. 목표 = max(고정 STAGED_TP1_PCT,
     # ATR*TP1_ATR_MULTIPLIER/진입가)를 ATR 익절선(=TP_EXTENSION 트레일 무장선)으로 상한 처리 - 저변동성 종목에서
     # 트레일이 TP1보다 먼저 무장되어 1차 분할 없이 전량 매도되던 문제 수정(r001 ENABLE_TP1_CAP_AT_ATR_TP 참조).
-    # 2차는 기존 1차-2차 간격(STAGED_TP2_PCT - STAGED_TP1_PCT)만큼 그 위에 얹는다.
     tp1_target_pct, atr_tp1_dynamic_pct = compute_staged_tp1_target_pct(
         ctx.atr_pct,
         ctx.atr_tp_pct,
@@ -385,7 +318,6 @@ def _staged_targets(ctx: SellContext) -> None:
     )
     ctx.entry_qty = entry_qty
     ctx.tp1_target_pct = tp1_target_pct
-    ctx.tp2_target_pct = tp1_target_pct + (STAGED_TP2_PCT - STAGED_TP1_PCT)
     ctx.atr_tp1_dynamic_pct = atr_tp1_dynamic_pct
 
 
@@ -550,60 +482,7 @@ def _004_hard_stop_loss(ctx: SellContext) -> bool:
     return False
 
 
-def _005_pyramid_add_entry(ctx: SellContext) -> bool:
-    """불타기: 추세 지속 시 1회 추가 진입(ADD_ENTRY - 매도가 아니라 추가 매수 주문)."""
-    code, pos, price, cur, frame, api = ctx.code, ctx.pos, ctx.price, ctx.cur, ctx.frame, ctx.api
-    if (
-        ENABLE_PYRAMIDING
-        and not bool(pos.get("pyramid_done", False))
-        and not api.has_pending_order(str(code).zfill(6))
-        and ctx.pnl_pct >= PYRAMID_TRIGGER_PNL_PCT
-    ):
-        prev_pyr = frame.iloc[-2] if len(frame) >= 2 else cur
-        ma5_cur_pyr = _num(cur, "MA_5")
-        ma5_prev_pyr = _num(prev_pyr, "MA_5")
-        bb_mid_cur_pyr = _num(cur, "BB_MIDDLE")
-        bb_mid_prev_pyr = _num(prev_pyr, "BB_MIDDLE")
-        adx_cur_pyr = _num(cur, "ADX")
-        adx_prev_pyr = _num(prev_pyr, "ADX")
-        pyramid_ok = (
-            not any(
-                pd.isna(v) for v in (
-                    ma5_cur_pyr, ma5_prev_pyr, bb_mid_cur_pyr,
-                    bb_mid_prev_pyr, adx_cur_pyr, adx_prev_pyr,
-                )
-            )
-            and ma5_cur_pyr > ma5_prev_pyr
-            and bb_mid_cur_pyr > bb_mid_prev_pyr
-            and adx_cur_pyr > adx_prev_pyr
-        )
-        if pyramid_ok:
-            pyr_qty = api.get_affordable_buy_qty(code, price, ctx.current_dt, ctx.nxt_tradeable)
-            if pyr_qty > 0:
-                pyr_session = ctx.services.classify_buy_session(ctx.current_dt)
-                reason_pyr = f"PYRAMID_2ND_ENTRY_PNL_{ctx.pnl_pct*100:.2f}PCT"
-                ctx.log(
-                    f"  [BUY TRIGGER ] {ctx.symbol_label} | {reason_pyr} | "
-                    f"add_qty={pyr_qty} price={price:,.0f} avg_entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% | "
-                    f"MA5={ma5_prev_pyr:.1f}->{ma5_cur_pyr:.1f} BB_MID={bb_mid_prev_pyr:.1f}->{bb_mid_cur_pyr:.1f} "
-                    f"ADX={adx_prev_pyr:.1f}->{adx_cur_pyr:.1f}"
-                )
-                pos["pyramid_done"] = True
-                if api.place_buy_order(
-                    code, price, pyr_qty, ctx.current_dt, ctx.nxt_tradeable, pyr_session,
-                    buy_detail=reason_pyr, code_name=ctx.name, pyramid=True,
-                ):
-                    api._record_position_meta(code, pos)
-                    api.persist_live_state(date_str=ctx.date_str)
-                else:
-                    pos["pyramid_done"] = False
-                return True
-    return False
-
-
 def _006_staged_tp1_partial(ctx: SellContext) -> bool:
-    if not ENABLE_STAGED_TAKE_PROFIT:
-        return False
     code, pos, price, cur, api = ctx.code, ctx.pos, ctx.price, ctx.cur, ctx.api
     _staged_targets(ctx)
     entry_qty, tp1_target_pct = ctx.entry_qty, ctx.tp1_target_pct
@@ -646,8 +525,6 @@ def _006_staged_tp1_partial(ctx: SellContext) -> bool:
         if api.place_sell_order(code, tp1_qty, ctx.current_dt, reason_tp1, ctx.nxt_tradeable, price=price, code_name=ctx.name):
             pos["tp1_done"] = True
             pos["entry_quantity"] = entry_qty
-            if STAGED_TP2_RATIO <= 0:
-                pos["tp2_done"] = True
             if surge_now:
                 # 사다리 기준가 = 1차 익절 실제 체결가(체결 확인 전이면 트리거 시점 현재가로 대체).
                 tp1_fill_price = float(api.last_sell_fill_price.get(str(code).zfill(6), 0.0) or 0.0)
@@ -713,251 +590,6 @@ def _007_surge_ladder_tp(ctx: SellContext) -> bool:
     return False
 
 
-def _008_staged_tp2_partial(ctx: SellContext) -> bool:
-    # 2차 익절: entry_qty의 STAGED_TP2_RATIO(30%), tp2_target_pct 도달 시 (1차 완료 후). STAGED_TP2_RATIO<=0이면
-    # 2차 단계 자체를 건너뛴다. 급등 사다리가 가동 중이면 사다리가 2차 이후를 담당하므로 건너뛴다.
-    if not ENABLE_STAGED_TAKE_PROFIT:
-        return False
-    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
-    if (
-        STAGED_TP2_RATIO > 0
-        and ctx.surge_ladder is None
-        and bool(pos.get("tp1_done", False))
-        and (not bool(pos.get("tp2_done", False)))
-        and ctx.pnl_pct >= ctx.tp2_target_pct
-    ):
-        tp2_qty = max(1, int(round(ctx.entry_qty * STAGED_TP2_RATIO)))
-        tp2_qty = min(tp2_qty, int(pos["quantity"]))
-        reason_tp2 = f"TP2_PARTIAL_{STAGED_TP2_RATIO*100:.0f}PCT_{ctx.tp2_target_pct*100:.2f}PCT"
-        ctx.log(
-            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp2} | "
-            f"qty={tp2_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
-        )
-        if api.place_sell_order(code, tp2_qty, ctx.current_dt, reason_tp2, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-            pos["tp2_done"] = True
-            api._record_position_meta(code, pos)
-            api.persist_live_state(date_str=ctx.date_str)
-            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp2} | qty={tp2_qty} price={price:,.0f}")
-        ctx.state.signal_sell_bar[code] = ctx.bar_time
-        return True
-    return False
-
-
-def _009_tp3_trail_arm(ctx: SellContext) -> bool:
-    # 3차: 고정 목표가 전량청산 대신, 1/2차 완료 후 잔량(30%)을 트레일링 스탑에 위임한다(Trail 30%). 여기서는 sell
-    # 주문을 내지 않고 플래그와 로그만 1회 남긴 뒤 아래 시그널 청산/트레일링 스탑 로직으로 이어지도록 둔다.
-    if not ENABLE_STAGED_TAKE_PROFIT:
-        return False
-    code, pos, price = ctx.code, ctx.pos, ctx.price
-    if (
-        bool(pos.get("tp1_done", False))
-        and bool(pos.get("tp2_done", False))
-        and ctx.surge_ladder is None
-        and not bool(pos.get("tp3_trail_armed", False))
-    ):
-        pos["tp3_trail_armed"] = True
-        ctx.log(
-            f"  [TP3 TRAIL ON] {ctx.symbol_label} | 1,2차 익절 완료 - 잔량 {int(pos['quantity'])}주 "
-            f"고정청산 없이 트레일링 스탑에 위임 | price={price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
-        )
-    return False
-
-
-def _010_legacy_tp_full_and_partial(ctx: SellContext) -> bool:
-    """ENABLE_STAGED_TAKE_PROFIT=False일 때만 쓰는 구형 익절(+2.0% 전량 / +1.0% 50% 1회)."""
-    if ENABLE_STAGED_TAKE_PROFIT:
-        return False
-    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
-    # +2.0% full take profit
-    if ctx.pnl_pct >= 0.020:
-        reason_tp2 = "TP2_FULL_2.0PCT"
-        ctx.log(
-            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp2} | "
-            f"price={price:,.0f} entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
-        )
-        ctx.state.trailing_sell_confirm_state.pop(code, None)
-        if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_tp2, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp2} | qty={pos['quantity']} price={price:,.0f}")
-        ctx.state.signal_sell_bar[code] = ctx.bar_time
-        return True
-
-    # +1.0% one-time 50% partial take profit
-    if (not bool(pos.get("tp1_done", False))) and ctx.pnl_pct >= 0.010:
-        partial_qty = max(1, int(int(pos["quantity"]) * 0.5))
-        partial_qty = min(partial_qty, int(pos["quantity"]))
-        reason_tp1 = "TP1_PARTIAL_50PCT_1.0PCT"
-        ctx.log(
-            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_tp1} | "
-            f"qty={partial_qty}/{int(pos['quantity'])} price={price:,.0f} pnl={ctx.pnl_pct*100:.2f}%"
-        )
-        if api.place_sell_order(code, partial_qty, ctx.current_dt, reason_tp1, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-            pos["tp1_done"] = True
-            api._record_position_meta(code, pos)
-            api.persist_live_state(date_str=ctx.date_str)
-            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_tp1} | qty={partial_qty} price={price:,.0f}")
-        ctx.state.signal_sell_bar[code] = ctx.bar_time
-        return True
-    return False
-
-
-def _011_hybrid_1min_dead_cross_exit(ctx: SellContext) -> bool:
-    """[2026-09-23] 매수측 _008_hybrid_1min_trigger(1분봉 BB중심선 골든크로스)의 대칭 매도판. 사용자 요청
-    ("매수/매도 컨셉 재검토", 204620 글로벌텍스프리 사례) + Codex 설계검토 반영.
-
-    _022_shared_reversal_sell(r002 check_sell_condition, AUX_REVERSAL_SCORE)은 구조적으로 min_pnl_req가
-    항상 양수라 손실 포지션을 절대 청산할 수 없다(2026-09-23 컨셉 재검토 메모 참조) - 그 결함을 고치는
-    대신(Codex 권고: "수익보호 전용으로 남기고, 손실을 자르는 건 별도 조건으로") 여기서 새로 담당한다.
-
-    손실 구간(pnl<=LOSS_EXIT_PNL_MAX)은 수익 요건 없이 즉시 청산 - Codex 권고 (3). 그 외(수익 중이거나
-    얕은 손실)는 1분봉 BB중심선 기울기가 이미 꺾였는지 추가로 확인 - Codex 권고 (4), 정상 상승추세
-    눌림목에서의 휩쏘 매도 방지. 확인창(CONFIRM_SECONDS)으로 노이즈도 걸러낸다 - Codex 권고 (5)."""
-    if not ENABLE_HYBRID_1MIN_DEADCROSS_EXIT:
-        return False
-    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
-    _, buy_token, held = _hold_info(ctx)
-    if held < HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS:
-        return False
-
-    frame_1min = ctx.services.get_frame_1min(code, ctx.current_dt, ctx.nxt_tradeable)
-    regime_mode = str(HYBRID_1MIN_DEADCROSS_REGIME_MODE).lower()
-    if regime_mode == "live" and bool(pos.get("dc_regime_hold", False)):
-        # [2026-10-06] armed 포지션은 cross 감지/깊이/기울기/확인창과 독립적으로 먼저 평가한다(Codex 1차) -
-        # check_1min_dead_cross 룩백(5봉)이 지나면 cross가 안 보여 나중의 3분봉 추세 이탈을 놓치기 때문.
-        return _011_regime_armed_step(ctx, frame_1min)
-
-    found, cross_reason, bars_since_cross = check_1min_dead_cross(frame_1min, HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS)
-    if not found:
-        ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
-        return False
-
-    is_loss_exit = ctx.pnl_pct <= HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX
-    bb_slope_1min = float("nan")
-    depth_label = ""
-    if not is_loss_exit and HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS > 0:
-        # [2026-10-06] 최신 확정봉 종가가 BB중심선보다 N호가 이상 아래여야 추세이탈 인정(066570 LG전자 사례,
-        # r001 HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS 참조) - 1호가 흔들림 휩쏘 매도 방지.
-        last_close = pd.to_numeric(frame_1min.iloc[-1].get("close"), errors="coerce")
-        last_bb = pd.to_numeric(frame_1min.iloc[-1].get("BB_MIDDLE"), errors="coerce")
-        if pd.isna(last_close) or pd.isna(last_bb) or last_close <= 0:
-            ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
-            return False
-        tick = krx_tick_size(float(last_close))
-        depth = float(last_bb) - float(last_close)
-        if depth < HYBRID_1MIN_DEADCROSS_TREND_FLIP_MIN_DEPTH_TICKS * tick:
-            ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
-            return False
-        depth_label = f" depth={depth:,.0f}/{tick}tick"
-    if not is_loss_exit:
-        # 수익/얕은 손실 구간: BB중심선(1분봉) 자체가 이미 꺾였을 때만 인정 - 상승추세 정상 눌림목 보호.
-        bb_slope_1min = _compute_bb_slope_pct(frame_1min)
-        if pd.isna(bb_slope_1min) or bb_slope_1min > 0:
-            ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
-            return False
-
-    dead_cross_hold_seconds = update_timed_condition_state(
-        ctx.state.hybrid_1min_dead_cross_state, code, buy_token, ctx.current_dt, True,
-    )
-    if dead_cross_hold_seconds < HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS:
-        return False
-
-    kind = "LOSS" if is_loss_exit else "TREND_FLIP"
-    reason = f"HYBRID_1MIN_DEAD_CROSS_{kind}_{cross_reason}"
-    if regime_mode in ("shadow", "live"):
-        # [Codex r2] 판정/로그/기록 전체를 예외 격리 - 실패하면 기존대로 매도(보유 판단은 snap 계산 성공 시에만).
-        snap = None
-        try:
-            snap = dc_regime_snapshot(
-                ctx.frame, frame_1min, ctx.pnl_pct, ctx.current_dt,
-                HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
-            )
-            _log_dc_regime(ctx, snap, regime_mode, reason)
-        except Exception as exc:
-            try:
-                ctx.log(f"  [DC REGIME   ] {ctx.symbol_label} | evaluation failed - sell as before: {exc}")
-            except Exception:
-                pass
-        if regime_mode == "live" and snap is not None and snap.get("hold_candidate"):
-            # 매도 대신 보유(armed). signal_sell_bar/다른 조건의 확인상태는 건드리지 않는다(Codex 1차).
-            pos["dc_regime_hold"] = True
-            api._record_position_meta(code, pos)
-            ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
-            return False
-    ctx.log(
-        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
-        f"pnl={ctx.pnl_pct*100:.2f}% held={held:.0f}s bars_since_cross={bars_since_cross} "
-        f"bb_slope_1min={bb_slope_1min:.3f}%{depth_label} confirm={dead_cross_hold_seconds:.0f}s"
-    )
-    ctx.state.trailing_sell_confirm_state.pop(code, None)
-    ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
-    if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={pos['quantity']} price={price:,.0f}")
-    ctx.state.signal_sell_bar[code] = ctx.bar_time
-    return True
-
-
-def _log_dc_regime(ctx: SellContext, snap: dict, mode: str, reason: str, action: str | None = None) -> None:
-    """[2026-10-06] 3분봉 추세 연동 판정 로그 + 게이트 jsonl(kind=DC_REGIME). 기록 실패는 매매에 영향 없음."""
-    decision = action or ("HOLD" if snap["hold_candidate"] else "SELL")
-    ctx.log(
-        f"  [DC REGIME   ] {ctx.symbol_label} | mode={mode} decision={decision} | {reason} | "
-        f"pnl={ctx.pnl_pct*100:.2f}% regime_up={snap['regime_up']} dist3={snap['dist3_pct']:.2f}% "
-        f"slope3={snap['slope3_pct']:.3f}% bar3_age={snap['bar3_age_s']:.0f}s | "
-        f"c1={snap['c1']:,.0f} mid1={snap['bb_mid1']:,.1f} low1={snap['bb_low1']:,.1f}"
-    )
-    rec_fn = getattr(ctx.services, "record_gate_decision", None)
-    if rec_fn is None:
-        return
-    try:
-        rec = {
-            "ts": ctx.current_dt.isoformat(timespec="seconds"), "code": str(ctx.code).zfill(6), "kind": "DC_REGIME",
-            "result": decision, "mode": mode, "reason": reason, "price": float(ctx.price),
-            "pnl_pct": round(ctx.pnl_pct * 100.0, 4), "entry_price": float(ctx.entry_price),
-            "bar_time": str(ctx.bar_time),
-        }
-        rec.update({k: (None if (isinstance(v, float) and pd.isna(v)) else v) for k, v in snap.items()})
-        rec_fn(rec)
-    except Exception as exc:
-        ctx.log(f"  [GATE LOG    ] {ctx.symbol_label} | DC_REGIME record failed: {exc}")
-
-
-def _011_regime_armed_step(ctx: SellContext, frame_1min: pd.DataFrame | None) -> bool:
-    """[2026-10-06] live 모드 armed 포지션 1틱 처리(r002 dc_regime_armed_action 공용 판정)."""
-    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
-    try:
-        snap = dc_regime_snapshot(
-            ctx.frame, frame_1min, ctx.pnl_pct, ctx.current_dt,
-            HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT, HYBRID_1MIN_DEADCROSS_REGIME_MAX_BAR_AGE_SECONDS,
-        )
-        action = dc_regime_armed_action(snap, ctx.pnl_pct, HYBRID_1MIN_DEADCROSS_REGIME_DEEP_LOSS_PCT)
-    except Exception as exc:  # 판정 실패 시 보수적으로 청산(fail-closed)
-        snap = {"regime_up": False, "hold_candidate": False, "dist3_pct": float("nan"), "slope3_pct": float("nan"),
-                "bar3_age_s": float("nan"), "c1": float("nan"), "bb_mid1": float("nan"), "bb_low1": float("nan")}
-        action = "EXIT_REGIME_FLIP"
-        ctx.log(f"  [DC REGIME   ] {ctx.symbol_label} | armed evaluation failed - exit: {exc}")
-    ctx.state.hybrid_1min_dead_cross_state.pop(code, None)
-    if action == "HOLD":
-        return False
-    if action == "DISARM":
-        pos["dc_regime_hold"] = False
-        api._record_position_meta(code, pos)
-        _log_dc_regime(ctx, snap, "live", "ARMED_RECOVERED", action="DISARM")
-        return False
-    reason = "HYBRID_1MIN_DEAD_CROSS_" + ("REGIME_FLIP" if action == "EXIT_REGIME_FLIP" else action.replace("EXIT_", "REGIME_"))
-    try:
-        _log_dc_regime(ctx, snap, "live", reason, action="SELL")
-    except Exception:
-        pass
-    ctx.log(
-        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
-        f"pnl={ctx.pnl_pct*100:.2f}%"
-    )
-    ctx.state.trailing_sell_confirm_state.pop(code, None)
-    if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={pos['quantity']} price={price:,.0f}")
-    ctx.state.signal_sell_bar[code] = ctx.bar_time
-    return True
-
-
 def _023_profit_lock(ctx: SellContext) -> bool:
     """[2026-11-02] 이익 잠금(사용자 요청, 091580 20261102): TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 이후 현재가가
     고점 x (1 - PROFIT_LOCK_GIVEBACK_PCT) 이하이면 진입수량의 PROFIT_LOCK_RATIO를 시장가 매도(포지션당 1회, profit_lock_done
@@ -1007,117 +639,6 @@ def _023_profit_lock(ctx: SellContext) -> bool:
     return True
 
 
-def _012_peak_retracement_guard(ctx: SellContext) -> bool:
-    """[2026-09-23] 사용자 요청("급등 후 꺾이면 고점 대비 -0.8%서 익절") + Codex 설계검토. TP1(+3.0%)/
-    ATR익절선 도달 전 구간은 현재 아무 보호장치가 없다 - 그 밑에서 고점을 찍고 반납해도 하드손절이나
-    시그널청산이 걸릴 때까지 아무 것도 안 잡는다. 이 공백을 메운다.
-
-    주의(탐색적 구현): 이 파일의 _017_breakeven_fail_guard 이력(BREAKEVEN_FAIL_GIVEBACK_PCT가
-    0.8%->2.0%->2.8%로 점진 완화됨 - 백테스트 결과 92.9%가 본전 이상 회복)은 고정 0.8% 되돌림처럼 좁은
-    문턱이 정상적인 되돌림도 조기청산할 위험을 보여준다. Codex 권고대로 ATR% 기반으로 문턱을 정해(고정
-    MIN_PCT는 하한선일 뿐) 변동성 큰 종목은 자동으로 문턱이 넓어지게 한다."""
-    if not ENABLE_PEAK_RETRACE_GUARD:
-        return False
-    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
-    # [2026-09-23, Codex 재검토] 아래 4개 조기 return은 모두 "이 조건 자체가 이번 틱엔 적용 대상이 아님"을
-    # 뜻하므로 진행 중이던 확인창(peak_retrace_guard_state)도 함께 지워야 한다 - 안 지우면 자격을 잃었다
-    # 되찾는 사이(예: pnl이 잠깐 0% 이하로 빠졌다가 다시 양전) 이전 타이머가 그대로 이어져, 실제로는
-    # 연속되지 않은 되돌림 구간인데도 CONFIRM_SECONDS를 즉시 만족해버릴 수 있다(단일 틱 노이즈 방지라는
-    # 확인창의 취지를 무력화).
-    if bool(pos.get("tp1_done", False)):
-        ctx.state.peak_retrace_guard_state.pop(code, None)
-        return False  # TP1 이후는 사다리/TP2/트레일링 스탑이 담당
-    if not pd.isna(ctx.atr_tp_pct) and ctx.peak_pnl_pct >= ctx.atr_tp_pct:
-        ctx.state.peak_retrace_guard_state.pop(code, None)
-        return False  # 이미 ATR 익절선 도달 - 확장 트레일링 영역, 그쪽(_015/_020)에 위임
-    if ctx.pnl_pct <= 0:
-        ctx.state.peak_retrace_guard_state.pop(code, None)
-        return False  # 손실/본전 이하는 _017_breakeven_fail_guard 담당
-    if ctx.peak_pnl_pct < PEAK_RETRACE_GUARD_ARM_PNL:
-        ctx.state.peak_retrace_guard_state.pop(code, None)
-        return False
-
-    _, buy_token, held = _hold_info(ctx)
-    retrace_threshold = max(
-        PEAK_RETRACE_GUARD_MIN_PCT,
-        (ctx.atr_pct * PEAK_RETRACE_GUARD_ATR_MULT) if not pd.isna(ctx.atr_pct) else 0.0,
-    )
-    condition = ctx.profit_giveback >= retrace_threshold
-    hold_seconds = update_timed_condition_state(
-        ctx.state.peak_retrace_guard_state, code, buy_token, ctx.current_dt, condition,
-    )
-    # condition도 함께 확인 - update_timed_condition_state는 조건 False/막 True 첫 틱 모두 0.0을 반환하므로
-    # PEAK_RETRACE_GUARD_CONFIRM_SECONDS<=0(롤백값)이면 조건 False에서도 발동하는 잠재 버그가 된다
-    # (_004_hard_stop_loss/_019_atr_stop_loss와 동일 패턴, 2026-09-23 발견 당시 이 함수엔 미적용).
-    if not condition or hold_seconds < PEAK_RETRACE_GUARD_CONFIRM_SECONDS:
-        return False
-
-    reason = f"PEAK_RETRACE_GUARD_{retrace_threshold*100:.2f}pct"
-    ctx.log(
-        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
-        f"peak={ctx.highest_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% peak_pnl={ctx.peak_pnl_pct*100:.2f}% "
-        f"giveback={ctx.profit_giveback*100:.2f}% atr_pct={ctx.atr_pct*100:.2f}% held={held:.0f}s "
-        f"confirm={hold_seconds:.0f}s"
-    )
-    ctx.state.trailing_sell_confirm_state.pop(code, None)
-    ctx.state.peak_retrace_guard_state.pop(code, None)
-    if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
-        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={pos['quantity']} price={price:,.0f}")
-    ctx.state.signal_sell_bar[code] = ctx.bar_time
-    return True
-
-
-def _013_signal_exit_stoch_k_lt_d(ctx: SellContext) -> bool:
-    if not ENABLE_SIGNAL_EXIT_STOCH_K_LT_D:
-        return False
-    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
-    s = _signal_trend_inputs(ctx)
-    k_now, d_now = s["k_now"], s["d_now"]
-    if not any(pd.isna(v) for v in (k_now, d_now)) and k_now < d_now:
-        if s["strong_uptrend"] or s["sig_held_seconds"] < SIGNAL_EXIT_MIN_HOLD_SECONDS or ctx.pnl_pct > SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN:
-            ctx.log(
-                f"  [SELL SKIP   ] {ctx.symbol_label} | STOCH_K_LT_D suppressed | "
-                f"K={k_now:.1f} D={d_now:.1f} pnl={ctx.pnl_pct*100:.2f}% held={s['sig_held_seconds']:.0f}s "
-                f"uptrend(adx={s['adx_uptrend']},price={s['price_uptrend']})"
-            )
-        else:
-            reason_sig_kd = "SIGNAL_EXIT_STOCH_K_LT_D"
-            ctx.log(
-                f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_sig_kd} | "
-                f"K={k_now:.1f} D={d_now:.1f} pnl={ctx.pnl_pct*100:.2f}%"
-            )
-            ctx.state.trailing_sell_confirm_state.pop(code, None)
-            if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_sig_kd, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-                ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_sig_kd} | qty={pos['quantity']} price={price:,.0f}")
-            ctx.state.signal_sell_bar[code] = ctx.bar_time
-            return True
-    return False
-
-
-def _014_signal_exit_macd_hist_down(ctx: SellContext) -> bool:
-    if not ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN:
-        return False
-    code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
-    s = _signal_trend_inputs(ctx)
-    hist_now, hist_prev, hist_prev2 = s["hist_now"], s["hist_prev"], s["hist_prev2"]
-    if (not any(pd.isna(v) for v in (hist_now, hist_prev, hist_prev2))
-            and hist_now < hist_prev < hist_prev2
-            and not s["strong_uptrend"]
-            and s["sig_held_seconds"] >= SIGNAL_EXIT_MIN_HOLD_SECONDS
-            and ctx.pnl_pct <= SIGNAL_EXIT_MACD_PNL_MAX):
-        reason_sig_macd = "SIGNAL_EXIT_MACD_HIST_DOWN_2BARS"
-        ctx.log(
-            f"  [SELL TRIGGER] {ctx.symbol_label} | {reason_sig_macd} | "
-            f"HIST={hist_prev2:.3f}->{hist_prev:.3f}->{hist_now:.3f} pnl={ctx.pnl_pct*100:.2f}%"
-        )
-        ctx.state.trailing_sell_confirm_state.pop(code, None)
-        if api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason_sig_macd, ctx.nxt_tradeable, price=price, code_name=ctx.name):
-            ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason_sig_macd} | qty={pos['quantity']} price={price:,.0f}")
-        ctx.state.signal_sell_bar[code] = ctx.bar_time
-        return True
-    return False
-
-
 def _015_atr_take_profit(ctx: SellContext) -> bool:
     code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
     if not pd.isna(ctx.atr_tp_pct) and ctx.pnl_pct >= ctx.atr_tp_pct:
@@ -1149,8 +670,6 @@ def _clear_timed_guard_states(ctx: SellContext) -> None:
     st.no_trend_exit_state.pop(code, None)
     st.trailing_sell_confirm_state.pop(code, None)
     st.atr_stop_confirm_state.pop(code, None)
-    st.hybrid_1min_dead_cross_state.pop(code, None)
-    st.peak_retrace_guard_state.pop(code, None)
     st.hard_stop_confirm_state.pop(code, None)
 
 
@@ -1432,9 +951,6 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
     SellCondition(4, "_004_hard_stop_loss", "EXIT", "하드 손절",
                   "손익 <= -HARD_STOP_LOSS_PCT 이고 보유 HARD_STOP_MIN_HOLD_SECONDS 경과가 HARD_STOP_CONFIRM_SECONDS 지속되면 시장가 전량 청산 + 당일 재진입 차단",
                   ("HARD_STOP_LOSS_PCT", "HARD_STOP_MIN_HOLD_SECONDS", "HARD_STOP_CONFIRM_SECONDS"), _004_hard_stop_loss),
-    SellCondition(5, "_005_pyramid_add_entry", "ADD_ENTRY", "불타기(추가 매수)",
-                  "수익 PYRAMID_TRIGGER_PNL_PCT 이상 + MA5/BB중심선/ADX 상승 시 1회 추가 매수 (매도 아님)",
-                  ("ENABLE_PYRAMIDING", "PYRAMID_TRIGGER_PNL_PCT"), _005_pyramid_add_entry),
     SellCondition(6, "_006_staged_tp1_partial", "EXIT", "1차 분할익절",
                   "손익 >= min(max(STAGED_TP1_PCT, ATR%xTP1_ATR_MULTIPLIER), ATR 익절선) 도달 시 진입수량의 STAGED_TP1_RATIO 매도. 급등이면 사다리 무장",
                   ("ENABLE_STAGED_TAKE_PROFIT", "STAGED_TP1_PCT", "STAGED_TP1_RATIO", "TP1_ATR_MULTIPLIER", "ENABLE_TP1_CAP_AT_ATR_TP",
@@ -1442,36 +958,12 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
     SellCondition(7, "_007_surge_ladder_tp", "EXIT", "급등 사다리 익절(TP2/TP3)",
                   "급등 중 1차 익절한 포지션: TP1 체결가 +SURGE_TP2_PCT에서 진입수량 일부, +SURGE_TP3_PCT에서 잔량 전량",
                   ("SURGE_TP2_PCT", "SURGE_TP3_PCT", "SURGE_TP2_RATIO"), _007_surge_ladder_tp),
-    SellCondition(8, "_008_staged_tp2_partial", "EXIT", "2차 분할익절",
-                  "1차 완료 후 손익 >= TP1 목표 + (STAGED_TP2_PCT-STAGED_TP1_PCT) 도달 시 진입수량의 STAGED_TP2_RATIO 매도 (사다리 가동 중이면 건너뜀)",
-                  ("STAGED_TP2_PCT", "STAGED_TP2_RATIO"), _008_staged_tp2_partial),
-    SellCondition(9, "_009_tp3_trail_arm", "STATE", "3차 트레일 무장",
-                  "1·2차 완료 후 잔량을 고정 청산 없이 트레일링 스탑에 위임 (플래그+로그만, 통과)", (), _009_tp3_trail_arm),
-    SellCondition(10, "_010_legacy_tp_full_and_partial", "EXIT", "구형 익절(비활성 시에만)",
-                  "ENABLE_STAGED_TAKE_PROFIT=False일 때만: +2.0% 전량 / +1.0% 50% 1회", ("ENABLE_STAGED_TAKE_PROFIT",), _010_legacy_tp_full_and_partial),
-    SellCondition(11, "_011_hybrid_1min_dead_cross_exit", "EXIT", "1분봉 BB중심선 데드크로스 청산",
-                  "1분봉 데드크로스(신선/룩백) + 확인창 지속 시 전량 시장가 청산 - 손실구간은 즉시, "
-                  "수익구간은 1분봉 BB기울기 하향 전환까지 확인 (r002 check_1min_dead_cross)",
-                  ("ENABLE_HYBRID_1MIN_DEADCROSS_EXIT", "HYBRID_1MIN_DEADCROSS_LOOKBACK_BARS",
-                   "HYBRID_1MIN_DEADCROSS_MIN_HOLD_SECONDS", "HYBRID_1MIN_DEADCROSS_CONFIRM_SECONDS",
-                   "HYBRID_1MIN_DEADCROSS_LOSS_EXIT_PNL_MAX"), _011_hybrid_1min_dead_cross_exit),
-    # [2026-11-02] 번호는 23(기존 번호 유지), 평가 순서는 _012 앞
+    # [2026-11-02] 번호는 23(기존 번호 유지). [2026-11-04] _012 되돌림 가드 삭제(잠금이 항상 먼저 발동해 도달 불가)
     SellCondition(23, "_023_profit_lock", "EXIT", "이익 잠금(고점 대비 하락 1차 매도 + 잔량 본전 청산)",
                   "TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 후 고점 대비 PROFIT_LOCK_GIVEBACK_PCT 하락 시 진입수량의 "
                   "PROFIT_LOCK_RATIO 시장가 매도(1회), 이후 잔량은 손익 <= 0이면 전량 시장가 매도",
                   ("ENABLE_PROFIT_LOCK", "PROFIT_LOCK_ARM_PNL", "PROFIT_LOCK_GIVEBACK_PCT", "PROFIT_LOCK_RATIO",
                    "PROFIT_LOCK_REST_BREAKEVEN"), _023_profit_lock),
-    SellCondition(12, "_012_peak_retracement_guard", "EXIT", "고점 대비 되돌림 익절가드",
-                  "TP1/ATR익절선 도달 전, 고점(peak_pnl>=ARM_PNL) 대비 되돌림이 max(MIN_PCT, ATR%xATR_MULT) "
-                  "이상 지속되면 전량 시장가 익절 청산",
-                  ("ENABLE_PEAK_RETRACE_GUARD", "PEAK_RETRACE_GUARD_ARM_PNL", "PEAK_RETRACE_GUARD_MIN_PCT",
-                   "PEAK_RETRACE_GUARD_ATR_MULT", "PEAK_RETRACE_GUARD_CONFIRM_SECONDS"), _012_peak_retracement_guard),
-    SellCondition(13, "_013_signal_exit_stoch_k_lt_d", "EXIT", "시그널 청산: 스토캐스틱 K<D",
-                  "%K<%D이면 전량 청산. 강한 상승추세/최소 보유시간 미달/수익 충분 시에는 억제(로그만)",
-                  ("ENABLE_SIGNAL_EXIT_STOCH_K_LT_D", "SIGNAL_EXIT_MIN_HOLD_SECONDS", "SIGNAL_EXIT_STRONG_TREND_ADX_MIN", "SIGNAL_EXIT_STOCH_SUPPRESS_PNL_MIN"), _013_signal_exit_stoch_k_lt_d),
-    SellCondition(14, "_014_signal_exit_macd_hist_down", "EXIT", "시그널 청산: MACD 히스토그램 2봉 하락",
-                  "MACD_HIST 2봉 연속 하락 + 상승추세 아님 + 최소 보유시간 + 손익 <= SIGNAL_EXIT_MACD_PNL_MAX 이면 전량 청산",
-                  ("ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN", "SIGNAL_EXIT_MACD_PNL_MAX", "SIGNAL_EXIT_MIN_HOLD_SECONDS"), _014_signal_exit_macd_hist_down),
     SellCondition(15, "_015_atr_take_profit", "EXIT", "ATR 익절선 도달",
                   "손익 >= ATR 익절선: 트레일 확장 모드면 로그만(트레일 무장), 아니면 전량 익절",
                   ("ATR_TAKE_PROFIT_MULTIPLIER", "ENABLE_TP_EXTENSION_TRAILING", "TP_EXTENSION_TRAIL_FROM_PEAK"), _015_atr_take_profit),
