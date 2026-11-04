@@ -590,6 +590,17 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def _env_int(name: str, default: int) -> int:
+    """[2026-11-04] 비음수 정수 환경변수(재진입 한도 등). 미설정이면 default, 정수가 아니거나 음수면 SystemExit."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return int(default)
+    text = str(raw).strip()
+    if not text.isdigit():
+        raise SystemExit(f"{name} must be a non-negative integer, got {raw!r}")
+    return int(text)
+
+
 # Replay-only overrides for buy-gate sensitivity comparison (defaults from r003).
 REQUIRE_ADX_RISING = _env_bool("REQUIRE_ADX_RISING", REQUIRE_ADX_RISING)
 REQUIRE_DI_PLUS_DOMINANT = _env_bool("REQUIRE_DI_PLUS_DOMINANT", REQUIRE_DI_PLUS_DOMINANT)
@@ -605,14 +616,16 @@ SIM_MA5_BB_FOLLOW_CHASE_MAX_GAP_PCT = _env_float(
 # Intrabar filter: follows r001 like live (env ENABLE_INTRABAR_LIVE_ENTRY_FILTER=0 turns it off for the sim only).
 ENABLE_INTRABAR_LIVE_ENTRY_FILTER = _env_bool("ENABLE_INTRABAR_LIVE_ENTRY_FILTER", ENABLE_INTRABAR_LIVE_ENTRY_FILTER)
 # [2026-10-31] 매도 조건 삭제 A/B용 (기본 r001: 세 조건 모두 OFF)
-ENABLE_HYBRID_1MIN_DEADCROSS_EXIT = _env_bool("ENABLE_HYBRID_1MIN_DEADCROSS_EXIT", ENABLE_HYBRID_1MIN_DEADCROSS_EXIT)
-ENABLE_SIGNAL_EXIT_STOCH_K_LT_D = _env_bool("ENABLE_SIGNAL_EXIT_STOCH_K_LT_D", ENABLE_SIGNAL_EXIT_STOCH_K_LT_D)
-ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN = _env_bool("ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN", ENABLE_SIGNAL_EXIT_MACD_HIST_DOWN)
 # [2026-10-31] 매수 게이트 A/B용 - 게이트 함수가 r002 모듈 전역을 읽으므로 r002 쪽 값을 덮어쓴다.
 import r002_strategy_core_shared as _r002_mod  # noqa: E402
 _r002_mod.ENABLE_MIN_ENTRY_ATR_FILTER = _env_bool("ENABLE_MIN_ENTRY_ATR_FILTER", _r002_mod.ENABLE_MIN_ENTRY_ATR_FILTER)
 _r002_mod.ENABLE_STOCHASTIC_BUY_GATE = _env_bool("ENABLE_STOCHASTIC_BUY_GATE", _r002_mod.ENABLE_STOCHASTIC_BUY_GATE)
 _r002_mod.ENABLE_BB_UPPER_GAP_GATE = _env_bool("ENABLE_BB_UPPER_GAP_GATE", _r002_mod.ENABLE_BB_UPPER_GAP_GATE)
+# [2026-11-04] 재진입 정책 what-if(손절 종목 재매수 허용/한도) 비교용 replay 전용 오버라이드 - 실전 r003은 r001 값만 사용.
+# 정수 한도는 _env_int(비음수 정수만, 그 외 즉시 종료 - Codex: nan/inf/1.9/음수가 조용히 통과하면 안 됨).
+HARD_STOP_BLOCK_REENTRY_TODAY = _env_bool("HARD_STOP_BLOCK_REENTRY_TODAY", HARD_STOP_BLOCK_REENTRY_TODAY)
+REENTRY_MAX_PER_CODE = _env_int("REENTRY_MAX_PER_CODE", REENTRY_MAX_PER_CODE)
+REENTRY_MAX_PER_CODE_AFTER_PROFIT = _env_int("REENTRY_MAX_PER_CODE_AFTER_PROFIT", REENTRY_MAX_PER_CODE_AFTER_PROFIT)
 INTRABAR_MIN_ELAPSED_SECONDS = _env_float("INTRABAR_MIN_ELAPSED_SECONDS", INTRABAR_MIN_ELAPSED_SECONDS)
 INTRABAR_MFI_MIN = _env_float("INTRABAR_MFI_MIN", INTRABAR_MFI_MIN)
 INTRABAR_MFI_MAX = _env_float("INTRABAR_MFI_MAX", INTRABAR_MFI_MAX)
