@@ -1762,6 +1762,39 @@ HYBRID_3MIN_CONTEXT_GATES: list[BuyGateCondition] = [
     gate for gate in BUY_GATE_CONDITIONS
     if gate.name not in _HYBRID_EXCLUDED_GATE_NAMES
 ]
+# [2026-11-04] 실제 매수 판정(r005 _014/_015, g003 양 경로)에 쓰는 3분 컨텍스트 게이트. 나머지(bb_slope_rising,
+# bb_mid_downtrend_block, bb_upper_gap_min, stochastic_buy_signal, di_spread_min)와 점수 임계값은 triple 경로에서 항상
+# BYPASS되어 판정 가치가 0이라 매수 조건에서 삭제(사용자 결정, 10/30~11/04 매수 17건 중 14건 stochastic BYPASS).
+# 게이트 함수/HYBRID_3MIN_CONTEXT_GATES 자체는 r011 Edge AI 피처(m3_gates_passed/m3_score)용으로 그대로 둔다.
+DECISION_CONTEXT_GATE_NAMES: tuple[str, ...] = ("min_entry_atr_volatility", "min_liquidity_safety")
+DECISION_CONTEXT_GATES: list[BuyGateCondition] = [
+    gate for gate in HYBRID_3MIN_CONTEXT_GATES if gate.name in DECISION_CONTEXT_GATE_NAMES
+]
+assert [g.name for g in DECISION_CONTEXT_GATES] == list(DECISION_CONTEXT_GATE_NAMES), "r002 decision gates missing"
+
+
+def run_3min_context_decision(
+    frame: pd.DataFrame,
+    now: pd.Timestamp,
+    live_price: float,
+    cross_info: dict[str, object],
+    config: StrategyConfig,
+    triple_cross: bool = False,
+) -> tuple[bool, str]:
+    """[2026-11-04] 매수 판정용 3분 컨텍스트: build_context_eval -> DECISION_CONTEXT_GATES(ATR 하한, 유동성)만 순차 판정,
+    점수는 임계값 없이 사유 문자열("HYBRID_3MIN_CTX_SCORE_n")에 기록만 한다. r005(_009/_014/_015/_017)와 g003 양 경로가
+    같은 집합을 쓴다. triple_cross는 진입 ATR 하한 완화(ENABLE_RELAXED_ENTRY_ATR)에만 쓰인다."""
+    ctx, reason = build_context_eval(frame, now, live_price, cross_info, config)
+    if ctx is None:
+        return False, reason
+    if dataclasses.is_dataclass(ctx):
+        ctx = dataclasses.replace(ctx, triple_cross=bool(triple_cross))
+    for gate in DECISION_CONTEXT_GATES:
+        passed, ctx, reason = gate.eval_fn(ctx)
+        if not passed:
+            return False, f"HYBRID_3MIN_CTX_{reason}"
+    score = sum(rule.eval_fn(ctx) for rule in BUY_SCORE_RULES)
+    return True, f"HYBRID_3MIN_CTX_SCORE_{score}"
 
 
 def build_context_eval(

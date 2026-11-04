@@ -240,42 +240,43 @@ class TestR005Triple(unittest.TestCase):
         self.assertIn("TICK_FEED_UNAVAILABLE", logs[-1])
 
 
-class TestSoftGateBypass(unittest.TestCase):
+class TestDecisionGatesNoBypass(unittest.TestCase):
+    """[2026-11-04] 소프트 게이트/BYPASS 삭제: 판정 게이트는 r002 DECISION_CONTEXT_GATES 2개뿐이고 실패는 항상 리젝,
+    _017은 점수를 기록만 한다."""
+
     def _ctx(self, triple):
-        logs = []
-        ctx = SimpleNamespace(triple_cross=triple, bypassed_gates=[], eval_ctx=None, trigger_reason="TRIPLE_X",
-                              current_dt=datetime(2026, 10, 30, 9, 22), config=None, buy_reason="")
-        return ctx, logs
+        return SimpleNamespace(triple_cross=triple, eval_ctx=None, trigger_reason="TRIPLE_X",
+                               current_dt=datetime(2026, 10, 30, 9, 22), config=None, buy_reason="")
 
-    def _gate(self, name):
-        return SimpleNamespace(eval_fn=lambda e: (False, e, f"{name.upper()}_FAIL"))
+    def test_registered_gates_are_exactly_atr_and_liquidity(self):
+        self.assertEqual(set(r005._GATES_BY_NAME), {"min_entry_atr_volatility", "min_liquidity_safety"})
+        names = [c.func_name for c in r005.BUY_CONDITIONS]
+        for gone in ("_010_bb_slope_rising", "_011_bb_mid_downtrend_block", "_012_bb_upper_gap_min",
+                     "_013_stochastic_buy_signal", "_016_di_spread_min", "_017_context_score_threshold"):
+            self.assertNotIn(gone, names)
+            self.assertFalse(hasattr(r005, gone), gone)
+        self.assertFalse(hasattr(r005, "TRIPLE_CROSS_BYPASS_CONTEXT_GATES"))
+        self.assertIn("_017_context_score_record", names)
 
-    def test_bypass_list_only(self):
-        with mock.patch.dict(r005._GATES_BY_NAME, {"stochastic_buy_signal": self._gate("stoch"),
-                                                   "min_liquidity_safety": self._gate("liq")}), \
+    def test_gate_failure_rejects_even_on_triple_path(self):
+        fail = SimpleNamespace(eval_fn=lambda e: (False, e, "LIQ_FAIL"))
+        with mock.patch.dict(r005._GATES_BY_NAME, {"min_liquidity_safety": fail}), \
                 mock.patch.object(r005, "_reject_hybrid") as rej:
-            ctx, _ = self._ctx(True)
-            self.assertTrue(r005._context_gate(ctx, "stochastic_buy_signal"))
-            self.assertEqual(ctx.bypassed_gates, ["stochastic_buy_signal"])
-            self.assertFalse(r005._context_gate(ctx, "min_liquidity_safety"))
-            rej.assert_called_once()
-            ctx2, _ = self._ctx(False)
-            self.assertFalse(r005._context_gate(ctx2, "stochastic_buy_signal"))
-
-    def test_score_bypass_and_reason(self):
-        with mock.patch.object(r005, "evaluate_context_score", lambda *a: (False, "HYBRID_3MIN_CTX_SCORE_5_LT_10")), \
-                mock.patch.object(r005, "_reject_hybrid") as rej:
-            ctx, _ = self._ctx(True)
-            ctx.bypassed_gates = ["stochastic_buy_signal"]
-            self.assertTrue(r005._017_context_score_threshold(ctx))
-            self.assertEqual(ctx.buy_reason,
-                             "TRIPLE_X+HYBRID_3MIN_CTX_SCORE_5_LT_10+BYPASS(stochastic_buy_signal,score)")
-            with mock.patch.object(r005, "TRIPLE_CROSS_BYPASS_SCORE", False):
-                ctx, _ = self._ctx(True)
-                self.assertFalse(r005._017_context_score_threshold(ctx))
-            ctx, _ = self._ctx(False)
-            self.assertFalse(r005._017_context_score_threshold(ctx))
+            self.assertFalse(r005._context_gate(self._ctx(True), "min_liquidity_safety"))
+            self.assertFalse(r005._context_gate(self._ctx(False), "min_liquidity_safety"))
             self.assertEqual(rej.call_count, 2)
+            self.assertIn("HYBRID_3MIN_CTX_LIQ_FAIL", rej.call_args[0][1])
+
+    def test_score_recorded_without_threshold(self):
+        rules = [SimpleNamespace(eval_fn=lambda e: 1)] * 5
+        with mock.patch.object(r005, "BUY_SCORE_RULES", rules), mock.patch.object(r005, "_reject_hybrid") as rej:
+            ctx = self._ctx(True)
+            self.assertTrue(r005._017_context_score_record(ctx))
+            self.assertEqual(ctx.buy_reason, "TRIPLE_X+HYBRID_3MIN_CTX_SCORE_5")
+            ctx = self._ctx(False)
+            self.assertTrue(r005._017_context_score_record(ctx))
+            self.assertEqual(ctx.buy_reason, "HYBRID_1MIN_TRIGGER_TRIPLE_X+HYBRID_3MIN_CTX_SCORE_5")
+            rej.assert_not_called()
 
     def test_triple_overrides_basic(self):
         with mock.patch.object(r005, "TRADING_STRATEGY_MODE", "basic"):

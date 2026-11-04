@@ -23,6 +23,7 @@ from r009_tick_bars import TICK_FILE_COLUMNS  # noqa: E402
 from r013_tick_trigger import TickReplayFeed, TickTriggerFeed  # noqa: E402
 
 import g003_trade_simulate_by_date as g003  # noqa: E402
+import r002_strategy_core_shared as r002  # noqa: E402
 
 T0 = datetime(2026, 11, 2, 10, 0, 0)
 
@@ -173,37 +174,30 @@ def _gate(name, ok):
     return SimpleNamespace(name=name, eval_fn=lambda ctx: (ok, ctx, None if ok else f"{name.upper()}_FAIL"))
 
 
-class TestTripleContextBypass(unittest.TestCase):
-    def _run(self, gates, score_ok, bypass_score=True):
-        with mock.patch.object(g003, "build_context_eval", return_value=(object(), "")), \
-                mock.patch.object(g003, "HYBRID_3MIN_CONTEXT_GATES", gates), \
-                mock.patch.object(g003, "TRIPLE_CROSS_BYPASS_CONTEXT_GATES", ("stochastic_buy_signal", "di_spread_min")), \
-                mock.patch.object(g003, "TRIPLE_CROSS_BYPASS_SCORE", bypass_score), \
-                mock.patch.object(g003, "evaluate_context_score",
-                                  return_value=(True, "HYBRID_3MIN_CTX_SCORE_5") if score_ok
-                                  else (False, "HYBRID_3MIN_CTX_LOW_SCORE_2_LT_4")):
-            return g003.run_3min_context_pipeline_triple(None, None, 0.0, {}, None)
+class TestContextDecision(unittest.TestCase):
+    """[2026-11-04] r002 run_3min_context_decision (r005/g003 공용): ATR 하한 + 유동성만 판정, 점수는 기록만, BYPASS 없음."""
 
-    def test_soft_gate_failures_and_low_score_bypassed(self):
-        ok, reason, bypassed = self._run(
-            [_gate("stochastic_buy_signal", False), _gate("min_liquidity_safety", True), _gate("di_spread_min", False)],
-            score_ok=False,
-        )
+    def _run(self, gates, score=7):
+        rules = [SimpleNamespace(eval_fn=lambda e: 1)] * score
+        with mock.patch.object(r002, "build_context_eval", return_value=(object(), "")), \
+                mock.patch.object(r002, "DECISION_CONTEXT_GATES", gates), \
+                mock.patch.object(r002, "BUY_SCORE_RULES", rules):
+            return r002.run_3min_context_decision(None, None, 0.0, {}, None, triple_cross=True)
+
+    def test_pass_records_score_without_threshold(self):
+        ok, reason = self._run([_gate("min_entry_atr_volatility", True), _gate("min_liquidity_safety", True)], score=3)
         self.assertTrue(ok)
-        self.assertEqual(reason, "HYBRID_3MIN_CTX_LOW_SCORE_2_LT_4")
-        self.assertEqual(bypassed, ["stochastic_buy_signal", "di_spread_min", "score"])
+        self.assertEqual(reason, "HYBRID_3MIN_CTX_SCORE_3")
 
-    def test_hard_gate_failure_rejects(self):
-        ok, reason, _ = self._run(
-            [_gate("stochastic_buy_signal", False), _gate("min_entry_atr_volatility", False)], score_ok=True,
-        )
+    def test_gate_failure_rejects(self):
+        ok, reason = self._run([_gate("min_entry_atr_volatility", False), _gate("min_liquidity_safety", True)])
         self.assertFalse(ok)
         self.assertEqual(reason, "HYBRID_3MIN_CTX_MIN_ENTRY_ATR_VOLATILITY_FAIL")
 
-    def test_low_score_rejects_without_score_bypass(self):
-        ok, reason, _ = self._run([_gate("stochastic_buy_signal", True)], score_ok=False, bypass_score=False)
-        self.assertFalse(ok)
-        self.assertIn("LOW_SCORE", reason)
+    def test_decision_gate_list_is_atr_and_liquidity_only(self):
+        self.assertEqual([g.name for g in r002.DECISION_CONTEXT_GATES], ["min_entry_atr_volatility", "min_liquidity_safety"])
+        self.assertFalse(hasattr(g003, "run_3min_context_pipeline_triple"))
+        self.assertFalse(hasattr(g003, "TRIPLE_CROSS_BYPASS_CONTEXT_GATES"))
 
 
 if __name__ == "__main__":

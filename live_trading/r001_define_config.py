@@ -2,6 +2,13 @@
 
 # Update log
 # - [2026-11-04] type=refactor owner=claude
+#     summary: 사용자 결정(매수/매도 조건 전면 검토) - 항상 BYPASS되던 3분 소프트 게이트(r005 _010/_011/_012/_013/_016)와
+#       점수 임계값(_017) 매수 조건에서 삭제, TRIPLE_CROSS_BYPASS_* 상수 제거. 판정 게이트 = r002 DECISION_CONTEXT_GATES(ATR 하한,
+#       유동성). BB_SLOPE_*/STOCH_*/DI_SPREAD_*/BB_UPPER_GAP_*/BB_BUY_SCORE_THRESHOLD는 r002 게이트 함수(r011 Edge AI 피처용)가
+#       계속 쓰므로 유지.
+#     impact: live (r003 재시작 후) + g003
+#     compatibility: breaking (매수 증가 방향 아님 - BYPASS라 실제 판정 변화 0, 사유 문자열에서 +BYPASS(...)만 사라짐)
+# - [2026-11-04] type=refactor owner=claude
 #     summary: 사용자 결정(매수/매도 조건 전면 검토) - 삭제된 매도 조건의 상수 제거: ENABLE_PYRAMIDING/PYRAMID_TRIGGER_PNL_PCT,
 #       STAGED_TP2_PCT/RATIO, ENABLE_HYBRID_1MIN_DEADCROSS_EXIT + HYBRID_1MIN_DEADCROSS_*(REGIME 포함), ENABLE_SIGNAL_EXIT_*/
 #       SIGNAL_EXIT_*, ENABLE_PEAK_RETRACE_GUARD/PEAK_RETRACE_GUARD_* (r006/g003 동시 삭제).
@@ -1253,8 +1260,8 @@ TRIPLE_TICK_CONDITION = "any"           # "any" | "all"
 # 3중 크로스 경로의 실시간 가드: 하락폭(HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT)은 항상, 1분 BB중심선 위 요구는 이 값.
 TRIPLE_REQUIRE_1MIN_ABOVE_MID = True
 # 3중 크로스일 때 실패해도 통과시키는 3분 컨텍스트 게이트(r002 HYBRID_3MIN_CONTEXT_GATES 이름). 점수 임계값은 아래 플래그.
-TRIPLE_CROSS_BYPASS_CONTEXT_GATES = ("bb_slope_rising", "bb_mid_downtrend_block", "stochastic_buy_signal", "di_spread_min")
-TRIPLE_CROSS_BYPASS_SCORE = True
+# [2026-11-04] TRIPLE_CROSS_BYPASS_CONTEXT_GATES / TRIPLE_CROSS_BYPASS_SCORE 삭제 - 소프트 게이트(_010/_011/_012/_013/_016)와
+# 점수 임계값 자체를 매수 조건에서 제거(r002 DECISION_CONTEXT_GATES = ATR 하한 + 유동성만 판정).
 # r003이 시작 시 g011_tick_collector를 자식 프로세스로 띄우고(이미 실행 중이면 재사용) 루프마다 생존 확인, 죽으면 재기동.
 TICK_COLLECTOR_AUTOSTART = True
 TICK_COLLECTOR_UNTIL = "15:31"
