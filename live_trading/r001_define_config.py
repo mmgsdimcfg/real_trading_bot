@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-04] type=tune owner=claude
+#     summary: 사용자 결정 - 기본 안전장치 켜기 ENABLE_DAILY_LOSS_LIMIT_GATE/ENABLE_MAX_OPEN_POSITIONS_GATE/ENABLE_SPREAD_GATE
+#       = True(r005 _025/_026/_027), Edge AI 메타 필터 EDGE_AI_MODE "shadow" -> "gate"(r005 _028, shadow 통계 근거).
+#     impact: live (r003 재시작 후)
+#     compatibility: breaking (매수 감소 방향. 롤백: 각 플래그 False / EDGE_AI_MODE="shadow")
 # - [2026-11-04] type=feat owner=claude
 #     summary: 사용자 결정(로그 패턴 제안 적용) - (1) 틱 크로스 봉 종가 대비 추격폭 가드 ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD/
 #       TRIPLE_CHASE_FROM_CROSS_MAX_PCT(0.5%), (2) 틱 밀도 하한 TICK_MIN_PRINTS_PER_MIN(15/분, 30분 창) - r013/r005/g003.
@@ -1761,11 +1766,11 @@ V2_SLIPPAGE_EXTRA_BPS_SMALL = 5            # extra bps for the low-liquidity tie
 
 # --- Existing-strategy portfolio guards - all OFF by default ------------------------
 # r005 gates _025~_027. Enabling them changes live behavior: validate in shadow/demo first.
-ENABLE_DAILY_LOSS_LIMIT_GATE = False
+ENABLE_DAILY_LOSS_LIMIT_GATE = True   # [2026-11-04] 사용자 결정(기본 안전장치 켜기). 롤백: False
 DAILY_LOSS_LIMIT_KRW = 150_000             # realized loss today <= -this -> block new buys (existing strategy path)
-ENABLE_MAX_OPEN_POSITIONS_GATE = False
+ENABLE_MAX_OPEN_POSITIONS_GATE = True  # [2026-11-04] 사용자 결정(기본 안전장치 켜기). 롤백: False
 MAX_OPEN_POSITIONS = 6
-ENABLE_SPREAD_GATE = False
+ENABLE_SPREAD_GATE = True  # [2026-11-04] 사용자 결정(기본 안전장치 켜기, 434480 같은 3체결/분 종목). 롤백: False
 MAX_ENTRY_SPREAD_TICKS = 2
 
 
@@ -1776,10 +1781,12 @@ MAX_ENTRY_SPREAD_TICKS = 2
 #   "off"    : 계산 안 함
 #   "shadow" : 예측/기록만(runtime/edge_ai/live/edge_ai_YYYYMMDD.jsonl), 매수 차단 없음 (기본)
 #   "auto"   : g014가 승격(promoted=True)한 모델일 때만 P < 임계값 매수 차단, 아니면 shadow와 동일
-#   "gate"   : 승격 여부와 무관하게 차단 (수동 강제 - 권장하지 않음)
+#   "gate"   : 승격 여부와 무관하게 차단 (수동 강제)
 #   모델/라이브러리 없음, 예외 -> 항상 통과(fail-open).
+# [2026-11-04] 사용자 결정으로 shadow -> gate: 11/02~11/04 shadow 기록 - would_block 7건 순 -22,022원(2승) vs pass 7건 +1,787원(4승).
+#   모델은 아직 승격 전(OOS AUC 0.599)이라 auto로는 차단이 안 되므로 gate로 강제. 임계값은 current_meta.json(0.31). 롤백: "shadow".
 # =============================================================================
-EDGE_AI_MODE = "shadow"
+EDGE_AI_MODE = "gate"
 EDGE_AI_DIR = RUNTIME_ROOT / "edge_ai"
 EDGE_AI_MIN_PROB_OVERRIDE = 0.0  # >0이면 모델 메타의 임계값 대신 이 값 사용
 
