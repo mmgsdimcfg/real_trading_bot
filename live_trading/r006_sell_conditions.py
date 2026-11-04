@@ -38,6 +38,11 @@ Order                                        Kind        Old r003 inline block (
   _022 shared reversal sell                  EXIT        5058-5099  (r002 check_sell_condition)
 
 Update log (append only):
+- [2026-11-04] type=fix owner=claude
+    summary: _register_hard_stop이 손절 종목 등록 직후 api.persist_live_state로 저장한다 - hard_stop_today_codes는 r003
+      live_state["hard_stop_today"]와 같은 집합(재시작 보존, Codex 검토 #4). api 없는 테스트 컨텍스트는 그대로 통과.
+    impact: live
+    compatibility: backward-compatible
 - [2026-11-04] type=feat owner=claude
     summary: 사용자 결정 - 손절 누적 서킷브레이커 삭제. _register_hard_stop은 당일 재진입 차단 등록 + 카운트 로그만 남김.
     impact: live (r003)
@@ -388,6 +393,13 @@ def _register_hard_stop(ctx: SellContext, label: str) -> None:
     """손절 매도 성공 후: 당일 재진입 차단 등록 + 누적 카운트(기록용).
     [2026-11-04] 서킷브레이커(누적 N회 -> 60분 신규 매수 차단) 삭제 - 사용자 결정(r001 Update log 참조)."""
     ctx.state.hard_stop_today_codes.add(str(ctx.code).zfill(6))
+    # [2026-11-04] 재시작 보존: hard_stop_today_codes는 live_state["hard_stop_today"]와 같은 객체 - 바로 저장해 둔다.
+    _persist = getattr(getattr(ctx, "api", None), "persist_live_state", None)
+    if callable(_persist):
+        try:
+            _persist(date_str=getattr(ctx, "date_str", None))
+        except Exception as exc:  # 저장 실패가 손절 처리를 막으면 안 된다
+            ctx.log(f"  [WARN        ] hard_stop persist failed: {exc}")
     ctx.risk.hard_stop_daily_count += 1
     ctx.log(f"  [STOP COUNT  ] {label} 당일 {ctx.risk.hard_stop_daily_count}회 (서킷브레이커 없음)")
 

@@ -20,6 +20,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-04] type=fix owner=claude
+    summary: 손절 종목 집합(hard_stop_today_codes) 재시작 보존 - 종전 메모리 set이라 r003 재시작(20261104 14:56) 직후 당일
+      손절 4종목이 [ACT REENTER] used=0/1로 감시 복귀했다(Codex 검토 #4). 이제 live_state["hard_stop_today"] 그 자체를
+      참조해 persist_live_state에 저장/복원하고 r006 _register_hard_stop이 즉시 저장한다. 감시목록 재편입 경로(_rebalance_
+      active_watchlist)도 HARD_STOP_BLOCK_REENTRY_TODAY=False면 차단하지 않는다(종전엔 설정과 무관하게 차단).
+    impact: live
+    compatibility: backward-compatible (키 없는 옛 live_state는 빈 집합)
 - [2026-11-04] type=feat owner=claude
     summary: 사용자 결정(20261104 OCI홀딩스 익절 후 재상승 재진입 불가) - 재진입 한도를 직전 청산 실현손익으로 결정:
       전량 청산 시 그 포지션의 순실현손익(수수료+세금 추정 차감, 분할매도 합산)이 + 이면 reentry_state[code]
@@ -754,6 +761,7 @@ from pathlib import Path
 
 import pandas as pd
 from r001_define_config import (
+    HARD_STOP_BLOCK_REENTRY_TODAY,
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
@@ -2954,7 +2962,9 @@ def _serialize_live_state(live_state: dict) -> dict:
             "profit_lock_done": bool(meta.get("profit_lock_done", False)),
         }
     traded = sorted({str(c).zfill(6) for c in (live_state.get("traded_today") or set())})
-    return {"positions_meta": positions_meta, "traded_today": traded,
+    # [2026-11-04] 당일 손절(HARD/ATR) 종목 - 재시작 후에도 _006 재진입 차단이 유지되도록 저장(종전 메모리 전용 -> 재시작 시 소실)
+    hard_stop_today = sorted({str(c).zfill(6) for c in (live_state.get("hard_stop_today") or set())})
+    return {"positions_meta": positions_meta, "traded_today": traded, "hard_stop_today": hard_stop_today,
             "reentry": _serialize_reentry_state(live_state.get("reentry")),
             "gapdip_shadow": _serialize_gapdip_state(live_state.get("gapdip_shadow")),
             "realized_pnl_krw": float(live_state.get("realized_pnl_krw", 0.0) or 0.0)}
@@ -3002,12 +3012,12 @@ def _serialize_reentry_state(raw) -> dict:
 def load_live_state(date_str: str) -> dict:
     path = _live_state_path(date_str)
     if not path.exists():
-        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}, "gapdip_shadow": {}}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "hard_stop_today": set(), "reentry": {}, "gapdip_shadow": {}}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         log(f"  [WARN        ] live state load failed ({path}): {exc}")
-        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "reentry": {}, "gapdip_shadow": {}}
+        return {"date": date_str, "positions_meta": {}, "traded_today": set(), "hard_stop_today": set(), "reentry": {}, "gapdip_shadow": {}}
 
     positions_meta: dict[str, dict] = {}
     for code, meta in (raw.get("positions_meta") or {}).items():
@@ -3044,11 +3054,12 @@ def load_live_state(date_str: str) -> dict:
             "profit_lock_done": bool((meta or {}).get("profit_lock_done", False)),
         }
     traded = {str(c).zfill(6) for c in (raw.get("traded_today") or [])}
+    hard_stop_today = {str(c).zfill(6) for c in (raw.get("hard_stop_today") or [])}
     try:
         realized = float(raw.get("realized_pnl_krw", 0.0) or 0.0)
     except (TypeError, ValueError):
         realized = 0.0
-    return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded,
+    return {"date": date_str, "positions_meta": positions_meta, "traded_today": traded, "hard_stop_today": hard_stop_today,
             "reentry": _serialize_reentry_state(raw.get("reentry")),
             "gapdip_shadow": _serialize_gapdip_state(raw.get("gapdip_shadow")),
             "realized_pnl_krw": realized}
@@ -3174,7 +3185,7 @@ def _rebalance_active_watchlist(
                 continue
             if api.has_buy_exposure(code):
                 continue
-            if code in hard_stop_today_codes or code in gap_blocked_codes:
+            if (HARD_STOP_BLOCK_REENTRY_TODAY and code in hard_stop_today_codes) or code in gap_blocked_codes:
                 continue
             if int(st.get("used", 0)) >= _reentry_limit(st):
                 continue
@@ -3200,7 +3211,7 @@ def _rebalance_active_watchlist(
                     st["filled"] = True
             continue
 
-        if code in hard_stop_today_codes:
+        if HARD_STOP_BLOCK_REENTRY_TODAY and code in hard_stop_today_codes:
             reason = "HARD_STOP"
         elif code in gap_blocked_codes:
             reason = "GAP_BLOCKED"
@@ -5261,7 +5272,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     hybrid_1min_dead_cross_state: dict[str, dict] = {}  # [2026-09-23] _011 1분봉 데드크로스 확인창 상태
     peak_retrace_guard_state: dict[str, dict] = {}  # [2026-09-23] _012 고점대비 익절가드 확인창 상태
     # 연속 HARD_STOP 서킷브레이커 상태
-    hard_stop_today_codes: set[str] = set()  # 당일 HARD_STOP 발생 종목 (재진입 영구 차단)
+    # [2026-11-04] 당일 HARD_STOP/ATR 손절 종목(재진입 차단) - live_state["hard_stop_today"] 그 자체를 참조해 persist_live_state에
+    # 함께 저장되고 재시작 시 복원된다(종전: 메모리 set -> 재시작 후 손절 종목이 [ACT REENTER]로 감시 복귀, 11/04 14:57 실제 발생).
+    hard_stop_today_codes: set[str] = api.live_state.setdefault("hard_stop_today", set())
+    if not isinstance(hard_stop_today_codes, set):
+        hard_stop_today_codes = set(hard_stop_today_codes or [])
+        api.live_state["hard_stop_today"] = hard_stop_today_codes
+    if hard_stop_today_codes:
+        log(f"HARD_STOP codes restored | codes={sorted(hard_stop_today_codes)} block_reentry={HARD_STOP_BLOCK_REENTRY_TODAY}")
     gap_blocked_codes: set[str] = set()  # 개장초 갭하락으로 당일 신규매수 차단된 종목
     # [2026-09-29] 졸업/재편입/재진입 사용횟수 (REENTRY_MODE) - live_state["reentry"]를 그대로 참조해 주기
     # 저장(persist_live_state)에 함께 실리고 재시작 시 복원된다.
@@ -5378,8 +5396,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             api.live_state = live_state
             api.live_state["traded_today"] = traded_today
             api._apply_persisted_position_meta()
-            # 날짜 변경: 서킷브레이커 상태 초기화
+            # 날짜 변경: 손절 종목/갭 차단 초기화 (같은 set 객체를 새 live_state에 다시 연결 - SellState가 참조 중)
             hard_stop_today_codes.clear()
+            hard_stop_today_codes.update(api.live_state.get("hard_stop_today") or set())
+            api.live_state["hard_stop_today"] = hard_stop_today_codes
             gap_blocked_codes.clear()
             reentry_state = api.live_state.setdefault("reentry", {})  # 새 날짜 live_state 기준으로 재바인딩
             v2_shadow = _make_v2_shadow_runner(date_str)  # [2026-10-23] V2 shadow state is per day
