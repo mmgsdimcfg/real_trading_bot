@@ -67,6 +67,19 @@ class TestPortfolioGates(unittest.TestCase):
             # the candidate itself is not counted
             self.assertTrue(r005._026_max_open_positions(_ctx(traded={"a", "000001"}, exposure={"a", "000001"})[0]))
 
+    def test_spread_gate_fail_open_on_query_exception(self):
+        # [2026-11-04 Codex 2차 #3] API 예외는 통과(fail-open), 정상 응답의 무호가는 차단
+        def boom(code, mkt):
+            raise RuntimeError("quote api down")
+        with mock.patch.object(r005, "ENABLE_SPREAD_GATE", True), mock.patch.object(r005, "MAX_ENTRY_SPREAD_TICKS", 2):
+            ctx, logs = _ctx()
+            ctx.services.fetch_bid_ask = boom
+            self.assertTrue(r005._027_entry_spread(ctx))
+            self.assertIn("fail-open", logs[-1])
+            ctx, logs = _ctx(bid=None, ask=None)
+            self.assertFalse(r005._027_entry_spread(ctx))
+            self.assertIn("SPREAD_NO_QUOTE", logs[-1])
+
     def test_spread_gate(self):
         with mock.patch.object(r005, "ENABLE_SPREAD_GATE", True), mock.patch.object(r005, "MAX_ENTRY_SPREAD_TICKS", 2):
             self.assertTrue(r005._027_entry_spread(_ctx(bid=10000, ask=10020)[0]))

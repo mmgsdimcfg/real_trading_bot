@@ -85,6 +85,14 @@ class TestDensity(unittest.TestCase):
         self.assertTrue(res.reason.startswith("TICK_LOW_DENSITY_12/min_LT_15"))
         self.assertAlmostEqual(res.prints_per_min, 12.0, places=6)
 
+    def test_exact_density_is_stable_across_bar_boundaries(self):
+        # [Codex 2차 #2] 정확히 15체결/분(60틱봉 4분마다)이면 봉 완성 시점과 무관하게 항상 15
+        open_ = datetime(2026, 11, 4, 9, 0, 0)
+        bars = self._bars(open_, 30, 240)  # 2h of bars
+        for minute in (30, 31, 32, 33, 45, 60, 61):
+            d = r013.prints_per_minute(bars, open_ + timedelta(minutes=minute), 30)
+            self.assertAlmostEqual(d, 15.0, places=6, msg=minute)
+
     def test_not_applied_right_after_open_or_when_disabled(self):
         open_ = datetime(2026, 11, 4, 9, 0, 0)
         slow = self._bars(open_, 1, 120)

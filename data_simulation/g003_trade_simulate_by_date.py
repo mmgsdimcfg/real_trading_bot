@@ -17,6 +17,11 @@ Update log format (append only):
 
 Update log:
 - [2026-11-04] type=feat owner=claude
+    summary: Codex 2차 검토 - r005 _025 일일 손실 한도(실현+평가, 비용 근사)·_026 동시 보유 상한 parity(_portfolio_gate_sim).
+      _027 스프레드/_028 Edge AI는 미재현(호가·모델 없음) - 리포트 해석 시 실전보다 매수가 많을 수 있음.
+    impact: sim
+    compatibility: backward-compatible (r001 플래그 OFF면 종전과 동일)
+- [2026-11-04] type=feat owner=claude
     summary: r005 _029 시장 추세 게이트 parity - 지수 ETF(MARKET_REGIME_ETF) 10초 파일이 있으면 1분봉 MA5>MA20을 ts마다 판정해
       매수 직전(과열 차단 앞)에서 차단. ETF 파일 없음/시장 미상은 MARKET_REGIME_FAIL_OPEN. env ENABLE_MARKET_REGIME_GATE(A/B).
     impact: sim
@@ -351,6 +356,11 @@ from r001_define_config import (
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
     ENABLE_MARKET_REGIME_GATE,
+    ENABLE_DAILY_LOSS_LIMIT_GATE,
+    DAILY_LOSS_LIMIT_KRW,
+    DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED,
+    ENABLE_MAX_OPEN_POSITIONS_GATE,
+    MAX_OPEN_POSITIONS,
     MARKET_REGIME_ETF,
     MARKET_REGIME_MA_FAST,
     MARKET_REGIME_MA_SLOW,
@@ -2585,6 +2595,28 @@ def simulate_date(
                 regime_frames_1min[_mkt] = _f1
                 log(f"MARKET REGIME | {_mkt} {_etf} | 1min bars={len(_f1)}")
 
+    def _portfolio_gate_sim(code: str, latest_prices: dict) -> str | None:
+        """[2026-11-04 Codex] r005 _025 일일 손실 한도(실현+당일 평가손익, 비용 근사 차감) / _026 동시 보유 상한 parity.
+        _027 스프레드(호가 없음)와 _028 Edge AI(모델 추론)는 g003에서 재현하지 않는다 - 결과 해석 시 주의."""
+        if ENABLE_MAX_OPEN_POSITIONS_GATE and sum(1 for c in sim.positions if c != code) >= int(MAX_OPEN_POSITIONS):
+            return f"MAX_OPEN_POSITIONS_{len(sim.positions)}_GE_{MAX_OPEN_POSITIONS}"
+        if ENABLE_DAILY_LOSS_LIMIT_GATE:
+            realized = 0.0
+            for r in sim.trade_log:
+                if r.action == "SELL" and r.pnl_krw is not None:
+                    sell_val = float(r.price) * int(r.qty)
+                    buy_val = sell_val - float(r.pnl_krw)
+                    realized += float(r.pnl_krw) - (sell_val * (_G003_COMMISSION_PCT + _G003_SELL_TAX_PCT) + buy_val * _G003_COMMISSION_PCT) / 100.0
+            unrealized = 0.0
+            if DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED:
+                for c, pos in sim.positions.items():
+                    px = latest_prices.get(c)
+                    if px:
+                        unrealized += (float(px) - float(pos.buy_price)) * int(pos.quantity)
+            if realized + unrealized <= -abs(float(DAILY_LOSS_LIMIT_KRW)):
+                return f"DAILY_LOSS_LIMIT_realized_{realized:,.0f}_unrealized_{unrealized:,.0f}"
+        return None
+
     def _market_regime_at(code: str, cut) -> tuple:
         mkt = SYMBOL_MARKET_MAP.get(str(code).zfill(6))
         fr = regime_frames_1min.get(mkt) if mkt else None
@@ -3276,6 +3308,12 @@ def simulate_date(
                     if should_buy:
                         reason = f"HYBRID_1MIN_TRIGGER_{trigger_reason}+{reason}"
 
+            if should_buy:  # [2026-11-04 Codex] r005 _025/_026 parity
+                _pg = _portfolio_gate_sim(code, latest_price_map)
+                if _pg is not None:
+                    buy_confirm_state.pop(code, None)
+                    log_detail(f"  [BUY SKIP] {code} | {_pg}")
+                    should_buy = False
             if should_buy and ENABLE_MARKET_REGIME_GATE:  # [2026-11-04] r005 _029 parity
                 _rg_ok, _rg_detail = _market_regime_at(code, _avail_cut)
                 if _rg_ok is None and not MARKET_REGIME_FAIL_OPEN:
