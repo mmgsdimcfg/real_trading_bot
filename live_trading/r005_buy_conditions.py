@@ -494,7 +494,11 @@ def _027_entry_spread(ctx: BuyContext) -> bool:
         return True
     spec = ctx.services.get_order_spec(ctx.current_dt, ctx.nxt_tradeable)
     mkt = "NX" if (spec and spec.get("exchange") == "NXT") else "J"
-    bid, ask = ctx.services.fetch_bid_ask(ctx.norm_code, mkt)
+    try:
+        bid, ask = ctx.services.fetch_bid_ask(ctx.norm_code, mkt)
+    except Exception as exc:  # [2026-11-04 Codex] API 장애는 fail-open(통과) - 정상 응답의 무호가만 차단
+        ctx.log(f"  [SPREAD      ] {ctx.symbol_label} | quote query failed ({type(exc).__name__}) - pass (fail-open)")
+        return True
     if not (bid and ask and bid > 0 and ask >= bid):
         ctx.log(f"  [REJECT      ] {ctx.symbol_label} | SPREAD_NO_QUOTE bid={bid} ask={ask}")
         return False

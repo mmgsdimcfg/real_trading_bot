@@ -1910,6 +1910,22 @@ def _fetch_bid_ask_price(code: str, market_div: str) -> tuple[float | None, floa
         return None, None
 
 
+def _fetch_bid_ask_price_strict(code: str, market_div: str) -> tuple[float | None, float | None]:
+    """[2026-11-04 Codex] r005 _027 스프레드 게이트용 - API 예외는 그대로 올린다(게이트가 fail-open으로 통과시킴).
+    정상 응답에 호가가 없는 경우만 (None, None) -> 게이트가 SPREAD_NO_QUOTE로 차단."""
+    df1, _ = dsf.inquire_asking_price_exp_ccn(
+        env_dv=KIS_ENV_DV,
+        fid_cond_mrkt_div_code=market_div,
+        fid_input_iscd=str(code).zfill(6),
+    )
+    if df1 is None or df1.empty:
+        return None, None
+    row = df1.iloc[0]
+    bid = float(row.get("bidp1") or 0) or None
+    ask = float(row.get("askp1") or 0) or None
+    return bid, ask
+
+
 def _fetch_orderbook_totals(code: str, market_div: str) -> tuple[float | None, float | None]:
     """총 매도호가 잔량(ask)과 총 매수호가 잔량(bid) 조회. 실패 시 (None, None) 반환."""
     try:
@@ -5451,7 +5467,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         fetch_orderbook_totals=_fetch_orderbook_totals,
         format_reject_detail=_buy_reject_detail,
         record_gate_decision=record_gate_decision if ENABLE_GATE_DECISION_LOG else None,
-        fetch_bid_ask=_fetch_bid_ask_price,
+        fetch_bid_ask=_fetch_bid_ask_price_strict,  # [2026-11-04] 예외는 _027이 fail-open 처리
         account_sync_age=api.account_sync_age_seconds,
         quote_status=get_quote_status,
     )

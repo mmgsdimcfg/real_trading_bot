@@ -155,11 +155,24 @@ def prints_per_minute(bars: list[TickBar], now: datetime, window_min: float) -> 
     if not todays:
         return float("nan")
     first = min(b.start_ts for b in todays)
-    elapsed = min(float(window_min), (now - first).total_seconds() / 60.0)
+    # [2026-11-04 Codex] 창의 끝은 now가 아니라 마지막 완성 봉의 종료시각 - 진행 중인 봉 구간을 분모에서 빼야 봉 완성 시점에
+    # 따라 밀도가 출렁이지 않는다(정확히 15체결/분 입력이면 항상 15).
+    last_end = max(b.end_ts for b in todays)
+    elapsed = min(float(window_min), (last_end - first).total_seconds() / 60.0)
     if elapsed < _DENSITY_MIN_ELAPSED_MIN:
         return float("nan")
-    cutoff = now - timedelta(minutes=elapsed)
-    prints = sum(int(b.n_ticks) for b in todays if b.end_ts > cutoff)
+    cutoff = last_end - timedelta(minutes=elapsed)
+    # [2026-11-04 Codex] 창 경계에 걸친 봉은 겹치는 시간 비율만큼만 더한다 - 봉 완성 시점에 따라 14/16체결/분으로 흔들리던
+    # 양자화 제거(정확히 15체결/분 입력이면 항상 15).
+    prints = 0.0
+    for b in todays:
+        if b.end_ts <= cutoff:
+            continue
+        span = (b.end_ts - b.start_ts).total_seconds()
+        if span <= 0 or b.start_ts >= cutoff:
+            prints += float(b.n_ticks)
+        else:
+            prints += float(b.n_ticks) * (b.end_ts - cutoff).total_seconds() / span
     return prints / elapsed if elapsed > 0 else float("nan")
 
 
