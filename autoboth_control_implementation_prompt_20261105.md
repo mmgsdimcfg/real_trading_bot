@@ -146,6 +146,17 @@ set ENABLE_PROFIT_LOCK=false PROFIT_LOCK_GIVEBACK_PCT=0.006 EDGE_AI_MODE=shadow 
 - `collector restart`: 돌고 있는 g011에 SIGTERM → `{"ok": true, "signalled": [1234], "note": "..."}`. 수집기는 cron(g022, 장중 5분마다) 또는
   r003 감시자가 현재 r004 목록으로 다시 띄운다(최대 ~5분 공백). 수집기가 없으면 rc 3. 장중에 누르면 "최대 5분간 틱 수집이 끊깁니다" 확인.
 
+### 1.8 차트 데이터 `indicators` / `bars` (2026-11-06 추가, 상세는 서버의 `live_trading/r017_chart_data.py` docstring과
+`autoboth_chart_data_reply_20261106.md`)
+```
+r016_control.py indicators --date 20261105 --code 003490 --frame 3m [--last N]
+r016_control.py bars --date 20261105 --code 003490 --kind tick --ticks 60 [--n N] [--warmup K] [--since-ts ISO] [--all-sessions]
+r016_control.py bars --date 20261105 --code 003490 --kind min --interval 1 ...
+r016_control.py bars --date 20261105 --code 003490 --kind day|week|month [--n N]
+```
+- 둘 다 읽기 전용, rc 0/2. 장중 10초 폴링은 `bars --since-ts <next_since>`로 한다(서버가 바이트 오프셋 캐시로 증분 파싱).
+- `conditions` 의 각 조건에 `frame`("1m+tick", "3m", "live", "daily", "none")이 있어 노드에서 해당 차트를 바로 열 수 있다.
+
 ## 2. UI 명세
 
 ### 2.1 제어 탭 (새 탭 "제어", 파이프라인 탭 왼쪽 또는 설정/연결 옆)
