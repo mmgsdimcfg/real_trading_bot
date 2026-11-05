@@ -33,6 +33,13 @@ Run:
   --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-06] type=feat owner=claude
+    summary: AutoBotH 차트 요청(P1-1) - 틱 CSV 끝에 venue(KRX), session(pre|regular|close_auction|post) 2열 추가
+      (r009 TICK_FILE_COLUMNS v2). session 은 체결시각 vs r014 정규장 (open, close): open 전 pre, [open, close) regular,
+      [close, close+10분) close_auction(15:30 동시호가 체결), 그 뒤 post. TickWriter 는 이미 있는 파일은 그 파일 헤더 폭으로
+      계속 쓴다(장중 재시작 시 한 파일에 13열/15열 섞이지 않음 - r009/r013 이 폭 불일치 행을 버리므로).
+    impact: collector (g011 재시작 후 새 파일부터 15열)
+    compatibility: backward-compatible (판독기는 헤더 기반)
 - [2026-11-02] type=fix owner=claude
     summary: Codex cron 검토 반영 - (1) 단일 실행 flock(.g011.lock, 실패 시 rc 3) (2) 승인키 요청 타임아웃
       (kis_auth.requests 래핑) (3) 30초 안에 ACK가 안 온 종목이 하나라도 있거나 장중 전 종목 무체결 120초면 재접속
@@ -64,7 +71,7 @@ import random
 import signal
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -155,9 +162,34 @@ def idle_check_window(day: datetime) -> tuple[datetime, datetime] | None:
     return start, end
 
 
-def parse_frame(raw: str) -> list[dict] | None:
+VENUE = "KRX"   # H0STCNT0 = KRX executions only (NXT would be H0NXCNT0, unified H0UNCNT0)
+CLOSE_AUCTION_WINDOW_MINUTES = 10
+_DEFAULT_HOURS = (dt_time(9, 0), dt_time(15, 30))
+
+
+def classify_session(trade_time: str, hours: tuple | None = None) -> str:
+    """pre | regular | close_auction | post from a HHMMSS print time and the day's regular (open, close) hours.
+    The 15:20-15:30 closing single-price auction has no prints; its fills print at/after the close time."""
+    open_t, close_t = hours or _DEFAULT_HOURS
+    try:
+        hhmmss = str(trade_time).strip().zfill(6)
+        t = dt_time(int(hhmmss[0:2]), int(hhmmss[2:4]), int(hhmmss[4:6]))
+    except (TypeError, ValueError):
+        return ""
+    if t < open_t:
+        return "pre"
+    if t < close_t:
+        return "regular"
+    close_end = (datetime.combine(datetime(2000, 1, 1), close_t) + timedelta(minutes=CLOSE_AUCTION_WINDOW_MINUTES)).time()
+    if t < close_end:
+        return "close_auction"
+    return "post"
+
+
+def parse_frame(raw: str, hours: tuple | None = None) -> list[dict] | None:
     """Split one data frame into records. Returns None for non-data (JSON control) frames.
-    Format: <encrypt flag>|<tr_id>|<record count>|<f1^f2^...> (count x NCOL fields)."""
+    Format: <encrypt flag>|<tr_id>|<record count>|<f1^f2^...> (count x NCOL fields).
+    hours = the day's regular (open, close) for the session column (None -> 09:00/15:30)."""
     if not raw or raw[0] not in "01":
         return None
     parts = raw.split("|", 3)
@@ -190,6 +222,8 @@ def parse_frame(raw: str) -> list[dict] | None:
             "askp1": rec[_IDX["ASKP1"]],
             "bidp1": rec[_IDX["BIDP1"]],
             "hour_cls_code": rec[_IDX["HOUR_CLS_CODE"]],
+            "venue": VENUE,
+            "session": classify_session(rec[_IDX["STCK_CNTG_HOUR"]], hours),
         })
     return out
 
@@ -211,11 +245,13 @@ class TickWriter:
             path = self.out_dir / f"{code}.csv"
             new = not path.exists() or path.stat().st_size == 0
             torn = not new and not _ends_with_newline(path)
+            fieldnames = TICK_FILE_COLUMNS if new else (_existing_header(path) or TICK_FILE_COLUMNS)
             f = open(path, "a", newline="", encoding="utf-8")
             if torn:
                 f.write("\n")  # close the row cut by a crash; r009 drops it as a short row
                 self.torn_rows += 1
-            w = csv.DictWriter(f, fieldnames=TICK_FILE_COLUMNS)
+            # an older (v1) file keeps its own width: readers drop rows whose width differs from the header
+            w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", restval="")
             if new:
                 w.writeheader()
             fh = (f, w)
@@ -235,6 +271,17 @@ class TickWriter:
             except Exception:
                 pass
         self._files.clear()
+
+
+def _existing_header(path: Path) -> list[str] | None:
+    """Column names of an existing tick file (first line), None if unreadable/empty."""
+    try:
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            line = f.readline()
+    except OSError:
+        return None
+    cols = next(csv.reader([line])) if line.strip() else []
+    return cols or None
 
 
 def _ends_with_newline(path: Path) -> bool:
@@ -284,6 +331,7 @@ def scan_fill_codes(data_dir: Path, today: str) -> tuple[str, list[str]]:
 
 
 async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -> None:
+    session_hours_today = session_hours(datetime.now()) or _DEFAULT_HOURS
     import websockets  # imported lazily so --dry-parse-test works without network deps
 
     open_api_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[2] / "open-trading-api")))
@@ -352,7 +400,7 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                             writer.flush()
                             continue
                         recv_ts = datetime.now().isoformat(timespec="milliseconds")
-                        recs = parse_frame(raw)
+                        recs = parse_frame(raw, session_hours_today)
                         if recs is None:
                             try:
                                 ctl = json.loads(raw)

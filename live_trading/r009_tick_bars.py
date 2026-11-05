@@ -34,10 +34,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-TICK_FILE_COLUMNS = [
+TICK_FILE_COLUMNS_V1 = [
     "recv_ts", "code", "bsop_date", "trade_time", "price", "cntg_vol", "acml_vol", "ccld_dvsn",
     "seln_cntg_csnu", "shnu_cntg_csnu", "askp1", "bidp1", "hour_cls_code",
 ]
+# [2026-11-06] v2 appends venue (KRX - H0STCNT0 is the KRX feed) and session (pre|regular|close_auction|post, from the
+# print time vs the r014 session hours). Readers are header-based, so v1 files stay readable; g011 keeps writing a file
+# in the layout of its existing header (a mid-day restart never mixes widths in one file).
+TICK_FILE_COLUMNS = TICK_FILE_COLUMNS_V1 + ["venue", "session"]
 
 
 @dataclass
