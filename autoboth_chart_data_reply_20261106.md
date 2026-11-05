@@ -179,4 +179,4 @@ date,open,high,low,close,volume,amount,source_date
    `indicators`는 폴링하지 말고 노드/종목을 눌렀을 때 1회 호출(`--last 40` 이하 권장)을 권한다.
 
 변경 파일: `data_simulation/g011_tick_collector.py`, `live_trading/r009_tick_bars.py`, `live_trading/r015_export_conditions.py`, `live_trading/r016_control.py`,
-`live_trading/r017_chart_data.py`(신규), `data_simulation/g025_daily_history.py`(신규), 테스트 5개(전체 348개 통과). Codex 검토 1회(6건 반영: 캐시 교체 감지, 기준가 출처, 200봉 창, 15:30 3분봉, 끊긴 행, 종목별 재구성).
+`live_trading/r017_chart_data.py`(신규), `data_simulation/g025_daily_history.py`(신규), 테스트 5개(전체 346개 통과). Codex 검토 1회(6건 반영: 캐시 교체 감지, 기준가 출처, 200봉 창, 15:30 3분봉, 끊긴 행, 종목별 재구성).
