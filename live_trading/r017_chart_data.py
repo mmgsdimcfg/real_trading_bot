@@ -19,6 +19,15 @@
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-06] type=fix owner=claude
+    summary: Codex 검토 반영 - (1) 캐시에 (st_dev, st_ino) + 오프셋 직전 바이트 지문을 저장해 교체/축소-재증가 파일이면 재구성
+      (2) 예열 기준가를 그 날짜 폴더 _prev_close.json(g003 parity)에서 먼저 읽고 warmup_basis 로 알림(실전 r003 은 KIS stck_sdpr -
+      권리락/분할일엔 다를 수 있음) (3) 1분 프레임은 r003 FRAME_CACHE_MAX_BARS=200 롤링 창과 같은 값이 되도록 200봉 초과 행은
+      창별 재계산 (4) 당일 3분봉은 r003 _normalize_intraday_frame 처럼 첫 부분봉만 버리고 15:30 동시호가 봉은 유지(예열은 r012 규칙 유지)
+      (5) 틱 행은 csv.reader 로 헤더 폭 검사(끊긴 행 제외, r009/r013 과 동일) (6) _10s 파일이 없는 당일은 틱으로 만든 1분봉으로
+      지표 계산(source 에 ticks 표시, 장중 근사) (7) 캐시 임시 파일 mkstemp.
+    impact: tooling
+    compatibility: backward-compatible (JSON 필드 추가: warmup_basis)
 - [2026-11-06] type=feat owner=claude
     summary: AutoBotH 차트 요청(P2-2 indicators, P3-1 bars) 신규. 틱 집계는 pandas 벡터 연산(acml_vol 기준 중복 제거)이라
       r009 TickBarBuilder 의 갭/역순 규칙과 미세하게 다를 수 있음(차트용). 5MB 틱 파일 기준 Pi 에서 약 0.6s.
@@ -29,10 +38,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
+import hashlib
 import io
 import json
 import math
+import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -113,6 +126,18 @@ def daily_history_path(code: str) -> Path | None:
     return p if p.is_file() else None
 
 
+def base_price_for(date_str: str, code: str) -> tuple[float | None, str]:
+    """Today's price basis for the warmup check: g003 parity = that folder's _prev_close.json, else the daily csv's
+    previous row. r003 live uses KIS stck_sdpr instead (differs on ex-rights/split days -> r003 may skip warmup)."""
+    pc = _data_root() / date_str / "_prev_close.json"
+    with contextlib.suppress(Exception):
+        v = json.loads(pc.read_text(encoding="utf-8")).get(code)
+        if v is not None and float(v) > 0:
+            return float(v), "_prev_close.json"
+    v = prev_close_from_daily(date_str, code)
+    return v, ("daily_csv_prev_row" if v else "none")
+
+
 def prev_close_from_daily(date_str: str, code: str) -> float | None:
     path, _ = latest_daily_csv(date_str, code)
     if path is None:
@@ -122,37 +147,58 @@ def prev_close_from_daily(date_str: str, code: str) -> float | None:
     return float(before["close"].iloc[-1]) if not before.empty else None
 
 
-def minute_frames(date_str: str, code: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Path] | None:
-    """(m1_start_label, m1_end_label, m3_end_label, path) from the g001 _10s file, exactly like r012/g003."""
-    path = r012.find_code_txt_path_finest(_data_root() / date_str, code, require_10s=True)
-    if path is None:
-        return None
-    raw = r012.read_ohlc_csv(path)
-    if raw is None or raw.empty:
-        return None
-    raw = raw[raw.index.strftime("%Y%m%d") == date_str]
-    causal = r012.causal_minute_frames(raw) if not raw.empty else None
-    if causal is None:
-        return None
-    m1, m1_end = causal
-    m1 = m1[OHLCV].astype("float64")
-    m1_end = m1_end[OHLCV].astype("float64")
-    m3 = m1_end.resample("3min", label="right", closed="right").agg(
-        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+def _day_3min(m1_end: pd.DataFrame) -> pd.DataFrame:
+    """Same as r003 _normalize_intraday_frame: 3-min bins on END-labelled minutes, drop only a partial FIRST bin
+    (the trailing 15:30 closing-auction bin stays, unlike the stricter prior-day warmup rule in r012)."""
+    tmp = m1_end[OHLCV].copy()
+    tmp["n"] = 1
+    m3 = tmp.resample("3min", label="right", closed="right").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "n": "sum"}
     ).dropna(subset=["open", "high", "low", "close"])
-    slots = r012.causal_3min_slot_counts(raw).reindex(m3.index).fillna(0)
-    m3 = m3[slots >= 3]
-    return m1, m1_end, m3, path
+    if not m3.empty and int(m3["n"].iloc[0]) < 3:
+        m3 = m3.iloc[1:]
+    return m3.drop(columns=["n"])
+
+
+def minute_frames(date_str: str, code: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str] | None:
+    """(m1_start_label, m1_end_label, m3_end_label, source) from the g001 _10s file (r012 causal frames) or, when that
+    file does not exist yet (today, during the session), from the tick file's regular-session prints (approximation)."""
+    path = r012.find_code_txt_path_finest(_data_root() / date_str, code, require_10s=True)
+    if path is not None:
+        raw = r012.read_ohlc_csv(path)
+        if raw is None or raw.empty:
+            return None
+        raw = raw[raw.index.strftime("%Y%m%d") == date_str]
+        causal = r012.causal_minute_frames(raw) if not raw.empty else None
+        if causal is None:
+            return None
+        m1, m1_end = causal
+        m1 = m1[OHLCV].astype("float64")
+        m1_end = m1_end[OHLCV].astype("float64")
+        return m1, m1_end, _day_3min(m1_end), str(path)
+    tf = tick_file(date_str, code)
+    if tf is None:
+        return None
+    ticks = load_ticks(tf)
+    if ticks.empty:
+        return None
+    mb = minute_bars(ticks, 1)
+    m1 = pd.DataFrame({"open": mb["o"].to_numpy(), "high": mb["h"].to_numpy(), "low": mb["l"].to_numpy(),
+                       "close": mb["c"].to_numpy(), "volume": mb["v"].to_numpy()}, index=pd.DatetimeIndex(mb["t"])).astype("float64")
+    m1_end = m1.copy()
+    m1_end.index = m1_end.index + pd.Timedelta(minutes=1)
+    return m1, m1_end, _day_3min(m1_end), f"{tf} (ticks -> 1m, live approximation)"
 
 
 def warmup_frames(date_str: str, code: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None, str]:
     if not bool(getattr(r001, "ENABLE_PRIOR_DAY_INDICATOR_WARMUP", False)):
         return None, None, "disabled"
-    base_price = prev_close_from_daily(date_str, code)
-    return r012.load_prior_day_warmup(
+    base_price, basis = base_price_for(date_str, code)
+    m1, m3, why = r012.load_prior_day_warmup(
         _data_root(), date_str, code, int(r001.PRIOR_DAY_WARMUP_MINUTES), int(r001.PRIOR_DAY_WARMUP_MAX_LOOKBACK_DAYS),
         base_price, float(r001.PRIOR_DAY_WARMUP_MAX_BASE_DIFF_PCT),
     )
+    return m1, m3, f"{why} (base_price from {basis}; r003 live uses KIS stck_sdpr)"
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +210,31 @@ def _params() -> dict:
              "OBV_MA_PERIOD", "MACD_FAST", "MACD_SLOW", "MACD_SIGNAL_PERIOD", "ADX_PERIOD", "ATR_PERIOD",
              "PRIOR_DAY_WARMUP_MINUTES", "ENABLE_PRIOR_DAY_INDICATOR_WARMUP"]
     return {n: getattr(r001, n) for n in names if hasattr(r001, n)}
+
+
+FRAME_CACHE_MAX_BARS = 200  # r003 _merge_bar_frame keeps only the last 200 bars of the day before computing
+
+
+PARITY_MAX_WINDOWS = 40  # each trailing-window recomputation costs ~0.16 s on the Pi; beyond this fall back to one pass
+
+
+def _indicators_rolling(day: pd.DataFrame, warmup: pd.DataFrame | None, max_bars: int, need_last: int | None = None) -> tuple[pd.DataFrame, str]:
+    """r003 parity: the bot computes on at most the last `max_bars` day bars (+ warmup). calculate_indicators is causal,
+    so rows < max_bars equal the plain prefix computation; later rows are recomputed from their own trailing window.
+    Only the rows that will be returned (need_last) are recomputed; if that is more than PARITY_MAX_WINDOWS the whole
+    day is computed in one pass (tiny recursive-indicator drift vs the bot after 200 bars) and parity says so."""
+    n = len(day)
+    if n <= max_bars:
+        return r002.calculate_indicators_with_warmup(day, warmup), "exact"
+    first_needed = max(max_bars, n - int(need_last)) if need_last else max_bars
+    if n - first_needed > PARITY_MAX_WINDOWS:
+        return r002.calculate_indicators_with_warmup(day, warmup), f"single_pass (>{max_bars} bars; r003 keeps a {max_bars}-bar window - small drift in EMA/RSI/ADX)"
+    full = r002.calculate_indicators_with_warmup(day, warmup)   # rows < max_bars are exact here (causal)
+    pieces = [full.iloc[:first_needed]]
+    for k in range(first_needed, n):
+        win = day.iloc[k - max_bars + 1:k + 1]
+        pieces.append(r002.calculate_indicators_with_warmup(win, warmup).iloc[-1:])
+    return pd.concat(pieces), "exact"
 
 
 def _frame_rows(df: pd.DataFrame, columns: list[str], ts_end_offset: pd.Timedelta | None) -> list[list]:
@@ -200,10 +271,10 @@ def indicators(date_str: str, code: str, frame: str, last: int | None = None) ->
     m1, m1_end, m3, path = mf
     w1, w3, why = warmup_frames(date_str, code)
     if frame == "1m":
-        df = r002.calculate_indicators_with_warmup(m1_end, w1)
+        df, parity = _indicators_rolling(m1_end, w1, FRAME_CACHE_MAX_BARS, last)
         offset = pd.Timedelta(minutes=1)
     else:
-        df = r002.calculate_indicators_with_warmup(m3, w3)
+        df, parity = _indicators_rolling(m3, w3, FRAME_CACHE_MAX_BARS, last)
         offset = pd.Timedelta(minutes=3)
     cols = [c for c in OHLCV + INDICATOR_COLUMNS if c in df.columns]
     if last:
@@ -212,7 +283,7 @@ def indicators(date_str: str, code: str, frame: str, last: int | None = None) ->
     out_rows = []
     for ts_end, r in df.iterrows():
         out_rows.append([_ts(ts_end - offset), _ts(ts_end)] + [_num(r.get(c)) for c in cols])
-    return {"ok": True, "frame": frame, "code": code, "date": date_str, "source": str(path), "warmup": why,
+    return {"ok": True, "frame": frame, "code": code, "date": date_str, "source": str(path), "warmup": why, "parity": parity,
             "params": _params(), "columns": ["ts", "ts_end"] + cols, "rows": out_rows,
             "elapsed_ms": int((time.time() - t0) * 1000)}
 
@@ -225,17 +296,31 @@ def tick_file(date_str: str, code: str) -> Path | None:
     return p if p.is_file() else None
 
 
-def load_ticks(path: Path, all_sessions: bool = False) -> pd.DataFrame:
-    """Deduplicated prints in exchange order: ts, price, qty, acml_vol, session."""
-    df = pd.read_csv(path, dtype=str, usecols=lambda c: c in ("bsop_date", "trade_time", "price", "cntg_vol", "acml_vol", "session"),
-                     encoding="utf-8", on_bad_lines="skip")
-    df = df.dropna(subset=["bsop_date", "trade_time", "price"])
+TICK_FIELDS = ("bsop_date", "trade_time", "price", "cntg_vol", "acml_vol", "session")
+
+
+def _rows_from_lines(header: list[str], lines) -> list[list]:
+    """Complete rows only: width must equal the header width (torn rows are dropped exactly like r009/r013)."""
+    idx = [header.index(c) if c in header else None for c in TICK_FIELDS]
+    width = len(header)
+    out = []
+    for fields in csv.reader(lines):
+        if len(fields) != width:
+            continue
+        out.append([fields[i] if i is not None else None for i in idx])
+    return out
+
+
+def _ticks_frame(rows: list[list], all_sessions: bool) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=list(TICK_FIELDS))
+    if df.empty:
+        return pd.DataFrame(columns=["ts", "price", "qty", "acml", "session"])
     df["ts"] = pd.to_datetime(df["bsop_date"].str.strip() + df["trade_time"].str.strip().str.zfill(6), format="%Y%m%d%H%M%S", errors="coerce")
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df["qty"] = pd.to_numeric(df["cntg_vol"], errors="coerce").fillna(0)
     df["acml"] = pd.to_numeric(df["acml_vol"], errors="coerce")
     df = df.dropna(subset=["ts", "price", "acml"])
-    if "session" not in df.columns:
+    if df["session"].isna().all():
         hhmm = df["ts"].dt.strftime("%H%M%S")
         df["session"] = "regular"
         df.loc[hhmm < "090000", "session"] = "pre"
@@ -247,6 +332,14 @@ def load_ticks(path: Path, all_sessions: bool = False) -> pd.DataFrame:
     if not all_sessions:
         df = df[df["session"].isin(TRADING_SESSIONS)]
     return df[["ts", "price", "qty", "acml", "session"]].reset_index(drop=True)
+
+
+def load_ticks(path: Path, all_sessions: bool = False) -> pd.DataFrame:
+    """Deduplicated prints in exchange order: ts, price, qty, acml_vol, session."""
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        header = next(csv.reader([fh.readline()]))
+        rows = _rows_from_lines(header, fh)
+    return _ticks_frame(rows, all_sessions)
 
 
 def _agg(df: pd.DataFrame, key) -> pd.DataFrame:
@@ -319,7 +412,14 @@ def _cache_path(date_str: str, code: str, tag: str) -> Path:
 
 
 def _parse_tick_text(text: str, header: str, all_sessions: bool) -> pd.DataFrame:
-    return load_ticks(io.StringIO(header + text), all_sessions)
+    cols = next(csv.reader([header]))
+    return _ticks_frame(_rows_from_lines(cols, io.StringIO(text)), all_sessions)
+
+
+def _tail_fingerprint(fh, offset: int, n: int = 256) -> str:
+    start = max(0, offset - n)
+    fh.seek(start)
+    return hashlib.sha1(fh.read(offset - start)).hexdigest()
 
 
 def _fold_bars(prev: pd.DataFrame | None, new_ticks: pd.DataFrame, kind: str, ticks: int, interval: int,
@@ -371,20 +471,24 @@ def _intraday_bars(date_str: str, code: str, kind: str, ticks: int, interval: in
         return minute_bars_from_10s(date_str, code, interval) if kind == "min" else None
     tag = (f"tick{ticks}" if kind == "tick" else f"min{interval}") + ("_all" if all_sessions else "")
     cache = _cache_path(date_str, code, tag)
-    size = tf.stat().st_size
-    with open(tf, "r", encoding="utf-8", newline="") as fh:
-        header = fh.readline()
+    st = tf.stat()
+    size = st.st_size
+    file_id = [st.st_dev, st.st_ino]
+    with open(tf, "rb") as fb:
+        header = fb.readline().decode("utf-8", "replace")
         state = None
         if cache.is_file():
             with contextlib.suppress(Exception):
                 state = json.loads(cache.read_text(encoding="utf-8"))
-                if state.get("header") != header or state.get("offset", 0) > size:
-                    state = None
+                ok = (state.get("header") == header and state.get("offset", 0) <= size and state.get("file_id") == file_id
+                      and state.get("fingerprint") == _tail_fingerprint(fb, int(state.get("offset", 0))))
+                if not ok:
+                    state = None   # replaced / rewritten / shrunk file: rebuild from scratch
         if state is not None and state.get("offset") == size:
             return _bars_from_json(state["bars"]), f"{tf} (cache)"
         offset = state["offset"] if state else len(header.encode("utf-8"))
-        fh.seek(offset)
-        text = fh.read()
+        fb.seek(offset)
+        text = fb.read().decode("utf-8", "replace")
     # keep an incomplete trailing line for the next call
     cut = text.rfind("\n")
     if cut < 0:
@@ -403,11 +507,14 @@ def _intraday_bars(date_str: str, code: str, kind: str, ticks: int, interval: in
     with contextlib.suppress(Exception):
         cache.parent.mkdir(parents=True, exist_ok=True)
         last_acml = float(new_carry["acml"].max()) if not new_carry.empty else (state.get("last_acml") if state else None)
-        payload = {"header": header, "offset": offset + consumed, "bars": _bars_json(bars_df), "carry": _ticks_to_json(new_carry),
-                   "last_acml": last_acml, "source": str(tf)}
-        tmp = cache.with_suffix(f".{id(payload)}.tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        tmp.replace(cache)
+        with open(tf, "rb") as fb:
+            fingerprint = _tail_fingerprint(fb, offset + consumed)
+        payload = {"header": header, "offset": offset + consumed, "file_id": file_id, "fingerprint": fingerprint,
+                   "bars": _bars_json(bars_df), "carry": _ticks_to_json(new_carry), "last_acml": last_acml, "source": str(tf)}
+        fd, tmp = tempfile.mkstemp(prefix=f".{cache.name}.", suffix=".tmp", dir=str(cache.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(payload))
+        os.replace(tmp, cache)
     return bars_df, str(tf)
 
 

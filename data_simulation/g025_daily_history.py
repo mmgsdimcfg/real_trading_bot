@@ -14,6 +14,11 @@ Run:
 주의: KIS API 를 호출하지 않는다(폴더에 있는 것만). 3년 이력은 폴더 범위(2025-09~)에 한정 - 더 긴 이력은 g001 --lookback 확대 후 --rebuild.
 
 Update log:
+- [2026-11-06] type=fix owner=claude
+    summary: Codex 검토 반영 - 재구성 시 폴더 표본을 전역이 아니라 종목별(그 종목 파일이 있는 폴더 중 처음/100개 간격/마지막 2개)로
+      골라, 표본 폴더에 없는 종목 누락과 미확정 행이 다음 폴더 값으로 교정되지 않는 문제 제거.
+    impact: tooling
+    compatibility: backward-compatible
 - [2026-11-06] type=feat owner=claude
     summary: AutoBotH 차트 요청(P3-2) 신규.
     impact: tooling
@@ -125,27 +130,36 @@ def append_folder(folder: str, log=print) -> int:
 
 
 def rebuild(log=print, step: int = ROWS_PER_FILE // 2) -> int:
-    """Read the oldest folder, then every `step`-th folder, then the newest two (each file holds 200 rows, so folders
-    ~100 trading days apart already overlap). Provisional same-day rows are replaced by the next folder's final rows."""
+    """Per symbol: list every folder that has its file, then read the oldest, every `step`-th, and the newest two of
+    THAT symbol's folders (each file holds 200 rows, so folders ~100 trading days apart already overlap). Later folders
+    are merged last, so a provisional same-day row is replaced by the next available folder's final row."""
     folders = date_folders()
     if not folders:
         log("g025 rebuild: no date folders")
         return 0
-    picked = sorted(set(folders[::step]) | set(folders[-2:]) | {folders[0]})
-    log(f"{datetime.now():%F %T} g025 rebuild from {len(picked)}/{len(folders)} folders: {picked}")
-    merged: dict[str, pd.DataFrame] = {}
-    for folder in picked:
-        t0 = time.time()
+    per_code: dict[str, list[tuple[str, Path]]] = {}
+    for folder in folders:
         for code, path in folder_files(folder).items():
+            per_code.setdefault(code, []).append((folder, path))
+    log(f"{datetime.now():%F %T} g025 rebuild: {len(per_code)} codes over {len(folders)} folders")
+    t0 = time.time()
+    n = 0
+    for code, items in sorted(per_code.items()):
+        picks = {0, len(items) - 1, len(items) - 2} | set(range(0, len(items), step))
+        merged = None
+        for i in sorted(p for p in picks if 0 <= p < len(items)):
+            folder, path = items[i]
             new = read_daily_file(path, folder)
             if new is None or new.empty:
                 continue
-            merged[code] = merge_rows(merged.get(code), new)
-        log(f"  {folder}: {len(merged)} codes so far ({time.time() - t0:.0f}s)")
-    for code, df in merged.items():
-        write_history(code, df)
-    log(f"{datetime.now():%F %T} g025 rebuild done: {len(merged)} codes -> {history_dir()}")
-    return len(merged)
+            merged = merge_rows(merged, new)
+        if merged is not None and not merged.empty:
+            write_history(code, merged)
+            n += 1
+        if n % 500 == 0 and n:
+            log(f"  {n} codes written ({time.time() - t0:.0f}s)")
+    log(f"{datetime.now():%F %T} g025 rebuild done: {n} codes -> {history_dir()} ({time.time() - t0:.0f}s)")
+    return n
 
 
 def main(argv=None) -> int:
