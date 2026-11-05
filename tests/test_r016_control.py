@@ -352,6 +352,19 @@ class ServiceTests(Base):
         self.assertEqual(len(self.paths.history.read_text(encoding="utf-8").splitlines()), 8)
 
 
+class ChartDispatchTests(Base):
+    def test_bars_and_indicators_dispatch_to_r017(self):
+        import r017_chart_data as r017
+        with mock.patch.object(r017, "bars", return_value={"ok": True, "bars": []}) as b:
+            rc, out = self.run_cli("bars", "--date", "20261105", "--code", "5930", "--kind", "tick", "--ticks", "120", "--since-ts", "2026-11-05T09:00:00")
+            self.assertEqual(rc, 0)
+            b.assert_called_once_with("20261105", "5930", "tick", None, 1, 120, 0, "2026-11-05T09:00:00", False)
+        with mock.patch.object(r017, "indicators", return_value={"ok": False, "error": "x"}) as i:
+            rc, out = self.run_cli("indicators", "--date", "20261105", "--code", "005930", "--frame", "1m", "--last", "5")
+            self.assertEqual(rc, 2)
+            i.assert_called_once_with("20261105", "005930", "1m", 5)
+
+
 class ProcScanTests(unittest.TestCase):
     def test_find_r003_processes_from_fake_proc(self):
         with tempfile.TemporaryDirectory() as td:
