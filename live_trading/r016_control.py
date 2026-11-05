@@ -16,6 +16,7 @@
   conditions                     r015 조건 JSON + 각 상수의 editable/base/override/running/pending
   watchlist get | watchlist set (--codes "005930,삼성전자;000660" | --stdin)   r004 감시목록 읽기/쓰기(백업 후 교체)
   collector status | collector restart      g011 틱 수집기 상태 / SIGTERM (g022 cron 또는 r003 감시자가 새 감시목록으로 재기동)
+  indicators ... | bars ...        차트 데이터 (live_trading/r017_chart_data.py 로 위임 - 그 파일의 docstring 참조)
 
 파일(저장소 밖): <runtime>/config/live_overrides.json, live_overrides_history.jsonl, r003.env, watchlist_backup/, .r016.lock
 실행 스냅샷: <runtime>/data/live_runtime/r003_running.json (r003 이 시작 시 기록) - "지금 돌고 있는 값"의 근거.
@@ -26,6 +27,10 @@
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-06] type=feat owner=claude
+    summary: AutoBotH 차트 요청 - indicators/bars 하위 명령(r017 위임), collector 블록에 started_at(/proc starttime) 추가.
+    impact: tooling
+    compatibility: backward-compatible
 - [2026-11-05] type=fix owner=claude
     summary: Codex 검토 반영 - (1) restart 도 외부 r003 검사, 서비스 active 면 start 거부 (2) 쓰기 전부 flock + 고유 임시
       파일 (3) NaN/Infinity JSON 거부, allow_nan=False (4) status/pending 을 r003_running.json 스냅샷(실제 dry_run/profile/
@@ -509,11 +514,22 @@ def _collector_codes_of(argv: list[str], ticks_day_dir: Path) -> set[str] | None
     return codes
 
 
+def _pid_started_at(pid: int, proc_root: Path = Path("/proc")) -> str | None:
+    try:
+        stat = (proc_root / str(pid) / "stat").read_text()
+        start_ticks = int(stat.rsplit(")", 1)[1].split()[19])
+        hz = os.sysconf("SC_CLK_TCK")
+        return datetime.fromtimestamp(_boot_epoch() + start_ticks / hz).isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
 def collector_status(paths: ControlPaths, watch_codes: list[str], now: datetime | None = None) -> dict:
     now = now or datetime.now()
     day = paths.ticks_dir / now.strftime("%Y%m%d")
     procs = _find_processes(G011_SCRIPT_NAME)
     out = {"running": bool(procs), "pid": procs[0]["pid"] if procs else None, "pids": [p["pid"] for p in procs],
+           "started_at": _pid_started_at(procs[0]["pid"]) if procs else None,
            "subscribed": None, "symbols": 0, "last_write": None, "stale": [], "missing": [], "ticks_dir": str(day)}
     subscribed = _collector_codes_of(procs[0]["argv"], day) if procs else None
     if subscribed is not None:
@@ -765,7 +781,13 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("--stdin", action="store_true", help="read entries (one per line) from stdin")
     p = sub.add_parser("collector")
     p.add_argument("action", choices=["status", "restart"])
+    import r017_chart_data as r017  # noqa: E402  (pandas import only when these commands are used would be nicer; cheap enough)
+    r017.add_subparsers(sub)
     args = ap.parse_args(argv)
+
+    if args.cmd in ("indicators", "bars"):
+        out = r017.run_command(args)
+        return _emit(out, 0 if out.get("ok") else 2)
 
     if args.cmd == "status":
         return _emit(status(paths, runner))
