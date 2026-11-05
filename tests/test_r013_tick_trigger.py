@@ -147,7 +147,7 @@ class TestTickTriggerFeed(unittest.TestCase):
         self.assertEqual(len(self.feed._feeds["003160"].builders[3].bars), 5)
 
         rows = self._rows([42000, 42050, 42100, 42150, 42200, 42250], now)
-        line = ",".join(str(rows[-1][c]) for c in TICK_FILE_COLUMNS)
+        line = ",".join(str(rows[-1].get(c, "")) for c in TICK_FILE_COLUMNS)
         self._append(rows[:-1], partial_tail=line[:20])  # writer flushed mid-row
         r = self.feed.evaluate("003160", now + timedelta(seconds=6))
         bars = self.feed._feeds["003160"].builders[3].bars

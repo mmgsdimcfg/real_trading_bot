@@ -87,6 +87,45 @@ class G011Test(unittest.TestCase):
             self.assertEqual(b.stats.accepted, 2)  # torn row is not read as a qty-0 / acml-0 print
             self.assertEqual(len(b.bars), 1)
 
+    def test_session_classification_and_v2_columns(self):
+        from datetime import time as dt_time
+        cs = g011.classify_session
+        self.assertEqual(cs("083005"), "pre")
+        self.assertEqual(cs("090000"), "regular")
+        self.assertEqual(cs("151959"), "regular")
+        self.assertEqual(cs("153011"), "close_auction")
+        self.assertEqual(cs("153959"), "close_auction")
+        self.assertEqual(cs("154000"), "post")
+        self.assertEqual(cs("160500", (dt_time(10, 0), dt_time(16, 30))), "regular")   # CSAT day
+        self.assertEqual(cs("163005", (dt_time(10, 0), dt_time(16, 30))), "close_auction")
+        self.assertEqual(cs("bad"), "")
+        self.assertEqual(TICK_FILE_COLUMNS[-2:], ["venue", "session"])
+        with tempfile.TemporaryDirectory() as d:
+            w = g011.TickWriter(Path(d))
+            w.write("2026-11-06T09:00:01.000", {**_rec(acml="5"), "venue": "KRX", "session": "regular"})
+            w.close()
+            lines = (Path(d) / "005930.csv").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[0].split(","), TICK_FILE_COLUMNS)
+            self.assertTrue(lines[1].endswith(",KRX,regular"))
+            b = build_tick_bars(iter_tick_file(Path(d) / "005930.csv"), "005930", 1)
+            self.assertEqual(b.stats.accepted, 1)
+
+    def test_writer_keeps_v1_width_of_existing_file(self):
+        from r009_tick_bars import TICK_FILE_COLUMNS_V1
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "005930.csv"
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                f.write(",".join(TICK_FILE_COLUMNS_V1) + "\n")
+                f.write("2026-11-06T09:00:01.000,005930,20261102,090001,100,5,5,1,0,1,0,0,0\n")
+            w = g011.TickWriter(Path(d))
+            w.write("2026-11-06T09:00:02.000", {**_rec(hhmmss="090002", px="101", q="3", acml="8"), "venue": "KRX", "session": "regular"})
+            w.close()
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines[0].split(",")), len(TICK_FILE_COLUMNS_V1))
+            self.assertTrue(all(len(l.split(",")) == len(TICK_FILE_COLUMNS_V1) for l in lines[1:]), lines)
+            b = build_tick_bars(iter_tick_file(path), "005930", 1)
+            self.assertEqual(b.stats.accepted, 2)   # both rows readable, nothing dropped as a torn row
+
     def test_idle_window_and_timeout_shim(self):
         with mock.patch.object(g011, "session_hours", return_value=(dtime(10, 0), dtime(16, 30))):
             start, end = g011.idle_check_window(datetime(2026, 11, 19, 8, 0))
