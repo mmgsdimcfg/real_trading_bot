@@ -1,0 +1,30 @@
+# systemd --user unit for the live trader r003 (install: see live_trading/systemd/README.md)
+#   cp live_trading/systemd/autobot-r003.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   systemctl --user start|stop|restart|status autobot-r003   (or via live_trading/r016_control.py / AutoBotH)
+# Not enabled at boot on purpose: starting trading after a reboot is an explicit decision.
+[Unit]
+Description=AutoBot r003 live trader (KRX)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/data/srv/autobot/auto_trading_src/live_trading
+ExecStart=/bin/bash /data/srv/autobot/auto_trading_src/live_trading/r003_service.sh
+Environment=PYTHONUNBUFFERED=1
+# r003 saves live_state on SIGTERM; give it time to finish the current loop.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+# Only r003 is killed on stop/restart; its g011 tick collector child keeps running (cron g022 supervises it,
+# a restarted r003 re-attaches to the running collector).
+KillMode=process
+Restart=on-failure
+RestartSec=60
+# r003 own file logs: <runtime>/log/<date>/. stdout/stderr -> journalctl --user -u autobot-r003
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
