@@ -1,6 +1,15 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-05] type=feat owner=claude
+#     summary: 원격 제어(AutoBotH)용 라이브 오버라이드 - risk profile 적용 직후 <runtime>/config/live_overrides.json
+#       (env AUTO_TRADING_LIVE_OVERRIDES=경로, "0"/"off"면 비활성)을 읽어 r001 상수를 덮어쓴다(_apply_live_overrides).
+#       키는 r001에 이미 있는 대문자 상수만, 값은 현재 값과 JSON 타입이 호환될 때만(bool<->int 불가, int->float 가능),
+#       경로/디렉터리/파일명 상수(DIR/PATH/ROOT/FILENAME/TEMPLATE 포함, Path 값)는 거부. 적용/거부 결과는
+#       LIVE_OVERRIDES_APPLIED / LIVE_OVERRIDES_BASE / LIVE_OVERRIDES_ERRORS 에 남겨 r016_control이 조회한다.
+#     impact: live (r003 재시작 후 - 파일이 없으면 동작 동일) + g003/테스트(같은 파일을 읽으므로 라이브 parity;
+#       시뮬에서 끄려면 AUTO_TRADING_LIVE_OVERRIDES=0)
+#     compatibility: backward-compatible (파일 없음 = 기존과 동일)
 # - [2026-11-04] type=feat owner=claude
 #     summary: 사용자 승인(Codex 2차 검토 안전 점검 4건 + 시장 추세 게이트) - PARTIAL_BUY_CANCEL_AFTER_SECONDS(부분체결 잔량 취소),
 #       ACCOUNT_SYNC_MAX_STALE_SECONDS/DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED(계좌 신선도·평가손익 포함 한도), ENABLE_QUOTE_STATUS_GATE
@@ -671,6 +680,7 @@ Risk profile presets:
 """
 
 import json
+import math
 import os
 from datetime import time as dt_time
 from pathlib import Path
@@ -1875,3 +1885,175 @@ def _apply_risk_profile_overrides() -> None:
 
 
 _apply_risk_profile_overrides()
+
+
+# ---------------------------------------------------------------------------
+# [2026-11-05] 라이브 오버라이드 (AutoBotH 원격 설정 편집용) - live_trading/r016_control.py 가 파일을 쓰고,
+# r001 import 시점(= r003 시작 시점)에 한 번 적용된다. 핫리로드 없음: 변경은 r003 재시작 후 반영.
+# ---------------------------------------------------------------------------
+LIVE_OVERRIDES_PATH: Path = RUNTIME_ROOT / "config" / "live_overrides.json"
+LIVE_OVERRIDES_DENY_TOKENS = ("DIR", "PATH", "ROOT", "FILENAME", "TEMPLATE", "URL", "SECRET", "TOKEN", "ACCT", "ACCOUNT_NO")
+LIVE_OVERRIDES_APPLIED: dict[str, object] = {}   # key -> applied value
+LIVE_OVERRIDES_BASE: dict[str, object] = {}      # key -> value before override (risk profile applied)
+LIVE_OVERRIDES_ERRORS: list[str] = []            # human readable rejects
+
+
+def _live_override_scalar_ok(value) -> bool:
+	"""bool/int/str/None, or a FINITE float (NaN/inf would silently disable comparisons such as age > limit)."""
+	if value is None or isinstance(value, (bool, int, str)):
+		return True
+	if isinstance(value, float):
+		return math.isfinite(value)
+	return False
+
+
+def _live_override_elem_ok(value) -> bool:
+	"""Container element: a scalar or one nested list/tuple of scalars (e.g. BB_UPPER_GAP_MIN_PCT_BY_TICK pairs)."""
+	if _live_override_scalar_ok(value):
+		return True
+	if isinstance(value, (list, tuple)):
+		return all(_live_override_scalar_ok(x) for x in value)
+	return False
+
+
+def live_override_key_allowed(key: str, current) -> bool:
+	"""True if this r001 constant may be overridden from the live_overrides file (no paths/dirs/secrets, scalar-ish)."""
+	if not key or key != key.upper() or key.startswith("_") or not key.isidentifier():
+		return False
+	if key.startswith("LIVE_OVERRIDES"):
+		return False
+	if any(tok in key.split("_") for tok in LIVE_OVERRIDES_DENY_TOKENS):
+		return False
+	if isinstance(current, Path) or callable(current):
+		return False
+	if _live_override_scalar_ok(current):
+		return True
+	if isinstance(current, (list, tuple, set, frozenset)):
+		return all(_live_override_elem_ok(x) for x in current)
+	if isinstance(current, dict):
+		return all(isinstance(k, str) and _live_override_scalar_ok(v) for k, v in current.items())
+	return False
+
+
+def _live_override_same_kind(current, new) -> bool:
+	"""Scalar kind check: bool only bool, int only int, float accepts int, str only str, None accepts any scalar."""
+	if isinstance(current, bool):
+		return isinstance(new, bool)
+	if isinstance(current, int):
+		return isinstance(new, int) and not isinstance(new, bool)
+	if isinstance(current, float):
+		return isinstance(new, (int, float)) and not isinstance(new, bool) and _live_override_scalar_ok(new)
+	if isinstance(current, str):
+		return isinstance(new, str)
+	if current is None:
+		return _live_override_scalar_ok(new)
+	return False
+
+
+def _live_override_elem_compatible(sample, new) -> bool:
+	if isinstance(sample, (list, tuple)):
+		if not isinstance(new, list) or not all(_live_override_scalar_ok(x) for x in new):
+			return False
+		return not sample or all(_live_override_same_kind(sample[0], x) for x in new)
+	return _live_override_same_kind(sample, new)
+
+
+def live_override_value_compatible(current, new) -> bool:
+	"""JSON value `new` may replace `current`: same scalar kind (bool is not int, int may become float, no NaN/inf);
+	list/tuple/set accept a JSON list whose elements match the kind of the current first element (so string code
+	tuples stay strings, numeric tuples stay numeric; an empty list is always accepted); dict accepts a JSON object
+	whose values match the kind of the current values."""
+	if _live_override_scalar_ok(current) or current is None:
+		return _live_override_same_kind(current, new)
+	if isinstance(current, (list, tuple, set, frozenset)):
+		if not isinstance(new, list):
+			return False
+		seq = list(current)
+		if not seq:
+			return all(_live_override_elem_ok(x) for x in new)
+		return all(_live_override_elem_compatible(seq[0], x) for x in new)
+	if isinstance(current, dict):
+		if not isinstance(new, dict) or not all(isinstance(k, str) for k in new):
+			return False
+		vals = list(current.values())
+		if not vals:
+			return all(_live_override_scalar_ok(v) for v in new.values())
+		return all(_live_override_same_kind(vals[0], v) for v in new.values())
+	return False
+
+
+def _live_override_coerce(current, new):
+	"""Keep the container type of the original constant (tuple/set/frozenset) and float-ness."""
+	if isinstance(current, float) and isinstance(new, int):
+		return float(new)
+	if isinstance(current, tuple):
+		return tuple(tuple(x) if isinstance(x, list) else x for x in new)
+	if isinstance(current, set):
+		return set(new)
+	if isinstance(current, frozenset):
+		return frozenset(new)
+	return new
+
+
+def _live_override_reject_constant(name: str):
+	raise ValueError(f"non-finite number {name} is not allowed")
+
+
+def _apply_live_overrides(path: Path | None = None, namespace: dict | None = None) -> dict[str, object]:
+	"""Apply <runtime>/config/live_overrides.json on top of the module constants. Returns the applied dict.
+
+	Env AUTO_TRADING_LIVE_OVERRIDES: a file path, or "0"/"off"/"false"/"" to disable (simulations / tests).
+	Rejected keys never raise - they are listed in LIVE_OVERRIDES_ERRORS and printed as [WARN].
+	"""
+	ns = globals() if namespace is None else namespace
+	applied: dict[str, object] = {}
+	base: dict[str, object] = {}
+	errors: list[str] = []
+	ns["LIVE_OVERRIDES_APPLIED"] = applied
+	ns["LIVE_OVERRIDES_BASE"] = base
+	ns["LIVE_OVERRIDES_ERRORS"] = errors
+
+	if path is None:
+		raw = os.environ.get("AUTO_TRADING_LIVE_OVERRIDES")
+		if raw is not None and raw.strip().lower() in ("", "0", "off", "false", "no"):
+			return applied
+		path = Path(raw).expanduser() if raw else ns.get("LIVE_OVERRIDES_PATH", LIVE_OVERRIDES_PATH)
+	ns["LIVE_OVERRIDES_PATH"] = Path(path)
+	if not Path(path).is_file():
+		return applied
+	try:
+		data = json.loads(Path(path).read_text(encoding="utf-8"), parse_constant=_live_override_reject_constant)
+	except Exception as exc:
+		errors.append(f"load failed: {exc}")
+		print(f"[WARN        ] live overrides not applied ({path}): {exc}")
+		return applied
+	if isinstance(data, dict) and isinstance(data.get("overrides"), dict):
+		data = data["overrides"]
+	if not isinstance(data, dict):
+		errors.append("invalid format (expected object)")
+		print(f"[WARN        ] live overrides not applied ({path}): expected a JSON object")
+		return applied
+
+	for key, value in data.items():
+		if key not in ns:
+			errors.append(f"{key}: unknown constant")
+			continue
+		current = ns[key]
+		if not live_override_key_allowed(key, current):
+			errors.append(f"{key}: not overridable")
+			continue
+		if not live_override_value_compatible(current, value):
+			errors.append(f"{key}: type mismatch (current {type(current).__name__}, got {type(value).__name__})")
+			continue
+		base[key] = current
+		ns[key] = _live_override_coerce(current, value)
+		applied[key] = ns[key]
+
+	for msg in errors:
+		print(f"[WARN        ] live override rejected - {msg}")
+	if applied:
+		print(f"[INFO] Applied live overrides from {path} ({len(applied)} keys: {', '.join(sorted(applied))})")
+	return applied
+
+
+_apply_live_overrides()
