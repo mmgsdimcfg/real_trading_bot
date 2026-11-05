@@ -60,6 +60,24 @@ class G025Tests(unittest.TestCase):
         self.assertEqual(len(df), 3)
         self.assertEqual(g025.main(["--append"]), 0)
 
+    def test_rebuild_is_per_symbol_and_corrects_provisional_rows(self):
+        # 000660 exists only in a middle folder that a global sample would skip; its provisional row is corrected
+        # by a later folder where it also appears
+        for i, day in enumerate(("20261106", "20261107", "20261110", "20261111")):
+            d = self.root / "data" / day
+            d.mkdir()
+            _daily(d / "005930_삼성전자_daily.csv", [(day, 100 + i, 101 + i, 1)])
+        _daily(self.root / "data" / "20261107" / "000660_SK하이닉스_daily.csv", [("20261105", 500, 506, 7), ("20261107", 510, 511, 8)])
+        _daily(self.root / "data" / "20261110" / "000660_SK하이닉스_daily.csv", [("20261107", 510, 515, 9), ("20261110", 520, 521, 3)])
+        n = g025.rebuild(log=lambda *_: None, step=3)
+        self.assertEqual(n, 2)
+        df = pd.read_csv(self.root / "data" / "daily_history" / "000660.csv", dtype={"date": str, "source_date": str}).set_index("date")
+        self.assertEqual(df.loc["20261105", "close"], 506)            # corrected by the next folder (final)
+        self.assertEqual(df.loc["20261107", "close"], 515)            # provisional 11/07 replaced by 11/10 folder
+        self.assertEqual(df.loc["20261110", "source_date"], "20261110")
+        samsung = pd.read_csv(self.root / "data" / "daily_history" / "005930.csv", dtype={"date": str}).set_index("date")
+        self.assertEqual(samsung.loc["20261111", "close"], 104)
+
     def test_cli_rebuild(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(g025.main(["--rebuild"]), 0)

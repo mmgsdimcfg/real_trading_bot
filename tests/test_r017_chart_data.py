@@ -181,6 +181,85 @@ class BarsTests(Base):
         self.assertEqual(rc, 2)
 
 
+class RobustnessTests(Base):
+    def test_torn_rows_are_dropped_like_r009(self):
+        torn_short = "2026-11-05T09:10:00.000,005930,20261105,091000,999999,5,5\n"
+        torn_long = self.lines[1].rstrip("\n") + ",extra,cols\n"
+        self.tick_path.write_text("".join(self.lines[:50]) + torn_short + torn_long + "".join(self.lines[50:]), encoding="utf-8")
+        df = r017.load_ticks(self.tick_path)
+        self.assertEqual(len(df), 700)
+        self.assertFalse((df["price"] == 999999).any())
+        rc, out = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "min")
+        self.assertTrue(all(b[2] < 999999 for b in out["bars"]))
+
+    def test_cache_rebuilds_when_file_is_replaced(self):
+        rc, a = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "min")
+        # same size + same header, different content (replace file -> new inode and different bytes)
+        other = _tick_lines(DAY, 700, base=50000)
+        tmp = self.tick_path.with_suffix(".new")
+        tmp.write_text("".join(other), encoding="utf-8")
+        tmp.replace(self.tick_path)
+        rc, b = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "min")
+        self.assertNotEqual(a["bars"][0][1], b["bars"][0][1])
+        self.assertEqual(b["bars"][0][1], 50000)
+        self.assertFalse(b["source"].endswith("(cache)"))
+        # truncate-and-regrow in place with different prints
+        self.tick_path.write_text("".join(_tick_lines(DAY, 300, base=60000)), encoding="utf-8")
+        rc, c = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "min")
+        self.assertEqual(c["bars"][0][1], 60000)
+        self.assertEqual(c["bars"], self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "min")[1]["bars"])
+
+
+class ParityTests(Base):
+    def test_3m_keeps_closing_auction_bin_and_drops_only_first_partial(self):
+        mf = r017.minute_frames(DAY, CODE)
+        m1, m1_end, m3, _ = mf
+        # synthetic day: 30 minutes 09:00..09:29 -> end labels 09:01..09:30 -> bins 09:03..09:30 all full (10 bins)
+        self.assertEqual(len(m3), 10)
+        # append a lone 15:30 minute (closing auction) -> lands alone in the 15:33 bin and must be kept
+        extra = m1_end.iloc[-1:].copy()
+        extra.index = [pd.Timestamp("2026-11-05 15:31:00")]
+        m3b = r017._day_3min(pd.concat([m1_end, extra]))
+        self.assertEqual(m3b.index[-1], pd.Timestamp("2026-11-05 15:33:00"))
+        # a partial FIRST bin is dropped (start at 09:02 -> first bin 09:03 has 1 slot)
+        m3c = r017._day_3min(m1_end.iloc[1:])
+        self.assertEqual(m3c.index[0], pd.Timestamp("2026-11-05 09:06:00"))
+
+    def test_1m_rolling_window_matches_r003_cap(self):
+        import r002_strategy_core_shared as r002
+        _write_10s(self.data / DAY / f"{CODE}_{NAME}_10s.txt", DAY, 260)
+        m1, m1_end, m3, _ = r017.minute_frames(DAY, CODE)
+        w1, w3, _ = r017.warmup_frames(DAY, CODE)
+        out, parity = r017._indicators_rolling(m1_end, w1, 200, need_last=30)
+        self.assertEqual(parity, "exact")
+        self.assertEqual(len(out), 260)
+        self.assertEqual(r017._indicators_rolling(m1_end, w1, 200)[1][:11], "single_pass")   # 60 windows > PARITY_MAX_WINDOWS
+        self.assertEqual(r017._indicators_rolling(m1_end.iloc[:150], w1, 200)[1], "exact")
+        # row 199 == prefix computation; row 259 == computation on its own trailing 200-bar window (what r003 holds)
+        ref_prefix = r002.calculate_indicators_with_warmup(m1_end.iloc[:200], w1)
+        ref_last = r002.calculate_indicators_with_warmup(m1_end.iloc[60:260], w1)
+        self.assertAlmostEqual(float(out["RSI"].iloc[199]), float(ref_prefix["RSI"].iloc[199]), places=9)
+        self.assertAlmostEqual(float(out["EMA_60"].iloc[-1]), float(ref_last["EMA_60"].iloc[-1]), places=9)
+        self.assertAlmostEqual(float(out["ADX"].iloc[-1]), float(ref_last["ADX"].iloc[-1]), places=9)
+        rc, res = self.cli("indicators", "--date", DAY, "--code", CODE, "--frame", "1m", "--last", "5")
+        self.assertEqual(res["parity"], "exact")
+        self.assertAlmostEqual(res["rows"][-1][res["columns"].index("ADX")], float(ref_last["ADX"].iloc[-1]), places=5)
+
+    def test_indicators_fall_back_to_ticks_when_no_10s_file(self):
+        (self.data / DAY / f"{CODE}_{NAME}_10s.txt").unlink()
+        rc, out = self.cli("indicators", "--date", DAY, "--code", CODE, "--frame", "1m", "--last", "2")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ticks -> 1m", out["source"])
+        self.assertIn("_prev_close.json", out["warmup"]) if (self.data / DAY / "_prev_close.json").exists() else self.assertIn("daily_csv_prev_row", out["warmup"])
+
+    def test_base_price_prefers_prev_close_json(self):
+        (self.data / DAY / "_prev_close.json").write_text(json.dumps({CODE: 12345.0}), encoding="utf-8")
+        price, basis = r017.base_price_for(DAY, CODE)
+        self.assertEqual((price, basis), (12345.0, "_prev_close.json"))
+        rc, out = self.cli("indicators", "--date", DAY, "--code", CODE, "--frame", "3m", "--last", "1")
+        self.assertIn("price basis changed", out["warmup"])   # 12345 vs prior close ~74k -> warmup refused like r003
+
+
 class IndicatorTests(Base):
     def test_3m_and_1m_with_warmup(self):
         rc, out = self.cli("indicators", "--date", DAY, "--code", CODE, "--frame", "3m", "--last", "3")
