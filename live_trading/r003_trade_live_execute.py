@@ -20,6 +20,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-05] type=feat owner=claude
+    summary: 원격 제어(r016/AutoBotH) 안전장치 - (1) run() 시작 시 <runtime>/data/live_runtime/.r003.lock 에 flock(단일 실행,
+      screen+systemd 이중 기동이면 rc 3 즉시 종료, 주문 전 단계) (2) 설정 확정 후 live_runtime/r003_running.json 에 실행
+      스냅샷(pid, 시작 시각, dry_run, env_dv, risk profile, 적용된 live overrides, 감시목록 파일 mtime) 기록 - r016 status 가
+      '실제 실행 중인 값'과 '편집된 값'을 비교해 미적용 변경을 판단. 정상 종료 시 삭제.
+    impact: live (r003 재시작 후)
+    compatibility: backward-compatible (락/스냅샷 파일 신규, 동작 로직 불변)
 - [2026-11-04] type=feat owner=claude
     summary: 사용자 승인(Codex 2차 안전 점검 + 시장 추세) - (1) 부분체결 매수: 메인 루프가 pending 매수라도 보유수량>0이면
       손절/익절 감시 계속, refresh_pending_orders가 PARTIAL_BUY_CANCEL_AFTER_SECONDS 뒤 잔량 취소(_cancel_buy_remainder).
@@ -5272,10 +5279,87 @@ def _shutdown_save_live_state(api: TradingAPI | None) -> None:
         log(f"  [WARN        ] live state save on shutdown failed: {exc}")
 
 
+# [2026-11-05] single-instance lock + running snapshot (read by live_trading/r016_control.py / AutoBotH).
+R003_INSTANCE_LOCK_PATH = LIVE_RUNTIME_DIR / ".r003.lock"
+R003_RUNNING_SNAPSHOT_PATH = LIVE_RUNTIME_DIR / "r003_running.json"
+_R003_LOCK_FH = None
+
+
+def _acquire_instance_lock() -> bool:
+    """Hold an exclusive flock for the life of this process. False if another r003 already holds it."""
+    global _R003_LOCK_FH
+    try:
+        import fcntl
+    except ImportError:  # non-Linux dev box: no lock, keep running
+        return True
+    try:
+        fh = open(R003_INSTANCE_LOCK_PATH, "a+", encoding="utf-8")
+    except OSError:
+        return True  # unwritable runtime dir: do not block trading over bookkeeping
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"{os.getpid()} {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    fh.flush()
+    _R003_LOCK_FH = fh  # keep the descriptor open: closing it releases the lock
+    return True
+
+
+def _write_running_snapshot(*, dry_run: bool, env_dv: str, watch_file: Path, code_count: int) -> None:
+    """r003_running.json: what this process actually runs with (not what the editable files say now)."""
+    try:
+        import r001_define_config as _r001
+        try:
+            wl_mtime = watch_file.stat().st_mtime
+        except OSError:
+            wl_mtime = None
+        payload = {
+            "pid": os.getpid(),
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "dry_run": bool(dry_run),
+            "env_dv": env_dv,
+            "risk_profile": (os.environ.get("AUTO_TRADING_RISK_PROFILE") or os.environ.get("RISK_PROFILE") or "neutral"),
+            "overrides_file": str(getattr(_r001, "LIVE_OVERRIDES_PATH", "")),
+            "overrides_applied": {k: (list(v) if isinstance(v, (tuple, set, frozenset)) else v)
+                                  for k, v in (getattr(_r001, "LIVE_OVERRIDES_APPLIED", {}) or {}).items()},
+            "overrides_errors": list(getattr(_r001, "LIVE_OVERRIDES_ERRORS", []) or []),
+            "watchlist_file": str(watch_file),
+            "watchlist_mtime": wl_mtime,
+            "watchlist_codes": int(code_count),
+            "trading_strategy_mode": str(TRADING_STRATEGY_MODE),
+            "entry_trigger_mode": str(ENTRY_TRIGGER_MODE),
+        }
+        tmp = R003_RUNNING_SNAPSHOT_PATH.with_suffix(f".json.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        os.replace(tmp, R003_RUNNING_SNAPSHOT_PATH)
+    except Exception as exc:  # never let bookkeeping stop trading
+        log(f"  [R003 SNAP   ] WARN running snapshot not written: {exc}")
+
+
+def _remove_running_snapshot() -> None:
+    try:
+        data = json.loads(R003_RUNNING_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        if int(data.get("pid", -1)) == os.getpid():
+            R003_RUNNING_SNAPSHOT_PATH.unlink()
+    except Exception:
+        pass
+
+
 def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool | None = None, watchlist_source: str | None = None) -> None:
     now = datetime.now()
     _ensure_log_date_for(now)
     print(f"[R003 START  ] {now:%Y-%m-%d %H:%M:%S} | initializing live executor", flush=True)
+    if not _acquire_instance_lock():
+        held = ""
+        with contextlib.suppress(Exception):
+            held = R003_INSTANCE_LOCK_PATH.read_text(encoding="utf-8").strip()
+        print(f"[R003 STOP   ] another r003 already holds {R003_INSTANCE_LOCK_PATH} ({held}) - refusing to start a second instance", flush=True)
+        sys.exit(3)
+    atexit.register(_remove_running_snapshot)
     log("R003 START | initializing live executor")
     log(f"  [R003 MODE   ] TRADING_STRATEGY_MODE={TRADING_STRATEGY_MODE}")
 
@@ -5370,6 +5454,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     )
     api = TradingAPI(env_dv=effective_env, dry_run=effective_dry, live_state=live_state)
     _install_shutdown_handlers(api)
+    _write_running_snapshot(dry_run=effective_dry, env_dv=effective_env, watch_file=watch_file, code_count=len(watch_map))
     api.live_state["traded_today"] = traded_today
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}
