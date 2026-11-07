@@ -10,6 +10,8 @@
  *   (close-weighted, session) and MA lines 5/20/60/120 for the chart tab. computeIndicators() now takes the warm-up bars and returns
  *   series aligned to the day's bars, mirroring the bot's calculate_indicators_with_warmup(): bot indicators over the previous
  *   day's last PRIOR_DAY_WARMUP_MINUTES (180) one-minute bars + the day, VWAP/OBV over the day only
+ * - [2026-11-07] type=feat - crossSignal / SIGNAL_RULES: per-oscillator buy / sell crossings for the chart's ▲ / ▼ marks (RSI 30/70,
+ *   MACD-signal, DI+/DI-, stochastic %K/%D in 20/80 zones, Williams -80/-20, MFI 20/80, OBV/MA). Display only
  */
 
 import type { Bar } from './price';
@@ -400,4 +402,64 @@ export function computeIndicators(bars: Bar[], on: IndicatorKey[], w: WarmupBars
   if (has('mfi')) out.mfi = cutBot(mfi(bot, p));
   if (has('obv')) out.obv = obv(bars, p, intraday);
   return out;
+}
+
+// ---- crossing signals (HTS style ▲ / ▼ on the indicator panes) ----------------------------------
+
+export type CrossSignal = 'buy' | 'sell';
+
+/** what each pane's ▲ / ▼ means (tooltips / legend) */
+export const SIGNAL_RULES: Partial<Record<IndicatorKey, string>> = {
+  rsi: '매수: RSI가 30을 상향 돌파 · 매도: 70을 하향 돌파',
+  macd: '매수: MACD가 시그널 상향 돌파(골든크로스) · 매도: 하향 돌파(데드크로스)',
+  adx: '매수: DI+가 DI-를 상향 돌파 · 매도: 하향 돌파',
+  stoch: '매수: 20 아래에서 %K가 %D 상향 돌파 · 매도: 80 위에서 하향 돌파',
+  williams: '매수: %R이 -80을 상향 돌파 · 매도: -20을 하향 돌파',
+  mfi: '매수: MFI가 20을 상향 돌파 · 매도: 80을 하향 돌파',
+  obv: '매수: OBV가 이동평균 상향 돌파 · 매도: 하향 돌파',
+};
+
+const fin = (v: number | undefined): v is number => v !== undefined && Number.isFinite(v);
+
+/** a crosses above b between bar i-1 and i (b may be a level) */
+function crossUp(a: Series, b: Series | number, i: number): boolean {
+  const a0 = a[i - 1];
+  const a1 = a[i];
+  const b0 = typeof b === 'number' ? b : b[i - 1];
+  const b1 = typeof b === 'number' ? b : b[i];
+  return fin(a0) && fin(a1) && fin(b0) && fin(b1) && a0 <= b0 && a1 > b1;
+}
+function crossDown(a: Series, b: Series | number, i: number): boolean {
+  const a0 = a[i - 1];
+  const a1 = a[i];
+  const b0 = typeof b === 'number' ? b : b[i - 1];
+  const b1 = typeof b === 'number' ? b : b[i];
+  return fin(a0) && fin(a1) && fin(b0) && fin(b1) && a0 >= b0 && a1 < b1;
+}
+
+/** Buy / sell crossing of an oscillator at bar i (rules in SIGNAL_RULES), null = none. Display only - not the bot's logic. */
+export function crossSignal(key: IndicatorKey, S: IndicatorSet, i: number): CrossSignal | null {
+  if (i < 1) return null;
+  const pick = (buy: boolean, sell: boolean): CrossSignal | null => (buy ? 'buy' : sell ? 'sell' : null);
+  switch (key) {
+    case 'rsi':
+      return S.rsi ? pick(crossUp(S.rsi.rsi, 30, i), crossDown(S.rsi.rsi, 70, i)) : null;
+    case 'macd':
+      return S.macd ? pick(crossUp(S.macd.macd, S.macd.signal, i), crossDown(S.macd.macd, S.macd.signal, i)) : null;
+    case 'adx':
+      return S.adx ? pick(crossUp(S.adx.diPlus, S.adx.diMinus, i), crossDown(S.adx.diPlus, S.adx.diMinus, i)) : null;
+    case 'stoch': {
+      if (!S.stoch) return null;
+      const k0 = S.stoch.k[i - 1];
+      return pick(crossUp(S.stoch.k, S.stoch.d, i) && fin(k0) && k0 < 20, crossDown(S.stoch.k, S.stoch.d, i) && fin(k0) && k0 > 80);
+    }
+    case 'williams':
+      return S.williams ? pick(crossUp(S.williams.r, -80, i), crossDown(S.williams.r, -20, i)) : null;
+    case 'mfi':
+      return S.mfi ? pick(crossUp(S.mfi, 20, i), crossDown(S.mfi, 80, i)) : null;
+    case 'obv':
+      return S.obv ? pick(crossUp(S.obv.obv, S.obv.ma, i), crossDown(S.obv.obv, S.obv.ma, i)) : null;
+    default:
+      return null;
+  }
 }
