@@ -13,7 +13,8 @@
  * - [2026-11-06] type=feat - All indicators of the chart tab available here too (shared IndicatorToggles); the bot's warm-up window
  *   (warmBot) is passed so the bot's indicators match r003
  * - [2026-11-07] type=feat - Past-day replay: tick/minute bars that start after the replay time are hidden (barsUpTo); the
- *   evaluation dots and trades already come cut from the replay snapshot
+ *   evaluation dots and trades already come cut from the replay snapshot. The time axis ends at the replay time, so it keeps
+ *   moving through stretches without events (r003 stopped)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -101,7 +102,13 @@ export function TimelineView() {
   const buyPts = useMemo(() => events.filter((e) => e.side === 'buy' && buyY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: buyY.get(ev.condKey)!, ev })), [events, buyY]);
   const sellPts = useMemo(() => events.filter((e) => e.side === 'sell' && sellY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: sellY.get(ev.condKey)!, ev })), [events, sellY]);
   const xs = [...events.map((e) => e.ts), ...trades.map((t) => t.ts)].filter(Number.isFinite);
-  const domain: [number, number] = xs.length ? [Math.min(...xs), Math.max(...xs)] : [0, 1];
+  const replayAt = snap?.replay?.cursor ?? null;
+  // replay: the axis runs to the replay time, so it moves while playing even when the symbol has no new events (r003 stopped)
+  const domain: [number, number] = xs.length
+    ? [Math.min(...xs), replayAt !== null ? Math.max(replayAt, Math.min(...xs) + 60000) : Math.max(...xs)]
+    : replayAt !== null
+      ? [replayAt - 30 * 60000, replayAt]
+      : [0, 1];
   // explicit 30-minute ticks (recharts' automatic ticks on a time scale bunch up at the start)
   const xTicks = useMemo(() => {
     const step = 30 * 60 * 1000;
@@ -136,10 +143,9 @@ export function TimelineView() {
   }, [reqKey, liveTick, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // past-day replay: intraday bars after the replay time are not shown yet
-  const replayCursor = snap?.replay?.cursor ?? null;
   const shownBars = useMemo(
-    () => (price?.ok ? barsUpTo(price.bars, replayCursor, chart.kind === 'tick' || chart.kind === 'min') : []),
-    [price, replayCursor, chart.kind],
+    () => (price?.ok ? barsUpTo(price.bars, replayAt, chart.kind === 'tick' || chart.kind === 'min') : []),
+    [price, replayAt, chart.kind],
   );
   // memoized so hovering the price chart does not rebuild its paths
   const intradayDomain = useMemo<[number, number] | null>(() => (xs.length ? [domain[0], domain[1]] : null), [xs.length > 0, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
