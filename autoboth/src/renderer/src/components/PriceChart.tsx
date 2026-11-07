@@ -16,6 +16,8 @@
  *   timeline keeps mode 'time' with the left axis
  * - [2026-11-07] type=fix - The floating tooltip flips to the left of the cursor when it does not fit on the right (measured width;
  *   before, a fixed 250 px guess let wide tooltips run off the right edge)
+ * - [2026-11-07] type=feat - Buy / sell marks on every indicator pane (HTS style): red ▲ under (buy) / blue ▼ over (sell) the pane's
+ *   main line at the trade's bar, with a hover title. Volume pane 2/3 of its former height (VOL_RATIO 0.2 -> 0.133)
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -33,7 +35,7 @@ const AXIS_H = 22;
 const GAP = 8;
 export const PRICE_PANE_H = 300;
 export const OSC_PANE_H = 84;
-const VOL_RATIO = 0.2;
+const VOL_RATIO = 0.2 * (2 / 3); // volume pane share of the price+volume area (2/3 of the former 0.2)
 const KST = 9 * 3600000;
 const MIN_BARS = 10;
 
@@ -639,6 +641,30 @@ export function PriceChart(props: Props) {
             );
           })}
 
+          {/* HTS style: buy ▲ (red) under / sell ▼ (blue) over each indicator pane's main line at the trade's bar */}
+          {model.marks.map((t, i) => {
+            const slot = slotAt(model.slots, t.ts);
+            if (!slot) return null;
+            const x = intraday ? model.xOfTime(t.ts) ?? slot.x : slot.x;
+            const buy = t.side === 'BUY';
+            return model.panes.map((p) => {
+              const main = p.series.find((ss) => ss.cls === 'ind-main') || p.series[0];
+              const v = main?.s[slot.i];
+              const yv = ok(v) ? p.y(v) : p.top + oscH / 2;
+              const y = Math.min(p.top + oscH - 2, Math.max(p.top + 2, buy ? yv + 4 : yv - 4));
+              return (
+                <path
+                  key={`${i}-${p.key}`}
+                  d={buy ? `M${x},${y} l-5,9 h10 z` : `M${x},${y} l-5,-9 h10 z`}
+                  className={buy ? 'pc-buy-dot' : 'pc-sell-dot'}
+                  pointerEvents="none"
+                >
+                  <title>{`${buy ? '매수' : '매도'} ${fmtInt(t.price)} (${fmtKstTime(t.ts).slice(0, 5)})`}</title>
+                </path>
+              );
+            });
+          })}
+
           {/* last price tag (right axis) */}
           {axis === 'right' && last && (
             <PriceTag x={L + W + 2} y={model.sy(last.b.c)} text={fmtInt(last.b.c)} cls={last.b.c >= last.b.o ? 'up' : 'dn'} />
@@ -688,6 +714,21 @@ export function PriceChart(props: Props) {
       {model && model.empty && <div className="empty small">이 구간에 해당하는 봉이 없습니다.</div>}
     </div>
   );
+}
+
+/** the bar a trade falls in: the last slot that starts at or before the trade time */
+function slotAt<T extends { b: Bar }>(slots: T[], ts: number): T | null {
+  let lo = 0;
+  let hi = slots.length - 1;
+  let found: T | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (slots[mid].b.t <= ts) {
+      found = slots[mid];
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return found;
 }
 
 const key2digits = (k: IndicatorKey) => (k === 'obv' ? 0 : k === 'macd' ? 2 : 1);
