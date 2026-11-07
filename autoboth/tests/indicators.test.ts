@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { adx, bollinger, BOT_PARAMS, computeIndicators, ewm, ichimoku, macd, mfi, obv, rollingMean, rsi, stochastic, vwap, williams } from '../src/shared/indicators';
+import { adx, bollinger, BOT_PARAMS, computeIndicators, crossSignal, ewm, ichimoku, macd, mfi, obv, rollingMean, rsi, stochastic, vwap, williams, type IndicatorSet } from '../src/shared/indicators';
 import type { Bar } from '../src/shared/price';
 
 const ref = JSON.parse(readFileSync(join(__dirname, 'indicators_ref.json'), 'utf8')) as Record<string, (number | null)[]> & {
@@ -114,5 +114,34 @@ describe('ichimoku', () => {
     expect(k.senkouB[5]).toBe((15 + 9) / 2); // window bars 0-3: high max 15, low min 9
     expect(k.chikou[0]).toBe(11);
     expect(Number.isNaN(k.chikou[4])).toBe(true);
+  });
+});
+
+describe('crossSignal (chart ▲ / ▼)', () => {
+  const S: IndicatorSet = {
+    rsi: { rsi: [25, 31, 72, 69], signal: [] },
+    macd: { macd: [-1, 1, 2, 0], signal: [0, 0, 1, 1], hist: [] },
+    adx: { adx: [], diPlus: [10, 20, 20, 10], diMinus: [15, 15, 15, 15] },
+    stoch: { k: [10, 25, 90, 70], d: [15, 15, 85, 85] },
+    williams: { r: [-90, -70, -10, -30], d: [] },
+    mfi: [10, 25, 85, 75],
+    obv: { obv: [1, 3, 3, 1], ma: [2, 2, 2, 2] },
+  };
+  it('buy on the upward crossing, sell on the downward one', () => {
+    for (const k of ['rsi', 'macd', 'adx', 'stoch', 'williams', 'mfi', 'obv'] as const) {
+      expect(crossSignal(k, S, 1), k).toBe('buy');
+      expect(crossSignal(k, S, 3), k).toBe('sell');
+    }
+  });
+  it('nothing without a crossing, on the first bar or for missing values', () => {
+    expect(crossSignal('rsi', S, 2)).toBeNull(); // 31 -> 72: above 30 already, not below 70
+    expect(crossSignal('rsi', S, 0)).toBeNull();
+    expect(crossSignal('rsi', { rsi: { rsi: [NaN, 40], signal: [] } }, 1)).toBeNull();
+    expect(crossSignal('bb', S, 1)).toBeNull();
+  });
+  it('stochastic crossings count only in the 20 / 80 zones', () => {
+    const s2: IndicatorSet = { stoch: { k: [40, 60, 60, 40], d: [50, 50, 50, 50] } };
+    expect(crossSignal('stoch', s2, 1)).toBeNull();
+    expect(crossSignal('stoch', s2, 3)).toBeNull();
   });
 });

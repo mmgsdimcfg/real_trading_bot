@@ -16,13 +16,25 @@
  *   timeline keeps mode 'time' with the left axis
  * - [2026-11-07] type=fix - The floating tooltip flips to the left of the cursor when it does not fit on the right (measured width;
  *   before, a fixed 250 px guess let wide tooltips run off the right edge)
- * - [2026-11-07] type=feat - Buy / sell marks on every indicator pane (HTS style): red ▲ under (buy) / blue ▼ over (sell) the pane's
- *   main line at the trade's bar, with a hover title. Volume pane 2/3 of its former height (VOL_RATIO 0.2 -> 0.133)
+ * - [2026-11-07] type=feat - Indicator panes mark each indicator's own buy / sell crossings (HTS style, shared crossSignal): red ▲ under
+ *   / blue ▼ over the pane's main line, the rule in the hover title. The bot's fills stay as the dashed vertical lines. Volume pane
+ *   2/3 of its former height (VOL_RATIO 0.2 -> 0.133)
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { samePeriod, type Bar, type ChartKind } from '../../../shared/price';
-import { BOT_PARAMS, computeIndicators, MA_PERIODS, OSCILLATORS, type IndicatorKey, type IndicatorSet, type Series } from '../../../shared/indicators';
+import {
+  BOT_PARAMS,
+  computeIndicators,
+  crossSignal,
+  MA_PERIODS,
+  OSCILLATORS,
+  SIGNAL_RULES,
+  type CrossSignal,
+  type IndicatorKey,
+  type IndicatorSet,
+  type Series,
+} from '../../../shared/indicators';
 import type { Trade } from '../../../shared/types';
 import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
 import { fmtInt } from '../lib';
@@ -405,7 +417,17 @@ export function PriceChart(props: Props) {
       }
       const lines = cfg.series.map((sr) => ({ cls: sr.cls, d: line(pts(sr.s), y) }));
       const ticks = cfg.fixed ? cfg.guides : niceTicks(vlo, vhi, 2);
-      return { key, top, y, lines, guides: cfg.guides, ticks, label: cfg.label, histUp, histDn, series: cfg.series };
+      // the indicator's own buy / sell crossings on the visible bars, drawn on its main line
+      const main = cfg.series.find((x) => x.cls === 'ind-main') || cfg.series[0];
+      const signals: { i: number; x: number; y: number; side: CrossSignal }[] = [];
+      if (main) {
+        for (const sl of slots) {
+          const side = crossSignal(key, S, sl.i);
+          const v = main.s[sl.i];
+          if (side && ok(v)) signals.push({ i: sl.i, x: sl.x, y: y(v), side });
+        }
+      }
+      return { key, top, y, lines, guides: cfg.guides, ticks, label: cfg.label, histUp, histDn, series: cfg.series, signals };
     });
 
     // ---- x labels ----
@@ -641,29 +663,21 @@ export function PriceChart(props: Props) {
             );
           })}
 
-          {/* HTS style: buy ▲ (red) under / sell ▼ (blue) over each indicator pane's main line at the trade's bar */}
-          {model.marks.map((t, i) => {
-            const slot = slotAt(model.slots, t.ts);
-            if (!slot) return null;
-            const x = intraday ? model.xOfTime(t.ts) ?? slot.x : slot.x;
-            const buy = t.side === 'BUY';
-            return model.panes.map((p) => {
-              const main = p.series.find((ss) => ss.cls === 'ind-main') || p.series[0];
-              const v = main?.s[slot.i];
-              const yv = ok(v) ? p.y(v) : p.top + oscH / 2;
-              const y = Math.min(p.top + oscH - 2, Math.max(p.top + 2, buy ? yv + 4 : yv - 4));
+          {/* HTS style: each indicator's own buy ▲ (red, under the line) / sell ▼ (blue, over the line) crossings (crossSignal) */}
+          {model.panes.map((p) =>
+            p.signals.map((g) => {
+              const y = Math.min(p.top + oscH - 2, Math.max(p.top + 2, g.side === 'buy' ? g.y + 4 : g.y - 4));
               return (
                 <path
-                  key={`${i}-${p.key}`}
-                  d={buy ? `M${x},${y} l-5,9 h10 z` : `M${x},${y} l-5,-9 h10 z`}
-                  className={buy ? 'pc-buy-dot' : 'pc-sell-dot'}
-                  pointerEvents="none"
+                  key={`${p.key}-${g.i}`}
+                  d={g.side === 'buy' ? `M${g.x},${y} l-4.5,8 h9 z` : `M${g.x},${y} l-4.5,-8 h9 z`}
+                  className={g.side === 'buy' ? 'pc-buy-dot' : 'pc-sell-dot'}
                 >
-                  <title>{`${buy ? '매수' : '매도'} ${fmtInt(t.price)} (${fmtKstTime(t.ts).slice(0, 5)})`}</title>
+                  <title>{`${p.label} ${g.side === 'buy' ? '매수' : '매도'} 신호 · ${SIGNAL_RULES[p.key] || ''}`}</title>
                 </path>
               );
-            });
-          })}
+            }),
+          )}
 
           {/* last price tag (right axis) */}
           {axis === 'right' && last && (
@@ -714,21 +728,6 @@ export function PriceChart(props: Props) {
       {model && model.empty && <div className="empty small">이 구간에 해당하는 봉이 없습니다.</div>}
     </div>
   );
-}
-
-/** the bar a trade falls in: the last slot that starts at or before the trade time */
-function slotAt<T extends { b: Bar }>(slots: T[], ts: number): T | null {
-  let lo = 0;
-  let hi = slots.length - 1;
-  let found: T | null = null;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (slots[mid].b.t <= ts) {
-      found = slots[mid];
-      lo = mid + 1;
-    } else hi = mid - 1;
-  }
-  return found;
 }
 
 const key2digits = (k: IndicatorKey) => (k === 'obv' ? 0 : k === 'macd' ? 2 : 1);
