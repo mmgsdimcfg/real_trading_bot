@@ -18,6 +18,11 @@
  * - [2026-11-06] type=feat - Warm-up like the bot (r012 load_prior_day_warmup): minute charts use the previous day's raw 1-minute bars
  *   of the 10-second file - warmBot = last PRIOR_DAY_WARMUP_MINUTES (180) resampled, warm = whole day (MA / Ichimoku); responses with
  *   a tick file carry a quote (last price, best ask/bid, buy/sell volume, latest 40 trades) for the chart tab
+ * - [2026-11-07] type=feat - Past days read through PriceFileCache (priceCache.ts): tick / 10-second / daily files and the "<code>_*"
+ *   lists are downloaded whole once into %APPDATA%/autoboth/pricecache/<date>/ and read locally after that - also offline. The
+ *   server's daily answer (r016 bars --kind day) of a past day is kept there too. prefetch(date, codes) downloads the files of
+ *   the day's symbols and the previous trading day's warm-up files in the background (one code per queue slot, so chart
+ *   requests are not held up for the whole download). The live day keeps the incremental SFTP reads
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
@@ -47,6 +52,16 @@ import {
 import { shellQuote, type SshConnection } from './ssh';
 import { BOT_PARAMS } from '../shared/indicators';
 import type { R016Client } from './control';
+import type { PriceFileCache } from './priceCache';
+
+export interface PrefetchProgress {
+  date: string;
+  done: number;
+  total: number;
+  failed: number;
+  /** last error (e.g. the connection dropped) */
+  error?: string;
+}
 
 const MAX_READ = 4 * 1024 * 1024;
 const MAX_ENTRIES = 12;
@@ -87,7 +102,15 @@ export class PriceService {
     private ssh: SshConnection,
     private root: () => string,
     private r016: () => R016Client | null = () => null,
+    /** local copies of past days' files; null = always read the server */
+    private cache: PriceFileCache | null = null,
+    /** true for a day before the server's today (its files no longer change) */
+    private isPast: (date: string) => boolean = () => false,
   ) {}
+
+  private cached(date: string): PriceFileCache | null {
+    return this.cache && this.isPast(date) ? this.cache : null;
+  }
 
   resetServerSupport(): void {
     this.noServerBars = false;
@@ -137,8 +160,23 @@ export class PriceService {
   /** All trades of the day so far (null = no tick file). */
   private async loadTicks(date: string, code: string): Promise<Tick[] | null> {
     const path = `${this.root()}/runtime/data/ticks/${date}/${code}.csv`;
-    const st = await this.ssh.stat(path);
     const key = `${date}/${code}`;
+    const fc = this.cached(date);
+    if (fc) {
+      const have = this.ticks.get(key);
+      if (have) return have.ticks;
+      const buf = await fc.file(date, `ticks/${code}.csv`, path);
+      if (!buf) return null;
+      const c: TickCache = { off: buf.length, lb: new LineBuffer(), ticks: [] };
+      let lines = c.lb.push(new Uint8Array(buf.buffer, buf.byteOffset, buf.length));
+      lines = lines.concat(c.lb.push(new Uint8Array([0x0a]))); // a last line without a newline
+      if (lines.length) {
+        c.cols = tickHeader(lines[0]);
+        for (const t of parseTickLines(lines.slice(1).filter(Boolean), c.cols)) c.ticks.push(t);
+      }
+      return remember(this.ticks, key, c).ticks;
+    }
+    const st = await this.ssh.stat(path);
     if (!st) {
       this.ticks.delete(key);
       return null;
@@ -165,8 +203,12 @@ export class PriceService {
     const key = `${date}/${code}`;
     const hit = this.files.get(key);
     if (hit && (!live || Date.now() - hit.at < 60000)) return hit.names;
-    const { out } = await this.ssh.exec(`cd ${shellQuote(this.dataDir(date))} 2>/dev/null && ls -1 -- ${code}_* 2>/dev/null`, 20000);
-    const names = out.split('\n').map((s) => s.trim()).filter(Boolean);
+    const ls = async () => {
+      const { out } = await this.ssh.exec(`cd ${shellQuote(this.dataDir(date))} 2>/dev/null && ls -1 -- ${code}_* 2>/dev/null`, 20000);
+      return out.split('\n').map((s) => s.trim()).filter(Boolean);
+    };
+    const fc = this.cached(date);
+    const names = fc ? await fc.list(date, code, ls) : await ls();
     return remember(this.files, key, { at: Date.now(), names }).names;
   }
 
@@ -175,6 +217,13 @@ export class PriceService {
     const name = (await this.filesFor(date, code, live)).find((n) => n.endsWith('_10s.txt'));
     if (!name) return null;
     const path = `${this.dataDir(date)}/${name}`;
+    const fc = this.cached(date);
+    if (fc) {
+      const hit = this.min1.get(path);
+      if (hit) return hit.bars;
+      const buf = await fc.file(date, `data/${name}`, path);
+      return buf ? remember(this.min1, path, { size: buf.length, bars: parse10sMinuteBars(buf.toString('utf8')) }).bars : null;
+    }
     const st = await this.ssh.stat(path);
     if (!st) return null;
     const hit = this.min1.get(path);
@@ -186,11 +235,16 @@ export class PriceService {
   /** YYYYMMDD folders under runtime/data (cached 10 min) */
   private async dataFolders(): Promise<string[]> {
     if (this.dirs && Date.now() - this.dirs.at < 600000) return this.dirs.list;
+    if (!this.ssh.connected && this.cache) {
+      const saved = this.cache.loadFolders();
+      if (saved.length) return saved; // offline: the last list seen
+    }
     const list = (await this.ssh.readdir(`${this.root()}/runtime/data`))
       .filter((e) => e.isDir && /^\d{8}$/.test(e.name))
       .map((e) => e.name)
       .sort();
     this.dirs = { at: Date.now(), list };
+    this.cache?.saveFolders(list);
     return list;
   }
 
@@ -201,6 +255,14 @@ export class PriceService {
       const name = (await this.filesFor(folder, code, live && folder === date)).find((n) => n.endsWith('_daily.csv'));
       if (!name) continue;
       const path = `${this.dataDir(folder)}/${name}`;
+      const fc = this.cached(folder);
+      if (fc) {
+        const hit = this.daily.get(path);
+        if (hit) return { bars: hit.bars, folder };
+        const buf = await fc.file(folder, `data/${name}`, path);
+        if (!buf) continue;
+        return { bars: remember(this.daily, path, { size: buf.length, bars: parseDailyCsv(buf.toString('utf8')) }).bars, folder };
+      }
       const st = await this.ssh.stat(path);
       if (!st) continue;
       const hit = this.daily.get(path);
@@ -209,6 +271,50 @@ export class PriceService {
       return { bars: remember(this.daily, path, { size: st.size, bars: parseDailyCsv(text) }).bars, folder };
     }
     return null;
+  }
+
+  /**
+   * Download a past day's price files for `codes` (+ the previous trading day's warm-up files) into the local cache. One code per
+   * queue slot so chart requests interleave. Files already cached are skipped without server access.
+   */
+  async prefetch(date: string, codes: string[], onProgress: (p: PrefetchProgress) => void, stopped: () => boolean): Promise<PrefetchProgress> {
+    const fc = this.cached(date);
+    const p: PrefetchProgress = { date, done: 0, total: codes.length, failed: 0 };
+    if (!fc) return p;
+    let prev: string | undefined;
+    try {
+      prev = (await this.dataFolders()).filter((d) => d < date).pop();
+    } catch {
+      /* no warm-up day */
+    }
+    onProgress({ ...p });
+    for (const code of codes) {
+      if (stopped()) break;
+      const job = this.tail.then(async () => {
+        const days = prev && this.isPast(prev) ? [date, prev] : [date];
+        for (const d of days) {
+          await fc.file(d, `ticks/${code}.csv`, `${this.root()}/runtime/data/ticks/${d}/${code}.csv`);
+          const names = await this.filesFor(d, code, false);
+          for (const n of names.filter((x) => x.endsWith('_10s.txt') || (d === date && x.endsWith('_daily.csv')))) {
+            await fc.file(d, `data/${n}`, `${this.dataDir(d)}/${n}`);
+          }
+        }
+      });
+      this.tail = job.catch(() => undefined);
+      try {
+        await job;
+      } catch (e) {
+        p.failed++;
+        p.error = String((e as Error)?.message || e).split('\n')[0];
+      }
+      p.done++;
+      onProgress({ ...p });
+      if (!this.ssh.connected) {
+        p.error = p.error || '연결이 끊겨 중단했습니다.';
+        break;
+      }
+    }
+    return p;
   }
 
   get(req: PriceRequest, live: boolean): Promise<PriceResponse> {
@@ -318,7 +424,14 @@ export class PriceService {
     let folder: string | undefined;
     let name: string | undefined;
     let sourceDetail: string | undefined;
-    const sb = await this.serverBars(['--date', date, '--code', code, '--kind', 'day']);
+    const fcDay = this.cached(date);
+    let sb: ServerBarsResult = null;
+    const savedDay = fcDay?.json<ServerBars>(date, `server_day/${code}.json`);
+    if (savedDay) sb = { ok: true, data: savedDay };
+    else {
+      sb = await this.serverBars(['--date', date, '--code', code, '--kind', 'day']);
+      if (fcDay && sb?.ok) fcDay.saveJson(date, `server_day/${code}.json`, sb.data);
+    }
     if (sb?.ok) {
       daily = serverRowsToBars(sb.data.columns, sb.data.bars);
       name = sb.data.name;
