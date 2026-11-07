@@ -66,6 +66,7 @@ class Base(unittest.TestCase):
         self.sleep.start()
         self.rate = mock.patch.object(r018, "_rate_slot", lambda deadline: None)
         self.rate.start()
+        r018._SHARED = None
 
     def tearDown(self):
         self.rate.stop()
@@ -228,7 +229,8 @@ class DailyTest(Base):
         self.assertTrue(r018._daily_fresh((now - timedelta(minutes=5)).timestamp(), now))
         self.assertFalse(r018._daily_fresh((now - timedelta(minutes=11)).timestamp(), now))
         late = datetime(2026, 11, 9, 20, 0)
-        self.assertTrue(r018._daily_fresh(datetime(2026, 11, 9, 15, 45).timestamp(), late))
+        self.assertTrue(r018._daily_fresh(datetime(2026, 11, 9, 18, 5).timestamp(), late))
+        self.assertFalse(r018._daily_fresh(datetime(2026, 11, 9, 16, 40).timestamp(), late))
         self.assertFalse(r018._daily_fresh(datetime(2026, 11, 8, 20, 0).timestamp(), late))
 
 
@@ -315,6 +317,7 @@ class R016IntegrationTest(Base):
         self.assertEqual(rc, 2)
         for p in self.kis.glob("KIS2*"):
             p.unlink()
+        r018._SHARED = None  # a new r016 process
         (self.runtime / "cache" / "kis" / "quote" / "005930.json").unlink()
         rc, out = self.run16(["quote", "--code", "005930"])
         self.assertEqual((rc, out["kis_code"]), (3, "token_not_ready"))
@@ -343,9 +346,120 @@ class R016IntegrationTest(Base):
         self.assertIn("tick collector", out["error"])
         for p in self.kis.glob("KIS2*"):
             p.unlink()
+        r018._SHARED = None  # a new r016 process
         with mock.patch.object(r017, "_intraday_bars", return_value=None):
             rc, out = self.run16(["bars", "--date", "20261106", "--code", "035720", "--kind", "min"])
         self.assertEqual((rc, out.get("kis_code")), (3, "token_not_ready"))
+
+
+class CodexFindingsTest(Base):
+    """Codex review 2026-11-07: deadline, interrupted incremental, cache failures, truncated daily, sessions, empty daily."""
+
+    def test_expired_deadline_never_calls_http(self):
+        c, s = self.client(QUOTE_HANDLERS)
+        c.deadline = time.time() - 1
+        with self.assertRaises(r018.KisError) as cm:
+            c.get("inquire_price", {})
+        self.assertEqual(cm.exception.code, "deadline")
+        self.assertEqual(s.calls, [])
+
+    def test_http_timeout_bounded_by_remaining_budget(self):
+        seen = {}
+
+        class S(FakeSession):
+            def get(self, url, headers=None, params=None, timeout=None):
+                seen["timeout"] = timeout
+                return super().get(url, headers=headers, params=params, timeout=timeout)
+
+        c = r018.Client(deadline_sec=2.0, session=S(QUOTE_HANDLERS))
+        c.get("inquire_price", {})
+        self.assertLessEqual(seen["timeout"][1], 2.0)
+
+    def test_shared_client_is_one_per_process(self):
+        self.assertIs(r018.shared_client(), r018.shared_client())
+
+    def test_interrupted_incremental_does_not_keep_from_open(self):
+        cpath = self.runtime / "cache" / "kis" / "min" / "20261109" / "035720.json"
+        with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 10, 0, 30)):
+            c, _ = self.client({"FHKST03010200": minute_handler("20261109")})
+            r018.minutes("035720", "20261109", client=c)
+        data = json.loads(cpath.read_text())
+        data["fetched_at"] = time.time() - 60
+        cpath.write_text(json.dumps(data))
+        with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 12, 0, 30)):
+            c2, s2 = self.client({"FHKST03010200": minute_handler("20261109", last="120000")})
+            real = c2.time_left
+            n = {"k": 0}
+
+            def budget():  # first page fetched, then the budget runs out
+                n["k"] += 1
+                return real() if n["k"] <= 3 else 0.0
+            c2.time_left = budget
+            r018.minutes("035720", "20261109", client=c2)
+        self.assertFalse(json.loads(cpath.read_text())["complete_from_open"])
+        data = json.loads(cpath.read_text())
+        data["fetched_at"] = time.time() - 60
+        cpath.write_text(json.dumps(data))
+        with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 12, 0, 40)):
+            c3, s3 = self.client({"FHKST03010200": minute_handler("20261109", last="120000")})
+            m = r018.minutes("035720", "20261109", client=c3)
+        self.assertEqual(len(m["rows"]), 181)  # 09:00..12:00 without a hole
+        self.assertTrue(json.loads(cpath.read_text())["complete_from_open"])
+
+    def test_cache_write_failure_still_returns_quote(self):
+        with mock.patch.object(r018.tempfile, "mkstemp", side_effect=PermissionError("ro")):
+            c, _ = self.client(QUOTE_HANDLERS)
+            q = r018.quote("005930", client=c)
+        self.assertEqual(q["price"], 71200)
+
+    def test_rate_storage_failure_blocks_call(self):
+        self.rate.stop()
+        try:
+            with mock.patch.object(r018, "_rate_slot_inner", side_effect=PermissionError("ro")):
+                c, s = self.client(QUOTE_HANDLERS)
+                with self.assertRaises(r018.KisError) as cm:
+                    c.get("inquire_price", {})
+            self.assertEqual(cm.exception.code, "rate_storage")
+            self.assertEqual(s.calls, [])
+        finally:
+            self.rate.start()
+
+    def test_truncated_daily_is_refetched(self):
+        days = [(datetime(2026, 11, 6) - timedelta(days=i)).strftime("%Y%m%d") for i in range(150)]
+
+        def handler(params):
+            end = params["FID_INPUT_DATE_2"]
+            return {"output1": {}, "output2": [{"stck_bsop_date": d, "stck_oprc": "1", "stck_hgpr": "2", "stck_lwpr": "1",
+                                                "stck_clpr": "2", "acml_vol": "1"} for d in days if d <= end][:100]}
+
+        c, _ = self.client({"FHKST03010100": handler})
+        c.time_left = lambda: 2.5  # enough for one page, not for paging on
+        d = r018.daily("005930", client=c)
+        self.assertFalse(d["complete"])
+        self.assertEqual(len(d["rows"]), 100)
+        c2, s2 = self.client({"FHKST03010100": handler})
+        d2 = r018.daily("005930", client=c2)
+        self.assertTrue(d2["complete"])
+        self.assertEqual(len(d2["rows"]), 150)
+
+    def test_session_hours_from_calendar(self):
+        with mock.patch("r014_market_calendar.session_hours", return_value=(datetime(2000, 1, 1, 10, 0).time(), datetime(2000, 1, 1, 16, 30).time())):
+            self.assertEqual(r018._session_hours("20261119"), ("100000", "163000"))
+        with mock.patch("r014_market_calendar.session_hours", return_value=None):
+            self.assertIsNone(r018.minutes("035720", "20261225"))
+
+    def test_before_open_today_returns_none_without_http(self):
+        with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 8, 40)):
+            c, s = self.client({})
+            self.assertIsNone(r018.minutes("035720", "20261109", client=c))
+        self.assertEqual(s.calls, [])
+
+    def test_empty_filtered_daily_is_rc2(self):
+        import r017_chart_data as r017
+        with mock.patch.object(r017, "day_bars", return_value=None), \
+             mock.patch.object(r017, "kis_day_bars", return_value=(r017.pd.DataFrame(columns=["t", "o", "h", "l", "c", "v", "n", "t_last"]), "kis:x", None)):
+            out = r017.bars("20200101", "005930", "day")
+        self.assertFalse(out["ok"])
 
 
 class RateLimitTest(unittest.TestCase):

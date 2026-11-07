@@ -760,9 +760,17 @@ def _emit(obj, code: int = 0) -> int:
     return code
 
 
+class _JsonArgumentParser(argparse.ArgumentParser):
+    """인자 오류도 stdout JSON 하나 + rc 2 (AutoBotH 파서 계약). --help 는 사람용 텍스트 그대로."""
+
+    def error(self, message):
+        print(json.dumps({"ok": False, "error": f"{self.prog}: {message}"}, ensure_ascii=False))
+        sys.exit(2)
+
+
 def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runner: Runner = _run) -> int:
     paths = paths or default_paths()
-    ap = argparse.ArgumentParser(description="r003 remote control (JSON out)")
+    ap = _JsonArgumentParser(description="r003 remote control (JSON out)")
     ap.add_argument("--by", default=os.environ.get("R016_BY") or "cli", help="who made the change (history)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
@@ -802,9 +810,13 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
 
     if args.cmd in ("indicators", "bars"):
         import r017_chart_data as r017  # noqa: E402
-        cp = argparse.ArgumentParser(prog=f"{ap.prog}")
+        cp = _JsonArgumentParser(prog=f"{ap.prog}")
         r017.add_subparsers(cp.add_subparsers(dest="cmd", required=True))
-        out = r017.run_command(cp.parse_args([args.cmd, *extra]))
+        cargs = cp.parse_args([args.cmd, *extra])
+        try:
+            out = r017.run_command(cargs)
+        except Exception as exc:  # noqa: BLE001 - KIS 폴백 경로의 예기치 못한 오류도 JSON 하나로
+            return _emit({"ok": False, "error": f"{args.cmd} failed ({type(exc).__name__}: {str(exc)[:200]})"}, 3)
         rc = out.pop("_rc", None)
         return _emit(out, 0 if out.get("ok") else (rc or 2))
     if args.cmd == "quote" and not extra:
@@ -815,6 +827,8 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
             return _emit({"ok": False, "error": str(exc)}, 2)
         except r018.KisError as exc:
             return _emit({"ok": False, "error": f"KIS: {exc.message}", "kis_code": exc.code}, 3)
+        except Exception as exc:  # noqa: BLE001 - 어떤 경우에도 JSON 하나 (내용에 비밀값 없음: 예외 종류만)
+            return _emit({"ok": False, "error": f"quote failed ({type(exc).__name__})"}, 3)
     if extra:
         ap.error(f"unrecognized arguments: {' '.join(extra)}")
 

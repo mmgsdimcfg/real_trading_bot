@@ -17,7 +17,9 @@ AutoBotH 차트 탭용 KIS 시세 조회(읽기 전용) - r016 `quote` 명령과
 - quote/<code>.json: 2초 안 재요청은 캐시(cached_ms 표시).
 - daily/<code>.json: 최근 3년 일봉. 같은 날 15:40 이후 받은 것은 그날 끝까지, 장중에 받은 것은 10분 유효.
 - min/<YYYYMMDD>/<code>.json: 1분봉(t = 봉 시작). 지난 날짜는 다 받으면(complete) 다시 받지 않는다. 당일은 마지막
-  미완성 분부터만 다시 받는다(보통 1회 호출).
+  미완성 분부터만 다시 받는다(보통 1회 호출). 세션 시각은 r014 달력, 휴장일·장 시작 전은 None.
+- 마감 시각: 명령 하나(프로세스)에 Client 하나(shared_client), 모든 조회가 DEADLINE_SEC 를 나눠 쓴다. 남은 시간이 없으면
+  KisError("deadline"). 캐시 쓰기 실패는 무시(최선 노력), 제한 파일 실패는 호출하지 않고 KisError("rate_storage").
 - names.json: 종목명/시장(search_stock_info, 종목당 1회).
 
 Update log:
@@ -47,10 +49,10 @@ RATE_MIN_GAP_SEC = 0.3
 HTTP_TIMEOUT = (3.05, 7.0)
 QUOTE_CACHE_SEC = 2.0
 DAILY_CACHE_SEC = 600.0
-DAILY_FINAL_AFTER = "15:40"
+DAILY_FINAL_AFTER = "18:00"  # KIS 일봉 당일 행은 16:38 이후에도 바뀐 사례가 있다(g001 노트)
 DAILY_YEARS = 3
 MIN_TODAY_CACHE_SEC = 5.0
-DEADLINE_SEC = 25.0
+DEADLINE_SEC = 25.0  # 명령 하나 전체(모든 TR 호출·페이징·예열 합계) - r016/AutoBotH 타임아웃 30초 안
 MARKET = "J"  # KRX (틱 수집기·r003과 같은 기준). UN/NX는 쓰지 않는다.
 
 # name -> (path, tr_id). 이 목록 밖의 TR은 _get이 거부한다 (주문/잔고/계좌 TR 없음).
@@ -129,6 +131,13 @@ def _load_app() -> dict:
 # shared rate limit (all processes using this module)
 # ---------------------------------------------------------------------------
 def _rate_slot(deadline: float) -> None:
+    try:
+        _rate_slot_inner(deadline)
+    except OSError as exc:  # 제한 파일을 못 쓰면 호출하지 않는다(제한 우회 금지)
+        raise KisError("rate_storage", f"rate limiter file unavailable ({type(exc).__name__})") from None
+
+
+def _rate_slot_inner(deadline: float) -> None:
     d = _cache_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = d / ".ratelimit"
@@ -198,15 +207,23 @@ class Client:
         path, tr_id = _TRS[tr]
         headers = dict(self._base(), tr_id=tr_id, tr_cont=tr_cont)
         for attempt in (0, 1):
-            _rate_slot(self.deadline)
+            if self.time_left() < 1.0:
+                raise KisError("deadline", "command time budget used up")
+            _rate_slot(self.deadline - 0.5)
+            left = self.time_left()
+            if left < 0.5:
+                raise KisError("deadline", "command time budget used up")
+            timeout = (min(HTTP_TIMEOUT[0], left), min(HTTP_TIMEOUT[1], left))
             self.calls += 1
             try:
-                res = self._session.get(self._url + path, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+                res = self._session.get(self._url + path, headers=headers, params=params, timeout=timeout)
             except requests.RequestException as exc:
                 raise KisError("network", type(exc).__name__) from None
             try:
                 body = res.json()
             except ValueError:
+                body = {}
+            if not isinstance(body, dict):
                 body = {}
             msg_cd = str(body.get("msg_cd") or "")
             if res.status_code == 200 and str(body.get("rt_cd")) == "0":
@@ -216,6 +233,17 @@ class Client:
                 continue
             raise KisError(msg_cd or f"http_{res.status_code}", str(body.get("msg1") or "").strip() or f"HTTP {res.status_code}")
         raise KisError("EGW00201", "rate limit")  # pragma: no cover
+
+
+_SHARED: Client | None = None
+
+
+def shared_client() -> Client:
+    """명령(프로세스) 하나에 클라이언트 하나 - 마감 시각 DEADLINE_SEC 를 모든 조회(본 요청 + 예열)가 나눠 쓴다."""
+    global _SHARED
+    if _SHARED is None:
+        _SHARED = Client()
+    return _SHARED
 
 
 # ---------------------------------------------------------------------------
@@ -229,11 +257,23 @@ def _read_json(path: Path):
 
 
 def _write_json(path: Path, obj) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
-    with os.fdopen(fd, "w", encoding="utf-8") as out:
-        out.write(json.dumps(obj, ensure_ascii=False))
-    os.replace(tmp, path)
+    """원자적 캐시 쓰기. 실패해도(디스크 가득/권한) 조회 결과는 버리지 않는다 - 캐시는 최선 노력."""
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(obj, ensure_ascii=False))
+        os.replace(tmp, path)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _f(v) -> float | None:
@@ -307,7 +347,7 @@ def quote(code: str, trades: int = 30, client: Client | None = None) -> dict:
         out["cached_ms"] = int((time.time() - float(cached["_at"])) * 1000)
         out["trades"] = (out.get("trades") or [])[:trades]
         return out
-    client = client or Client()
+    client = client or shared_client()
     params = {"FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code}
     body, _ = client.get("inquire_price", params)
     p = body.get("output") or {}
@@ -331,6 +371,8 @@ def quote(code: str, trades: int = 30, client: Client | None = None) -> dict:
         "strength": None, "orderbook": None, "trades": [], "partial_errors": [],
     }
     try:
+        if client.time_left() < 2:
+            raise KisError("deadline", "skipped (time budget)")
         body, _ = client.get("inquire_asking_price_exp_ccn", params)
         b = body.get("output1") or {}
         asks = [[_f(b.get(f"askp{i}")), _f(b.get(f"askp_rsqn{i}"))] for i in range(1, 11)]
@@ -340,6 +382,8 @@ def quote(code: str, trades: int = 30, client: Client | None = None) -> dict:
     except KisError as exc:
         out["partial_errors"].append(f"orderbook {exc.code}: {exc.message}")
     try:
+        if client.time_left() < 2:
+            raise KisError("deadline", "skipped (time budget)")
         body, _ = client.get("inquire_ccnl", params)
         rows = body.get("output") or []
         if rows:
@@ -372,17 +416,24 @@ def daily(code: str, client: Client | None = None) -> dict:
     now = _now()
     cpath = _cache_dir() / "daily" / f"{code}.json"
     cached = _read_json(cpath)
-    if cached and _daily_fresh(float(cached.get("fetched_at", 0)), now):
-        return {"rows": cached["rows"], "name": cached.get("name"), "source": "kis:inquire_daily_itemchartprice", "calls": 0}
-    client = client or Client()
+    if cached and cached.get("complete", True) and _daily_fresh(float(cached.get("fetched_at", 0)), now):
+        return {"rows": cached["rows"], "name": cached.get("name"), "source": "kis:inquire_daily_itemchartprice", "calls": 0,
+                "complete": True}
+    client = client or shared_client()
     start = (now - timedelta(days=365 * DAILY_YEARS + 3)).strftime("%Y%m%d")
     end = now.strftime("%Y%m%d")
     rows: dict[str, list] = {}
     name = None
+    exhausted = False
     for _page in range(12):
-        body, _ = client.get("inquire_daily_itemchartprice", {
-            "FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": start,
-            "FID_INPUT_DATE_2": end, "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
+        try:
+            body, _ = client.get("inquire_daily_itemchartprice", {
+                "FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": start,
+                "FID_INPUT_DATE_2": end, "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
+        except KisError as exc:
+            if rows and exc.code in ("deadline", "rate_busy"):
+                break  # 받은 만큼 응답, complete=False 로 저장 -> 다음 요청이 이어 받는다
+            raise
         name = name or ((body.get("output1") or {}).get("hts_kor_isnm") or "").strip() or None
         page = [r for r in (body.get("output2") or []) if str(r.get("stck_bsop_date") or "").strip()]
         new = 0
@@ -395,17 +446,23 @@ def daily(code: str, client: Client | None = None) -> dict:
                 new += 1
             rows[d] = [d, o, h, l, c, _f(r.get("acml_vol"))]
         if not page or new == 0:
+            exhausted = True
             break
         oldest = min(str(r["stck_bsop_date"]).strip() for r in page)
-        if oldest <= start or len(page) < 100 or client.time_left() < 3:
+        if oldest <= start or len(page) < 100:
+            exhausted = True
+            break
+        if client.time_left() < 3:
             break
         end = (datetime.strptime(oldest, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
     if not rows:
         raise ValueError(f"unknown code {code} (KIS returned no daily rows)")
     out_rows = [rows[k] for k in sorted(rows)]
-    _write_json(cpath, {"fetched_at": time.time(), "rows": out_rows, "name": name})
+    # 시간 제한으로 3년을 다 못 받았으면 complete=False 로 저장 -> 다음 요청이 다시 받는다(그동안 받은 만큼은 응답)
+    _write_json(cpath, {"fetched_at": time.time(), "rows": out_rows, "name": name, "complete": exhausted})
     remember_name(code, name)
-    return {"rows": out_rows, "name": name, "source": "kis:inquire_daily_itemchartprice", "calls": client.calls}
+    return {"rows": out_rows, "name": name, "source": "kis:inquire_daily_itemchartprice", "calls": client.calls,
+            "complete": exhausted}
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +486,23 @@ def _parse_min_rows(rows: list, date_str: str) -> dict[str, list]:
     return out
 
 
+def _session_hours(date_str: str) -> tuple[str, str] | None:
+    """(첫 분봉 HHMMSS, 마지막 분봉 HHMMSS) - r014 달력(수능일 10:00~16:30 등). 마지막 = 종가 동시호가 분(close)."""
+    import r014_market_calendar as r014  # noqa: E402  (가벼움)
+    try:
+        h = r014.session_hours(date_str)
+    except Exception:
+        h = None
+        try:
+            if datetime.strptime(date_str, "%Y%m%d").weekday() < 5:
+                return "090000", "153000"
+        except ValueError:
+            return None
+    if h is None:
+        return None
+    return h[0].strftime("%H%M%S"), h[1].strftime("%H%M%S")
+
+
 def minutes(code: str, date_str: str, client: Client | None = None) -> dict | None:
     """{"rows": [[HHMMSS, o, h, l, c, v], ...] 오름차순, "name", "source", "complete", "calls"} 또는 None(KIS에 없음)."""
     code = _check_code(code)
@@ -437,6 +511,12 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
     if date_str > today:
         return None
     is_today = date_str == today
+    hours = _session_hours(date_str)
+    if hours is None:
+        return None  # 휴장일(r014 달력)
+    open_hms, last_hms = hours
+    if is_today and now.strftime("%H%M%S") < open_hms:
+        return None  # 장 시작 전 - 오늘 분봉 없음
     tr = "inquire_time_itemchartprice" if is_today else "inquire_time_dailychartprice"
     cpath = _cache_dir() / "min" / date_str / f"{code}.json"
     cached = _read_json(cpath) or {}
@@ -445,13 +525,14 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
         return {"rows": cached["rows"], "name": cached.get("name"), "source": f"kis:{tr}", "complete": True, "calls": 0}
     if is_today and have and time.time() - float(cached.get("fetched_at", 0)) < MIN_TODAY_CACHE_SEC:
         return {"rows": cached["rows"], "name": cached.get("name"), "source": f"kis:{tr}", "complete": False, "calls": 0}
-    client = client or Client()
+    client = client or shared_client()
     name = cached.get("name")
     # 09:00부터 끊김 없이 받아 둔 경우에만 증분: 마지막 분은 미완성일 수 있어 다시 받고, 그 직전 분까지 겹치면 멈춘다.
     # (앞선 조회가 시간 제한으로 09:00까지 못 갔으면 처음부터 다시 받아 구멍을 남기지 않는다)
     keep_until = _minus_minute(max(have)) if (is_today and have and cached.get("complete_from_open")) else None
-    hour = min(now.strftime("%H%M%S"), "153500") if is_today else "153500"
+    hour = min(now.strftime("%H%M%S"), last_hms) if is_today else last_hms
     reached_open = False
+    overlapped = False
     for _page in range(16):
         params = {"FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code, "FID_INPUT_HOUR_1": hour,
                   "FID_PW_DATA_INCU_YN": "Y"}
@@ -459,7 +540,12 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
             params["FID_ETC_CLS_CODE"] = ""
         else:
             params.update({"FID_INPUT_DATE_1": date_str, "FID_FAKE_TICK_INCU_YN": ""})
-        body, _ = client.get(tr, params)
+        try:
+            body, _ = client.get(tr, params)
+        except KisError as exc:
+            if have and exc.code in ("deadline", "rate_busy"):
+                break  # 받은 만큼 저장(끊김 없음 표시는 하지 않음) -> 다음 조회가 메운다
+            raise
         name = name or ((body.get("output1") or {}).get("hts_kor_isnm") or "").strip() or None
         page = _parse_min_rows(body.get("output2") or [], date_str)
         if not page:
@@ -467,10 +553,11 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
             break
         have.update(page)
         oldest = min(page)
-        if oldest <= "090000":
+        if oldest <= open_hms:
             reached_open = True
             break
         if keep_until and oldest <= keep_until:
+            overlapped = True
             break
         if client.time_left() < 2:
             break
@@ -479,7 +566,9 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
         return None
     rows = [have[k] for k in sorted(have)]
     complete = (not is_today) and reached_open
-    from_open = reached_open or bool(keep_until and cached.get("complete_from_open"))
+    # 이번 조회가 장 시작까지 갔거나, 앞서 09:00부터 이어 받은 구간과 실제로 겹쳤을 때만 '끊김 없음' 유지.
+    # 시간 제한으로 중간에 멈추면 False -> 다음 조회가 처음부터 다시 받아 구멍을 메운다.
+    from_open = reached_open or overlapped
     _write_json(cpath, {"fetched_at": time.time(), "rows": rows, "name": name, "complete": complete,
                         "complete_from_open": from_open})
     remember_name(code, name)
