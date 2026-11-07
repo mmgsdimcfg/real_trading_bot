@@ -5,6 +5,8 @@
  *   Settings from v1 (pemPath) are taken over as keyPath
  * - [2026-11-05] type=feat - SSH proxy settings (proxyType/proxyCommand/proxyHost/proxyPort/proxyUser); the proxy password is stored
  *   encrypted with safeStorage as proxySecretEnc, like the SSH secret. getProxyConfig() builds the ProxyConfig for ssh.connect
+ * - [2026-11-07] type=feat - sessionOpenAuto (default on): the funnel start time follows the server NXT setting; stores without
+ *   the key get it on
  * - [2026-11-07] type=feat - statusPollSec (r016 status poll, default 30 s, min 15 s) separate from pollSec (log poll); stores without
  *   the key get the default
  */
@@ -39,6 +41,7 @@ const DEFAULTS: Stored = {
   pollSec: 10,
   statusPollSec: STATUS_POLL_DEFAULT_SEC,
   sessionOpen: '09:00',
+  sessionOpenAuto: true,
   retentionDays: 30,
 };
 
@@ -66,6 +69,7 @@ export function getSettings(): Settings {
     pollSec: s.pollSec,
     statusPollSec: Math.max(STATUS_POLL_MIN_SEC, Number(s.statusPollSec) || STATUS_POLL_DEFAULT_SEC),
     sessionOpen: s.sessionOpen,
+    sessionOpenAuto: s.sessionOpenAuto !== false,
     retentionDays: s.retentionDays,
     hasSecret: !!s.secretEnc,
   };
@@ -87,6 +91,8 @@ export function saveSettings(next: Settings): Settings {
     pollSec: Math.max(3, Number(rest.pollSec) || 10),
     statusPollSec: Math.max(STATUS_POLL_MIN_SEC, Number(rest.statusPollSec) || STATUS_POLL_DEFAULT_SEC),
     retentionDays: Math.max(1, Number(rest.retentionDays) || 30),
+    sessionOpenAuto: rest.sessionOpenAuto !== false,
+    sessionOpen: /^\d{1,2}:\d{2}$/.test(String(rest.sessionOpen || '').trim()) ? String(rest.sessionOpen).trim() : '09:00',
     remoteRoot: String(rest.remoteRoot || DEFAULTS.remoteRoot).replace(/\/+$/, ''),
   });
   if (secret !== undefined) storeEncrypted('secretEnc', secret);

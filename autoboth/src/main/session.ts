@@ -3,6 +3,8 @@
  * - [2026-11-04] type=feat - DaySession: one trading day = one worker + byte offsets per file. pollOnce() lists the day folder,
  *   reads only the bytes appended since the last poll (main logs in name order, then the daily buy_sell log), and picks up new
  *   main logs created by an r003 restart. A file that got smaller restarts the whole day from offset 0
+ * - [2026-11-07] type=feat - `replay` (past days): the worker keeps the lines so setCursor(ts) can show the day as it was at ts.
+ *   setSessionOpen() re-reads the day with a new funnel start time (the cursor is kept)
  */
 
 import { Worker } from 'node:worker_threads';
@@ -31,6 +33,7 @@ export class DaySession {
     readonly source: LogSource,
     private conditions: ConditionsDoc,
     private sessionOpen: string,
+    readonly replay = false,
   ) {
     this.worker = createEngineWorker({});
     this.worker.on('message', (m: { id: number; data?: unknown; error?: string }) => {
@@ -45,14 +48,14 @@ export class DaySession {
       else p.resolve(m.data);
     });
     this.worker.on('error', (e) => (this.workerError = String(e)));
-    this.post({ t: 'init', date, conditions, sessionOpen });
+    this.post({ t: 'init', date, conditions, sessionOpen, replay });
   }
 
   private post(m: WorkerMsg, transfer?: ArrayBuffer[]): void {
     this.worker.postMessage(m, transfer as never);
   }
 
-  private call<T>(m: { t: 'snapshot' } | { t: 'timeline'; code: string }): Promise<T> {
+  private call<T>(m: { t: 'snapshot' } | { t: 'timeline'; code: string } | { t: 'cursor'; ts: number | null }): Promise<T> {
     const id = this.reqId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
@@ -119,7 +122,33 @@ export class DaySession {
   private restart(): void {
     this.offsets.clear();
     this.names.clear();
-    this.post({ t: 'init', date: this.date, conditions: this.conditions, sessionOpen: this.sessionOpen });
+    this.post({ t: 'init', date: this.date, conditions: this.conditions, sessionOpen: this.sessionOpen, replay: this.replay });
+    this.cursorTs = null;
+  }
+
+  /** replay cursor (epoch ms) of the last setCursor - re-applied after a re-read */
+  cursorTs: number | null = null;
+
+  /** Show the day as it was at `ts` (null = whole day). Only for replay sessions. */
+  async setCursor(ts: number | null): Promise<void> {
+    if (!this.replay) return;
+    this.cursorTs = ts;
+    await this.call<boolean>({ t: 'cursor', ts });
+  }
+
+  get funnelOpen(): string {
+    return this.sessionOpen;
+  }
+
+  /** New funnel start time: the worker starts over and the next poll() reads the day again (cached bytes for remote days). */
+  async setSessionOpen(open: string): Promise<void> {
+    if (open === this.sessionOpen) return;
+    if (this.busy) await this.busy.catch(() => undefined);
+    const keep = this.cursorTs;
+    this.sessionOpen = open;
+    this.restart();
+    await this.poll();
+    if (keep !== null) await this.setCursor(keep);
   }
 
   files(): FileProgress[] {

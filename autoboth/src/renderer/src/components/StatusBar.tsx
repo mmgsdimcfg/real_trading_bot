@@ -5,6 +5,7 @@
  * - [2026-11-06] type=feat - The status bar is now the window's title bar (TermH style, frame:false): app icon + "AutoBotH", a gap,
  *   the status items, then ☰ (shared app-menu.js: 설정 / 업데이트 확인 / AutoBotH 정보) and minimize / maximize-restore / close.
  *   Empty space drags the window; double-click toggles maximize
+ * - [2026-11-07] type=feat - Past day in replay: the day pill shows "재현 HH:MM:SS" instead of "1회 로드"
  * - [2026-11-05] type=feat - Bot summary (봇: 실행 중 / 정지 / 미적용 변경 N, dry-run marker, external r003 warning) - opens the 제어 tab
  */
 
@@ -111,7 +112,9 @@ export function StatusBar() {
       )}
       <span className="sb-item">
         {status.date ? ymdDash(status.date) : '날짜 없음'}
-        <b className={status.live ? 'pill live' : 'pill'}>{status.live ? 'LIVE' : '1회 로드'}</b>
+        <b className={status.live ? 'pill live' : snap?.replay?.cursor != null ? 'pill replay-pill' : 'pill'}>
+          {status.live ? 'LIVE' : snap?.replay?.cursor != null ? `재현 ${fmtKstTime(snap.replay.cursor)}` : '1회 로드'}
+        </b>
       </span>
       <span className="sb-item" title="마지막으로 새 바이트를 받은 시각">
         수신 {status.lastReceivedAt ? `${fmtKstTime(status.lastReceivedAt)} KST (${ago}s 전)` : '-'}

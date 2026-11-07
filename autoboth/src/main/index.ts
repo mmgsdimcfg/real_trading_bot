@@ -13,6 +13,9 @@
  *   (status / start / stop / restart / schema / set / unset / reset / history / watchlist) that run live_trading/r016_control.py;
  *   r016 status is polled every pollSec from connect until an explicit disconnect; the condition JSON is fetched with
  *   `r016_control.py conditions` through the same serial queue (r015 fallback) and reloaded after overrides change
+ * - [2026-11-07] type=feat - Funnel start time = funnelOpen(): with settings.sessionOpenAuto it follows the server NXT setting
+ *   (control.nxt, 08:00 / 09:00), otherwise settings.sessionOpen; the open day is re-read when it changes (NXT read/changed,
+ *   settings saved). Past days and local folders open as replay sessions; replay:cursor IPC sets the replay time (null = whole day)
  * - [2026-11-07] type=perf - market:quote answers reused per code (8 s in market hours, 5 min outside, errors 20 s) and concurrent
  *   asks for the same code share one r016 call - each call starts Python on the Raspberry Pi and costs 3 KIS calls
  * - [2026-11-06] type=feat - market:quote IPC (r016 `quote`: KIS current price / 10-level order book / trades - re-checked every 10 min
@@ -38,7 +41,7 @@ import { DaySession } from './session';
 import { createControl } from './control';
 import { PriceService } from './prices';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
-import { CHART_CACHE_MS, quoteCacheMs } from '../shared/control';
+import { CHART_CACHE_MS, quoteCacheMs, resolveSessionOpen } from '../shared/control';
 import { LocalDirSource, RemoteDaySource, cacheDirFor, cachedDates, pruneCache } from './sources';
 
 const TASKBAR_TITLE_PAD = '⠀'.repeat(40);
@@ -70,7 +73,27 @@ const control = createControl({
   send: (ch, data) => send(ch, data),
   win: () => win,
   reloadConditions: () => refreshConditions(),
+  onNxt: () => void applyFunnelOpen(),
 });
+
+/** funnel start time for the log engine (see resolveSessionOpen) */
+function funnelOpen(): string {
+  const s = getSettings();
+  return resolveSessionOpen(s.sessionOpenAuto, s.sessionOpen, control.nxt());
+}
+
+/** Re-read the open day when the funnel start time changed (settings saved / server NXT setting read or changed). */
+async function applyFunnelOpen(): Promise<void> {
+  const cur = session;
+  const open = funnelOpen();
+  if (!cur || cur.funnelOpen === open) return;
+  try {
+    await cur.setSessionOpen(open);
+    if (cur === session) await pushSnapshot();
+  } catch (e) {
+    if (cur === session) setStatus({ message: errMsg(e) });
+  }
+}
 
 const prices = new PriceService(ssh, () => getSettings().remoteRoot, () => (ssh.connected ? control.client : null));
 const priceInFlight = new Map<string, Promise<PriceResponse>>();
@@ -188,12 +211,11 @@ async function tick(): Promise<void> {
 
 function openDay(ymd: string, live: boolean): void {
   stopSession();
-  const s = getSettings();
   const source = ssh.connected
     ? new RemoteDaySource(ssh, logDir(ymd), ymd)
     : new LocalDirSource(cacheDirFor(ymd), `캐시 ${ymd}`);
   if (!ssh.connected) live = false;
-  session = new DaySession(ymd, source, conditions, s.sessionOpen);
+  session = new DaySession(ymd, source, conditions, funnelOpen(), !live);
   setStatus({ date: ymd, live, conn: ssh.connected ? 'connected' : status.conn === 'local' ? 'local' : status.conn, message: undefined });
   send('snapshot', null);
   void tick();
@@ -207,7 +229,7 @@ function openLocal(dir: string): void {
     const f = readdirSync(dir).find((n) => /^\d{8}_buy_sell\.log$/.test(n));
     ymd = f ? f.slice(0, 8) : '00000000';
   }
-  session = new DaySession(ymd, new LocalDirSource(dir), conditions, getSettings().sessionOpen);
+  session = new DaySession(ymd, new LocalDirSource(dir), conditions, funnelOpen(), true);
   setStatus({ conn: 'local', date: ymd, live: false, message: `로컬 폴더 ${basename(dir)}` });
   send('snapshot', null);
   void tick();
@@ -225,6 +247,7 @@ async function connectAndOpenToday(): Promise<{ ok: boolean; error?: string }> {
     lastDateCheck = Date.now();
     setStatus({ serverDate: d });
     await refreshConditions();
+    await control.refreshNxt(); // funnel start time (auto) before the first parse of the day
     openDay(d, true);
     control.startPolling();
     prices.resetServerSupport();
@@ -266,7 +289,9 @@ ipcMain.on('get-app-version', (e) => (e.returnValue = getAppVersionLabel()));
 ipcMain.handle('settings:get', () => getSettings());
 ipcMain.handle('settings:save', (_e, s: Settings) => {
   try {
-    return { ok: true, settings: saveSettings(s) };
+    const settings = saveSettings(s);
+    void applyFunnelOpen();
+    return { ok: true, settings };
   } catch (err) {
     return { ok: false, error: errMsg(err) };
   }
@@ -376,6 +401,20 @@ async function fetchQuote(code: string): Promise<QuoteAnswer> {
   }
 }
 ipcMain.handle('timeline:get', async (_e, code: string) => (session ? session.timeline(code) : { events: [], trades: [] }));
+ipcMain.handle('replay:cursor', async (_e, ts: number | null) => {
+  const cur = session;
+  if (!cur || !cur.replay) return { ok: false, error: '지난 날짜(또는 로컬 폴더)를 열었을 때만 재생할 수 있습니다.' };
+  const t = ts === null || ts === undefined ? null : Number(ts);
+  if (t !== null && !Number.isFinite(t)) return { ok: false, error: '시각 형식 오류' };
+  try {
+    await cur.setCursor(t);
+    if (cur !== session) return { ok: false, error: '날짜가 바뀌었습니다.' };
+    await pushSnapshot();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errMsg(e) };
+  }
+});
 
 // ---- window ----------------------------------------------------------------------------------
 
