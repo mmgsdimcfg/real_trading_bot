@@ -11,7 +11,7 @@
  *   OHLC, 10-level order book, latest trades, 체결강도, upper/lower limit, 52-week high/low, PER/PBR, market cap, VI / halt). Today's
  *   daily/weekly/monthly candle is completed from the current price when the daily data has no row for today yet
  * - [2026-11-07] type=perf - Periodic refreshes are skipped while the window is hidden/minimized (server load rule); symbol or kind
- *   changes still load
+ *   changes still load; a missing server KIS token (r016 quote token_not_ready) is shown as a plain notice
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -483,7 +483,13 @@ export function ChartView() {
                 현재가·호가·체결: 서버에 <code>quote</code> 명령이 추가되면 표시됩니다 (KIS 조회 요청서 docs/server_kis_market_data_request_20261106.md).
               </p>
             )}
-            {quoteRes?.error && <p className="muted small q-note">현재가 조회 실패: {quoteRes.error}</p>}
+            {quoteRes?.error && (
+              <p className="muted small q-note">
+                {/token file|token_not_ready/.test(quoteRes.error)
+                  ? '현재가: 서버의 KIS 토큰이 아직 없습니다 (봇 r003이 시작되면 생깁니다).'
+                  : `현재가 조회 실패: ${quoteRes.error}`}
+              </p>
+            )}
           </section>
 
           {q?.orderbook && (q.orderbook.asks.length > 0 || q.orderbook.bids.length > 0) && (
