@@ -68,6 +68,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
@@ -760,6 +761,32 @@ def _emit(obj, code: int = 0) -> int:
     return code
 
 
+COMMAND_HARD_DEADLINE_SEC = 27.0  # AutoBotH 타임아웃 30초 - JSON 출력할 여유. r018 예산(25초)의 마지막 안전장치
+
+
+class CommandDeadline(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def _hard_deadline(seconds: float):
+    """절대 시각 기준 강제 중단(SIGALRM). 느린 HTTP 응답(바이트가 조금씩 계속 오는 경우)도 끊는다. 메인 스레드에서만."""
+    if not hasattr(signal, "setitimer") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _fire(_signum, _frame):
+        raise CommandDeadline(f"command exceeded {seconds:.0f} s")
+
+    prev = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, prev)
+
+
 class _JsonArgumentParser(argparse.ArgumentParser):
     """인자 오류도 stdout JSON 하나 + rc 2 (AutoBotH 파서 계약). --help 는 사람용 텍스트 그대로."""
 
@@ -814,19 +841,26 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
         r017.add_subparsers(cp.add_subparsers(dest="cmd", required=True))
         cargs = cp.parse_args([args.cmd, *extra])
         try:
-            out = r017.run_command(cargs)
-        except Exception as exc:  # noqa: BLE001 - KIS 폴백 경로의 예기치 못한 오류도 JSON 하나로
-            return _emit({"ok": False, "error": f"{args.cmd} failed ({type(exc).__name__}: {str(exc)[:200]})"}, 3)
+            with _hard_deadline(COMMAND_HARD_DEADLINE_SEC):
+                out = r017.run_command(cargs)
+        except CommandDeadline as exc:
+            return _emit({"ok": False, "error": str(exc), "kis_code": "deadline"}, 3)
+        except Exception as exc:  # noqa: BLE001 - KIS 폴백 경로의 예기치 못한 오류도 JSON 하나로 (예외 종류만, 내용 없음)
+            return _emit({"ok": False, "error": f"{args.cmd} failed ({type(exc).__name__})"}, 3)
         rc = out.pop("_rc", None)
         return _emit(out, 0 if out.get("ok") else (rc or 2))
     if args.cmd == "quote" and not extra:
         import r018_kis_market as r018  # noqa: E402  (requests/yaml only)
         try:
-            return _emit(r018.quote(args.code, args.trades))
+            with _hard_deadline(COMMAND_HARD_DEADLINE_SEC):
+                out = r018.quote(args.code, args.trades)
+            return _emit(out)
         except ValueError as exc:
             return _emit({"ok": False, "error": str(exc)}, 2)
         except r018.KisError as exc:
             return _emit({"ok": False, "error": f"KIS: {exc.message}", "kis_code": exc.code}, 3)
+        except CommandDeadline as exc:
+            return _emit({"ok": False, "error": str(exc), "kis_code": "deadline"}, 3)
         except Exception as exc:  # noqa: BLE001 - 어떤 경우에도 JSON 하나 (내용에 비밀값 없음: 예외 종류만)
             return _emit({"ok": False, "error": f"quote failed ({type(exc).__name__})"}, 3)
     if extra:
