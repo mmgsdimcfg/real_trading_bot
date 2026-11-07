@@ -692,7 +692,7 @@ DEFINE_TODAY_CODE_PATH = "r004_trade_watchlist_today.txt"
 DATA_DIR_NAME = "data"
 # [2026-10-11] 런타임 산출물(수집 데이터/로그)은 저장소 밖 <git 루트>/runtime/{data,log}에 둔다(사용자 요청).
 # 환경변수 AUTO_TRADING_RUNTIME으로 다른 위치를 지정할 수 있다.
-RUNTIME_ROOT = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime")
+RUNTIME_ROOT = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[3] / "runtime")
 RUNTIME_DATA_DIR = RUNTIME_ROOT / DATA_DIR_NAME   # 날짜별 수집 데이터(data/YYYYMMDD), live_runtime 등
 RUNTIME_LOG_DIR = RUNTIME_ROOT / "log"            # r003 실매매 로그, g003 결과 csv/compare
 # ---------------------------------------------------------------------------

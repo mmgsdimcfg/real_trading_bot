@@ -548,7 +548,7 @@ import pandas as pd
 
 # [2026-10-11] 런타임 산출물(수집 데이터/로그)은 저장소 밖 <git 루트>/runtime/{data,log}에 둔다(사용자 요청).
 # 환경변수 AUTO_TRADING_RUNTIME으로 다른 위치를 지정할 수 있다.
-RUNTIME_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime") / "data"
+RUNTIME_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[3] / "runtime") / "data"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "live_trading"))  # r001_define_config
 

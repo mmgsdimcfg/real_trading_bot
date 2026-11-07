@@ -929,7 +929,7 @@ sys.path.insert(0, str(data_sim_dir))  # g005_watchlist_bridge
 from g005_watchlist_bridge import resolve_watchlist_path
 from r012_prior_day_warmup import load_prior_day_warmup
 
-project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[2] / "open-trading-api")))
+project_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[3] / "open-trading-api")))
 sys.path.insert(0, str(project_root / "examples_llm"))
 sys.path.insert(0, str(project_root / "examples_user" / "domestic_stock"))
 sys.path.insert(0, str(project_root / "examples_llm" / "domestic_stock" / "inquire_time_itemchartprice"))

@@ -9,7 +9,7 @@
 set -u
 set -f   # no globbing when splitting R003_EXTRA_ARGS
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME="${AUTO_TRADING_RUNTIME:-$(cd "$HERE/../.." && pwd)/runtime}"
+RUNTIME="${AUTO_TRADING_RUNTIME:-$(cd "$HERE/../../.." && pwd)/runtime}"
 ENV_FILE="$RUNTIME/config/r003.env"
 R003_DRY_RUN="${R003_DRY_RUN:-0}"
 R003_DATE="${R003_DATE:-}"

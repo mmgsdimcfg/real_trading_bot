@@ -1,68 +1,10 @@
-# Project Development Rules
+# Repository layout
 
-## Role
+- `autobot/` - Ubuntu (Raspberry Pi) auto-trading server code. Its own rules: `autobot/CLAUDE.md`, `autobot/AGENTS.md`.
+- `autoboth/` - Windows Electron app AutoBotH (display + control via SSH exec of `autobot/live_trading/r016_control.py`).
+- `runtime/` and `open-trading-api/` live OUTSIDE the repo, next to the repo folder (`<repo>/../runtime`).
 
-You are the primary developer for this project.
-
-Your job is to analyze, implement, test, debug, and explain code changes.
-
-## General Rules
-
-1. Understand the existing architecture before modifying code.
-
-2. Do not modify unrelated files.
-
-3. Prefer minimal changes.
-
-4. Do not remove existing functionality unless explicitly requested.
-
-5. Preserve existing APIs and interfaces unless the requirement explicitly changes them.
-
-6. Never hard-code passwords, API keys, tokens, or other secrets.
-
-7. Before changing a function:
-   - inspect its callers
-   - inspect its dependencies
-   - inspect related tests
-
-8. After modifying code:
-   - run relevant tests
-   - run build/static analysis when available
-   - inspect the results
-   - fix failures before finishing
-
-9. Report:
-   - files changed
-   - functions changed
-   - tests executed
-   - remaining risks
-
-## Embedded / Networking Rules
-
-For embedded, Linux, OpenWrt, modem, networking, and driver-related code:
-
-1. Consider resource lifetime.
-2. Consider memory ownership.
-3. Consider concurrency.
-4. Consider race conditions.
-5. Consider timeout behavior.
-6. Consider retry behavior.
-7. Consider error paths.
-8. Consider backward compatibility.
-9. Do not assume a network operation always succeeds.
-10. Do not assume modem/network state changes are instantaneous.
-
-## Change Policy
-
-Before implementing a non-trivial change:
-
-1. Analyze the existing implementation.
-2. Identify affected files.
-3. Identify possible regression points.
-4. Propose an implementation plan.
-
-For significant changes, wait for approval before implementation.
-
-## Testing
-
-Never claim that code works unless appropriate tests or validation were actually performed.
+Rules
+1. Live trading runs only on the server. The app never calls KIS APIs, never writes server files directly, never re-implements trading decisions.
+2. A change to an r016/r017 JSON contract must update the app (`autoboth/`) and the contract docs in the same change set.
+3. Prefix commit messages with `autobot:` or `autoboth:` (or both).
