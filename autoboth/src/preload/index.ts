@@ -45,7 +45,8 @@ const api = {
   saveSettings: (s: Settings) => ipcRenderer.invoke('settings:save', s),
   pickKey: () => ipcRenderer.invoke('dialog:pickKey'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
-  connect: () => ipcRenderer.invoke('conn:connect'),
+  /** connect, then open `ymd` (past date) or the server's today */
+  connect: (ymd?: string) => ipcRenderer.invoke('conn:connect', ymd),
   disconnect: () => ipcRenderer.invoke('conn:disconnect'),
   openDay: (ymd: string) => ipcRenderer.invoke('day:open', ymd),
   openLocal: (dir: string) => ipcRenderer.invoke('day:openLocal', dir),

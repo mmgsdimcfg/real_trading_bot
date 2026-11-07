@@ -9,6 +9,7 @@
  *   value is an unset, so no override is left behind) with the stored / running value and the restart-needed mark. The funnel start
  *   time ("장 시작 (집계 기준)") is automatic by default: it follows the server NXT setting (08:00 / 09:00); unticking it enables
  *   the manual time
+ * - [2026-11-07] type=fix - The date select starts at (and follows) the loaded date; "저장 후 연결" opens the selected past date
  * - [2026-11-05] type=feat - "고급: 전체 설정값" (collapsed): `schema --all` (~380 r001 constants) with a search box and the same value
  *   editor as the pipeline panel (only changed keys are sent in one `set`); the read-only note now lists the r016 control calls
  */
@@ -31,7 +32,9 @@ export function SettingsView() {
   const [proxySecret, setProxySecret] = useState('');
   const [msg, setMsg] = useState('');
   const [dates, setDates] = useState<{ remote: string[]; cached: string[] }>({ remote: [], cached: [] });
-  const [date, setDate] = useState('');
+  // the date select shows the loaded day (kept when the tab is left and re-entered)
+  const [date, setDate] = useState(status.date || '');
+  useEffect(() => setDate(status.date || ''), [status.date]);
   const nxt = useStore((s) => s.control.nxt);
 
   useEffect(() => setForm(stored), [stored]);
@@ -58,7 +61,7 @@ export function SettingsView() {
   const connect = async () => {
     if (!(await save())) return;
     setMsg('연결 중…');
-    const r = await window.api.connect();
+    const r = await window.api.connect(date && date !== status.serverDate ? date : undefined);
     setMsg(r.ok ? '연결했습니다.' : `연결 실패: ${r.error}`);
   };
   const allDates = [...new Set([...dates.remote, ...dates.cached])].sort().reverse();

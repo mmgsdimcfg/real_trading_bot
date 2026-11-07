@@ -13,6 +13,9 @@
  *   (status / start / stop / restart / schema / set / unset / reset / history / watchlist) that run live_trading/r016_control.py;
  *   r016 status is polled every pollSec from connect until an explicit disconnect; the condition JSON is fetched with
  *   `r016_control.py conditions` through the same serial queue (r015 fallback) and reloaded after overrides change
+ * - [2026-11-07] type=fix - SSH drop while a past day is open: the 'lost' handler starts the reconnect loop (a past day has no poll
+ *   timer, so the app stayed in "재연결 대기" and the price chart could not load). conn:connect takes an optional date: "저장 후 연결"
+ *   opens the date chosen on the settings view instead of always today
  * - [2026-11-07] type=feat - Funnel start time = funnelOpen(): with settings.sessionOpenAuto it follows the server NXT setting
  *   (control.nxt, 08:00 / 09:00), otherwise settings.sessionOpen; the open day is re-read when it changes (NXT read/changed,
  *   settings saved). Past days and local folders open as replay sessions; replay:cursor IPC sets the replay time (null = whole day)
@@ -235,7 +238,8 @@ function openLocal(dir: string): void {
   void tick();
 }
 
-async function connectAndOpenToday(): Promise<{ ok: boolean; error?: string }> {
+/** Connect, then open `ymd` (a past date chosen on the settings view) or the server's today. */
+async function connectAndOpenToday(ymd?: string): Promise<{ ok: boolean; error?: string }> {
   wantConnected = true;
   stopSession();
   control.stopPolling();
@@ -248,7 +252,8 @@ async function connectAndOpenToday(): Promise<{ ok: boolean; error?: string }> {
     setStatus({ serverDate: d });
     await refreshConditions();
     await control.refreshNxt(); // funnel start time (auto) before the first parse of the day
-    openDay(d, true);
+    const want = ymd && /^\d{8}$/.test(ymd) ? ymd : d;
+    openDay(want, want === d);
     control.startPolling();
     prices.resetServerSupport();
     quoteUnsupportedAt = 0;
@@ -266,7 +271,9 @@ ssh.on('log', (line: string) => {
 
 ssh.on('lost', (e: Error) => {
   if (!wantConnected) return;
-  setStatus({ conn: 'reconnecting', message: errMsg(e) });
+  setStatus({ conn: 'reconnecting', message: errMsg(e), nextRetryAt: Date.now() + BACKOFF_MIN });
+  // a past day loaded once has no poll timer - start the reconnect loop here (tick reconnects remote sessions with back-off)
+  if (session?.source.kind === 'remote') schedule(BACKOFF_MIN);
 });
 
 // ---- IPC -------------------------------------------------------------------------------------
@@ -308,7 +315,7 @@ ipcMain.handle('dialog:pickFolder', async () => {
   const r = await dialog.showOpenDialog(win!, { title: '로그 폴더 선택 (runtime/log/YYYYMMDD 복사본)', properties: ['openDirectory'] });
   return r.canceled ? null : r.filePaths[0];
 });
-ipcMain.handle('conn:connect', () => connectAndOpenToday());
+ipcMain.handle('conn:connect', (_e, ymd?: string) => connectAndOpenToday(ymd));
 ipcMain.handle('conn:disconnect', () => {
   wantConnected = false;
   if (timer) clearTimeout(timer);
