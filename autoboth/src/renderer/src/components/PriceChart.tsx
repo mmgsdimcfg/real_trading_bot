@@ -19,6 +19,8 @@
  * - [2026-11-07] type=feat - Indicator panes mark each indicator's own buy / sell crossings (HTS style, shared crossSignal): red ▲ under
  *   / blue ▼ over the pane's main line, the rule in the hover title. The bot's fills stay as the dashed vertical lines. Volume pane
  *   2/3 of its former height (VOL_RATIO 0.2 -> 0.133)
+ * - [2026-11-07] type=feat - Volume is a switch ('vol' in indicators, 거래량 check box): off = no volume pane, the price pane takes the
+ *   space. Volume pane half of the previous height (VOL_RATIO 0.133 -> 0.067)
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -47,7 +49,7 @@ const AXIS_H = 22;
 const GAP = 8;
 export const PRICE_PANE_H = 300;
 export const OSC_PANE_H = 84;
-const VOL_RATIO = 0.2 * (2 / 3); // volume pane share of the price+volume area (2/3 of the former 0.2)
+const VOL_RATIO = 0.2 / 3; // volume pane share of the price+volume area (0.2 -> 0.133 -> half of that)
 const KST = 9 * 3600000;
 const MIN_BARS = 10;
 
@@ -233,9 +235,10 @@ export function PriceChart(props: Props) {
   const osc = oscOf(indicators);
   const W = Math.max(10, width - L - R);
   const mainH = height - osc.length * (oscH + GAP) - TOP - AXIS_H;
-  const priceH = mainH * (1 - VOL_RATIO) - GAP;
-  const volTop = TOP + priceH + GAP;
-  const volH = mainH * VOL_RATIO;
+  const showVol = indicators.includes('vol');
+  const priceH = showVol ? mainH * (1 - VOL_RATIO) - GAP : mainH;
+  const volTop = TOP + priceH + (showVol ? GAP : 0);
+  const volH = showVol ? mainH * VOL_RATIO : 0;
   const oscTop = (j: number) => volTop + volH + GAP + j * (oscH + GAP);
   const bottom = osc.length ? oscTop(osc.length - 1) + oscH : volTop + volH;
   const shift = indicators.includes('ichimoku') ? BOT_PARAMS.ichiShift : 0;
@@ -559,7 +562,7 @@ export function PriceChart(props: Props) {
             </g>
           ))}
           <line x1={L} x2={L + W} y1={volTop + volH} y2={volTop + volH} className="pc-grid" />
-          {!showLegend && (
+          {showVol && !showLegend && (
             <text x={axisX} y={volTop + 10} className="pc-axis" textAnchor={anchorAxis}>
               거래량
             </text>
@@ -588,8 +591,8 @@ export function PriceChart(props: Props) {
             <path d={model.dnW} className="pc-dn-line" />
             <path d={model.upB} className="pc-up" />
             <path d={model.dnB} className="pc-dn" />
-            <path d={model.upV} className="pc-up vol" />
-            <path d={model.dnV} className="pc-dn vol" />
+            {showVol && <path d={model.upV} className="pc-up vol" />}
+            {showVol && <path d={model.dnV} className="pc-dn vol" />}
             {model.overlay.map((o, i) => (
               <path key={i} d={o.d} className={`ind-line ${o.cls || ''}`} style={o.color ? { stroke: o.color } : undefined} />
             ))}
@@ -631,7 +634,7 @@ export function PriceChart(props: Props) {
               )}
             </g>
           ))}
-          {showLegend && <Legends S={S} i={li} x={legendX} y={TOP + 12} volY={volTop + 11} vol={li >= 0 ? bars[li]?.v : undefined} />}
+          {showLegend && <Legends S={S} i={li} x={legendX} y={TOP + 12} volY={volTop + 11} vol={showVol && li >= 0 ? bars[li]?.v : undefined} />}
 
           {/* position + fills */}
           {buyPrice && buyPrice > model.lo && buyPrice < model.hi && (
@@ -772,9 +775,11 @@ function Legends({ S, i, x, y, volY, vol }: { S: IndicatorSet; i: number; x: num
           ))}
         </text>
       ))}
-      <text x={x} y={volY} className="pc-legend">
-        거래량 {fmtInt(vol)}
-      </text>
+      {vol !== undefined && (
+        <text x={x} y={volY} className="pc-legend">
+          거래량 {fmtInt(vol)}
+        </text>
+      )}
     </g>
   );
 }

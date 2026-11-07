@@ -309,7 +309,9 @@ export function sma(close: Series, period: number): Series {
   return rollingMean(close, period, period);
 }
 
-export type IndicatorKey = 'ma' | 'bb' | 'ichimoku' | 'vwap' | 'rsi' | 'macd' | 'adx' | 'stoch' | 'williams' | 'mfi' | 'obv';
+export type IndicatorKey = 'ma' | 'bb' | 'ichimoku' | 'vwap' | 'vol' | 'rsi' | 'macd' | 'adx' | 'stoch' | 'williams' | 'mfi' | 'obv';
+/** volume bars under the price pane (a switch like the indicators; nothing to compute) */
+export const VOLUME: IndicatorKey = 'vol';
 /** drawn on the price pane */
 export const OVERLAYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'vwap'];
 /** one pane each below the price pane */
@@ -319,6 +321,7 @@ export const INDICATOR_LABEL: Record<IndicatorKey, string> = {
   bb: '볼린저',
   ichimoku: '일목',
   vwap: 'VWAP',
+  vol: '거래량',
   rsi: 'RSI',
   macd: 'MACD',
   adx: 'ADX',

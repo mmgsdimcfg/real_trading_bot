@@ -15,6 +15,7 @@
  * - [2026-11-07] type=feat - Past-day replay: tick/minute bars that start after the replay time are hidden (barsUpTo); the
  *   evaluation dots and trades already come cut from the replay snapshot. The time axis ends at the replay time, so it keeps
  *   moving through stretches without events (r003 stopped)
+ * - [2026-11-07] type=feat - Sell fill markers show the sell price and return ("매도 22,450 (+1.43%) <reason>"), like the buy price
  * - [2026-11-07] type=feat - Price chart twice as tall (TL_SCALE: price + volume area 300 -> 600 px, indicator panes 84 -> 168 px)
  * - [2026-11-07] type=feat - Buy chart y-axis rows can be hidden ("y축 항목" popover: per-row checkboxes, 모두 표시, 이 종목 평가된 항목만);
  *   hidden rows and their dots are left out, the remaining rows close up and the chart gets shorter. Kept per PC (localStorage)
@@ -27,7 +28,7 @@ import { SymbolPicker } from '../components/SymbolPicker';
 import { condTitle, fmtInt, fmtKrw, sortedConds } from '../lib';
 import { condKeyOf } from '../../../shared/mapping';
 import { fmtKstTime } from '../../../shared/time';
-import type { EvalEvent } from '../../../shared/types';
+import type { EvalEvent, Trade } from '../../../shared/types';
 import { MIN_SIZES, TICK_SIZES, type ChartKind, type PriceResponse } from '../../../shared/price';
 import { OSC_PANE_H, PRICE_PANE_H, PriceChart, chartHeight } from '../components/PriceChart';
 
@@ -179,7 +180,7 @@ export function TimelineView() {
       x={t.ts}
       stroke={t.side === 'BUY' ? 'var(--gain)' : 'var(--loss)'}
       strokeDasharray="4 3"
-      label={{ value: t.side === 'BUY' ? `매수 ${fmtInt(t.price)}` : `매도 ${t.reason.slice(0, 18)}`, position: t.side === 'BUY' ? 'insideTopRight' : 'insideBottomLeft', fill: 'var(--text-2)', fontSize: 11 }}
+      label={{ value: tradeLabel(t), position: t.side === 'BUY' ? 'insideTopRight' : 'insideBottomLeft', fill: 'var(--text-2)', fontSize: 11 }}
     />
   ));
 
@@ -355,6 +356,14 @@ export function TimelineView() {
       )}
     </div>
   );
+}
+
+/** fill marker text: "매수 22,133" / "매도 22,450 (+1.43%) AUX_REVERSAL_SCORE" */
+function tradeLabel(t: Trade): string {
+  const price = Number.isFinite(t.price) ? ` ${fmtInt(t.price)}` : '';
+  if (t.side === 'BUY') return `매수${price}`;
+  const pct = Number.isFinite(t.pnlPct) ? ` (${(t.pnlPct as number) >= 0 ? '+' : ''}${(t.pnlPct as number).toFixed(2)}%)` : '';
+  return `매도${price}${pct} ${t.reason.slice(0, 18)}`.trim();
 }
 
 const ymdShort = (ymd: string) => (ymd ? `${ymd.slice(4, 6)}-${ymd.slice(6, 8)}` : '');
