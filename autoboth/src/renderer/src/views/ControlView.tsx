@@ -5,6 +5,8 @@
  *   while the main process waits for the unit to settle, the external-r003 warning, pending-restart items (overrides with
  *   [기본값으로], env, watchlist), override errors, and the last 20 history rows (`history -n 20`). Confirmations (live orders,
  *   market hours) are shown by the main process. Server times are shown as the server's KST strings, unconverted
+ * - [2026-11-07] type=fix - Mode label: status.dry_run is null while the bot is stopped (no running snapshot); it was shown as a red
+ *   '실주문'. Now '-' when stopped, '확인 불가' when running without a snapshot, dry-run/실주문 only from the snapshot
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -154,7 +156,17 @@ export function ControlView() {
           <span>시작 {isoShow(svc?.started_at)}</span>
           <span>재시작 {svc?.restarts ?? 0}회</span>
           <span>
-            모드 <b className={st?.dry_run ? '' : 'live-mode'}>{st ? (st.dry_run ? 'dry-run' : '실주문') : '-'}</b>
+            {/* dry_run is null while the bot is stopped (no running snapshot) - never show that as 실주문 */}
+            모드{' '}
+            {st?.dry_run === true ? (
+              <b>dry-run</b>
+            ) : st?.dry_run === false ? (
+              <b className="live-mode">실주문</b>
+            ) : (
+              <b title={st?.running ? '실행 스냅샷이 없어 실행 모드를 확인할 수 없습니다 (재시작 후 정확)' : '정지 중 - 다음 실행 모드는 아래 dry-run 체크'}>
+                {st?.running ? '확인 불가' : '-'}
+              </b>
+            )}
           </span>
           <span>프로파일 {st?.risk_profile || '-'}</span>
           {svc?.sub_state === 'auto-restart' && <span className="warn-text">크래시 후 재시작 대기 중</span>}
