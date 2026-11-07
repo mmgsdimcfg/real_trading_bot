@@ -462,6 +462,97 @@ class CodexFindingsTest(Base):
         self.assertFalse(out["ok"])
 
 
+class CodexSecondPassTest(Base):
+    """Codex 2nd review 2026-11-07: absolute deadline, partial pages on HTTP timeout, empty pages, legacy caches, error text."""
+
+    def test_hard_deadline_interrupts_slow_streaming_call(self):
+        import r016_control as r016
+
+        def slow(params):
+            for _ in range(200):          # bytes keep arriving: no read timeout would fire
+                time.sleep(0.01)
+            return price_body(params)
+
+        self.sleep.stop()                 # real sleeping here
+        try:
+            orig = r018.Client
+            with mock.patch.object(r016, "COMMAND_HARD_DEADLINE_SEC", 0.3), \
+                 mock.patch.object(r018, "Client", lambda *a, **k: orig(session=FakeSession(dict(QUOTE_HANDLERS, FHKST01010100=slow)))):
+                buf = io.StringIO()
+                t0 = time.time()
+                with contextlib.redirect_stdout(buf):
+                    rc = r016.main(["quote", "--code", "005930"])
+            self.assertLess(time.time() - t0, 1.5)
+            out = json.loads(buf.getvalue())
+            self.assertEqual((rc, out["kis_code"]), (3, "deadline"))
+        finally:
+            self.sleep.start()
+
+    def test_page_two_http_timeout_keeps_page_one(self):
+        days = [(datetime(2026, 11, 6) - timedelta(days=i)).strftime("%Y%m%d") for i in range(150)]
+        n = {"k": 0}
+
+        class S(FakeSession):
+            def get(self, url, headers=None, params=None, timeout=None):
+                n["k"] += 1
+                if n["k"] == 2:
+                    raise r018.requests.ReadTimeout("slow")
+                return super().get(url, headers=headers, params=params, timeout=timeout)
+
+        def handler(params):
+            end = params["FID_INPUT_DATE_2"]
+            return {"output1": {}, "output2": [{"stck_bsop_date": d, "stck_oprc": "1", "stck_hgpr": "2", "stck_lwpr": "1",
+                                                "stck_clpr": "2", "acml_vol": "1"} for d in days if d <= end][:100]}
+
+        c = r018.Client(session=S({"FHKST03010100": handler}))
+        d = r018.daily("005930", client=c)
+        self.assertEqual((len(d["rows"]), d["complete"]), (100, False))
+
+    def test_empty_first_page_does_not_mark_continuity(self):
+        cpath = self.runtime / "cache" / "kis" / "min" / "20261106" / "035720.json"
+        cpath.parent.mkdir(parents=True)
+        cpath.write_text(json.dumps({"fetched_at": 0, "rows": [["120000", 1, 1, 1, 1, 1]], "complete": False,
+                                     "complete_from_open": False}))
+        with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 10, 0)):
+            c, _ = self.client({"FHKST03010230": lambda p: {"output1": {}, "output2": []}})
+            m = r018.minutes("035720", "20261106", client=c)
+        self.assertFalse(m["complete"])
+        self.assertFalse(json.loads(cpath.read_text())["complete_from_open"])
+
+    def test_legacy_daily_cache_without_flag_is_refetched(self):
+        cpath = self.runtime / "cache" / "kis" / "daily" / "005930.json"
+        cpath.parent.mkdir(parents=True)
+        cpath.write_text(json.dumps({"fetched_at": time.time(), "rows": [["20261106", 1, 2, 1, 2, 1]], "name": None}))
+        c, s = self.client({"FHKST03010100": lambda p: {"output1": {}, "output2": [
+            {"stck_bsop_date": "20261106", "stck_oprc": "1", "stck_hgpr": "2", "stck_lwpr": "1", "stck_clpr": "2", "acml_vol": "1"}]}})
+        r018.daily("005930", client=c)
+        self.assertEqual(len(s.calls), 1)
+
+    def test_chart_exception_text_is_not_echoed(self):
+        import r016_control as r016
+        import r017_chart_data as r017
+        with mock.patch.object(r017, "run_command", side_effect=RuntimeError("SECRET_SENTINEL")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = r016.main(["bars", "--date", "20261106", "--code", "005930", "--kind", "day"])
+        self.assertEqual(rc, 3)
+        self.assertNotIn("SECRET_SENTINEL", buf.getvalue())
+
+    def test_quote_skips_optional_requests_when_budget_low(self):
+        c, s = self.client(QUOTE_HANDLERS)
+        real = c.time_left
+        n = {"k": 0}
+
+        def budget():
+            n["k"] += 1
+            return real() if n["k"] <= 4 else 1.0   # price + name fetched, then low budget
+        c.time_left = budget
+        q = r018.quote("005930", client=c)
+        self.assertEqual(q["price"], 71200)
+        self.assertIsNone(q["orderbook"])
+        self.assertEqual(len(q["partial_errors"]), 2)
+
+
 class RateLimitTest(unittest.TestCase):
     def test_spacing_and_per_second_cap(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"AUTO_TRADING_RUNTIME": d}):

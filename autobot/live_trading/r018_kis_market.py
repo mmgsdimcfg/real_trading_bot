@@ -217,6 +217,8 @@ class Client:
             self.calls += 1
             try:
                 res = self._session.get(self._url + path, headers=headers, params=params, timeout=timeout)
+            except requests.Timeout as exc:
+                raise KisError("timeout", type(exc).__name__) from None
             except requests.RequestException as exc:
                 raise KisError("network", type(exc).__name__) from None
             try:
@@ -236,6 +238,8 @@ class Client:
 
 
 _SHARED: Client | None = None
+# 페이징 도중 이 오류면 받은 페이지까지는 응답·저장한다(완료 표시는 하지 않음)
+_PARTIAL_OK = ("deadline", "rate_busy", "timeout")
 
 
 def shared_client() -> Client:
@@ -416,7 +420,7 @@ def daily(code: str, client: Client | None = None) -> dict:
     now = _now()
     cpath = _cache_dir() / "daily" / f"{code}.json"
     cached = _read_json(cpath)
-    if cached and cached.get("complete", True) and _daily_fresh(float(cached.get("fetched_at", 0)), now):
+    if cached and cached.get("complete") is True and _daily_fresh(float(cached.get("fetched_at", 0)), now):
         return {"rows": cached["rows"], "name": cached.get("name"), "source": "kis:inquire_daily_itemchartprice", "calls": 0,
                 "complete": True}
     client = client or shared_client()
@@ -431,7 +435,7 @@ def daily(code: str, client: Client | None = None) -> dict:
                 "FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": start,
                 "FID_INPUT_DATE_2": end, "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
         except KisError as exc:
-            if rows and exc.code in ("deadline", "rate_busy"):
+            if rows and exc.code in _PARTIAL_OK:
                 break  # 받은 만큼 응답, complete=False 로 저장 -> 다음 요청이 이어 받는다
             raise
         name = name or ((body.get("output1") or {}).get("hts_kor_isnm") or "").strip() or None
@@ -533,6 +537,7 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
     hour = min(now.strftime("%H%M%S"), last_hms) if is_today else last_hms
     reached_open = False
     overlapped = False
+    fetched_any = False
     for _page in range(16):
         params = {"FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code, "FID_INPUT_HOUR_1": hour,
                   "FID_PW_DATA_INCU_YN": "Y"}
@@ -543,14 +548,17 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
         try:
             body, _ = client.get(tr, params)
         except KisError as exc:
-            if have and exc.code in ("deadline", "rate_busy"):
+            if fetched_any and exc.code in _PARTIAL_OK:
                 break  # 받은 만큼 저장(끊김 없음 표시는 하지 않음) -> 다음 조회가 메운다
             raise
         name = name or ((body.get("output1") or {}).get("hts_kor_isnm") or "").strip() or None
         page = _parse_min_rows(body.get("output2") or [], date_str)
         if not page:
-            reached_open = True
+            # 이번 조회에서 최신부터 이어 받은 뒤에 빈 페이지면 더 이전 분봉이 없는 것(장 시작 쪽 끝).
+            # 첫 페이지부터 비었으면 연속성을 확인한 것이 아니므로 표시를 바꾸지 않는다.
+            reached_open = fetched_any
             break
+        fetched_any = True
         have.update(page)
         oldest = min(page)
         if oldest <= open_hms:
