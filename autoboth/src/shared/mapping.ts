@@ -1,0 +1,292 @@
+/*
+ * Update log
+ * - [2026-11-04] type=feat - Log -> condition mapping (guide 3.1 buy path, 3.2 sell path). Conditions are keyed by number ("_014"),
+ *   which is matched to Condition.no of the server JSON, so a renamed function does not break the mapping. Reason prefixes are
+ *   matched longest-first; anything that matches no rule is reported as unknown with the original line kept
+ * - [2026-11-05] type=fix - New r003 info tags were listed as unknown: [BAR_SKIP] (intrabar 3min RSI/MFI out of range ->
+ *   "using confirmed 3min bar instead", a data-source note, not a reject) and [WARMUP] (prior-day bars loaded for indicator warmup)
+ *   added to IGNORED_TAGS
+ * - [2026-11-05] type=feat - [CHECK] and [BAR_SKIP] are no longer ignored: they become status events (condKey 'PREP', result 'info',
+ *   sub STATUS_SUB) so the timeline shows the bot is still checking a symbol while no condition is evaluated. The engine thins them
+ *   (see DayEngine.push). [WARMUP] stays ignored
+ * - [2026-11-05] type=feat - [HOLD SKIP] (logged as "[🔴HOLD SKIP ]": a held position that was not bought today, e.g.
+ *   NOT_TODAY_BUY_POSITION, so the sell conditions are not evaluated for it) becomes a sell-side status event on the 'PREP' row
+ */
+
+import type { EvalResult, Side } from './types';
+import { parseSteps, splitSegments } from './logLine';
+
+export interface Classified {
+  side: Side;
+  condKey: string;
+  sub?: string;
+  result: EvalResult;
+  reason: string;
+  steps?: Record<string, 'P' | 'F' | '-'>;
+}
+
+export type ClassifyOutcome =
+  | { kind: 'event'; ev: Classified }
+  | { kind: 'ignore' }
+  | { kind: 'unknown'; side: Side; reason: string };
+
+interface Rule {
+  p: string;
+  cond: string;
+  sub?: string;
+}
+
+function sortRules(rules: Rule[]): Rule[] {
+  return [...rules].sort((a, b) => b.p.length - a.p.length);
+}
+
+function matchLongest(rules: Rule[], text: string): Rule | undefined {
+  for (const r of rules) if (text.startsWith(r.p)) return r;
+  return undefined;
+}
+
+/** _008 sub-steps, in display order */
+export const TRIGGER_SUBS = ['trigger', 'candle', 'live', 'chase', 'legacy', 'other'] as const;
+export const TRIGGER_SUB_LABEL: Record<string, string> = {
+  trigger: '크로스 트리거',
+  candle: '캔들/갭 가드',
+  live: '현재가 가드',
+  chase: '크로스 대비 추격',
+  legacy: 'legacy 1분 트리거',
+  other: '기타',
+};
+
+// [REJECT] reasons (guide 3.1)
+const BUY_REJECT_RULES = sortRules([
+  { p: 'SESSION_OPEN_WARMUP', cond: '_002' },
+  { p: 'TRIPLE_CROSS_MISSING_', cond: '_008', sub: 'trigger' },
+  { p: 'TICK_LOW_DENSITY_', cond: '_008', sub: 'trigger' },
+  { p: 'TRIPLE_CROSS_1MIN_CHASE_BUY_BB_GAP', cond: '_008', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_1MIN_CHASE_BUY_INTRABAR', cond: '_008', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_1MIN_CANDLE_NOT_BULLISH', cond: '_008', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_CANDLE_NOT_BULLISH', cond: '_008', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_1MIN_LIVE_DROP', cond: '_008', sub: 'live' },
+  { p: 'TRIPLE_CROSS_1MIN_LIVE_BELOW_BB_MID', cond: '_008', sub: 'live' },
+  { p: 'TRIPLE_CROSS_CHASE_FROM_CROSS', cond: '_008', sub: 'chase' },
+  { p: 'TRIPLE_CROSS_', cond: '_008', sub: 'other' },
+  { p: 'HYBRID_1MIN_TRIGGER_', cond: '_008', sub: 'legacy' },
+  { p: 'HYBRID_1MIN_FRAME_UNAVAILABLE', cond: '_008', sub: 'legacy' },
+  { p: 'MARKET_REGIME_DOWN', cond: '_029' },
+  { p: 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', cond: '_009' },
+  { p: 'HYBRID_3MIN_CTX_MISSING_INDICATOR', cond: '_009' },
+  { p: 'HYBRID_3MIN_CTX_LOW_ENTRY_ATR', cond: '_014' },
+  { p: 'HYBRID_3MIN_CTX_LOW_VOL_MA_ABS', cond: '_015' },
+  { p: 'HYBRID_3MIN_CTX_LOW_ABS_VOLUME', cond: '_015' },
+  { p: 'HYBRID_3MIN_CTX_LOW_VOLUME_RATIO', cond: '_015' },
+  { p: 'HYBRID_3MIN_CTX_LOW_TURNOVER', cond: '_015' },
+  { p: 'EXCESSIVE_RISE_FROM_PREV_CLOSE', cond: '_018' },
+  { p: 'ANTI_CHASE_', cond: '_019' },
+  { p: 'OPENING_GAP', cond: '_020' },
+  { p: 'QUOTE_STATUS_BLOCK', cond: '_031' },
+  { p: 'ACCOUNT_SYNC_STALE', cond: '_030' },
+  { p: 'EDGE_AI_LOW_PROB', cond: '_028' },
+  { p: 'SPREAD_NO_QUOTE', cond: '_027' },
+  { p: 'SPREAD_TOO_WIDE', cond: '_027' },
+  { p: 'INSUFFICIENT_BUYING_POWER_OR_BUDGET', cond: '_022' },
+  { p: 'STALE_LIVE_PRICE', cond: '_023' },
+  { p: 'ORDERBOOK_ASK_THIN', cond: '_024' },
+]);
+
+// [BUY SKIP] reasons
+const BUY_SKIP_RULES = sortRules([
+  { p: 'ALREADY_TRADED_TODAY_UNTIL_SELL', cond: '_005' },
+  { p: 'HARD_STOP_REENTRY_BLOCKED_TODAY', cond: '_006' },
+  { p: 'DAILY_LOSS_LIMIT', cond: '_025' },
+  { p: 'MAX_OPEN_POSITIONS', cond: '_026' },
+]);
+
+// [SELL TRIGGER] / [SELL HOLD] reasons (guide 3.2)
+const SELL_RULES = sortRules([
+  { p: 'AUX_BLOCKED_SCORE', cond: '_022' },
+  { p: 'AUX_TRIGGER_BUFFER_BLOCK', cond: '_022' },
+  { p: 'HARD_STOP_LOSS', cond: '_004' },
+  { p: 'TP1_PARTIAL', cond: '_006' },
+  { p: 'TP2_SURGE_LADDER', cond: '_007' },
+  { p: 'TP3_SURGE_LADDER', cond: '_007' },
+  { p: 'PROFIT_LOCK_', cond: '_023' },
+  { p: 'ATR_TAKE_PROFIT', cond: '_015' },
+  { p: 'POST_BUY_ENTRY_DROP', cond: '_016' },
+  { p: 'BREAKEVEN_FAIL', cond: '_017' },
+  { p: 'NO_TREND_EXIT', cond: '_018' },
+  { p: 'ATR_STOP_LOSS', cond: '_019' },
+  { p: 'TRAILING_STOP_GIVEBACK', cond: '_020' },
+  { p: 'TP_EXTENSION_TRAIL', cond: '_020' },
+  { p: 'AUX_REVERSAL_SCORE', cond: '_022' },
+  { p: 'LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED', cond: '_022' },
+  { p: 'PEAK_NEXT_BAR_BEARISH', cond: '_003' },
+  { p: 'REGULAR_CLOSE_SESSION_FORCE_CLOSE_ALL', cond: 'SESSION_CLOSE' },
+  { p: 'NXT_CLOSE', cond: 'SESSION_CLOSE' },
+]);
+
+/** Sell reason -> condKey (also used for trades from the buy_sell log). */
+export function sellReasonToCond(reason: string): string | undefined {
+  const r = matchLongest(SELL_RULES, reason.replace(/^reason=/, ''));
+  return r?.cond;
+}
+
+/** Buy reject reason -> condKey/sub (exported for tests and the unknown list). */
+export function buyRejectToCond(reason: string): { cond: string; sub?: string } | undefined {
+  const r = matchLongest(BUY_REJECT_RULES, reason);
+  return r ? { cond: r.cond, sub: r.sub } : undefined;
+}
+
+const BUY_ORDER_TAGS = new Set([
+  'BUY SUBMIT',
+  'BUY PENDING',
+  'BUY PARTIAL',
+  'BUY PART CXL',
+  'BUY RP CNCL',
+  'BUY RP RSUB',
+  'BUY RP QUIT',
+  'BUY RP ABAND',
+  'BUY EXEC',
+  'BUY NOFILL',
+  'REENTRY LIVE',
+]);
+const SELL_ORDER_TAGS = new Set(['SELL SUBMIT', 'SELL FILLED', 'SELL EXEC', 'SELL PARTIAL', 'SEL RSUB ERR', 'SELL RSUB ERR']);
+
+/** sub of status events ([CHECK] / [BAR_SKIP]) - info dots on the PREP row, not condition evaluations */
+export const STATUS_SUB = 'status';
+/** [CHECK]: bar count / live price / confirmed bar; [BAR_SKIP]: intrabar 3min RSI/MFI out of range -> confirmed 3min bar used (not a reject) */
+const STATUS_TAGS = new Set(['CHECK', 'BAR_SKIP']);
+
+/** Tags that are understood but carry no condition event (handled elsewhere or noise). */
+export const IGNORED_TAGS = new Set([
+  'TICK CROSS',
+  'WL SPLIT',
+  'MKT REGIME',
+  'ACT PROMOTE',
+  'ACT DROPOUT',
+  'ACT GRADUATE',
+  'ACT REENTER',
+  'WARMUP', // prior-day bars loaded for indicator warmup
+]);
+
+function reasonCandidates(rest: string): string[] {
+  const segs = splitSegments(rest);
+  const out: string[] = [];
+  if (segs[0]) out.push(segs[0].replace(/^reason=/, ''));
+  for (const s of segs) {
+    const m = /(?:^|\s)reason=(\S+)/.exec(s);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+function firstMatch(rules: Rule[], rest: string): { rule: Rule; reason: string } | undefined {
+  for (const c of reasonCandidates(rest)) {
+    const rule = matchLongest(rules, c);
+    if (rule) return { rule, reason: c };
+  }
+  return undefined;
+}
+
+/** Sell reasons can sit anywhere in the body - scan every token. */
+function scanTokens(rules: Rule[], rest: string): { rule: Rule; reason: string } | undefined {
+  const viaFields = firstMatch(rules, rest);
+  if (viaFields) return viaFields;
+  for (const tok of rest.split(/[\s|]+/)) {
+    const t = tok.replace(/^reason=/, '');
+    const rule = matchLongest(rules, t);
+    if (rule) return { rule, reason: t };
+  }
+  return undefined;
+}
+
+const firstSeg = (rest: string) => splitSegments(rest)[0] || '';
+
+/**
+ * Classify one tagged main-log line that belongs to a symbol.
+ * `tag` is trimmed; `rest` is the body after "{code}_{name} |".
+ */
+export function classify(tag: string, rest: string): ClassifyOutcome {
+  const ev = (e: Classified): ClassifyOutcome => ({ kind: 'event', ev: e });
+
+  switch (tag) {
+    case 'SKIP': {
+      if (rest.includes('can_trade_code_now=False')) return ev({ side: 'buy', condKey: '_001', result: 'fail', reason: 'can_trade_code_now=False' });
+      if (/frame=None|INDICATOR_WARMUP_BARS|bars=\d+\s*</.test(rest)) return ev({ side: 'buy', condKey: 'PREP', result: 'fail', reason: firstSeg(rest) });
+      return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
+    }
+    case 'REJECT':
+    case 'BUY REJECT': {
+      const hit = firstMatch(BUY_REJECT_RULES, rest);
+      const steps = parseSteps(rest);
+      if (!hit) return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
+      return ev({ side: 'buy', condKey: hit.rule.cond, sub: hit.rule.sub, result: 'fail', reason: hit.reason, steps });
+    }
+    case 'BUY SKIP': {
+      const hit = firstMatch(BUY_SKIP_RULES, rest);
+      if (!hit) return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
+      return ev({ side: 'buy', condKey: hit.rule.cond, result: 'fail', reason: hit.reason });
+    }
+    case 'BUY HOLD': {
+      if (rest.includes('WAIT_NEXT_POLL_CONFIRM')) return ev({ side: 'buy', condKey: '_021', result: 'hold', reason: firstSeg(rest).replace(/^reason=/, '') + (/(count=\S+)/.exec(rest) ? ' ' + /(count=\S+)/.exec(rest)![1] : '') });
+      return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
+    }
+    case 'EDGE AI':
+      return ev({ side: 'buy', condKey: '_028', result: 'info', reason: firstSeg(rest) });
+    case 'SPREAD':
+      return ev({ side: 'buy', condKey: '_027', result: 'info', reason: firstSeg(rest) });
+    case 'TICK TRIG':
+      return ev({ side: 'buy', condKey: '_008', sub: 'trigger', result: 'info', reason: firstSeg(rest) });
+    case 'BUY EVAL': {
+      const m = /^OK\s+(\S+)/.exec(rest.trim());
+      if (m) return ev({ side: 'buy', condKey: 'ORDER', sub: 'EVAL OK', result: 'pass', reason: m[1] });
+      return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
+    }
+    case 'PENDING': {
+      const side: Side = /side=SELL/.test(rest) ? 'sell' : 'buy';
+      return ev({ side, condKey: 'ORDER', sub: 'PENDING', result: 'hold', reason: firstSeg(rest) });
+    }
+    case 'SELL HOLD': {
+      const hit = scanTokens(SELL_RULES, rest);
+      if (!hit) return { kind: 'unknown', side: 'sell', reason: firstSeg(rest) };
+      return ev({ side: 'sell', condKey: hit.rule.cond, result: 'hold', reason: hit.reason });
+    }
+    case 'SELL TRIGGER': {
+      const hit = scanTokens(SELL_RULES, rest);
+      if (!hit) return { kind: 'unknown', side: 'sell', reason: firstSeg(rest) };
+      return ev({ side: 'sell', condKey: hit.rule.cond, result: 'pass', reason: hit.reason });
+    }
+    case 'HOLD SKIP':
+      return ev({ side: 'sell', condKey: 'PREP', sub: STATUS_SUB, result: 'info', reason: firstSeg(rest) });
+    case 'TP_EXTENSION':
+      return ev({ side: 'sell', condKey: '_015', result: 'info', reason: firstSeg(rest) });
+  }
+  if (BUY_ORDER_TAGS.has(tag)) {
+    const result: EvalResult = tag === 'BUY EXEC' ? 'pass' : tag === 'BUY NOFILL' || tag === 'BUY RP ABAND' ? 'fail' : 'info';
+    return ev({ side: 'buy', condKey: 'ORDER', sub: tag, result, reason: firstSeg(rest) });
+  }
+  if (SELL_ORDER_TAGS.has(tag)) {
+    const result: EvalResult = tag === 'SELL FILLED' || tag === 'SELL EXEC' ? 'pass' : 'info';
+    return ev({ side: 'sell', condKey: 'ORDER', sub: tag, result, reason: firstSeg(rest) });
+  }
+  if (STATUS_TAGS.has(tag)) return ev({ side: 'buy', condKey: 'PREP', sub: STATUS_SUB, result: 'info', reason: `${tag} ${firstSeg(rest)}`.trim() });
+  if (IGNORED_TAGS.has(tag)) return { kind: 'ignore' };
+  return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
+}
+
+/** STEPS diagnostic names -> condKey (colors other gates on a rejected poll) */
+export const STEP_TO_COND: Record<string, string> = {
+  '1min_trigger': '_008',
+  min_entry_atr_volatility: '_014',
+  min_liquidity_safety: '_015',
+};
+
+/** Buy conditions that never log (shown as "silent") and the score-only condition (dashed). */
+export const SILENT_BUY = new Set(['_003', '_004']);
+export const INFO_ONLY_BUY = new Set(['_017']);
+
+/** "_014" for a condition */
+export const condKeyOf = (no: number) => '_' + String(no).padStart(3, '0');
+
+/** Group similar reasons in the unknown list: digits -> # */
+export function reasonShape(reason: string): string {
+  return reason.replace(/-?\d[\d.,]*/g, '#').slice(0, 80);
+}
