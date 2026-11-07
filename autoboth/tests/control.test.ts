@@ -13,6 +13,8 @@ vi.mock('electron', () => ({ dialog: {}, ipcMain: { handle: vi.fn() } }));
 
 import {
   buildR016Command,
+  serverCodeDir,
+  statusPollMs,
   checkWatchRows,
   collectChanges,
   extractJson,
@@ -155,7 +157,7 @@ describe('shell quoting / command building', () => {
   it('quotes Korean, spaces and JSON string values', () => {
     const cmd = buildR016Command('/data/srv/autobot', '~/venv/bin/python', 'autoboth@hjcho', ['set', 'EDGE_AI_MODE="shadow"', 'MARKET_REGIME_ETF={"KOSPI":"069500"}', '삼성 전자']);
     expect(cmd).toBe(
-      `cd '/data/srv/autobot/auto_trading_src' && R016_BY='autoboth@hjcho' ~/'venv/bin/python' live_trading/r016_control.py 'set' 'EDGE_AI_MODE="shadow"' 'MARKET_REGIME_ETF={"KOSPI":"069500"}' '삼성 전자'`,
+      `cd '/data/srv/autobot/real_trading_bot/autobot' && R016_BY='autoboth@hjcho' ~/'venv/bin/python' live_trading/r016_control.py 'set' 'EDGE_AI_MODE="shadow"' 'MARKET_REGIME_ETF={"KOSPI":"069500"}' '삼성 전자'`,
     );
   });
   it('shellQuote escapes single quotes', () => {
@@ -333,7 +335,7 @@ describe('R016Client (mocked SSH exec)', () => {
     const r = await c.run(['watchlist', 'set', '--stdin'], { stdin: '005930,삼성전자\n000660\n' });
     expect(r.ok).toBe(true);
     expect(exec).toHaveBeenCalledWith(
-      `cd '/data/srv/autobot/auto_trading_src' && R016_BY='autoboth@hjcho' ~/'venv/bin/python' live_trading/r016_control.py 'watchlist' 'set' '--stdin'`,
+      `cd '/data/srv/autobot/real_trading_bot/autobot' && R016_BY='autoboth@hjcho' ~/'venv/bin/python' live_trading/r016_control.py 'watchlist' 'set' '--stdin'`,
       30000,
       '005930,삼성전자\n000660\n',
     );
@@ -377,5 +379,23 @@ describe('R016Client (mocked SSH exec)', () => {
     expect(r.ok).toBe(false);
     expect(r.rc).toBe(2);
     expect(exec).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('server code folder and status poll interval (2026-11-07)', () => {
+  it('builds the monorepo server folder from the remote root', () => {
+    expect(serverCodeDir('/data/srv/autobot')).toBe('/data/srv/autobot/real_trading_bot/autobot');
+    expect(serverCodeDir('/data/srv/autobot//')).toBe('/data/srv/autobot/real_trading_bot/autobot');
+    expect(buildR016Command('/data/srv/autobot/', 'py', 'me', ['status'])).toContain("cd '/data/srv/autobot/real_trading_bot/autobot' && ");
+  });
+
+  it('polls status every 30 s by default, never below 15 s, 120 s when hidden', () => {
+    expect(statusPollMs(undefined, true)).toBe(30000);
+    expect(statusPollMs(0, true)).toBe(30000);
+    expect(statusPollMs(Number.NaN, true)).toBe(30000);
+    expect(statusPollMs(5, true)).toBe(15000);
+    expect(statusPollMs(45, true)).toBe(45000);
+    expect(statusPollMs(30, false)).toBe(120000);
+    expect(statusPollMs(300, false)).toBe(300000);
   });
 });
