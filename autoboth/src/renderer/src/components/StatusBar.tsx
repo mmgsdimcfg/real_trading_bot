@@ -5,6 +5,7 @@
  * - [2026-11-06] type=feat - The status bar is now the window's title bar (TermH style, frame:false): app icon + "AutoBotH", a gap,
  *   the status items, then ☰ (shared app-menu.js: 설정 / 업데이트 확인 / AutoBotH 정보) and minimize / maximize-restore / close.
  *   Empty space drags the window; double-click toggles maximize
+ * - [2026-11-07] type=feat - Past day: price files download progress ("주가 받는 중 3/22", then "주가 로컬 보관" or the failure count)
  * - [2026-11-07] type=feat - Past day in replay: the day pill shows "재현 HH:MM:SS" instead of "1회 로드"
  * - [2026-11-05] type=feat - Bot summary (봇: 실행 중 / 정지 / 미적용 변경 N, dry-run marker, external r003 warning) - opens the 제어 tab
  */
@@ -116,6 +117,18 @@ export function StatusBar() {
           {status.live ? 'LIVE' : snap?.replay?.cursor != null ? `재현 ${fmtKstTime(snap.replay.cursor)}` : '1회 로드'}
         </b>
       </span>
+      {status.prefetch && status.prefetch.date === status.date && (
+        <span
+          className={`sb-item ${status.prefetch.failed ? 'warn-text' : ''}`}
+          title={`지난 날짜의 주가 파일(틱·1분봉·일봉, 전날 예열분 포함)을 이 PC에 받아 둡니다. 받은 뒤에는 연결 없이도 차트가 보입니다.${status.prefetch.error ? `\n마지막 오류: ${status.prefetch.error}` : ''}`}
+        >
+          {status.prefetch.done < status.prefetch.total
+            ? `주가 받는 중 ${status.prefetch.done}/${status.prefetch.total}`
+            : status.prefetch.failed
+              ? `주가 ${status.prefetch.failed}종목 실패`
+              : '주가 로컬 보관'}
+        </span>
+      )}
       <span className="sb-item" title="마지막으로 새 바이트를 받은 시각">
         수신 {status.lastReceivedAt ? `${fmtKstTime(status.lastReceivedAt)} KST (${ago}s 전)` : '-'}
       </span>

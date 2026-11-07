@@ -13,6 +13,10 @@
  *   (status / start / stop / restart / schema / set / unset / reset / history / watchlist) that run live_trading/r016_control.py;
  *   r016 status is polled every pollSec from connect until an explicit disconnect; the condition JSON is fetched with
  *   `r016_control.py conditions` through the same serial queue (r015 fallback) and reloaded after overrides change
+ * - [2026-11-07] type=feat - Past days: the price files of the day's symbols (+ previous-day warm-up) are downloaded in the background
+ *   after the logs are loaded (runPrefetch -> PriceService.prefetch, progress in status.prefetch) into %APPDATA%/autoboth/pricecache;
+ *   price:get then works offline for past days. A prefetch cut by a dropped connection resumes after the reconnect. The price
+ *   cache is pruned with the log cache (retention setting)
  * - [2026-11-07] type=fix - SSH drop while a past day is open: the 'lost' handler starts the reconnect loop (a past day has no poll
  *   timer, so the app stayed in "재연결 대기" and the price chart could not load). conn:connect takes an optional date: "저장 후 연결"
  *   opens the date chosen on the settings view instead of always today
@@ -43,6 +47,7 @@ import { fetchConditions, loadLocalConditions } from './conditions';
 import { DaySession } from './session';
 import { createControl } from './control';
 import { PriceService } from './prices';
+import { PriceFileCache, prunePriceCache } from './priceCache';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
 import { CHART_CACHE_MS, quoteCacheMs, resolveSessionOpen } from '../shared/control';
 import { LocalDirSource, RemoteDaySource, cacheDirFor, cachedDates, pruneCache } from './sources';
@@ -98,7 +103,29 @@ async function applyFunnelOpen(): Promise<void> {
   }
 }
 
-const prices = new PriceService(ssh, () => getSettings().remoteRoot, () => (ssh.connected ? control.client : null));
+/** a day before the server's today: its files no longer change (unknown today = offline -> treat as past, i.e. cache only) */
+const isPastDate = (d: string): boolean => (status.serverDate ? d < status.serverDate : true);
+const priceCache = new PriceFileCache(ssh);
+const prices = new PriceService(ssh, () => getSettings().remoteRoot, () => (ssh.connected ? control.client : null), priceCache, isPastDate);
+/** session whose price files are being / were prefetched */
+let prefetchSession: DaySession | null = null;
+
+/** Past day: download the price files of the day's symbols in the background (status.prefetch shows the progress). */
+async function runPrefetch(cur: DaySession): Promise<void> {
+  prefetchSession = cur;
+  const codes = (lastSnapshot?.symbols || []).map((x) => x.code).filter((c) => /^[0-9A-Z]{6}$/.test(c));
+  if (!codes.length) return;
+  try {
+    const p = await prices.prefetch(cur.date, codes, (pr) => cur === session && setStatus({ prefetch: pr }), () => cur !== session);
+    // stopped by a dropped connection: try again after the reconnect (cached files are skipped)
+    if (p.done < p.total && cur === session) prefetchSession = null;
+  } catch (e) {
+    if (cur === session) {
+      prefetchSession = null;
+      setStatus({ prefetch: { date: cur.date, done: 0, total: codes.length, failed: codes.length, error: errMsg(e) } });
+    }
+  }
+}
 const priceInFlight = new Map<string, Promise<PriceResponse>>();
 
 const BACKOFF_MIN = 5000;
@@ -185,6 +212,7 @@ async function tick(): Promise<void> {
     if (cur !== session) return;
     await pushSnapshot();
     loadedOnce = true;
+    if (!status.live && cur.source.kind === 'remote' && ssh.connected && prefetchSession !== cur && isPastDate(cur.date)) void runPrefetch(cur);
     backoffMs = 0;
     setStatus({ lastReceivedAt: cur.lastReceivedAt, message: cur.workerError ? `파서 오류: ${cur.workerError.split('\n')[0]}` : status.message });
 
@@ -219,7 +247,7 @@ function openDay(ymd: string, live: boolean): void {
     : new LocalDirSource(cacheDirFor(ymd), `캐시 ${ymd}`);
   if (!ssh.connected) live = false;
   session = new DaySession(ymd, source, conditions, funnelOpen(), !live);
-  setStatus({ date: ymd, live, conn: ssh.connected ? 'connected' : status.conn === 'local' ? 'local' : status.conn, message: undefined });
+  setStatus({ date: ymd, live, conn: ssh.connected ? 'connected' : status.conn === 'local' ? 'local' : status.conn, message: undefined, prefetch: undefined });
   send('snapshot', null);
   void tick();
 }
@@ -357,7 +385,8 @@ ipcMain.handle('conditions:refresh', () => (ssh.connected ? refreshConditions() 
 ipcMain.handle('snapshot:get', () => lastSnapshot);
 ipcMain.handle('status:get', () => status);
 ipcMain.handle('price:get', (_e, req: PriceRequest): Promise<PriceResponse> | PriceResponse => {
-  if (!ssh.connected) return { ok: false, bars: [], error: '서버에 연결되어 있지 않아 주가를 불러올 수 없습니다.' };
+  // past days are read from the local copy (pricecache) when offline
+  if (!ssh.connected && !isPastDate(req.date)) return { ok: false, bars: [], error: '서버에 연결되어 있지 않아 주가를 불러올 수 없습니다.' };
   const key = `${req.date}/${req.code}/${req.kind}/${req.n}/${req.warmup ? 'w' : ''}${req.withName ? 'n' : ''}`;
   const running = priceInFlight.get(key);
   if (running) return running;
@@ -475,6 +504,7 @@ ipcMain.handle('win-is-maximized', (e) => !!senderWin(e)?.isMaximized());
 void app.whenReady().then(() => {
   try {
     pruneCache(getSettings().retentionDays);
+    prunePriceCache(getSettings().retentionDays);
   } catch {
     /* ignore */
   }

@@ -178,6 +178,8 @@ export interface AppStatus {
   serverDate?: string;
   conditionsSource?: ConditionsDoc['source'];
   nextRetryAt?: number;
+  /** past day: background download of the day's price files (main/prices.ts PrefetchProgress) */
+  prefetch?: { date: string; done: number; total: number; failed: number; error?: string };
 }
 
 export interface Settings {
