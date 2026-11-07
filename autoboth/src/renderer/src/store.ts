@@ -18,17 +18,20 @@ import type { ChartKind } from '../../shared/price';
 import type { IndicatorKey } from '../../shared/indicators';
 
 type ChartPrefs = { kind: ChartKind; tickN: number; minN: number; ind: IndicatorKey[] };
-const IND_KEYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'vwap', 'rsi', 'macd', 'adx', 'stoch', 'williams', 'mfi', 'obv'];
+const IND_KEYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'vwap', 'vol', 'rsi', 'macd', 'adx', 'stoch', 'williams', 'mfi', 'obv'];
+/** prefs saved before volume became a switch (no `v`) keep showing volume */
+const PREFS_V = 2;
+const withVol = (v: { v?: number }, ind: IndicatorKey[]): IndicatorKey[] => (v.v === PREFS_V || ind.includes('vol') ? ind : ['vol', ...ind]);
 
 /** chart tab (HTS-style) choice, kept separately from the timeline chart */
 type ChartTabPrefs = ChartPrefs & { prevDay: boolean };
 const CHART_TAB_KEY = 'autoboth.chartTab';
 function loadChartTab(): ChartTabPrefs {
-  const d: ChartTabPrefs = { kind: 'day', tickN: 30, minN: 3, ind: ['ma', 'bb', 'rsi', 'macd'], prevDay: true };
+  const d: ChartTabPrefs = { kind: 'day', tickN: 30, minN: 3, ind: ['ma', 'bb', 'vol', 'rsi', 'macd'], prevDay: true };
   try {
     const v = JSON.parse(localStorage.getItem(CHART_TAB_KEY) || 'null');
     if (v && ['tick', 'min', 'day', 'week', 'month'].includes(v.kind)) {
-      const ind = Array.isArray(v.ind) ? (v.ind as IndicatorKey[]).filter((k) => IND_KEYS.includes(k)) : d.ind;
+      const ind = Array.isArray(v.ind) ? withVol(v, (v.ind as IndicatorKey[]).filter((k) => IND_KEYS.includes(k))) : d.ind;
       return { kind: v.kind, tickN: Number(v.tickN) || d.tickN, minN: Number(v.minN) || d.minN, ind, prevDay: v.prevDay !== false };
     }
   } catch {
@@ -40,11 +43,11 @@ function loadChartTab(): ChartTabPrefs {
 /** price chart choice of the timeline tab, remembered per PC (localStorage, best effort) */
 const CHART_KEY = 'autoboth.priceChart';
 function loadChart(): ChartPrefs {
-  const d: ChartPrefs = { kind: 'min', tickN: 30, minN: 1, ind: ['bb'] };
+  const d: ChartPrefs = { kind: 'min', tickN: 30, minN: 1, ind: ['bb', 'vol'] };
   try {
     const v = JSON.parse(localStorage.getItem(CHART_KEY) || 'null');
     if (v && ['tick', 'min', 'day', 'week', 'month'].includes(v.kind)) {
-      const ind = Array.isArray(v.ind) ? (v.ind as IndicatorKey[]).filter((k) => IND_KEYS.includes(k)) : d.ind;
+      const ind = Array.isArray(v.ind) ? withVol(v, (v.ind as IndicatorKey[]).filter((k) => IND_KEYS.includes(k))) : d.ind;
       return { kind: v.kind, tickN: Number(v.tickN) || d.tickN, minN: Number(v.minN) || d.minN, ind };
     }
   } catch {
@@ -117,7 +120,7 @@ export const useStore = create<State>()((set, get) => ({
     const chartTab = { ...get().chartTab, ...patch };
     set({ chartTab });
     try {
-      localStorage.setItem(CHART_TAB_KEY, JSON.stringify(chartTab));
+      localStorage.setItem(CHART_TAB_KEY, JSON.stringify({ ...chartTab, v: PREFS_V }));
     } catch {
       /* storage unavailable */
     }
@@ -127,7 +130,7 @@ export const useStore = create<State>()((set, get) => ({
     const chart = { ...get().chart, ...patch };
     set({ chart });
     try {
-      localStorage.setItem(CHART_KEY, JSON.stringify(chart));
+      localStorage.setItem(CHART_KEY, JSON.stringify({ ...chart, v: PREFS_V }));
     } catch {
       /* storage unavailable */
     }
