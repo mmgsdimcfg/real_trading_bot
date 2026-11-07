@@ -15,6 +15,8 @@
  * - [2026-11-07] type=feat - Past-day replay: tick/minute bars that start after the replay time are hidden (barsUpTo); the
  *   evaluation dots and trades already come cut from the replay snapshot. The time axis ends at the replay time, so it keeps
  *   moving through stretches without events (r003 stopped)
+ * - [2026-11-07] type=feat - Buy chart y-axis rows can be hidden ("y축 항목" popover: per-row checkboxes, 모두 표시, 이 종목 평가된 항목만);
+ *   hidden rows and their dots are left out, the remaining rows close up and the chart gets shorter. Kept per PC (localStorage)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -82,12 +84,23 @@ export function TimelineView() {
 
   const buyConds = useMemo(() => sortedConds(conditions, 'buy'), [conditions]);
   const sellConds = useMemo(() => sortedConds(conditions, 'sell'), [conditions]);
-  const buyY = useMemo(() => {
-    const m = new Map<string, number>([['PREP', 0]]);
-    buyConds.forEach((c, i) => m.set(condKeyOf(c.no), i + 1));
-    m.set('ORDER', buyConds.length + 1);
-    return m;
-  }, [buyConds]);
+  const buyHidden = useStore((s) => s.buyHidden);
+  const setBuyHidden = useStore((s) => s.setBuyHidden);
+  /** every buy row bottom-up: 준비, conditions in evaluation order, 주문 */
+  const buyRows = useMemo(
+    () => [
+      { key: 'PREP', label: '준비' },
+      ...buyConds.map((c) => ({ key: condKeyOf(c.no), label: condKeyOf(c.no) + ' ' + c.title.slice(0, 10) })),
+      { key: 'ORDER', label: '주문' },
+    ],
+    [buyConds],
+  );
+  const shownRows = useMemo(() => {
+    const hide = new Set(buyHidden);
+    const rows = buyRows.filter((r) => !hide.has(r.key));
+    return rows.length ? rows : buyRows;
+  }, [buyRows, buyHidden]);
+  const buyY = useMemo(() => new Map(shownRows.map((r, i) => [r.key, i])), [shownRows]);
   const sellY = useMemo(() => {
     // row 0 = 'PREP': sell evaluation skipped for the position ([HOLD SKIP], e.g. not bought today)
     const m = new Map<string, number>([['PREP', 0]]);
@@ -149,7 +162,8 @@ export function TimelineView() {
   );
   // memoized so hovering the price chart does not rebuild its paths
   const intradayDomain = useMemo<[number, number] | null>(() => (xs.length ? [domain[0], domain[1]] : null), [xs.length > 0, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const buyLabel = (v: number) => (v === 0 ? '준비' : v === buyConds.length + 1 ? '주문' : buyConds[v - 1] ? condKeyOf(buyConds[v - 1].no) + ' ' + buyConds[v - 1].title.slice(0, 10) : '');
+  const buyLabel = (v: number) => shownRows[v]?.label || '';
+  const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
   const sellLabel = (v: number) =>
     v === 0 ? '평가 제외' : v === sellConds.length + 1 ? '세션 종료' : v === sellConds.length + 2 ? '주문' : sellConds[v - 1] ? condKeyOf(sellConds[v - 1].no) + ' ' + sellConds[v - 1].title.slice(0, 10) : '';
 
@@ -177,13 +191,46 @@ export function TimelineView() {
       {!selected && <div className="empty">종목을 선택하세요.</div>}
       {selected && (
         <div className="charts">
-          <h4>매수 평가 - 도달 깊이 (조건 평가 순서)</h4>
-          <div className="chart-buy">
+          <div className="chart-head">
+            <h4>매수 평가 - 도달 깊이 (조건 평가 순서)</h4>
+            <details className="ypick">
+              <summary>
+                y축 항목 ({shownRows.length}/{buyRows.length}) ▾
+              </summary>
+              <div className="ypick-panel">
+                <div className="actions">
+                  <button className="mini" onClick={() => setBuyHidden([])}>
+                    모두 표시
+                  </button>
+                  <button
+                    className="mini"
+                    title="선택한 종목의 매수 평가 로그에 나온 항목만 남깁니다"
+                    disabled={!buyKeysWithEvents.size}
+                    onClick={() => setBuyHidden(buyRows.filter((r) => !buyKeysWithEvents.has(r.key)).map((r) => r.key))}
+                  >
+                    이 종목 평가된 항목만
+                  </button>
+                </div>
+                {[...buyRows].reverse().map((r) => (
+                  <label key={r.key} className="check ypick-row">
+                    <input
+                      type="checkbox"
+                      checked={!buyHidden.includes(r.key)}
+                      onChange={(e) => setBuyHidden(e.target.checked ? buyHidden.filter((k) => k !== r.key) : [...buyHidden, r.key])}
+                    />
+                    <span className={buyKeysWithEvents.has(r.key) ? '' : 'muted'}>{r.label}</span>
+                  </label>
+                ))}
+                <p className="muted small">숨긴 항목의 점은 표시하지 않습니다. 흐린 글자 = 이 종목에서 평가 로그가 없는 항목.</p>
+              </div>
+            </details>
+          </div>
+          <div className="chart-buy" style={{ height: Math.max(200, Math.min(520, 110 + shownRows.length * 15)) }}>
             <ResponsiveContainer>
               <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }}>
                 <CartesianGrid stroke="var(--grid)" />
                 <XAxis type="number" dataKey="x" domain={domain} ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
-                <YAxis type="number" dataKey="y" domain={[0, buyConds.length + 1]} ticks={[...Array(buyConds.length + 2).keys()]} tickFormatter={buyLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
+                <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownRows.length - 1)]} ticks={[...Array(shownRows.length).keys()]} tickFormatter={buyLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
                 <Tooltip content={<TipBox />} isAnimationActive={false} />
                 <Legend verticalAlign="top" height={24} />
                 {markers}

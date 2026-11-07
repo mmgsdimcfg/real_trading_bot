@@ -6,6 +6,8 @@
  *   the control tab watches so every write (set/unset/reset/watchlist/service) shows up in the history table
  * - [2026-11-05] type=feat - Timeline price chart choice (kind tick/min/day/week/month + ticks/minutes per bar), kept in localStorage
  * - [2026-11-06] type=feat - Chart indicator selection (chart.ind: bb / ichimoku / rsi / macd / adx), kept with the chart choice
+ * - [2026-11-07] type=feat - buyHidden: buy-evaluation rows (condition keys, 'PREP', 'ORDER') hidden on the timeline's y axis,
+ *   kept in localStorage
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
  */
 
@@ -51,6 +53,16 @@ function loadChart(): ChartPrefs {
   return d;
 }
 
+const BUY_HIDDEN_KEY = 'autoboth.timelineBuyHidden';
+function loadBuyHidden(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(BUY_HIDDEN_KEY) || '[]');
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export type Tab = 'control' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'trades' | 'settings';
 
 interface State {
@@ -70,6 +82,9 @@ interface State {
   setChart: (patch: Partial<ChartPrefs>) => void;
   chartTab: ChartTabPrefs;
   setChartTab: (patch: Partial<ChartTabPrefs>) => void;
+  /** timeline buy chart: y-axis rows hidden by the user */
+  buyHidden: string[];
+  setBuyHidden: (keys: string[]) => void;
   setTab: (t: Tab) => void;
   setSide: (s: Side) => void;
   select: (code: string | null) => void;
@@ -88,6 +103,15 @@ export const useStore = create<State>()((set, get) => ({
   control: { status: null, busy: null },
   historyRev: 0,
   bumpHistory: () => set({ historyRev: get().historyRev + 1 }),
+  buyHidden: loadBuyHidden(),
+  setBuyHidden: (keys) => {
+    set({ buyHidden: keys });
+    try {
+      localStorage.setItem(BUY_HIDDEN_KEY, JSON.stringify(keys));
+    } catch {
+      /* storage unavailable */
+    }
+  },
   chartTab: loadChartTab(),
   setChartTab: (patch) => {
     const chartTab = { ...get().chartTab, ...patch };
