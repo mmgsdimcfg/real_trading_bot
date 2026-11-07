@@ -1,6 +1,8 @@
 /* Update log
  * - [2026-11-04] type=feat - v2 styles: role tokens (dark default, light via prefers-color-scheme), status colors for pass/fail/hold
  *   always paired with an icon, Korean P&L convention (gain red, loss blue)
+ * - [2026-11-07] type=feat - Theme switch: <html data-theme="light|dark"> overrides the system setting (no attribute = follow the
+ *   system); drawing tools (.draw-tools, .pc-draw-*)
  * - [2026-11-05] type=feat - .field-col (input + hint stacked in one .form cell) for the ProxyCommand field
  * - [2026-11-06] type=feat - TermH-style title bar (.titlebar / .tb-brand / .win-controls / .win-btn), the old bottom-right version line
  *   (.version-foot) removed - version and update check live in the ☰ menu / About dialog
@@ -39,7 +41,7 @@
   font-size: 13px;
 }
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme='dark']) {
     color-scheme: light;
     --bg: #f4f4f2;
     --surface: #fcfcfb;
@@ -56,6 +58,23 @@
     --gain: #e34948;
     --loss: #2a78d6;
   }
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f4f4f2;
+  --surface: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: #d9d8d3;
+  --hover: rgba(0, 0, 0, 0.04);
+  --grid: #e6e5e1;
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --text-3: #7a7974;
+  --accent: #2a78d6;
+  --series-1: #2a78d6;
+  --st-idle: #a3a29c;
+  --gain: #e34948;
+  --loss: #2a78d6;
 }
 
 * { box-sizing: border-box; }
@@ -95,6 +114,7 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 .win-btn { width: 40px; height: 32px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; border-radius: 6px; color: var(--text); font-size: 12px; line-height: 1; padding: 0; }
 .win-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 16%, transparent); }
 .win-close:hover:not(:disabled) { background: #e81123; color: #fff; }
+.win-theme { font-size: 14px; }
 .win-menu { font-size: 16px; }
 .conn { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); }
 .conn .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--st-idle); display: inline-block; }
@@ -369,6 +389,15 @@ button.mini { padding: 1px 7px; font-size: 11.5px; }
 .pc-buy-dot { fill: var(--gain); stroke: var(--surface); stroke-width: 1.5; }
 .pc-sell-dot { fill: var(--loss); stroke: var(--surface); stroke-width: 1.5; }
 .pc-cross { stroke: var(--text-3); stroke-dasharray: 3 3; stroke-width: 1; }
+.draw-tools { position: absolute; top: 4px; right: 70px; z-index: 4; display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.draw-tools button { border: none; border-radius: 0; padding: 2px 9px; font-size: 13px; background: transparent; line-height: 1.4; }
+.draw-tools button + button { border-left: 1px solid var(--border); }
+.draw-tools button.on { background: var(--accent); color: #fff; }
+.price-chart svg.drawing { cursor: crosshair; }
+.pc-draw-line { stroke: var(--st-hold); stroke-width: 1.4; }
+.pc-draw-line.ghost { stroke-dasharray: 4 3; pointer-events: none; }
+.pc-draw-hit { stroke: transparent; stroke-width: 9; pointer-events: stroke; cursor: context-menu; }
+.pc-draw-label { fill: var(--st-hold); font-size: 11px; pointer-events: none; }
 .pc-tip { position: absolute; pointer-events: none; z-index: 3; min-width: 200px; }
 .pc-ohlc { display: flex; flex-wrap: wrap; gap: 2px 10px; font-variant-numeric: tabular-nums; margin-top: 2px; }
 

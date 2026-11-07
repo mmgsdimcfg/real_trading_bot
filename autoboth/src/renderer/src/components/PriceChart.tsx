@@ -21,6 +21,9 @@
  *   2/3 of its former height (VOL_RATIO 0.2 -> 0.133)
  * - [2026-11-07] type=feat - Volume is a switch ('vol' in indicators, 거래량 check box): off = no volume pane, the price pane takes the
  *   space. Volume pane half of the previous height (VOL_RATIO 0.133 -> 0.067)
+ * - [2026-11-07] type=feat - Drawing tools (with drawKey = symbol code): 선택 / 가로선 / 세로선 / 추세선 (two clicks) / 지우기 at the top
+ *   right, lines kept per code (drawings.ts) in price / time coordinates so they stay put when zooming, panning or switching bar
+ *   size; right-click a line to delete it, Esc cancels. Drawn on the price pane only
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -40,6 +43,7 @@ import {
 import type { Trade } from '../../../shared/types';
 import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
 import { fmtInt } from '../lib';
+import { addDrawing, clearDrawings, getDrawings, removeDrawing, subscribeDrawings, type DrawTool, type Drawing } from '../drawings';
 
 /** must match the ScatterChart margins + YAxis width in TimelineView */
 export const PLOT_LEFT = 8 + 150;
@@ -88,6 +92,8 @@ interface Props {
   tooltip?: boolean;
   /** hovered bar index (null = none) */
   onHover?: (i: number | null) => void;
+  /** symbol code: shows the drawing tools (horizontal / vertical / trend line, clear) and the code's saved drawings */
+  drawKey?: string;
 }
 
 function niceTicks(lo: number, hi: number, count = 5): number[] {
@@ -206,7 +212,7 @@ const fmtNum = (v: number | undefined, d = 1) => {
 };
 
 export function PriceChart(props: Props) {
-  const { bars, warm = [], warmBot = [], kind, n, indicators, trades, buyPrice, date, xTicks = [], interactive = false, tooltip = true, onHover } = props;
+  const { bars, warm = [], warmBot = [], kind, n, indicators, trades, buyPrice, date, xTicks = [], interactive = false, tooltip = true, onHover, drawKey } = props;
   const intraday = kind === 'tick' || kind === 'min';
   const mode = props.mode ?? (intraday ? 'time' : 'index');
   const axis = props.axis ?? 'left';
@@ -456,8 +462,62 @@ export function PriceChart(props: Props) {
         }
       });
     }
-    return { empty: false as const, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, panes, xOfTime, dayLines, step };
+    // drawings: time <-> x for the whole bar range (index mode: by bar position, may fall outside the view - clipped)
+    const xOfT = (t: number): number => {
+      if (mode === 'time') return L + ((t - d0) / (d1 - d0)) * W;
+      let lo2 = 0;
+      let hi2 = bars.length - 1;
+      let i = -1;
+      while (lo2 <= hi2) {
+        const mid = (lo2 + hi2) >> 1;
+        if (bars[mid].t <= t) (i = mid), (lo2 = mid + 1);
+        else hi2 = mid - 1;
+      }
+      return L + W - step * (vp.end - i - 0.5 + shift);
+    };
+    const tOfX = (x: number): number => {
+      if (mode === 'time') return d0 + ((x - L) / W) * (d1 - d0);
+      let best = slots[0];
+      for (const sl of slots) if (Math.abs(sl.x - x) < Math.abs(best.x - x)) best = sl;
+      return best.b.t;
+    };
+    return { empty: false as const, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, panes, xOfTime, xOfT, tOfX, dayLines, step };
   }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, date, width, intraday, L, W, priceH, volTop, volH, oscH, osc.join(), vp, shift, defaultCount, interactive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- drawings (HTS-style tools) ----
+  const [tool, setTool] = useState<DrawTool>('pointer');
+  const [drawings, setDrawings] = useState<Drawing[]>(() => (drawKey ? getDrawings(drawKey) : []));
+  const [pending, setPending] = useState<{ t: number; p: number } | null>(null);
+  const [ghost, setGhost] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!drawKey) return setDrawings([]);
+    setDrawings(getDrawings(drawKey));
+    setPending(null);
+    return subscribeDrawings(() => setDrawings(getDrawings(drawKey)));
+  }, [drawKey]);
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && (setPending(null), setTool('pointer'));
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  }, []);
+  /** a click with a drawing tool (price pane only). Trend line = two clicks. Returns true when handled. */
+  const drawClick = (mx: number, my: number): boolean => {
+    if (!drawKey || tool === 'pointer' || !model || model.empty) return false;
+    if (mx < L || mx > L + W || my < TOP || my > TOP + priceH) return true;
+    const t = model.tOfX(mx);
+    const p = model.py(my);
+    if (tool === 'h') addDrawing(drawKey, { type: 'h', p });
+    else if (tool === 'v') addDrawing(drawKey, { type: 'v', t });
+    else if (!pending) {
+      setPending({ t, p });
+      return true;
+    } else {
+      addDrawing(drawKey, { type: 't', t1: pending.t, p1: pending.p, t2: t, p2: p });
+      setPending(null);
+    }
+    setTool('pointer');
+    return true;
+  };
 
   // ---- interaction ----
   const nearest = (mx: number): number | null => {
@@ -486,11 +546,16 @@ export function PriceChart(props: Props) {
       setView({ end, count: drag.current.count });
       return;
     }
+    if (pending) setGhost({ x: mx, y: my });
     if (mx < L || mx > L + W) return setHov(null);
     setHoverY(my >= TOP && my <= TOP + priceH ? my : null);
     setHov(nearest(mx));
   };
   const onDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (e.button === 0 && tool !== 'pointer') {
+      const r0 = e.currentTarget.getBoundingClientRect();
+      if (drawClick(e.clientX - r0.left, e.clientY - r0.top)) return;
+    }
     if (!interactive || mode !== 'index' || e.button !== 0 || !model || model.empty) return;
     const r = e.currentTarget.getBoundingClientRect();
     drag.current = { x: e.clientX - r.left, end: vp.end, count: vp.count, slot: Math.max(1, model.step) };
@@ -546,10 +611,13 @@ export function PriceChart(props: Props) {
   return (
     <div className={`price-chart ${interactive ? 'interactive' : ''}`} ref={ref} style={{ height }}>
       {model && !model.empty && width > 0 && (
-        <svg width={width} height={height} onMouseMove={onMove} onMouseDown={onDown} onMouseLeave={() => (setHov(null), setHoverY(null))} onDoubleClick={() => interactive && setView(null)}>
+        <svg className={tool !== 'pointer' ? 'drawing' : undefined} width={width} height={height} onMouseMove={onMove} onMouseDown={onDown} onMouseLeave={() => (setHov(null), setHoverY(null))} onDoubleClick={() => interactive && setView(null)}>
           <defs>
             <clipPath id={`pc-clip-${L}-${R}`}>
               <rect x={L} y={0} width={W} height={height} />
+            </clipPath>
+            <clipPath id={`pc-clip-price-${L}-${R}`}>
+              <rect x={L} y={TOP} width={W} height={priceH} />
             </clipPath>
           </defs>
           {/* price grid + axis */}
@@ -682,6 +750,42 @@ export function PriceChart(props: Props) {
             }),
           )}
 
+          {/* user drawings: right-click a line to delete it */}
+          {drawKey && (
+            <g clipPath={`url(#pc-clip-price-${L}-${R})`}>
+              {drawings.map((d) => {
+                const del = (e: React.MouseEvent) => {
+                  e.preventDefault();
+                  removeDrawing(drawKey, d.id);
+                };
+                let x1: number, y1: number, x2: number, y2: number;
+                let label = '';
+                if (d.type === 'h') {
+                  [x1, x2, y1, y2] = [L, L + W, model.sy(d.p), model.sy(d.p)];
+                  label = fmtInt(d.p);
+                } else if (d.type === 'v') {
+                  const x = model.xOfT(d.t);
+                  [x1, x2, y1, y2] = [x, x, TOP, TOP + priceH];
+                } else [x1, y1, x2, y2] = [model.xOfT(d.t1), model.sy(d.p1), model.xOfT(d.t2), model.sy(d.p2)];
+                return (
+                  <g key={d.id} className="pc-draw" onContextMenu={del}>
+                    <line x1={x1} y1={y1} x2={x2} y2={y2} className="pc-draw-hit" />
+                    <line x1={x1} y1={y1} x2={x2} y2={y2} className="pc-draw-line" />
+                    {label && (
+                      <text x={L + W - 4} y={y1 - 3} className="pc-draw-label" textAnchor="end">
+                        {label}
+                      </text>
+                    )}
+                    <title>{d.type === 'h' ? `가로선 ${label}` : d.type === 'v' ? `세로선 ${fmtKstTime(d.t)}` : '추세선'} · 우클릭 = 삭제</title>
+                  </g>
+                );
+              })}
+              {pending && ghost && (
+                <line x1={model.xOfT(pending.t)} y1={model.sy(pending.p)} x2={ghost.x} y2={ghost.y} className="pc-draw-line ghost" />
+              )}
+            </g>
+          )}
+
           {/* last price tag (right axis) */}
           {axis === 'right' && last && (
             <PriceTag x={L + W + 2} y={model.sy(last.b.c)} text={fmtInt(last.b.c)} cls={last.b.c >= last.b.o ? 'up' : 'dn'} />
@@ -702,6 +806,29 @@ export function PriceChart(props: Props) {
             </g>
           )}
         </svg>
+      )}
+      {drawKey && (
+        <div className="draw-tools" onMouseDown={(e) => e.stopPropagation()}>
+          {(
+            [
+              ['pointer', '↖', '선택 (그리기 끝)'],
+              ['h', '―', '가로선: 가격 칸을 클릭'],
+              ['v', '│', '세로선: 가격 칸을 클릭'],
+              ['t', '╱', '추세선: 시작점과 끝점을 차례로 클릭'],
+            ] as [DrawTool, string, string][]
+          ).map(([k, icon, title]) => (
+            <button key={k} className={tool === k ? 'on' : ''} title={title} onClick={() => (setTool(k), setPending(null))}>
+              {icon}
+            </button>
+          ))}
+          <button
+            title="이 종목에 그린 선을 모두 지웁니다 (하나만 지우려면 선을 우클릭)"
+            disabled={!drawings.length}
+            onClick={() => (clearDrawings(drawKey), setPending(null))}
+          >
+            지우기
+          </button>
+        </div>
       )}
       {tooltip && h && (
         <div ref={tipRef} className="tip pc-tip" style={{ left: Math.max(h.x + 12, 0), top: 8 }}>

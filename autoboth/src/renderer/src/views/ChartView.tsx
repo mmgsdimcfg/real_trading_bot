@@ -354,6 +354,7 @@ export function ChartView() {
           {data?.ok && bars.length > 0 && (
             <PriceChart
               key={`${chartKey}/${key}`}
+              drawKey={code}
               bars={bars}
               warm={warm}
               warmBot={warmBot}

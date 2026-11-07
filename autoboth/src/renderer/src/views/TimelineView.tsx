@@ -330,6 +330,7 @@ export function TimelineView() {
             {price?.ok && shownBars.length > 0 && (
               <PriceChart
                 bars={shownBars}
+                drawKey={selected}
                 height={chartHeight(chart.ind, TL_OSC_H, TL_PRICE_H)}
                 oscHeight={TL_OSC_H}
                 warm={price.warm}
