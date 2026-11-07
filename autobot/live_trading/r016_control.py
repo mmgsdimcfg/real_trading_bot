@@ -17,6 +17,7 @@
   watchlist get | watchlist set (--codes "005930,삼성전자;000660" | --stdin)   r004 감시목록 읽기/쓰기(백업 후 교체)
   collector status | collector restart      g011 틱 수집기 상태 / SIGTERM (g022 cron 또는 r003 감시자가 새 감시목록으로 재기동)
   indicators ... | bars ...        차트 데이터 (live_trading/r017_chart_data.py 로 위임 - 그 파일의 docstring 참조)
+  quote --code C [--trades N]      KIS 현재가+호가+체결 (live_trading/r018_kis_market.py, 읽기 전용)
 
 파일(저장소 밖): <runtime>/config/live_overrides.json, live_overrides_history.jsonl, r003.env, watchlist_backup/, .r016.lock
 실행 스냅샷: <runtime>/data/live_runtime/r003_running.json (r003 이 시작 시 기록) - "지금 돌고 있는 값"의 근거.
@@ -27,6 +28,10 @@
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-07] type=feat owner=claude
+    summary: quote 명령(r018 KIS 현재가/호가/체결, 읽기 전용, 토큰 미발급, 공용 호출 제한). bars 의 KIS 오류는 rc 3(kis_code).
+    impact: tooling
+    compatibility: backward-compatible
 - [2026-11-07] type=perf owner=claude
     summary: r017(pandas) 지연 import - indicators/bars 일 때만 불러와 r017 인자 정의로 다시 파싱. status 2.1 s/70 MB -> 0.4 s/17 MB
       (AutoBotH 30초 폴링, 라즈베리파이 부하). 그 밖의 명령에 모르는 옵션이 오면 기존처럼 rc 2.
@@ -790,6 +795,9 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     # 그 비용을 내지 않도록 자리만 등록하고, 이 두 명령일 때만 r017을 import해 r017의 인자 정의로 다시 파싱한다.
     for chart_cmd in ("indicators", "bars"):
         sub.add_parser(chart_cmd, add_help=False)
+    p = sub.add_parser("quote", help="KIS 현재가+호가+최근 체결 (읽기 전용, r018)")
+    p.add_argument("--code", required=True)
+    p.add_argument("--trades", type=int, default=30)
     args, extra = ap.parse_known_args(argv)
 
     if args.cmd in ("indicators", "bars"):
@@ -797,7 +805,16 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
         cp = argparse.ArgumentParser(prog=f"{ap.prog}")
         r017.add_subparsers(cp.add_subparsers(dest="cmd", required=True))
         out = r017.run_command(cp.parse_args([args.cmd, *extra]))
-        return _emit(out, 0 if out.get("ok") else 2)
+        rc = out.pop("_rc", None)
+        return _emit(out, 0 if out.get("ok") else (rc or 2))
+    if args.cmd == "quote" and not extra:
+        import r018_kis_market as r018  # noqa: E402  (requests/yaml only)
+        try:
+            return _emit(r018.quote(args.code, args.trades))
+        except ValueError as exc:
+            return _emit({"ok": False, "error": str(exc)}, 2)
+        except r018.KisError as exc:
+            return _emit({"ok": False, "error": f"KIS: {exc.message}", "kis_code": exc.code}, 3)
     if extra:
         ap.error(f"unrecognized arguments: {' '.join(extra)}")
 
