@@ -418,7 +418,7 @@ def _shape_daily(df: pd.DataFrame, date_str: str, kind: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # KIS fallback (r018, read-only) - only when the server has no file for the code/day
 # ---------------------------------------------------------------------------
-KIS_WARMUP_MAX_DAYS = 3
+KIS_WARMUP_MAX_DAYS = 3  # 거래일 기준(r014 달력). 모든 KIS 조회는 r018.shared_client() 의 명령당 마감 시각을 나눠 쓴다
 
 
 def _kis():
@@ -592,6 +592,8 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
                 return {"ok": False, "error": str(exc)}
             except r018.KisError as exc:
                 return _kis_error(exc)
+            if df.empty:
+                return {"ok": False, "error": f"no daily data for {code} on or before {date_str} (KIS)"}
         else:
             df, src = res
         warm_rows, warm_date = [], None
@@ -619,7 +621,8 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
             kis_tries = 0
             for d in _prev_days(date_str):
                 prev = _intraday_bars(d, code, kind, ticks, interval, all_sessions)
-                if (prev is None or prev[0].empty) and kind == "min" and kis_used and kis_tries < KIS_WARMUP_MAX_DAYS:
+                if ((prev is None or prev[0].empty) and kind == "min" and kis_used and kis_tries < KIS_WARMUP_MAX_DAYS
+                        and _kis()._session_hours(d) is not None):  # 휴장일은 시도 횟수에 넣지 않는다
                     kis_tries += 1
                     try:
                         kp = kis_minute_bars(d, code, interval)

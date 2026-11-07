@@ -398,15 +398,21 @@ class LazyChartImportTest(unittest.TestCase):
         self.assertEqual(out.stdout.strip().splitlines()[-1], "False False")
 
     def test_chart_command_args_are_parsed_by_r017(self):
-        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as cm:
             r016.main(["bars", "--kind", "day"])
         self.assertEqual(cm.exception.code, 2)
-        self.assertIn("--date", err.getvalue())
+        self.assertIn("--date", json.loads(out.getvalue())["error"])
 
-    def test_unknown_option_on_other_command_is_rejected(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+    def test_unknown_option_on_other_command_is_rejected_as_json(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as cm:
             r016.main(["status", "--bogus"])
         self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(json.loads(out.getvalue())["ok"], False)
+
+    def test_unknown_command_keeps_invalid_choice_text(self):  # AutoBotH detects old servers by "invalid choice"
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            r016.main(["nosuch"])
+        self.assertIn("invalid choice", json.loads(out.getvalue())["error"])
 
 
 if __name__ == "__main__":
