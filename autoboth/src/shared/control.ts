@@ -3,7 +3,8 @@
  * - [2026-11-07] type=fix - Server code moved to the monorepo folder `<remote root>/real_trading_bot/autobot` (was
  *   `<remote root>/auto_trading_src`). The sub-folder is one constant (SERVER_CODE_SUBDIR) used by the r016 and r015 commands.
  *   r016 `status` gets its own poll interval (statusPollMs): each call starts a Python process on the Raspberry Pi, so it is
- *   not tied to the 10 s log poll - default 30 s, minimum 15 s, 120 s while the window is minimized/hidden
+ *   not tied to the 10 s log poll - default 30 s, minimum 15 s, 120 s while the window is minimized/hidden.
+ *   kstNowIso / quoteCacheMs / CHART_CACHE_MS: main-process reuse windows for r016 quote / bars answers (chart tab load rule)
  * - [2026-11-05] type=feat - r003 remote control (guide 20261105): response types of live_trading/r016_control.py, the command
  *   builder (cd + R016_BY + python + quoted args), the stdout JSON extractor/parser (rc 0 / 2 rejected / 3 systemctl), the
  *   service button rules, the market-hours check on the server's KST timestamp, value-editor parsing per r001 type, the changed-
@@ -269,6 +270,21 @@ export function serviceButtons(s: R016Status | null, busy: boolean): ButtonState
 }
 
 /** Mon-Fri 09:00 <= t < 15:30 using the server's KST ISO string as is (no time-zone conversion). */
+/** Current KST time as 'YYYY-MM-DDTHH:MM:SS' (independent of the PC's time zone). */
+export function kstNowIso(nowMs: number = Date.now()): string {
+  return new Date(nowMs + 9 * 3600 * 1000).toISOString().slice(0, 19);
+}
+
+/**
+ * How long the main process reuses a server chart/quote answer before asking the server again (each ask starts Python on the
+ * Raspberry Pi and may cost KIS calls). Market hours: just under the 10 s chart refresh; outside: values do not change.
+ */
+export const CHART_CACHE_MS = { quoteLive: 8000, quoteIdle: 300000, quoteFailed: 20000, daily: 600000, failed: 60000, intradayIdle: 300000 } as const;
+
+export function quoteCacheMs(nowIso: string = kstNowIso()): number {
+  return isMarketHours(nowIso) ? CHART_CACHE_MS.quoteLive : CHART_CACHE_MS.quoteIdle;
+}
+
 export function isMarketHours(serverIso: string | undefined): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(serverIso || '');
   if (!m) return false;

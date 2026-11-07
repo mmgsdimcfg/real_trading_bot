@@ -10,6 +10,8 @@
  *   history, KIS once the server adds it) and the side panel uses r016 `quote` when the server has it (KIS current price, change, day
  *   OHLC, 10-level order book, latest trades, 체결강도, upper/lower limit, 52-week high/low, PER/PBR, market cap, VI / halt). Today's
  *   daily/weekly/monthly candle is completed from the current price when the daily data has no row for today yet
+ * - [2026-11-07] type=perf - Periodic refreshes are skipped while the window is hidden/minimized (server load rule); symbol or kind
+ *   changes still load
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -171,8 +173,11 @@ export function ChartView() {
 
   useEffect(() => {
     if (!code || !day || !/^[0-9A-Z]{6}$/.test(code)) return;
-    const my = ++seq.current;
     const changed = lastKey.current !== key;
+    // periodic refresh (new log poll) while the window is minimized/hidden: skip - every refresh starts Python on the server
+    // (bars / quote, maybe KIS calls). A symbol/kind change still loads; the next poll after the window is shown refreshes.
+    if (!changed && document.hidden) return;
+    const my = ++seq.current;
     lastKey.current = key;
     if (changed) {
       setLoading(true);
