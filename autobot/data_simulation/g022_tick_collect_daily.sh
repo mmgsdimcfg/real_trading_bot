@@ -8,8 +8,8 @@
 #   - g011's stop time defaults to the calendar close + 1 min (TICK_COLLECTOR_UNTIL=HH:MM overrides).
 #
 # crontab (weekdays; the 5-minute repeats restart g011 if it died; hour 16 covers late-close days):
-#   50,55 8 * * 1-5   /data/srv/autobot/auto_trading_src/data_simulation/g022_tick_collect_daily.sh
-#   */5 9-16 * * 1-5  /data/srv/autobot/auto_trading_src/data_simulation/g022_tick_collect_daily.sh
+#   50,55 8 * * 1-5   /data/srv/autobot/real_trading_bot/autobot/data_simulation/g022_tick_collect_daily.sh
+#   */5 9-16 * * 1-5  /data/srv/autobot/real_trading_bot/autobot/data_simulation/g022_tick_collect_daily.sh
 # Do not wrap it in another `flock`: that lock fd would be inherited by g011 and block every later run.
 #
 # Update log:
@@ -21,7 +21,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="${TICK_COLLECTOR_PYTHON:-$HOME/venv/bin/python}"
-RUNTIME="${AUTO_TRADING_RUNTIME:-$(cd "$HERE/../.." && pwd)/runtime}"
+RUNTIME="${AUTO_TRADING_RUNTIME:-$(cd "$HERE/../../.." && pwd)/runtime}"
 CALENDAR="$HERE/../live_trading/r014_market_calendar.txt"
 today=$(date +%Y%m%d)
 # r014 calendar: "YYYYMMDD closed" or "YYYYMMDD HH:MM HH:MM" (same rules as r014_market_calendar.py)

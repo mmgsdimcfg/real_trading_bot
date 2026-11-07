@@ -51,7 +51,7 @@ import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent
 # [2026-10-11] data_simulation/data -> <git root>/runtime/data (AUTO_TRADING_RUNTIME로 변경 가능)
-DEFAULT_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or BASE_DIR.parent.parent / "runtime") / "data"
+DEFAULT_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or BASE_DIR.parents[2] / "runtime") / "data"
 COST_PCT = 0.23
 EOD_TIME = dt_time(15, 19)
 

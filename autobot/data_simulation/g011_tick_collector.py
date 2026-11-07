@@ -334,7 +334,7 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
     session_hours_today = session_hours(datetime.now()) or _DEFAULT_HOURS
     import websockets  # imported lazily so --dry-parse-test works without network deps
 
-    open_api_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[2] / "open-trading-api")))
+    open_api_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[3] / "open-trading-api")))
     sys.path.insert(0, str(open_api_root / "examples_user"))
     sys.path.insert(0, str(open_api_root / "examples_user" / "domestic_stock"))
     import kis_auth as ka  # noqa: E402

@@ -1,9 +1,9 @@
 # 회신: AutoBotH 주가 차트·보조지표용 서버 데이터 (요청 2026-11-06 → 처리 2026-11-06)
 
-> 서버 저장소(`auto_trading_src`) 쪽 회신이다. 요청 문서 "서버 데이터 요청 프롬프트: AutoBotH 주가 차트·보조지표용 수집 데이터"의
+> 서버 저장소(`real_trading_bot/autobot`) 쪽 회신이다. 요청 문서 "서버 데이터 요청 프롬프트: AutoBotH 주가 차트·보조지표용 수집 데이터"의
 > P1~P3 항목 순서로 답하고, 마지막에 요청된 회신 4가지(확인 답변 / 새 파일·열·예시 / 새 명령 출력 예시 / 보관·용량·CPU)를 모은다.
 > 모든 새 명령은 `r016_control.py`의 하위 명령이며 읽기 전용, stdout JSON 하나, rc 0(성공)/2(입력·파일 없음)다. 호출은 기존과 같이
-> `cd /data/srv/autobot/auto_trading_src && ~/venv/bin/python live_trading/r016_control.py <command> ...`.
+> `cd /data/srv/autobot/real_trading_bot/autobot && ~/venv/bin/python live_trading/r016_control.py <command> ...`.
 
 ---
 

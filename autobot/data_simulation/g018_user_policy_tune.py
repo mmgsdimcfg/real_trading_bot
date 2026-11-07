@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from numba import njit
 
-POLICY_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime") / "edge_ai" / "policy"
+POLICY_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[3] / "runtime") / "edge_ai" / "policy"
 
 # filter space: column -> (op, candidate thresholds); None = filter off
 SPACE = {

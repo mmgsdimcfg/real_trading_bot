@@ -35,7 +35,7 @@ except Exception:
     SCAN_PICKS_LEGACY_FILENAME = "picks.txt"
     SCAN_PICKS_PREFIX_TEMPLATE = "_{date}_picks.txt"
     DATA_DIR_NAME = "data"
-    RUNTIME_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[2] / "runtime") / DATA_DIR_NAME
+    RUNTIME_DATA_DIR = Path(os.environ.get("AUTO_TRADING_RUNTIME") or Path(__file__).resolve().parents[3] / "runtime") / DATA_DIR_NAME
 
 R004_HEADER = """# Daily live trading watchlist.
 #

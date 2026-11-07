@@ -4,7 +4,7 @@
 #   2) g014: walk-forward re-validation, threshold re-selection, promotion check, publish current_* model
 # r003 (r011) hot-reloads runtime/edge_ai/current_meta.json within 60 s - no bot restart needed.
 #
-# crontab example:  30 21 * * 1-5  EDGE_AI_WORKERS=1 /data/srv/autobot/auto_trading_src/data_simulation/g015_edge_ai_daily.sh
+# crontab example:  30 21 * * 1-5  EDGE_AI_WORKERS=1 /data/srv/autobot/real_trading_bot/autobot/data_simulation/g015_edge_ai_daily.sh
 # (EDGE_AI_WORKERS=1 on the 4 GB Pi - earlyoom kills Pool workers at 2.) g013 skips a day until g001 wrote its
 # done marker, so running before g001 finishes is safe (the day is picked up by the next run).
 # Failures (non-zero exit of g013/g014, no published model) are mailed by g024 --edge-ai.
@@ -18,7 +18,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="${EDGE_AI_PYTHON:-$HOME/venv/bin/python}"
-RUNTIME="${AUTO_TRADING_RUNTIME:-$(cd "$HERE/../.." && pwd)/runtime}"
+RUNTIME="${AUTO_TRADING_RUNTIME:-$(cd "$HERE/../../.." && pwd)/runtime}"
 LOG_DIR="$RUNTIME/edge_ai/logs"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/daily_$(date +%Y%m%d).log"
