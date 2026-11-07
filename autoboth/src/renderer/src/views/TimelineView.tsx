@@ -15,6 +15,9 @@
  * - [2026-11-07] type=feat - Past-day replay: tick/minute bars that start after the replay time are hidden (barsUpTo); the
  *   evaluation dots and trades already come cut from the replay snapshot. The time axis ends at the replay time, so it keeps
  *   moving through stretches without events (r003 stopped)
+ * - [2026-11-07] type=fix - The time axis also covers the day's tick / minute bars (it ended at the symbol's last evaluation, so
+ *   later bars could not be seen); "보기 범위" (전체 / 2시간 / 1시간 / 30분) + a slider to move the window left and right, shared by
+ *   the buy-evaluation and price charts
  * - [2026-11-07] type=feat - Sell fill markers show the sell price and return ("매도 22,450 (+1.43%) <reason>"), like the buy price
  * - [2026-11-07] type=feat - Price chart twice as tall (TL_SCALE: price + volume area 300 -> 600 px, indicator panes 84 -> 168 px)
  * - [2026-11-07] type=feat - Buy chart y-axis rows can be hidden ("y축 항목" popover: per-row checkboxes, 모두 표시, 이 종목 평가된 항목만);
@@ -121,14 +124,24 @@ export function TimelineView() {
   const trades = timeline && timeline.code === selected ? timeline.trades : [];
   const buyPts = useMemo(() => events.filter((e) => e.side === 'buy' && buyY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: buyY.get(ev.condKey)!, ev })), [events, buyY]);
   const sellPts = useMemo(() => events.filter((e) => e.side === 'sell' && sellY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: sellY.get(ev.condKey)!, ev })), [events, sellY]);
-  const xs = [...events.map((e) => e.ts), ...trades.map((t) => t.ts)].filter(Number.isFinite);
   const replayAt = snap?.replay?.cursor ?? null;
+  // tick / minute bars of the day widen the axis too (evaluations may stop before the close, e.g. r003 stopped at 13:40)
+  const intradayKind = chart.kind === 'tick' || chart.kind === 'min';
+  const barTs = intradayKind && price?.ok && price.bars.length ? [price.bars[0].t, price.bars[price.bars.length - 1].t2 ?? price.bars[price.bars.length - 1].t] : [];
+  const xs = [...events.map((e) => e.ts), ...trades.map((t) => t.ts), ...barTs].filter(Number.isFinite);
   // replay: the axis runs to the replay time, so it moves while playing even when the symbol has no new events (r003 stopped)
-  const domain: [number, number] = xs.length
+  const full: [number, number] = xs.length
     ? [Math.min(...xs), replayAt !== null ? Math.max(replayAt, Math.min(...xs) + 60000) : Math.max(...xs)]
     : replayAt !== null
       ? [replayAt - 30 * 60000, replayAt]
       : [0, 1];
+  // visible window: whole range or a span moved with the slider (both charts follow it)
+  const [span, setSpan] = useState(0);
+  const [startPct, setStartPct] = useState(100);
+  const fullLen = full[1] - full[0];
+  const win = span > 0 && span < fullLen ? span : 0;
+  const winStart = win ? full[0] + ((fullLen - win) * startPct) / 100 : full[0];
+  const domain: [number, number] = win ? [winStart, winStart + win] : full;
   // explicit 30-minute ticks (recharts' automatic ticks on a time scale bunch up at the start)
   const xTicks = useMemo(() => {
     const step = 30 * 60 * 1000;
@@ -236,7 +249,7 @@ export function TimelineView() {
             <ResponsiveContainer>
               <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }}>
                 <CartesianGrid stroke="var(--grid)" />
-                <XAxis type="number" dataKey="x" domain={domain} ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
+                <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                 <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownRows.length - 1)]} ticks={[...Array(shownRows.length).keys()]} tickFormatter={buyLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
                 <Tooltip content={<TipBox />} isAnimationActive={false} />
                 <Legend verticalAlign="top" height={24} />
@@ -247,6 +260,34 @@ export function TimelineView() {
               </ScatterChart>
             </ResponsiveContainer>
           </div>
+          {fullLen > 30 * 60000 && (
+            <div className="time-window">
+              <span className="muted small">보기 범위</span>
+              <select value={span} onChange={(e) => setSpan(Number(e.target.value))} title="두 차트(매수 평가·주가)의 시간 범위">
+                {[
+                  [0, '전체'],
+                  [2 * 3600000, '2시간'],
+                  [3600000, '1시간'],
+                  [1800000, '30분'],
+                ].map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              {win > 0 && (
+                <>
+                  <input type="range" min={0} max={100} step={0.5} value={startPct} onChange={(e) => setStartPct(Number(e.target.value))} title="좌우로 끌어 시간대 이동" />
+                  <span className="mono small">
+                    {fmtKstTime(domain[0]).slice(0, 5)} ~ {fmtKstTime(domain[1]).slice(0, 5)}
+                  </span>
+                </>
+              )}
+              <span className="muted small">
+                {fmtKstTime(full[0]).slice(0, 5)} ~ {fmtKstTime(full[1]).slice(0, 5)}
+              </span>
+            </div>
+          )}
           <div className="price-head">
             <h4>주가</h4>
             <div className="seg">
@@ -312,7 +353,7 @@ export function TimelineView() {
               <ResponsiveContainer>
                 <ScatterChart margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
                   <CartesianGrid stroke="var(--grid)" />
-                  <XAxis type="number" dataKey="x" domain={domain} ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
+                  <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                   <YAxis type="number" dataKey="y" domain={[0, sellConds.length + 2]} ticks={[...Array(sellConds.length + 3).keys()]} tickFormatter={sellLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
                   <Tooltip content={<TipBox />} isAnimationActive={false} />
                   {markers}

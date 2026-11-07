@@ -230,6 +230,9 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 /* timeline & trades */
 .charts { flex: 1; overflow: auto; padding: 0 12px 12px; }
 .charts h4, .panel h4 { margin: 10px 0 4px; color: var(--text-2); font-size: 13px; }
+.time-window { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; }
+.time-window input[type='range'] { flex: 1; max-width: 640px; padding: 0; border: none; background: none; accent-color: var(--accent); }
+.time-window select { padding: 1px 6px; font-size: 12px; }
 .chart-head { display: flex; align-items: center; gap: 12px; }
 .ypick { position: relative; font-size: 12px; }
 .ypick summary { cursor: pointer; color: var(--text-2); list-style: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; }
