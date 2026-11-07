@@ -15,6 +15,7 @@
  * - [2026-11-07] type=feat - Past-day replay: tick/minute bars that start after the replay time are hidden (barsUpTo); the
  *   evaluation dots and trades already come cut from the replay snapshot. The time axis ends at the replay time, so it keeps
  *   moving through stretches without events (r003 stopped)
+ * - [2026-11-07] type=feat - Price chart twice as tall (TL_SCALE: price + volume area 300 -> 600 px, indicator panes 84 -> 168 px)
  * - [2026-11-07] type=feat - Buy chart y-axis rows can be hidden ("y축 항목" popover: per-row checkboxes, 모두 표시, 이 종목 평가된 항목만);
  *   hidden rows and their dots are left out, the remaining rows close up and the chart gets shorter. Kept per PC (localStorage)
  */
@@ -28,7 +29,12 @@ import { condKeyOf } from '../../../shared/mapping';
 import { fmtKstTime } from '../../../shared/time';
 import type { EvalEvent } from '../../../shared/types';
 import { MIN_SIZES, TICK_SIZES, type ChartKind, type PriceResponse } from '../../../shared/price';
-import { PriceChart, chartHeight } from '../components/PriceChart';
+import { OSC_PANE_H, PRICE_PANE_H, PriceChart, chartHeight } from '../components/PriceChart';
+
+/** the timeline's price chart is twice the default size (price + volume area and every indicator pane) */
+const TL_SCALE = 2;
+const TL_OSC_H = OSC_PANE_H * TL_SCALE;
+const TL_PRICE_H = PRICE_PANE_H * TL_SCALE;
 import { IndicatorToggles } from '../components/IndicatorToggles';
 import { barsUpTo } from '../../../shared/replay';
 
@@ -276,12 +282,14 @@ export function TimelineView() {
                   : ''}
             </span>
           </div>
-          <div className="chart-price" style={{ height: chartHeight(chart.ind) }}>
+          <div className="chart-price" style={{ height: chartHeight(chart.ind, TL_OSC_H, TL_PRICE_H) }}>
             {price && !price.ok && <div className="empty small">{price.error}</div>}
             {price?.ok && shownBars.length === 0 && <div className="empty small">{price.bars.length ? '재현 시각까지의 봉이 없습니다.' : '봉이 없습니다.'}</div>}
             {price?.ok && shownBars.length > 0 && (
               <PriceChart
                 bars={shownBars}
+                height={chartHeight(chart.ind, TL_OSC_H, TL_PRICE_H)}
+                oscHeight={TL_OSC_H}
                 warm={price.warm}
                 warmBot={price.warmBot}
                 indicators={chart.ind}

@@ -158,8 +158,8 @@ function cloud(pts: { x: number; a: number; b: number }[], sy: (v: number) => nu
 
 const oscOf = (indicators: IndicatorKey[]) => OSCILLATORS.filter((k) => indicators.includes(k));
 
-export function chartHeight(indicators: IndicatorKey[], oscH = OSC_PANE_H): number {
-  return PRICE_PANE_H + oscOf(indicators).length * (oscH + GAP);
+export function chartHeight(indicators: IndicatorKey[], oscH = OSC_PANE_H, priceH = PRICE_PANE_H): number {
+  return priceH + oscOf(indicators).length * (oscH + GAP);
 }
 
 interface PaneLine {
