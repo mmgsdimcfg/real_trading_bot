@@ -1,0 +1,409 @@
+{
+ "generated_at": "2026-11-04T00:00:00+09:00 (bundled)",
+ "entry_trigger_mode": "triple",
+ "trading_strategy_mode": "normal",
+ "buy": [
+  {
+   "order": 0,
+   "no": 1,
+   "func": "_001_entry_time_window",
+   "stage": "STATE",
+   "title": "신규 진입 허용 시간대",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 1,
+   "no": 2,
+   "func": "_002",
+   "stage": "STATE",
+   "title": "장 시작 워밍업",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 2,
+   "no": 3,
+   "func": "_003",
+   "stage": "STATE",
+   "title": "쿨다운 (로그 없음)",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 3,
+   "no": 4,
+   "func": "_004",
+   "stage": "STATE",
+   "title": "같은 봉 중복 진입 방지 (로그 없음)",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 4,
+   "no": 5,
+   "func": "_005",
+   "stage": "STATE",
+   "title": "당일 매매 종목 (매도 전까지)",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 5,
+   "no": 6,
+   "func": "_006",
+   "stage": "STATE",
+   "title": "당일 하드 손절 종목 재진입 차단",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 6,
+   "no": 25,
+   "func": "_025",
+   "stage": "STATE",
+   "title": "일일 손실 한도",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 7,
+   "no": 26,
+   "func": "_026",
+   "stage": "STATE",
+   "title": "최대 보유 종목 수",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 8,
+   "no": 8,
+   "func": "_008",
+   "stage": "TRIGGER",
+   "title": "트리플 크로스 진입 트리거",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 9,
+   "no": 29,
+   "func": "_029",
+   "stage": "CONTEXT",
+   "title": "시장 국면 (KOSPI 하락) 차단",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 10,
+   "no": 9,
+   "func": "_009",
+   "stage": "CONTEXT",
+   "title": "3분 컨텍스트 데이터",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 11,
+   "no": 14,
+   "func": "_014",
+   "stage": "CONTEXT",
+   "title": "진입 ATR 변동성 하한",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 12,
+   "no": 15,
+   "func": "_015",
+   "stage": "CONTEXT",
+   "title": "유동성/거래량 안전",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 13,
+   "no": 17,
+   "func": "_017",
+   "stage": "CONTEXT",
+   "title": "3분 컨텍스트 점수 (정보)",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 14,
+   "no": 18,
+   "func": "_018",
+   "stage": "PRE_ORDER",
+   "title": "전일 종가 대비 과도 상승",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 15,
+   "no": 19,
+   "func": "_019",
+   "stage": "PRE_ORDER",
+   "title": "추격 매수 방지 (VWAP 괴리)",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 16,
+   "no": 20,
+   "func": "_020",
+   "stage": "PRE_ORDER",
+   "title": "시초 갭",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 17,
+   "no": 31,
+   "func": "_031",
+   "stage": "PRE_ORDER",
+   "title": "호가 상태 차단",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 18,
+   "no": 30,
+   "func": "_030",
+   "stage": "PRE_ORDER",
+   "title": "계좌 동기화 지연",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 19,
+   "no": 28,
+   "func": "_028",
+   "stage": "PRE_ORDER",
+   "title": "Edge AI 확률",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 20,
+   "no": 27,
+   "func": "_027",
+   "stage": "PRE_ORDER",
+   "title": "스프레드",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 21,
+   "no": 21,
+   "func": "_021",
+   "stage": "PRE_ORDER",
+   "title": "연속 폴링 확인",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 22,
+   "no": 22,
+   "func": "_022",
+   "stage": "PRE_ORDER",
+   "title": "매수 가능 금액/예산",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 23,
+   "no": 23,
+   "func": "_023",
+   "stage": "PRE_ORDER",
+   "title": "현재가 지연 (STALE)",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 24,
+   "no": 24,
+   "func": "_024",
+   "stage": "PRE_ORDER",
+   "title": "매도호가 잔량 부족",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  }
+ ],
+ "sell": [
+  {
+   "order": 0,
+   "no": 1,
+   "func": "_001_stale_live_price_guard",
+   "stage": "GUARD",
+   "title": "현재가 지연 가드",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 1,
+   "no": 2,
+   "func": "_002",
+   "stage": "GUARD",
+   "title": "매도 조건 _002",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 2,
+   "no": 3,
+   "func": "_003",
+   "stage": "EXIT",
+   "title": "고점 다음 봉 음봉",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 3,
+   "no": 4,
+   "func": "_004",
+   "stage": "EXIT",
+   "title": "하드 손절",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 4,
+   "no": 6,
+   "func": "_006",
+   "stage": "EXIT",
+   "title": "TP1 부분 익절",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 5,
+   "no": 7,
+   "func": "_007",
+   "stage": "EXIT",
+   "title": "TP2/TP3 급등 사다리",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 6,
+   "no": 23,
+   "func": "_023",
+   "stage": "EXIT",
+   "title": "수익 잠금",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 7,
+   "no": 15,
+   "func": "_015",
+   "stage": "EXIT",
+   "title": "ATR 익절",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 8,
+   "no": 16,
+   "func": "_016",
+   "stage": "EXIT",
+   "title": "매수 후 진입가 하락",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 9,
+   "no": 17,
+   "func": "_017",
+   "stage": "EXIT",
+   "title": "본전 실패",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 10,
+   "no": 18,
+   "func": "_018",
+   "stage": "EXIT",
+   "title": "무추세 청산",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 11,
+   "no": 19,
+   "func": "_019",
+   "stage": "EXIT",
+   "title": "ATR 손절",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 12,
+   "no": 20,
+   "func": "_020",
+   "stage": "EXIT",
+   "title": "트레일링 스톱",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 13,
+   "no": 21,
+   "func": "_021",
+   "stage": "EXIT",
+   "title": "매도 조건 _021",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  },
+  {
+   "order": 14,
+   "no": 22,
+   "func": "_022",
+   "stage": "EXIT",
+   "title": "보조 반전 매도",
+   "description": "앱 내장 스냅샷(2026-11-04 가이드 기준). 서버에서 조건 JSON을 받으면 실제 제목/설명/값으로 바뀝니다.",
+   "defines": [],
+   "values": {}
+  }
+ ]
+}

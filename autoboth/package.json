@@ -1,0 +1,119 @@
+{
+  "_updateLog": [
+    "[2026-11-06] type=feat - v2.2.0_008: chart tab for any code - daily bars from the server's r016 `bars` (daily_history ~14 months, week/month built from them), tick/minute bars fall back to `bars` when the server has no file for the code/day; side panel uses r016 `quote` when the server has it (KIS current price, 10-level order book, trades, 체결강도, limits, 52-week high/low, PER/PBR, market cap, VI/halt) and completes today's daily/weekly/monthly candle from it. Older servers keep the SFTP-only path. docs/server_kis_market_data_request_20261106.md: KIS fallback in `bars` + new `quote` (read-only quote TRs, shared rate limit with r003, token reuse, cache)",
+    "[2026-11-06] type=feat - v2.2.0_007: TermH-style title bar (frame:false, no File/Edit menu; icon + AutoBotH + status items + shared app-menu.js ☰ menu with 설정 / 업데이트 확인 / AutoBotH 정보 (app-about.js) + window buttons; the bottom-right version line removed). New 차트 tab (HTS-style): any 6-digit code, tick/minute (previous day shown)/day/week/month, wheel zoom + drag pan, right price axis with last/hover price tags, legends, MA 5/20/60/120, Bollinger, Ichimoku, VWAP, RSI, MACD, ADX, stochastic, Williams %R, MFI, OBV; side panel with current price, change, day OHLC, best ask/bid, 체결강도, 200-day high/low, data window, indicator signals, bot state, latest trades. New indicators match r002 calculate_indicators (tests); warm-up like the bot (previous day's last 180 one-minute bars of the 10-second file, VWAP/OBV per day)",
+    "[2026-11-06] type=feat - v2.1.0_006: price chart indicators - Bollinger and Ichimoku overlays (cloud drawn 26 bars ahead), RSI / MACD / ADX+DI panes; formulas and periods match the bot (r002 calculate_indicators, r001 BB 20/2, RSI 14/6 Wilder, MACD 5/12/4, ADX 7; verified against pandas output of data_simulation/shared/indicators.py to 1e-6), Ichimoku standard 9/26/52; tick/minute charts get the previous trading day's 120 bars as warm-up; toggles kept in localStorage. docs/server_data_request_prompt_20261106.md: data requests for the server side. vitest: tests/indicators.test.ts + indicators_ref.json",
+    "[2026-11-05] type=feat - v2.1.0_005: price chart on the timeline tab between the buy and sell evaluation charts - tick bars (1-300 ticks) and minute bars (1-60 min) from the server tick files runtime/data/ticks/YYYYMMDD/<code>.csv (fallback: real 1-minute bars of runtime/data/YYYYMMDD/<code>_<name>_10s.txt), daily/weekly/monthly bars from <code>_<name>_daily.csv; intraday candles use the buy chart's time axis so they line up with the evaluation dots; volume pane, fills, position price, hover OHLCV; SFTP reads only, tick file read incrementally, requests serialized. vitest: tests/price.test.ts",
+    "[2026-11-05] type=feat - v2.1.0_004: r003 remote control through live_trading/r016_control.py (SSH exec, one serial queue, stdout JSON; no SFTP writes, no order API). New 제어 tab: start/stop/restart of the autobot-r003 systemd user service with dry-run and risk profile, external-r003 guard, pending-restart badge, saved overrides with unset/reset, last 20 history rows; status bar bot summary. Pipeline node panel edits r001 values (values_meta from `r016 conditions`, which replaces r015; only changed keys sent in one `set`, server `rejected` shown per row) and node headers mirror ENABLE_* as ON/OFF toggles with a pending dot. 설정/연결 gets a collapsed '고급: 전체 설정값' editor (`schema --all`). 종목 보드 gets a r004 watchlist editor (reorder, backup path toast). Confirmations for live-order start, market-hours stop/restart, reset and watchlist save are shown by the main process. vitest: tests/control.test.ts",
+    "[2026-11-05] type=fix - Symbol list: per-symbol file names now end in _buy_sell (name shown as \"SK_buy_sell\") -> suffix dropped and the WATCH-line name wins; market-regime ETFs 069500/229200 (only in [WARMUP] lines) no longer listed as name-less symbols; emoji tags such as [🔴HOLD SKIP ] are parsed, and HOLD SKIP (held position not bought today) is shown on a new sell row '평가 제외'; version 2.0.0_003",
+    "[2026-11-05] type=fix - npm run dist runs electron-builder through scripts/electron-builder.cjs, which makes NsisTarget extract the uninstaller from the NSIS stub (UninstallerReader) instead of executing it - Windows Smart App Control blocked the unsigned stub at random and the build died with spawn UNKNOWN",
+    "[2026-11-05] type=feat - App icon: build/icon.ico (scripts/make-icon.cjs, rising candlesticks) set as win.icon and nsis.installerIcon/uninstallerIcon/installerHeaderIcon like TermH; version 2.0.0_002",
+    "[2026-11-04] type=feat - v2.0.0_001: rewrite as the r003 buy/sell condition pipeline viewer (read-only). electron-vite + React 18 + TypeScript, React Flow + dagre diagram, recharts, zustand; ssh2 SFTP incremental reads of runtime/log/YYYYMMDD with byte offsets, condition list from r015_export_conditions.py, parsing in a worker thread, vitest parser tests. Removed the r006 run/simulate modes and the remote strategy config editor (no server writes)",
+    "[2026-10-26] type=feat - postdist runs scripts/release.cjs --yml-only, so npm run dist already writes buildNumber/portableFile into dist/latest.yml (the update check compares the build number; needed when the files are copied to the update site by hand)",
+    "[2026-10-25] type=fix - Fix blurry installer screens on high-DPI displays: add build/installer.nsh (ManifestDPIAware true), picked up automatically as the default nsis.include",
+    "[2026-10-19] type=refactor - v1.0.2_002: package name trading-viewer -> autoboth (old internal name replaced by the current app name); the settings file becomes %APPDATA%/autoboth/autoboth-settings.json and main.js copies the old %APPDATA%/trading-viewer settings on first start",
+    "[2026-10-15] type=feat - Self-hosted auto update: electron-updater dependency, build.publish generic https://update.iccid.dev/AutoBotH/ (writes app-update.yml/latest.yml), dist runs electron-builder with --publish never, new npm run release = dist + scripts/release.cjs (uploads installer/.blockmap/portable/latest.yml to the target in make_utils/release.config.json)",
+    "[2026-10-14] type=feat - Copyright notice: author=xgraph, license=UNLICENSED (proprietary - standard npm value), add build.copyright (copyright field in exe file properties). Full text in LICENSE",
+    "[2026-10-07] type=feat - Introduce version input file: editing the single line in version.txt (e.g. 1.0.0_001) is applied to version/build.buildNumber by scripts/version.cjs before npm start/dist (prestart/predist). npm start runs via scripts/start.cjs (clears inherited ELECTRON_RUN_AS_NODE=1 to prevent the \"Menu/app is undefined\" error)",
+    "[2026-10-02] type=feat - Introduce versioning scheme: display version v<version>_<buildNumber> (e.g. v1.0.0_001). version stays semver (1.0.0); build.buildNumber (3 digits) is incremented by 1 on every change. Output names changed to <name>_Setup_v1.0.0_001.exe",
+    "[2026-09-28] type=feat - Change installer to the standard Windows 11 setup wizard (same as WiFiScannerH): oneClick=false, perMachine=false gives an install scope choice 'Current user only (%LOCALAPPDATA%Programs, no admin rights) / All users (Program Files, requests admin rights)', allows changing the install folder, desktop/Start menu shortcuts, 'Installed apps' uninstall entry (uninstallDisplayName), run after install, Korean/English installer UI (installerLanguages). User data (AppData) is kept on uninstall",
+    "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
+  ],
+  "name": "autoboth",
+  "version": "2.2.0",
+  "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
+  "author": "xgraph <xgraph.kr@gmail.com>",
+  "license": "UNLICENSED",
+  "main": "./out/main/index.js",
+  "private": true,
+  "scripts": {
+    "prestart": "node scripts/version.cjs",
+    "start": "electron-vite build && node scripts/start.cjs preview",
+    "predev": "node scripts/version.cjs",
+    "dev": "node scripts/start.cjs dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "predist": "node scripts/version.cjs",
+    "dist": "electron-vite build && node scripts/electron-builder.cjs --publish never",
+    "postdist": "node scripts/release.cjs --yml-only",
+    "build:win": "npm run dist",
+    "release": "npm run dist && node scripts/release.cjs"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@dagrejs/dagre": "^1.1.8",
+    "@types/node": "^20.19.43",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@types/ssh2": "^1.15.6",
+    "@vitejs/plugin-react": "^4.7.0",
+    "@xyflow/react": "^12.12.1",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.4",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9",
+    "zustand": "^5.0.16"
+  },
+  "build": {
+    "publish": {
+      "provider": "generic",
+      "url": "https://update.iccid.dev/AutoBotH/"
+    },
+    "buildNumber": "008",
+    "appId": "kr.xgraph.autoboth",
+    "productName": "AutoBotH",
+    "copyright": "Copyright © 2026 xgraph",
+    "npmRebuild": false,
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "version.txt",
+      "updater.js",
+      "app-about.js",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "ko_KR",
+        "en_US"
+      ],
+      "shortcutName": "AutoBotH",
+      "uninstallDisplayName": "AutoBotH",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "artifactName": "AutoBotH_Setup_v${version}_${buildNumber}.${ext}"
+    },
+    "portable": {
+      "artifactName": "AutoBotH_Setup_v${version}_${buildNumber}_Portable.${ext}"
+    },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    }
+  }
+}
