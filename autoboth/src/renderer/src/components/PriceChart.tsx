@@ -14,9 +14,11 @@
  *   per-pane legends with values, more overlays (MA 5/20/60/120, VWAP) and panes (stochastic, Williams %R, MFI, OBV), a separator at
  *   each new KST day of intraday bars, trade marks placed by time on an index axis, onHover for an outside data panel. The
  *   timeline keeps mode 'time' with the left axis
+ * - [2026-11-07] type=fix - The floating tooltip flips to the left of the cursor when it does not fit on the right (measured width;
+ *   before, a fixed 250 px guess let wide tooltips run off the right edge)
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { samePeriod, type Bar, type ChartKind } from '../../../shared/price';
 import { BOT_PARAMS, computeIndicators, MA_PERIODS, OSCILLATORS, type IndicatorKey, type IndicatorSet, type Series } from '../../../shared/indicators';
 import type { Trade } from '../../../shared/types';
@@ -503,6 +505,17 @@ export function PriceChart(props: Props) {
   const li = h ? h.i : last ? last.i : -1;
   const showLegend = axis === 'right';
 
+  // floating tooltip: right of the cursor when it fits, otherwise left of it (measured after render - its width depends on
+  // the indicators shown)
+  const tipRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    if (!el || !h) return;
+    const w = el.offsetWidth;
+    const right = h.x + 12;
+    el.style.left = `${right + w <= width ? right : Math.max(0, h.x - 12 - w)}px`;
+  });
+
   return (
     <div className={`price-chart ${interactive ? 'interactive' : ''}`} ref={ref} style={{ height }}>
       {model && !model.empty && width > 0 && (
@@ -648,7 +661,7 @@ export function PriceChart(props: Props) {
         </svg>
       )}
       {tooltip && h && (
-        <div className="tip pc-tip" style={{ left: Math.min(Math.max(h.x + 12, 0), Math.max(0, width - 250)), top: 8 }}>
+        <div ref={tipRef} className="tip pc-tip" style={{ left: Math.max(h.x + 12, 0), top: 8 }}>
           <b>
             {intraday
               ? kind === 'tick' && h.b.t2 && h.b.t2 !== h.b.t

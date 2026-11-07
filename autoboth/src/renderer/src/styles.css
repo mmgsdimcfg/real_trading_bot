@@ -230,6 +230,15 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 /* timeline & trades */
 .charts { flex: 1; overflow: auto; padding: 0 12px 12px; }
 .charts h4, .panel h4 { margin: 10px 0 4px; color: var(--text-2); font-size: 13px; }
+.chart-head { display: flex; align-items: center; gap: 12px; }
+.ypick { position: relative; font-size: 12px; }
+.ypick summary { cursor: pointer; color: var(--text-2); list-style: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.ypick-panel {
+  position: absolute; z-index: 10; top: 26px; left: 0; width: 300px; max-height: 460px; overflow: auto; padding: 8px 10px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.ypick-panel .actions { margin-top: 0; margin-bottom: 6px; }
+.ypick-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
 .chart-buy { height: 520px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
 .chart-sell { height: 300px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
 .empty { padding: 40px; color: var(--text-3); text-align: center; }
