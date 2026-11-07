@@ -18,7 +18,6 @@ autoboth/node_modules/
 autoboth/dist/
 autoboth/out/
 autoboth/release/
-autoboth/build/
 autoboth/coverage/
 autoboth/*.log
 autoboth/.env

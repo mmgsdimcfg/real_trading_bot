@@ -107,3 +107,22 @@ RAM 여유가 1 GB 안팎이고 earlyoom이 동작 중이다. **Python 프로세
 - vitest: 직렬 큐(동시 실행 1개, 중복 제거, 타임아웃 30초), 폴링 스케줄러(장중/장외/최소화 주기 전환), 재연결 백오프, 끊김 중 쓰기 명령 미재전송.
 - SSH는 모킹한다. 실제 서버에 붙는 수동 확인은 사용자가 한다. 그때 서버에서 `top`으로 Python 프로세스가 30초에 한 번 정도만 뜨는지 본다.
 - 보고 형식: 바꾼 파일, 바꾼 함수, 실행한 테스트와 결과, 4장 체크리스트 표, 남은 위험.
+
+## 6. 서버에서 확인한 점검 결과 (2026-11-07, 커밋 6fac870 기준)
+
+모노레포 전환(서버 코드 = `real_trading_bot/autobot/`) 후 서버 쪽에서 앱 소스를 읽고 확인한 항목이다. 아래 순서로 고친다.
+
+1. **[필수] 서버 코드 경로 고정값.** `src/shared/control.ts:173`(`buildR016Command`)와 `src/main/conditions.ts:40`(`fetchR015`)이
+   `remoteRoot + '/auto_trading_src'`를 쓴다. 서버 폴더가 `/data/srv/autobot/real_trading_bot/autobot`으로 바뀌었다.
+   - 상수 하나(`SERVER_CODE_SUBDIR = 'real_trading_bot/autobot'`, `src/shared/control.ts`)로 모으고 두 곳이 그것을 쓰게 한다.
+     설정 화면에 고급 항목으로 노출해도 된다(기본값 = 위 상수).
+   - 지금은 서버에 임시 심볼릭 링크 `/data/srv/autobot/auto_trading_src -> real_trading_bot/autobot`이 있어서 기존 빌드도 동작한다.
+     새 빌드가 배포되면 서버에서 링크를 지운다.
+   - `tests/control.test.ts` 등에서 명령 문자열을 비교하는 기대값도 같이 고친다.
+2. **[필수] `status` 폴링 주기.** `src/main/control.ts:177`이 로그 폴링과 같은 `pollSec`(기본 10초, 최소 3초)으로 `r016 status`를 부른다.
+   `status` 1회 = 서버 Python 기동 약 2초. 2.3 표대로 **별도 주기 `statusPollSec`(기본 30초, 최소 15초, 창 최소화 시 120초)**로 분리한다.
+   로그 증분 폴링(`src/main/index.ts:183`)은 SFTP라서 `pollSec` 그대로 둔다. 제어 동작 직후 2초 간격 확인 루프는 지금처럼 유지.
+3. **[확인됨, 유지]** SSH 연결 1개 + SFTP 1개(`src/main/ssh.ts`), r016 직렬 큐와 `status` 중복 호출 합치기(`R016Client`, `refreshStatus`),
+   rc 2/3 미재시도, 차트 파일 SFTP 증분 읽기(`src/main/prices.ts`). 바꾸지 않는다.
+4. **[권장]** `keepaliveCountMax` 3 → 4(2.1). 장외 시간(15:40~08:00) 로그 폴링 30초 감속(2.3).
+5. 서버 쪽 대응 예정: `r016 status`에서 pandas 지연 import(1초 이하로 단축). 응답 형식 변화 없음.
