@@ -7,6 +7,7 @@
  *   by main, so the renderer cannot skip them)
  * - [2026-11-05] type=feat - getPrice (price:get) for the timeline price chart
  * - [2026-11-06] type=feat - getQuote (market:quote) for the chart tab's current price / order book
+ * - [2026-11-07] type=feat - setReplayCursor (replay:cursor) for the past-day time replay bar
  * - [2026-11-06] type=feat - window.winCtl (title-bar window buttons) and window.appAbout (shared About dialog of the ☰ menu)
  */
 
@@ -54,6 +55,8 @@ const api = {
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
   getStatus: () => ipcRenderer.invoke('status:get'),
   getTimeline: (code: string) => ipcRenderer.invoke('timeline:get', code),
+  /** past-day replay: show the state at ts (epoch ms), null = whole day */
+  setReplayCursor: (ts: number | null): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('replay:cursor', ts),
   getPrice: (req: PriceRequest): Promise<PriceResponse> => ipcRenderer.invoke('price:get', req),
   getQuote: (code: string): Promise<{ ok: boolean; data?: MarketQuote; error?: string; unsupported?: boolean }> => ipcRenderer.invoke('market:quote', code),
   onStatus: (cb: (s: AppStatus) => void) => on('status', cb),

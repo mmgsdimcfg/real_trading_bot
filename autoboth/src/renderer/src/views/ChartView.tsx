@@ -12,6 +12,8 @@
  *   daily/weekly/monthly candle is completed from the current price when the daily data has no row for today yet
  * - [2026-11-07] type=perf - Periodic refreshes are skipped while the window is hidden/minimized (server load rule); symbol or kind
  *   changes still load; a missing server KIS token (r016 quote token_not_ready) is shown as a plain notice
+ * - [2026-11-07] type=feat - Past-day replay: tick/minute bars of the viewed day that start after the replay time are hidden
+ *   (barsUpTo); trade markers come from the replay snapshot. Daily / weekly / monthly bars are not cut
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -21,6 +23,7 @@ import { IndicatorToggles } from '../components/IndicatorToggles';
 import { MIN_SIZES, TICK_SIZES, monthBars, weekBars, ymdEpoch, type Bar, type ChartKind, type MarketQuote, type PriceResponse } from '../../../shared/price';
 import { computeIndicators, OSCILLATORS, type IndicatorKey, type IndicatorSet } from '../../../shared/indicators';
 import { condTitle, fmtInt } from '../lib';
+import { barsUpTo } from '../../../shared/replay';
 import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
 
 const KINDS: [ChartKind, string][] = [
@@ -209,6 +212,7 @@ export function ChartView() {
   /** today's daily candle from the KIS quote when the daily data has no row for today yet */
   const quoteBar: Bar | null =
     isToday && q && q.open && q.high && q.low && q.price ? { t: dayT0, o: q.open, h: q.high, l: q.low, c: q.price, v: q.volume || 0 } : null;
+  const replayCursor = snap?.replay?.cursor ?? null;
   const bars = useMemo<Bar[]>(() => {
     if (!data?.ok) return [];
     if (!intraday && quoteBar) {
@@ -219,8 +223,8 @@ export function ChartView() {
         return prefs.kind === 'day' ? plus : prefs.kind === 'week' ? weekBars(plus) : monthBars(plus);
       }
     }
-    return [...prevDay, ...data.bars];
-  }, [data, daily, prefs.prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v]); // eslint-disable-line react-hooks/exhaustive-deps
+    return [...prevDay, ...barsUpTo(data.bars, replayCursor, intraday)];
+  }, [data, daily, prefs.prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const warm = prevDay.length ? NONE : data?.warm;
   const warmBot = prevDay.length ? NONE : data?.warmBot;
 

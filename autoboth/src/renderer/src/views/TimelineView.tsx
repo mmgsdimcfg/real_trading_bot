@@ -12,6 +12,8 @@
  *   for the previous trading day's bars as indicator warm-up while any indicator is on; the chart box grows with the panes
  * - [2026-11-06] type=feat - All indicators of the chart tab available here too (shared IndicatorToggles); the bot's warm-up window
  *   (warmBot) is passed so the bot's indicators match r003
+ * - [2026-11-07] type=feat - Past-day replay: tick/minute bars that start after the replay time are hidden (barsUpTo); the
+ *   evaluation dots and trades already come cut from the replay snapshot
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,6 +27,7 @@ import type { EvalEvent } from '../../../shared/types';
 import { MIN_SIZES, TICK_SIZES, type ChartKind, type PriceResponse } from '../../../shared/price';
 import { PriceChart, chartHeight } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
+import { barsUpTo } from '../../../shared/replay';
 
 const KIND_LABEL: [ChartKind, string][] = [
   ['tick', '틱봉'],
@@ -132,6 +135,12 @@ export function TimelineView() {
     });
   }, [reqKey, liveTick, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // past-day replay: intraday bars after the replay time are not shown yet
+  const replayCursor = snap?.replay?.cursor ?? null;
+  const shownBars = useMemo(
+    () => (price?.ok ? barsUpTo(price.bars, replayCursor, chart.kind === 'tick' || chart.kind === 'min') : []),
+    [price, replayCursor, chart.kind],
+  );
   // memoized so hovering the price chart does not rebuild its paths
   const intradayDomain = useMemo<[number, number] | null>(() => (xs.length ? [domain[0], domain[1]] : null), [xs.length > 0, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const buyLabel = (v: number) => (v === 0 ? '준비' : v === buyConds.length + 1 ? '주문' : buyConds[v - 1] ? condKeyOf(buyConds[v - 1].no) + ' ' + buyConds[v - 1].title.slice(0, 10) : '');
@@ -216,10 +225,10 @@ export function TimelineView() {
           </div>
           <div className="chart-price" style={{ height: chartHeight(chart.ind) }}>
             {price && !price.ok && <div className="empty small">{price.error}</div>}
-            {price?.ok && price.bars.length === 0 && <div className="empty small">봉이 없습니다.</div>}
-            {price?.ok && price.bars.length > 0 && (
+            {price?.ok && shownBars.length === 0 && <div className="empty small">{price.bars.length ? '재현 시각까지의 봉이 없습니다.' : '봉이 없습니다.'}</div>}
+            {price?.ok && shownBars.length > 0 && (
               <PriceChart
-                bars={price.bars}
+                bars={shownBars}
                 warm={price.warm}
                 warmBot={price.warmBot}
                 indicators={chart.ind}

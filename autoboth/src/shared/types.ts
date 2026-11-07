@@ -151,6 +151,18 @@ export interface Snapshot {
   lines: number;
   lastLineTs?: number;
   files: FileProgress[];
+  /** past day loaded with time replay: the day's log time range and the replay cursor (null = whole day) */
+  replay?: ReplayInfo;
+}
+
+export interface ReplayInfo {
+  /** epoch ms of the first / last log line */
+  first: number;
+  last: number;
+  /** epoch ms the shown state is cut at; null = the whole day */
+  cursor: number | null;
+  /** log times of the buy/sell blocks in the daily buy_sell log (whole day) - replay jump targets */
+  trades: number[];
 }
 
 export type ConnState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'local';
@@ -191,6 +203,9 @@ export interface Settings {
   pollSec: number;
   /** r016 status poll interval (s) - separate from pollSec because every call starts Python on the server */
   statusPollSec: number;
+  /** manual funnel start time ("09:00") - used when sessionOpenAuto is off or the server NXT setting is unknown */
   sessionOpen: string;
+  /** funnel start time follows the server ENABLE_NXT_SESSION (08:00 / 09:00) */
+  sessionOpenAuto: boolean;
   retentionDays: number;
 }

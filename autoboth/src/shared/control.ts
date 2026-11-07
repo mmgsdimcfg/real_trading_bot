@@ -1,5 +1,8 @@
 /*
  * Update log
+ * - [2026-11-07] type=feat - NXT session: ControlState.nxt (r016 `get ENABLE_NXT_SESSION` - effective / running / pending),
+ *   parseNxt() and resolveSessionOpen(): the app's funnel start time follows the server's NXT setting when sessionOpenAuto is on
+ *   (NXT on -> 08:00 morning NXT session, off -> 09:00 regular session)
  * - [2026-11-07] type=fix - Server code moved to the monorepo folder `<remote root>/real_trading_bot/autobot` (was
  *   `<remote root>/auto_trading_src`). The sub-folder is one constant (SERVER_CODE_SUBDIR) used by the r016 and r015 commands.
  *   r016 `status` gets its own poll interval (statusPollMs): each call starts a Python process on the Raspberry Pi, so it is
@@ -143,6 +146,47 @@ export interface ControlState {
   error?: string;
   /** result line of the last service action */
   lastAction?: { verb: string; ok: boolean; message: string; at: number };
+  /** server ENABLE_NXT_SESSION (r016 get) - undefined until read */
+  nxt?: NxtState;
+}
+
+/** r001 ENABLE_NXT_SESSION as r016 `get` reports it */
+export interface NxtState {
+  /** value r003 uses at its next start (base or override) */
+  effective: boolean;
+  /** value the running r003 uses (null = not running / unknown) */
+  running: boolean | null;
+  base: boolean;
+  has_override: boolean;
+  /** effective differs from running -> r003 restart needed */
+  pending: boolean;
+}
+
+export const NXT_KEY = 'ENABLE_NXT_SESSION';
+/** r001 MORNING_NXT_START / REGULAR_START */
+export const NXT_OPEN = '08:00';
+export const REGULAR_OPEN = '09:00';
+
+/** `get ENABLE_NXT_SESSION` data -> NxtState (null when the key is missing or not a bool) */
+export function parseNxt(data: unknown): NxtState | null {
+  const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[NXT_KEY];
+  if (!v || typeof v.effective !== 'boolean') return null;
+  return {
+    effective: v.effective,
+    running: typeof v.running === 'boolean' ? v.running : null,
+    base: typeof v.base === 'boolean' ? v.base : v.effective,
+    has_override: !!v.has_override,
+    pending: !!v.pending,
+  };
+}
+
+/**
+ * Funnel start time for the log engine: blocks before it are counted as "pre-open". Auto mode follows the NXT setting the
+ * running r003 uses (or the stored one when it is not running); unknown -> the manual value.
+ */
+export function resolveSessionOpen(auto: boolean, manual: string, nxt: NxtState | undefined | null): string {
+  if (auto && nxt) return (nxt.running ?? nxt.effective) ? NXT_OPEN : REGULAR_OPEN;
+  return /^\d{1,2}:\d{2}$/.test(manual || '') ? manual : REGULAR_OPEN;
 }
 
 export type RiskProfile = 'conservative' | 'neutral' | 'aggressive';

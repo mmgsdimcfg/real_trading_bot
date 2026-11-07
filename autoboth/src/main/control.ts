@@ -8,6 +8,8 @@
  *   (status every 2 s until the unit leaves activating/deactivating), and a condition reload when the service start time changes
  *   (so "pending" marks clear after a restart). Rejections (rc 2/3) are never retried; an unknown result (timeout / SSH drop) is
  *   resolved by reading `status` again
+ * - [2026-11-07] type=feat - NXT session: state.nxt from `get ENABLE_NXT_SESSION` (by the main process right after connect, after set/unset/reset and when
+ *   the service start time changes); deps.onNxt lets the main process re-derive the funnel start time
  * - [2026-11-07] type=perf - status polling uses its own interval (settings.statusPollSec, default 30 s; 120 s while the window is
  *   minimized/hidden) instead of the 10 s log poll - each call starts a Python process on the Raspberry Pi
  */
@@ -17,6 +19,8 @@ import { userInfo } from 'node:os';
 import {
   buildR016Command,
   isMarketHours,
+  NXT_KEY,
+  parseNxt,
   parseR016Output,
   setArgs,
   statusPollMs,
@@ -25,6 +29,7 @@ import {
   checkWatchRows,
   type ControlState,
   type HistoryRow,
+  type NxtState,
   type R016Result,
   type R016Status,
   type RiskProfile,
@@ -101,6 +106,8 @@ export interface ControlDeps {
   win: () => BrowserWindow | null;
   /** reload the condition JSON (values_meta) - called after set/unset/reset and when the service start time changes */
   reloadConditions: () => Promise<unknown>;
+  /** the server NXT setting was read and changed (or read for the first time) */
+  onNxt?: (nxt: NxtState) => void;
 }
 
 const errMsg = (e: unknown) => String((e as Error)?.message || e).split('\n')[0];
@@ -160,6 +167,7 @@ export function createControl(deps: ControlDeps) {
           (prev.service?.started_at !== s.service?.started_at || (prev.service?.active_state === 'active') !== (s.service?.active_state === 'active'))
         ) {
           void deps.reloadConditions();
+          void refreshNxt();
         }
         return s;
       } catch (e) {
@@ -168,6 +176,22 @@ export function createControl(deps: ControlDeps) {
       }
     })().finally(() => (statusInFlight = null));
     return statusInFlight;
+  }
+
+  /** ENABLE_NXT_SESSION (base / override / running). Failures keep the last known value. */
+  async function refreshNxt(): Promise<NxtState | undefined> {
+    if (!deps.isConnected()) return state.nxt;
+    try {
+      const r = await client.run(['get', NXT_KEY]);
+      const nxt = r.ok ? parseNxt(r.data) : null;
+      if (!nxt) return state.nxt;
+      const prev = state.nxt;
+      push({ nxt });
+      if (!prev || JSON.stringify(prev) !== JSON.stringify(nxt)) deps.onNxt?.(nxt);
+      return nxt;
+    } catch {
+      return state.nxt;
+    }
   }
 
   const windowVisible = (): boolean => {
@@ -257,6 +281,7 @@ export function createControl(deps: ControlDeps) {
   async function afterOverrideChange(): Promise<void> {
     await deps.reloadConditions();
     await refreshStatus();
+    await refreshNxt();
   }
 
   // ---- IPC ----
@@ -338,6 +363,8 @@ export function createControl(deps: ControlDeps) {
     startPolling,
     stopPolling,
     refreshStatus,
+    refreshNxt,
+    nxt: () => state.nxt,
     clear: () => push({ status: null, statusAt: undefined, error: undefined }),
   };
 }

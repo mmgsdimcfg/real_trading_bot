@@ -5,6 +5,10 @@
  *   and local cache), local folder (fixtures), condition JSON refresh, and the list of unknown tags/reasons
  * - [2026-11-05] type=feat - SSH proxy option (same as TermH Add/Edit Host): 프록시 select (사용 안 함 / ProxyCommand / SOCKS5 / HTTP CONNECT)
  *   with the ProxyCommand line + %h/%p/%r hint, or proxy host/port/user/password (password stored encrypted like the SSH secret)
+ * - [2026-11-07] type=feat - "매매 시간 (서버 r003)": NXT session toggle (ENABLE_NXT_SESSION via r016 set / unset - back to the r001
+ *   value is an unset, so no override is left behind) with the stored / running value and the restart-needed mark. The funnel start
+ *   time ("장 시작 (집계 기준)") is automatic by default: it follows the server NXT setting (08:00 / 09:00); unticking it enables
+ *   the manual time
  * - [2026-11-05] type=feat - "고급: 전체 설정값" (collapsed): `schema --all` (~380 r001 constants) with a search box and the same value
  *   editor as the pipeline panel (only changed keys are sent in one `set`); the read-only note now lists the r016 control calls
  */
@@ -14,7 +18,7 @@ import { useStore } from '../store';
 import type { Settings } from '../../../shared/types';
 import { fmtInt } from '../lib';
 import { ymdDash } from '../../../shared/time';
-import type { SchemaDoc } from '../../../shared/control';
+import { NXT_KEY, resolveSessionOpen, type SchemaDoc } from '../../../shared/control';
 import { EditorActions, useValueEditing, ValuesEditor, type EditItem } from '../components/ValuesEditor';
 
 export function SettingsView() {
@@ -28,6 +32,7 @@ export function SettingsView() {
   const [msg, setMsg] = useState('');
   const [dates, setDates] = useState<{ remote: string[]; cached: string[] }>({ remote: [], cached: [] });
   const [date, setDate] = useState('');
+  const nxt = useStore((s) => s.control.nxt);
 
   useEffect(() => setForm(stored), [stored]);
   const loadDates = () => window.api.listDates().then(setDates);
@@ -156,8 +161,20 @@ export function SettingsView() {
           <input type="number" min={3} value={form.pollSec} onChange={(e) => set('pollSec', Number(e.target.value))} />
           <label>봇 상태 확인 주기 (초)</label>
           <input type="number" min={15} value={form.statusPollSec} onChange={(e) => set('statusPollSec', Number(e.target.value))} title="r016 status 호출 주기 - 호출마다 서버(라즈베리파이)에서 Python이 실행되므로 15초 이상. 창을 최소화하면 120초" />
-          <label>정규장 시작</label>
-          <input value={form.sessionOpen} onChange={(e) => set('sessionOpen', e.target.value)} title="이 시각 전의 반려는 '개장 전'으로 따로 집계 (깔때기에서 제외)" />
+          <label>장 시작 (집계 기준)</label>
+          <div className="inline-row" title="이 시각 전의 반려는 '개장 전'으로 따로 집계합니다 (깔때기에서 제외). r003의 매매 시간과는 무관합니다.">
+            <label className="check">
+              <input type="checkbox" checked={form.sessionOpenAuto} onChange={(e) => set('sessionOpenAuto', e.target.checked)} /> 자동 (서버 NXT 설정)
+            </label>
+            {form.sessionOpenAuto ? (
+              <span className="muted">
+                {resolveSessionOpen(true, form.sessionOpen, nxt)}
+                {nxt ? (nxt.running ?? nxt.effective ? ' - NXT 운용' : ' - 정규장만') : ' - 서버 값 모름, 수동 값 사용'}
+              </span>
+            ) : (
+              <input value={form.sessionOpen} onChange={(e) => set('sessionOpen', e.target.value)} placeholder="09:00" style={{ width: 90 }} />
+            )}
+          </div>
           <label>로컬 캐시 보관 (일)</label>
           <input type="number" min={1} value={form.retentionDays} onChange={(e) => set('retentionDays', Number(e.target.value))} />
         </div>
@@ -173,9 +190,11 @@ export function SettingsView() {
         </div>
         <p className="muted small">
           로그는 SFTP로 읽기만 합니다. 서버 변경(봇 실행/정지, 설정값, 감시목록)은 모두 <code>live_trading/r016_control.py</code>를 통해서만 하며, 주문 API와 계좌 정보에는 접근하지 않습니다. 비밀번호/키 암호/프록시 비밀번호는 Windows 사용자 계정으로 암호화(safeStorage)해 저장합니다.
-          정규장 시작 시각 변경은 다음 로드부터 적용됩니다.
+          장 시작(집계 기준) 시각이 바뀌면 열려 있는 날짜를 다시 집계합니다.
         </p>
       </section>
+
+      <NxtSection />
 
       <section>
         <h3>날짜 / 데이터 소스</h3>
@@ -263,6 +282,54 @@ export function SettingsView() {
         </div>
       </section>
     </div>
+  );
+}
+
+/** "매매 시간 (서버 r003)" - ENABLE_NXT_SESSION toggle */
+function NxtSection() {
+  const connected = useStore((s) => s.status.conn === 'connected');
+  const nxt = useStore((s) => s.control.nxt);
+  const running = useStore((s) => !!s.control.status?.running);
+  const bumpHistory = useStore((s) => s.bumpHistory);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const change = async (on: boolean) => {
+    if (!nxt || busy) return;
+    setBusy(true);
+    setMsg('저장 중…');
+    // back to the r001 value = remove the override (no leftover key); otherwise store the override
+    const r = on === nxt.base ? await window.api.ctlUnset([NXT_KEY]) : await window.api.ctlSet({ [NXT_KEY]: on });
+    setBusy(false);
+    bumpHistory();
+    setMsg(r.ok ? `저장했습니다.${running ? ' r003을 재시작하면 반영됩니다.' : ' 다음 r003 실행부터 적용됩니다.'}` : `실패: ${r.error}`);
+  };
+  const onOff = (v: boolean | null | undefined) => (v === true ? '켬' : v === false ? '끔' : '-');
+
+  return (
+    <section>
+      <h3>매매 시간 (서버 r003)</h3>
+      {!connected && <p className="muted">서버에 연결되어 있을 때만 바꿀 수 있습니다.{nxt ? ` (마지막으로 읽은 값: ${onOff(nxt.effective)})` : ''}</p>}
+      <div className="actions">
+        <label className="check" title="r001 ENABLE_NXT_SESSION">
+          <input type="checkbox" checked={!!nxt?.effective} disabled={!connected || !nxt || busy} onChange={(e) => void change(e.target.checked)} /> NXT 세션 운용
+          (오전 08:00~08:50, 오후 15:30~20:00)
+        </label>
+        {nxt && (
+          <span className="muted small">
+            저장값 {onOff(nxt.effective)}
+            {nxt.has_override ? ` (r001 기본 ${onOff(nxt.base)}에서 변경)` : ' (r001 기본값)'} · 실행 중 r003 {running ? onOff(nxt.running) : '정지'}
+            {nxt.pending && running && <b className="pill pend">재시작 필요</b>}
+          </span>
+        )}
+        <span className="muted small">{msg}</span>
+      </div>
+      <p className="muted small">
+        끄면 정규장(09:00~15:30)만 매매합니다: 15:20 신규 진입 마감·당일 매수분 청산, 15:30 종료. 켜면 당일 매수분 중 NXT 거래 가능 종목은 15:20 청산 대신
+        19:59:58에 청산하고(NXT 불가 종목은 15:20) 20:00에 종료합니다. 서버{' '}
+        <code>live_overrides.json</code>에 저장되며 r003을 다시 시작해야 반영됩니다.
+      </p>
+    </section>
   );
 }
 

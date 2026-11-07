@@ -2,11 +2,13 @@
  * Update log
  * - [2026-11-04] type=feat - App shell: status bar + tabs (pipeline / board / timeline / trades / settings)
  * - [2026-11-06] type=feat - 차트 tab (HTS-style chart) after 타임라인
+ * - [2026-11-07] type=feat - ReplayBar under the tabs (past day / local folder): time replay of the loaded day for every tab
  * - [2026-11-05] type=feat - 제어 tab (r003 start/stop/restart, pending changes, history) left of the pipeline tab
  */
 
 import { useStore, type Tab } from './store';
 import { StatusBar } from './components/StatusBar';
+import { ReplayBar } from './components/ReplayBar';
 import { PipelineView } from './views/PipelineView';
 import { ControlView } from './views/ControlView';
 import { BoardView } from './views/BoardView';
@@ -38,6 +40,7 @@ export function App() {
           </button>
         ))}
       </nav>
+      {tab !== 'control' && tab !== 'settings' && <ReplayBar />}
       <main className="view">
         {tab === 'control' && <ControlView />}
         {tab === 'pipeline' && <PipelineView />}

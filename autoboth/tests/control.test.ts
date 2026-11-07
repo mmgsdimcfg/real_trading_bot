@@ -5,6 +5,8 @@
  *   market-hours check, value-editor parsing per type (int rejects fractions, dict JSON errors block the save, only changed keys
  *   are sent), watchlist row checks / stdin body, and the main-process exec wrapper with a mocked SSH exec (command string, stdin,
  *   serial queue)
+ * - [2026-11-07] type=test - NXT: parseNxt on the r016 `get ENABLE_NXT_SESSION` output, resolveSessionOpen (auto follows the running
+ *   value, then the stored one; unknown / manual -> the manual time, bad manual -> 09:00)
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -32,6 +34,8 @@ import {
   setArgs,
   watchlistStdin,
   writerName,
+  parseNxt,
+  resolveSessionOpen,
   type R016Status,
   type SchemaKey,
 } from '../src/shared/control';
@@ -411,5 +415,36 @@ describe('chart reuse windows (2026-11-07)', () => {
     expect(quoteCacheMs('2026-11-09T09:30:05')).toBe(CHART_CACHE_MS.quoteLive);
     expect(quoteCacheMs('2026-11-09T15:31:00')).toBe(CHART_CACHE_MS.quoteIdle);
     expect(quoteCacheMs('2026-11-08T10:00:00')).toBe(CHART_CACHE_MS.quoteIdle); // Sunday
+  });
+});
+
+describe('NXT session setting', () => {
+  // real output of `r016_control.py get ENABLE_NXT_SESSION` (2026-11-07, r003 stopped)
+  const out = {
+    values: { ENABLE_NXT_SESSION: { base: true, override: null, has_override: false, effective: true, running: null, pending: false } },
+    unknown: [],
+    applied_state_known: false,
+  };
+
+  it('parses r016 get', () => {
+    expect(parseNxt(out)).toEqual({ effective: true, running: null, base: true, has_override: false, pending: false });
+    expect(parseNxt({ values: {} })).toBeNull();
+    expect(parseNxt(null)).toBeNull();
+    expect(parseNxt({ values: { ENABLE_NXT_SESSION: { effective: 'yes' } } })).toBeNull();
+  });
+
+  it('auto funnel start follows the running value, then the stored one', () => {
+    const n = parseNxt(out)!;
+    expect(resolveSessionOpen(true, '09:00', n)).toBe('08:00');
+    expect(resolveSessionOpen(true, '09:00', { ...n, effective: false })).toBe('09:00');
+    // running r003 still uses NXT although the stored value is off (restart pending)
+    expect(resolveSessionOpen(true, '09:00', { ...n, effective: false, running: true, pending: true })).toBe('08:00');
+  });
+
+  it('manual time when auto is off or the server value is unknown', () => {
+    const n = parseNxt(out)!;
+    expect(resolveSessionOpen(false, '09:10', n)).toBe('09:10');
+    expect(resolveSessionOpen(true, '09:10', undefined)).toBe('09:10');
+    expect(resolveSessionOpen(false, 'abc', n)).toBe('09:00');
   });
 });
