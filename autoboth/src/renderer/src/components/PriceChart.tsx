@@ -24,6 +24,8 @@
  * - [2026-11-07] type=feat - Drawing tools (with drawKey = symbol code): 선택 / 가로선 / 세로선 / 추세선 (two clicks) / 지우기 at the top
  *   right, lines kept per code (drawings.ts) in price / time coordinates so they stay put when zooming, panning or switching bar
  *   size; right-click a line to delete it, Esc cancels. Drawn on the price pane only
+ * - [2026-11-07] type=feat - A drawing tool stays selected (draw several lines; ↖ / Esc to stop). Horizontal lines show the price, the
+ *   difference to the latest close and to the position's average price; vertical lines show the time and that bar's OHLC / volume
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -515,7 +517,7 @@ export function PriceChart(props: Props) {
       addDrawing(drawKey, { type: 't', t1: pending.t, p1: pending.p, t2: t, p2: p });
       setPending(null);
     }
-    setTool('pointer');
+    // the tool stays selected: several lines in a row; ↖ (or Esc) ends drawing
     return true;
   };
 
@@ -760,12 +762,14 @@ export function PriceChart(props: Props) {
                 };
                 let x1: number, y1: number, x2: number, y2: number;
                 let label = '';
+                let vlabel = '';
                 if (d.type === 'h') {
                   [x1, x2, y1, y2] = [L, L + W, model.sy(d.p), model.sy(d.p)];
-                  label = fmtInt(d.p);
+                  label = hLineInfo(d.p, last?.b.c, buyPrice);
                 } else if (d.type === 'v') {
                   const x = model.xOfT(d.t);
                   [x1, x2, y1, y2] = [x, x, TOP, TOP + priceH];
+                  vlabel = vLineInfo(d.t, barAtTime(bars, d.t), intraday);
                 } else [x1, y1, x2, y2] = [model.xOfT(d.t1), model.sy(d.p1), model.xOfT(d.t2), model.sy(d.p2)];
                 return (
                   <g key={d.id} className="pc-draw" onContextMenu={del}>
@@ -776,7 +780,12 @@ export function PriceChart(props: Props) {
                         {label}
                       </text>
                     )}
-                    <title>{d.type === 'h' ? `가로선 ${label}` : d.type === 'v' ? `세로선 ${fmtKstTime(d.t)}` : '추세선'} · 우클릭 = 삭제</title>
+                    {vlabel && (
+                      <text x={x1 + 4} y={TOP + 12} className="pc-draw-label">
+                        {vlabel}
+                      </text>
+                    )}
+                    <title>{d.type === 'h' ? `가로선 ${label}` : d.type === 'v' ? `세로선 ${vlabel}` : `추세선 ${fmtInt(d.p1)} → ${fmtInt(d.p2)}`} · 우클릭 = 삭제</title>
                   </g>
                 );
               })}
@@ -812,9 +821,9 @@ export function PriceChart(props: Props) {
           {(
             [
               ['pointer', '↖', '선택 (그리기 끝)'],
-              ['h', '―', '가로선: 가격 칸을 클릭'],
-              ['v', '│', '세로선: 가격 칸을 클릭'],
-              ['t', '╱', '추세선: 시작점과 끝점을 차례로 클릭'],
+              ['h', '―', '가로선: 가격 칸을 클릭 (여러 개 연속, ↖ 또는 Esc로 끝)'],
+              ['v', '│', '세로선: 가격 칸을 클릭 (여러 개 연속, ↖ 또는 Esc로 끝)'],
+              ['t', '╱', '추세선: 시작점과 끝점을 차례로 클릭 (여러 개 연속)'],
             ] as [DrawTool, string, string][]
           ).map(([k, icon, title]) => (
             <button key={k} className={tool === k ? 'on' : ''} title={title} onClick={() => (setTool(k), setPending(null))}>
@@ -858,6 +867,39 @@ export function PriceChart(props: Props) {
       {model && model.empty && <div className="empty small">이 구간에 해당하는 봉이 없습니다.</div>}
     </div>
   );
+}
+
+/** the bar holding time t (last bar starting at or before it) */
+function barAtTime(bars: Bar[], t: number): Bar | undefined {
+  let lo = 0;
+  let hi = bars.length - 1;
+  let found: Bar | undefined;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].t <= t) (found = bars[mid]), (lo = mid + 1);
+    else hi = mid - 1;
+  }
+  return found;
+}
+
+const signedPct = (a: number, b: number) => {
+  const v = ((a - b) / b) * 100;
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+};
+
+/** horizontal line: "22,450 · 현재가 대비 +1.20% · 평단 대비 -0.50%" */
+function hLineInfo(p: number, lastClose: number | undefined, buyPrice: number | undefined): string {
+  const parts = [fmtInt(p)];
+  if (lastClose && lastClose > 0) parts.push(`최근가 ${fmtInt(lastClose)} 대비 ${signedPct(p, lastClose)}`);
+  if (buyPrice && buyPrice > 0) parts.push(`평단 대비 ${signedPct(p, buyPrice)}`);
+  return parts.join(' · ');
+}
+
+/** vertical line: "11:30:00 · 시 21,600 고 21,750 저 21,600 종 21,650 · 량 964" (daily kinds: the date) */
+function vLineInfo(t: number, b: Bar | undefined, intraday: boolean): string {
+  const when = intraday ? fmtKstTime(t) : fmtKstDateTime(t).slice(0, 10);
+  if (!b) return when;
+  return `${when} · 시 ${fmtInt(b.o)} 고 ${fmtInt(b.h)} 저 ${fmtInt(b.l)} 종 ${fmtInt(b.c)} · 량 ${fmtInt(b.v)}`;
 }
 
 const key2digits = (k: IndicatorKey) => (k === 'obv' ? 0 : k === 'macd' ? 2 : 1);
