@@ -5,6 +5,8 @@
  *   DayEngine fed only with the lines logged at or before ts: moving forward feeds just the new lines, moving back rebuilds from
  *   the first line. Lines without a time prefix (continuations) take the time of the line before them. Pure TypeScript (worker +
  *   vitest); the server is not involved - it works on the bytes the session already read
+ * - [2026-11-07] type=feat - ReplayInfo.gaps: stretches of at least GAP_MIN_MS without a main-log line (r003 stopped, e.g.
+ *   2026-11-06 11:05-13:45) so the replay bar can shade them and playback can skip them
  */
 
 import { DayEngine, type EngineOptions } from './engine';
@@ -48,6 +50,18 @@ class LineStore {
     return this.ts.find((t) => t > 0);
   }
 
+  /** [last line before, first line after] of every pause >= minMs between consecutive stamped lines */
+  gaps(minMs: number): [number, number][] {
+    const out: [number, number][] = [];
+    let prev = 0;
+    for (const t of this.ts) {
+      if (t <= 0 || t === prev) continue;
+      if (prev > 0 && t - prev >= minMs) out.push([prev, t]);
+      prev = t;
+    }
+    return out;
+  }
+
   /** times of the lines whose text after the prefix matches `re` */
   marks(re: RegExp): number[] {
     const out: number[] = [];
@@ -55,6 +69,9 @@ class LineStore {
     return out;
   }
 }
+
+/** a pause between two main-log lines this long counts as "r003 not logging" */
+export const GAP_MIN_MS = 5 * 60000;
 
 // buy_sell block line "... [INFO] >>> 159010_아스플로 Buy - reason=..."
 const BS_BLOCK_LINE_RE = /\]\s*>>> \d{6}_\S*\s+(?:Buy|Sell) - /;
@@ -70,6 +87,8 @@ export class DayFeed {
   private readonly names: [string, string][] = [];
   private tradeMarks: number[] = [];
   private marksAt = -1;
+  private gapList: [number, number][] = [];
+  private gapsAt = -1;
 
   constructor(
     readonly date: string,
@@ -139,7 +158,11 @@ export class DayFeed {
       this.tradeMarks = this.bs.marks(BS_BLOCK_LINE_RE);
       this.marksAt = this.bs.lines.length;
     }
-    return { first: Math.min(...firsts), last: Math.max(...lasts), cursor: this.cursor, trades: this.tradeMarks };
+    if (this.gapsAt !== this.main.lines.length) {
+      this.gapList = this.main.gaps(GAP_MIN_MS);
+      this.gapsAt = this.main.lines.length;
+    }
+    return { first: Math.min(...firsts), last: Math.max(...lasts), cursor: this.cursor, trades: this.tradeMarks, gaps: this.gapList };
   }
 
   private engine(): DayEngine {

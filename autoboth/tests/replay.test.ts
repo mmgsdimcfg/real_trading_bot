@@ -1,7 +1,7 @@
 /*
  * Update log
  * - [2026-11-07] type=test - Past-day time replay (DayFeed in shared/replay.ts): the cut follows the log time, moving forward feeds
- *   only new lines, moving back rebuilds, null = whole day, live feeds keep no lines; trade marks; barsUpTo for the charts
+ *   only new lines, moving back rebuilds, null = whole day, live feeds keep no lines; trade marks; log gaps; barsUpTo for the charts
  */
 
 import { describe, expect, it } from 'vitest';
@@ -44,7 +44,18 @@ describe('DayFeed replay', () => {
     const s = feed().snapshot();
     expect(s.trades).toHaveLength(2);
     expect(s.regime).toBe('BEAR');
-    expect(s.replay).toEqual({ first: at('08:00:01'), last: at('15:00:00'), cursor: null, trades: [at('09:09:26'), at('09:15:56')] });
+    expect(s.replay).toEqual({
+      first: at('08:00:01'),
+      last: at('15:00:00'),
+      cursor: null,
+      trades: [at('09:09:26'), at('09:15:56')],
+      // main-log pauses of 5 min or more (the continuation line keeps 09:00:05)
+      gaps: [
+        [at('08:00:02'), at('09:00:05')],
+        [at('09:00:05'), at('09:30:00')],
+        [at('09:30:00'), at('15:00:00')],
+      ],
+    });
   });
 
   it('cuts every part of the state at the cursor', () => {
@@ -105,6 +116,14 @@ describe('DayFeed replay', () => {
     const s = f.snapshot();
     expect(s.replay).toBeUndefined();
     expect(s.trades).toHaveLength(2);
+  });
+});
+
+describe('log gaps', () => {
+  it('a pause under 5 minutes is not a gap', () => {
+    const f = new DayFeed('20261104', conditions, {}, true);
+    f.feedMain(['2026-11-04 11:00:00,000 [INFO] a', '2026-11-04 11:04:59,000 [INFO] b', '2026-11-04 13:45:59,000 [INFO] c']);
+    expect(f.snapshot().replay?.gaps).toEqual([[at('11:04:59'), at('13:45:59')]]);
   });
 });
 

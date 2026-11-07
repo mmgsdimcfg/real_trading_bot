@@ -163,6 +163,8 @@ export interface ReplayInfo {
   cursor: number | null;
   /** log times of the buy/sell blocks in the daily buy_sell log (whole day) - replay jump targets */
   trades: number[];
+  /** [from, to] stretches without main-log lines (r003 not running) - shaded on the replay bar, skipped while playing */
+  gaps: [number, number][];
 }
 
 export type ConnState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'local';

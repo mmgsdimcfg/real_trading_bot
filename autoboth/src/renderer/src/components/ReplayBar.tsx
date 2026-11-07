@@ -5,6 +5,8 @@
  *   "전체" (whole day). Every tab (pipeline, board, timeline, chart markers, trades) shows the state cut at the cursor because
  *   the main process re-sends the snapshot after each move. Cursor calls are coalesced: while one is running only the latest
  *   requested time is kept and sent next, so dragging or fast playback never queues work in the engine worker
+ * - [2026-11-07] type=feat - Log gaps (r003 not running, ReplayInfo.gaps) are shaded on the slider, the time shows "r003 로그 없음"
+ *   inside one, and playback jumps over them
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -73,7 +75,10 @@ export function ReplayBar() {
     if (!playing || !replay) return;
     const id = setInterval(() => {
       const cur = posRef.current ?? first;
-      const nxt = cur + speed * TICK_MS;
+      let nxt = cur + speed * TICK_MS;
+      // nothing happens while r003 was not logging - jump to where the logs continue
+      const gap = (replay.gaps || []).find(([a, b]) => nxt > a && nxt < b);
+      if (gap) nxt = gap[1];
       if (nxt >= last) {
         moveTo(last);
         setPlaying(false);
@@ -95,6 +100,7 @@ export function ReplayBar() {
     moveTo(kstToEpoch(ymdDash(date), hms));
   };
   const pct = (t: number) => `${((t - first) / Math.max(1, last - first)) * 100}%`;
+  const inGap = (replay.gaps || []).find(([a, b]) => shown > a && shown < b);
 
   return (
     <div className="replaybar">
@@ -142,6 +148,9 @@ export function ReplayBar() {
             moveTo(Number(e.target.value));
           }}
         />
+        {(replay.gaps || []).map(([a, b], i) => (
+          <i key={`g${i}`} className="replay-gap" style={{ left: pct(a), width: `calc(${pct(b)} - ${pct(a)})` }} title={`r003 로그 없음 ${fmtKstTime(a)} ~ ${fmtKstTime(b)}`} />
+        ))}
         {trades.map((t, i) => (
           <i key={i} className="replay-mark" style={{ left: pct(t) }} title={`매매 ${fmtKstTime(t)}`} />
         ))}
@@ -149,6 +158,11 @@ export function ReplayBar() {
       <span className="replay-time mono" title={`로그 범위 ${fmtKstTime(first)} ~ ${fmtKstTime(last)}`}>
         {pos === null ? `전체 (~${fmtKstTime(last)})` : fmtKstTime(pos)}
       </span>
+      {inGap && (
+        <span className="muted small" title="이 구간에는 r003 로그가 없습니다 (r003 정지). 재생하면 건너뜁니다.">
+          r003 로그 없음 ~{fmtKstTime(inGap[1])}
+        </span>
+      )}
       <input
         className="replay-jump mono"
         placeholder="HH:MM"
