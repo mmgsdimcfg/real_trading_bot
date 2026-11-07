@@ -19,6 +19,12 @@
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-07] type=feat owner=claude
+    summary: bars KIS 폴백(r018, 읽기 전용) - 서버 파일이 없을 때만: day/week/month = KIS 일봉 3년, min = KIS 1분봉(당일
+      inquire_time_itemchartprice / 지난 날짜 inquire_time_dailychartprice, 직전일 예열 최대 3일 시도), tick 은 오류 문구 고정.
+      KIS 오류는 kis_code + rc 3(_rc). KIS 응답이면 name 추가.
+    impact: tooling
+    compatibility: backward-compatible (파일이 있으면 기존과 동일)
 - [2026-11-06] type=fix owner=claude
     summary: Codex 검토 반영 - (1) 캐시에 (st_dev, st_ino) + 오프셋 직전 바이트 지문을 저장해 교체/축소-재증가 파일이면 재구성
       (2) 예열 기준가를 그 날짜 폴더 _prev_close.json(g003 parity)에서 먼저 읽고 warmup_basis 로 알림(실전 r003 은 KIS stck_sdpr -
@@ -44,6 +50,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import time
@@ -391,6 +398,11 @@ def day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str] | 
             return None
         df = read_daily(path)
         src = str(path)
+    return _shape_daily(df, date_str, kind), src
+
+
+def _shape_daily(df: pd.DataFrame, date_str: str, kind: str) -> pd.DataFrame:
+    """daily frame (index date, open..volume) -> day/week/month bars t,o,h,l,c,v,n,t_last up to date_str."""
     df = df[df.index <= pd.Timestamp(datetime.strptime(date_str, "%Y%m%d"))]
     if kind == "week":
         df = df.resample("W-FRI", label="left", closed="right").agg(
@@ -400,7 +412,43 @@ def day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str] | 
         df = df.resample("MS").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open"])
     out = pd.DataFrame({"t": df.index, "o": df["open"].to_numpy(), "h": df["high"].to_numpy(), "l": df["low"].to_numpy(),
                         "c": df["close"].to_numpy(), "v": df["volume"].to_numpy(), "n": None, "t_last": df.index})
-    return out.reset_index(drop=True), src
+    return out.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# KIS fallback (r018, read-only) - only when the server has no file for the code/day
+# ---------------------------------------------------------------------------
+KIS_WARMUP_MAX_DAYS = 3
+
+
+def _kis():
+    import r018_kis_market as r018  # noqa: E402  (requests/yaml - only when a fallback is needed)
+    return r018
+
+
+def kis_day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str, str | None]:
+    d = _kis().daily(code)
+    df = pd.DataFrame([r[1:] for r in d["rows"]], columns=["open", "high", "low", "close", "volume"],
+                      index=pd.to_datetime([r[0] for r in d["rows"]], format="%Y%m%d"))
+    return _shape_daily(df, date_str, kind), d["source"], d.get("name")
+
+
+def kis_minute_bars(date_str: str, code: str, interval: int) -> tuple[pd.DataFrame, str, str | None] | None:
+    m = _kis().minutes(code, date_str)
+    if not m or not m["rows"]:
+        return None
+    idx = pd.to_datetime([date_str + r[0] for r in m["rows"]], format="%Y%m%d%H%M%S")
+    m1 = pd.DataFrame([r[1:] for r in m["rows"]], columns=["open", "high", "low", "close", "volume"], index=idx)
+    if interval > 1:
+        m1 = m1.resample(f"{interval}min", label="left", closed="left").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open"])
+    out = pd.DataFrame({"t": m1.index, "o": m1["open"].to_numpy(), "h": m1["high"].to_numpy(), "l": m1["low"].to_numpy(),
+                        "c": m1["close"].to_numpy(), "v": m1["volume"].to_numpy(), "n": None, "t_last": m1.index})
+    return out.reset_index(drop=True), m["source"], m.get("name")
+
+
+def _kis_error(exc) -> dict:
+    return {"ok": False, "error": f"KIS: {exc.message}", "kis_code": exc.code, "_rc": 3}
 
 
 def _bars_json(df: pd.DataFrame) -> list[list]:
@@ -524,25 +572,60 @@ def _prev_days(date_str: str, max_back: int = 10):
         yield (base - timedelta(days=back)).strftime("%Y%m%d")
 
 
+_KIS_CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
+
+
 def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: int = 1, ticks: int = 60, warmup: int = 0,
          since_ts: str | None = None, all_sessions: bool = False) -> dict:
     t0 = time.time()
     code = str(code).zfill(6)
+    name = None
     if kind in ("day", "week", "month"):
         res = day_bars(date_str, code, kind)
         if res is None:
-            return {"ok": False, "error": f"no daily data for {code} around {date_str}"}
-        df, src = res
+            if not _KIS_CODE_RE.fullmatch(code):
+                return {"ok": False, "error": f"no daily data for {code} around {date_str}"}
+            r018 = _kis()
+            try:
+                df, src, name = kis_day_bars(date_str, code, kind)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            except r018.KisError as exc:
+                return _kis_error(exc)
+        else:
+            df, src = res
         warm_rows, warm_date = [], None
     elif kind in ("tick", "min"):
         res = _intraday_bars(date_str, code, kind, ticks, interval, all_sessions)
+        kis_used = False
         if res is None:
-            return {"ok": False, "error": f"no tick file / _10s file for {code} on {date_str}"}
-        df, src = res
+            if kind == "tick":
+                return {"ok": False, "error": "tick bars need the tick collector (not subscribed): use min"}
+            r018 = _kis()
+            try:
+                kres = kis_minute_bars(date_str, code, interval)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            except r018.KisError as exc:
+                return _kis_error(exc)
+            if kres is None:
+                return {"ok": False, "error": f"no tick file / _10s file for {code} on {date_str} (KIS has no minute bars either)"}
+            df, src, name = kres
+            kis_used = True
+        else:
+            df, src = res
         warm_rows, warm_date = [], None
         if warmup and warmup > 0:
+            kis_tries = 0
             for d in _prev_days(date_str):
                 prev = _intraday_bars(d, code, kind, ticks, interval, all_sessions)
+                if (prev is None or prev[0].empty) and kind == "min" and kis_used and kis_tries < KIS_WARMUP_MAX_DAYS:
+                    kis_tries += 1
+                    try:
+                        kp = kis_minute_bars(d, code, interval)
+                    except (ValueError, _kis().KisError):
+                        kp = None
+                    prev = (kp[0], kp[1]) if kp else None
                 if prev is not None and not prev[0].empty:
                     warm_rows, warm_date = _bars_json(prev[0].tail(int(warmup))), d
                     break
@@ -558,7 +641,8 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
     if n and n > 0:
         df = df.tail(int(n))
     next_since = _ts(df["t"].iloc[-1]) if not df.empty else (since_ts or None)
-    return {"ok": True, "kind": kind, "code": code, "date": date_str, "source": src,
+    out_name = {"name": name} if name else {}
+    return {"ok": True, "kind": kind, "code": code, "date": date_str, "source": src, **out_name,
             "ticks": ticks if kind == "tick" else None, "interval": interval if kind == "min" else None,
             "sessions": "all" if all_sessions else "+".join(TRADING_SESSIONS),
             "columns": ["t", "o", "h", "l", "c", "v"], "bars": _bars_json(df), "count": int(len(df)),
