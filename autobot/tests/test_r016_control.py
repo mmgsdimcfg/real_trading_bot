@@ -379,5 +379,35 @@ class ProcScanTests(unittest.TestCase):
         self.assertIn("--dry-run", found[0]["cmdline"])
 
 
+class LazyChartImportTest(unittest.TestCase):
+    """status 폴링(AutoBotH 30 s)이 r017/pandas import 비용(~1 s, ~50 MB)을 내지 않는지."""
+
+    def test_non_chart_command_does_not_import_r017_or_pandas(self):
+        code = (
+            "import contextlib, io, sys, tempfile\n"
+            f"sys.path.insert(0, {str(ROOT / 'live_trading')!r})\n"
+            "import r016_control as m\n"
+            "with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):\n"
+            "    from pathlib import Path\n"
+            "    m.main(['history', '-n', '1'], paths=m.ControlPaths(runtime_root=Path(d), live_trading_dir=Path(d)))\n"
+            "print('r017_chart_data' in sys.modules, 'pandas' in sys.modules)\n"
+        )
+        env = dict(os.environ, AUTO_TRADING_LIVE_OVERRIDES="0")
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip().splitlines()[-1], "False False")
+
+    def test_chart_command_args_are_parsed_by_r017(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
+            r016.main(["bars", "--kind", "day"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--date", err.getvalue())
+
+    def test_unknown_option_on_other_command_is_rejected(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            r016.main(["status", "--bogus"])
+        self.assertEqual(cm.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

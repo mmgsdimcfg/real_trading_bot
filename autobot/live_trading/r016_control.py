@@ -27,6 +27,11 @@
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-07] type=perf owner=claude
+    summary: r017(pandas) 지연 import - indicators/bars 일 때만 불러와 r017 인자 정의로 다시 파싱. status 2.1 s/70 MB -> 0.4 s/17 MB
+      (AutoBotH 30초 폴링, 라즈베리파이 부하). 그 밖의 명령에 모르는 옵션이 오면 기존처럼 rc 2.
+    impact: tooling
+    compatibility: backward-compatible (명령/출력 동일)
 - [2026-11-06] type=feat owner=claude
     summary: AutoBotH 차트 요청 - indicators/bars 하위 명령(r017 위임), collector 블록에 started_at(/proc starttime) 추가.
     impact: tooling
@@ -781,13 +786,20 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("--stdin", action="store_true", help="read entries (one per line) from stdin")
     p = sub.add_parser("collector")
     p.add_argument("action", choices=["status", "restart"])
-    import r017_chart_data as r017  # noqa: E402  (pandas import only when these commands are used would be nicer; cheap enough)
-    r017.add_subparsers(sub)
-    args = ap.parse_args(argv)
+    # 차트 명령(indicators/bars)은 r017(pandas, r012/r002)을 불러와야 해서 기동이 ~1 s 느리다. 나머지 명령(status 폴링 등)은
+    # 그 비용을 내지 않도록 자리만 등록하고, 이 두 명령일 때만 r017을 import해 r017의 인자 정의로 다시 파싱한다.
+    for chart_cmd in ("indicators", "bars"):
+        sub.add_parser(chart_cmd, add_help=False)
+    args, extra = ap.parse_known_args(argv)
 
     if args.cmd in ("indicators", "bars"):
-        out = r017.run_command(args)
+        import r017_chart_data as r017  # noqa: E402
+        cp = argparse.ArgumentParser(prog=f"{ap.prog}")
+        r017.add_subparsers(cp.add_subparsers(dest="cmd", required=True))
+        out = r017.run_command(cp.parse_args([args.cmd, *extra]))
         return _emit(out, 0 if out.get("ok") else 2)
+    if extra:
+        ap.error(f"unrecognized arguments: {' '.join(extra)}")
 
     if args.cmd == "status":
         return _emit(status(paths, runner))
