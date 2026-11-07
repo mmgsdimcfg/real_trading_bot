@@ -11,6 +11,9 @@
  *   (see DayEngine.push). [WARMUP] stays ignored
  * - [2026-11-05] type=feat - [HOLD SKIP] (logged as "[🔴HOLD SKIP ]": a held position that was not bought today, e.g.
  *   NOT_TODAY_BUY_POSITION, so the sell conditions are not evaluated for it) becomes a sell-side status event on the 'PREP' row
+ * - [2026-11-07] type=fix - Unknown-list leftovers of 2026-11-04 mapped: [SELL EVAL] OK <reason> (r006 AUX / BB down-cross sell, no
+ *   [SELL TRIGGER] line) -> sell condition by reason, pass; [TRADE] BUY REPRICE RESUBMIT and [BUY CXL REJ] -> buy ORDER info;
+ *   [BUY SKIP] CIRCUIT_BREAKER_ACTIVE (breaker removed from r003 the same day) -> PREP status info (a global pause, not a block)
  */
 
 import type { EvalResult, Side } from './types';
@@ -146,6 +149,7 @@ const BUY_ORDER_TAGS = new Set([
   'BUY RP ABAND',
   'BUY EXEC',
   'BUY NOFILL',
+  'BUY CXL REJ',
   'REENTRY LIVE',
 ]);
 const SELL_ORDER_TAGS = new Set(['SELL SUBMIT', 'SELL FILLED', 'SELL EXEC', 'SELL PARTIAL', 'SEL RSUB ERR', 'SELL RSUB ERR']);
@@ -221,6 +225,9 @@ export function classify(tag: string, rest: string): ClassifyOutcome {
       return ev({ side: 'buy', condKey: hit.rule.cond, sub: hit.rule.sub, result: 'fail', reason: hit.reason, steps });
     }
     case 'BUY SKIP': {
+      // hard-stop circuit breaker, removed from r003 on 2026-11-04 (only in older logs): a global pause of all buys, not a condition -
+      // gray status dots on the PREP row (thinned like [CHECK]), not counted as blocks
+      if (rest.includes('CIRCUIT_BREAKER_ACTIVE')) return ev({ side: 'buy', condKey: 'PREP', sub: STATUS_SUB, result: 'info', reason: firstSeg(rest) });
       const hit = firstMatch(BUY_SKIP_RULES, rest);
       if (!hit) return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
       return ev({ side: 'buy', condKey: hit.rule.cond, result: 'fail', reason: hit.reason });
@@ -253,6 +260,17 @@ export function classify(tag: string, rest: string): ClassifyOutcome {
       const hit = scanTokens(SELL_RULES, rest);
       if (!hit) return { kind: 'unknown', side: 'sell', reason: firstSeg(rest) };
       return ev({ side: 'sell', condKey: hit.rule.cond, result: 'pass', reason: hit.reason });
+    }
+    case 'SELL EVAL': {
+      // r006 logs "OK <reason>" after the sell order was placed (AUX / BB down-cross path, no separate [SELL TRIGGER])
+      const hit = /^OK\s/.test(rest.trim()) ? scanTokens(SELL_RULES, rest) : null;
+      if (!hit) return { kind: 'unknown', side: 'sell', reason: firstSeg(rest) };
+      return ev({ side: 'sell', condKey: hit.rule.cond, result: 'pass', reason: hit.reason });
+    }
+    case 'TRADE': {
+      // "[TRADE] <code> | BUY REPRICE RESUBMIT | qty=..." (the other [TRADE] lines carry no symbol and are global)
+      if (rest.includes('BUY REPRICE RESUBMIT')) return ev({ side: 'buy', condKey: 'ORDER', sub: 'BUY REPRICE RESUBMIT', result: 'info', reason: firstSeg(rest) });
+      return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
     }
     case 'HOLD SKIP':
       return ev({ side: 'sell', condKey: 'PREP', sub: STATUS_SUB, result: 'info', reason: firstSeg(rest) });

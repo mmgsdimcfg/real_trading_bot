@@ -59,6 +59,9 @@ describe('(b) log -> condition mapping', () => {
     ['BUY SKIP', 'HARD_STOP_REENTRY_BLOCKED_TODAY', '_006'],
     ['BUY SKIP', 'DAILY_LOSS_LIMIT -1.20% <= -1.00%', '_025'],
     ['BUY SKIP', 'MAX_OPEN_POSITIONS 5/5', '_026'],
+    ['BUY SKIP', 'CIRCUIT_BREAKER_ACTIVE until=12:24:03 count=3', 'PREP', 'status'],
+    ['TRADE', 'BUY REPRICE RESUBMIT | qty=10 | leg=limit', 'ORDER', 'BUY REPRICE RESUBMIT'],
+    ['BUY CXL REJ', 'leg=limit | 주문 취소 불가', 'ORDER', 'BUY CXL REJ'],
     ['REJECT', 'TRIPLE_CROSS_MISSING_TICK_ABSTAIN_NO_FILE | GATES', '_008', 'trigger'],
     ['REJECT', 'TICK_LOW_DENSITY_12_LT_30', '_008', 'trigger'],
     ['REJECT', 'TRIPLE_CROSS_1MIN_CHASE_BUY_BB_GAP_2.1%', '_008', 'candle'],
@@ -133,6 +136,9 @@ describe('(b) log -> condition mapping', () => {
     ['SELL TRIGGER', 'PEAK_NEXT_BAR_BEARISH_0.5%', '_003', 'pass'],
     ['SELL TRIGGER', 'qty=17 | reason=REGULAR_CLOSE_SESSION_FORCE_CLOSE_ALL_1520', 'SESSION_CLOSE', 'pass'],
     ['SELL FILLED', 'filled=17/17 | price=28,511 | remaining=0 | pnl=-2.10% | reason=HARD_STOP_LOSS_1.7PCT', 'ORDER', 'pass'],
+    // 2026-11-04 unknown-list leftovers (real lines)
+    ['SELL EVAL', 'OK AUX_REVERSAL_SCORE_3 | 11:14:10 | LIVE 22,550 | BB 21945.0->21940.0 | RSI=48.5 SIG=46.7', '_022', 'pass'],
+    ['SELL EVAL', 'OK LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_2 | 10:14:00 | LIVE 30,100', '_022', 'pass'],
   ];
   for (const [tag, rest, cond, result] of sellCases) {
     it(`${tag} ${rest.slice(0, 40)} -> ${cond}`, () => {
