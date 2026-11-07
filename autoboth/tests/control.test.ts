@@ -15,6 +15,9 @@ import {
   buildR016Command,
   serverCodeDir,
   statusPollMs,
+  kstNowIso,
+  quoteCacheMs,
+  CHART_CACHE_MS,
   checkWatchRows,
   collectChanges,
   extractJson,
@@ -397,5 +400,16 @@ describe('server code folder and status poll interval (2026-11-07)', () => {
     expect(statusPollMs(45, true)).toBe(45000);
     expect(statusPollMs(30, false)).toBe(120000);
     expect(statusPollMs(300, false)).toBe(300000);
+  });
+});
+
+describe('chart reuse windows (2026-11-07)', () => {
+  it('formats KST regardless of the PC time zone', () => {
+    expect(kstNowIso(Date.UTC(2026, 10, 9, 0, 30, 5))).toBe('2026-11-09T09:30:05');
+  });
+  it('reuses quotes 8 s in market hours and 5 min outside', () => {
+    expect(quoteCacheMs('2026-11-09T09:30:05')).toBe(CHART_CACHE_MS.quoteLive);
+    expect(quoteCacheMs('2026-11-09T15:31:00')).toBe(CHART_CACHE_MS.quoteIdle);
+    expect(quoteCacheMs('2026-11-08T10:00:00')).toBe(CHART_CACHE_MS.quoteIdle); // Sunday
   });
 });

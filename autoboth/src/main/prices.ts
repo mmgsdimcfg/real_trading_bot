@@ -13,12 +13,15 @@
  *   or KIS once the server adds it - see docs/server_kis_market_data_request_20261106.md), week/month are built from them here; tick /
  *   minute bars still read the files over SFTP first (incremental, quote from ticks) and fall back to `bars` when the server has no file
  *   for the code/day (not collected, today's minutes before g001 runs). An older server without `bars` keeps the SFTP-only behaviour
+ * - [2026-11-07] type=perf - r016 `bars` answers are reused (daily 10 min, intraday outside market hours 5 min, failures 1 min):
+ *   the chart refreshes every 10 s and each server call starts Python on the Raspberry Pi (and may cost KIS calls)
  * - [2026-11-06] type=feat - Warm-up like the bot (r012 load_prior_day_warmup): minute charts use the previous day's raw 1-minute bars
  *   of the 10-second file - warmBot = last PRIOR_DAY_WARMUP_MINUTES (180) resampled, warm = whole day (MA / Ichimoku); responses with
  *   a tick file carry a quote (last price, best ask/bid, buy/sell volume, latest 40 trades) for the chart tab
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
+import { CHART_CACHE_MS, isMarketHours, kstNowIso } from '../shared/control';
 import {
   dailyWithToday,
   minuteBarsFromTicks,
@@ -63,12 +66,17 @@ function remember<K, V>(m: Map<K, V>, k: K, v: V): V {
   return v;
 }
 
+/** r016 `bars` result: null = unavailable (old server / no client) */
+type ServerBarsResult = { ok: true; data: ServerBars } | { ok: false; error: string } | null;
+
 export class PriceService {
   private ticks = new Map<string, TickCache>();
   private files = new Map<string, { at: number; names: string[] }>();
   private min1 = new Map<string, { size: number; bars: Bar[] }>();
   private daily = new Map<string, { size: number; bars: Bar[] }>();
   private dirs: { at: number; list: string[] } | null = null;
+  /** r016 `bars` answers reused for a while (each call = Python on the server, maybe KIS): key = args joined */
+  private serverCache = new Map<string, { at: number; ttl: number; res: ServerBarsResult }>();
   /** requests run one at a time: two concurrent readers of the same incremental tick cache would read the same byte range twice */
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -83,10 +91,28 @@ export class PriceService {
 
   resetServerSupport(): void {
     this.noServerBars = false;
+    this.serverCache.clear();
+  }
+
+  /**
+   * r016 `bars` with reuse: daily answers 10 min, intraday answers outside market hours 5 min, failures 1 min
+   * (a code the server cannot serve is not asked again every 10 s).
+   */
+  private async serverBars(args: string[]): Promise<ServerBarsResult> {
+    const key = args.join(' ');
+    const hit = this.serverCache.get(key);
+    if (hit && Date.now() - hit.at < hit.ttl) return hit.res;
+    const res = await this.serverBarsRaw(args);
+    if (res) {
+      const isDaily = args.includes('day');
+      const ttl = !res.ok ? CHART_CACHE_MS.failed : isDaily ? CHART_CACHE_MS.daily : isMarketHours(kstNowIso()) ? 0 : CHART_CACHE_MS.intradayIdle;
+      if (ttl > 0) remember(this.serverCache, key, { at: Date.now(), ttl, res });
+    }
+    return res;
   }
 
   /** r016 `bars` (read-only). null = unavailable (old server / no client) */
-  private async serverBars(args: string[]): Promise<{ ok: true; data: ServerBars } | { ok: false; error: string } | null> {
+  private async serverBarsRaw(args: string[]): Promise<ServerBarsResult> {
     const c = this.r016();
     if (!c || this.noServerBars) return null;
     const r = await c.run<ServerBars>(['bars', ...args], { timeoutMs: 60000 });

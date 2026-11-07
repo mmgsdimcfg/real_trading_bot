@@ -13,6 +13,8 @@
  *   (status / start / stop / restart / schema / set / unset / reset / history / watchlist) that run live_trading/r016_control.py;
  *   r016 status is polled every pollSec from connect until an explicit disconnect; the condition JSON is fetched with
  *   `r016_control.py conditions` through the same serial queue (r015 fallback) and reloaded after overrides change
+ * - [2026-11-07] type=perf - market:quote answers reused per code (8 s in market hours, 5 min outside, errors 20 s) and concurrent
+ *   asks for the same code share one r016 call - each call starts Python on the Raspberry Pi and costs 3 KIS calls
  * - [2026-11-06] type=feat - market:quote IPC (r016 `quote`: KIS current price / 10-level order book / trades - re-checked every 10 min
  *   while the server does not have it); PriceService gets the r016 client for server `bars`
  * - [2026-11-05] type=feat - price:get IPC for the timeline price chart (PriceService, prices.ts - SFTP reads of the server's tick /
@@ -36,6 +38,7 @@ import { DaySession } from './session';
 import { createControl } from './control';
 import { PriceService } from './prices';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
+import { CHART_CACHE_MS, quoteCacheMs } from '../shared/control';
 import { LocalDirSource, RemoteDaySource, cacheDirFor, cachedDates, pruneCache } from './sources';
 
 const TASKBAR_TITLE_PAD = '⠀'.repeat(40);
@@ -336,10 +339,30 @@ ipcMain.handle('price:get', (_e, req: PriceRequest): Promise<PriceResponse> | Pr
 });
 // current price + order book + latest trades (r016 `quote`, KIS on the server). unsupported = the server has no `quote` yet
 let quoteUnsupportedAt = 0;
+type QuoteAnswer = { ok: boolean; data?: MarketQuote; error?: string; unsupported?: boolean };
+/** last answer per code (reused for quoteCacheMs: 8 s in market hours, 5 min outside) + one in-flight call per code */
+const quoteCache = new Map<string, { at: number; res: QuoteAnswer }>();
+const quoteInFlight = new Map<string, Promise<QuoteAnswer>>();
 ipcMain.handle('market:quote', async (_e, code: string) => {
   if (!ssh.connected) return { ok: false, error: '서버에 연결되어 있지 않습니다.' };
   if (!/^[0-9A-Z]{6}$/.test(String(code))) return { ok: false, error: '종목 코드 형식 오류' };
   if (quoteUnsupportedAt && Date.now() - quoteUnsupportedAt < 600000) return { ok: false, unsupported: true };
+  const hit = quoteCache.get(code);
+  if (hit && Date.now() - hit.at < quoteCacheMs()) return hit.res;
+  const running = quoteInFlight.get(code);
+  if (running) return running;
+  const job = fetchQuote(code)
+    .then((res) => {
+      // errors are kept 20 s (e.g. token_not_ready before r003 starts) so a failing code is not re-asked on every refresh
+      if (res.ok || !res.unsupported) quoteCache.set(code, { at: res.ok ? Date.now() : Date.now() - quoteCacheMs() + CHART_CACHE_MS.quoteFailed, res });
+      if (quoteCache.size > 50) quoteCache.delete(quoteCache.keys().next().value as string);
+      return res;
+    })
+    .finally(() => quoteInFlight.delete(code));
+  quoteInFlight.set(code, job);
+  return job;
+});
+async function fetchQuote(code: string): Promise<QuoteAnswer> {
   try {
     const r = await control.client.run<MarketQuote>(['quote', '--code', code, '--trades', '30'], { timeoutMs: 30000 });
     if (r.ok && r.data?.ok) return { ok: true, data: r.data };
@@ -351,7 +374,7 @@ ipcMain.handle('market:quote', async (_e, code: string) => {
   } catch (e) {
     return { ok: false, error: errMsg(e) };
   }
-});
+}
 ipcMain.handle('timeline:get', async (_e, code: string) => (session ? session.timeline(code) : { events: [], trades: [] }));
 
 // ---- window ----------------------------------------------------------------------------------
