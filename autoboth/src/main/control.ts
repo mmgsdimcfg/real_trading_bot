@@ -8,6 +8,8 @@
  *   (status every 2 s until the unit leaves activating/deactivating), and a condition reload when the service start time changes
  *   (so "pending" marks clear after a restart). Rejections (rc 2/3) are never retried; an unknown result (timeout / SSH drop) is
  *   resolved by reading `status` again
+ * - [2026-11-07] type=perf - status polling uses its own interval (settings.statusPollSec, default 30 s; 120 s while the window is
+ *   minimized/hidden) instead of the 10 s log poll - each call starts a Python process on the Raspberry Pi
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
@@ -17,6 +19,7 @@ import {
   isMarketHours,
   parseR016Output,
   setArgs,
+  statusPollMs,
   watchlistStdin,
   writerName,
   checkWatchRows,
@@ -93,7 +96,7 @@ export class R016Client {
 export interface ControlDeps {
   exec: ExecFn;
   isConnected: () => boolean;
-  settings: () => { remoteRoot: string; pythonPath: string; pollSec: number };
+  settings: () => { remoteRoot: string; pythonPath: string; pollSec: number; statusPollSec?: number };
   send: (ch: string, data: unknown) => void;
   win: () => BrowserWindow | null;
   /** reload the condition JSON (values_meta) - called after set/unset/reset and when the service start time changes */
@@ -167,6 +170,11 @@ export function createControl(deps: ControlDeps) {
     return statusInFlight;
   }
 
+  const windowVisible = (): boolean => {
+    const w = deps.win();
+    return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized();
+  };
+
   function startPolling(): void {
     stopPolling();
     const loop = () => {
@@ -174,7 +182,7 @@ export function createControl(deps: ControlDeps) {
         // skip a poll while a write is queued - the action itself refreshes the status afterwards
         if (deps.isConnected() && !state.busy && !client.busy) await refreshStatus();
         if (timer) loop();
-      }, Math.max(3, deps.settings().pollSec || 10) * 1000);
+      }, statusPollMs(deps.settings().statusPollSec, windowVisible()));
     };
     loop();
     void refreshStatus();

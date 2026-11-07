@@ -154,6 +154,8 @@ export function SettingsView() {
           <input value={form.pythonPath} onChange={(e) => set('pythonPath', e.target.value)} />
           <label>폴링 주기 (초)</label>
           <input type="number" min={3} value={form.pollSec} onChange={(e) => set('pollSec', Number(e.target.value))} />
+          <label>봇 상태 확인 주기 (초)</label>
+          <input type="number" min={15} value={form.statusPollSec} onChange={(e) => set('statusPollSec', Number(e.target.value))} title="r016 status 호출 주기 - 호출마다 서버(라즈베리파이)에서 Python이 실행되므로 15초 이상. 창을 최소화하면 120초" />
           <label>정규장 시작</label>
           <input value={form.sessionOpen} onChange={(e) => set('sessionOpen', e.target.value)} title="이 시각 전의 반려는 '개장 전'으로 따로 집계 (깔때기에서 제외)" />
           <label>로컬 캐시 보관 (일)</label>
@@ -202,7 +204,7 @@ export function SettingsView() {
             로컬 폴더 열기…
           </button>
         </div>
-        <p className="muted small">오늘(서버 날짜)은 {form.pollSec}초마다 증분 수신, 지난 날짜는 폴링 없이 1회 로드합니다. 로컬 폴더는 runtime/log/YYYYMMDD 복사본(픽스처)을 SSH 없이 엽니다.</p>
+        <p className="muted small">오늘(서버 날짜)은 {form.pollSec}초마다 증분 수신(봇 상태는 {form.statusPollSec}초마다, 창 최소화 시 120초), 지난 날짜는 폴링 없이 1회 로드합니다. 로컬 폴더는 runtime/log/YYYYMMDD 복사본(픽스처)을 SSH 없이 엽니다.</p>
       </section>
 
       <section>

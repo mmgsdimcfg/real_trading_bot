@@ -1,5 +1,6 @@
 /*
  * Update log
+ * - [2026-11-07] type=fix - r015 fallback runs in the monorepo server folder (shared/control.ts serverCodeDir)
  * - [2026-11-05] type=feat - Condition list now comes from `r016_control.py conditions` (same buy/sell structure as r015 plus
  *   values_meta / overrides / override_errors for the value editor), run through the control client's serial queue. A server
  *   without r016 falls back to r015_export_conditions.py (read-only display, no values_meta)
@@ -14,6 +15,7 @@ import { join } from 'node:path';
 import type { ConditionsDoc } from '../shared/types';
 import { shellPath, shellQuote, type SshConnection } from './ssh';
 import { R016_CONDITIONS_TIMEOUT, type R016Client } from './control';
+import { serverCodeDir } from '../shared/control';
 
 const cacheFile = () => join(app.getPath('userData'), 'conditions_cache.json');
 const bundledFile = () => join(app.getAppPath(), 'resources', 'conditions_snapshot.json');
@@ -37,7 +39,7 @@ export function loadLocalConditions(): ConditionsDoc {
 }
 
 async function fetchR015(ssh: SshConnection, remoteRoot: string, pythonPath: string): Promise<ConditionsDoc> {
-  const cmd = `cd ${shellQuote(remoteRoot + '/auto_trading_src')} && ${shellPath(pythonPath)} live_trading/r015_export_conditions.py`;
+  const cmd = `cd ${shellQuote(serverCodeDir(remoteRoot))} && ${shellPath(pythonPath)} live_trading/r015_export_conditions.py`;
   const { out, err, code } = await ssh.exec(cmd, 90000);
   const a = out.indexOf('{');
   const b = out.lastIndexOf('}');

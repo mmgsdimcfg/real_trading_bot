@@ -82,7 +82,7 @@ RAM 여유가 1 GB 안팎이고 earlyoom이 동작 중이다. **Python 프로세
 - 이 표의 주기는 설정 탭에서 바꿀 수 있게 하되, 하한(`status` 15초, `bars` 5초)을 둔다.
 
 ### 2.4 서버 쪽에 예정된 개선 (앱은 대비만)
-서버 저장소에서 `r016 status`가 pandas를 불러오지 않도록 지연 import를 적용할 예정이다(적용되면 약 1초 이하). 적용 전후 응답 JSON 형식은 같다.
+서버 저장소에서 `r016 status`가 pandas를 불러오지 않도록 지연 import를 적용했다(2.1초 → 0.4초, 2026-11-07). 응답 JSON 형식은 같다.
 앱은 위 주기를 그대로 쓰면 된다.
 
 ## 3. 연결 끊김과 재연결
@@ -116,13 +116,14 @@ RAM 여유가 1 GB 안팎이고 earlyoom이 동작 중이다. **Python 프로세
    `remoteRoot + '/auto_trading_src'`를 쓴다. 서버 폴더가 `/data/srv/autobot/real_trading_bot/autobot`으로 바뀌었다.
    - 상수 하나(`SERVER_CODE_SUBDIR = 'real_trading_bot/autobot'`, `src/shared/control.ts`)로 모으고 두 곳이 그것을 쓰게 한다.
      설정 화면에 고급 항목으로 노출해도 된다(기본값 = 위 상수).
-   - 지금은 서버에 임시 심볼릭 링크 `/data/srv/autobot/auto_trading_src -> real_trading_bot/autobot`이 있어서 기존 빌드도 동작한다.
-     새 빌드가 배포되면 서버에서 링크를 지운다.
    - `tests/control.test.ts` 등에서 명령 문자열을 비교하는 기대값도 같이 고친다.
+   - **→ 2026-11-07 서버 쪽에서 직접 반영함**(`SERVER_CODE_SUBDIR`/`serverCodeDir`, 테스트 추가). 임시 심볼릭 링크는 삭제했다.
+     이 수정 전 빌드는 제어/조건 조회가 실패하므로 새로 빌드해 설치한다.
 2. **[필수] `status` 폴링 주기.** `src/main/control.ts:177`이 로그 폴링과 같은 `pollSec`(기본 10초, 최소 3초)으로 `r016 status`를 부른다.
    `status` 1회 = 서버 Python 기동 약 2초. 2.3 표대로 **별도 주기 `statusPollSec`(기본 30초, 최소 15초, 창 최소화 시 120초)**로 분리한다.
    로그 증분 폴링(`src/main/index.ts:183`)은 SFTP라서 `pollSec` 그대로 둔다. 제어 동작 직후 2초 간격 확인 루프는 지금처럼 유지.
+   **→ 2026-11-07 직접 반영함**(`settings.statusPollSec`, `statusPollMs`, 설정 화면 "봇 상태 확인 주기"). 서버 `status`도 0.4초로 단축(r016 9a4cfe3).
 3. **[확인됨, 유지]** SSH 연결 1개 + SFTP 1개(`src/main/ssh.ts`), r016 직렬 큐와 `status` 중복 호출 합치기(`R016Client`, `refreshStatus`),
    rc 2/3 미재시도, 차트 파일 SFTP 증분 읽기(`src/main/prices.ts`). 바꾸지 않는다.
 4. **[권장]** `keepaliveCountMax` 3 → 4(2.1). 장외 시간(15:40~08:00) 로그 폴링 30초 감속(2.3).
-5. 서버 쪽 대응 예정: `r016 status`에서 pandas 지연 import(1초 이하로 단축). 응답 형식 변화 없음.
+5. 서버 쪽 대응 완료: `r016 status` pandas 지연 import, 2.1초 → 0.4초. 응답 형식 변화 없음.

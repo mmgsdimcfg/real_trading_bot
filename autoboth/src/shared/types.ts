@@ -189,6 +189,8 @@ export interface Settings {
   remoteRoot: string;
   pythonPath: string;
   pollSec: number;
+  /** r016 status poll interval (s) - separate from pollSec because every call starts Python on the server */
+  statusPollSec: number;
   sessionOpen: string;
   retentionDays: number;
 }

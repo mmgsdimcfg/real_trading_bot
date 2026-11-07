@@ -1,5 +1,9 @@
 /*
  * Update log
+ * - [2026-11-07] type=fix - Server code moved to the monorepo folder `<remote root>/real_trading_bot/autobot` (was
+ *   `<remote root>/auto_trading_src`). The sub-folder is one constant (SERVER_CODE_SUBDIR) used by the r016 and r015 commands.
+ *   r016 `status` gets its own poll interval (statusPollMs): each call starts a Python process on the Raspberry Pi, so it is
+ *   not tied to the 10 s log poll - default 30 s, minimum 15 s, 120 s while the window is minimized/hidden
  * - [2026-11-05] type=feat - r003 remote control (guide 20261105): response types of live_trading/r016_control.py, the command
  *   builder (cd + R016_BY + python + quoted args), the stdout JSON extractor/parser (rc 0 / 2 rejected / 3 systemctl), the
  *   service button rules, the market-hours check on the server's KST timestamp, value-editor parsing per r001 type, the changed-
@@ -146,6 +150,24 @@ export const RISK_PROFILES: RiskProfile[] = ['conservative', 'neutral', 'aggress
 // ---- command building / parsing --------------------------------------------------------------
 
 export const R016_SCRIPT = 'live_trading/r016_control.py';
+/** Server code folder under the remote root (monorepo `real_trading_bot`, server part `autobot/`). */
+export const SERVER_CODE_SUBDIR = 'real_trading_bot/autobot';
+
+export const STATUS_POLL_DEFAULT_SEC = 30;
+export const STATUS_POLL_MIN_SEC = 15;
+export const STATUS_POLL_HIDDEN_SEC = 120;
+
+/** r016 `status` poll interval in ms: setting (default 30 s, at least 15 s); at least 120 s while the window is not visible. */
+export function statusPollMs(statusPollSec: number | undefined, windowVisible: boolean): number {
+  const n = Number(statusPollSec);
+  const sec = Math.max(STATUS_POLL_MIN_SEC, Number.isFinite(n) && n > 0 ? n : STATUS_POLL_DEFAULT_SEC);
+  return (windowVisible ? sec : Math.max(sec, STATUS_POLL_HIDDEN_SEC)) * 1000;
+}
+
+/** `<remote root>/real_trading_bot/autobot` (trailing slashes of the root removed). */
+export function serverCodeDir(remoteRoot: string): string {
+  return `${String(remoteRoot || '').replace(/\/+$/, '')}/${SERVER_CODE_SUBDIR}`;
+}
 
 /** Characters never sent inside an argument, even though every argument is single-quoted. */
 const ARG_FORBIDDEN = /['`;\r\n\0]/;
@@ -161,7 +183,7 @@ export function writerName(osUser: string): string {
 }
 
 /**
- * `cd <root>/auto_trading_src && R016_BY=<by> <python> live_trading/r016_control.py <args...>`, every argument single-quoted.
+ * `cd <root>/real_trading_bot/autobot && R016_BY=<by> <python> live_trading/r016_control.py <args...>`, every argument single-quoted.
  * Throws when an argument holds a quote, backtick, semicolon or newline (checked before quoting, defence in depth).
  */
 export function buildR016Command(remoteRoot: string, pythonPath: string, by: string, args: string[]): string {
@@ -169,8 +191,7 @@ export function buildR016Command(remoteRoot: string, pythonPath: string, by: str
     const p = argProblem(a);
     if (p) throw new Error(p);
   }
-  const root = String(remoteRoot || '').replace(/\/+$/, '');
-  return `cd ${shellQuote(root + '/auto_trading_src')} && R016_BY=${shellQuote(by)} ${shellPath(pythonPath)} ${R016_SCRIPT} ${args.map(shellQuote).join(' ')}`.trimEnd();
+  return `cd ${shellQuote(serverCodeDir(remoteRoot))} && R016_BY=${shellQuote(by)} ${shellPath(pythonPath)} ${R016_SCRIPT} ${args.map(shellQuote).join(' ')}`.trimEnd();
 }
 
 /** First "{" .. last "}" of stdout (tolerates warnings printed before/after the JSON). */

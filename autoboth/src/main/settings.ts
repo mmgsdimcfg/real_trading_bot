@@ -5,12 +5,15 @@
  *   Settings from v1 (pemPath) are taken over as keyPath
  * - [2026-11-05] type=feat - SSH proxy settings (proxyType/proxyCommand/proxyHost/proxyPort/proxyUser); the proxy password is stored
  *   encrypted with safeStorage as proxySecretEnc, like the SSH secret. getProxyConfig() builds the ProxyConfig for ssh.connect
+ * - [2026-11-07] type=feat - statusPollSec (r016 status poll, default 30 s, min 15 s) separate from pollSec (log poll); stores without
+ *   the key get the default
  */
 
 import Store from 'electron-store';
 import { safeStorage } from 'electron';
 import type { Settings } from '../shared/types';
 import type { ProxyConfig } from './proxy';
+import { STATUS_POLL_DEFAULT_SEC, STATUS_POLL_MIN_SEC } from '../shared/control';
 
 interface Stored extends Omit<Settings, 'secret' | 'hasSecret' | 'proxySecret' | 'hasProxySecret'> {
   secretEnc: string;
@@ -34,6 +37,7 @@ const DEFAULTS: Stored = {
   remoteRoot: '/data/srv/autobot',
   pythonPath: '~/venv/bin/python',
   pollSec: 10,
+  statusPollSec: STATUS_POLL_DEFAULT_SEC,
   sessionOpen: '09:00',
   retentionDays: 30,
 };
@@ -60,6 +64,7 @@ export function getSettings(): Settings {
     remoteRoot: s.remoteRoot,
     pythonPath: s.pythonPath,
     pollSec: s.pollSec,
+    statusPollSec: Math.max(STATUS_POLL_MIN_SEC, Number(s.statusPollSec) || STATUS_POLL_DEFAULT_SEC),
     sessionOpen: s.sessionOpen,
     retentionDays: s.retentionDays,
     hasSecret: !!s.secretEnc,
@@ -80,6 +85,7 @@ export function saveSettings(next: Settings): Settings {
     proxyUser: String(rest.proxyUser || ''),
     port: Number(rest.port) || 22,
     pollSec: Math.max(3, Number(rest.pollSec) || 10),
+    statusPollSec: Math.max(STATUS_POLL_MIN_SEC, Number(rest.statusPollSec) || STATUS_POLL_DEFAULT_SEC),
     retentionDays: Math.max(1, Number(rest.retentionDays) || 30),
     remoteRoot: String(rest.remoteRoot || DEFAULTS.remoteRoot).replace(/\/+$/, ''),
   });
