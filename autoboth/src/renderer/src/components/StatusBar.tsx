@@ -5,6 +5,7 @@
  * - [2026-11-06] type=feat - The status bar is now the window's title bar (TermH style, frame:false): app icon + "AutoBotH", a gap,
  *   the status items, then ☰ (shared app-menu.js: 설정 / 업데이트 확인 / AutoBotH 정보) and minimize / maximize-restore / close.
  *   Empty space drags the window; double-click toggles maximize
+ * - [2026-11-07] type=feat - Theme button left of ☰: 시스템 ◐ -> 라이트 ☀ -> 다크 ☾ (theme.ts)
  * - [2026-11-07] type=feat - Past day: price files download progress ("주가 받는 중 3/22", then "주가 로컬 보관" or the failure count)
  * - [2026-11-07] type=feat - Past day in replay: the day pill shows "재현 HH:MM:SS" instead of "1회 로드"
  * - [2026-11-05] type=feat - Bot summary (봇: 실행 중 / 정지 / 미적용 변경 N, dry-run marker, external r003 warning) - opens the 제어 tab
@@ -16,6 +17,7 @@ import { fmtBytes, fmtInt } from '../lib';
 import { fmtKstTime, ymdDash } from '../../../shared/time';
 import { botSummary, pendingCount } from '../../../shared/control';
 import { BOT_LABEL } from '../views/ControlView';
+import { applyTheme, loadTheme, THEME_ICON, THEME_LABEL, THEME_NEXT, type ThemeChoice } from '../theme';
 
 /** ☰ menu (app-menu.js is a classic script loaded before the React module runs) */
 function useAppMenu(openSettings: () => void) {
@@ -37,12 +39,25 @@ function useAppMenu(openSettings: () => void) {
 
 function WindowButtons() {
   const [max, setMax] = useState(false);
+  const [theme, setTheme] = useState<ThemeChoice>(loadTheme);
   useEffect(() => {
     void window.winCtl.isMaximized().then(setMax);
     return window.winCtl.onMaximized(setMax);
   }, []);
   return (
     <div className="win-controls">
+      <button
+        type="button"
+        className="win-btn win-theme"
+        title={`테마: ${THEME_LABEL[theme]} (누르면 ${THEME_LABEL[THEME_NEXT[theme]]})`}
+        onClick={() => {
+          const next = THEME_NEXT[theme];
+          applyTheme(next);
+          setTheme(next);
+        }}
+      >
+        {THEME_ICON[theme]}
+      </button>
       <button type="button" id="appMenuBtn" className="win-btn win-menu" title="메뉴">
         ☰
       </button>
