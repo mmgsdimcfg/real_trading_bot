@@ -19,11 +19,14 @@
  *   _018->_015, _019->_016, _020->_017, _031->_018, _030->_019, _028->_020, _027->_021, _021->_022, _022->_023, _023->_024,
  *   _024->_025). Logs carry reason strings, not numbers, so older logs map to the new keys too. Sell keys unchanged.
  *   TRIGGER_COND names the trigger key for the pipeline's sub-step nodes
+ * - [2026-11-08] type=fix - keyRemap / remapKey: app keys are translated to the server's numbers through the function names in the
+ *   server condition list, so labels stay right when the server and the app were updated at different times (a sell trade was
+ *   shown as "_022 (조건 목록에 없음)" by an app built before the sell renumbering)
  * - [2026-11-08] type=refactor - Sell condition numbers follow the evaluation order too (server r006 _001.._015): _006->_005,
  *   _007->_006, _023->_007, _015->_008, _016->_009, _017->_010, _018->_011, _019->_012, _020->_013, _021->_014, _022->_015
  */
 
-import type { EvalResult, Side } from './types';
+import type { Condition, ConditionsDoc, EvalResult, Side } from './types';
 import { parseSteps, splitSegments } from './logLine';
 
 export interface Classified {
@@ -313,6 +316,56 @@ export const INFO_ONLY_BUY = new Set(['_014']);
 
 /** "_012" for a condition */
 export const condKeyOf = (no: number) => '_' + String(no).padStart(3, '0');
+
+// [2026-11-08] The rules above use the app's condition numbers (server r005 / r006 as of 2026-11-08). When the server numbers
+// differ (server and app updated at different times), keys are translated through the function name: server func
+// "_007_profit_lock" -> stem "profit_lock" -> server key "_007". Stems not found in the server list keep the app key.
+const BUY_STEMS: Record<string, string> = {
+  _001: 'entry_time_window', _002: 'session_open_warmup', _003: 'trade_cooldown', _004: 'same_bar_signal_dedup',
+  _005: 'no_open_buy_exposure', _006: 'hard_stop_reentry_block', _007: 'daily_loss_limit', _008: 'max_open_positions',
+  _009: 'hybrid_1min_trigger', _010: 'market_regime', _011: 'context_frame_ready', _012: 'min_entry_atr_volatility',
+  _013: 'min_liquidity_safety', _014: 'context_score_record', _015: 'excessive_rise_from_prev_close',
+  _016: 'anti_chase_day_extension', _017: 'opening_gap_volume_gate', _018: 'quote_status', _019: 'account_sync_fresh',
+  _020: 'edge_ai_meta_filter', _021: 'entry_spread', _022: 'consecutive_poll_confirm', _023: 'affordable_buy_qty',
+  _024: 'fresh_live_price', _025: 'orderbook_ask_not_thin',
+};
+const SELL_STEMS: Record<string, string> = {
+  _001: 'stale_live_price_guard', _002: 'update_position_tracking', _003: 'peak_next_bar_bearish_exit', _004: 'hard_stop_loss',
+  _005: 'staged_tp1_partial', _006: 'surge_ladder_tp', _007: 'profit_lock', _008: 'atr_take_profit',
+  _009: 'post_buy_entry_drop_guard', _010: 'breakeven_fail_guard', _011: 'no_trend_time_exit', _012: 'atr_stop_loss',
+  _013: 'trailing_stop', _014: 'same_bar_sell_dedup', _015: 'shared_reversal_sell',
+};
+
+/** server function name without its number prefix ("_007_profit_lock" -> "profit_lock", "_b09_basic_x" -> "basic_x") */
+export const funcStem = (func: string) => func.replace(/^_(?:\d{3}|b\d{2})_/, '');
+
+export type KeyRemap = Map<string, string>;
+
+/** app key -> server key for one side, only for keys whose number differs on the server */
+export function keyRemap(doc: ConditionsDoc | null | undefined, side: Side): KeyRemap {
+  return keyRemapOf(doc ? (side === 'buy' ? doc.buy : doc.sell) : [], side);
+}
+
+/** keyRemap for one side's condition list */
+export function keyRemapOf(list: Condition[] | undefined, side: Side): KeyRemap {
+  const out: KeyRemap = new Map();
+  if (!list?.length) return out;
+  const byStem = new Map(list.map((c) => [funcStem(c.func), condKeyOf(c.no)]));
+  for (const [appKey, stem] of Object.entries(side === 'buy' ? BUY_STEMS : SELL_STEMS)) {
+    const k = byStem.get(stem);
+    if (k && k !== appKey) out.set(appKey, k);
+  }
+  return out;
+}
+
+/** translate an app key (also "<key>/<sub>"); pseudo keys (PREP, ORDER, ...) pass through */
+export function remapKey(remap: KeyRemap, key: string): string {
+  if (!remap.size) return key;
+  const slash = key.indexOf('/');
+  const base = slash < 0 ? key : key.slice(0, slash);
+  const to = remap.get(base);
+  return to ? to + (slash < 0 ? '' : key.slice(slash)) : key;
+}
 
 /** Group similar reasons in the unknown list: digits -> # */
 export function reasonShape(reason: string): string {
