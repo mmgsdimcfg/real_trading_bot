@@ -25,6 +25,8 @@
  * - [2026-11-08] type=feat - Heights set by dragging (store layout, kept per PC): grip bars under the buy / sell evaluation charts,
  *   handles on the bottom edge of the price area and of each indicator pane (PriceChart onResizePane); double-click = default size.
  *   The y-axis row list follows the evaluation order, which the server numbers _001.._025 since 2026-11-08
+ * - [2026-11-08] type=feat - Sell chart gets the same "y축 항목" picker (YPick: check boxes, 모두 표시, 이 종목 평가된 항목만 - sell
+ *   events and sell fills); hidden rows close up and the default height follows the row count
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -71,6 +73,51 @@ const SERIES: { key: EvalEvent['result']; label: string; color: string; shape: '
   { key: 'pass', label: '✓ 통과/주문', color: 'var(--st-pass)', shape: 'circle' },
   { key: 'info', label: '· 정보', color: 'var(--st-idle)', shape: 'square' },
 ];
+
+/** "y축 항목" popover of an evaluation chart: per-row check boxes, 모두 표시, 이 종목 평가된 항목만 (list top-down = chart top-down) */
+function YPick(props: {
+  side: string;
+  rows: { key: string; label: string }[];
+  shown: number;
+  hidden: string[];
+  setHidden: (keys: string[]) => void;
+  evaluated: Set<string>;
+}) {
+  const { side, rows, shown, hidden, setHidden, evaluated } = props;
+  return (
+    <details className="ypick">
+      <summary>
+        y축 항목 ({shown}/{rows.length}) ▾
+      </summary>
+      <div className="ypick-panel">
+        <div className="actions">
+          <button className="mini" onClick={() => setHidden([])}>
+            모두 표시
+          </button>
+          <button
+            className="mini"
+            title={`선택한 종목의 ${side} 평가 로그에 나온 항목만 남깁니다`}
+            disabled={!evaluated.size}
+            onClick={() => setHidden(rows.filter((r) => !evaluated.has(r.key)).map((r) => r.key))}
+          >
+            이 종목 평가된 항목만
+          </button>
+        </div>
+        {[...rows].reverse().map((r) => (
+          <label key={r.key} className="check ypick-row">
+            <input
+              type="checkbox"
+              checked={!hidden.includes(r.key)}
+              onChange={(e) => setHidden(e.target.checked ? hidden.filter((k) => k !== r.key) : [...hidden, r.key])}
+            />
+            <span className={evaluated.has(r.key) ? '' : 'muted'}>{r.label}</span>
+          </label>
+        ))}
+        <p className="muted small">숨긴 항목의 점은 표시하지 않습니다. 흐린 글자 = 이 종목에서 평가 로그가 없는 항목.</p>
+      </div>
+    </details>
+  );
+}
 
 function TipBox({ active, payload }: { active?: boolean; payload?: { payload: Pt }[] }) {
   const conditions = useStore((s) => s.conditions);
@@ -121,14 +168,24 @@ export function TimelineView() {
     return rows.length ? rows : buyRows;
   }, [buyRows, buyHidden]);
   const buyY = useMemo(() => new Map(shownRows.map((r, i) => [r.key, i])), [shownRows]);
-  const sellY = useMemo(() => {
-    // row 0 = 'PREP': sell evaluation skipped for the position ([HOLD SKIP], e.g. not bought today)
-    const m = new Map<string, number>([['PREP', 0]]);
-    sellConds.forEach((c, i) => m.set(condKeyOf(c.no), i + 1));
-    m.set('SESSION_CLOSE', sellConds.length + 1);
-    m.set('ORDER', sellConds.length + 2);
-    return m;
-  }, [sellConds]);
+  const sellHidden = useStore((s) => s.sellHidden);
+  const setSellHidden = useStore((s) => s.setSellHidden);
+  /** every sell row bottom-up: 평가 제외 ('PREP': [HOLD SKIP], e.g. not bought today), conditions, 세션 종료, 주문 */
+  const sellRows = useMemo(
+    () => [
+      { key: 'PREP', label: '평가 제외' },
+      ...sellConds.map((c) => ({ key: condKeyOf(c.no), label: condKeyOf(c.no) + ' ' + c.title.slice(0, 10) })),
+      { key: 'SESSION_CLOSE', label: '세션 종료' },
+      { key: 'ORDER', label: '주문' },
+    ],
+    [sellConds],
+  );
+  const shownSellRows = useMemo(() => {
+    const hide = new Set(sellHidden);
+    const rows = sellRows.filter((r) => !hide.has(r.key));
+    return rows.length ? rows : sellRows;
+  }, [sellRows, sellHidden]);
+  const sellY = useMemo(() => new Map(shownSellRows.map((r, i) => [r.key, i])), [shownSellRows]);
 
   const events = timeline && timeline.code === selected ? timeline.events : [];
   const trades = timeline && timeline.code === selected ? timeline.trades : [];
@@ -195,11 +252,15 @@ export function TimelineView() {
   const buyLabel = (v: number) => shownRows[v]?.label || '';
   // heights: dragged by the user (layout) or the defaults
   const buyH = layout.buyH ?? Math.max(200, Math.min(520, 110 + shownRows.length * 15));
-  const sellH = layout.sellH ?? SELL_DEFAULT_H;
+  const sellH = layout.sellH ?? Math.max(160, Math.min(SELL_DEFAULT_H, 70 + shownSellRows.length * 14));
   const priceBoxH = chartHeight(chart.ind, TL_OSC_H, layout.priceH ?? TL_PRICE_H, layout.osc);
   const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
-  const sellLabel = (v: number) =>
-    v === 0 ? '평가 제외' : v === sellConds.length + 1 ? '세션 종료' : v === sellConds.length + 2 ? '주문' : sellConds[v - 1] ? condKeyOf(sellConds[v - 1].no) + ' ' + sellConds[v - 1].title.slice(0, 10) : '';
+  const sellLabel = (v: number) => shownSellRows[v]?.label || '';
+  // sell rows with evaluations of this symbol: sell events + the condition of each sell fill
+  const sellKeysWithEvents = useMemo(
+    () => new Set([...events.filter((e) => e.side === 'sell').map((e) => e.condKey), ...trades.filter((t) => t.side === 'SELL' && t.condKey).map((t) => t.condKey as string)]),
+    [events, trades],
+  );
 
   const markers = trades.map((t, i) => (
     <ReferenceLine
@@ -227,37 +288,7 @@ export function TimelineView() {
         <div className="charts">
           <div className="chart-head">
             <h4>매수 평가 - 도달 깊이 (조건 평가 순서)</h4>
-            <details className="ypick">
-              <summary>
-                y축 항목 ({shownRows.length}/{buyRows.length}) ▾
-              </summary>
-              <div className="ypick-panel">
-                <div className="actions">
-                  <button className="mini" onClick={() => setBuyHidden([])}>
-                    모두 표시
-                  </button>
-                  <button
-                    className="mini"
-                    title="선택한 종목의 매수 평가 로그에 나온 항목만 남깁니다"
-                    disabled={!buyKeysWithEvents.size}
-                    onClick={() => setBuyHidden(buyRows.filter((r) => !buyKeysWithEvents.has(r.key)).map((r) => r.key))}
-                  >
-                    이 종목 평가된 항목만
-                  </button>
-                </div>
-                {[...buyRows].reverse().map((r) => (
-                  <label key={r.key} className="check ypick-row">
-                    <input
-                      type="checkbox"
-                      checked={!buyHidden.includes(r.key)}
-                      onChange={(e) => setBuyHidden(e.target.checked ? buyHidden.filter((k) => k !== r.key) : [...buyHidden, r.key])}
-                    />
-                    <span className={buyKeysWithEvents.has(r.key) ? '' : 'muted'}>{r.label}</span>
-                  </label>
-                ))}
-                <p className="muted small">숨긴 항목의 점은 표시하지 않습니다. 흐린 글자 = 이 종목에서 평가 로그가 없는 항목.</p>
-              </div>
-            </details>
+            <YPick side="매수" rows={buyRows} shown={shownRows.length} hidden={buyHidden} setHidden={setBuyHidden} evaluated={buyKeysWithEvents} />
           </div>
           <div className="chart-buy" style={{ height: buyH }}>
             <ResponsiveContainer>
@@ -363,7 +394,10 @@ export function TimelineView() {
               />
             )}
           </div>
-          <h4>매도 평가 (보유 중 발동/보류)</h4>
+          <div className="chart-head">
+            <h4>매도 평가 (보유 중 발동/보류)</h4>
+            <YPick side="매도" rows={sellRows} shown={shownSellRows.length} hidden={sellHidden} setHidden={setSellHidden} evaluated={sellKeysWithEvents} />
+          </div>
           <div className="chart-sell" style={{ height: sellH }}>
             {sellPts.length === 0 && trades.length === 0 ? (
               <div className="empty small">오늘 이 종목의 매도 평가 로그가 없습니다.</div>
@@ -372,7 +406,7 @@ export function TimelineView() {
                 <ScatterChart margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
                   <CartesianGrid stroke="var(--grid)" />
                   <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
-                  <YAxis type="number" dataKey="y" domain={[0, sellConds.length + 2]} ticks={[...Array(sellConds.length + 3).keys()]} tickFormatter={sellLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
+                  <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownSellRows.length - 1)]} ticks={[...Array(shownSellRows.length).keys()]} tickFormatter={sellLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
                   <Tooltip content={<TipBox />} isAnimationActive={false} />
                   {markers}
                   <Scatter name="발동" data={sellPts.filter((p) => p.ev.result === 'pass')} fill="var(--st-fail)" shape="cross" isAnimationActive={false} />

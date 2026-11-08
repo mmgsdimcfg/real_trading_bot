@@ -10,6 +10,7 @@
  *   kept in localStorage
  * - [2026-11-08] type=feat - layout: timeline chart heights (buy / sell evaluation charts, price area, each indicator pane) set by
  *   dragging, kept in localStorage
+ * - [2026-11-08] type=feat - sellHidden: rows hidden on the timeline's sell chart y axis (same picker as the buy chart)
  * - [2026-11-08] type=fix - buyHidden moved to key '.v2' with the old keys translated once to the renumbered buy conditions
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
  */
@@ -84,6 +85,16 @@ function loadBuyHidden(): string[] {
   }
 }
 
+/** [2026-11-08] timeline sell chart: hidden y-axis rows (sell condition keys, 'PREP', 'SESSION_CLOSE', 'ORDER') */
+const SELL_HIDDEN_KEY = 'autoboth.timelineSellHidden';
+function loadSellHidden(): string[] {
+  try {
+    return strList(JSON.parse(localStorage.getItem(SELL_HIDDEN_KEY) || '[]'));
+  } catch {
+    return [];
+  }
+}
+
 /** [2026-11-08] timeline heights dragged by the user (px; missing = default size). price = price + volume area,
  *  osc = one entry per indicator pane. Kept per PC (localStorage) */
 export interface TimelineLayout {
@@ -131,6 +142,9 @@ interface State {
   /** timeline buy chart: y-axis rows hidden by the user */
   buyHidden: string[];
   setBuyHidden: (keys: string[]) => void;
+  /** timeline sell chart: y-axis rows hidden by the user */
+  sellHidden: string[];
+  setSellHidden: (keys: string[]) => void;
   /** timeline chart / pane heights (undefined value = back to the default size) */
   layout: TimelineLayout;
   setLayout: (patch: Partial<Omit<TimelineLayout, 'osc'>> & { osc?: Partial<Record<IndicatorKey, number | undefined>> }) => void;
@@ -157,6 +171,15 @@ export const useStore = create<State>()((set, get) => ({
     set({ buyHidden: keys });
     try {
       localStorage.setItem(BUY_HIDDEN_KEY, JSON.stringify(keys));
+    } catch {
+      /* storage unavailable */
+    }
+  },
+  sellHidden: loadSellHidden(),
+  setSellHidden: (keys) => {
+    set({ sellHidden: keys });
+    try {
+      localStorage.setItem(SELL_HIDDEN_KEY, JSON.stringify(keys));
     } catch {
       /* storage unavailable */
     }

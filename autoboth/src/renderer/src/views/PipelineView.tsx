@@ -9,6 +9,7 @@
  *   ENABLE_* constant as an ON/OFF toggle (edits the panel draft of that node, not saved until 저장), a yellow "미적용" dot when a
  *   saved override is not yet in the running bot, and a ◆ mark while an override is active. Unsaved edits pin the focused node;
  *   switching nodes asks before discarding them
+ * - [2026-11-08] type=fix - Trigger / STEPS / silent / info-only keys follow the server's numbering (mapping keyRemapOf)
  */
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from 'react';
@@ -19,7 +20,7 @@ import { SymbolPicker } from '../components/SymbolPicker';
 import { condIndex, editItemsFor, fmtInt, fmtKrw, nodeEnableKey, PSEUDO_LABEL, sortedConds, STAGE_LABEL } from '../lib';
 import { EditorActions, useValueEditing, ValuesEditor } from '../components/ValuesEditor';
 import { savedValue } from '../../../shared/control';
-import { INFO_ONLY_BUY, SILENT_BUY, STEP_TO_COND, TRIGGER_COND, TRIGGER_SUBS, TRIGGER_SUB_LABEL, condKeyOf } from '../../../shared/mapping';
+import { INFO_ONLY_BUY, SILENT_BUY, STEP_TO_COND, TRIGGER_COND, TRIGGER_SUBS, TRIGGER_SUB_LABEL, condKeyOf, keyRemapOf, remapKey } from '../../../shared/mapping';
 import type { Condition, EvalEvent, Side, Snapshot, SymbolSummary } from '../../../shared/types';
 import { fmtKstTime } from '../../../shared/time';
 
@@ -27,6 +28,8 @@ type NState = 'pass' | 'fail' | 'hold' | 'idle' | 'none';
 
 interface CondData extends Record<string, unknown> {
   key: string;
+  /** the entry trigger node (has the sub-step handle on the right) */
+  trigger?: boolean;
   title: string;
   state: NState;
   badge?: string;
@@ -114,7 +117,7 @@ const CondNode = memo(function CondNode({ id, data }: NodeProps<Node<CondData>>)
         </div>
       )}
       {!data.sub && <Handle type="source" position={Position.Bottom} />}
-      {data.key === TRIGGER_COND && <Handle type="source" id="r" position={Position.Right} />}
+      {data.trigger && <Handle type="source" id="r" position={Position.Right} />}
     </div>
   );
 });
@@ -184,11 +187,16 @@ function build(snap: Snapshot | null, conds: Condition[], side: Side, sym: Symbo
   const topKey = keys.reduce((a, k) => (countOf(k) > countOf(a) ? k : a), keys[0]);
   const states = sym ? (side === 'buy' ? buyStates(sym, keys) : sellStates(sym, keys)) : null;
 
+  // app keys of the trigger / STEPS / silent / info-only conditions in the server's numbering (mapping keyRemap)
+  const rm = keyRemapOf(conds, side);
+  const trig = remapKey(rm, TRIGGER_COND);
+  const infoOnly = new Set([...INFO_ONLY_BUY].map((k) => remapKey(rm, k)));
+  const silent = new Set([...SILENT_BUY].map((k) => remapKey(rm, k)));
   const data = new Map<string, CondData>();
   for (const it of chain) {
     const k = it.key;
     const title = it.cond?.title || PSEUDO_LABEL[k] || k;
-    const d: CondData = { key: k, title, state: 'none', width: BASE_W, focus: focus === k, ...ext.get(k) };
+    const d: CondData = { key: k, title, state: 'none', width: BASE_W, focus: focus === k, trigger: side === 'buy' && k === trig, ...ext.get(k) };
     if (!sym) {
       const c = countOf(k);
       d.bar = c / max;
@@ -217,11 +225,11 @@ function build(snap: Snapshot | null, conds: Condition[], side: Side, sym: Symbo
         if (sym.lastSell?.condKey === k) d.note = sym.lastSell.reason;
       }
     }
-    if (side === 'buy' && INFO_ONLY_BUY.has(k)) {
+    if (side === 'buy' && infoOnly.has(k)) {
       d.dashed = true;
       d.note = d.note || '반려 없음 (점수 정보)';
     }
-    if (side === 'buy' && SILENT_BUY.has(k)) {
+    if (side === 'buy' && silent.has(k)) {
       d.dashed = true;
       d.note = d.note || '로그 없음 (silent)';
     }
@@ -231,7 +239,7 @@ function build(snap: Snapshot | null, conds: Condition[], side: Side, sym: Symbo
   // STEPS diagnostics of the last rejected poll
   if (sym && side === 'buy' && sym.lastEval?.steps) {
     for (const [step, v] of Object.entries(sym.lastEval.steps)) {
-      const k = STEP_TO_COND[step];
+      const k = STEP_TO_COND[step] && remapKey(rm, STEP_TO_COND[step]);
       const d = k && data.get(k);
       if (d && v !== '-' && d.state === 'idle') d.diag = v;
     }
@@ -256,18 +264,18 @@ function build(snap: Snapshot | null, conds: Condition[], side: Side, sym: Symbo
   }
 
   const colRight = BASE_W / 2 + EXTRA_W / 2 + 60;
-  // trigger (TRIGGER_COND) sub-steps to the right of the trigger node
-  if (side === 'buy' && pos.has(TRIGGER_COND)) {
-    const p = pos.get(TRIGGER_COND)!;
-    const subs = TRIGGER_SUBS.filter((s) => s !== 'legacy' || (buyStats[`${TRIGGER_COND}/legacy`]?.block || 0) > 0);
-    const subMax = Math.max(1, ...subs.map((s) => buyStats[`${TRIGGER_COND}/${s}`]?.block || 0));
+  // trigger (TRIGGER_COND in server numbering) sub-steps to the right of the trigger node
+  if (side === 'buy' && pos.has(trig)) {
+    const p = pos.get(trig)!;
+    const subs = TRIGGER_SUBS.filter((s) => s !== 'legacy' || (buyStats[`${trig}/legacy`]?.block || 0) > 0);
+    const subMax = Math.max(1, ...subs.map((s) => buyStats[`${trig}/${s}`]?.block || 0));
     subs.forEach((s, i) => {
-      const id = `${TRIGGER_COND}/${s}`;
+      const id = `${trig}/${s}`;
       const st = buyStats[id];
       let state: NState = 'none';
       if (sym) {
         const ev = sym.lastEval;
-        state = ev?.condKey === TRIGGER_COND ? (ev.sub === s ? 'fail' : 'idle') : data.get(TRIGGER_COND)!.state === 'pass' ? 'pass' : 'idle';
+        state = ev?.condKey === trig ? (ev.sub === s ? 'fail' : 'idle') : data.get(trig)!.state === 'pass' ? 'pass' : 'idle';
       }
       const d: CondData = {
         key: id,
@@ -281,7 +289,7 @@ function build(snap: Snapshot | null, conds: Condition[], side: Side, sym: Symbo
       };
       const y = p.y - ((subs.length - 1) * (SUB_H + 8)) / 2 + i * (SUB_H + 8) - SUB_H / 2;
       nodes.push({ id, type: 'cond', position: { x: p.x + colRight, y }, data: d, zIndex: 2 });
-      edges.push({ id: `es${i}`, source: TRIGGER_COND, sourceHandle: 'r', target: id, className: 'edge-sub' });
+      edges.push({ id: `es${i}`, source: trig, sourceHandle: 'r', target: id, className: 'edge-sub' });
     });
   }
 

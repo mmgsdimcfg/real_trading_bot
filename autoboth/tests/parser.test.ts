@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { LineBuffer } from '../src/shared/lineBuffer';
 import { parseMainLine } from '../src/shared/logLine';
-import { classify } from '../src/shared/mapping';
+import { classify, keyRemap, remapKey } from '../src/shared/mapping';
 import { DayEngine } from '../src/shared/engine';
 import { classifyLogFile } from '../src/shared/files';
 import type { ConditionsDoc } from '../src/shared/types';
@@ -318,5 +318,43 @@ describe('symbol list (2026-11-05 log changes)', () => {
     const snap = e.snapshot();
     expect(snap.symbols.map((s) => s.code)).toEqual(['034730']);
     expect(snap.symbols[0].name).toBe('SK');
+  });
+});
+
+describe('server key remap (app / server numbering gap)', () => {
+  // a server still on the numbering before 2026-11-08: sell profit lock _023, reversal _022, buy trigger _008
+  const cond = (order: number, no: number, func: string) => ({ order, no, func, stage: 'EXIT', title: func, description: '' });
+  const oldDoc = {
+    generated_at: 'x',
+    buy: [cond(0, 1, '_001_entry_time_window'), cond(1, 8, '_008_hybrid_1min_trigger'), cond(2, 14, '_014_min_entry_atr_volatility')],
+    sell: [cond(0, 4, '_004_hard_stop_loss'), cond(1, 23, '_023_profit_lock'), cond(2, 22, '_022_shared_reversal_sell')],
+  } as unknown as ConditionsDoc;
+
+  it('maps app keys to the server numbers through the function names', () => {
+    const sell = keyRemap(oldDoc, 'sell');
+    expect(remapKey(sell, '_007')).toBe('_023');
+    expect(remapKey(sell, '_015')).toBe('_022');
+    expect(remapKey(sell, '_004')).toBe('_004');
+    expect(remapKey(sell, 'ORDER')).toBe('ORDER');
+    const buy = keyRemap(oldDoc, 'buy');
+    expect(remapKey(buy, '_009/trigger')).toBe('_008/trigger');
+    expect(remapKey(buy, '_012')).toBe('_014');
+  });
+
+  it('stub or missing functions keep the app key', () => {
+    const stub = { generated_at: 'x', buy: [cond(0, 2, '_002')], sell: [] } as unknown as ConditionsDoc;
+    expect(keyRemap(stub, 'buy').size).toBe(0);
+    expect(keyRemap(null, 'sell').size).toBe(0);
+  });
+
+  it('engine events and sell trades use the server keys', () => {
+    const e = new DayEngine('20261104', oldDoc);
+    e.feedMainLines([
+      L('09:05:00', 'REJECT', '159010_아스플로   | HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.4%_LT_0.6% | GATES x'),
+      L('09:10:00', 'SELL HOLD', '159010_아스플로   | AUX_BLOCKED_SCORE_3_PNL_0.20%_LT_0.50%'),
+    ]);
+    const snap = e.snapshot();
+    expect(snap.buyStats._014.block).toBe(1);
+    expect(snap.sellStats._022.hold).toBe(1);
   });
 });

@@ -10,6 +10,8 @@
  *   names from log labels / file names, which could be cut or carry a suffix; (2) a line with an ignored tag ([WARMUP] etc.) no
  *   longer creates a symbol by itself - the market-regime ETFs (069500 KOSPI, 229200 KOSDAQ) only appear in [WARMUP] lines and
  *   were listed as name-less symbols with no events
+ * - [2026-11-08] type=fix - Condition keys from the log rules (and sell trades) are translated to the server's numbers (mapping
+ *   keyRemap, rebuilt in setConditions) so an app/server version gap does not show "조건 목록에 없음"
  */
 
 import type {
@@ -24,7 +26,7 @@ import type {
   WatchState,
 } from './types';
 import { BS_BLOCK_RE, BS_DETAIL_RE, num, parseBuySellLine, parseKv, parseMainLine } from './logLine';
-import { IGNORED_TAGS, STATUS_SUB, classify, condKeyOf, reasonShape, sellReasonToCond, type Classified } from './mapping';
+import { IGNORED_TAGS, STATUS_SUB, classify, condKeyOf, keyRemap, reasonShape, remapKey, sellReasonToCond, type Classified, type KeyRemap } from './mapping';
 
 const STATUS_GAP_MS = 60000;
 import { hhmmToSeconds, kstDateTimeToEpoch, kstSecondOfDay } from './time';
@@ -45,6 +47,8 @@ export class DayEngine {
   readonly date: string;
   private buyIndex = new Map<string, number>();
   private buyKeys: string[] = [];
+  /** app condition key -> server key (see mapping keyRemap) */
+  private remap: Record<'buy' | 'sell', KeyRemap> = { buy: new Map(), sell: new Map() };
   private syms = new Map<string, SymState>();
   private buyStats = new Map<string, NodeStat>();
   private sellStats = new Map<string, SellNodeStat>();
@@ -72,6 +76,7 @@ export class DayEngine {
     const sorted = [...doc.buy].sort((a, b) => a.order - b.order);
     this.buyKeys = sorted.map((c) => condKeyOf(c.no));
     this.buyIndex = new Map(this.buyKeys.map((k, i) => [k, i]));
+    this.remap = { buy: keyRemap(doc, 'buy'), sell: keyRemap(doc, 'sell') };
   }
 
   private watchNamed = new Set<string>();
@@ -145,7 +150,8 @@ export class DayEngine {
       const last = s.timeline[s.timeline.length - 1];
       if (last && p.ts - last.ts < STATUS_GAP_MS) return;
     }
-    this.push(s, p.ts, p.code, p.tag, out.ev, raw);
+    const ev = out.ev;
+    this.push(s, p.ts, p.code, p.tag, { ...ev, condKey: remapKey(this.remap[ev.side], ev.condKey) }, raw);
   }
 
   private push(s: SymState, ts: number, code: string, tag: string, c: Classified, raw: string): void {
@@ -270,7 +276,8 @@ export class DayEngine {
       if (t.side === 'SELL') {
         t.pnlKrw = num(kv['수익금액']);
         t.pnlPct = num(kv['수익율']);
-        t.condKey = sellReasonToCond(reason) || 'UNKNOWN';
+        const k = sellReasonToCond(reason);
+        t.condKey = k ? remapKey(this.remap.sell, k) : 'UNKNOWN';
       }
       if (name) this.setName(code, name);
       this.trades.push(t);
