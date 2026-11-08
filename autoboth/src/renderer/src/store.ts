@@ -8,6 +8,7 @@
  * - [2026-11-06] type=feat - Chart indicator selection (chart.ind: bb / ichimoku / rsi / macd / adx), kept with the chart choice
  * - [2026-11-07] type=feat - buyHidden: buy-evaluation rows (condition keys, 'PREP', 'ORDER') hidden on the timeline's y axis,
  *   kept in localStorage
+ * - [2026-11-08] type=feat - buyEvalOnly: "이 종목 평가된 항목만" checkbox state, kept in localStorage
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
  */
 
@@ -66,6 +67,15 @@ function loadBuyHidden(): string[] {
   }
 }
 
+const BUY_EVAL_ONLY_KEY = 'autoboth.timelineBuyEvalOnly';
+function loadBuyEvalOnly(): boolean {
+  try {
+    return localStorage.getItem(BUY_EVAL_ONLY_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export type Tab = 'control' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'trades' | 'settings';
 
 interface State {
@@ -88,6 +98,9 @@ interface State {
   /** timeline buy chart: y-axis rows hidden by the user */
   buyHidden: string[];
   setBuyHidden: (keys: string[]) => void;
+  /** timeline buy chart: "이 종목 평가된 항목만" checked - the rows follow the selected symbol (buyHidden unused while on) */
+  buyEvalOnly: boolean;
+  setBuyEvalOnly: (on: boolean) => void;
   setTab: (t: Tab) => void;
   setSide: (s: Side) => void;
   select: (code: string | null) => void;
@@ -111,6 +124,15 @@ export const useStore = create<State>()((set, get) => ({
     set({ buyHidden: keys });
     try {
       localStorage.setItem(BUY_HIDDEN_KEY, JSON.stringify(keys));
+    } catch {
+      /* storage unavailable */
+    }
+  },
+  buyEvalOnly: loadBuyEvalOnly(),
+  setBuyEvalOnly: (on) => {
+    set({ buyEvalOnly: on });
+    try {
+      localStorage.setItem(BUY_EVAL_ONLY_KEY, on ? '1' : '0');
     } catch {
       /* storage unavailable */
     }
