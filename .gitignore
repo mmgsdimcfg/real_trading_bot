@@ -13,15 +13,15 @@ autobot/data_simulation/*.pkl
 autobot/live_trading/r004_trade_watchlist_today.txt
 autobot/live_trading/active_watchlist.txt
 
-# ---- autoboth (윈도우 Electron 앱) ----
-autoboth/node_modules/
-autoboth/dist/
-autoboth/out/
-autoboth/release/
-autoboth/coverage/
-autoboth/*.log
-autoboth/.env
-autoboth/.env.*
+# ---- AutoBotH (윈도우 Electron 앱) ----
+AutoBotH/node_modules/
+AutoBotH/dist/
+AutoBotH/out/
+AutoBotH/release/
+AutoBotH/coverage/
+AutoBotH/*.log
+AutoBotH/.env
+AutoBotH/.env.*
 *.pem
 *.ppk
 id_rsa*
