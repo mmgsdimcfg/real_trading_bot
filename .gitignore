@@ -2,16 +2,16 @@ __pycache__/
 *.pyc
 .vscode/
 
-# ---- autobot (서버 자동매매) ----
-autobot/data_simulation/data/
-autobot/data_simulation/logs/
-autobot/data_simulation/shared/data/
-autobot/data_simulation/shared/logs/
-autobot/data_simulation/*.pkl
+# ---- AutoBot (서버 자동매매) ----
+AutoBot/data_simulation/data/
+AutoBot/data_simulation/logs/
+AutoBot/data_simulation/shared/data/
+AutoBot/data_simulation/shared/logs/
+AutoBot/data_simulation/*.pkl
 
 # 매일 g002/r003이 다시 쓰는 당일 감시목록(실행 데이터) - 커밋하지 않음
-autobot/live_trading/r004_trade_watchlist_today.txt
-autobot/live_trading/active_watchlist.txt
+AutoBot/live_trading/r004_trade_watchlist_today.txt
+AutoBot/live_trading/active_watchlist.txt
 
 # ---- AutoBotH (윈도우 Electron 앱) ----
 AutoBotH/node_modules/

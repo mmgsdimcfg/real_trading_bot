@@ -110,11 +110,11 @@ RAM 여유가 1 GB 안팎이고 earlyoom이 동작 중이다. **Python 프로세
 
 ## 6. 서버에서 확인한 점검 결과 (2026-11-07, 커밋 6fac870 기준)
 
-모노레포 전환(서버 코드 = `real_trading_bot/autobot/`) 후 서버 쪽에서 앱 소스를 읽고 확인한 항목이다. 아래 순서로 고친다.
+모노레포 전환(서버 코드 = `real_trading_bot/AutoBot/`) 후 서버 쪽에서 앱 소스를 읽고 확인한 항목이다. 아래 순서로 고친다.
 
 1. **[필수] 서버 코드 경로 고정값.** `src/shared/control.ts:173`(`buildR016Command`)와 `src/main/conditions.ts:40`(`fetchR015`)이
-   `remoteRoot + '/auto_trading_src'`를 쓴다. 서버 폴더가 `/data/srv/autobot/real_trading_bot/autobot`으로 바뀌었다.
-   - 상수 하나(`SERVER_CODE_SUBDIR = 'real_trading_bot/autobot'`, `src/shared/control.ts`)로 모으고 두 곳이 그것을 쓰게 한다.
+   `remoteRoot + '/auto_trading_src'`를 쓴다. 서버 폴더가 `/data/srv/autobot/real_trading_bot/AutoBot`으로 바뀌었다.
+   - 상수 하나(`SERVER_CODE_SUBDIR = 'real_trading_bot/AutoBot'`, `src/shared/control.ts`)로 모으고 두 곳이 그것을 쓰게 한다.
      설정 화면에 고급 항목으로 노출해도 된다(기본값 = 위 상수).
    - `tests/control.test.ts` 등에서 명령 문자열을 비교하는 기대값도 같이 고친다.
    - **→ 2026-11-07 서버 쪽에서 직접 반영함**(`SERVER_CODE_SUBDIR`/`serverCodeDir`, 테스트 추가). 임시 심볼릭 링크는 삭제했다.

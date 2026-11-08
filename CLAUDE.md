@@ -1,7 +1,7 @@
 # Repository layout
 
-- `autobot/` - Ubuntu (Raspberry Pi) auto-trading server code. Its own rules: `autobot/CLAUDE.md`, `autobot/AGENTS.md`.
-- `AutoBotH/` - Windows Electron app AutoBotH (display + control via SSH exec of `autobot/live_trading/r016_control.py`).
+- `AutoBot/` - Ubuntu (Raspberry Pi) auto-trading server code. Its own rules: `AutoBot/CLAUDE.md`, `AutoBot/AGENTS.md`.
+- `AutoBotH/` - Windows Electron app AutoBotH (display + control via SSH exec of `AutoBot/live_trading/r016_control.py`).
 - `runtime/` and `open-trading-api/` live OUTSIDE the repo, next to the repo folder (`<repo>/../runtime`).
 
 Rules

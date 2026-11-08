@@ -1,7 +1,7 @@
 # 회신: 임의 종목 시세 조회 (KIS, 읽기 전용) - `quote` 명령 + `bars` KIS 폴백 (요청 2026-11-06 → 처리 2026-11-07)
 
 > 요청 문서 `autoboth/docs/server_kis_market_data_request_20261106.md`에 대한 서버 쪽 회신이다. 구현은
-> `autobot/live_trading/r018_kis_market.py`(신규), `r016_control.py`(`quote` 명령), `r017_chart_data.py`(`bars` 폴백).
+> `AutoBot/live_trading/r018_kis_market.py`(신규), `r016_control.py`(`quote` 명령), `r017_chart_data.py`(`bars` 폴백).
 > 앱 쪽 호출 줄이기(재사용 창, 창 숨김 시 갱신 생략)는 같은 날 `autoboth/`에 반영했다(커밋 cb10b5b).
 
 ---
@@ -61,4 +61,4 @@ r016_control.py quote --code CODE [--trades N]     # N 최대 30
 | 3. 공용 제한 + r003 동시 10분 관찰(EGW00201) | **월요일 장중 예정** |
 | 4. 토큰 재사용(새 발급 없음) | 코드상 발급 경로 없음(테스트로 확인). 월요일에 토큰 파일 시각으로 재확인 |
 
-테스트: `autobot/tests/test_r018_kis_market.py` 33개(HTTP 모킹), 서버 전체 테스트 통과. Codex 검토 2회(1차 7건, 2차 3건 + 위험 3건 반영). r016은 quote/bars에 절대 시각 27초 강제 중단(SIGALRM)을 둬서 느린 응답에서도 JSON을 낸다.
+테스트: `AutoBot/tests/test_r018_kis_market.py` 33개(HTTP 모킹), 서버 전체 테스트 통과. Codex 검토 2회(1차 7건, 2차 3건 + 위험 3건 반영). r016은 quote/bars에 절대 시각 27초 강제 중단(SIGALRM)을 둬서 느린 응답에서도 JSON을 낸다.

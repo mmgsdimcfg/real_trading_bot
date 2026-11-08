@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """R016 - r003 원격 제어 CLI (AutoBotH 윈도우 앱이 SSH exec으로 호출). 출력은 항상 JSON 한 덩어리.
 
-실행: cd real_trading_bot/autobot && ~/venv/bin/python live_trading/r016_control.py <command> [...]
+실행: cd real_trading_bot/AutoBot && ~/venv/bin/python live_trading/r016_control.py <command> [...]
 
   status                         서비스 상태(systemd --user autobot-r003), 실행 스냅샷(r003이 실제로 쓰는 값), 외부(screen 등)
                                  r003 PID, 틱 수집기(g011) 상태, 미적용 변경(desired vs running)

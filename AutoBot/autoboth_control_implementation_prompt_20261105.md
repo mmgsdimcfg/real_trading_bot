@@ -24,7 +24,7 @@ SFTP로 쓰지 않고, 주문 API를 절대 호출하지 않으며, 검증 로�
 
 호출 형식(기존 r015 호출과 동일한 방식):
 ```
-cd /data/srv/autobot/real_trading_bot/autobot && R016_BY=autoboth ~/venv/bin/python live_trading/r016_control.py <command> [args]
+cd /data/srv/autobot/real_trading_bot/AutoBot && R016_BY=autoboth ~/venv/bin/python live_trading/r016_control.py <command> [args]
 ```
 - 출력: **항상 stdout에 JSON 하나**. stderr는 무시하되 로그에 남긴다.
 - 종료 코드: `0` 성공, `2` 검증 실패/거부(JSON에 `error` 또는 `rejected`), `3` systemctl 실패(JSON `ok:false`, `stderr`).
