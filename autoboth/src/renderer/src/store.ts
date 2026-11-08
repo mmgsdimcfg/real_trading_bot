@@ -8,6 +8,9 @@
  * - [2026-11-06] type=feat - Chart indicator selection (chart.ind: bb / ichimoku / rsi / macd / adx), kept with the chart choice
  * - [2026-11-07] type=feat - buyHidden: buy-evaluation rows (condition keys, 'PREP', 'ORDER') hidden on the timeline's y axis,
  *   kept in localStorage
+ * - [2026-11-08] type=feat - layout: timeline chart heights (buy / sell evaluation charts, price area, each indicator pane) set by
+ *   dragging, kept in localStorage
+ * - [2026-11-08] type=fix - buyHidden moved to key '.v2' with the old keys translated once to the renumbered buy conditions
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
  */
 
@@ -56,13 +59,53 @@ function loadChart(): ChartPrefs {
   return d;
 }
 
-const BUY_HIDDEN_KEY = 'autoboth.timelineBuyHidden';
+/** [2026-11-08] v2 = buy condition keys after the server renumbered them in evaluation order (r005 _001.._025) */
+const BUY_HIDDEN_KEY = 'autoboth.timelineBuyHidden.v2';
+const BUY_HIDDEN_KEY_V1 = 'autoboth.timelineBuyHidden';
+/** old (v1) buy condition key -> new key; keys not listed (_001.._006, PREP, ORDER) kept */
+const BUY_KEY_V1_TO_V2: Record<string, string> = {
+  _025: '_007', _026: '_008', _008: '_009', _029: '_010', _009: '_011', _014: '_012', _015: '_013', _017: '_014',
+  _018: '_015', _019: '_016', _020: '_017', _031: '_018', _030: '_019', _028: '_020', _027: '_021', _021: '_022',
+  _022: '_023', _023: '_024', _024: '_025',
+};
+const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 function loadBuyHidden(): string[] {
   try {
-    const v = JSON.parse(localStorage.getItem(BUY_HIDDEN_KEY) || '[]');
-    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+    const cur = localStorage.getItem(BUY_HIDDEN_KEY);
+    if (cur !== null) return strList(JSON.parse(cur));
+    const old = localStorage.getItem(BUY_HIDDEN_KEY_V1);
+    if (old === null) return [];
+    const keys = strList(JSON.parse(old)).map((k) => BUY_KEY_V1_TO_V2[k] ?? k);
+    localStorage.setItem(BUY_HIDDEN_KEY, JSON.stringify(keys));
+    localStorage.removeItem(BUY_HIDDEN_KEY_V1);
+    return keys;
   } catch {
     return [];
+  }
+}
+
+/** [2026-11-08] timeline heights dragged by the user (px; missing = default size). price = price + volume area,
+ *  osc = one entry per indicator pane. Kept per PC (localStorage) */
+export interface TimelineLayout {
+  buyH?: number;
+  sellH?: number;
+  priceH?: number;
+  osc?: Partial<Record<IndicatorKey, number>>;
+}
+const LAYOUT_KEY = 'autoboth.timelineLayout';
+const posNum = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined);
+function loadLayout(): TimelineLayout {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
+    if (!v || typeof v !== 'object') return {};
+    const osc: Partial<Record<IndicatorKey, number>> = {};
+    for (const k of IND_KEYS) {
+      const h = posNum(v.osc?.[k]);
+      if (h) osc[k] = h;
+    }
+    return { buyH: posNum(v.buyH), sellH: posNum(v.sellH), priceH: posNum(v.priceH), osc };
+  } catch {
+    return {};
   }
 }
 
@@ -88,6 +131,9 @@ interface State {
   /** timeline buy chart: y-axis rows hidden by the user */
   buyHidden: string[];
   setBuyHidden: (keys: string[]) => void;
+  /** timeline chart / pane heights (undefined value = back to the default size) */
+  layout: TimelineLayout;
+  setLayout: (patch: Partial<Omit<TimelineLayout, 'osc'>> & { osc?: Partial<Record<IndicatorKey, number | undefined>> }) => void;
   setTab: (t: Tab) => void;
   setSide: (s: Side) => void;
   select: (code: string | null) => void;
@@ -111,6 +157,22 @@ export const useStore = create<State>()((set, get) => ({
     set({ buyHidden: keys });
     try {
       localStorage.setItem(BUY_HIDDEN_KEY, JSON.stringify(keys));
+    } catch {
+      /* storage unavailable */
+    }
+  },
+  layout: loadLayout(),
+  setLayout: (patch) => {
+    const cur = get().layout;
+    const osc = { ...cur.osc };
+    for (const [k, h] of Object.entries(patch.osc || {})) {
+      if (h) osc[k as IndicatorKey] = h;
+      else delete osc[k as IndicatorKey];
+    }
+    const layout: TimelineLayout = { ...cur, ...patch, osc };
+    set({ layout });
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
     } catch {
       /* storage unavailable */
     }

@@ -167,7 +167,7 @@ export class DayEngine {
       const idx = c.condKey === 'ORDER' ? this.buyKeys.length : c.condKey === 'PREP' ? -1 : this.buyIndex.get(c.condKey);
       if (c.result === 'fail') {
         const st = this.stat(c.condKey);
-        // sub-step counts of _008 are kept as "_008/trigger" etc. (not part of the evaluation order)
+        // sub-step counts of the trigger (TRIGGER_COND) are kept as "_009/trigger" etc. (not part of the evaluation order)
         const subSt = c.sub ? this.stat(`${c.condKey}/${c.sub}`) : null;
         if (inSession) {
           st.block++;

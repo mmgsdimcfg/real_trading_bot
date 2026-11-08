@@ -22,6 +22,9 @@
  * - [2026-11-07] type=feat - Price chart twice as tall (TL_SCALE: price + volume area 300 -> 600 px, indicator panes 84 -> 168 px)
  * - [2026-11-07] type=feat - Buy chart y-axis rows can be hidden ("y축 항목" popover: per-row checkboxes, 모두 표시, 이 종목 평가된 항목만);
  *   hidden rows and their dots are left out, the remaining rows close up and the chart gets shorter. Kept per PC (localStorage)
+ * - [2026-11-08] type=feat - Heights set by dragging (store layout, kept per PC): grip bars under the buy / sell evaluation charts,
+ *   handles on the bottom edge of the price area and of each indicator pane (PriceChart onResizePane); double-click = default size.
+ *   The y-axis row list follows the evaluation order, which the server numbers _001.._025 since 2026-11-08
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -34,11 +37,16 @@ import { fmtKstTime } from '../../../shared/time';
 import type { EvalEvent, Trade } from '../../../shared/types';
 import { MIN_SIZES, TICK_SIZES, type ChartKind, type PriceResponse } from '../../../shared/price';
 import { OSC_PANE_H, PRICE_PANE_H, PriceChart, chartHeight } from '../components/PriceChart';
+import { HeightGrip } from '../components/HeightGrip';
 
 /** the timeline's price chart is twice the default size (price + volume area and every indicator pane) */
 const TL_SCALE = 2;
 const TL_OSC_H = OSC_PANE_H * TL_SCALE;
 const TL_PRICE_H = PRICE_PANE_H * TL_SCALE;
+/** buy / sell evaluation chart heights: default of the sell chart, drag limits of both */
+const SELL_DEFAULT_H = 300;
+const GRIP_MIN = 120;
+const GRIP_MAX = 1600;
 import { IndicatorToggles } from '../components/IndicatorToggles';
 import { barsUpTo } from '../../../shared/replay';
 
@@ -96,6 +104,8 @@ export function TimelineView() {
   const sellConds = useMemo(() => sortedConds(conditions, 'sell'), [conditions]);
   const buyHidden = useStore((s) => s.buyHidden);
   const setBuyHidden = useStore((s) => s.setBuyHidden);
+  const layout = useStore((s) => s.layout);
+  const setLayout = useStore((s) => s.setLayout);
   /** every buy row bottom-up: 준비, conditions in evaluation order, 주문 */
   const buyRows = useMemo(
     () => [
@@ -183,6 +193,10 @@ export function TimelineView() {
   // memoized so hovering the price chart does not rebuild its paths
   const intradayDomain = useMemo<[number, number] | null>(() => (xs.length ? [domain[0], domain[1]] : null), [xs.length > 0, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const buyLabel = (v: number) => shownRows[v]?.label || '';
+  // heights: dragged by the user (layout) or the defaults
+  const buyH = layout.buyH ?? Math.max(200, Math.min(520, 110 + shownRows.length * 15));
+  const sellH = layout.sellH ?? SELL_DEFAULT_H;
+  const priceBoxH = chartHeight(chart.ind, TL_OSC_H, layout.priceH ?? TL_PRICE_H, layout.osc);
   const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
   const sellLabel = (v: number) =>
     v === 0 ? '평가 제외' : v === sellConds.length + 1 ? '세션 종료' : v === sellConds.length + 2 ? '주문' : sellConds[v - 1] ? condKeyOf(sellConds[v - 1].no) + ' ' + sellConds[v - 1].title.slice(0, 10) : '';
@@ -245,7 +259,7 @@ export function TimelineView() {
               </div>
             </details>
           </div>
-          <div className="chart-buy" style={{ height: Math.max(200, Math.min(520, 110 + shownRows.length * 15)) }}>
+          <div className="chart-buy" style={{ height: buyH }}>
             <ResponsiveContainer>
               <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }}>
                 <CartesianGrid stroke="var(--grid)" />
@@ -260,6 +274,7 @@ export function TimelineView() {
               </ScatterChart>
             </ResponsiveContainer>
           </div>
+          <HeightGrip height={buyH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ buyH: h })} onReset={() => setLayout({ buyH: undefined })} />
           {fullLen > 30 * 60000 && (
             <div className="time-window">
               <span className="muted small">보기 범위</span>
@@ -324,15 +339,17 @@ export function TimelineView() {
                   : ''}
             </span>
           </div>
-          <div className="chart-price" style={{ height: chartHeight(chart.ind, TL_OSC_H, TL_PRICE_H) }}>
+          <div className="chart-price" style={{ height: priceBoxH }}>
             {price && !price.ok && <div className="empty small">{price.error}</div>}
             {price?.ok && shownBars.length === 0 && <div className="empty small">{price.bars.length ? '재현 시각까지의 봉이 없습니다.' : '봉이 없습니다.'}</div>}
             {price?.ok && shownBars.length > 0 && (
               <PriceChart
                 bars={shownBars}
                 drawKey={selected}
-                height={chartHeight(chart.ind, TL_OSC_H, TL_PRICE_H)}
+                height={priceBoxH}
                 oscHeight={TL_OSC_H}
+                oscHeights={layout.osc}
+                onResizePane={(k, h) => (k === 'price' ? setLayout({ priceH: h }) : setLayout({ osc: { [k]: h } }))}
                 warm={price.warm}
                 warmBot={price.warmBot}
                 indicators={chart.ind}
@@ -347,7 +364,7 @@ export function TimelineView() {
             )}
           </div>
           <h4>매도 평가 (보유 중 발동/보류)</h4>
-          <div className="chart-sell">
+          <div className="chart-sell" style={{ height: sellH }}>
             {sellPts.length === 0 && trades.length === 0 ? (
               <div className="empty small">오늘 이 종목의 매도 평가 로그가 없습니다.</div>
             ) : (
@@ -365,6 +382,7 @@ export function TimelineView() {
               </ResponsiveContainer>
             )}
           </div>
+          <HeightGrip height={sellH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ sellH: h })} onReset={() => setLayout({ sellH: undefined })} />
           {trades.length > 0 && (
             <table className="grid compact">
               <thead>

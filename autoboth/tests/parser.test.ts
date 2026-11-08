@@ -57,44 +57,44 @@ describe('(b) log -> condition mapping', () => {
     ['REJECT', 'SESSION_OPEN_WARMUP | GATES x', '_002'],
     ['BUY SKIP', 'ALREADY_TRADED_TODAY_UNTIL_SELL', '_005'],
     ['BUY SKIP', 'HARD_STOP_REENTRY_BLOCKED_TODAY', '_006'],
-    ['BUY SKIP', 'DAILY_LOSS_LIMIT -1.20% <= -1.00%', '_025'],
-    ['BUY SKIP', 'MAX_OPEN_POSITIONS 5/5', '_026'],
+    ['BUY SKIP', 'DAILY_LOSS_LIMIT -1.20% <= -1.00%', '_007'],
+    ['BUY SKIP', 'MAX_OPEN_POSITIONS 5/5', '_008'],
     ['BUY SKIP', 'CIRCUIT_BREAKER_ACTIVE until=12:24:03 count=3', 'PREP', 'status'],
     ['TRADE', 'BUY REPRICE RESUBMIT | qty=10 | leg=limit', 'ORDER', 'BUY REPRICE RESUBMIT'],
     ['BUY CXL REJ', 'leg=limit | 주문 취소 불가', 'ORDER', 'BUY CXL REJ'],
-    ['REJECT', 'TRIPLE_CROSS_MISSING_TICK_ABSTAIN_NO_FILE | GATES', '_008', 'trigger'],
-    ['REJECT', 'TICK_LOW_DENSITY_12_LT_30', '_008', 'trigger'],
-    ['REJECT', 'TRIPLE_CROSS_1MIN_CHASE_BUY_BB_GAP_2.1%', '_008', 'candle'],
-    ['REJECT', 'TRIPLE_CROSS_1MIN_CHASE_BUY_INTRABAR', '_008', 'candle'],
-    ['REJECT', 'TRIPLE_CROSS_1MIN_CANDLE_NOT_BULLISH_0.2', '_008', 'candle'],
-    ['REJECT', 'TRIPLE_CROSS_1MIN_LIVE_DROP_0.5%', '_008', 'live'],
-    ['REJECT', 'TRIPLE_CROSS_1MIN_LIVE_BELOW_BB_MID', '_008', 'live'],
-    ['REJECT', 'TRIPLE_CROSS_CHASE_FROM_CROSS_2.10%_GT_1.50%', '_008', 'chase'],
-    ['REJECT', 'HYBRID_1MIN_TRIGGER_NONE', '_008', 'legacy'],
-    ['REJECT', 'HYBRID_1MIN_FRAME_UNAVAILABLE', '_008', 'legacy'],
-    ['TICK TRIG', 'no tick file before 09:00', '_008', 'trigger'],
-    ['REJECT', 'MARKET_REGIME_DOWN_KOSPI', '_029'],
-    ['REJECT', 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', '_009'],
-    ['REJECT', 'HYBRID_3MIN_CTX_MISSING_INDICATOR', '_009'],
-    ['REJECT', 'HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.41%_LT_0.60% | GATES a | STEPS 1min_trigger(P) min_entry_atr_volatility(F) min_liquidity_safety(-)', '_014'],
-    ['REJECT', 'HYBRID_3MIN_CTX_LOW_VOL_MA_ABS_1000', '_015'],
-    ['REJECT', 'HYBRID_3MIN_CTX_LOW_ABS_VOLUME_1000', '_015'],
-    ['REJECT', 'HYBRID_3MIN_CTX_LOW_VOLUME_RATIO_0.8', '_015'],
-    ['REJECT', 'HYBRID_3MIN_CTX_LOW_TURNOVER_1e8', '_015'],
-    ['REJECT', 'EXCESSIVE_RISE_FROM_PREV_CLOSE_25%', '_018'],
-    ['REJECT', 'ANTI_CHASE_VWAP_GAP_3.95%_GE_3.00%', '_019'],
-    ['REJECT', 'OPENING_GAP_5%', '_020'],
-    ['REJECT', 'QUOTE_STATUS_BLOCK_51', '_031'],
-    ['REJECT', 'ACCOUNT_SYNC_STALE age=120s', '_030'],
-    ['EDGE AI', 'p=0.372 thr=0.310 pass mode=shadow', '_028'],
-    ['REJECT', 'EDGE_AI_LOW_PROB_p=0.20_LT_0.31', '_028'],
-    ['REJECT', 'SPREAD_NO_QUOTE', '_027'],
-    ['REJECT', 'SPREAD_TOO_WIDE 0.8%', '_027'],
-    ['SPREAD', 'quote query failed timeout pass', '_027'],
-    ['BUY HOLD', 'reason=WAIT_NEXT_POLL_CONFIRM | count=1/2', '_021'],
-    ['REJECT', 'INSUFFICIENT_BUYING_POWER_OR_BUDGET', '_022'],
-    ['REJECT', 'STALE_LIVE_PRICE', '_023'],
-    ['REJECT', 'ORDERBOOK_ASK_THIN', '_024'],
+    ['REJECT', 'TRIPLE_CROSS_MISSING_TICK_ABSTAIN_NO_FILE | GATES', '_009', 'trigger'],
+    ['REJECT', 'TICK_LOW_DENSITY_12_LT_30', '_009', 'trigger'],
+    ['REJECT', 'TRIPLE_CROSS_1MIN_CHASE_BUY_BB_GAP_2.1%', '_009', 'candle'],
+    ['REJECT', 'TRIPLE_CROSS_1MIN_CHASE_BUY_INTRABAR', '_009', 'candle'],
+    ['REJECT', 'TRIPLE_CROSS_1MIN_CANDLE_NOT_BULLISH_0.2', '_009', 'candle'],
+    ['REJECT', 'TRIPLE_CROSS_1MIN_LIVE_DROP_0.5%', '_009', 'live'],
+    ['REJECT', 'TRIPLE_CROSS_1MIN_LIVE_BELOW_BB_MID', '_009', 'live'],
+    ['REJECT', 'TRIPLE_CROSS_CHASE_FROM_CROSS_2.10%_GT_1.50%', '_009', 'chase'],
+    ['REJECT', 'HYBRID_1MIN_TRIGGER_NONE', '_009', 'legacy'],
+    ['REJECT', 'HYBRID_1MIN_FRAME_UNAVAILABLE', '_009', 'legacy'],
+    ['TICK TRIG', 'no tick file before 09:00', '_009', 'trigger'],
+    ['REJECT', 'MARKET_REGIME_DOWN_KOSPI', '_010'],
+    ['REJECT', 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', '_011'],
+    ['REJECT', 'HYBRID_3MIN_CTX_MISSING_INDICATOR', '_011'],
+    ['REJECT', 'HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.41%_LT_0.60% | GATES a | STEPS 1min_trigger(P) min_entry_atr_volatility(F) min_liquidity_safety(-)', '_012'],
+    ['REJECT', 'HYBRID_3MIN_CTX_LOW_VOL_MA_ABS_1000', '_013'],
+    ['REJECT', 'HYBRID_3MIN_CTX_LOW_ABS_VOLUME_1000', '_013'],
+    ['REJECT', 'HYBRID_3MIN_CTX_LOW_VOLUME_RATIO_0.8', '_013'],
+    ['REJECT', 'HYBRID_3MIN_CTX_LOW_TURNOVER_1e8', '_013'],
+    ['REJECT', 'EXCESSIVE_RISE_FROM_PREV_CLOSE_25%', '_015'],
+    ['REJECT', 'ANTI_CHASE_VWAP_GAP_3.95%_GE_3.00%', '_016'],
+    ['REJECT', 'OPENING_GAP_5%', '_017'],
+    ['REJECT', 'QUOTE_STATUS_BLOCK_51', '_018'],
+    ['REJECT', 'ACCOUNT_SYNC_STALE age=120s', '_019'],
+    ['EDGE AI', 'p=0.372 thr=0.310 pass mode=shadow', '_020'],
+    ['REJECT', 'EDGE_AI_LOW_PROB_p=0.20_LT_0.31', '_020'],
+    ['REJECT', 'SPREAD_NO_QUOTE', '_021'],
+    ['REJECT', 'SPREAD_TOO_WIDE 0.8%', '_021'],
+    ['SPREAD', 'quote query failed timeout pass', '_021'],
+    ['BUY HOLD', 'reason=WAIT_NEXT_POLL_CONFIRM | count=1/2', '_022'],
+    ['REJECT', 'INSUFFICIENT_BUYING_POWER_OR_BUDGET', '_023'],
+    ['REJECT', 'STALE_LIVE_PRICE', '_024'],
+    ['REJECT', 'ORDERBOOK_ASK_THIN', '_025'],
     ['BUY EVAL', 'OK TRIPLE_CROSS_X+HYBRID_3MIN_CTX_SCORE_12 | 09:07:56 | LIVE 29,050', 'ORDER'],
     ['BUY SUBMIT', 'qty=8 | price=29,050', 'ORDER'],
     ['BUY EXEC', 'qty=8', 'ORDER'],
@@ -111,7 +111,7 @@ describe('(b) log -> condition mapping', () => {
     });
   }
   it('parses STEPS diagnostics', () => {
-    const out = classify('REJECT', buyCases.find((c) => c[2] === '_014')![1]);
+    const out = classify('REJECT', buyCases.find((c) => c[2] === '_012')![1]);
     expect(out.kind === 'event' && out.ev.steps).toEqual({ '1min_trigger': 'P', min_entry_atr_volatility: 'F', min_liquidity_safety: '-' });
   });
 
@@ -221,13 +221,13 @@ describe('engine aggregation', () => {
     const e = new DayEngine('20261104', conditions);
     e.feedMainLines(MAIN_SAMPLE);
     const snap = e.snapshot();
-    expect(snap.buyStats._008.preOpenBlock).toBe(1);
-    expect(snap.buyStats._008.block).toBe(0);
+    expect(snap.buyStats._009.preOpenBlock).toBe(1);
+    expect(snap.buyStats._009.block).toBe(0);
     expect(snap.buyStats._002.block).toBe(1);
-    expect(snap.buyStats._014.block).toBe(1);
-    // in-session polls that got past _001: _002 reject, _014 reject, _021 hold, EVAL OK
+    expect(snap.buyStats._012.block).toBe(1);
+    // in-session polls that got past _001: _002 reject, _012 reject, _022 hold, EVAL OK
     expect(snap.buyStats._001.pass).toBe(4);
-    expect(snap.buyStats._021.hold).toBe(1);
+    expect(snap.buyStats._022.hold).toBe(1);
     const s = snap.symbols[0];
     expect(s.name).toBe('아스플로');
     expect(s.furthestOrderToday).toBe(conditions.buy.length);
