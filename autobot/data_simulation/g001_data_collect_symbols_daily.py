@@ -19,21 +19,22 @@ Per date folder also: _prev_close.json, _daily_close.json, _52w_high_low.json, _
 
 Key behavior:
 - Collects by date from KIS minute API (`inquire_time_dailychartprice`).
-- Uses market priority NX > J > UN for overlapping timestamps.
-- Supports NXT pre/after sessions (08:00~19:59) when symbol is NXT-tradeable.
+- Regular session (09:00~15:30) uses KRX bars (J, UN only when J and NX are both empty).
+- NXT pre/after sessions (08:00~08:50, 15:30~19:59) are collected by default (NX bars) when the symbol
+  is NXT-tradeable; --no-nxt collects the regular session only.
 - Exports 10-second interpolated bars (`_10s.txt`) for r007 simulation input.
 - Optionally saves legacy `_1m/_3m/_20s` files for backward compatibility (--save-legacy-files).
 
 Usage examples:
-- Single code on specific date (regular market only):
+- Single code on specific date (NXT sessions included for NXT-tradeable symbols - default):
     python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310
-- Single code on specific date (include NXT market):
-    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310 --nxt
+- Single code on specific date (regular market only):
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310 --no-nxt
 - Multiple dates (space- or comma-separated):
     python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 20260511 20260512
-    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508,20260511,20260512 --nxt
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508,20260511,20260512
 - Multiple codes on specific date:
-    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930 --nxt
+    python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --code 067310,005930
 - Full list from symbols file:
     python xgraph/auto_trading/g001_data_collect_symbols_daily.py --date 20260508 --symbols-file xgraph/auto_trading/g004_universe_symbols_master.txt
 
@@ -44,6 +45,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-08] type=feat owner=claude
+    summary: 사용자 요청 "NXT 매매 종목이면 NXT 시간 데이터도 수집". --nxt 기본 켜짐(--no-nxt로 끔, --nxt는 호환용 유지).
+      NXT 가능 종목만 NX 분봉(08:00~08:50, 15:30~20:00)을 추가하고, 정규장(09:00~15:30)은 J 봉만 쓴다 - 기존 --nxt의
+      우선순위 NX > J는 정규장에도 NXT 거래소 단독 봉을 넣었음. 따라서 정규장 행은 --no-nxt 수집과 같다.
+      10s 지표 열은 전체 분봉(NXT 포함)으로 계산되므로 정규장 행의 VWAP/RSI 등은 프리마켓 영향이 있음 - g002는 정규장
+      행만 쓰도록 같은 날 수정(build_daily_bars, VWAP 재계산).
+      수집 시간: NXT 가능 종목당 NX 분봉 페이지 몇 회 추가, 완료 기준 시각 15:30 -> 20:00(이전 수집 저장분은 이어받기 시
+      NX 구간이 없으면 다시 받음).
+    impact: collector / scanner(g002) / sim(g003은 nxt_flags.json과 세션 시각으로 이미 NXT 지원)
+    compatibility: 기본 동작 변경 - 10s 파일에 08:00~08:50, 15:30~20:00 행이 생김(NXT 가능 종목). 이전처럼 받으려면 --no-nxt.
 - [2026-11-02] type=feat owner=claude
     summary: 완료 표식 {date}/_g001_done.json(scope/symbols/saved/empty/failed/finished_at). 전체 유니버스 수집
       (기본 g004 목록, --code/--watchlist-only 미지정)만 시작 시 삭제하고 정상 종료 시 기록 - g013(g015 cron)이
@@ -308,6 +319,7 @@ from r001_define_config import (
     MACD_SLOW,
     OBV_MA_PERIOD,
     REGULAR_END,
+    REGULAR_START,
     RSI_PERIOD,
     RUNTIME_DATA_DIR,
     RSI_SIGNAL_PERIOD,
@@ -449,7 +461,11 @@ def parse_args() -> argparse.Namespace:
                         help="Symbols processed in parallel (threads). API requests stay globally throttled; 1 = sequential. "
                              "--sleep then applies per worker")
     parser.add_argument("--sleep", type=float, default=0.0, help="Extra sleep seconds between symbols (requests are already throttled to KIS_MIN_REQUEST_INTERVAL)")
-    parser.add_argument("--nxt", action="store_true", help="Include NXT market data (08:00~20:00)")
+    parser.add_argument(
+        "--nxt", action=argparse.BooleanOptionalAction, default=True,
+        help="NXT-tradeable symbols also get NXT pre/after-session bars (08:00~08:50, 15:30~20:00); "
+             "regular session (09:00~15:30) is always KRX(J). Default on; --no-nxt = regular session only",
+    )
     parser.add_argument(
         "--save-legacy-files",
         action="store_true",
@@ -852,6 +868,13 @@ def fetch_symbol_data(code: str, target_date: str, include_nxt: bool) -> pd.Data
     # Filter data based on market hours
     if not include_nxt:
         merged = merged[merged["datetime"].dt.time >= datetime.strptime("09:00:00", "%H:%M:%S").time()]
+    else:
+        # [2026-11-08] 정규장(09:00~15:30)은 KRX(J/UN) 봉만, 그 밖(08:00~08:50, 15:30 이후)은 NX 봉만 쓴다.
+        # 기존 우선순위 NX > J는 정규장에도 NXT 거래소 단독 봉(거래량이 KRX보다 훨씬 작음)을 넣어, NXT 가능 종목의
+        # 정규장 구간이 --no-nxt 수집과 달라졌다(g002 선정 입력 오염). 이제 정규장 행은 --no-nxt 수집과 같다.
+        _t = merged["datetime"].dt.time
+        _regular = (_t >= REGULAR_START) & (_t <= REGULAR_END)
+        merged = merged[_regular != merged["market"].eq("NX")]
 
     # One row per minute. Priority: NX > J > UN.
     priority = {"NX": 0, "J": 1, "UN": 2}

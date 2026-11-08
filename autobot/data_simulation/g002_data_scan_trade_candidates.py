@@ -24,6 +24,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-08] type=fix owner=claude
+    summary: g001이 NXT 가능 종목의 NXT 세션(08:00~08:50, 15:30~20:00)도 기본 수집하게 돼, 선정은 지금처럼 정규장
+      데이터만 쓰도록 고정. build_daily_bars(10s -> 대상일 일봉 1행) 집계를 09:00~15:30 행으로 한정(시가/고가/저가/종가/
+      거래량에 NXT 체결이 섞이지 않게; 정규장 첫/마지막 원본 봉 밖의 세션 간 보간 행도 제외), 마감 VWAP은 프리마켓 행이 있는 파일이면 정규장 원본 분봉으로 재계산(g001 VWAP
+      열은 첫 분봉부터 누적). 장중 ATR은 원래 09:00~15:20만 사용.
+    impact: scanner
+    compatibility: backward-compatible (정규장만 수집된 기존 파일은 결과 동일)
 - [2026-11-01] type=tune owner=claude
     summary: 사용자 결정 - 아깝게 탈락한 보충 후보 허용(FALLBACK_NEAR_MISS_PATTERN_FAILS): 패턴 조건 중
       pattern_no_bullish_close(메리츠형) 또는 pattern_bearish_candles(롯데렌탈형) 하나에만 걸리고 20일 평균 거래대금
@@ -726,6 +733,11 @@ def _symbol_file_priority(path):
 _DIR_LISTING_CACHE: dict[str, dict[str, list[str]]] = {}
 
 
+# [2026-11-08] 정규장 구간(HH:MM:SS 문자열 비교). g001 10s 파일은 NXT 가능 종목이면 NXT 세션 행도 담는다.
+REGULAR_SESSION_START = "09:00:00"
+REGULAR_SESSION_END = "15:30:00"
+
+
 def _dir_files_by_code(data_dir) -> dict[str, list[str]]:
     """{6-char prefix: [file names]} for a date folder, listed once per process. Path.glob(f"{code}*") scans
     the whole folder (~5,000-7,500 files) on every call - ~0.12s each on a Raspberry Pi, 2-3 calls per symbol.
@@ -775,7 +787,8 @@ def load_data(code, data_dir, warn=True):
 
     try:
         # 일봉 집계에 필요한 열만 읽는다(10s 파일은 지표 포함 30열 - 전체 파싱이 Pi에서 주된 비용).
-        _keep = {"timestamp", "datetime", "Time", "time", "date", "Date", "open", "high", "low", "close", "volume"}
+        _keep = {"timestamp", "datetime", "Time", "time", "date", "Date", "open", "high", "low", "close", "volume",
+                 "raw_bar"}
         df = pd.read_csv(file_path, index_col=0, parse_dates=True, usecols=lambda c: c in _keep)
         df = ensure_datetime_index(df)
         return df
@@ -813,6 +826,14 @@ def build_daily_bars(data_root, code, target_date_str=None, lookback=DAILY_LOOKB
         df = ensure_datetime_index(df)
         if isinstance(df.index, pd.DatetimeIndex):
             df = df[df.index.year != 1900]
+            # [2026-11-08] g001이 NXT 세션(08:00~08:50, 15:30~20:00)도 수집 - 선정은 정규장 행만으로 집계한다.
+            _tod = df.index.strftime("%H:%M:%S")
+            df = df[(_tod >= REGULAR_SESSION_START) & (_tod <= REGULAR_SESSION_END)]
+            # 정규장 첫/마지막 KIS 원본 봉 밖의 행은 NXT 봉과 이어 붙인 보간 행(예: J 첫 봉 09:02면 09:00~09:01:50이
+            # NX 08:49 봉과의 보간)이라 버린다. 정규장만 수집한 파일은 격자가 원본 봉에서 시작/끝나 그대로다.
+            if "raw_bar" in df.columns:
+                _raw = df.index[pd.to_numeric(df["raw_bar"], errors="coerce") == 1]
+                df = df.loc[_raw.min():_raw.max()] if len(_raw) else df.iloc[0:0]
         if df.empty:
             continue
         for col in ["open", "high", "low", "close", "volume"]:
@@ -1465,10 +1486,27 @@ def _pattern_assessment(price, f) -> tuple[list[str], str | None, list[str]]:
 
 
 def _last_vwap_from_frame(df: "pd.DataFrame", dt: "pd.Series") -> float | None:
-    """[2026-10-10] 대상일 정규장(<=15:30) 마지막 행의 VWAP (g001 10s 파일의 VWAP 열, 1분봉 누적 기준)."""
+    """[2026-10-10] 대상일 정규장(<=15:30) 마지막 행의 VWAP (g001 10s 파일의 VWAP 열, 1분봉 누적 기준).
+    [2026-11-08] g001 VWAP 열은 그날 첫 분봉부터 누적이라 NXT 프리마켓(09:00 전) 행이 있는 파일은 정규장 원본 분봉
+    (raw_bar==1, 09:00~15:29 봉)으로 다시 계산한다 - 프리마켓이 없는 파일은 기존과 같은 값(열 그대로)."""
+    tod = dt.dt.strftime("%H:%M:%S")
+    if (dt.notna() & (tod < REGULAR_SESSION_START)).any():
+        if any(c not in df.columns for c in ("raw_bar", "close", "volume")):
+            return None
+        # 열 값과 같은 기준: 15:30 행의 VWAP은 그때까지 완성된 봉(15:29 봉까지)의 누적이라 15:30 단일가 봉은 빠진다.
+        m = dt.notna() & (tod >= REGULAR_SESSION_START) & (tod < REGULAR_SESSION_END)
+        m &= pd.to_numeric(df["raw_bar"], errors="coerce") == 1
+        close = pd.to_numeric(df.loc[m, "close"], errors="coerce")
+        vol = pd.to_numeric(df.loc[m, "volume"], errors="coerce")
+        ok = close.notna() & vol.notna() & (vol > 0)
+        vsum = float(vol[ok].sum())
+        if vsum <= 0:
+            return None
+        vwap = float((close[ok] * vol[ok]).sum()) / vsum
+        return vwap if vwap > 0 else None
     if "VWAP" not in df.columns:
         return None
-    vw = df.loc[dt.notna() & (dt.dt.strftime("%H:%M:%S") <= "15:30:00"), "VWAP"]
+    vw = df.loc[dt.notna() & (tod <= REGULAR_SESSION_END), "VWAP"]
     vw = pd.to_numeric(vw, errors="coerce").dropna()
     if vw.empty:
         return None
@@ -1523,7 +1561,7 @@ def _load_intraday_metrics(data_root: Path, target_date_str, code: str) -> dict:
     if path is None or not path.stem.endswith("_10s"):
         out["atr3_status"] = "no_file"
         return out
-    wanted = ("datetime", "VWAP", "raw_bar", "open", "high", "low", "close")
+    wanted = ("datetime", "VWAP", "raw_bar", "open", "high", "low", "close", "volume")
     try:
         df = pd.read_csv(path, usecols=lambda c: c in wanted, encoding="utf-8-sig")
         dt = pd.to_datetime(df["datetime"], errors="coerce")
