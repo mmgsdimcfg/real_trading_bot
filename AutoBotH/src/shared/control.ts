@@ -3,6 +3,8 @@
  * - [2026-11-07] type=feat - NXT session: ControlState.nxt (r016 `get ENABLE_NXT_SESSION` - effective / running / pending),
  *   parseNxt() and resolveSessionOpen(): the app's funnel start time follows the server's NXT setting when sessionOpenAuto is on
  *   (NXT on -> 08:00 morning NXT session, off -> 09:00 regular session)
+ * - [2026-11-09] type=refactor - Server code folder renamed real_trading_bot/autobot -> real_trading_bot/AutoBot (SERVER_CODE_SUBDIR);
+ *   app builds before 2.2.1_003 point at the old folder and fail until rebuilt
  * - [2026-11-07] type=fix - Server code moved to the monorepo folder `<remote root>/real_trading_bot/autobot` (was
  *   `<remote root>/auto_trading_src`). The sub-folder is one constant (SERVER_CODE_SUBDIR) used by the r016 and r015 commands.
  *   r016 `status` gets its own poll interval (statusPollMs): each call starts a Python process on the Raspberry Pi, so it is
@@ -195,8 +197,8 @@ export const RISK_PROFILES: RiskProfile[] = ['conservative', 'neutral', 'aggress
 // ---- command building / parsing --------------------------------------------------------------
 
 export const R016_SCRIPT = 'live_trading/r016_control.py';
-/** Server code folder under the remote root (monorepo `real_trading_bot`, server part `autobot/`). */
-export const SERVER_CODE_SUBDIR = 'real_trading_bot/autobot';
+/** Server code folder under the remote root (monorepo `real_trading_bot`, server part `AutoBot/`). */
+export const SERVER_CODE_SUBDIR = 'real_trading_bot/AutoBot';
 
 export const STATUS_POLL_DEFAULT_SEC = 30;
 export const STATUS_POLL_MIN_SEC = 15;
@@ -209,7 +211,7 @@ export function statusPollMs(statusPollSec: number | undefined, windowVisible: b
   return (windowVisible ? sec : Math.max(sec, STATUS_POLL_HIDDEN_SEC)) * 1000;
 }
 
-/** `<remote root>/real_trading_bot/autobot` (trailing slashes of the root removed). */
+/** `<remote root>/real_trading_bot/AutoBot` (trailing slashes of the root removed). */
 export function serverCodeDir(remoteRoot: string): string {
   return `${String(remoteRoot || '').replace(/\/+$/, '')}/${SERVER_CODE_SUBDIR}`;
 }
@@ -228,7 +230,7 @@ export function writerName(osUser: string): string {
 }
 
 /**
- * `cd <root>/real_trading_bot/autobot && R016_BY=<by> <python> live_trading/r016_control.py <args...>`, every argument single-quoted.
+ * `cd <root>/real_trading_bot/AutoBot && R016_BY=<by> <python> live_trading/r016_control.py <args...>`, every argument single-quoted.
  * Throws when an argument holds a quote, backtick, semicolon or newline (checked before quoting, defence in depth).
  */
 export function buildR016Command(remoteRoot: string, pythonPath: string, by: string, args: string[]): string {

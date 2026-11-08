@@ -11,8 +11,8 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-WorkingDirectory=/data/srv/autobot/real_trading_bot/autobot/live_trading
-ExecStart=/bin/bash /data/srv/autobot/real_trading_bot/autobot/live_trading/r003_service.sh
+WorkingDirectory=/data/srv/autobot/real_trading_bot/AutoBot/live_trading
+ExecStart=/bin/bash /data/srv/autobot/real_trading_bot/AutoBot/live_trading/r003_service.sh
 Environment=PYTHONUNBUFFERED=1
 # r003 saves live_state on SIGTERM; give it time to finish the current loop.
 KillSignal=SIGTERM

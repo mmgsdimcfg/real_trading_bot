@@ -8,8 +8,8 @@
 #   - g011's stop time defaults to the calendar close + 1 min (TICK_COLLECTOR_UNTIL=HH:MM overrides).
 #
 # crontab (weekdays; the 5-minute repeats restart g011 if it died; hour 16 covers late-close days):
-#   50,55 8 * * 1-5   /data/srv/autobot/real_trading_bot/autobot/data_simulation/g022_tick_collect_daily.sh
-#   */5 9-16 * * 1-5  /data/srv/autobot/real_trading_bot/autobot/data_simulation/g022_tick_collect_daily.sh
+#   50,55 8 * * 1-5   /data/srv/autobot/real_trading_bot/AutoBot/data_simulation/g022_tick_collect_daily.sh
+#   */5 9-16 * * 1-5  /data/srv/autobot/real_trading_bot/AutoBot/data_simulation/g022_tick_collect_daily.sh
 # Do not wrap it in another `flock`: that lock fd would be inherited by g011 and block every later run.
 #
 # Update log:

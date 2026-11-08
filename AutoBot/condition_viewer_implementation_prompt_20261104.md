@@ -36,7 +36,7 @@
 
 ## 2. 서버의 데이터 (전부 읽기 전용)
 
-원격 루트(설정값, 기본): `/data/srv/autobot` — 서버 코드는 `real_trading_bot/autobot/`, 런타임은 `runtime/`.
+원격 루트(설정값, 기본): `/data/srv/autobot` — 서버 코드는 `real_trading_bot/AutoBot/`, 런타임은 `runtime/`.
 
 ### 2.1 로그 디렉터리 `runtime/log/YYYYMMDD/`
 
@@ -85,7 +85,7 @@
 
 ### 2.4 조건 목록(진실의 원천) - 서버에서 JSON으로 받는다
 
-SSH exec: `cd /data/srv/autobot/real_trading_bot/autobot && ~/venv/bin/python live_trading/r015_export_conditions.py`
+SSH exec: `cd /data/srv/autobot/real_trading_bot/AutoBot && ~/venv/bin/python live_trading/r015_export_conditions.py`
 → stdout에 JSON 하나:
 ```json
 {"generated_at": "...", "entry_trigger_mode": "triple", "trading_strategy_mode": "normal",

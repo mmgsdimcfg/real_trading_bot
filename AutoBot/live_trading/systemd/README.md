@@ -4,7 +4,7 @@ screen 세션 대신 systemd --user 로 r003 을 관리한다. AutoBotH / r016_c
 
 설치 (서버에서 1회):
 ```
-cp /data/srv/autobot/real_trading_bot/autobot/live_trading/systemd/autobot-r003.service ~/.config/systemd/user/
+cp /data/srv/autobot/real_trading_bot/AutoBot/live_trading/systemd/autobot-r003.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 loginctl show-user $USER -p Linger      # Linger=yes 여야 로그아웃 후에도 유지 (이미 yes)
 ```
