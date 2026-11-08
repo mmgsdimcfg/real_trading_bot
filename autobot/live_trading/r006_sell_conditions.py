@@ -11,27 +11,36 @@ Overview
   inline code. Nothing in this file changes a threshold or a strategy decision.
 - No broker imports: everything that talks to the broker is injected through `SellServices` and `ctx.api`.
 
-Order                                        Kind        Old r003 inline block (baseline lines)
+Order [numbers = evaluation order since 2026-11-08, old number in brackets]
+                                             Kind        Old r003 inline block (baseline lines)
   _001 stale live price guard                GUARD       4431-4436  ([SELL REJECT] STALE_LIVE_PRICE)
   _002 update position tracking              UPDATE      4438-4471  (current_price, price samples, highest/peak)
   _003 peak next-bar bearish exit            EXIT        4473-4508
   _004 hard stop loss                        EXIT        4544-4567 (2026-09-23: added confirm window)
-  _006 staged TP1 partial                    EXIT        4617-4690
-  _007 surge ladder TP2/TP3                  EXIT        4692-4732
-  _023 profit lock                           EXIT        (2026-11-02 신규 - TP1 전 고점 대비 반납 시 전량 매도)
-  _015 ATR take profit / TP extension        EXIT/LOG    4833-4850
-  _016 post-buy entry drop guard             EXIT        4852-4886
-  _017 breakeven fail guard                  EXIT        4888-4920  (TP1 이후 잔량의 손실 방어)
-  _018 no-trend time exit                    EXIT        4922-4957
-  _019 ATR stop loss                         EXIT        4959-4994
-  _020 trailing stop                         EXIT        4996-5053
-  _021 same-bar sell dedup                   GUARD       5055-5056
-  _022 shared reversal sell                  EXIT        5058-5099  (r002 check_sell_condition)
-  [2026-11-04 삭제] _005 불타기(OFF) / _008 TP2(비율 0) / _009 TP3 무장(로그만) / _010 구형 익절(비활성 경로) /
+  _005 staged TP1 partial            [_006]  EXIT        4617-4690
+  _006 surge ladder TP2/TP3          [_007]  EXIT        4692-4732
+  _007 profit lock                   [_023]  EXIT        (2026-11-02 신규 - TP1 전 고점 대비 반납 시 전량 매도)
+  _008 ATR take profit / TP extension [_015] EXIT/LOG    4833-4850
+  _009 post-buy entry drop guard     [_016]  EXIT        4852-4886
+  _010 breakeven fail guard          [_017]  EXIT        4888-4920  (TP1 이후 잔량의 손실 방어)
+  _011 no-trend time exit            [_018]  EXIT        4922-4957
+  _012 ATR stop loss                 [_019]  EXIT        4959-4994
+  _013 trailing stop                 [_020]  EXIT        4996-5053
+  _014 same-bar sell dedup           [_021]  GUARD       5055-5056
+  _015 shared reversal sell          [_022]  EXIT        5058-5099  (r002 check_sell_condition)
+  basic 모드: _001/_002/_004 + _b10~_b12 (번호 무변경)
+  [2026-11-04 삭제, 옛 번호] _005 불타기(OFF) / _008 TP2(비율 0) / _009 TP3 무장(로그만) / _010 구형 익절(비활성 경로) /
     _011 1분 데드크로스(OFF) / _012 되돌림 가드(_023이 항상 먼저 발동) / _013 STOCH K<D(OFF) / _014 MACD(OFF).
     번호는 재사용하지 않는다(로그/문서 호환).
 
 Update log (append only):
+- [2026-11-08] type=refactor owner=claude
+    summary: 사용자 요청(AutoBotH 평가 차트 번호 순차화, 매수 r005와 같은 작업) - 매도 조건 번호를 평가 순서대로 _001~_015로
+      다시 매김(함수명/SellCondition.no 함께). 평가 순서와 로직은 무변경. 이전 -> 새 번호: _006->_005, _007->_006,
+      _023->_007, _015->_008, _016->_009, _017->_010, _018->_011, _019->_012, _020->_013, _021->_014, _022->_015
+      (_001~_004 그대로, basic _b10~_b12 그대로). 이 줄 아래 Update log/주석의 번호는 그 날짜 기준.
+    impact: live(조건 JSON r015·r016) / app(autoboth mapping.ts SELL_RULES 동시 수정)
+    compatibility: 조건 JSON의 매도 no/func 값 변경 - AutoBotH와 함께 배포. 로그 문구에는 번호가 없음.
 - [2026-11-04] type=refactor owner=claude
     summary: 사용자 결정(매수/매도 조건 전면 검토) - 10/01 이후 발동 0건이고 구조적으로 도달 불가/OFF인 매도 조건 8개 삭제:
       _005 불타기, _008 TP2(STAGED_TP2_RATIO=0), _009 TP3 트레일 무장, _010 구형 익절, _011 1분 데드크로스(+DC regime 헬퍼),
@@ -68,7 +77,7 @@ Update log (append only):
     compatibility: breaking (PEAK_NEXT_BAR_BEARISH 판정 시점이 한 봉 늦춰짐 - 원래 의도대로. 롤백: 이 커밋의 _002/_003 되돌림)
 - [2026-09-23] type=feat owner=claude
     summary: 사용자 요청("매수/매도 컨셉 재검토" 3~4단계 적용) + Codex 설계검토 - 신규 _011_hybrid_1min_dead_cross_exit
-      추가(매수측 _009_hybrid_1min_trigger의 대칭 매도판, r002 check_1min_dead_cross 사용). 기존 _021
+      추가(매수측 _008_hybrid_1min_trigger의 대칭 매도판, r002 check_1min_dead_cross 사용). 기존 _021
       shared_reversal_sell(AUX_REVERSAL_SCORE)이 구조적으로 손실 포지션을 절대 청산 못 하는 문제
       (2026-09-23 컨셉 재검토 메모)를 "수익보호 전용으로 남기고 손실은 별도 조건이 담당"하는 방식으로
       해결. 기존 _011~_020이 _012~_021로 한 칸씩 밀림(로직 무변경, 이름/번호만 이동) - r001 Update log
@@ -250,7 +259,7 @@ class SellContext:
     peak_pnl_pct: float = 0.0
     profit_giveback: float = 0.0
 
-    # 스테이지드 익절 블록(_006/_007/_023) 공유값
+    # 스테이지드 익절 블록(_005/_006/_007) 공유값
     entry_qty: int = 0
     tp1_target_pct: float = _NAN
     atr_tp1_dynamic_pct: float = _NAN
@@ -300,8 +309,8 @@ def _hold_info(ctx: SellContext) -> tuple[datetime, object, float]:
 
 
 def _staged_targets(ctx: SellContext) -> None:
-    """스테이지드 익절 공유값(entry_qty/tp1_target_pct)을 채운다 - 기존 4618-4634. (2차 익절 _008은 2026-11-04 삭제)
-    같은 틱에서 _006이 먼저 호출한다(트리거 시 pos를 바꾸고 STOP_SYMBOL이므로 이후 조건은 같은 값을 본다)."""
+    """스테이지드 익절 공유값(entry_qty/tp1_target_pct)을 채운다 - 기존 4618-4634. (옛 2차 익절 _008은 2026-11-04 삭제)
+    같은 틱에서 _005가 먼저 호출한다(트리거 시 pos를 바꾸고 STOP_SYMBOL이므로 이후 조건은 같은 값을 본다)."""
     pos = ctx.pos
     entry_qty = int(pos.get("entry_quantity", 0) or 0)
     if entry_qty <= 0:
@@ -448,7 +457,7 @@ def _004_hard_stop_loss(ctx: SellContext) -> bool:
     hard_sl_condition = ctx.pnl_pct <= -HARD_STOP_LOSS_PCT and held_for_hard_sl >= HARD_STOP_MIN_HOLD_SECONDS
     # [2026-09-23] 단일 폴링 틱 노이즈로 즉시 손절되는 걸 막기 위해 HARD_STOP_CONFIRM_SECONDS 동안 조건이
     # 연속 유지될 때만 실행 (119850 지엔씨에너지 2026-09-23 09:02 사례 - 21초 폴링 간격에 -1.27%->-2.00%로
-    # 임계값을 그냥 통과해 확인 없이 즉시 발동됨). _019_atr_stop_loss와 동일한 헬퍼/취지(033790 피노
+    # 임계값을 그냥 통과해 확인 없이 즉시 발동됨). _012_atr_stop_loss와 동일한 헬퍼/취지(033790 피노
     # 2026-08-31 사례) - 이 조건만 유일하게 확인창이 없었다. HARD_STOP_CONFIRM_SECONDS<=0이면 첫 통과 틱에서
     # 바로 발동해 기존과 동일하게 동작한다(update_timed_condition_state는 첫 통과 시 0.0을 반환).
     # 주의: 이 확인창은 손실 상한을 보장하지 않는다 - 하락이 계속되면 확인 시간만큼 더 나쁜 가격에 체결될 수
@@ -482,7 +491,7 @@ def _004_hard_stop_loss(ctx: SellContext) -> bool:
     return False
 
 
-def _006_staged_tp1_partial(ctx: SellContext) -> bool:
+def _005_staged_tp1_partial(ctx: SellContext) -> bool:
     code, pos, price, cur, api = ctx.code, ctx.pos, ctx.price, ctx.cur, ctx.api
     _staged_targets(ctx)
     entry_qty, tp1_target_pct = ctx.entry_qty, ctx.tp1_target_pct
@@ -493,7 +502,7 @@ def _006_staged_tp1_partial(ctx: SellContext) -> bool:
         tp1_qty = max(1, int(round(entry_qty * STAGED_TP1_RATIO)))
         tp1_qty = min(tp1_qty, int(pos["quantity"]))
         # 급등 여부는 1차 익절 시점에 판정한다. 급등이면 잔량을 TP1 체결가 기준 +2%/+4% 사다리로 추가 익절
-        # (_007), 아니면 기존대로 잔량은 트레일 위임.
+        # (_006), 아니면 기존대로 잔량은 트레일 위임.
         surge_now = False
         surge_detail = ""
         if ENABLE_SURGE_LADDER_TP:
@@ -544,7 +553,7 @@ def _006_staged_tp1_partial(ctx: SellContext) -> bool:
     return False
 
 
-def _007_surge_ladder_tp(ctx: SellContext) -> bool:
+def _006_surge_ladder_tp(ctx: SellContext) -> bool:
     """급등 중 1차 익절을 한 포지션의 잔량 사다리 익절: TP1 체결가(base) 기준 +SURGE_TP2_PCT에서 진입수량의
     SURGE_TP2_RATIO, +SURGE_TP3_PCT에서 잔량 전량. 트레일링 스탑/손절은 뒤 조건에서 그대로 병행된다. 주문 성공 시에만
     단계 플래그를 세우므로 쿨다운으로 주문이 막히면 다음 틱에 같은 단계를 재시도한다."""
@@ -590,7 +599,7 @@ def _007_surge_ladder_tp(ctx: SellContext) -> bool:
     return False
 
 
-def _023_profit_lock(ctx: SellContext) -> bool:
+def _007_profit_lock(ctx: SellContext) -> bool:
     """[2026-11-02] 이익 잠금(사용자 요청, 091580 20261102): TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 이후 현재가가
     고점 x (1 - PROFIT_LOCK_GIVEBACK_PCT) 이하이면 진입수량의 PROFIT_LOCK_RATIO를 시장가 매도(포지션당 1회, profit_lock_done
     저장). 그 뒤 잔량은 손익 <= 0이면 전량 시장가 매도(PROFIT_LOCK_REST_BREAKEVEN). TP1 이후는 기존 트레일이 담당.
@@ -639,7 +648,7 @@ def _023_profit_lock(ctx: SellContext) -> bool:
     return True
 
 
-def _015_atr_take_profit(ctx: SellContext) -> bool:
+def _008_atr_take_profit(ctx: SellContext) -> bool:
     code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
     if not pd.isna(ctx.atr_tp_pct) and ctx.pnl_pct >= ctx.atr_tp_pct:
         if ENABLE_TP_EXTENSION_TRAILING:
@@ -673,7 +682,7 @@ def _clear_timed_guard_states(ctx: SellContext) -> None:
     st.hard_stop_confirm_state.pop(code, None)
 
 
-def _016_post_buy_entry_drop_guard(ctx: SellContext) -> bool:
+def _009_post_buy_entry_drop_guard(ctx: SellContext) -> bool:
     code, pos, price, api, entry_price = ctx.code, ctx.pos, ctx.price, ctx.api, ctx.entry_price
     _buy_time, buy_token, held_for_guard = _hold_info(ctx)
     if held_for_guard <= POST_BUY_BB_DROP_ARMED_SECONDS:
@@ -705,7 +714,7 @@ def _016_post_buy_entry_drop_guard(ctx: SellContext) -> bool:
     return False
 
 
-def _017_breakeven_fail_guard(ctx: SellContext) -> bool:
+def _010_breakeven_fail_guard(ctx: SellContext) -> bool:
     code, pos, price, api, entry_price = ctx.code, ctx.pos, ctx.price, ctx.api, ctx.entry_price
     _buy_time, buy_token, held_for_guard = _hold_info(ctx)
     if not ctx.is_startup_position:
@@ -743,7 +752,7 @@ def _017_breakeven_fail_guard(ctx: SellContext) -> bool:
     return False
 
 
-def _018_no_trend_time_exit(ctx: SellContext) -> bool:
+def _011_no_trend_time_exit(ctx: SellContext) -> bool:
     code, pos, price, api, cur = ctx.code, ctx.pos, ctx.price, ctx.api, ctx.cur
     _buy_time, buy_token, held_for_guard = _hold_info(ctx)
     bb_mid_guard = _num(cur, "BB_MIDDLE")
@@ -781,7 +790,7 @@ def _018_no_trend_time_exit(ctx: SellContext) -> bool:
     return False
 
 
-def _019_atr_stop_loss(ctx: SellContext) -> bool:
+def _012_atr_stop_loss(ctx: SellContext) -> bool:
     code, pos, price, api = ctx.code, ctx.pos, ctx.price, ctx.api
     buy_time, buy_token, _held_for_guard = _hold_info(ctx)
     held_sl = (ctx.current_dt - buy_time).total_seconds()
@@ -820,7 +829,7 @@ def _019_atr_stop_loss(ctx: SellContext) -> bool:
     return False
 
 
-def _020_trailing_stop(ctx: SellContext) -> bool:
+def _013_trailing_stop(ctx: SellContext) -> bool:
     code, pos, price, api, bar_time = ctx.code, ctx.pos, ctx.price, ctx.api, ctx.bar_time
     highest_price, entry_price, peak_pnl_pct = ctx.highest_price, ctx.entry_price, ctx.peak_pnl_pct
     trailing_sell_confirm_state = ctx.state.trailing_sell_confirm_state
@@ -884,11 +893,11 @@ def _020_trailing_stop(ctx: SellContext) -> bool:
     return False
 
 
-def _021_same_bar_sell_dedup(ctx: SellContext) -> bool:
+def _014_same_bar_sell_dedup(ctx: SellContext) -> bool:
     return ctx.state.signal_sell_bar.get(ctx.code) == ctx.bar_time
 
 
-def _022_shared_reversal_sell(ctx: SellContext) -> bool:
+def _015_shared_reversal_sell(ctx: SellContext) -> bool:
     """r002 check_sell_condition(BB 중심선 하향돌파 / 보조 반전 점수) 결과를 실행한다. 마지막 조건이라 어느 경로든
     이 종목의 이번 틱 처리는 여기서 끝난다(기존에는 명시적 continue 없이 블록 끝으로 흘렀음)."""
     code, pos, price, api, cur, frame = ctx.code, ctx.pos, ctx.price, ctx.api, ctx.cur, ctx.frame
@@ -951,43 +960,43 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
     SellCondition(4, "_004_hard_stop_loss", "EXIT", "하드 손절",
                   "손익 <= -HARD_STOP_LOSS_PCT 이고 보유 HARD_STOP_MIN_HOLD_SECONDS 경과가 HARD_STOP_CONFIRM_SECONDS 지속되면 시장가 전량 청산 + 당일 재진입 차단",
                   ("HARD_STOP_LOSS_PCT", "HARD_STOP_MIN_HOLD_SECONDS", "HARD_STOP_CONFIRM_SECONDS"), _004_hard_stop_loss),
-    SellCondition(6, "_006_staged_tp1_partial", "EXIT", "1차 분할익절",
+    SellCondition(5, "_005_staged_tp1_partial", "EXIT", "1차 분할익절",
                   "손익 >= min(max(STAGED_TP1_PCT, ATR%xTP1_ATR_MULTIPLIER), ATR 익절선) 도달 시 진입수량의 STAGED_TP1_RATIO 매도. 급등이면 사다리 무장",
                   ("ENABLE_STAGED_TAKE_PROFIT", "STAGED_TP1_PCT", "STAGED_TP1_RATIO", "TP1_ATR_MULTIPLIER", "ENABLE_TP1_CAP_AT_ATR_TP",
-                   "ENABLE_SURGE_LADDER_TP", "SURGE_SPEED_MIN_PCT", "SURGE_SPEED_ATR_MULT", "SURGE_VOLUME_RATIO_MIN", "SURGE_MIN_CONFIRMS"), _006_staged_tp1_partial),
-    SellCondition(7, "_007_surge_ladder_tp", "EXIT", "급등 사다리 익절(TP2/TP3)",
+                   "ENABLE_SURGE_LADDER_TP", "SURGE_SPEED_MIN_PCT", "SURGE_SPEED_ATR_MULT", "SURGE_VOLUME_RATIO_MIN", "SURGE_MIN_CONFIRMS"), _005_staged_tp1_partial),
+    SellCondition(6, "_006_surge_ladder_tp", "EXIT", "급등 사다리 익절(TP2/TP3)",
                   "급등 중 1차 익절한 포지션: TP1 체결가 +SURGE_TP2_PCT에서 진입수량 일부, +SURGE_TP3_PCT에서 잔량 전량",
-                  ("SURGE_TP2_PCT", "SURGE_TP3_PCT", "SURGE_TP2_RATIO"), _007_surge_ladder_tp),
-    # [2026-11-02] 번호는 23(기존 번호 유지). [2026-11-04] _012 되돌림 가드 삭제(잠금이 항상 먼저 발동해 도달 불가)
-    SellCondition(23, "_023_profit_lock", "EXIT", "이익 잠금(고점 대비 하락 1차 매도 + 잔량 본전 청산)",
+                  ("SURGE_TP2_PCT", "SURGE_TP3_PCT", "SURGE_TP2_RATIO"), _006_surge_ladder_tp),
+    # [2026-11-02] 신규(당시 번호 23, 2026-11-08 평가 순서대로 _007). [2026-11-04] 옛 _012 되돌림 가드 삭제(잠금이 항상 먼저 발동해 도달 불가)
+    SellCondition(7, "_007_profit_lock", "EXIT", "이익 잠금(고점 대비 하락 1차 매도 + 잔량 본전 청산)",
                   "TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 후 고점 대비 PROFIT_LOCK_GIVEBACK_PCT 하락 시 진입수량의 "
                   "PROFIT_LOCK_RATIO 시장가 매도(1회), 이후 잔량은 손익 <= 0이면 전량 시장가 매도",
                   ("ENABLE_PROFIT_LOCK", "PROFIT_LOCK_ARM_PNL", "PROFIT_LOCK_GIVEBACK_PCT", "PROFIT_LOCK_RATIO",
-                   "PROFIT_LOCK_REST_BREAKEVEN"), _023_profit_lock),
-    SellCondition(15, "_015_atr_take_profit", "EXIT", "ATR 익절선 도달",
+                   "PROFIT_LOCK_REST_BREAKEVEN"), _007_profit_lock),
+    SellCondition(8, "_008_atr_take_profit", "EXIT", "ATR 익절선 도달",
                   "손익 >= ATR 익절선: 트레일 확장 모드면 로그만(트레일 무장), 아니면 전량 익절",
-                  ("ATR_TAKE_PROFIT_MULTIPLIER", "ENABLE_TP_EXTENSION_TRAILING", "TP_EXTENSION_TRAIL_FROM_PEAK"), _015_atr_take_profit),
-    SellCondition(16, "_016_post_buy_entry_drop_guard", "EXIT", "매수 직후 진입가 이탈 가드",
+                  ("ATR_TAKE_PROFIT_MULTIPLIER", "ENABLE_TP_EXTENSION_TRAILING", "TP_EXTENSION_TRAIL_FROM_PEAK"), _008_atr_take_profit),
+    SellCondition(9, "_009_post_buy_entry_drop_guard", "EXIT", "매수 직후 진입가 이탈 가드",
                   "매수 후 POST_BUY_BB_DROP_ARMED_SECONDS 이내 진입가 대비 POST_BUY_BB_DROP_PCT 이상 하락이 POST_BUY_DROP_CONFIRM_SECONDS 지속되면 청산",
-                  ("POST_BUY_BB_DROP_ARMED_SECONDS", "POST_BUY_BB_DROP_PCT", "POST_BUY_DROP_CONFIRM_SECONDS"), _016_post_buy_entry_drop_guard),
-    SellCondition(17, "_017_breakeven_fail_guard", "EXIT", "본전 이탈 가드",
+                  ("POST_BUY_BB_DROP_ARMED_SECONDS", "POST_BUY_BB_DROP_PCT", "POST_BUY_DROP_CONFIRM_SECONDS"), _009_post_buy_entry_drop_guard),
+    SellCondition(10, "_010_breakeven_fail_guard", "EXIT", "본전 이탈 가드",
                   "고점 수익이 났다가 손실로 반납(peak>=ARM, pnl<-0.5%, giveback>=GIVEBACK)이 CONFIRM초 지속되면 청산",
-                  ("BREAKEVEN_FAIL_ARM_PNL", "BREAKEVEN_FAIL_GIVEBACK_PCT", "BREAKEVEN_FAIL_CONFIRM_SECONDS"), _017_breakeven_fail_guard),
-    SellCondition(18, "_018_no_trend_time_exit", "EXIT", "무추세 시간 청산",
+                  ("BREAKEVEN_FAIL_ARM_PNL", "BREAKEVEN_FAIL_GIVEBACK_PCT", "BREAKEVEN_FAIL_CONFIRM_SECONDS"), _010_breakeven_fail_guard),
+    SellCondition(11, "_011_no_trend_time_exit", "EXIT", "무추세 시간 청산",
                   "보유 NO_TREND_EXIT_ARM_SECONDS 이상, 고점 수익 미미, 손실 + BB중심선 아래가 CONFIRM초 지속되면 청산",
-                  ("NO_TREND_EXIT_ARM_SECONDS", "NO_TREND_EXIT_MAX_PEAK_PNL", "NO_TREND_EXIT_MIN_PNL", "NO_TREND_EXIT_CONFIRM_SECONDS"), _018_no_trend_time_exit),
-    SellCondition(19, "_019_atr_stop_loss", "EXIT", "ATR 손절",
+                  ("NO_TREND_EXIT_ARM_SECONDS", "NO_TREND_EXIT_MAX_PEAK_PNL", "NO_TREND_EXIT_MIN_PNL", "NO_TREND_EXIT_CONFIRM_SECONDS"), _011_no_trend_time_exit),
+    SellCondition(12, "_012_atr_stop_loss", "EXIT", "ATR 손절",
                   "손익 <= ATR 손절선이 ATR_STOP_CONFIRM_SECONDS 지속되면 시장가 전량 청산 + 재진입 차단/서킷브레이커 집계",
-                  ("ATR_STOP_MULTIPLIER", "ATR_STOP_CONFIRM_SECONDS", "HARD_STOP_MIN_HOLD_SECONDS"), _019_atr_stop_loss),
-    SellCondition(20, "_020_trailing_stop", "EXIT", "트레일링 스탑",
+                  ("ATR_STOP_MULTIPLIER", "ATR_STOP_CONFIRM_SECONDS", "HARD_STOP_MIN_HOLD_SECONDS"), _012_atr_stop_loss),
+    SellCondition(13, "_013_trailing_stop", "EXIT", "트레일링 스탑",
                   "고점 대비 되돌림이 트레일 폭 이상이면 청산. 확장 트레일은 즉시, 일반 트레일은 다음 3분봉 확인 후",
-                  ("TP_EXTENSION_TRAIL_FROM_PEAK", "TRAILING_STOP_FROM_PEAK"), _020_trailing_stop),
-    SellCondition(21, "_021_same_bar_sell_dedup", "GUARD", "같은 봉 재매도 차단",
-                  "이 3분봉에서 이미 매도 신호를 낸 종목은 건너뜀 (signal_sell_bar)", (), _021_same_bar_sell_dedup),
-    SellCondition(22, "_022_shared_reversal_sell", "EXIT", "반전 신호 매도(r002)",
+                  ("TP_EXTENSION_TRAIL_FROM_PEAK", "TRAILING_STOP_FROM_PEAK"), _013_trailing_stop),
+    SellCondition(14, "_014_same_bar_sell_dedup", "GUARD", "같은 봉 재매도 차단",
+                  "이 3분봉에서 이미 매도 신호를 낸 종목은 건너뜀 (signal_sell_bar)", (), _014_same_bar_sell_dedup),
+    SellCondition(15, "_015_shared_reversal_sell", "EXIT", "반전 신호 매도(r002)",
                   "BB 중심선 하향돌파/보조 반전 점수 (r002 check_sell_condition) + 점수별 최소 수익 요건/슬리피지 버퍼",
                   ("AUX_SELL_MIN_PNL_SCORE2", "AUX_SELL_MIN_PNL_SCORE3", "AUX_SELL_MIN_PNL_SCORE4", "AUX_SELL_MIN_REALIZED_TARGET_PCT",
-                   "AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT"), _022_shared_reversal_sell),
+                   "AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT"), _015_shared_reversal_sell),
 )
 
 

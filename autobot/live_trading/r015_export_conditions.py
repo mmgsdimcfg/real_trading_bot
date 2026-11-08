@@ -57,11 +57,11 @@ BUY_FRAME_BY_FUNC = {
 }
 SELL_FRAME_BY_FUNC = {
     "_001_stale_live_price_guard": "live", "_002_update_position_tracking": "live+3m",
-    "_003_peak_next_bar_bearish_exit": "live+3m", "_004_hard_stop_loss": "live", "_006_staged_tp1_partial": "live",
-    "_007_surge_ladder_tp": "live", "_023_profit_lock": "live", "_015_atr_take_profit": "live+3m",
-    "_016_post_buy_entry_drop_guard": "live", "_017_breakeven_fail_guard": "live", "_018_no_trend_time_exit": "live",
-    "_019_atr_stop_loss": "live+3m", "_020_trailing_stop": "live", "_021_same_bar_sell_dedup": "3m",
-    "_022_shared_reversal_sell": "3m",
+    "_003_peak_next_bar_bearish_exit": "live+3m", "_004_hard_stop_loss": "live", "_005_staged_tp1_partial": "live",
+    "_006_surge_ladder_tp": "live", "_007_profit_lock": "live", "_008_atr_take_profit": "live+3m",
+    "_009_post_buy_entry_drop_guard": "live", "_010_breakeven_fail_guard": "live", "_011_no_trend_time_exit": "live",
+    "_012_atr_stop_loss": "live+3m", "_013_trailing_stop": "live", "_014_same_bar_sell_dedup": "3m",
+    "_015_shared_reversal_sell": "3m",
 }
 FRAMES_LEGEND = {
     "none": "데이터 무관(상태/시간/계좌)",
