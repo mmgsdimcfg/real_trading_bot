@@ -12,6 +12,8 @@
  *   dragging, kept in localStorage
  * - [2026-11-08] type=feat - sellHidden: rows hidden on the timeline's sell chart y axis (same picker as the buy chart)
  * - [2026-11-08] type=fix - buyHidden moved to key '.v2' with the old keys translated once to the renumbered buy conditions
+ * - [2026-11-08] type=feat - buyEvalOnly: "이 종목 평가된 항목만" checkbox state, kept in localStorage
+ * - [2026-11-08] type=feat - sellEvalOnly: the same checkbox for the sell chart (merge of the Windows buyEvalOnly change)
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
  */
 
@@ -120,6 +122,16 @@ function loadLayout(): TimelineLayout {
   }
 }
 
+const BUY_EVAL_ONLY_KEY = 'autoboth.timelineBuyEvalOnly';
+const SELL_EVAL_ONLY_KEY = 'autoboth.timelineSellEvalOnly';
+function loadFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export type Tab = 'control' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'trades' | 'settings';
 
 interface State {
@@ -148,6 +160,12 @@ interface State {
   /** timeline chart / pane heights (undefined value = back to the default size) */
   layout: TimelineLayout;
   setLayout: (patch: Partial<Omit<TimelineLayout, 'osc'>> & { osc?: Partial<Record<IndicatorKey, number | undefined>> }) => void;
+  /** timeline buy chart: "이 종목 평가된 항목만" checked - the rows follow the selected symbol (buyHidden unused while on) */
+  buyEvalOnly: boolean;
+  setBuyEvalOnly: (on: boolean) => void;
+  /** timeline sell chart: "이 종목 평가된 항목만" checked (sellHidden unused while on) */
+  sellEvalOnly: boolean;
+  setSellEvalOnly: (on: boolean) => void;
   setTab: (t: Tab) => void;
   setSide: (s: Side) => void;
   select: (code: string | null) => void;
@@ -196,6 +214,24 @@ export const useStore = create<State>()((set, get) => ({
     set({ layout });
     try {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+    } catch {
+      /* storage unavailable */
+    }
+  },
+  buyEvalOnly: loadFlag(BUY_EVAL_ONLY_KEY),
+  setBuyEvalOnly: (on) => {
+    set({ buyEvalOnly: on });
+    try {
+      localStorage.setItem(BUY_EVAL_ONLY_KEY, on ? '1' : '0');
+    } catch {
+      /* storage unavailable */
+    }
+  },
+  sellEvalOnly: loadFlag(SELL_EVAL_ONLY_KEY),
+  setSellEvalOnly: (on) => {
+    set({ sellEvalOnly: on });
+    try {
+      localStorage.setItem(SELL_EVAL_ONLY_KEY, on ? '1' : '0');
     } catch {
       /* storage unavailable */
     }
