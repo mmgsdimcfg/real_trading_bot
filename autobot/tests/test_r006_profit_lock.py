@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""r006 _023_profit_lock (2026-11-02, 091580 상신이디피: entry 26,750 -> peak 27,050 (+1.12%) -> stopped at -1.12%)."""
+"""r006 _007_profit_lock (2026-11-02, 091580 상신이디피: entry 26,750 -> peak 27,050 (+1.12%) -> stopped at -1.12%)."""
 from __future__ import annotations
 
 import sys
@@ -49,7 +49,7 @@ class TestProfitLock(unittest.TestCase):
             atr_pct=0.008, atr_tp_pct=0.03, entry_qty=0, tp1_target_pct=float("nan"), tp2_target_pct=float("nan"),
             atr_tp1_dynamic_pct=float("nan"),
         )
-        return r006._023_profit_lock(ctx)
+        return r006._007_profit_lock(ctx)
 
     @mock.patch.multiple(r006, PROFIT_LOCK_GIVEBACK_PCT=0.005, PROFIT_LOCK_RATIO=0.50, PROFIT_LOCK_REST_BREAKEVEN=True)
     def test_091580_path_locks_half_then_breakeven(self):
@@ -99,16 +99,24 @@ class TestProfitLock(unittest.TestCase):
         self.assertFalse(self.pos.get("profit_lock_done", False))
 
     def test_condition_registered_after_tp1_before_atr_tp(self):
-        # [2026-11-04] _012 되돌림 가드 삭제 - 잠금은 TP1/사다리 뒤, ATR 익절선(_015) 앞에서 평가된다.
+        # [2026-11-04] 옛 _012 되돌림 가드 삭제 - 잠금은 TP1/사다리 뒤, ATR 익절선(_008) 앞에서 평가된다.
         names = [c.func_name for c in r006.SELL_CONDITIONS]
-        self.assertLess(names.index("_006_staged_tp1_partial"), names.index("_023_profit_lock"))
-        self.assertLess(names.index("_023_profit_lock"), names.index("_015_atr_take_profit"))
+        self.assertLess(names.index("_005_staged_tp1_partial"), names.index("_007_profit_lock"))
+        self.assertLess(names.index("_007_profit_lock"), names.index("_008_atr_take_profit"))
         self.assertEqual(len({c.no for c in r006.SELL_CONDITIONS}), len(r006.SELL_CONDITIONS))
         for gone in ("_005_pyramid_add_entry", "_008_staged_tp2_partial", "_009_tp3_trail_arm", "_010_legacy_tp_full_and_partial",
                      "_011_hybrid_1min_dead_cross_exit", "_012_peak_retracement_guard", "_013_signal_exit_stoch_k_lt_d",
                      "_014_signal_exit_macd_hist_down"):
             self.assertNotIn(gone, names)
             self.assertFalse(hasattr(r006, gone), gone)
+
+    def test_numbers_follow_evaluation_order(self):
+        # [2026-11-08] AutoBotH plots sell conditions bottom-up in evaluation order - the numbers must count up with it
+        self.assertEqual([c.no for c in r006.SELL_CONDITIONS], list(range(1, len(r006.SELL_CONDITIONS) + 1)))
+        for c in r006.SELL_CONDITIONS:
+            self.assertTrue(c.func_name.startswith(f"_{c.no:03d}_"), c.func_name)
+        basic = [c.no for c in r006.BASIC_SELL_CONDITIONS]
+        self.assertEqual(basic, sorted(basic))
 
 
 if __name__ == "__main__":
