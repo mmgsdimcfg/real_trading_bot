@@ -22,6 +22,9 @@
  * - [2026-11-07] type=feat - Price chart twice as tall (TL_SCALE: price + volume area 300 -> 600 px, indicator panes 84 -> 168 px)
  * - [2026-11-07] type=feat - Buy chart y-axis rows can be hidden ("y축 항목" popover: per-row checkboxes, 모두 표시, 이 종목 평가된 항목만);
  *   hidden rows and their dots are left out, the remaining rows close up and the chart gets shorter. Kept per PC (localStorage)
+ * - [2026-11-08] type=feat - "이 종목 평가된 항목만" is a checkbox (kept per PC): while checked, the shown rows follow the selected
+ *   symbol and change with it (the old button picked the rows once, for the symbol selected at the click). "모두 표시" or
+ *   changing a row by hand unchecks it and continues from the rows shown at that moment
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -105,12 +108,8 @@ export function TimelineView() {
     ],
     [buyConds],
   );
-  const shownRows = useMemo(() => {
-    const hide = new Set(buyHidden);
-    const rows = buyRows.filter((r) => !hide.has(r.key));
-    return rows.length ? rows : buyRows;
-  }, [buyRows, buyHidden]);
-  const buyY = useMemo(() => new Map(shownRows.map((r, i) => [r.key, i])), [shownRows]);
+  const buyEvalOnly = useStore((s) => s.buyEvalOnly);
+  const setBuyEvalOnly = useStore((s) => s.setBuyEvalOnly);
   const sellY = useMemo(() => {
     // row 0 = 'PREP': sell evaluation skipped for the position ([HOLD SKIP], e.g. not bought today)
     const m = new Map<string, number>([['PREP', 0]]);
@@ -122,6 +121,22 @@ export function TimelineView() {
 
   const events = timeline && timeline.code === selected ? timeline.events : [];
   const trades = timeline && timeline.code === selected ? timeline.trades : [];
+  const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
+  // "이 종목 평가된 항목만" checked: the hidden rows follow the selected symbol (rows without a buy evaluation for it) and are
+  // recomputed on every symbol change. Until the new symbol's timeline arrives the previous rows stay (no flash of all rows)
+  const evalHiddenRef = useRef<string[]>([]);
+  const hiddenKeys = useMemo(() => {
+    if (!buyEvalOnly) return buyHidden;
+    if (timeline && timeline.code === selected) evalHiddenRef.current = buyRows.filter((r) => !buyKeysWithEvents.has(r.key)).map((r) => r.key);
+    return evalHiddenRef.current;
+  }, [buyEvalOnly, buyHidden, timeline, selected, buyRows, buyKeysWithEvents]);
+  const shownRows = useMemo(() => {
+    const hide = new Set(hiddenKeys);
+    const rows = buyRows.filter((r) => !hide.has(r.key));
+    // evaluated-only on a symbol without buy evaluations (sell-only holding, replay before its first one): no rows, not all rows
+    return rows.length || buyEvalOnly ? rows : buyRows;
+  }, [buyRows, hiddenKeys, buyEvalOnly]);
+  const buyY = useMemo(() => new Map(shownRows.map((r, i) => [r.key, i])), [shownRows]);
   const buyPts = useMemo(() => events.filter((e) => e.side === 'buy' && buyY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: buyY.get(ev.condKey)!, ev })), [events, buyY]);
   const sellPts = useMemo(() => events.filter((e) => e.side === 'sell' && sellY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: sellY.get(ev.condKey)!, ev })), [events, sellY]);
   const replayAt = snap?.replay?.cursor ?? null;
@@ -183,7 +198,6 @@ export function TimelineView() {
   // memoized so hovering the price chart does not rebuild its paths
   const intradayDomain = useMemo<[number, number] | null>(() => (xs.length ? [domain[0], domain[1]] : null), [xs.length > 0, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const buyLabel = (v: number) => shownRows[v]?.label || '';
-  const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
   const sellLabel = (v: number) =>
     v === 0 ? '평가 제외' : v === sellConds.length + 1 ? '세션 종료' : v === sellConds.length + 2 ? '주문' : sellConds[v - 1] ? condKeyOf(sellConds[v - 1].no) + ' ' + sellConds[v - 1].title.slice(0, 10) : '';
 
@@ -219,24 +233,30 @@ export function TimelineView() {
               </summary>
               <div className="ypick-panel">
                 <div className="actions">
-                  <button className="mini" onClick={() => setBuyHidden([])}>
-                    모두 표시
-                  </button>
                   <button
                     className="mini"
-                    title="선택한 종목의 매수 평가 로그에 나온 항목만 남깁니다"
-                    disabled={!buyKeysWithEvents.size}
-                    onClick={() => setBuyHidden(buyRows.filter((r) => !buyKeysWithEvents.has(r.key)).map((r) => r.key))}
+                    onClick={() => {
+                      setBuyEvalOnly(false);
+                      setBuyHidden([]);
+                    }}
                   >
-                    이 종목 평가된 항목만
+                    모두 표시
                   </button>
+                  <label className="check" title="체크하면 종목을 바꿀 때마다 그 종목의 매수 평가 로그에 나온 항목만 표시합니다">
+                    <input type="checkbox" checked={buyEvalOnly} onChange={(e) => setBuyEvalOnly(e.target.checked)} />
+                    <span>이 종목 평가된 항목만</span>
+                  </label>
                 </div>
                 {[...buyRows].reverse().map((r) => (
                   <label key={r.key} className="check ypick-row">
                     <input
                       type="checkbox"
-                      checked={!buyHidden.includes(r.key)}
-                      onChange={(e) => setBuyHidden(e.target.checked ? buyHidden.filter((k) => k !== r.key) : [...buyHidden, r.key])}
+                      checked={!hiddenKeys.includes(r.key)}
+                      onChange={(e) => {
+                        // picking rows by hand ends the per-symbol mode and starts from the rows shown now
+                        setBuyEvalOnly(false);
+                        setBuyHidden(e.target.checked ? hiddenKeys.filter((k) => k !== r.key) : [...hiddenKeys, r.key]);
+                      }}
                     />
                     <span className={buyKeysWithEvents.has(r.key) ? '' : 'muted'}>{r.label}</span>
                   </label>
@@ -244,6 +264,7 @@ export function TimelineView() {
                 <p className="muted small">숨긴 항목의 점은 표시하지 않습니다. 흐린 글자 = 이 종목에서 평가 로그가 없는 항목.</p>
               </div>
             </details>
+            {buyEvalOnly && shownRows.length === 0 && <span className="muted small">이 종목은 매수 평가 기록이 없습니다.</span>}
           </div>
           <div className="chart-buy" style={{ height: Math.max(200, Math.min(520, 110 + shownRows.length * 15)) }}>
             <ResponsiveContainer>
