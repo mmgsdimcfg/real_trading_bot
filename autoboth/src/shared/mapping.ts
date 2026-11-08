@@ -19,6 +19,8 @@
  *   _018->_015, _019->_016, _020->_017, _031->_018, _030->_019, _028->_020, _027->_021, _021->_022, _022->_023, _023->_024,
  *   _024->_025). Logs carry reason strings, not numbers, so older logs map to the new keys too. Sell keys unchanged.
  *   TRIGGER_COND names the trigger key for the pipeline's sub-step nodes
+ * - [2026-11-08] type=refactor - Sell condition numbers follow the evaluation order too (server r006 _001.._015): _006->_005,
+ *   _007->_006, _023->_007, _015->_008, _016->_009, _017->_010, _018->_011, _019->_012, _020->_013, _021->_014, _022->_015
  */
 
 import type { EvalResult, Side } from './types';
@@ -113,22 +115,22 @@ const BUY_SKIP_RULES = sortRules([
 
 // [SELL TRIGGER] / [SELL HOLD] reasons (guide 3.2)
 const SELL_RULES = sortRules([
-  { p: 'AUX_BLOCKED_SCORE', cond: '_022' },
-  { p: 'AUX_TRIGGER_BUFFER_BLOCK', cond: '_022' },
+  { p: 'AUX_BLOCKED_SCORE', cond: '_015' },
+  { p: 'AUX_TRIGGER_BUFFER_BLOCK', cond: '_015' },
   { p: 'HARD_STOP_LOSS', cond: '_004' },
-  { p: 'TP1_PARTIAL', cond: '_006' },
-  { p: 'TP2_SURGE_LADDER', cond: '_007' },
-  { p: 'TP3_SURGE_LADDER', cond: '_007' },
-  { p: 'PROFIT_LOCK_', cond: '_023' },
-  { p: 'ATR_TAKE_PROFIT', cond: '_015' },
-  { p: 'POST_BUY_ENTRY_DROP', cond: '_016' },
-  { p: 'BREAKEVEN_FAIL', cond: '_017' },
-  { p: 'NO_TREND_EXIT', cond: '_018' },
-  { p: 'ATR_STOP_LOSS', cond: '_019' },
-  { p: 'TRAILING_STOP_GIVEBACK', cond: '_020' },
-  { p: 'TP_EXTENSION_TRAIL', cond: '_020' },
-  { p: 'AUX_REVERSAL_SCORE', cond: '_022' },
-  { p: 'LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED', cond: '_022' },
+  { p: 'TP1_PARTIAL', cond: '_005' },
+  { p: 'TP2_SURGE_LADDER', cond: '_006' },
+  { p: 'TP3_SURGE_LADDER', cond: '_006' },
+  { p: 'PROFIT_LOCK_', cond: '_007' },
+  { p: 'ATR_TAKE_PROFIT', cond: '_008' },
+  { p: 'POST_BUY_ENTRY_DROP', cond: '_009' },
+  { p: 'BREAKEVEN_FAIL', cond: '_010' },
+  { p: 'NO_TREND_EXIT', cond: '_011' },
+  { p: 'ATR_STOP_LOSS', cond: '_012' },
+  { p: 'TRAILING_STOP_GIVEBACK', cond: '_013' },
+  { p: 'TP_EXTENSION_TRAIL', cond: '_013' },
+  { p: 'AUX_REVERSAL_SCORE', cond: '_015' },
+  { p: 'LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED', cond: '_015' },
   { p: 'PEAK_NEXT_BAR_BEARISH', cond: '_003' },
   { p: 'REGULAR_CLOSE_SESSION_FORCE_CLOSE_ALL', cond: 'SESSION_CLOSE' },
   { p: 'NXT_CLOSE', cond: 'SESSION_CLOSE' },
@@ -283,7 +285,7 @@ export function classify(tag: string, rest: string): ClassifyOutcome {
     case 'HOLD SKIP':
       return ev({ side: 'sell', condKey: 'PREP', sub: STATUS_SUB, result: 'info', reason: firstSeg(rest) });
     case 'TP_EXTENSION':
-      return ev({ side: 'sell', condKey: '_015', result: 'info', reason: firstSeg(rest) });
+      return ev({ side: 'sell', condKey: '_008', result: 'info', reason: firstSeg(rest) });
   }
   if (BUY_ORDER_TAGS.has(tag)) {
     const result: EvalResult = tag === 'BUY EXEC' ? 'pass' : tag === 'BUY NOFILL' || tag === 'BUY RP ABAND' ? 'fail' : 'info';

@@ -116,29 +116,29 @@ describe('(b) log -> condition mapping', () => {
   });
 
   const sellCases: [string, string, string, string][] = [
-    ['SELL HOLD', 'AUX_BLOCKED_SCORE_3_PNL_0.20%_LT_0.50%', '_022', 'hold'],
-    ['SELL HOLD', 'AUX_TRIGGER_BUFFER_BLOCK 1/2', '_022', 'hold'],
+    ['SELL HOLD', 'AUX_BLOCKED_SCORE_3_PNL_0.20%_LT_0.50%', '_015', 'hold'],
+    ['SELL HOLD', 'AUX_TRIGGER_BUFFER_BLOCK 1/2', '_015', 'hold'],
     ['SELL TRIGGER', 'HARD_STOP_LOSS_1.7PCT | pnl=-2.10%', '_004', 'pass'],
-    ['SELL TRIGGER', 'TP1_PARTIAL_40PCT_1.20PCT_SURGE', '_006', 'pass'],
-    ['SELL TRIGGER', 'TP2_SURGE_LADDER_3PCT', '_007', 'pass'],
-    ['SELL TRIGGER', 'TP3_SURGE_LADDER_5PCT', '_007', 'pass'],
-    ['SELL TRIGGER', 'PROFIT_LOCK_100PCT_GIVEBACK_0.4PCT', '_023', 'pass'],
-    ['SELL TRIGGER', 'PROFIT_LOCK_REST_BREAKEVEN', '_023', 'pass'],
-    ['SELL TRIGGER', 'ATR_TAKE_PROFIT_3.0x', '_015', 'pass'],
-    ['SELL TRIGGER', 'POST_BUY_ENTRY_DROP_1.0%', '_016', 'pass'],
-    ['SELL TRIGGER', 'BREAKEVEN_FAIL_30MIN', '_017', 'pass'],
-    ['SELL TRIGGER', 'NO_TREND_EXIT_40MIN', '_018', 'pass'],
-    ['SELL TRIGGER', 'ATR_STOP_LOSS_1.5x', '_019', 'pass'],
-    ['SELL TRIGGER', 'TRAILING_STOP_GIVEBACK_0.8%', '_020', 'pass'],
-    ['SELL TRIGGER', 'TP_EXTENSION_TRAIL_1.0%', '_020', 'pass'],
-    ['SELL TRIGGER', 'AUX_REVERSAL_SCORE_4', '_022', 'pass'],
-    ['SELL TRIGGER', 'LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_2', '_022', 'pass'],
+    ['SELL TRIGGER', 'TP1_PARTIAL_40PCT_1.20PCT_SURGE', '_005', 'pass'],
+    ['SELL TRIGGER', 'TP2_SURGE_LADDER_3PCT', '_006', 'pass'],
+    ['SELL TRIGGER', 'TP3_SURGE_LADDER_5PCT', '_006', 'pass'],
+    ['SELL TRIGGER', 'PROFIT_LOCK_100PCT_GIVEBACK_0.4PCT', '_007', 'pass'],
+    ['SELL TRIGGER', 'PROFIT_LOCK_REST_BREAKEVEN', '_007', 'pass'],
+    ['SELL TRIGGER', 'ATR_TAKE_PROFIT_3.0x', '_008', 'pass'],
+    ['SELL TRIGGER', 'POST_BUY_ENTRY_DROP_1.0%', '_009', 'pass'],
+    ['SELL TRIGGER', 'BREAKEVEN_FAIL_30MIN', '_010', 'pass'],
+    ['SELL TRIGGER', 'NO_TREND_EXIT_40MIN', '_011', 'pass'],
+    ['SELL TRIGGER', 'ATR_STOP_LOSS_1.5x', '_012', 'pass'],
+    ['SELL TRIGGER', 'TRAILING_STOP_GIVEBACK_0.8%', '_013', 'pass'],
+    ['SELL TRIGGER', 'TP_EXTENSION_TRAIL_1.0%', '_013', 'pass'],
+    ['SELL TRIGGER', 'AUX_REVERSAL_SCORE_4', '_015', 'pass'],
+    ['SELL TRIGGER', 'LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_2', '_015', 'pass'],
     ['SELL TRIGGER', 'PEAK_NEXT_BAR_BEARISH_0.5%', '_003', 'pass'],
     ['SELL TRIGGER', 'qty=17 | reason=REGULAR_CLOSE_SESSION_FORCE_CLOSE_ALL_1520', 'SESSION_CLOSE', 'pass'],
     ['SELL FILLED', 'filled=17/17 | price=28,511 | remaining=0 | pnl=-2.10% | reason=HARD_STOP_LOSS_1.7PCT', 'ORDER', 'pass'],
     // 2026-11-04 unknown-list leftovers (real lines)
-    ['SELL EVAL', 'OK AUX_REVERSAL_SCORE_3 | 11:14:10 | LIVE 22,550 | BB 21945.0->21940.0 | RSI=48.5 SIG=46.7', '_022', 'pass'],
-    ['SELL EVAL', 'OK LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_2 | 10:14:00 | LIVE 30,100', '_022', 'pass'],
+    ['SELL EVAL', 'OK AUX_REVERSAL_SCORE_3 | 11:14:10 | LIVE 22,550 | BB 21945.0->21940.0 | RSI=48.5 SIG=46.7', '_015', 'pass'],
+    ['SELL EVAL', 'OK LIVE_PRICE_BB_DOWN_CROSS_CONFIRMED_2 | 10:14:00 | LIVE 30,100', '_015', 'pass'],
   ];
   for (const [tag, rest, cond, result] of sellCases) {
     it(`${tag} ${rest.slice(0, 40)} -> ${cond}`, () => {
@@ -233,7 +233,7 @@ describe('engine aggregation', () => {
     expect(s.furthestOrderToday).toBe(conditions.buy.length);
     expect(s.lastEval?.condKey).toBe('ORDER');
     expect(s.lastSell?.condKey).toBe('_004');
-    expect(snap.sellStats._022.hold).toBe(1);
+    expect(snap.sellStats._015.hold).toBe(1);
     expect(snap.unknown).toHaveLength(1);
   });
 });
