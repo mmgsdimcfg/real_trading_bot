@@ -68,7 +68,7 @@ Update log (append only):
     compatibility: breaking (PEAK_NEXT_BAR_BEARISH 판정 시점이 한 봉 늦춰짐 - 원래 의도대로. 롤백: 이 커밋의 _002/_003 되돌림)
 - [2026-09-23] type=feat owner=claude
     summary: 사용자 요청("매수/매도 컨셉 재검토" 3~4단계 적용) + Codex 설계검토 - 신규 _011_hybrid_1min_dead_cross_exit
-      추가(매수측 _008_hybrid_1min_trigger의 대칭 매도판, r002 check_1min_dead_cross 사용). 기존 _021
+      추가(매수측 _009_hybrid_1min_trigger의 대칭 매도판, r002 check_1min_dead_cross 사용). 기존 _021
       shared_reversal_sell(AUX_REVERSAL_SCORE)이 구조적으로 손실 포지션을 절대 청산 못 하는 문제
       (2026-09-23 컨셉 재검토 메모)를 "수익보호 전용으로 남기고 손실은 별도 조건이 담당"하는 방식으로
       해결. 기존 _011~_020이 _012~_021로 한 칸씩 밀림(로직 무변경, 이름/번호만 이동) - r001 Update log

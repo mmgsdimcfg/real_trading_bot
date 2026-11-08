@@ -211,17 +211,18 @@ class TestR005Hook(unittest.TestCase):
 
     def test_registered_before_confirm_and_excluded_from_shadow_and_basic(self):
         order = [c.no for c in r005.BUY_CONDITIONS]
-        self.assertLess(order.index(20), order.index(28))
-        self.assertLess(order.index(28), order.index(21))
-        self.assertNotIn(28, [c.no for c in r005.SHADOW_ENTRY_CONDITIONS])
-        self.assertNotIn(28, [c.no for c in r005.BASIC_BUY_CONDITIONS])
+        # [2026-11-08] renumbered: opening gap _020 -> _017, edge AI _028 -> _020, consecutive confirm _021 -> _022
+        self.assertLess(order.index(17), order.index(20))
+        self.assertLess(order.index(20), order.index(22))
+        self.assertNotIn(20, [c.no for c in r005.SHADOW_ENTRY_CONDITIONS])
+        self.assertNotIn(20, [c.no for c in r005.BASIC_BUY_CONDITIONS])
 
     def test_off_and_non_regular_do_nothing(self):
         ctx, _ = self._ctx()
         with mock.patch.object(r005, "EDGE_AI_MODE", "off"):
-            self.assertTrue(r005._028_edge_ai_meta_filter(ctx))
+            self.assertTrue(r005._020_edge_ai_meta_filter(ctx))
         ctx, _ = self._ctx(session="nxt_after")
-        self.assertTrue(r005._028_edge_ai_meta_filter(ctx))
+        self.assertTrue(r005._020_edge_ai_meta_filter(ctx))
         ctx.services.fetch_day_ref_prices.assert_not_called()
 
     def test_block_clears_confirm_state(self):
@@ -229,7 +230,7 @@ class TestR005Hook(unittest.TestCase):
         gate = mock.Mock()
         gate.evaluate.return_value = r011.EdgeAIDecision(False, 0.3, 0.5, True, "block")
         with mock.patch.object(r005, "_edge_ai_gate", return_value=gate):
-            self.assertFalse(r005._028_edge_ai_meta_filter(ctx))
+            self.assertFalse(r005._020_edge_ai_meta_filter(ctx))
         self.assertNotIn("000001", ctx.state.buy_confirm_state)
         self.assertTrue(any("EDGE_AI_LOW_PROB" in m for m in logs))
         self.assertEqual((ctx.day_open, ctx.day_vwap), (9950.0, 10000.0))
@@ -238,7 +239,7 @@ class TestR005Hook(unittest.TestCase):
     def test_exception_fails_open(self):
         ctx, logs = self._ctx()
         with mock.patch.object(r005, "_edge_ai_gate", side_effect=RuntimeError("boom")):
-            self.assertTrue(r005._028_edge_ai_meta_filter(ctx))
+            self.assertTrue(r005._020_edge_ai_meta_filter(ctx))
         self.assertIn("000001", ctx.state.buy_confirm_state)
         self.assertTrue(any("fail-open" in m for m in logs))
 

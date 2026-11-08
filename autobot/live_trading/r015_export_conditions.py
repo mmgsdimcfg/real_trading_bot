@@ -46,14 +46,14 @@ with contextlib.redirect_stdout(io.StringIO()):
 BUY_FRAME_BY_FUNC = {
     "_001_entry_time_window": "none", "_002_session_open_warmup": "none", "_003_trade_cooldown": "none",
     "_004_same_bar_signal_dedup": "3m", "_005_no_open_buy_exposure": "none", "_006_hard_stop_reentry_block": "none",
-    "_025_daily_loss_limit": "none", "_026_max_open_positions": "none",
-    "_008_triple_cross_trigger": "1m+tick", "_008_hybrid_1min_trigger": "1m",
-    "_029_market_regime": "1m", "_009_context_frame_ready": "3m", "_014_min_entry_atr_volatility": "3m",
-    "_015_min_liquidity_safety": "3m", "_017_context_score_record": "3m",
-    "_018_excessive_rise_from_prev_close": "live+daily", "_019_anti_chase_day_extension": "live+1m",
-    "_020_opening_gap_volume_gate": "3m+daily", "_031_quote_status": "live", "_030_account_sync_fresh": "none",
-    "_028_edge_ai_meta_filter": "3m+daily", "_027_entry_spread": "live", "_021_consecutive_poll_confirm": "live+3m",
-    "_022_affordable_buy_qty": "live", "_023_fresh_live_price": "live", "_024_orderbook_ask_not_thin": "live",
+    "_007_daily_loss_limit": "none", "_008_max_open_positions": "none",
+    "_008_triple_cross_trigger": "1m+tick", "_009_hybrid_1min_trigger": "1m",
+    "_010_market_regime": "1m", "_011_context_frame_ready": "3m", "_012_min_entry_atr_volatility": "3m",
+    "_013_min_liquidity_safety": "3m", "_014_context_score_record": "3m",
+    "_015_excessive_rise_from_prev_close": "live+daily", "_016_anti_chase_day_extension": "live+1m",
+    "_017_opening_gap_volume_gate": "3m+daily", "_018_quote_status": "live", "_019_account_sync_fresh": "none",
+    "_020_edge_ai_meta_filter": "3m+daily", "_021_entry_spread": "live", "_022_consecutive_poll_confirm": "live+3m",
+    "_023_affordable_buy_qty": "live", "_024_fresh_live_price": "live", "_025_orderbook_ask_not_thin": "live",
 }
 SELL_FRAME_BY_FUNC = {
     "_001_stale_live_price_guard": "live", "_002_update_position_tracking": "live+3m",
@@ -110,7 +110,7 @@ def build() -> dict:
                    "enabled": bool(getattr(r001, "ENABLE_PRIOR_DAY_INDICATOR_WARMUP", False)),
                    "note": "전일 원본 1분봉 마지막 N개(및 그 3분 집계)를 당일 봉 앞에 붙여 지표 계산 - 당일 행만 사용"},
         "buy": _rows(r005.active_buy_conditions(), r005.describe_buy_conditions(),
-                     {**BUY_FRAME_BY_FUNC, "_008_hybrid_1min_trigger": "1m+tick" if str(getattr(r001, "ENTRY_TRIGGER_MODE", "")) == "triple" else "1m"}),
+                     {**BUY_FRAME_BY_FUNC, "_009_hybrid_1min_trigger": "1m+tick" if str(getattr(r001, "ENTRY_TRIGGER_MODE", "")) == "triple" else "1m"}),
         "sell": _rows(r006.active_sell_conditions(), r006.describe_sell_conditions(), SELL_FRAME_BY_FUNC),
     }
 

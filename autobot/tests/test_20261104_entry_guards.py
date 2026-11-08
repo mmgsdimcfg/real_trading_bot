@@ -148,17 +148,17 @@ class TestR005TripleGuards(unittest.TestCase):
         logs = []
         # 77300 vs cross close 76500 -> +1.05% > 0.5% -> reject
         ctx = self._ctx(frame, now, 77300.0, lambda c, d: _tick(now, cross_close=76500.0), logs)
-        self.assertFalse(r005._008_hybrid_1min_trigger(ctx))
+        self.assertFalse(r005._009_hybrid_1min_trigger(ctx))
         self.assertTrue(any("TRIPLE_CROSS_CHASE_FROM_CROSS_1.05%_GT_0.50%" in m for m in logs), logs)
         # within 0.5% -> pass
         logs.clear()
         ctx = self._ctx(frame, now, 77300.0, lambda c, d: _tick(now, cross_close=77100.0), logs)
-        self.assertTrue(r005._008_hybrid_1min_trigger(ctx), logs)
+        self.assertTrue(r005._009_hybrid_1min_trigger(ctx), logs)
         # guard disabled -> pass even when chasing
         logs.clear()
         with mock.patch.object(r005, "ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD", False):
             ctx = self._ctx(frame, now, 77300.0, lambda c, d: _tick(now, cross_close=76500.0), logs)
-            self.assertTrue(r005._008_hybrid_1min_trigger(ctx), logs)
+            self.assertTrue(r005._009_hybrid_1min_trigger(ctx), logs)
 
     def test_pre_open_no_file_logged_once_and_silent(self):
         frame = _sk_frame("2026-10-30 09:22")
@@ -167,14 +167,14 @@ class TestR005TripleGuards(unittest.TestCase):
         pre = datetime(2026, 10, 30, 8, 30, 0)
         ctx = self._ctx(frame, pre, 77300.0, lambda c, d: nofile, logs)
         for _ in range(3):
-            self.assertFalse(r005._008_hybrid_1min_trigger(ctx))
+            self.assertFalse(r005._009_hybrid_1min_trigger(ctx))
         self.assertEqual(sum("no tick file before" in m for m in logs), 1)
         self.assertFalse(any("[REJECT" in m for m in logs), logs)
         self.assertNotIn("326030", ctx.state.buy_confirm_state)
         # after the open the usual REJECT line is logged
         logs.clear()
         ctx = self._ctx(frame, datetime(2026, 10, 30, 9, 22, 13), 77300.0, lambda c, d: nofile, logs)
-        self.assertFalse(r005._008_hybrid_1min_trigger(ctx))
+        self.assertFalse(r005._009_hybrid_1min_trigger(ctx))
         self.assertTrue(any("TICK_ABSTAIN_NO_FILE" in m for m in logs), logs)
 
 

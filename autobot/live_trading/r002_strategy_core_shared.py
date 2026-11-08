@@ -56,7 +56,7 @@ Update log:
       (r001 ENABLE_MIDDAY_NO_ENTRY, 11:30~13:00 신규매수 금지) + is_regular_new_entry_blocked_time()
       (점심 + r001 ENABLE_REGULAR_ENTRY_WINDOW 09:30~11:00 진입창, 기본 OFF)와 anti_chase_day_gate()(r001
       ENABLE_ANTI_CHASE_DAY_GATE, 당일 시가 +8%/VWAP +3% 이상 신규매수 차단). r003 is_new_entry_allowed /
-      r005 _019_anti_chase_day_extension과 g003이 같은 함수를 쓴다. 근거 수치는 r001 Update log 2026-10-04.
+      r005 _016_anti_chase_day_extension과 g003이 같은 함수를 쓴다. 근거 수치는 r001 Update log 2026-10-04.
     impact: common (r003 실전/g003 백테스트 공용)
     compatibility: breaking (매수 빈도 감소. 롤백: r001 두 플래그 False)
 - [2026-10-02] type=feat owner=claude

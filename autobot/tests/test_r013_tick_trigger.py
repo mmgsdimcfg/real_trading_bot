@@ -301,7 +301,7 @@ class TestR005TickOr(unittest.TestCase):
     def test_tick_cross_opens_trigger_when_1min_has_no_cross(self):
         logs, recs = [], []
         ctx = self._ctx(_frame_1min(), self._tick_ok(), logs, recs)
-        self.assertTrue(r005._008_hybrid_1min_trigger(ctx), logs)
+        self.assertTrue(r005._009_hybrid_1min_trigger(ctx), logs)
         self.assertEqual(ctx.trigger_reason, "TICK120_MA5_MA20_GOLDEN_CROSS")
         self.assertEqual(ctx.trigger_info["path"], "tick")
         rec = [r for r in recs if r.get("result") == "TICK_CROSS_PASS"]
@@ -311,25 +311,25 @@ class TestR005TickOr(unittest.TestCase):
     def test_no_tick_result_keeps_1min_reject(self):
         for tick in (None, TickTriggerResult(False, reason="TICK_ABSTAIN_NO_FILE")):
             logs, recs = [], []
-            self.assertFalse(r005._008_hybrid_1min_trigger(self._ctx(_frame_1min(), tick, logs, recs)))
+            self.assertFalse(r005._009_hybrid_1min_trigger(self._ctx(_frame_1min(), tick, logs, recs)))
             self.assertIn("HYBRID_1MIN_TRIGGER_1MIN_NO_BB_MID_GOLDEN_CROSS", logs[-1])
 
     def test_mode_off_ignores_tick(self):
         logs, recs = [], []
         with mock.patch.object(r005, "TICK_TRIGGER_MODE", "off"):
-            self.assertFalse(r005._008_hybrid_1min_trigger(self._ctx(_frame_1min(), self._tick_ok(), logs, recs)))
+            self.assertFalse(r005._009_hybrid_1min_trigger(self._ctx(_frame_1min(), self._tick_ok(), logs, recs)))
 
     def test_tick_path_still_rejected_by_live_drop(self):
         logs, recs = [], []
         ctx = self._ctx(_frame_1min(), self._tick_ok(), logs, recs)
         ctx.price = 41700.0  # -0.6% vs confirmed 41,950
-        self.assertFalse(r005._008_hybrid_1min_trigger(ctx))
+        self.assertFalse(r005._009_hybrid_1min_trigger(ctx))
         self.assertIn("HYBRID_1MIN_TRIGGER_1MIN_LIVE_DROP_", logs[-1])
 
     def test_tick_guard_failure_reported_when_1min_failed(self):
         logs, recs = [], []
         frame = _frame_1min(close=41700.0, open_=41900.0)
-        self.assertFalse(r005._008_hybrid_1min_trigger(self._ctx(frame, self._tick_ok(), logs, recs)))
+        self.assertFalse(r005._009_hybrid_1min_trigger(self._ctx(frame, self._tick_ok(), logs, recs)))
         self.assertIn("HYBRID_1MIN_TRIGGER_1MIN_CANDLE_NOT_BULLISH", logs[-1])
 
     def test_may_replace_rules(self):
@@ -349,7 +349,7 @@ class TestR005TickOr(unittest.TestCase):
         ctx = self._ctx(self._fresh_1min_cross(), self._tick_ok(), logs, recs)
         ctx.price = 42050.0
         ctx.current_dt = datetime(2026, 10, 29, 10, 41, 20)
-        self.assertTrue(r005._008_hybrid_1min_trigger(ctx), logs)
+        self.assertTrue(r005._009_hybrid_1min_trigger(ctx), logs)
         self.assertEqual(ctx.trigger_info["path"], "cross")  # 1-min path keeps priority
 
     def test_tick_path_used_when_1min_fails_live_bb_mid(self):
@@ -359,7 +359,7 @@ class TestR005TickOr(unittest.TestCase):
             logs, recs = [], []
             ctx = self._ctx(self._fresh_1min_cross(), tick, logs, recs)
             ctx.current_dt = datetime(2026, 10, 29, 10, 41, 20)
-            self.assertEqual(r005._008_hybrid_1min_trigger(ctx), expect, logs)
+            self.assertEqual(r005._009_hybrid_1min_trigger(ctx), expect, logs)
             if expect:
                 self.assertEqual(ctx.trigger_info["path"], "tick")
                 rec = [r for r in recs if r.get("result") == "TICK_CROSS_PASS"][0]
@@ -372,7 +372,7 @@ class TestR005TickOr(unittest.TestCase):
         ctx = self._ctx(self._fresh_1min_cross(), self._tick_ok(), logs, recs)
         ctx.price = 41800.0  # -0.59%: both live guards reject
         ctx.current_dt = datetime(2026, 10, 29, 10, 41, 20)
-        self.assertFalse(r005._008_hybrid_1min_trigger(ctx))
+        self.assertFalse(r005._009_hybrid_1min_trigger(ctx))
         self.assertIn("HYBRID_1MIN_TRIGGER_1MIN_LIVE_DROP_", logs[-1])
 
     def test_tick_service_exception_falls_back_to_1min(self):
@@ -382,7 +382,7 @@ class TestR005TickOr(unittest.TestCase):
         def boom(code, now):
             raise RuntimeError("feed down")
         ctx.services.tick_trigger = boom
-        self.assertFalse(r005._008_hybrid_1min_trigger(ctx))
+        self.assertFalse(r005._009_hybrid_1min_trigger(ctx))
         self.assertTrue(any("evaluate failed: feed down" in m for m in logs))
         self.assertIn("HYBRID_1MIN_TRIGGER_1MIN_NO_BB_MID_GOLDEN_CROSS", logs[-1])
 

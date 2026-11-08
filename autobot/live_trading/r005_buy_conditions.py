@@ -7,7 +7,7 @@ Overview
   that does not pass. A condition returns True (passed) or False (stop). A failing condition logs / mutates state at
   the same point, with the same text, as the old inline code did.
 - The numeric logic of the 1-min trigger and of the 3-min context gates stays in r002 (shared with the g003
-  backtester); the `_008`..`_017` conditions only delegate to it. The refactor itself changed no threshold.
+  backtester); the `_009`..`_014` conditions (numbers as of 2026-11-08) only delegate to it. The refactor itself changed no threshold.
 - [2026-09-22] `_021`(당시 `_020`) now also requires the same 3-min bar and a bounded price drift between the two consecutive
   passes, and its gap window is 45 s (r001 BUY_CONFIRM_MAX_GAP_SECONDS / _REQUIRE_SAME_BAR / _MAX_PRICE_DRIFT_PCT).
   That is the only behavior change in this file since the refactor.
@@ -16,44 +16,56 @@ Overview
 - [2026-11-04] soft gates `_010/_011/_012/_013/_016`, the score threshold of `_017` and the whole TRIPLE_CROSS_BYPASS
   mechanism removed (user decision after the 11/04 review: 14 of 17 triple buys bypassed stochastic, so the gates decided
   nothing). Decision gates are now r002 DECISION_CONTEXT_GATES (ATR floor + liquidity); `_017` only records the score.
+- [2026-11-08] Renumbered `_001`..`_025` in evaluation order (numbers had drifted: added gates kept 25~31 and removed
+  ones left gaps). Notes and update-log entries above this line use the numbers of their date - see the 2026-11-08 entry
+  for the old -> new table.
 - No broker imports: everything that talks to the broker / clock is injected through `BuyServices` and `ctx.api`, so the
   whole checklist can be unit-tested without authenticating.
 
-Order (stage)                                     Old r003 inline block
+Order (stage)  [numbers = evaluation order since 2026-11-08, old number in brackets]
   STATE     _001 entry time window                is_new_entry_allowed
             _002 session open warm-up             STARTUP_WARMUP_SECONDS
             _003 trade cool-down                  api._in_cooldown
             _004 same-bar signal dedup            signal_buy_bar
             _005 no open buy exposure             api.has_buy_exposure
             _006 hard-stop re-entry block         hard_stop_today_codes
-            (_007 stop-loss circuit breaker - removed 2026-11-04, number kept free)
-  TRIGGER   _008 hybrid 1-min trigger             check_buy_condition_1min_hybrid_trigger
-  CONTEXT   _029 market regime (index ETF)        (2026-11-04 신규) r002 market_regime_ok
-  CONTEXT   _009 3-min context frame ready        run_3min_context_pipeline (prefix)
-            (_010 bb_slope_rising / _011 bb_mid_downtrend_block / _012 bb_upper_gap_min / _013 stochastic_buy_signal /
-             _016 di_spread_min - removed 2026-11-04: always BYPASSed on the triple path, numbers kept free)
-            _014 min_entry_atr_volatility         r002 DECISION_CONTEXT_GATES
-            _015 min_liquidity_safety
-            _017 context score record             score only, no threshold (2026-11-04)
-  PRE_ORDER _018 excessive rise from prev close   MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
-            _019 anti-chase day extension         (2026-10-04 신규) 당일 시가/VWAP 대비 과열 차단
-            _020 opening gap / volume gate        passes_opening_gap_volume_gate
-            _031 quote status (VI/halt/warning)   (2026-11-04 신규) 현재가 응답 상태 코드 차단
-            _030 account sync freshness           (2026-11-04 신규) 잔고 동기화 오래되면 매수 차단
-            _028 edge AI meta-label filter        (2026-10-26 신규) r011 LightGBM P(승) - 기본 shadow(기록만)
-            _021 consecutive poll confirm         BUY_CONSECUTIVE_CONFIRM_COUNT
-            _022 affordable buy qty               api.get_affordable_buy_qty
-            _023 fresh live price                 _is_stale_live_price_source
-            _024 order-book ask not thin          _fetch_orderbook_totals (+ reservation, see docstring)
+            _007 daily loss limit        [_025]   (2026-10-23 신규) 포트폴리오 가드
+            _008 max open positions      [_026]   (2026-10-23 신규) 포트폴리오 가드
+  TRIGGER   _009 hybrid 1-min trigger    [_008]   check_buy_condition_1min_hybrid_trigger
+  CONTEXT   _010 market regime (index ETF) [_029] (2026-11-04 신규) r002 market_regime_ok
+            _011 3-min context frame ready [_009] run_3min_context_pipeline (prefix)
+            _012 min_entry_atr_volatility [_014]  r002 DECISION_CONTEXT_GATES
+            _013 min_liquidity_safety    [_015]
+            _014 context score record    [_017]   score only, no threshold (2026-11-04)
+  PRE_ORDER _015 excessive rise from prev close [_018] MAX_BUY_RISE_PCT_FROM_PREV_CLOSE
+            _016 anti-chase day extension [_019]  (2026-10-04 신규) 당일 시가/VWAP 대비 과열 차단
+            _017 opening gap / volume gate [_020] passes_opening_gap_volume_gate
+            _018 quote status (VI/halt/warning) [_031] (2026-11-04 신규) 현재가 응답 상태 코드 차단
+            _019 account sync freshness  [_030]   (2026-11-04 신규) 잔고 동기화 오래되면 매수 차단
+            _020 edge AI meta-label filter [_028] (2026-10-26 신규) r011 LightGBM P(승) - 기본 shadow(기록만)
+            _021 entry spread            [_027]   (2026-10-23 신규) 매도1-매수1 호가 스프레드
+            _022 consecutive poll confirm [_021]  BUY_CONSECUTIVE_CONFIRM_COUNT
+            _023 affordable buy qty      [_022]   api.get_affordable_buy_qty
+            _024 fresh live price        [_023]   _is_stale_live_price_source
+            _025 order-book ask not thin [_024]   _fetch_orderbook_totals (+ reservation, see docstring)
 
 Behavior notes kept from the old inline code (do not "fix" them here - they are strategy decisions):
-- _001~_004 rejects are silent and do NOT clear the confirm state; _008~_020 rejects clear it; _022/_023/_024 rejects and
+- _001~_004 rejects are silent and do NOT clear the confirm state; _009~_017 rejects clear it; _023/_024/_025 rejects and
   a failed order do NOT clear it.
-- _021 rewrites the confirm state on every pass, also once the count is >= BUY_CONSECUTIVE_CONFIRM_COUNT.
-- The 1-min frame fetch (_008), prev-close fetch (_018), day open/VWAP quote (_019), buying-power query (_022) and
-  order-book query (_024) are API calls: they run only when reached, in this order.
+- _022 rewrites the confirm state on every pass, also once the count is >= BUY_CONSECUTIVE_CONFIRM_COUNT.
+- The 1-min frame fetch (_009), prev-close fetch (_015), day open/VWAP quote (_016), buying-power query (_023) and
+  order-book query (_025) are API calls: they run only when reached, in this order.
 
 Update log (append only):
+- [2026-11-08] type=refactor owner=claude
+    summary: 사용자 요청(AutoBotH 매수 평가 y축 번호가 아래->위로 순차 증가하지 않음) - 번호를 평가 순서대로 _001~_025로
+      다시 매김(함수명/BuyCondition.no/_COND_* 변수 함께). 평가 순서와 로직은 무변경. 이전 -> 새 번호:
+      _025->_007, _026->_008, _008->_009, _029->_010, _009->_011, _014->_012, _015->_013, _017->_014, _018->_015,
+      _019->_016, _020->_017, _031->_018, _030->_019, _028->_020, _027->_021, _021->_022, _022->_023, _023->_024,
+      _024->_025 (_001~_006 그대로), basic 트리거 _b08 -> _b09. SHADOW_ENTRY_CONDITIONS는 번호 범위(2~18) 대신 같은
+      조건 집합을 새 번호로 명시. 로그 문구에는 번호가 없어(앱은 사유 문자열 -> 번호 매핑) 과거 로그도 그대로 읽힘.
+    impact: live(r003 표시/조건 JSON r015·r016) / app(autoboth mapping.ts 동시 수정)
+    compatibility: 조건 JSON의 no/func 값 변경 - AutoBotH와 함께 배포해야 함. 매도 조건 번호는 무변경.
 - [2026-11-04] type=feat owner=claude
     summary: 사용자 승인(Codex 2차 안전 점검 + 시장 추세) - _029 시장 추세(지수 ETF 1분 MA5>MA20, r002 market_regime_ok),
       _030 계좌 동기화 신선도(fail-closed), _031 시세 상태(VI/임시정지/시장경고/종목상태), _025에 당일 봇 포지션 평가손익 포함.
@@ -279,7 +291,7 @@ class BuyServices:
     format_reject_detail: Callable[..., str]
     # [2026-10-05] 게이트 판정 기록(r001 ENABLE_GATE_DECISION_LOG). None이면 기록하지 않는다.
     record_gate_decision: Callable[[dict], None] | None = None
-    # [2026-10-23] best bid/ask for the spread gate (_027). None -> gate passes (flag is OFF by default anyway).
+    # [2026-10-23] best bid/ask for the spread gate (_021). None -> gate passes (flag is OFF by default anyway).
     fetch_bid_ask: Callable[[str, str], tuple[float | None, float | None]] | None = None
     # [2026-10-29] r013 틱 트리거 (code, now) -> TickTriggerResult. None이면 틱 트리거 없음(1분 트리거만).
     tick_trigger: Callable[[str, datetime], Any] | None = None
@@ -312,7 +324,7 @@ class BuyContext:
     session_open_dt: datetime | None = None
     trigger_flag: str = "-"       # STEPS 로그의 1min_trigger(P|F|-)
     trigger_reason: str = ""
-    steps_text: str = ""          # "1min_trigger(P) bb_slope_rising(P) ..." (_008에서 계산)
+    steps_text: str = ""          # "1min_trigger(P) bb_slope_rising(P) ..." (_009에서 계산)
     eval_ctx: Any = None          # r002.BuyEvalContext
     buy_reason: str = ""
     prev_close: float | None = None
@@ -324,9 +336,9 @@ class BuyContext:
     buy_detail: str = ""
     # [2026-10-15] 게이트 섀도 기록 구분용 - 실제 판정이면 "live", evaluate_entry_time_shadow의 시간차단 관찰이면 그 kind
     eval_mode: str = "live"
-    # [2026-10-27] _008이 통과시킨 1분 트리거의 info(path/bars_since_cross) - _028 Edge AI 피처가 재계산 대신 사용
+    # [2026-10-27] _009가 통과시킨 1분 트리거의 info(path/bars_since_cross) - _020 Edge AI 피처가 재계산 대신 사용
     trigger_info: dict | None = None
-    # [2026-10-30] _008 triple 모드에서 1분 MA + 60틱 + 120틱 골든크로스가 모두 통과했으면 True(3분 소프트 게이트 BYPASS 대상)
+    # [2026-10-30] _009 triple 모드에서 1분 MA + 60틱 + 120틱 골든크로스가 모두 통과했으면 True(3분 소프트 게이트 BYPASS 대상)
     triple_cross: bool = False
 
     @property
@@ -355,7 +367,7 @@ class BuyCondition:
 
 @dataclass(frozen=True)
 class BuyDecision:
-    """approved=True면 모든 조건 통과(이때 _024의 예약이 남아 있음 - r003이 주문 후 실패 시 해제).
+    """approved=True면 모든 조건 통과(이때 _025의 예약이 남아 있음 - r003이 주문 후 실패 시 해제).
     approved=False면 failed가 처음 통과하지 못한 조건."""
 
     approved: bool
@@ -375,7 +387,7 @@ def _steps_text(ctx: BuyContext, triple_cross: bool = False) -> str:
 
 
 def _reject_hybrid(ctx: BuyContext, buy_reason: str) -> None:
-    """트리거/3분 컨텍스트(_008~_017) 공통 리젝 로그: 확인 상태 초기화 + 지표 스냅샷 + STEPS 진단."""
+    """트리거/3분 컨텍스트(_009~_014) 공통 리젝 로그: 확인 상태 초기화 + 지표 스냅샷 + STEPS 진단."""
     ctx.state.buy_confirm_state.pop(ctx.code, None)
     detail = ctx.services.format_reject_detail(
         buy_reason,
@@ -448,9 +460,9 @@ def _006_hard_stop_reentry_block(ctx: BuyContext) -> bool:
 # 11:24~13:02 동안 모든 감시 종목 매수를 막았다. 번호 7은 비워 둔다(로그/분석 번호 안정성).
 
 
-# [2026-10-23] Portfolio guards (r001 ENABLE_*_GATE, all OFF by default). Evaluated right after _006 (was _007, removed 2026-11-04) / before _021
+# [2026-10-23] Portfolio guards (r001 ENABLE_*_GATE, all OFF by default). Evaluated right after _006 (now _007/_008) / _021 before _022
 # so a block never leaves confirm/reservation side effects behind. Numbers 25-27 keep the existing 1-24 stable.
-def _025_daily_loss_limit(ctx: BuyContext) -> bool:
+def _007_daily_loss_limit(ctx: BuyContext) -> bool:
     if not ENABLE_DAILY_LOSS_LIMIT_GATE:
         return True
     realized = float((ctx.api.live_state or {}).get("realized_pnl_krw", 0.0) or 0.0)
@@ -477,7 +489,7 @@ def _025_daily_loss_limit(ctx: BuyContext) -> bool:
     return True
 
 
-def _026_max_open_positions(ctx: BuyContext) -> bool:
+def _008_max_open_positions(ctx: BuyContext) -> bool:
     if not ENABLE_MAX_OPEN_POSITIONS_GATE:
         return True
     # Bot exposure only: codes bought today (traded_today is cleared on a full exit) that are still held/pending.
@@ -489,7 +501,7 @@ def _026_max_open_positions(ctx: BuyContext) -> bool:
     return True
 
 
-def _027_entry_spread(ctx: BuyContext) -> bool:
+def _021_entry_spread(ctx: BuyContext) -> bool:
     if not ENABLE_SPREAD_GATE or ctx.services.fetch_bid_ask is None:
         return True
     spec = ctx.services.get_order_spec(ctx.current_dt, ctx.nxt_tradeable)
@@ -509,7 +521,7 @@ def _027_entry_spread(ctx: BuyContext) -> bool:
     return True
 
 
-def _029_market_regime(ctx: BuyContext) -> bool:
+def _010_market_regime(ctx: BuyContext) -> bool:
     """[2026-11-04] 시장 추세 게이트: 종목 시장의 지수 ETF 1분봉 MA5>MA20이 아니면 차단 (r002 market_regime_ok, r003 주입)."""
     fn = ctx.services.market_regime
     if not ENABLE_MARKET_REGIME_GATE or fn is None:
@@ -529,7 +541,7 @@ def _029_market_regime(ctx: BuyContext) -> bool:
     return False
 
 
-def _030_account_sync_fresh(ctx: BuyContext) -> bool:
+def _019_account_sync_fresh(ctx: BuyContext) -> bool:
     """[2026-11-04] 계좌 동기화 신선도(Codex #17): 마지막 성공 잔고 조회가 ACCOUNT_SYNC_MAX_STALE_SECONDS보다 오래됐거나 없으면
     신규 매수 차단(fail-closed). 서비스 미주입이면 통과."""
     fn = ctx.services.account_sync_age
@@ -544,7 +556,7 @@ def _030_account_sync_fresh(ctx: BuyContext) -> bool:
     return True
 
 
-def _031_quote_status(ctx: BuyContext) -> bool:
+def _018_quote_status(ctx: BuyContext) -> bool:
     """[2026-11-04] 시세 상태(Codex #18): 최근 현재가 응답의 VI/임시정지/시장경고/종목상태 코드가 차단 대상이면 반려.
     응답 없음/오래됨은 통과(fail-open)."""
     fn = ctx.services.quote_status
@@ -645,7 +657,7 @@ def _tick_may_replace_1min(ctx: BuyContext, trigger_ok: bool, trigger_reason: st
 
 
 def _load_entry_frame_1min(ctx: BuyContext) -> pd.DataFrame | None:
-    """_008 공통: 진입 판단용 1분봉(직전 확정분까지 최신) 또는 None(반려 로그 완료)."""
+    """_009 공통: 진입 판단용 1분봉(직전 확정분까지 최신) 또는 None(반려 로그 완료)."""
     frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
     if frame_1min is None or frame_1min.empty or len(frame_1min) < 2:
         ctx.trigger_flag = "-"
@@ -752,7 +764,7 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     return True
 
 
-def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
+def _009_hybrid_1min_trigger(ctx: BuyContext) -> bool:
     ctx.triple_cross = False
     frame_1min = _load_entry_frame_1min(ctx)
     if frame_1min is None:
@@ -841,7 +853,7 @@ def _008_hybrid_1min_trigger(ctx: BuyContext) -> bool:
 
 def _1min_candidate_reject(ctx: BuyContext, frame_1min: pd.DataFrame, trigger_info: dict,
                            trigger_age_seconds: float) -> str | None:
-    """1분 트리거 후보의 실시간 가드 + 크로스 나이 판정(기존 _008 후반부). 통과면 None, 반려면 리젝 사유 문자열."""
+    """1분 트리거 후보의 실시간 가드 + 크로스 나이 판정(기존 _009 후반부). 통과면 None, 반려면 리젝 사유 문자열."""
     # [2026-10-28] 형성 중인 1분봉 실시간 하락/BB중심선 이탈 반려(091580 사례) - 유효시간 타이머 갱신 뒤에 둬서
     # 이 반려가 확정봉 트리거의 수명을 리셋하지 않게 한다(Codex 검토).
     live_ok, live_reason = check_1min_trigger_live_guard(frame_1min, ctx.price)
@@ -881,7 +893,7 @@ def _1min_candidate_reject(ctx: BuyContext, frame_1min: pd.DataFrame, trigger_in
 # CONTEXT stage (3-min) - numeric logic lives in r002 gates
 # ---------------------------------------------------------------------------
 
-def _009_context_frame_ready(ctx: BuyContext) -> bool:
+def _011_context_frame_ready(ctx: BuyContext) -> bool:
     eval_ctx, reason = build_context_eval(ctx.buy_frame, ctx.current_dt, ctx.price, ctx.cross_info, ctx.config)
     if eval_ctx is None:
         _reject_hybrid(ctx, reason)
@@ -891,15 +903,15 @@ def _009_context_frame_ready(ctx: BuyContext) -> bool:
     return True
 
 
-def _014_min_entry_atr_volatility(ctx: BuyContext) -> bool:
+def _012_min_entry_atr_volatility(ctx: BuyContext) -> bool:
     return _context_gate(ctx, "min_entry_atr_volatility")
 
 
-def _015_min_liquidity_safety(ctx: BuyContext) -> bool:
+def _013_min_liquidity_safety(ctx: BuyContext) -> bool:
     return _context_gate(ctx, "min_liquidity_safety")
 
 
-def _017_context_score_record(ctx: BuyContext) -> bool:
+def _014_context_score_record(ctx: BuyContext) -> bool:
     """[2026-11-04] 가점 합계는 임계값 없이 매수 사유에 기록만 한다(종전 _017_context_score_threshold - triple 경로에서
     TRIPLE_CROSS_BYPASS_SCORE로 항상 통과돼 판정 가치 0, 사용자 결정으로 삭제). 항상 True."""
     score = sum(rule.eval_fn(ctx.eval_ctx) for rule in BUY_SCORE_RULES)
@@ -915,7 +927,7 @@ def _017_context_score_record(ctx: BuyContext) -> bool:
 # PRE_ORDER stage
 # ---------------------------------------------------------------------------
 
-def _018_excessive_rise_from_prev_close(ctx: BuyContext) -> bool:
+def _015_excessive_rise_from_prev_close(ctx: BuyContext) -> bool:
     # 상승률 제한이 꺼져 있어도 전일 종가 조회(API)는 항상 수행한다(기존 동작 유지).
     prev_close = ctx.services.fetch_prev_close(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
     rise_ratio = ctx.services.rise_from_prev_close(ctx.price, float(prev_close or 0.0))
@@ -939,7 +951,7 @@ def _018_excessive_rise_from_prev_close(ctx: BuyContext) -> bool:
         and rise_ratio >= MAX_BUY_RISE_SHADOW_PCT
     ):
         # [2026-10-15] 관찰 전용(주문 영향 없음, r001 MAX_BUY_RISE_SHADOW_PCT) - 이 단계 통과 기록이며 이후 조건
-        # (_019~_024) 통과까지 뜻하지는 않는다. record_gate_decision이 종목/kind/result별 1분 1건으로 중복을 줄이므로
+        # (_016~_025) 통과까지 뜻하지는 않는다. record_gate_decision이 종목/kind/result별 1분 1건으로 중복을 줄이므로
         # 시간차단 관찰(eval_mode != "live") 기록은 result에 모드를 붙여 live 기록과 서로 지워지지 않게 한다(Codex 4차).
         _record_gate(ctx, kind="PREV_CLOSE_RISE_SHADOW",
                      result="would_block" if ctx.eval_mode == "live" else f"would_block@{ctx.eval_mode}", reason=None,
@@ -948,7 +960,7 @@ def _018_excessive_rise_from_prev_close(ctx: BuyContext) -> bool:
     return True
 
 
-def _019_anti_chase_day_extension(ctx: BuyContext) -> bool:
+def _016_anti_chase_day_extension(ctx: BuyContext) -> bool:
     """[2026-10-04] 당일 시가/VWAP 대비 이미 크게 오른 종목은 신규 매수하지 않는다(r002 anti_chase_day_gate).
     플래그가 꺼져 있거나(임계값 둘 다 <=0 포함) 정규장이 아니면 시세 조회(API)도 하지 않는다."""
     if not ENABLE_ANTI_CHASE_DAY_GATE or (
@@ -994,7 +1006,7 @@ def _record_gate(ctx: BuyContext, kind: str, result: str, reason: str | None, **
         ctx.log(f"  [GATE LOG    ] {ctx.symbol_label} | record failed: {exc}")
 
 
-def _020_opening_gap_volume_gate(ctx: BuyContext) -> bool:
+def _017_opening_gap_volume_gate(ctx: BuyContext) -> bool:
     if not ENABLE_OPENING_GAP_VOLUME_GATE:
         return True
     # passes_opening_gap_volume_gate는 심한 갭하락 종목을 gap_blocked_codes에 추가할 수 있다.
@@ -1016,7 +1028,7 @@ def _edge_ai_gate(config):
                                        EDGE_AI_MIN_PROB_OVERRIDE))
 
 
-def _028_edge_ai_meta_filter(ctx: BuyContext) -> bool:
+def _020_edge_ai_meta_filter(ctx: BuyContext) -> bool:
     """[2026-10-26] 기본 매수 신호에 대한 LightGBM 메타 라벨 필터(r011). 정규장만 평가하고, 예외/모델 없음은 통과(fail-open)."""
     if str(EDGE_AI_MODE).lower() == "off" or ctx.services.classify_buy_session(ctx.current_dt) != "regular":
         return True
@@ -1041,7 +1053,7 @@ def _028_edge_ai_meta_filter(ctx: BuyContext) -> bool:
     return False
 
 
-def _021_consecutive_poll_confirm(ctx: BuyContext) -> bool:
+def _022_consecutive_poll_confirm(ctx: BuyContext) -> bool:
     """연속 BUY_CONSECUTIVE_CONFIRM_COUNT회 통과 확인. 이 지점에 도달할 때마다(결과와 무관) 상태를 갱신한다.
 
     직전 통과와 아래 중 하나라도 어긋나면 횟수를 1로 되돌리고 이번 통과를 새 기준으로 삼는다:
@@ -1092,7 +1104,7 @@ def _021_consecutive_poll_confirm(ctx: BuyContext) -> bool:
     return True
 
 
-def _022_affordable_buy_qty(ctx: BuyContext) -> bool:
+def _023_affordable_buy_qty(ctx: BuyContext) -> bool:
     ctx.qty = ctx.api.get_affordable_buy_qty(ctx.code, ctx.price, ctx.current_dt, ctx.nxt_tradeable)
     if ctx.qty <= 0:
         ctx.log(f"  [REJECT      ] {ctx.symbol_label} | INSUFFICIENT_BUYING_POWER_OR_BUDGET | price={ctx.price:,.0f}")
@@ -1100,7 +1112,7 @@ def _022_affordable_buy_qty(ctx: BuyContext) -> bool:
     return True
 
 
-def _023_fresh_live_price(ctx: BuyContext) -> bool:
+def _024_fresh_live_price(ctx: BuyContext) -> bool:
     if ctx.services.is_stale_live_price_source(ctx.price_source):
         ctx.log(
             f"  [REJECT      ] {ctx.symbol_label} | STALE_LIVE_PRICE | "
@@ -1110,7 +1122,7 @@ def _023_fresh_live_price(ctx: BuyContext) -> bool:
     return True
 
 
-def _024_orderbook_ask_not_thin(ctx: BuyContext) -> bool:
+def _025_orderbook_ask_not_thin(ctx: BuyContext) -> bool:
     """세션/매수 상세(buy_detail)를 만들고 신규 매수를 '예약'(traded_today/signal_buy_bar)한 뒤 호가를 조회한다.
     통과하면 예약이 남는다 - r003이 이어서 place_buy_order를 호출하고 실패하면 예약을 해제한다. 매도잔량이
     얇아 거절할 때는 여기서 예약을 해제한다(확인 상태는 지우지 않음 - 기존 동작)."""
@@ -1153,7 +1165,7 @@ def _024_orderbook_ask_not_thin(ctx: BuyContext) -> bool:
 # Registry + main function
 # ---------------------------------------------------------------------------
 
-def _b08_basic_1min_golden_cross(ctx: BuyContext) -> bool:
+def _b09_basic_1min_golden_cross(ctx: BuyContext) -> bool:
     """[2026-10-07] basic 모드 매수 트리거: 최신 확정 1분봉이 1분봉 BB중심선을 아래->위로 돌파한 봉이고
     현재가도 그 중심선 위일 때만 통과. 1분봉 캐시가 직전 확정분이 아니면 보류(ENTRY_1MIN_FRAME_REQUIRE_LATEST)."""
     frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
@@ -1193,30 +1205,30 @@ def _b08_basic_1min_golden_cross(ctx: BuyContext) -> bool:
 _GATES_BY_NAME = {gate.name: gate for gate in DECISION_CONTEXT_GATES}
 
 # [2026-10-23] Portfolio guards - tuple position (not number) decides evaluation order.
-_COND_025 = BuyCondition(25, "_025_daily_loss_limit", "STATE", "일일 손실 한도",
+_COND_007 = BuyCondition(7, "_007_daily_loss_limit", "STATE", "일일 손실 한도",
                          "당일 실현손익(live_state realized_pnl_krw, 비용 차감 추정) <= -DAILY_LOSS_LIMIT_KRW면 신규 매수 중단",
-                         ("ENABLE_DAILY_LOSS_LIMIT_GATE", "DAILY_LOSS_LIMIT_KRW"), _025_daily_loss_limit)
-_COND_026 = BuyCondition(26, "_026_max_open_positions", "STATE", "동시 보유 종목 수 상한",
+                         ("ENABLE_DAILY_LOSS_LIMIT_GATE", "DAILY_LOSS_LIMIT_KRW"), _007_daily_loss_limit)
+_COND_008 = BuyCondition(8, "_008_max_open_positions", "STATE", "동시 보유 종목 수 상한",
                          "봇이 당일 매수해 보유/미체결 중인 종목 수 >= MAX_OPEN_POSITIONS면 신규 매수 중단",
-                         ("ENABLE_MAX_OPEN_POSITIONS_GATE", "MAX_OPEN_POSITIONS"), _026_max_open_positions)
-_COND_028 = BuyCondition(28, "_028_edge_ai_meta_filter", "PRE_ORDER", "Edge AI 메타 라벨 필터",
+                         ("ENABLE_MAX_OPEN_POSITIONS_GATE", "MAX_OPEN_POSITIONS"), _008_max_open_positions)
+_COND_020 = BuyCondition(20, "_020_edge_ai_meta_filter", "PRE_ORDER", "Edge AI 메타 라벨 필터",
                          "r011 LightGBM이 예측한 P(비용 차감 순수익>0) < 임계값이면 차단(EDGE_AI_MODE auto=승격 모델만/gate). "
                          "shadow는 기록만. 모델 없음/오류는 통과",
-                         ("EDGE_AI_MODE", "EDGE_AI_DIR", "EDGE_AI_MIN_PROB_OVERRIDE"), _028_edge_ai_meta_filter)
-_COND_027 = BuyCondition(27, "_027_entry_spread", "PRE_ORDER", "호가 스프레드",
+                         ("EDGE_AI_MODE", "EDGE_AI_DIR", "EDGE_AI_MIN_PROB_OVERRIDE"), _020_edge_ai_meta_filter)
+_COND_021 = BuyCondition(21, "_021_entry_spread", "PRE_ORDER", "호가 스프레드",
                          "(매도1호가-매수1호가)/호가단위 > MAX_ENTRY_SPREAD_TICKS면 차단, 호가 없음도 차단 (API: 호가 조회)",
-                         ("ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"), _027_entry_spread)
-_COND_029 = BuyCondition(29, "_029_market_regime", "CONTEXT", "시장 추세(지수 ETF)",
+                         ("ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"), _021_entry_spread)
+_COND_010 = BuyCondition(10, "_010_market_regime", "CONTEXT", "시장 추세(지수 ETF)",
                          "종목 시장(KOSPI/KOSDAQ)의 지수 ETF 1분봉 MA5 > MA20이 아니면 차단. ETF 데이터 없으면 MARKET_REGIME_FAIL_OPEN",
                          ("ENABLE_MARKET_REGIME_GATE", "MARKET_REGIME_ETF", "MARKET_REGIME_MA_FAST", "MARKET_REGIME_MA_SLOW",
-                          "MARKET_REGIME_FAIL_OPEN"), _029_market_regime)
-_COND_030 = BuyCondition(30, "_030_account_sync_fresh", "PRE_ORDER", "계좌 동기화 신선도",
+                          "MARKET_REGIME_FAIL_OPEN"), _010_market_regime)
+_COND_019 = BuyCondition(19, "_019_account_sync_fresh", "PRE_ORDER", "계좌 동기화 신선도",
                          "마지막 성공 잔고 조회가 ACCOUNT_SYNC_MAX_STALE_SECONDS보다 오래됐거나 없으면 신규 매수 차단(fail-closed)",
-                         ("ACCOUNT_SYNC_MAX_STALE_SECONDS",), _030_account_sync_fresh)
-_COND_031 = BuyCondition(31, "_031_quote_status", "PRE_ORDER", "시세 상태(VI/정지/경고)",
+                         ("ACCOUNT_SYNC_MAX_STALE_SECONDS",), _019_account_sync_fresh)
+_COND_018 = BuyCondition(18, "_018_quote_status", "PRE_ORDER", "시세 상태(VI/정지/경고)",
                          "최근 현재가 응답의 vi_cls_code=Y / temp_stop_yn=Y / 시장경고 02·03 / 종목상태 51·52·53·58·59면 차단 (오래된 응답은 통과)",
                          ("ENABLE_QUOTE_STATUS_GATE", "QUOTE_STATUS_BLOCK_WARN_CODES", "QUOTE_STATUS_BLOCK_STAT_CODES",
-                          "QUOTE_STATUS_MAX_AGE_SECONDS"), _031_quote_status)
+                          "QUOTE_STATUS_MAX_AGE_SECONDS"), _018_quote_status)
 
 BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     BuyCondition(1, "_001_entry_time_window", "STATE", "신규 진입 허용 시간대",
@@ -1231,9 +1243,9 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                  "당일 매수 후 아직 매도되지 않았거나 미체결 매수가 있으면 차단 (has_buy_exposure)", (), _005_no_open_buy_exposure),
     BuyCondition(6, "_006_hard_stop_reentry_block", "STATE", "손절 종목 당일 재진입 차단",
                  "HARD_STOP/ATR 손절이 난 종목은 당일 재진입 금지", ("HARD_STOP_BLOCK_REENTRY_TODAY",), _006_hard_stop_reentry_block),
-    _COND_025,
-    _COND_026,
-    BuyCondition(8, "_008_hybrid_1min_trigger", "TRIGGER", "1분봉 트리거",
+    _COND_007,
+    _COND_008,
+    BuyCondition(9, "_009_hybrid_1min_trigger", "TRIGGER", "1분봉 트리거",
                  "1분봉 BB중심선 골든크로스(룩백)/우상향 지속 + 1분 캔들·BB갭 추격 가드 (r002 check_buy_condition_1min_hybrid_trigger) "
                  "+ 트리거 유효 지속시간이 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려 + 크로스 경로는 크로스 봉 확정 후 "
                  "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS 초과 시 반려 + 1분봉 캐시가 직전 확정분이 아니면 반려 "
@@ -1246,50 +1258,50 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID", "ENTRY_1MIN_FRAME_REQUIRE_LATEST",
                   "HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT", "TICK_TRIGGER_MODE", "TICK_TRIGGER_BAR_SIZES",
                   "TICK_TRIGGER_MA_FAST", "TICK_TRIGGER_MA_SLOW", "TICK_TRIGGER_CROSS_MAX_AGE_SECONDS",
-                  "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID"), _008_hybrid_1min_trigger),
-    _COND_029,
-    BuyCondition(9, "_009_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
-                 "3분봉 2개 이상 + BB 지표 산출 완료", (), _009_context_frame_ready),
-    BuyCondition(14, "_014_min_entry_atr_volatility", "CONTEXT", "최소 변동성(ATR%)",
-                 "ATR% >= STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO", ("ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO"), _014_min_entry_atr_volatility),
-    BuyCondition(15, "_015_min_liquidity_safety", "CONTEXT", "최소 유동성",
-                 "거래량/거래량MA/비율/거래대금 최소치", ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW"), _015_min_liquidity_safety),
-    BuyCondition(17, "_017_context_score_record", "CONTEXT", "가점 합계 기록",
+                  "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID"), _009_hybrid_1min_trigger),
+    _COND_010,
+    BuyCondition(11, "_011_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
+                 "3분봉 2개 이상 + BB 지표 산출 완료", (), _011_context_frame_ready),
+    BuyCondition(12, "_012_min_entry_atr_volatility", "CONTEXT", "최소 변동성(ATR%)",
+                 "ATR% >= STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO", ("ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO"), _012_min_entry_atr_volatility),
+    BuyCondition(13, "_013_min_liquidity_safety", "CONTEXT", "최소 유동성",
+                 "거래량/거래량MA/비율/거래대금 최소치", ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW"), _013_min_liquidity_safety),
+    BuyCondition(14, "_014_context_score_record", "CONTEXT", "가점 합계 기록",
                  "가점 12항목 합계를 매수 사유(HYBRID_3MIN_CTX_SCORE_n)에 기록만 한다 - 임계값 없음(2026-11-04 삭제)",
-                 (), _017_context_score_record),
-    BuyCondition(18, "_018_excessive_rise_from_prev_close", "PRE_ORDER", "전일 종가 대비 과도 상승",
+                 (), _014_context_score_record),
+    BuyCondition(15, "_015_excessive_rise_from_prev_close", "PRE_ORDER", "전일 종가 대비 과도 상승",
                  "전일 종가 대비 상승률 < MAX_BUY_RISE_PCT_FROM_PREV_CLOSE (API: 전일 종가 조회)",
-                 ("MAX_BUY_RISE_PCT_FROM_PREV_CLOSE",), _018_excessive_rise_from_prev_close),
-    BuyCondition(19, "_019_anti_chase_day_extension", "PRE_ORDER", "당일 과열(추격) 차단",
+                 ("MAX_BUY_RISE_PCT_FROM_PREV_CLOSE",), _015_excessive_rise_from_prev_close),
+    BuyCondition(16, "_016_anti_chase_day_extension", "PRE_ORDER", "당일 과열(추격) 차단",
                  "현재가 >= 당일시가 x (1+ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT%) 또는 >= 당일VWAP x (1+ANTI_CHASE_MAX_VWAP_GAP_PCT%)면 차단 "
                  "(API: 현재가 시세 stck_oprc/wghn_avrg_stck_prc, 조회 실패 시 통과)",
                  ("ENABLE_ANTI_CHASE_DAY_GATE", "ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT", "ANTI_CHASE_MAX_VWAP_GAP_PCT"),
-                 _019_anti_chase_day_extension),
-    BuyCondition(20, "_020_opening_gap_volume_gate", "PRE_ORDER", "개장 초반 갭/거래량 게이트",
+                 _016_anti_chase_day_extension),
+    BuyCondition(17, "_017_opening_gap_volume_gate", "PRE_ORDER", "개장 초반 갭/거래량 게이트",
                  "개장 후 5분 이내: 갭 범위 + 거래량 폭발 확인, 큰 갭하락은 당일 영구 차단",
                  ("ENABLE_OPENING_GAP_VOLUME_GATE", "OPENING_GAP_GATE_WINDOW_MINUTES", "OPENING_GAP_MIN_PCT", "OPENING_GAP_MAX_PCT",
-                  "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _020_opening_gap_volume_gate),
-    _COND_031,
-    _COND_030,
-    _COND_028,
-    _COND_027,
-    BuyCondition(21, "_021_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
+                  "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _017_opening_gap_volume_gate),
+    _COND_018,
+    _COND_019,
+    _COND_020,
+    _COND_021,
+    BuyCondition(22, "_022_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
                  "모든 조건이 연속 BUY_CONSECUTIVE_CONFIRM_COUNT회 통과해야 매수 - 직전 통과와 간격 BUY_CONFIRM_MAX_GAP_SECONDS 이내, "
                  "같은 3분봉(BUY_CONFIRM_REQUIRE_SAME_BAR), 실시간가 이탈 BUY_CONFIRM_MAX_PRICE_DRIFT_PCT 이내여야 연속으로 인정",
                  ("BUY_CONSECUTIVE_CONFIRM_COUNT", "BUY_CONFIRM_MAX_GAP_SECONDS", "BUY_CONFIRM_REQUIRE_SAME_BAR",
-                  "BUY_CONFIRM_MAX_PRICE_DRIFT_PCT", "POLL_INTERVAL_SECONDS"), _021_consecutive_poll_confirm),
-    BuyCondition(22, "_022_affordable_buy_qty", "PRE_ORDER", "매수 가능 수량",
-                 "예수금/1회 주문 한도로 1주 이상 살 수 있는가 (API: 계좌 조회)", ("MAX_ORDER_AMOUNT_KRW",), _022_affordable_buy_qty),
-    BuyCondition(23, "_023_fresh_live_price", "PRE_ORDER", "신선한 현재가",
-                 "현재가가 stale 캐시/봉 종가 대체값이 아닌가", ("LIVE_PRICE_STALE_TTL_SECONDS",), _023_fresh_live_price),
-    BuyCondition(24, "_024_orderbook_ask_not_thin", "PRE_ORDER", "호가 잔량 확인",
-                 "매도호가 총잔량 >= 매수호가 총잔량 x 0.5 (API: 호가 조회). 통과 시 매수 예약 상태로 남음", (), _024_orderbook_ask_not_thin),
+                  "BUY_CONFIRM_MAX_PRICE_DRIFT_PCT", "POLL_INTERVAL_SECONDS"), _022_consecutive_poll_confirm),
+    BuyCondition(23, "_023_affordable_buy_qty", "PRE_ORDER", "매수 가능 수량",
+                 "예수금/1회 주문 한도로 1주 이상 살 수 있는가 (API: 계좌 조회)", ("MAX_ORDER_AMOUNT_KRW",), _023_affordable_buy_qty),
+    BuyCondition(24, "_024_fresh_live_price", "PRE_ORDER", "신선한 현재가",
+                 "현재가가 stale 캐시/봉 종가 대체값이 아닌가", ("LIVE_PRICE_STALE_TTL_SECONDS",), _024_fresh_live_price),
+    BuyCondition(25, "_025_orderbook_ask_not_thin", "PRE_ORDER", "호가 잔량 확인",
+                 "매도호가 총잔량 >= 매수호가 총잔량 x 0.5 (API: 호가 조회). 통과 시 매수 예약 상태로 남음", (), _025_orderbook_ask_not_thin),
 )
 
 # r002에 3분 컨텍스트 게이트가 추가/삭제되면 위 번호 목록도 함께 고치도록 import 시점에 바로 실패시킨다.
 _CONTEXT_GATE_FUNC_TO_NAME = {
-    "_014_min_entry_atr_volatility": "min_entry_atr_volatility",
-    "_015_min_liquidity_safety": "min_liquidity_safety",
+    "_012_min_entry_atr_volatility": "min_entry_atr_volatility",
+    "_013_min_liquidity_safety": "min_liquidity_safety",
 }
 _registered_gate_names = {
     _CONTEXT_GATE_FUNC_TO_NAME[c.func_name] for c in BUY_CONDITIONS if c.func_name in _CONTEXT_GATE_FUNC_TO_NAME
@@ -1318,17 +1330,18 @@ def check_buy_conditions(ctx: BuyContext, conditions: tuple[BuyCondition, ...] |
     return BuyDecision(approved=True)
 
 
-# [2026-10-05] 진입 시간 관찰(shadow)에 쓰는 조건 - 주문 직전 단계(_019 이후: 과열 차단/개장 갭/연속 확인/
-# 수량/현재가 신선도/호가+예약)는 제외. _019 과열 여부는 지표로만 함께 기록한다.
-SHADOW_ENTRY_CONDITIONS: tuple[BuyCondition, ...] = tuple(c for c in BUY_CONDITIONS if 2 <= c.no <= 18)
-# (_025~_027 have numbers > 24 and are therefore excluded from the shadow set, like the other pre-order stages.)
+# [2026-10-05] 진입 시간 관찰(shadow)에 쓰는 조건 - 주문 직전 단계(_016 이후: 과열 차단/개장 갭/연속 확인/
+# 수량/현재가 신선도/호가+예약)는 제외. _016 과열 여부는 지표로만 함께 기록한다.
+# [2026-11-08] 번호 재정렬 전 "2 <= no <= 18"이 고르던 집합 그대로(포트폴리오 가드 _007/_008, 시장 추세 _010 제외).
+_SHADOW_ENTRY_NOS = (2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15)
+SHADOW_ENTRY_CONDITIONS: tuple[BuyCondition, ...] = tuple(c for c in BUY_CONDITIONS if c.no in _SHADOW_ENTRY_NOS)
 
 
 def evaluate_entry_time_shadow(ctx: BuyContext, kind: str) -> bool:
-    """[2026-10-05] _001(진입 시간)에서 점심 금지/진입 허용창 때문에 막힌 종목이 그 제한이 없었다면 _002~_018을
+    """[2026-10-05] _001(진입 시간)에서 점심 금지/진입 허용창 때문에 막힌 종목이 그 제한이 없었다면 _002~_015(shadow 조건)를
     통과했을지 관찰한다(Codex 2차 검토: 실제 시세 기준 관찰 기록). 상태(확인/트리거 경과/중복 방지/차단 목록)는
     사본으로 평가하고 로그는 끄므로 실제 매수 판정과 13:00 이후 동작에는 영향이 없다. 모두 통과하면 당일
-    시가/VWAP 과열 지표(_019 기준)를 붙여 kind로 기록하고 True를 돌려준다. 연속 확인(_021)은 평가하지 않으므로
+    시가/VWAP 과열 지표(_016 기준)를 붙여 kind로 기록하고 True를 돌려준다. 연속 확인(_022)은 평가하지 않으므로
     '주문 직전 단계 도달' 기준이다."""
     if str(TRADING_STRATEGY_MODE).lower() == "basic":
         return False  # [2026-10-07] 점심/진입창 관찰은 normal 조건 기준이라 basic 모드에서는 기록하지 않는다
@@ -1362,14 +1375,13 @@ def describe_buy_conditions() -> list[dict[str, object]]:
     ]
 
 
-# [2026-10-07] basic 모드 매수 조건 - normal의 운영 안전 조건(_001~_006, _022~_024)은 같은 함수 그대로 재사용하고
-# 전략 필터(_008~_021: 1분 트리거 룩백/3분봉 컨텍스트/추격·갭 차단/연속확인)는 basic 트리거 하나로 대체한다.
+# [2026-10-07] basic 모드 매수 조건 - normal의 운영 안전 조건(_001~_008, _023~_025)은 같은 함수 그대로 재사용하고
+# 전략 필터(_009~_022: 1분 트리거 룩백/3분봉 컨텍스트/추격·갭 차단/연속확인)는 basic 트리거 하나로 대체한다.
 _NORMAL_BY_NO = {c.no: c for c in BUY_CONDITIONS}
 BASIC_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
-    [_NORMAL_BY_NO[n] for n in range(1, 7)]  # _007 삭제(2026-11-04)
-    + [_COND_025, _COND_026]
-    + [BuyCondition(8, "_b08_basic_1min_golden_cross", "TRIGGER", "[basic] 1분봉 BB중심선 골든크로스",
+    [_NORMAL_BY_NO[n] for n in range(1, 9)]  # _001~_006 + 포트폴리오 가드 _007/_008
+    + [BuyCondition(9, "_b09_basic_1min_golden_cross", "TRIGGER", "[basic] 1분봉 BB중심선 골든크로스",
                     "최신 확정 1분봉이 BB중심선을 아래->위로 돌파 + 현재가 중심선 위 (1분봉 캐시 최신 필수)",
-                    ("TRADING_STRATEGY_MODE", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _b08_basic_1min_golden_cross)]
-    + [_NORMAL_BY_NO[n] for n in (22, 23, 24)]
+                    ("TRADING_STRATEGY_MODE", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _b09_basic_1min_golden_cross)]
+    + [_NORMAL_BY_NO[n] for n in (23, 24, 25)]
 )

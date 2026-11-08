@@ -224,7 +224,7 @@
 #       값) 추가. 1분봉 골든크로스는 유효한데 3분봉 컨텍스트 게이트가 못 따라와 대기만 길어지다가, 뒤늦게
 #       게이트가 맞아떨어진 시점엔 이미 가격이 추격매수 구간까지 오른 사례(204620: 09:04 트리거 유효 ->
 #       09:17 실제 매수, 13분 지연) 대응. Codex가 제안한 "진입 이벤트에 유효기한을 두자"는 아이디어를
-#       구현 - r005 _008_hybrid_1min_trigger에서 update_timed_condition_state()로 1분봉 트리거가
+#       구현 - r005 _009_hybrid_1min_trigger에서 update_timed_condition_state()로 1분봉 트리거가
 #       "계속 유효" 상태로 지속된 시간을 추적, 초과 시 HYBRID_1MIN_TRIGGER_EXPIRED로 반려한다(r002
 #       check_buy_condition_1min_hybrid_trigger 자체는 무변경, r005/g003 양쪽에서 동일 로직 사용).
 #       <=0이면 비활성(기존과 동일). 아직 백테스트로 최적값을 검증하지 않았다 - 실거래 관찰 필요.

@@ -139,7 +139,7 @@ class TestR005Triple(unittest.TestCase):
         logs, recs = [], []
         tick_fn = None if tick is None else (lambda code, dt: tick)
         ctx = self._ctx(_sk_frame(last_label), now, price, tick_fn, logs, recs)
-        return r005._008_hybrid_1min_trigger(ctx), ctx, logs, recs
+        return r005._009_hybrid_1min_trigger(ctx), ctx, logs, recs
 
     def _legacy(self):
         # pre-2026-11-02 rule: fresh 1-min cross AND every tick size
@@ -236,7 +236,7 @@ class TestR005Triple(unittest.TestCase):
         logs, recs = [], []
         now = datetime(2026, 10, 30, 9, 22, 13)
         ctx = self._ctx(_sk_frame("2026-10-30 09:22"), now, 77300.0, boom, logs, recs)
-        self.assertFalse(r005._008_hybrid_1min_trigger(ctx))
+        self.assertFalse(r005._009_hybrid_1min_trigger(ctx))
         self.assertIn("TICK_FEED_UNAVAILABLE", logs[-1])
 
 
@@ -256,7 +256,7 @@ class TestDecisionGatesNoBypass(unittest.TestCase):
             self.assertNotIn(gone, names)
             self.assertFalse(hasattr(r005, gone), gone)
         self.assertFalse(hasattr(r005, "TRIPLE_CROSS_BYPASS_CONTEXT_GATES"))
-        self.assertIn("_017_context_score_record", names)
+        self.assertIn("_014_context_score_record", names)
 
     def test_gate_failure_rejects_even_on_triple_path(self):
         fail = SimpleNamespace(eval_fn=lambda e: (False, e, "LIQ_FAIL"))
@@ -271,10 +271,10 @@ class TestDecisionGatesNoBypass(unittest.TestCase):
         rules = [SimpleNamespace(eval_fn=lambda e: 1)] * 5
         with mock.patch.object(r005, "BUY_SCORE_RULES", rules), mock.patch.object(r005, "_reject_hybrid") as rej:
             ctx = self._ctx(True)
-            self.assertTrue(r005._017_context_score_record(ctx))
+            self.assertTrue(r005._014_context_score_record(ctx))
             self.assertEqual(ctx.buy_reason, "TRIPLE_X+HYBRID_3MIN_CTX_SCORE_5")
             ctx = self._ctx(False)
-            self.assertTrue(r005._017_context_score_record(ctx))
+            self.assertTrue(r005._014_context_score_record(ctx))
             self.assertEqual(ctx.buy_reason, "HYBRID_1MIN_TRIGGER_TRIPLE_X+HYBRID_3MIN_CTX_SCORE_5")
             rej.assert_not_called()
 

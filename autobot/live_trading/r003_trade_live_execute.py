@@ -146,7 +146,7 @@ Update log:
       점심 구간(r002 is_midday_no_entry_time, r001 ENABLE_MIDDAY_NO_ENTRY 11:30~13:00)에 False를 돌려
       신규 매수만 막는다(매도/청산 로직은 이 함수를 쓰지 않음). (2) 신규 fetch_day_ref_prices()
       (KRX inquire_price의 stck_oprc/wghn_avrg_stck_prc, 읽기 전용, 15초 캐시)를 BuyServices.fetch_day_ref_prices로 주입 -
-      r005 _019_anti_chase_day_extension이 사용. r001 Update log 2026-10-04 참조.
+      r005 _016_anti_chase_day_extension이 사용. r001 Update log 2026-10-04 참조.
     impact: live (r003)
     compatibility: breaking (매수 빈도 감소. 롤백: r001 ENABLE_MIDDAY_NO_ENTRY/ENABLE_ANTI_CHASE_DAY_GATE=False)
 - [2026-10-04] type=feat owner=claude
@@ -187,7 +187,7 @@ Update log:
     impact: live
     compatibility: backward-compatible (배선만 추가, 판정 로직은 r006/r002에 있음)
 - [2026-09-23] type=feat owner=claude
-    summary: 사용자 요청("매수/매도 컨셉 재검토" + Codex 설계검토) - r005 _008_hybrid_1min_trigger의 신규
+    summary: 사용자 요청("매수/매도 컨셉 재검토" + Codex 설계검토) - r005 _009_hybrid_1min_trigger의 신규
       진입 이벤트 유효기한(HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS)에 맞춰 buy_trigger_age_state dict를
       신설(선언/BuyState 주입/날짜변경 clear()/포지션보유전환 및 매수체결 시 pop()) - buy_confirm_state와
       동일한 배선 패턴. 상세는 r001/r005 Update log 2026-09-23 참조.
@@ -2513,7 +2513,7 @@ DAY_REF_CACHE_TTL_SECONDS = 15.0  # 연속 확인 폴링(_021)마다 시세를 �
 
 def fetch_day_ref_prices(code: str, now: datetime, nxt_tradeable: bool) -> tuple[float | None, float | None]:
     """정규장 당일 시가(stck_oprc)와 당일 가중평균가(wghn_avrg_stck_prc = VWAP)를 KRX 현재가 시세에서 읽는다
-    (읽기 전용). r005 _019_anti_chase_day_extension 전용 - 정규장에서만 호출된다. 두 값이 모두 있는 첫 응답을
+    (읽기 전용). r005 _016_anti_chase_day_extension 전용 - 정규장에서만 호출된다. 두 값이 모두 있는 첫 응답을
     쓰고, 없으면 가장 많이 채워진 응답을 쓴다. 실패/0이면 해당 값은 None (게이트는 fail-open)."""
     cached = _DAY_REF_CACHE.get(code)
     if cached is not None and 0 <= (now - cached[0]).total_seconds() < DAY_REF_CACHE_TTL_SECONDS:

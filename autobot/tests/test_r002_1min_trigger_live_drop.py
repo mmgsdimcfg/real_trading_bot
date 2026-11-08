@@ -103,11 +103,11 @@ class TestR005Wiring(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
 
         t0 = datetime(2026, 10, 28, 9, 34, 28)
-        self.assertTrue(r005._008_hybrid_1min_trigger(self._ctx(27850.0, t0, state, logs)))
+        self.assertTrue(r005._009_hybrid_1min_trigger(self._ctx(27850.0, t0, state, logs)))
         start = state.buy_trigger_age_state["091580"]["start"]
 
         t1 = datetime(2026, 10, 28, 9, 34, 57)
-        self.assertFalse(r005._008_hybrid_1min_trigger(self._ctx(27650.0, t1, state, logs)))
+        self.assertFalse(r005._009_hybrid_1min_trigger(self._ctx(27650.0, t1, state, logs)))
         self.assertIn("HYBRID_1MIN_TRIGGER_1MIN_LIVE_DROP_0.72%", logs[-1])
         self.assertNotIn("091580", state.buy_confirm_state)
         self.assertEqual(state.buy_trigger_age_state["091580"]["start"], start)  # lifetime not reset
