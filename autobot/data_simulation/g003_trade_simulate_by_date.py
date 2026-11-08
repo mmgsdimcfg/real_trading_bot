@@ -2534,7 +2534,7 @@ def simulate_date(
             frame_1min = calculate_indicators_with_warmup(strategy_df_1min, _warm1)
             if frame_1min is not None and not frame_1min.empty:
                 frames_1min[code] = frame_1min
-        # [2026-10-04] r005 _019_anti_chase_day_extension parity: 당일 시가/VWAP 근사용 정규장 1분봉.
+        # [2026-10-04] r005 _016_anti_chase_day_extension parity: 당일 시가/VWAP 근사용 정규장 1분봉.
         # [Codex r2] causal이면 검증된 원본 앵커(분 시작 라벨, 세션 공백 합성행 제외)로 만든다 - helper가 스스로 +1분.
         day_ref_frames[code] = _build_day_ref_frame(_causal[0] if _causal is not None else raw_df)
         # r006 parity: evaluate live condition every 10s even if source file cadence is 20s/1m.
@@ -3323,7 +3323,7 @@ def simulate_date(
                     log_detail(f"  [REJECT] {code} | MARKET_REGIME_DOWN_{_rg_detail} | price={price:,.0f}")
                     should_buy = False
             if should_buy and classify_buy_session(ts) == "regular":
-                # [2026-10-04/05] r005 _019_anti_chase_day_extension parity (당일 시가/VWAP 대비 과열 차단).
+                # [2026-10-04/05] r005 _016_anti_chase_day_extension parity (당일 시가/VWAP 대비 과열 차단).
                 # [2026-10-05 Codex 2차] 실전과 같은 위치(트리거/컨텍스트 통과 후, 연속 확인 전)로 옮기고 차단 시
                 # 연속 확인 상태를 지운다(실전 _019와 동일). 정규장 진입에만 적용(NXT 미적용).
                 _day_open, _day_vwap, _last_close = _day_refs_at(day_ref_frames.get(code), ts)

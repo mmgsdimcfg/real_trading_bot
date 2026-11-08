@@ -41,9 +41,9 @@ class TestPortfolioGates(unittest.TestCase):
         with mock.patch.object(r005, "ENABLE_DAILY_LOSS_LIMIT_GATE", False), \
                 mock.patch.object(r005, "ENABLE_MAX_OPEN_POSITIONS_GATE", False), \
                 mock.patch.object(r005, "ENABLE_SPREAD_GATE", False):
-            self.assertTrue(r005._025_daily_loss_limit(ctx))
-            self.assertTrue(r005._026_max_open_positions(ctx))
-            self.assertTrue(r005._027_entry_spread(ctx))
+            self.assertTrue(r005._007_daily_loss_limit(ctx))
+            self.assertTrue(r005._008_max_open_positions(ctx))
+            self.assertTrue(r005._021_entry_spread(ctx))
 
     def test_defaults_are_on(self):
         import r001_define_config as r001
@@ -54,18 +54,18 @@ class TestPortfolioGates(unittest.TestCase):
 
     def test_daily_loss_limit(self):
         with mock.patch.object(r005, "ENABLE_DAILY_LOSS_LIMIT_GATE", True), mock.patch.object(r005, "DAILY_LOSS_LIMIT_KRW", 100_000):
-            self.assertTrue(r005._025_daily_loss_limit(_ctx(realized=-99_999)[0]))
+            self.assertTrue(r005._007_daily_loss_limit(_ctx(realized=-99_999)[0]))
             ctx, logs = _ctx(realized=-100_000)
-            self.assertFalse(r005._025_daily_loss_limit(ctx))
+            self.assertFalse(r005._007_daily_loss_limit(ctx))
             self.assertIn("DAILY_LOSS_LIMIT", logs[0])
 
     def test_max_open_positions_counts_only_bot_exposure(self):
         with mock.patch.object(r005, "ENABLE_MAX_OPEN_POSITIONS_GATE", True), mock.patch.object(r005, "MAX_OPEN_POSITIONS", 2):
             # 3 codes traded today, but only 1 still exposed -> allowed
-            self.assertTrue(r005._026_max_open_positions(_ctx(traded={"a", "b", "c"}, exposure={"a"})[0]))
-            self.assertFalse(r005._026_max_open_positions(_ctx(traded={"a", "b"}, exposure={"a", "b"})[0]))
+            self.assertTrue(r005._008_max_open_positions(_ctx(traded={"a", "b", "c"}, exposure={"a"})[0]))
+            self.assertFalse(r005._008_max_open_positions(_ctx(traded={"a", "b"}, exposure={"a", "b"})[0]))
             # the candidate itself is not counted
-            self.assertTrue(r005._026_max_open_positions(_ctx(traded={"a", "000001"}, exposure={"a", "000001"})[0]))
+            self.assertTrue(r005._008_max_open_positions(_ctx(traded={"a", "000001"}, exposure={"a", "000001"})[0]))
 
     def test_spread_gate_fail_open_on_query_exception(self):
         # [2026-11-04 Codex 2차 #3] API 예외는 통과(fail-open), 정상 응답의 무호가는 차단
@@ -74,26 +74,35 @@ class TestPortfolioGates(unittest.TestCase):
         with mock.patch.object(r005, "ENABLE_SPREAD_GATE", True), mock.patch.object(r005, "MAX_ENTRY_SPREAD_TICKS", 2):
             ctx, logs = _ctx()
             ctx.services.fetch_bid_ask = boom
-            self.assertTrue(r005._027_entry_spread(ctx))
+            self.assertTrue(r005._021_entry_spread(ctx))
             self.assertIn("fail-open", logs[-1])
             ctx, logs = _ctx(bid=None, ask=None)
-            self.assertFalse(r005._027_entry_spread(ctx))
+            self.assertFalse(r005._021_entry_spread(ctx))
             self.assertIn("SPREAD_NO_QUOTE", logs[-1])
 
     def test_spread_gate(self):
         with mock.patch.object(r005, "ENABLE_SPREAD_GATE", True), mock.patch.object(r005, "MAX_ENTRY_SPREAD_TICKS", 2):
-            self.assertTrue(r005._027_entry_spread(_ctx(bid=10000, ask=10020)[0]))
-            self.assertFalse(r005._027_entry_spread(_ctx(bid=10000, ask=10030)[0]))
-            self.assertFalse(r005._027_entry_spread(_ctx(bid=None, ask=10030)[0]))
+            self.assertTrue(r005._021_entry_spread(_ctx(bid=10000, ask=10020)[0]))
+            self.assertFalse(r005._021_entry_spread(_ctx(bid=10000, ask=10030)[0]))
+            self.assertFalse(r005._021_entry_spread(_ctx(bid=None, ask=10030)[0]))
 
     def test_registration_order(self):
         names = [c.func_name for c in r005.BUY_CONDITIONS]
         self.assertNotIn("_007_stoploss_circuit_breaker", names)  # removed 2026-11-04
-        self.assertLess(names.index("_006_hard_stop_reentry_block"), names.index("_025_daily_loss_limit"))
-        self.assertLess(names.index("_026_max_open_positions"), names.index("_008_hybrid_1min_trigger"))
-        self.assertLess(names.index("_027_entry_spread"), names.index("_021_consecutive_poll_confirm"))
+        self.assertLess(names.index("_006_hard_stop_reentry_block"), names.index("_007_daily_loss_limit"))
+        self.assertLess(names.index("_008_max_open_positions"), names.index("_009_hybrid_1min_trigger"))
+        self.assertLess(names.index("_021_entry_spread"), names.index("_022_consecutive_poll_confirm"))
         self.assertEqual(len({c.no for c in r005.BUY_CONDITIONS}), len(r005.BUY_CONDITIONS))
-        self.assertTrue(all(2 <= c.no <= 18 for c in r005.SHADOW_ENTRY_CONDITIONS))
+        self.assertEqual([c.no for c in r005.SHADOW_ENTRY_CONDITIONS], [2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15])
+
+    def test_numbers_follow_evaluation_order(self):
+        # [2026-11-08] AutoBotH plots conditions bottom-up in evaluation order - the numbers must count up with it
+        self.assertEqual([c.no for c in r005.BUY_CONDITIONS], list(range(1, len(r005.BUY_CONDITIONS) + 1)))
+        for c in r005.BUY_CONDITIONS:
+            self.assertTrue(c.func_name.startswith(f"_{c.no:03d}_"), c.func_name)
+        basic = [c.no for c in r005.BASIC_BUY_CONDITIONS]
+        self.assertEqual(basic, sorted(basic))
+        self.assertEqual(r005.BASIC_BUY_CONDITIONS[-3:], r005.BUY_CONDITIONS[-3:])  # same pre-order safety tail
 
 
 class TestV2Shadow(unittest.TestCase):

@@ -27,10 +27,10 @@ class FrameTests(unittest.TestCase):
                 self.assertTrue(row["frame"], row["func"])
                 self.assertTrue(set(row["frame"].split("+")) <= VALID, row)
         buy = {r["func"]: r for r in data["buy"]}
-        self.assertEqual(buy["_029_market_regime"]["frame"], "1m")
-        self.assertEqual(buy["_009_context_frame_ready"]["frame"], "3m")
+        self.assertEqual(buy["_010_market_regime"]["frame"], "1m")
+        self.assertEqual(buy["_011_context_frame_ready"]["frame"], "3m")
         if data["entry_trigger_mode"] == "triple":
-            self.assertEqual(buy["_008_hybrid_1min_trigger"]["frame"], "1m+tick")
+            self.assertEqual(buy["_009_hybrid_1min_trigger"]["frame"], "1m+tick")
         self.assertGreater(data["warmup"]["prior_day_1m_bars"], 0)
 
 

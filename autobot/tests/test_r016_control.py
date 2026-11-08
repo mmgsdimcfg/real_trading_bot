@@ -153,7 +153,7 @@ class OverrideTests(Base):
         with mock.patch.object(r016, "_pid_is_r003", return_value=True):
             rc, out = self.run_cli("conditions")
         self.assertEqual(rc, 0)
-        row = next(r for r in out["buy"] if r["func"] == "_029_market_regime")
+        row = next(r for r in out["buy"] if r["func"] == "_010_market_regime")
         meta = row["values_meta"]["ENABLE_MARKET_REGIME_GATE"]
         self.assertTrue(meta["editable"])
         self.assertEqual(meta["override"], False)

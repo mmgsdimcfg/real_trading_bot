@@ -58,19 +58,19 @@ class TestMarketRegime(unittest.TestCase):
     def test_r005_029(self):
         with mock.patch.object(r005, "ENABLE_MARKET_REGIME_GATE", True):
             ctx, logs = self._ctx(lambda c: (False, "KOSDAQ_229200_MA5_NOT_ABOVE_MA20"))
-            self.assertFalse(r005._029_market_regime(ctx))
+            self.assertFalse(r005._010_market_regime(ctx))
             self.assertIn("MARKET_REGIME_DOWN_KOSDAQ_229200_MA5_NOT_ABOVE_MA20", logs[-1])
             self.assertNotIn("159010", ctx.state.buy_confirm_state)
             ctx, _ = self._ctx(lambda c: (True, "ok"))
-            self.assertTrue(r005._029_market_regime(ctx))
+            self.assertTrue(r005._010_market_regime(ctx))
             with mock.patch.object(r005, "MARKET_REGIME_FAIL_OPEN", True):
-                self.assertTrue(r005._029_market_regime(self._ctx(lambda c: (None, "no"))[0]))
+                self.assertTrue(r005._010_market_regime(self._ctx(lambda c: (None, "no"))[0]))
             with mock.patch.object(r005, "MARKET_REGIME_FAIL_OPEN", False):
-                self.assertFalse(r005._029_market_regime(self._ctx(lambda c: (None, "no"))[0]))
-            self.assertTrue(r005._029_market_regime(self._ctx(None)[0]))
-            self.assertTrue(r005._029_market_regime(self._ctx(lambda c: 1 / 0)[0]))  # exception -> fail-open
+                self.assertFalse(r005._010_market_regime(self._ctx(lambda c: (None, "no"))[0]))
+            self.assertTrue(r005._010_market_regime(self._ctx(None)[0]))
+            self.assertTrue(r005._010_market_regime(self._ctx(lambda c: 1 / 0)[0]))  # exception -> fail-open
         with mock.patch.object(r005, "ENABLE_MARKET_REGIME_GATE", False):
-            self.assertTrue(r005._029_market_regime(self._ctx(lambda c: (False, "x"))[0]))
+            self.assertTrue(r005._010_market_regime(self._ctx(lambda c: (False, "x"))[0]))
 
 
 class TestSafetyConditions(unittest.TestCase):
@@ -85,12 +85,12 @@ class TestSafetyConditions(unittest.TestCase):
 
     def test_030_account_sync_fresh(self):
         with mock.patch.object(r005, "ACCOUNT_SYNC_MAX_STALE_SECONDS", 600.0):
-            self.assertTrue(r005._030_account_sync_fresh(self._ctx(account_sync_age=lambda: 30.0)[0]))
+            self.assertTrue(r005._019_account_sync_fresh(self._ctx(account_sync_age=lambda: 30.0)[0]))
             ctx, logs = self._ctx(account_sync_age=lambda: 601.0)
-            self.assertFalse(r005._030_account_sync_fresh(ctx))
+            self.assertFalse(r005._019_account_sync_fresh(ctx))
             self.assertIn("ACCOUNT_SYNC_STALE", logs[-1])
-            self.assertFalse(r005._030_account_sync_fresh(self._ctx(account_sync_age=lambda: None)[0]))
-            self.assertTrue(r005._030_account_sync_fresh(self._ctx()[0]))  # not injected -> pass
+            self.assertFalse(r005._019_account_sync_fresh(self._ctx(account_sync_age=lambda: None)[0]))
+            self.assertTrue(r005._019_account_sync_fresh(self._ctx()[0]))  # not injected -> pass
 
     def test_031_quote_status(self):
         now = datetime(2026, 11, 4, 10, 0, 0)
@@ -98,17 +98,17 @@ class TestSafetyConditions(unittest.TestCase):
             base = {"vi_cls_code": "N", "mrkt_warn_cls_code": "00", "temp_stop_yn": "N", "iscd_stat_cls_code": "55", "at": now}
             base.update(kw); return base
         with mock.patch.object(r005, "ENABLE_QUOTE_STATUS_GATE", True):
-            self.assertTrue(r005._031_quote_status(self._ctx(quote_status=lambda c: st())[0]))
-            self.assertTrue(r005._031_quote_status(self._ctx(quote_status=lambda c: st(iscd_stat_cls_code="57"))[0]))
+            self.assertTrue(r005._018_quote_status(self._ctx(quote_status=lambda c: st())[0]))
+            self.assertTrue(r005._018_quote_status(self._ctx(quote_status=lambda c: st(iscd_stat_cls_code="57"))[0]))
             for kw, tag in ((dict(vi_cls_code="Y"), "VI_ACTIVE"), (dict(temp_stop_yn="Y"), "TEMP_STOP"),
                             (dict(mrkt_warn_cls_code="02"), "MARKET_WARN_02"), (dict(iscd_stat_cls_code="58"), "STOCK_STATUS_58")):
                 ctx, logs = self._ctx(quote_status=lambda c, kw=kw: st(**kw))
-                self.assertFalse(r005._031_quote_status(ctx), tag)
+                self.assertFalse(r005._018_quote_status(ctx), tag)
                 self.assertIn(tag, logs[-1])
             # stale status -> pass
             old = st(vi_cls_code="Y", at=now - timedelta(seconds=r001.QUOTE_STATUS_MAX_AGE_SECONDS + 1))
-            self.assertTrue(r005._031_quote_status(self._ctx(quote_status=lambda c: old)[0]))
-            self.assertTrue(r005._031_quote_status(self._ctx(quote_status=lambda c: None)[0]))
+            self.assertTrue(r005._018_quote_status(self._ctx(quote_status=lambda c: old)[0]))
+            self.assertTrue(r005._018_quote_status(self._ctx(quote_status=lambda c: None)[0]))
 
     def test_025_includes_unrealized(self):
         with mock.patch.object(r005, "ENABLE_DAILY_LOSS_LIMIT_GATE", True), mock.patch.object(r005, "DAILY_LOSS_LIMIT_KRW", 100_000), \
@@ -118,10 +118,10 @@ class TestSafetyConditions(unittest.TestCase):
             ctx.api.positions = {"159010": {"quantity": 10, "buy_price": 30000.0, "current_price": 25000.0},  # -50,000
                                  "999999": {"quantity": 100, "buy_price": 100.0, "current_price": 1.0}}  # not bot's -> ignored
             ctx.state.traded_today = {"159010"}
-            self.assertFalse(r005._025_daily_loss_limit(ctx))
+            self.assertFalse(r005._007_daily_loss_limit(ctx))
             self.assertIn("unrealized=-50,000", logs[-1])
             ctx.state.traded_today = set()
-            self.assertTrue(r005._025_daily_loss_limit(ctx))
+            self.assertTrue(r005._007_daily_loss_limit(ctx))
 
 
 @unittest.skipIf(r003 is None, "r003 import failed")
