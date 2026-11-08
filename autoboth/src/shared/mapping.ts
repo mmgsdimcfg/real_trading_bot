@@ -14,6 +14,11 @@
  * - [2026-11-07] type=fix - Unknown-list leftovers of 2026-11-04 mapped: [SELL EVAL] OK <reason> (r006 AUX / BB down-cross sell, no
  *   [SELL TRIGGER] line) -> sell condition by reason, pass; [TRADE] BUY REPRICE RESUBMIT and [BUY CXL REJ] -> buy ORDER info;
  *   [BUY SKIP] CIRCUIT_BREAKER_ACTIVE (breaker removed from r003 the same day) -> PREP status info (a global pause, not a block)
+ * - [2026-11-08] type=refactor - Buy condition numbers follow the evaluation order (server r005 renumbered _001.._025): rule
+ *   keys moved with it (_025->_007, _026->_008, _008->_009, _029->_010, _009->_011, _014->_012, _015->_013, _017->_014,
+ *   _018->_015, _019->_016, _020->_017, _031->_018, _030->_019, _028->_020, _027->_021, _021->_022, _022->_023, _023->_024,
+ *   _024->_025). Logs carry reason strings, not numbers, so older logs map to the new keys too. Sell keys unchanged.
+ *   TRIGGER_COND names the trigger key for the pipeline's sub-step nodes
  */
 
 import type { EvalResult, Side } from './types';
@@ -48,7 +53,10 @@ function matchLongest(rules: Rule[], text: string): Rule | undefined {
   return undefined;
 }
 
-/** _008 sub-steps, in display order */
+/** condKey of the entry trigger (its sub-steps are counted as "<key>/<sub>") */
+export const TRIGGER_COND = '_009';
+
+/** trigger (TRIGGER_COND) sub-steps, in display order */
 export const TRIGGER_SUBS = ['trigger', 'candle', 'live', 'chase', 'legacy', 'other'] as const;
 export const TRIGGER_SUB_LABEL: Record<string, string> = {
   trigger: '크로스 트리거',
@@ -62,45 +70,45 @@ export const TRIGGER_SUB_LABEL: Record<string, string> = {
 // [REJECT] reasons (guide 3.1)
 const BUY_REJECT_RULES = sortRules([
   { p: 'SESSION_OPEN_WARMUP', cond: '_002' },
-  { p: 'TRIPLE_CROSS_MISSING_', cond: '_008', sub: 'trigger' },
-  { p: 'TICK_LOW_DENSITY_', cond: '_008', sub: 'trigger' },
-  { p: 'TRIPLE_CROSS_1MIN_CHASE_BUY_BB_GAP', cond: '_008', sub: 'candle' },
-  { p: 'TRIPLE_CROSS_1MIN_CHASE_BUY_INTRABAR', cond: '_008', sub: 'candle' },
-  { p: 'TRIPLE_CROSS_1MIN_CANDLE_NOT_BULLISH', cond: '_008', sub: 'candle' },
-  { p: 'TRIPLE_CROSS_CANDLE_NOT_BULLISH', cond: '_008', sub: 'candle' },
-  { p: 'TRIPLE_CROSS_1MIN_LIVE_DROP', cond: '_008', sub: 'live' },
-  { p: 'TRIPLE_CROSS_1MIN_LIVE_BELOW_BB_MID', cond: '_008', sub: 'live' },
-  { p: 'TRIPLE_CROSS_CHASE_FROM_CROSS', cond: '_008', sub: 'chase' },
-  { p: 'TRIPLE_CROSS_', cond: '_008', sub: 'other' },
-  { p: 'HYBRID_1MIN_TRIGGER_', cond: '_008', sub: 'legacy' },
-  { p: 'HYBRID_1MIN_FRAME_UNAVAILABLE', cond: '_008', sub: 'legacy' },
-  { p: 'MARKET_REGIME_DOWN', cond: '_029' },
-  { p: 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', cond: '_009' },
-  { p: 'HYBRID_3MIN_CTX_MISSING_INDICATOR', cond: '_009' },
-  { p: 'HYBRID_3MIN_CTX_LOW_ENTRY_ATR', cond: '_014' },
-  { p: 'HYBRID_3MIN_CTX_LOW_VOL_MA_ABS', cond: '_015' },
-  { p: 'HYBRID_3MIN_CTX_LOW_ABS_VOLUME', cond: '_015' },
-  { p: 'HYBRID_3MIN_CTX_LOW_VOLUME_RATIO', cond: '_015' },
-  { p: 'HYBRID_3MIN_CTX_LOW_TURNOVER', cond: '_015' },
-  { p: 'EXCESSIVE_RISE_FROM_PREV_CLOSE', cond: '_018' },
-  { p: 'ANTI_CHASE_', cond: '_019' },
-  { p: 'OPENING_GAP', cond: '_020' },
-  { p: 'QUOTE_STATUS_BLOCK', cond: '_031' },
-  { p: 'ACCOUNT_SYNC_STALE', cond: '_030' },
-  { p: 'EDGE_AI_LOW_PROB', cond: '_028' },
-  { p: 'SPREAD_NO_QUOTE', cond: '_027' },
-  { p: 'SPREAD_TOO_WIDE', cond: '_027' },
-  { p: 'INSUFFICIENT_BUYING_POWER_OR_BUDGET', cond: '_022' },
-  { p: 'STALE_LIVE_PRICE', cond: '_023' },
-  { p: 'ORDERBOOK_ASK_THIN', cond: '_024' },
+  { p: 'TRIPLE_CROSS_MISSING_', cond: '_009', sub: 'trigger' },
+  { p: 'TICK_LOW_DENSITY_', cond: '_009', sub: 'trigger' },
+  { p: 'TRIPLE_CROSS_1MIN_CHASE_BUY_BB_GAP', cond: '_009', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_1MIN_CHASE_BUY_INTRABAR', cond: '_009', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_1MIN_CANDLE_NOT_BULLISH', cond: '_009', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_CANDLE_NOT_BULLISH', cond: '_009', sub: 'candle' },
+  { p: 'TRIPLE_CROSS_1MIN_LIVE_DROP', cond: '_009', sub: 'live' },
+  { p: 'TRIPLE_CROSS_1MIN_LIVE_BELOW_BB_MID', cond: '_009', sub: 'live' },
+  { p: 'TRIPLE_CROSS_CHASE_FROM_CROSS', cond: '_009', sub: 'chase' },
+  { p: 'TRIPLE_CROSS_', cond: '_009', sub: 'other' },
+  { p: 'HYBRID_1MIN_TRIGGER_', cond: '_009', sub: 'legacy' },
+  { p: 'HYBRID_1MIN_FRAME_UNAVAILABLE', cond: '_009', sub: 'legacy' },
+  { p: 'MARKET_REGIME_DOWN', cond: '_010' },
+  { p: 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', cond: '_011' },
+  { p: 'HYBRID_3MIN_CTX_MISSING_INDICATOR', cond: '_011' },
+  { p: 'HYBRID_3MIN_CTX_LOW_ENTRY_ATR', cond: '_012' },
+  { p: 'HYBRID_3MIN_CTX_LOW_VOL_MA_ABS', cond: '_013' },
+  { p: 'HYBRID_3MIN_CTX_LOW_ABS_VOLUME', cond: '_013' },
+  { p: 'HYBRID_3MIN_CTX_LOW_VOLUME_RATIO', cond: '_013' },
+  { p: 'HYBRID_3MIN_CTX_LOW_TURNOVER', cond: '_013' },
+  { p: 'EXCESSIVE_RISE_FROM_PREV_CLOSE', cond: '_015' },
+  { p: 'ANTI_CHASE_', cond: '_016' },
+  { p: 'OPENING_GAP', cond: '_017' },
+  { p: 'QUOTE_STATUS_BLOCK', cond: '_018' },
+  { p: 'ACCOUNT_SYNC_STALE', cond: '_019' },
+  { p: 'EDGE_AI_LOW_PROB', cond: '_020' },
+  { p: 'SPREAD_NO_QUOTE', cond: '_021' },
+  { p: 'SPREAD_TOO_WIDE', cond: '_021' },
+  { p: 'INSUFFICIENT_BUYING_POWER_OR_BUDGET', cond: '_023' },
+  { p: 'STALE_LIVE_PRICE', cond: '_024' },
+  { p: 'ORDERBOOK_ASK_THIN', cond: '_025' },
 ]);
 
 // [BUY SKIP] reasons
 const BUY_SKIP_RULES = sortRules([
   { p: 'ALREADY_TRADED_TODAY_UNTIL_SELL', cond: '_005' },
   { p: 'HARD_STOP_REENTRY_BLOCKED_TODAY', cond: '_006' },
-  { p: 'DAILY_LOSS_LIMIT', cond: '_025' },
-  { p: 'MAX_OPEN_POSITIONS', cond: '_026' },
+  { p: 'DAILY_LOSS_LIMIT', cond: '_007' },
+  { p: 'MAX_OPEN_POSITIONS', cond: '_008' },
 ]);
 
 // [SELL TRIGGER] / [SELL HOLD] reasons (guide 3.2)
@@ -233,15 +241,15 @@ export function classify(tag: string, rest: string): ClassifyOutcome {
       return ev({ side: 'buy', condKey: hit.rule.cond, result: 'fail', reason: hit.reason });
     }
     case 'BUY HOLD': {
-      if (rest.includes('WAIT_NEXT_POLL_CONFIRM')) return ev({ side: 'buy', condKey: '_021', result: 'hold', reason: firstSeg(rest).replace(/^reason=/, '') + (/(count=\S+)/.exec(rest) ? ' ' + /(count=\S+)/.exec(rest)![1] : '') });
+      if (rest.includes('WAIT_NEXT_POLL_CONFIRM')) return ev({ side: 'buy', condKey: '_022', result: 'hold', reason: firstSeg(rest).replace(/^reason=/, '') + (/(count=\S+)/.exec(rest) ? ' ' + /(count=\S+)/.exec(rest)![1] : '') });
       return { kind: 'unknown', side: 'buy', reason: firstSeg(rest) };
     }
     case 'EDGE AI':
-      return ev({ side: 'buy', condKey: '_028', result: 'info', reason: firstSeg(rest) });
+      return ev({ side: 'buy', condKey: '_020', result: 'info', reason: firstSeg(rest) });
     case 'SPREAD':
-      return ev({ side: 'buy', condKey: '_027', result: 'info', reason: firstSeg(rest) });
+      return ev({ side: 'buy', condKey: '_021', result: 'info', reason: firstSeg(rest) });
     case 'TICK TRIG':
-      return ev({ side: 'buy', condKey: '_008', sub: 'trigger', result: 'info', reason: firstSeg(rest) });
+      return ev({ side: 'buy', condKey: '_009', sub: 'trigger', result: 'info', reason: firstSeg(rest) });
     case 'BUY EVAL': {
       const m = /^OK\s+(\S+)/.exec(rest.trim());
       if (m) return ev({ side: 'buy', condKey: 'ORDER', sub: 'EVAL OK', result: 'pass', reason: m[1] });
@@ -292,16 +300,16 @@ export function classify(tag: string, rest: string): ClassifyOutcome {
 
 /** STEPS diagnostic names -> condKey (colors other gates on a rejected poll) */
 export const STEP_TO_COND: Record<string, string> = {
-  '1min_trigger': '_008',
-  min_entry_atr_volatility: '_014',
-  min_liquidity_safety: '_015',
+  '1min_trigger': '_009',
+  min_entry_atr_volatility: '_012',
+  min_liquidity_safety: '_013',
 };
 
 /** Buy conditions that never log (shown as "silent") and the score-only condition (dashed). */
 export const SILENT_BUY = new Set(['_003', '_004']);
-export const INFO_ONLY_BUY = new Set(['_017']);
+export const INFO_ONLY_BUY = new Set(['_014']);
 
-/** "_014" for a condition */
+/** "_012" for a condition */
 export const condKeyOf = (no: number) => '_' + String(no).padStart(3, '0');
 
 /** Group similar reasons in the unknown list: digits -> # */

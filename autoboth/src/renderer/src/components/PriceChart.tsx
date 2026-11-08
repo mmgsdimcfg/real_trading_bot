@@ -26,6 +26,8 @@
  *   size; right-click a line to delete it, Esc cancels. Drawn on the price pane only
  * - [2026-11-07] type=feat - A drawing tool stays selected (draw several lines; ↖ / Esc to stop). Horizontal lines show the price, the
  *   difference to the latest close and to the position's average price; vertical lines show the time and that bar's OHLC / volume
+ * - [2026-11-08] type=feat - Per-pane heights (oscHeights) and, with onResizePane, drag handles on the bottom edge of the price +
+ *   volume area and of every indicator pane (drag = resize, double-click = default size); the chart grows / shrinks with them
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -45,6 +47,7 @@ import {
 import type { Trade } from '../../../shared/types';
 import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
 import { fmtInt } from '../lib';
+import { startHeightDrag } from './HeightGrip';
 import { addDrawing, clearDrawings, getDrawings, removeDrawing, subscribeDrawings, type DrawTool, type Drawing } from '../drawings';
 
 /** must match the ScatterChart margins + YAxis width in TimelineView */
@@ -88,6 +91,11 @@ interface Props {
   /** total height; default = 300 + one pane per oscillator */
   height?: number;
   oscHeight?: number;
+  /** per indicator pane height (missing = oscHeight) */
+  oscHeights?: Partial<Record<IndicatorKey, number>>;
+  /** shows resize handles under the price + volume area ('price') and under each indicator pane; h undefined = default size.
+   *  The parent owns the heights: it passes them back through height (chartHeight) and oscHeights */
+  onResizePane?: (key: 'price' | IndicatorKey, h: number | undefined) => void;
   /** index mode: wheel zoom + drag pan */
   interactive?: boolean;
   /** floating OHLC/indicator tooltip (off when the page shows its own data panel) */
@@ -168,9 +176,20 @@ function cloud(pts: { x: number; a: number; b: number }[], sy: (v: number) => nu
 
 const oscOf = (indicators: IndicatorKey[]) => OSCILLATORS.filter((k) => indicators.includes(k));
 
-export function chartHeight(indicators: IndicatorKey[], oscH = OSC_PANE_H, priceH = PRICE_PANE_H): number {
-  return priceH + oscOf(indicators).length * (oscH + GAP);
+export function chartHeight(
+  indicators: IndicatorKey[],
+  oscH = OSC_PANE_H,
+  priceH = PRICE_PANE_H,
+  oscHeights?: Partial<Record<IndicatorKey, number>>,
+): number {
+  return priceH + oscOf(indicators).reduce((sum, k) => sum + (oscHeights?.[k] ?? oscH) + GAP, 0);
 }
+
+/** resize limits (px) of the price + volume area and of one indicator pane */
+export const PRICE_AREA_MIN = 140;
+export const PRICE_AREA_MAX = 1600;
+export const OSC_PANE_MIN = 40;
+export const OSC_PANE_MAX = 600;
 
 interface PaneLine {
   cls?: string;
@@ -214,12 +233,12 @@ const fmtNum = (v: number | undefined, d = 1) => {
 };
 
 export function PriceChart(props: Props) {
-  const { bars, warm = [], warmBot = [], kind, n, indicators, trades, buyPrice, date, xTicks = [], interactive = false, tooltip = true, onHover, drawKey } = props;
+  const { bars, warm = [], warmBot = [], kind, n, indicators, trades, buyPrice, date, xTicks = [], interactive = false, tooltip = true, onHover, drawKey, onResizePane } = props;
   const intraday = kind === 'tick' || kind === 'min';
   const mode = props.mode ?? (intraday ? 'time' : 'index');
   const axis = props.axis ?? 'left';
   const oscH = props.oscHeight ?? OSC_PANE_H;
-  const height = props.height ?? chartHeight(indicators, oscH);
+  const height = props.height ?? chartHeight(indicators, oscH, PRICE_PANE_H, props.oscHeights);
   const L = props.left ?? PLOT_LEFT;
   const R = props.right ?? PLOT_RIGHT;
 
@@ -242,13 +261,17 @@ export function PriceChart(props: Props) {
 
   const osc = oscOf(indicators);
   const W = Math.max(10, width - L - R);
-  const mainH = height - osc.length * (oscH + GAP) - TOP - AXIS_H;
+  const oscHs = osc.map((k) => props.oscHeights?.[k] ?? oscH);
+  const oscSum = oscHs.reduce((a, h) => a + h + GAP, 0);
+  /** the price + volume area as chartHeight counts it (resize handle start value) */
+  const priceArea = height - oscSum;
+  const mainH = priceArea - TOP - AXIS_H;
   const showVol = indicators.includes('vol');
   const priceH = showVol ? mainH * (1 - VOL_RATIO) - GAP : mainH;
   const volTop = TOP + priceH + (showVol ? GAP : 0);
   const volH = showVol ? mainH * VOL_RATIO : 0;
-  const oscTop = (j: number) => volTop + volH + GAP + j * (oscH + GAP);
-  const bottom = osc.length ? oscTop(osc.length - 1) + oscH : volTop + volH;
+  const oscTop = (j: number) => volTop + volH + GAP + oscHs.slice(0, j).reduce((a, h) => a + h + GAP, 0);
+  const bottom = osc.length ? oscTop(osc.length - 1) + oscHs[osc.length - 1] : volTop + volH;
   const shift = indicators.includes('ichimoku') ? BOT_PARAMS.ichiShift : 0;
   const defaultCount = Math.max(MIN_BARS, Math.floor(W / (interactive ? 8 : 7)) - shift);
 
@@ -396,6 +419,7 @@ export function PriceChart(props: Props) {
     const panes = osc.map((key, j) => {
       const cfg = paneOf(key, S);
       const top = oscTop(j);
+      const ph = oscHs[j];
       let vlo = cfg.fixed ? cfg.fixed[0] : Infinity;
       let vhi = cfg.fixed ? cfg.fixed[1] : -Infinity;
       if (!cfg.fixed) {
@@ -412,7 +436,7 @@ export function PriceChart(props: Props) {
         const pd = (vhi - vlo) * 0.08;
         (vlo -= pd), (vhi += pd);
       }
-      const y = (v: number) => top + ((vhi - v) / (vhi - vlo)) * oscH;
+      const y = (v: number) => top + ((vhi - v) / (vhi - vlo)) * ph;
       let histUp = '';
       let histDn = '';
       if (cfg.hist) {
@@ -438,7 +462,7 @@ export function PriceChart(props: Props) {
           if (side && ok(v)) signals.push({ i: sl.i, x: sl.x, y: y(v), side });
         }
       }
-      return { key, top, y, lines, guides: cfg.guides, ticks, label: cfg.label, histUp, histDn, series: cfg.series, signals };
+      return { key, top, h: ph, y, lines, guides: cfg.guides, ticks, label: cfg.label, histUp, histDn, series: cfg.series, signals };
     });
 
     // ---- x labels ----
@@ -484,7 +508,7 @@ export function PriceChart(props: Props) {
       return best.b.t;
     };
     return { empty: false as const, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, panes, xOfTime, xOfT, tOfX, dayLines, step };
-  }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, date, width, intraday, L, W, priceH, volTop, volH, oscH, osc.join(), vp, shift, defaultCount, interactive]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, date, width, intraday, L, W, priceH, volTop, volH, oscHs.join(), osc.join(), vp, shift, defaultCount, interactive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- drawings (HTS-style tools) ----
   const [tool, setTool] = useState<DrawTool>('pointer');
@@ -668,7 +692,7 @@ export function PriceChart(props: Props) {
             ))}
             {model.panes.map((p) => (
               <g key={p.key}>
-                <rect x={L} y={p.top} width={W} height={oscH} className="pc-pane" />
+                <rect x={L} y={p.top} width={W} height={p.h} className="pc-pane" />
                 {p.guides.map((g) => (
                   <line key={g} x1={L} x2={L + W} y1={p.y(g)} y2={p.y(g)} className="pc-guide" />
                 ))}
@@ -739,7 +763,7 @@ export function PriceChart(props: Props) {
           {/* HTS style: each indicator's own buy ▲ (red, under the line) / sell ▼ (blue, over the line) crossings (crossSignal) */}
           {model.panes.map((p) =>
             p.signals.map((g) => {
-              const y = Math.min(p.top + oscH - 2, Math.max(p.top + 2, g.side === 'buy' ? g.y + 4 : g.y - 4));
+              const y = Math.min(p.top + p.h - 2, Math.max(p.top + 2, g.side === 'buy' ? g.y + 4 : g.y - 4));
               return (
                 <path
                   key={`${p.key}-${g.i}`}
@@ -814,6 +838,19 @@ export function PriceChart(props: Props) {
               )}
             </g>
           )}
+
+          {/* [2026-11-08] resize handles: bottom edge of the price + volume area and of each indicator pane */}
+          {onResizePane &&
+            [
+              { key: 'price' as const, y: volTop + volH + GAP / 2, cur: priceArea, min: PRICE_AREA_MIN, max: PRICE_AREA_MAX, label: '주가' },
+              ...model.panes.map((p) => ({ key: p.key, y: p.top + p.h + GAP / 2, cur: p.h, min: OSC_PANE_MIN, max: OSC_PANE_MAX, label: p.label })),
+            ].map((g) => (
+              <g key={g.key} className="pc-resize" onMouseDown={(e) => startHeightDrag(e, g.cur, g.min, g.max, (hh) => onResizePane(g.key, hh))} onDoubleClick={(e) => (e.stopPropagation(), onResizePane(g.key, undefined))}>
+                <title>{`${g.label} 영역 높이: 위아래로 끌어 조절 · 더블클릭: 기본 높이`}</title>
+                <rect x={L} y={g.y - 4} width={W} height={8} className="pc-resize-hit" />
+                <line x1={L} x2={L + W} y1={g.y} y2={g.y} className="pc-resize-line" />
+              </g>
+            ))}
         </svg>
       )}
       {drawKey && (

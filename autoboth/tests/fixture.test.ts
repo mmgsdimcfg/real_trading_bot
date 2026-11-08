@@ -53,12 +53,12 @@ describe.skipIf(!has)('fixture 20261104', () => {
     expect(total).toBe(-20265);
   });
 
-  it('acceptance: 159010 sold by _004 hard stop; _014 is the most blocked node (257)', () => {
+  it('acceptance: 159010 sold by _004 hard stop; _012 (entry ATR floor) is the most blocked node (257)', () => {
     const sell = snap.trades.find((t) => t.code === '159010' && t.side === 'SELL');
     expect(sell?.condKey).toBe('_004');
     const ranked = Object.entries(snap.buyStats).sort((a, b) => b[1].block - a[1].block);
     console.table(ranked.slice(0, 8).map(([k, v]) => ({ cond: k, ...v })));
-    expect(ranked[0][0]).toBe('_014');
-    expect(snap.buyStats._014.block).toBe(257);
+    expect(ranked[0][0]).toBe('_012');
+    expect(snap.buyStats._012.block).toBe(257);
   });
 });

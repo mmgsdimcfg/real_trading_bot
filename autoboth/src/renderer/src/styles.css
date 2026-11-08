@@ -263,7 +263,16 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 .ypick-panel .actions { margin-top: 0; margin-bottom: 6px; }
 .ypick-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
 .chart-buy { height: 520px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-.chart-sell { height: 300px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+.chart-sell { height: 300px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+/* [2026-11-08] drag-to-resize: grip bar under a chart, handles on PriceChart pane edges */
+.height-grip { height: 9px; margin: 1px 0 6px; cursor: row-resize; border-radius: 4px; position: relative; }
+.height-grip::after { content: ''; position: absolute; left: 50%; top: 3px; width: 44px; height: 3px; margin-left: -22px; border-radius: 2px; background: var(--border); }
+.height-grip:hover { background: var(--surface-2); }
+.height-grip:hover::after { background: var(--text-3); }
+.pc-resize { cursor: row-resize; }
+.pc-resize-hit { fill: transparent; }
+.pc-resize-line { stroke: transparent; stroke-width: 2; pointer-events: none; }
+.pc-resize:hover .pc-resize-line { stroke: var(--text-3); stroke-dasharray: 4 3; }
 .empty { padding: 40px; color: var(--text-3); text-align: center; }
 .empty.small { padding: 24px; }
 .tip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; max-width: 560px; font-size: 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3); }

@@ -19,7 +19,7 @@ import { SymbolPicker } from '../components/SymbolPicker';
 import { condIndex, editItemsFor, fmtInt, fmtKrw, nodeEnableKey, PSEUDO_LABEL, sortedConds, STAGE_LABEL } from '../lib';
 import { EditorActions, useValueEditing, ValuesEditor } from '../components/ValuesEditor';
 import { savedValue } from '../../../shared/control';
-import { INFO_ONLY_BUY, SILENT_BUY, STEP_TO_COND, TRIGGER_SUBS, TRIGGER_SUB_LABEL, condKeyOf } from '../../../shared/mapping';
+import { INFO_ONLY_BUY, SILENT_BUY, STEP_TO_COND, TRIGGER_COND, TRIGGER_SUBS, TRIGGER_SUB_LABEL, condKeyOf } from '../../../shared/mapping';
 import type { Condition, EvalEvent, Side, Snapshot, SymbolSummary } from '../../../shared/types';
 import { fmtKstTime } from '../../../shared/time';
 
@@ -114,7 +114,7 @@ const CondNode = memo(function CondNode({ id, data }: NodeProps<Node<CondData>>)
         </div>
       )}
       {!data.sub && <Handle type="source" position={Position.Bottom} />}
-      {data.key === '_008' && <Handle type="source" id="r" position={Position.Right} />}
+      {data.key === TRIGGER_COND && <Handle type="source" id="r" position={Position.Right} />}
     </div>
   );
 });
@@ -256,18 +256,18 @@ function build(snap: Snapshot | null, conds: Condition[], side: Side, sym: Symbo
   }
 
   const colRight = BASE_W / 2 + EXTRA_W / 2 + 60;
-  // _008 sub-steps to the right of the trigger node
-  if (side === 'buy' && pos.has('_008')) {
-    const p = pos.get('_008')!;
-    const subs = TRIGGER_SUBS.filter((s) => s !== 'legacy' || (buyStats['_008/legacy']?.block || 0) > 0);
-    const subMax = Math.max(1, ...subs.map((s) => buyStats[`_008/${s}`]?.block || 0));
+  // trigger (TRIGGER_COND) sub-steps to the right of the trigger node
+  if (side === 'buy' && pos.has(TRIGGER_COND)) {
+    const p = pos.get(TRIGGER_COND)!;
+    const subs = TRIGGER_SUBS.filter((s) => s !== 'legacy' || (buyStats[`${TRIGGER_COND}/legacy`]?.block || 0) > 0);
+    const subMax = Math.max(1, ...subs.map((s) => buyStats[`${TRIGGER_COND}/${s}`]?.block || 0));
     subs.forEach((s, i) => {
-      const id = `_008/${s}`;
+      const id = `${TRIGGER_COND}/${s}`;
       const st = buyStats[id];
       let state: NState = 'none';
       if (sym) {
         const ev = sym.lastEval;
-        state = ev?.condKey === '_008' ? (ev.sub === s ? 'fail' : 'idle') : data.get('_008')!.state === 'pass' ? 'pass' : 'idle';
+        state = ev?.condKey === TRIGGER_COND ? (ev.sub === s ? 'fail' : 'idle') : data.get(TRIGGER_COND)!.state === 'pass' ? 'pass' : 'idle';
       }
       const d: CondData = {
         key: id,
@@ -281,7 +281,7 @@ function build(snap: Snapshot | null, conds: Condition[], side: Side, sym: Symbo
       };
       const y = p.y - ((subs.length - 1) * (SUB_H + 8)) / 2 + i * (SUB_H + 8) - SUB_H / 2;
       nodes.push({ id, type: 'cond', position: { x: p.x + colRight, y }, data: d, zIndex: 2 });
-      edges.push({ id: `es${i}`, source: '_008', sourceHandle: 'r', target: id, className: 'edge-sub' });
+      edges.push({ id: `es${i}`, source: TRIGGER_COND, sourceHandle: 'r', target: id, className: 'edge-sub' });
     });
   }
 

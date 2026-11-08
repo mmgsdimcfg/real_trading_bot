@@ -110,7 +110,7 @@ describe('r016 response parser', () => {
   it('1.4 conditions with values_meta', () => {
     const doc = {
       generated_at: 'x',
-      buy: [{ order: 0, no: 29, func: '_029', stage: 'CONTEXT', title: 't', description: '', values: { ENABLE_MARKET_REGIME_GATE: true }, values_meta: { ENABLE_MARKET_REGIME_GATE: { editable: true, type: 'bool', base: true, override: null, has_override: false, pending: false } } }],
+      buy: [{ order: 0, no: 10, func: '_010', stage: 'CONTEXT', title: 't', description: '', values: { ENABLE_MARKET_REGIME_GATE: true }, values_meta: { ENABLE_MARKET_REGIME_GATE: { editable: true, type: 'bool', base: true, override: null, has_override: false, pending: false } } }],
       sell: [],
       overrides: {},
       override_errors: [],
