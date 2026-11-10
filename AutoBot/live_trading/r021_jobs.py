@@ -6,7 +6,7 @@ AutoBotH 가 r016_control.py job ... 으로 부른다 (Linux 서버, Windows 노
 CPU 를 많이 쓰는 일이다.
 
   r016 job list                                 작업 목록 + 각 작업의 마지막 실행 상태 + 지금 도는 작업
-  r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai]
+  r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai] [--keep-watchlist]
   r016 job stop NAME                            지금 단계(자식 프로세스)를 끝내고 stopped 로 기록
   r016 job log NAME [-n 200]                    마지막 실행 로그 끝부분
 
@@ -14,6 +14,8 @@ CPU 를 많이 쓰는 일이다.
   collect    g001 --date D                                   분봉/일봉 수집 (KIS, 오래 걸림)
   history    g025 --append D                                 종목별 일봉 이력 갱신 (AutoBotH 일/주/월봉)
   scan       g002 --date D --export-watchlist --for-next-trading-day   다음 거래일 감시목록(r004) 선별
+             --keep-watchlist 이면 g002 --date D --no-export-watchlist: 그 날짜의 선별 파일(_D_picks.txt, 리포트)만 만들고
+             r004 감시목록은 그대로 둔다 (과거 날짜 보충 수집 / Edge AI 데이터셋 - g013 은 전날 picks 파일을 읽는다)
   edge_ai    g013 --live, g014, g024 --edge-ai                Edge AI 데이터셋/학습/점검 (g015_edge_ai_daily.sh 와 같음)
   universe   g010                                             수집 대상 종목 목록(g004) 갱신
   postclose  collect -> history -> scan [-> edge_ai]          장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지 않는다
@@ -26,6 +28,12 @@ Update log:
     summary: 신규 - AutoBotH(노트북 메인)에서 장 마감 후 데이터 취득과 감시 종목 선별을 실행/정지/진행 확인.
     impact: tooling (스크립트 자체는 그대로 실행)
     compatibility: backward-compatible (신규 파일)
+- [2026-11-11] type=feat owner=claude
+    summary: --keep-watchlist (start/run) - scan 단계를 g002 --no-export-watchlist 로 실행해 r004 감시목록을 바꾸지 않는다.
+      과거 날짜 데이터를 보충 수집하거나 Edge AI 재학습용으로 postclose 를 돌릴 때 지금 감시 중인 종목이 바뀌는 문제.
+      상태 파일 args 에 keep_watchlist 기록 (앱이 "감시목록은 바꾸지 않음" 표시).
+    impact: tooling (r016 job start 옵션 추가, 기본 동작 불변)
+    compatibility: backward-compatible
 """
 from __future__ import annotations
 
@@ -63,6 +71,7 @@ class JobArgs:
     date: str
     workers: int | None = None
     edge_ai: bool = False
+    keep_watchlist: bool = False  # scan: g002 --no-export-watchlist (past-date backfill / Edge AI: r004 stays as is)
 
 
 @dataclass
@@ -84,8 +93,9 @@ STEPS: dict[str, Step] = {
     "collect": Step("collect", lambda a, rc: _py("g001_data_collect_symbols_daily.py", "--date", a.date,
                                                  "--workers", _workers(a, 4))),
     "history": Step("history", lambda a, rc: _py("g025_daily_history.py", "--append", a.date), required=False),
-    "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--export-watchlist",
-                                           "--for-next-trading-day")),
+    "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date,
+                                           *(("--no-export-watchlist",) if a.keep_watchlist
+                                             else ("--export-watchlist", "--for-next-trading-day")))),
     "edge_dataset": Step("edge_dataset", lambda a, rc: _py("g013_edge_ai_dataset.py", "--workers", _workers(a, 2), "--live"),
                          required=False),
     "edge_train": Step("edge_train", lambda a, rc: _py("g014_edge_ai_train.py", "--threads", _workers(a, 2)), required=False),
@@ -212,6 +222,8 @@ def start_job(paths: Paths, name: str, args: JobArgs, by: str, spawn=r019.spawn_
         argv += ["--workers", str(args.workers)]
     if args.edge_ai:
         argv.append("--edge-ai")
+    if args.keep_watchlist:
+        argv.append("--keep-watchlist")
     now = datetime.now()
     pid = spawn(argv, cwd=str(HERE), log_path=paths.root / "log" / "jobs" / "r021_runner.log",
                 env=r019.child_env({"AUTO_TRADING_RUNTIME": str(paths.root)}))
@@ -273,7 +285,8 @@ class Runner:
         self.state = {"name": name, "title": JOBS[name]["title"], "state": "running", "pid": os.getpid(), "by": by,
                       "run_id": run_id,
                       "started_at": now.isoformat(timespec="seconds"), "finished_at": None, "rc": None,
-                      "args": {"date": args.date, "workers": args.workers, "edge_ai": args.edge_ai},
+                      "args": {"date": args.date, "workers": args.workers, "edge_ai": args.edge_ai,
+                               "keep_watchlist": args.keep_watchlist},
                       "log": str(self.log_path), "steps": [], "error": None}
 
     def _save(self) -> None:
@@ -385,6 +398,7 @@ def add_job_parser(sub) -> None:
     p.add_argument("--date", default=None)
     p.add_argument("--workers", type=int, default=None)
     p.add_argument("--edge-ai", action="store_true")
+    p.add_argument("--keep-watchlist", action="store_true", help="scan: build the picks files only, do not write r004 (g002 --no-export-watchlist)")
     p.add_argument("--trading-day-only", action="store_true", help="start: skip (rc 0, skipped) on a weekend / r014 closed day")
     p.add_argument("-n", type=int, default=200)
 
@@ -412,7 +426,8 @@ def run_job_command(args, by: str, paths: Paths | None = None) -> tuple[dict, in
         date = args.date or _today()
         if getattr(args, "trading_day_only", False) and len(date) == 8 and date.isdigit() and not is_trading_day(date):
             return {"ok": True, "skipped": True, "reason": f"{date} is not a trading day"}, 0
-        out = start_job(paths, args.name, JobArgs(date=date, workers=args.workers, edge_ai=args.edge_ai), by)
+        out = start_job(paths, args.name, JobArgs(date=date, workers=args.workers, edge_ai=args.edge_ai,
+                                                   keep_watchlist=getattr(args, "keep_watchlist", False)), by)
         return out, 0 if out.get("ok") else 3
     if args.action == "stop":
         out = stop_job(paths, args.name)
@@ -428,13 +443,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--date", default=None)
     p.add_argument("--workers", type=int, default=None)
     p.add_argument("--edge-ai", action="store_true")
+    p.add_argument("--keep-watchlist", action="store_true", help="scan: build the picks files only, do not write r004 (g002 --no-export-watchlist)")
     p.add_argument("--by", default="cli")
     p.add_argument("--run-id", default=None)
     p.add_argument("--runtime", default=None, help="runtime root (a WMI-started process has no inherited env)")
     args = ap.parse_args(argv)
     if args.runtime:
         os.environ["AUTO_TRADING_RUNTIME"] = args.runtime
-    return run_detached_entry(args.name, JobArgs(date=args.date or _today(), workers=args.workers, edge_ai=args.edge_ai), args.by,
+    return run_detached_entry(args.name, JobArgs(date=args.date or _today(), workers=args.workers, edge_ai=args.edge_ai,
+                                                   keep_watchlist=args.keep_watchlist), args.by,
                               run_id=args.run_id)
 
 

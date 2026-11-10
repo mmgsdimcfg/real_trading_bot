@@ -21,6 +21,8 @@
  * - [2026-11-10] type=fix - Codex review: a service verb pins its client (host) for the whole operation and passes it to the guard;
  *   clear() bumps a connection generation so status / NXT answers of the previous host are dropped; busy() lets the connect refuse
  *   a run-mode switch while a verb runs
+ * - [2026-11-11] type=feat - ctl:jobStart keepWatchlist -> r021 --keep-watchlist (scan builds the picks files only, r004 stays);
+ *   while r003 runs, a scan / postclose that WOULD rewrite r004 asks first (one dialog together with the KIS-load note)
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
@@ -496,8 +498,14 @@ export function createControl(deps: ControlDeps) {
     if (o.workers) args.push('--workers', String(Math.max(1, Math.min(32, Math.floor(Number(o.workers)) || 1))));
     if (o.edgeAi) args.push('--edge-ai');
     if (o.tradingDayOnly) args.push('--trading-day-only');
-    if (!o.noConfirm && state.status?.running && (name === 'collect' || name === 'postclose')) {
-      if (!(await confirm('데이터 수집', 'r003이 실행 중입니다.', '수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다. 그래도 시작할까요?', '시작'))) {
+    if (o.keepWatchlist) args.push('--keep-watchlist');
+    if (!o.noConfirm && state.status?.running) {
+      const notes: string[] = [];
+      if (name === 'collect' || name === 'postclose') notes.push('수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다.');
+      if ((name === 'scan' || name === 'postclose') && !o.keepWatchlist) {
+        notes.push('선별(g002)은 r004 감시목록을 덮어씁니다 - 지금 감시 중인 종목이 다음 실행/재시작부터 바뀝니다. 과거 날짜 데이터만 모으려면 "감시목록 갱신"을 끄세요.');
+      }
+      if (notes.length && !(await confirm('데이터 작업', 'r003이 실행 중입니다.', `${notes.join(' ')} 그래도 시작할까요?`, '시작'))) {
         return { ok: false, cancelled: true };
       }
     }
