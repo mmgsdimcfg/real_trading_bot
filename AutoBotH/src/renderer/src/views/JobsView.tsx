@@ -10,6 +10,10 @@
  *   tooltip), date / workers inputs with placeholders and 시작 / 정지 on the right; the date and step start time moved to tooltips
  * - [2026-11-10] type=feat - 기준일 is a date field (components/DatePicker): a click opens a small calendar, future days cannot be
  *   picked; the job still receives YYYYMMDD
+ * - [2026-11-11] type=feat - "감시목록(r004) 갱신" checkbox for 장 마감 파이프라인 / 감시 종목 선별: on for today, off for a past date
+ *   (auto until the user toggles it; follows the date again when the date changes). Off = r021 --keep-watchlist: the scan builds
+ *   that day's picks files (what g013 reads for the Edge AI dataset) but the r004 watchlist stays, so a past-date backfill for
+ *   Edge AI retraining does not change the stocks r003 watches. The last run shows whether it touched the watchlist
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -47,10 +51,10 @@ const shortCmd = (argv: string[]) => {
 };
 
 const DESC: Record<string, string> = {
-  postclose: '수집 → 이력 → 다음 거래일 감시 종목 선별 · 수집 실패 시 선별 생략',
+  postclose: '수집 → 이력 → 다음 거래일 감시 종목 선별 [→ Edge AI] · 수집 실패 시 선별 생략 · 과거 날짜는 기본으로 감시목록을 바꾸지 않음',
   collect: '분봉·일봉 데이터 수집 · KIS API 전 종목 (오래 걸림)',
   history: '종목별 일봉 이력 갱신 · 차트 일/주/월봉',
-  scan: '수집된 데이터로 다음 거래일 감시 종목 선별 · r004 감시목록 저장',
+  scan: '수집된 데이터로 다음 거래일 감시 종목 선별 · "감시목록 갱신"이 켜져 있으면 r004 감시목록 저장',
   edge_ai: 'Edge AI 데이터셋 생성 → 학습 → 점검 · CPU 많이 씀',
   universe: '수집 대상 종목 목록(g004) 갱신 · 신규상장/상장폐지/위험종목',
 };
@@ -75,6 +79,12 @@ export function JobsView() {
   const [date, setDate] = useState(localYmd());
   const [workers, setWorkers] = useState('');
   const [edgeAi, setEdgeAi] = useState(false);
+  /** 감시목록(r004) 갱신: null = automatic (today -> on, past date -> off), the user's click fixes it until the date changes */
+  const [wlChoice, setWlChoice] = useState<boolean | null>(null);
+  const isToday = date === localYmd();
+  const wlUpdate = wlChoice ?? isToday;
+  const hasScan = sel === 'postclose' || sel === 'scan';
+  useEffect(() => setWlChoice(null), [date]);
   const [log, setLog] = useState<JobLog | null>(null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -114,7 +124,12 @@ export function JobsView() {
     if (!/^\d{8}$/.test(date)) return setMsg('날짜는 YYYYMMDD');
     setBusy(true);
     setMsg('시작 중…');
-    const r = await window.api.ctlJobStart(sel, { date, workers: Number(workers) || undefined, edgeAi: sel === 'postclose' && edgeAi });
+    const r = await window.api.ctlJobStart(sel, {
+      date,
+      workers: Number(workers) || undefined,
+      edgeAi: sel === 'postclose' && edgeAi,
+      keepWatchlist: hasScan && !wlUpdate,
+    });
     setBusy(false);
     if (r.cancelled) return setMsg('');
     setMsg(r.ok ? '시작했습니다. 앱을 닫아도 작업은 계속됩니다.' : `실패: ${r.error}`);
@@ -194,6 +209,16 @@ export function JobsView() {
               <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 포함
             </label>
           )}
+          {hasScan && (
+            <label
+              className="check"
+              title="켜짐: 선별 결과를 r004 감시목록에 저장 (다음 r003 실행부터 그 종목을 감시). 꺼짐: 기준일 폴더에 선별 파일(picks·리포트)만 만들고 감시목록은 그대로 - 과거 날짜 보충 수집 / Edge AI 데이터셋용"
+            >
+              <input type="checkbox" checked={wlUpdate} onChange={(e) => setWlChoice(e.target.checked)} /> 감시목록(r004) 갱신
+            </label>
+          )}
+          {hasScan && !wlUpdate && <span className="muted small">선별 파일만 만들고 지금 감시 중인 종목은 그대로 둡니다</span>}
+          {hasScan && wlUpdate && !isToday && <span className="warn-text small">과거 날짜({date}) 기준으로 감시목록이 바뀝니다</span>}
           {busy && <i className="spinner" />}
           <span className="muted small">{msg}</span>
           <span className="push-right" />
@@ -235,7 +260,10 @@ export function JobsView() {
                 ))}
               </tbody>
             </table>
-            {(sel === 'scan' || sel === 'postclose') && last.state.startsWith('done') && (
+            {hasScan && last.state.startsWith('done') && last.args?.keep_watchlist && (
+              <p className="muted small">감시목록(r004)은 바꾸지 않았습니다 - 기준일 {last.args.date} 폴더의 선별 파일만 만들었습니다.</p>
+            )}
+            {hasScan && last.state.startsWith('done') && !last.args?.keep_watchlist && (
               <p className="small">
                 새 감시목록은{' '}
                 <button className="linklike" onClick={() => setTab('board')}>

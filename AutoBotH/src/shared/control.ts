@@ -533,7 +533,7 @@ export interface JobRun {
   started_at: string;
   finished_at: string | null;
   rc: number | null;
-  args: { date: string; workers: number | null; edge_ai: boolean };
+  args: { date: string; workers: number | null; edge_ai: boolean; keep_watchlist?: boolean };
   log: string;
   steps: JobStep[];
   error: string | null;
@@ -559,6 +559,8 @@ export interface JobStartOpts {
   workers?: number;
   edgeAi?: boolean;
   tradingDayOnly?: boolean;
+  /** scan / postclose: build the picks files only, r004 watchlist untouched (past-date backfill, Edge AI) */
+  keepWatchlist?: boolean;
   /** scheduler: no confirmation dialog */
   noConfirm?: boolean;
 }

@@ -55,12 +55,13 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 | `collector start [--force]` | `{ok, started, pid, log}` / `{ok, already_running, pid}` / 창 밖·standby `{ok:false, error}` | 0 / 3 |
 | `doctor` | `{ok, problems[], host, python, executable, packages{}, code{dir,commit}, open_trading_api{path,exists,commit}, kis_config{dir,devlp_yaml,token_today}, runtime{root,exists}}` | 0 |
 | `job list` | `{ok, running: {pid, started_at, name, run_id}\|null, jobs: [{name, title, steps, last}]}` | 0 |
-| `job start NAME [--date D] [--workers N] [--edge-ai] [--trading-day-only]` | `{ok, name, pid, run_id, running}` / 휴장일 `{ok, skipped, reason}` / 다른 작업 실행 중 `{ok:false, error, running}` | 0 / 3 |
+| `job start NAME [--date D] [--workers N] [--edge-ai] [--keep-watchlist] [--trading-day-only]` | `{ok, name, pid, run_id, running}` / 휴장일 `{ok, skipped, reason}` / 다른 작업 실행 중 `{ok:false, error, running}` | 0 / 3 |
 | `job stop NAME` | `{ok, stopped}` | 0 / 3 |
 | `job log NAME [-n N]` | `{ok, name, log, lines[], state}` | 0 |
 
 - 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --export-watchlist
-  --for-next-trading-day), `edge_ai`(g013 --live, g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> scan
+  --for-next-trading-day; `--keep-watchlist`면 g002 --date D --no-export-watchlist: 그 날짜의 선별 파일만 만들고 r004는 그대로 - 과거 날짜
+  보충 수집/Edge AI 재학습용, 앱의 "감시목록(r004) 갱신" 체크 해제), `edge_ai`(g013 --live, g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> scan
   [-> edge_ai]). collect/scan 실패 시 뒤 단계 생략, history 실패는 계속. 한 번에 한 작업. 상태 `runtime/data/jobs/<NAME>.json`,
   로그 `runtime/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log`.
 - process 백엔드 `stop`은 감시자가 없더라도 r003 잠금이 잡혀 있으면 정지 요청을 보내고, 잠금이 풀릴 때만 성공한다.
@@ -80,6 +81,13 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
    `cd /data/srv/autobot/real_trading_bot/AutoBot && ~/venv/bin/python live_trading/r016_control.py role set primary`.
 3. "매매 실행 위치" 표에서 라즈베리파이 줄의 [여기서 실행] -> [라즈베리파이에서 실행] (노트북이 켜져 있으면 노트북을 standby로 바꾼다).
 4. 노트북이 꺼져 있었다면, 다시 쓰기 전에 노트북 역할을 확인한다 (앱이 [실행] 때 자동으로 확인).
+
+### 과거 날짜 데이터 보충 / Edge AI 재학습 (장중에도 가능)
+1. 데이터 작업 탭 > 장 마감 파이프라인, 기준일 = 과거 날짜. "감시목록(r004) 갱신"은 과거 날짜면 자동으로 꺼진다 - 수집 -> 이력 -> 선별까지
+   돌지만 선별은 그 날짜 폴더의 `_D_picks.txt`/리포트만 만들고 지금 감시 중인 종목(r004)은 바뀌지 않는다 (g013 이 전날 picks 를 읽으므로 선별은 필요).
+2. 날짜가 여럿이면 날짜마다 1을 반복한다 (한 번에 한 작업). Edge AI 는 마지막에 한 번만: "Edge AI 재학습" 작업 (g013 은 아직 안 만든 날만 추가).
+   또는 마지막 날짜의 파이프라인에 "Edge AI 포함".
+3. 오늘 날짜로 돌리면 갱신이 켜진 채 시작되고, r003 실행 중이면 감시목록을 덮어쓴다는 확인을 먼저 묻는다.
 
 ### 데이터
 - 감시목록(r004)은 장 마감 작업 후 라즈베리파이로 복사된다. 다음 날 라즈베리파이로 매매해도 같은 종목을 감시한다.
