@@ -24,6 +24,30 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-11] type=tune owner=claude
+    summary: 사용자 요청("조건이 너무 타이트하거나 불필요한 조건이 좋은 종목을 누락 - 데이터 기반으로 정리/고도화")
+      + Codex 검토. 검증: runtime/data/daily_history(3,009종목 x 226일)로 g002 scan()을 2026-07-06~11-09 85거래일
+      포인트인타임 재현(선정 코드 그대로, 로더만 메모리 데이터; 장중 ATR 필터는 10s 파일이 7일치뿐이라 재현에서 제외)
+      + D+1 시가->종가(봇은 당일 청산)/D+5 + r003 실매매 로그(8/18~11/10, 510건)와 결합. 결과: 20261110 스캔은 적격 2,
+      선정 8이었는데 패턴 통과 67종목 중 43이 장중 ATR, 그 외는 과열/추세 조건에서 탈락.
+      (1) 완화 - 눌림 기준 PATTERN_BASE_MAX_VS_MA20 5% -> 8%(단독 탈락 175건 D+1 +0.67%), B등급 음봉 허용 1 -> 2개
+      (PATTERN_MAX_BEAR5; 단독 탈락 313건 +0.40%p 초과수익), 2일 연속 종가 하락 하드 -> 소프트(EXCLUDE_2D_CLOSE_DOWNTREND
+      False/SOFT_FLAG_2D_CLOSE_DOWNTREND; D+1 차이 없음), 보충 유동성 구제 하한 100억 -> 50억(LIQUIDITY_FALLBACK_MIN_AMOUNT;
+      50~100억 보충 풀 +0.34%p, r003 실매매 +0.40%).
+      (2) 강화 - 과열 상한 추가(pattern_overheated): MA60 20일 변화율 > +6%(PATTERN_MAX_MA60_SLOPE20; 적격 중 D+1 -0.49%,
+      r003 승률 19.6%) 또는 20일 수익률 > +30%(PATTERN_MAX_RET_20D; -0.46%). 과열 종목은 보충(fallback)으로도 구제하지
+      않음(FALLBACK_BLOCKED_PATTERN_FAILS, Codex 검토 지적: 재현에서 보충으로 들어온 과열 종목 327건 D+1 -0.72%, D+5 -6.2%).
+      보충 판정 함수를 모듈 수준(_fallback_relaxable_row/_fallback_near_miss_row)으로 꺼내 테스트 가능하게 함.
+      (3) 제거 - 강세 섹터 가산점(HOT_SECTOR_BONUS_RATIO 0.10 -> 0; 해당 종목 D+1 -1.14%, 승률 36.5%), 선정 순서의
+      매수신호 개수(SELECTION_RANK_BY_SIGNAL_COUNT False; 신호 많을수록 D+1 나쁨, IC -0.038).
+      (4) 검토 후 유지 - 장중 3분봉 ATR 0.40% 하드(0.40% 미만은 D+1 시가->고가 1.4~2.4%로 익절 3%에 부족, r003 실매매 -0.35%,
+      ETF를 걸러주는 역할), MA120 -3%/종가>MA20/MA20 비하락/60·120일선 위(구간별 D+1로 현재 문턱 확인), 보충 trend_state
+      "up"만(flat 허용안은 뽑히는 상위 종목이 D+1 -0.08%p·D+5 -2.6%라 기각), 장대음봉/박스권/음봉우세 레거시 필터(차이 없음).
+      재현 결과(비ETF, 85일 평균): 하루 선정 25.4 -> 30.3종목(최소 7 -> 14, 10종목 미만인 날 3 -> 0), 패턴 선정 D+1
+      시가->종가 -0.02% -> +0.07%(초과수익 +0.26 -> +0.32%p, 급락비율 29.4 -> 26.9%). 롤백 상수는 각 항목 주석 참조.
+      g008 사유 문구/읽는 법 갱신, tests/test_g002_selection_filters.py에 회귀 테스트 추가.
+    impact: scanner (선정 종목 수 증가, 과열 종목 제외, 점수/순서 변경)
+    compatibility: breaking (선정 기준 변경; 출력 컬럼 불변)
 - [2026-11-08] type=fix owner=claude
     summary: g001이 NXT 가능 종목의 NXT 세션(08:00~08:50, 15:30~20:00)도 기본 수집하게 돼, 선정은 지금처럼 정규장
       데이터만 쓰도록 고정. build_daily_bars(10s -> 대상일 일봉 1행) 집계를 09:00~15:30 행으로 한정(시가/고가/저가/종가/
@@ -621,7 +645,9 @@ LIQUIDITY_RELAX_FACTOR = 0.70
 LIQUIDITY_ABSOLUTE_SAFE_AMOUNT = 20_000_000_000  # 200억원/일 이상이면 시장상대 비교와 무관하게 유동성 하드탈락 면제
 # [2026-10-10] fallback이 유동성 미달(liquidity_below_market_dual) 종목을 구제할 때의 절대 하한(20일 평균 거래대금).
 # 상승 초입 패턴 도입 후 적격이 적어(20261008: 7종목) fallback이 일 거래대금 1억 미만 종목까지 채워 넣었음.
-LIQUIDITY_FALLBACK_MIN_AMOUNT = 10_000_000_000  # 100억원/일
+LIQUIDITY_FALLBACK_MIN_AMOUNT = 5_000_000_000  # 50억원/일 (100억 -> 50억, 2026-11-11: 85거래일 재현에서 보충 후보 중
+# 시장상대 유동성 미달 50~100억 구간 761건 D+1 시가->종가 초과수익 +0.34%p(보충 풀 전체 +0.17%p, crash 26% vs 33%),
+# r003 실매매 50~100억 107건 평균 +0.40%(전체 +0.05%). 패턴 종목 면제 기준(PATTERN_LIQUIDITY_MIN_AMOUNT)과 통일)
 # [2026-10-11] 상승 초입 패턴 등급(A/B) 종목은 20일 평균 거래대금이 이 이상이면 시장상대 유동성 탈락을 면제(사용자 결정).
 # 패턴이 중소형주에서 많이 나와 시장상대 기준(시장 평균의 70%)에 대부분 걸렸음(20261008: 등급 29종목 중 2종목만 통과).
 # 25거래일 재현: 200억+만 하루 8.6종목 D+1 시가->종가 +0.36%, 50억+ 15.0종목 +0.29%(50~100억 구간만 보면 -0.31%, 소표본).
@@ -681,13 +707,53 @@ FALLBACK_ALLOW_LAST_BEARISH = True
 # 290550이 10/28 -1.6%, 10/29 -3.2% 연속 하락인데 보충으로 선정된 사례). 반전 예외/패턴 override 없음.
 # 상승추세 유동 종목(거래대금 50억+, 종가>MA20, MA20 상승) D+1 시가->종가: 9/22 이후 해당 -0.97% vs 나머지 -0.45%
 # (480건), 이전 -0.62% vs -0.64%(차이 없음). 롤백: False.
-EXCLUDE_2D_CLOSE_DOWNTREND = True
+EXCLUDE_2D_CLOSE_DOWNTREND = False
+# [2026-11-11] 하드 제외 -> 소프트플래그(-0.7점)로 완화. 85거래일 재현(7/06~11/09): 종가>MA20·MA20 비하락 유동 종목 중 해당
+# 1,833건 D+1 시가->종가 초과수익 +0.09%p vs 비해당 +0.07%p(차이 없음), 패턴 A/B인데 이 사유로만 탈락한 18건 D+1 +0.97%.
+# r003 실매매 15건 평균 +0.03%(전체 +0.05%). 하드 제외로 되돌리려면 EXCLUDE_2D_CLOSE_DOWNTREND=True.
+SOFT_FLAG_2D_CLOSE_DOWNTREND = True
 # [2026-11-01] 아깝게 탈락한 보충 후보(사용자 결정): 패턴 조건 중 아래 하나에만 걸린 종목(메리츠형 = 당일 양봉 아님,
 # 롯데렌탈형 = 최근 5일 음봉 2개 이상)은 보충 시 trend_state == "up" 요구를 면제하고, 거래대금 이원 기준 미달도
 # 20일 평균 거래대금 50억(PATTERN_LIQUIDITY_MIN_AMOUNT) 이상이면 허용한다. MA20 이격 +10% 이내, SCORE_CUTOFF,
 # 장중 3분봉 ATR 하한, 그 외 하드필터는 그대로. 10/12~10/29 14거래일 재현: 하루 약 +3종목, D+1 시가->종가 -0.43%
 # (현재 선정 -0.34%, 이격 제한 없이 +0.33%였으나 소수 급등 종목 의존 - 중앙값 -0.61%). 롤백: 빈 tuple.
 FALLBACK_NEAR_MISS_PATTERN_FAILS = ("pattern_no_bullish_close", "pattern_bearish_candles")
+# [2026-11-11] 보충 후보의 MA5/MA20 추세 상태 허용 범위. "flat"까지 허용하는 안을 85거래일 재현으로 검증했으나, 풀 전체로는
+# flat이 up과 같았어도(D+1 초과수익 +0.30%p vs +0.23%p) 실제로 보충에 뽑히는 flat 상위 종목(228건)은 D+1 -0.08%p,
+# D+5 -2.6%로 나빠 "up"만 유지한다. 유지 근거 기록용 상수(값 변경 시 보충 풀이 바뀐다).
+FALLBACK_ALLOWED_TREND_STATES = ("up",)
+# [2026-11-11] 선정 순서에서 매수신호 개수 제거(등급 -> 점수 -> 거래대금 -> ATR). 신호 개수는 D+1 수익률과 음(-)의 순위상관
+# (IC -0.038, t=-2.5; 4개 이상 D+1 초과수익 -0.10%p vs 2개 +0.27%p). 롤백: True.
+SELECTION_RANK_BY_SIGNAL_COUNT = False
+# [2026-11-11] 보충(fallback)이 구제하지 않는 패턴 탈락 사유(Codex 검토: 과열 상한은 패턴 탈락만 시키고 보충 경로로 되돌아올 수
+# 있었음). 과열 종목(MA20 +15%/RSI 70/MA60 20일 +6%/20일 +30%)은 보충에서도 제외한다.
+FALLBACK_BLOCKED_PATTERN_FAILS = ("pattern_overheated",)
+
+
+def _fallback_relaxable_row(row) -> bool:
+    """[2026-10-20] 보충 허용 판정: 유동성/점수 외 사유가 없거나, 상승 초입 패턴 조건(pattern_*, 지표 없음 제외)에만 걸리고
+    MA20 이격이 FALLBACK_NON_PATTERN_MAX_VS_MA20 이내. [2026-11-11] FALLBACK_BLOCKED_PATTERN_FAILS는 구제하지 않는다."""
+    extra = set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS
+    if not extra:
+        return True
+    if not FALLBACK_NON_PATTERN_ENABLED or "pattern_unknown" in extra:
+        return False
+    if not all(reason.startswith("pattern_") for reason in extra):
+        return False
+    if extra & set(FALLBACK_BLOCKED_PATTERN_FAILS):
+        return False
+    ratio = row.get("close_ma20_ratio")
+    return ratio is not None and ratio <= FALLBACK_NON_PATTERN_MAX_VS_MA20
+
+
+def _fallback_near_miss_row(row) -> bool:
+    """[2026-11-01] 패턴 조건 하나(FALLBACK_NEAR_MISS_PATTERN_FAILS)에만 걸리고 거래대금 PATTERN_LIQUIDITY_MIN_AMOUNT 이상."""
+    extra = set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS
+    return (
+        len(extra) == 1
+        and next(iter(extra)) in FALLBACK_NEAR_MISS_PATTERN_FAILS
+        and (row.get("amount_ma20") or 0.0) >= PATTERN_LIQUIDITY_MIN_AMOUNT
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1391,6 +1457,13 @@ def _base_breakout_features(df) -> dict:
     vs20 = c / df["MA_20"] - 1.0
     prev10 = vs20.iloc[-11:-1].dropna()
     feat["min_vs20_prev10"] = safe_float(prev10.min()) if len(prev10) >= 5 else None
+    # [2026-11-11] 과열 상한용: MA60 20일 변화율, 20일 수익률
+    ma60 = df["MA_60"] if "MA_60" in df.columns else pd.Series(dtype=float)
+    feat["ma60_slope20"] = (
+        safe_float(ma60.iloc[-1] / ma60.iloc[-21] - 1.0)
+        if len(ma60) >= 21 and pd.notna(ma60.iloc[-21]) and pd.notna(ma60.iloc[-1]) and ma60.iloc[-21] > 0 else None
+    )
+    feat["ret_20d"] = safe_float(c.iloc[-1] / c.iloc[-21] - 1.0) if len(c) >= 21 and c.iloc[-21] > 0 else None
     feat["brk5"] = bool(len(c) >= 6 and c.iloc[-1] > c.iloc[-6:-1].max())
     feat["bull"] = bool(c.iloc[-1] > o.iloc[-1])
     feat["bear5"] = int((c.tail(5) < o.tail(5)).sum())
@@ -1408,10 +1481,18 @@ def _base_breakout_features(df) -> dict:
 
 # [2026-10-10] 상승 초입 패턴(사용자 지정 차트의 빨간 박스: 테스 9/21, 대덕전자 9/22~23, 저스템 8/28·9/22).
 PATTERN_MIN_SIGNALS = 2          # 아래 매수 신호 중 최소 개수 (3 -> 2, 2026-10-11 사용자 요청: 선정 수 확대)
-PATTERN_BASE_MAX_VS_MA20 = 0.05  # 직전 10거래일 중 한 번은 종가가 MA20 대비 +5% 이내(눌림/바닥에서 출발)
+PATTERN_BASE_MAX_VS_MA20 = 0.08  # 직전 10거래일 중 한 번은 종가가 MA20 대비 +8% 이내(눌림/바닥에서 출발)
+                                 # (0.05 -> 0.08, 2026-11-11: 'pattern_no_pullback_base 단독 탈락' 175건 D+1 시가->종가 +0.67%,
+                                 # 직전 10일 최소 이격 5~8% 구간 D+1 초과수익 +0.13%p로 0~5% 구간과 차이 없음)
 PATTERN_MAX_VS_MA20 = 0.15       # 과열 상한: 종가가 MA20 대비 +15% 초과면 이미 올라간 종목
 PATTERN_MAX_RSI = 70.0
-PATTERN_MAX_BEAR5 = 1            # B등급: 최근 5거래일 음봉 최대 개수
+# [2026-11-11] 과열 상한 2개 추가(pattern_overheated). 85거래일 재현(7/06~11/09, 거래대금 50억+ 비ETF 적격 종목):
+# MA60 20일 변화율 +6% 초과 D+1 시가->종가 -0.49%(crash 41.6%) vs 전체 +0.13%, r003 실매매(8/18~11/10 510건) 해당 구간
+# 승률 19.6% 평균 -0.31%; 20일 수익률 +30% 초과 -0.46%(승률 40%). 롤백: 둘 다 None.
+PATTERN_MAX_MA60_SLOPE20 = 0.06  # MA60의 20일 변화율 상한(이미 많이 오른 종목)
+PATTERN_MAX_RET_20D = 0.30       # 20일 수익률 상한
+PATTERN_MAX_BEAR5 = 2            # B등급: 최근 5거래일 음봉 최대 개수 (1 -> 2, 2026-11-11: 음봉 2개 구간 D+1 초과수익
+                                 # +0.19%p vs 1개 +0.08%p, 'pattern_bearish_candles 단독 탈락' 313건 D+1 +0.40%p로 적격과 동급)
 PATTERN_B_MAX_VS_MA20 = 0.10     # B등급: 돌파 캔들이 없으므로 MA20 대비 +10% 이내만(이미 오른 뒤 쉬는 종목 제외)
 # [2026-10-20] MA120 20일 변화율 하한 (기존 > 0). 52거래일 재현(장중 ATR 적용): > 0 하루 7.6종목 -> > -1% 10.0종목,
 # 패턴 D+1 시가->종가 +0.40% -> +0.41%로 품질 유지(-2%는 11.5종목이지만 5일 수익률 약화).
@@ -1469,7 +1550,12 @@ def _pattern_assessment(price, f) -> tuple[list[str], str | None, list[str]]:
         fails.append("pattern_ma20_falling")
     if f["min_vs20_prev10"] > PATTERN_BASE_MAX_VS_MA20:
         fails.append("pattern_no_pullback_base")
-    if price / f["MA_20"] - 1.0 > PATTERN_MAX_VS_MA20 or f["RSI"] > PATTERN_MAX_RSI:
+    overheated = price / f["MA_20"] - 1.0 > PATTERN_MAX_VS_MA20 or f["RSI"] > PATTERN_MAX_RSI
+    if PATTERN_MAX_MA60_SLOPE20 is not None and f.get("ma60_slope20") is not None and f["ma60_slope20"] > PATTERN_MAX_MA60_SLOPE20:
+        overheated = True
+    if PATTERN_MAX_RET_20D is not None and f.get("ret_20d") is not None and f["ret_20d"] > PATTERN_MAX_RET_20D:
+        overheated = True
+    if overheated:
         fails.append("pattern_overheated")
     signals = _buy_signals(f)
     if fails:
@@ -2020,12 +2106,12 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
 
     # [2026-11-01] 대상일 포함 2거래일 연속 종가 하락 하드 제외(EXCLUDE_2D_CLOSE_DOWNTREND). 서버 일봉에 대상일 행이
     # 없으면 대상일 종가는 price(10s 집계 마지막 종가)로 붙인다.
-    if EXCLUDE_2D_CLOSE_DOWNTREND:
+    if EXCLUDE_2D_CLOSE_DOWNTREND or SOFT_FLAG_2D_CLOSE_DOWNTREND:
         _closes = list(_check_df["close"].dropna().tail(3 if hist_is_current else 2))
         if not hist_is_current:
             _closes.append(price)
         if _is_2d_close_downtrend(_closes):
-            candidate["fail_reasons"].append("2d_close_downtrend")
+            (candidate["fail_reasons"] if EXCLUDE_2D_CLOSE_DOWNTREND else candidate["soft_flags"]).append("2d_close_downtrend")
 
     # 이전 3 거래일 연속 종가 하락 (반전 신호 없을 때) - 소프트 경고로 완화 (2026-07-22)
     # 단, daily_5d_downtrend가 이미 잡혔다면 생략한다: 최근 5거래일 연속 하락(c[-5]>c[-4]>c[-3]>c[-2]>c[-1])은
@@ -2355,10 +2441,11 @@ def weighted_sample_without_replacement(rows, k, rng):
 
 
 def _selection_rank_key(row):
-    """[2026-10-10] 선정/정렬 순서: 패턴 등급(A>B) -> 매수신호 개수 -> 점수 -> 거래대금 -> ATR."""
+    """[2026-10-10] 선정/정렬 순서: 패턴 등급(A>B) -> 매수신호 개수 -> 점수 -> 거래대금 -> ATR.
+    [2026-11-11] 매수신호 개수는 SELECTION_RANK_BY_SIGNAL_COUNT=False(기본)이면 순서에서 뺀다(0으로 고정)."""
     return (
         row.get("pattern_tier_rank") or 0,
-        row.get("buy_signal_count") or 0,
+        (row.get("buy_signal_count") or 0) if SELECTION_RANK_BY_SIGNAL_COUNT else 0,
         row.get("score") or 0.0,
         row.get("amount_ma20") or 0.0,
         row.get("atr_ratio") or 0.0,
@@ -2399,7 +2486,10 @@ def pick_with_tie_randomization(sorted_rows, max_picks, rng):
 SECTOR_CAP_RATIO = 0.3  # 최종 선정 중 한 업종(sector)이 차지할 수 있는 최대 비율
 
 # [2026-10-15] 당일 강세 섹터 가산점 (파일 상단 changelog 참조)
-HOT_SECTOR_BONUS_RATIO = 0.10      # 강세 섹터 종목 점수 가산 비율 (0.0이면 비활성)
+HOT_SECTOR_BONUS_RATIO = 0.0       # 강세 섹터 종목 점수 가산 비율 (0.0이면 비활성)
+# [2026-11-11] 0.10 -> 0.0 비활성. 85거래일 재현: 강세 섹터 종목(종가>MA20·MA20 비하락 유동 종목 중 441건) D+1 시가->종가
+# -1.14%(초과수익 -0.78%p), 승률 36.5%, crash 45.6% - 당일 급등 섹터는 다음날 되밀렸다(도입 시 사전검증 -0.81% vs -0.66%와
+# 같은 방향). 표시(hot_sector 컬럼)는 유지. 롤백: 0.10.
 HOT_SECTOR_TOP_N = 3               # 대상일 평균 등락률 상위 N개 업종
 HOT_SECTOR_MIN_MEMBERS = 5         # 평균을 낼 최소 구성 종목 수 (1~2종목 급등이 업종 전체로 보이는 것 방지)
 HOT_SECTOR_MIN_AVG_RETURN = 0.01   # 업종 평균 등락률 하한 (+1.0%) - 하락장에서 '덜 빠진' 업종은 강세로 보지 않음
@@ -3425,32 +3515,14 @@ def scan(
     if config.max_picks is not None and len(selected_rows) < config.max_picks:
         selected_codes = {row["code"] for row in selected_rows}
 
-        def _fallback_relaxable(row) -> bool:
-            extra = set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS
-            if not extra:
-                return True
-            # [2026-10-20] 비패턴 보충: 상승 초입 패턴 조건에만 걸린 종목(지표 없음 제외) + MA20 이격 상한
-            if not FALLBACK_NON_PATTERN_ENABLED or "pattern_unknown" in extra:
-                return False
-            if not all(reason.startswith("pattern_") for reason in extra):
-                return False
-            ratio = row.get("close_ma20_ratio")
-            return ratio is not None and ratio <= FALLBACK_NON_PATTERN_MAX_VS_MA20
-
-        def _near_miss(row) -> bool:
-            # [2026-11-01] 패턴 조건 하나(FALLBACK_NEAR_MISS_PATTERN_FAILS)에만 걸리고 거래대금 50억 이상
-            extra = set(row.get("fail_reasons", [])) - FALLBACK_RELAXABLE_FAIL_REASONS
-            return (
-                len(extra) == 1
-                and next(iter(extra)) in FALLBACK_NEAR_MISS_PATTERN_FAILS
-                and (row.get("amount_ma20") or 0.0) >= PATTERN_LIQUIDITY_MIN_AMOUNT
-            )
+        _fallback_relaxable = _fallback_relaxable_row
+        _near_miss = _fallback_near_miss_row
 
         fallback_rows = [
             row for row in candidates
             if is_scorable_candidate(row)
             # Keep fallback defensive: only clear up-trend names (near-miss 패턴 후보는 예외).
-            and (row.get("trend_state") == "up" or _near_miss(row))
+            and (row.get("trend_state") in FALLBACK_ALLOWED_TREND_STATES or _near_miss(row))
             and (FALLBACK_ALLOW_LAST_BEARISH or not bool(row.get("is_last_bearish")))
             # 장중 지표를 아직 안 읽은 보충 후보는 VWAP 마감 가점(최대 2점, 강세섹터 +10% 포함 2.2점)을 받기 전이라
             # 그만큼 낮춰 1차로 거르고, 아래에서 지표 반영 후 재채점해 SCORE_CUTOFF를 다시 확인한다(Codex 5차 검토).

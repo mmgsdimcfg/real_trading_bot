@@ -72,12 +72,14 @@ FAIL_REASON_DESC = {
     "pattern_ma20_falling": ("상승 초입 패턴: 20일선이 5일 동안 1% 넘게 하락", "Base-breakout pattern: MA20 fell more than 1% over 5 days"),
     "pattern_ma120_falling": ("상승 초입 패턴: 120일선 20일 변화율 -3% 이하(장기 하락)", "Base-breakout pattern: MA120 20-day change at or below -3% (long-term downtrend)"),
     "pattern_no_pullback_base": (
-        "상승 초입 패턴: 직전 10일 동안 20일선 +5% 이내로 내려온 적 없음(눌림/바닥 없이 이미 올라간 상태)",
-        "Base-breakout pattern: never within +5% of MA20 in the prior 10 days (already extended, no pullback/base)"),
-    "pattern_overheated": ("상승 초입 패턴: 20일선 대비 +15% 초과 또는 RSI 70 초과(과열)", "Base-breakout pattern: more than +15% above MA20 or RSI above 70 (overheated)"),
+        "상승 초입 패턴: 직전 10일 동안 20일선 +8% 이내로 내려온 적 없음(눌림/바닥 없이 이미 올라간 상태)",
+        "Base-breakout pattern: never within +8% of MA20 in the prior 10 days (already extended, no pullback/base)"),
+    "pattern_overheated": (
+        "상승 초입 패턴: 20일선 대비 +15% 초과, RSI 70 초과, 60일선 20일 변화율 +6% 초과 또는 20일 수익률 +30% 초과(과열·이미 많이 오름)",
+        "Base-breakout pattern: more than +15% above MA20, RSI above 70, MA60 20-day change above +6% or 20-day return above +30% (overheated/extended)"),
     "pattern_few_buy_signals": ("상승 초입 패턴: 매수 신호 2개 미만", "Base-breakout pattern: fewer than 2 buy signals"),
     "pattern_no_bullish_close": ("상승 초입 패턴: 당일 음봉/보합 마감", "Base-breakout pattern: day closed bearish or flat"),
-    "pattern_bearish_candles": ("상승 초입 패턴 B등급: 최근 5일 음봉 2개 이상", "Base-breakout tier B: 2 or more bearish candles in the last 5 days"),
+    "pattern_bearish_candles": ("상승 초입 패턴 B등급: 최근 5일 음봉 3개 이상", "Base-breakout tier B: 3 or more bearish candles in the last 5 days"),
     "pattern_b_extended": ("상승 초입 패턴 B등급: 돌파 없이 20일선 +10% 초과", "Base-breakout tier B: more than +10% above MA20 without a breakout"),
     "pattern_unknown": ("상승 초입 패턴: 일봉 이력 부족/대상일 일봉 없음으로 판정 불가", "Base-breakout pattern: cannot evaluate (short daily history or no target-day bar)"),
     "uptrend_unknown": ("우상향 판정 불가(일봉 이력 부족)", "Uptrend cannot be evaluated (short daily history)"),
@@ -98,6 +100,7 @@ FAIL_REASON_DESC = {
 
 # 주의 플래그(감점만, 탈락 아님) 뜻풀이: (국문, 영문)
 SOFT_FLAG_DESC = {
+    "2d_close_downtrend": ("당일 포함 2거래일 연속 종가 하락", "Close fell 2 trading days in a row (including the day)"),
     "volume_declining": ("최근 5일 평균 거래량이 직전 20일 평균보다 적음", "Last-5-day average volume below the prior 20-day average"),
     "bb_lower_not_uptrend": ("볼린저밴드 하단선이 3일간 상승 전환 안 됨", "Bollinger lower band not rising over 3 days"),
     "near_52w_low_unconfirmed": ("52주 저가 대비 +30% 미만(바닥권, 반등 미확인)", "Less than +30% above the 52-week low (near the bottom, rebound unconfirmed)"),
@@ -311,8 +314,8 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
         tier_txt = (
             _pick(lang, ("A: 당일 양봉으로 직전 5일 종가 고점 돌파", "A: bullish candle breaking the prior 5-day closing high"))
             if row["pattern_tier"] == "A" else
-            _pick(lang, ("B: 당일 양봉, 최근 5일 음봉 1개 이하, 20일선 +10% 이내",
-                         "B: bullish candle, at most 1 bearish candle in 5 days, within +10% of MA20"))
+            _pick(lang, ("B: 당일 양봉, 최근 5일 음봉 2개 이하, 20일선 +10% 이내",
+                         "B: bullish candle, at most 2 bearish candles in 5 days, within +10% of MA20"))
         )
         sigs = row.get("buy_signals") or []
         sig_txt = ", ".join(_pick(lang, BUY_SIGNAL_LABELS[s]) if s in BUY_SIGNAL_LABELS else s for s in sigs)
@@ -582,7 +585,7 @@ def render_selection_reason_report(
             f"# 종목 선별 리포트 (종목별 선정 이유) — {target_label}",
             "",
             f"> g002 스캐너(`{config.name}`) 최종 선정 {len(selected_rows)}종목의 선정 이유. "
-            f"적격 {summary.get('eligible_pool_count', '-')}종목 중 패턴 등급 → 매수신호 개수 → 점수 순으로 선정.",
+            f"적격 {summary.get('eligible_pool_count', '-')}종목 중 패턴 등급 → 점수 순으로 선정.",
             "> 점수 내역은 실제 채점(`calculate_candidate_score_breakdown`) 결과를 그대로 옮겼다.",
             "",
             "## 읽는 법 — 선정 방식",
@@ -590,13 +593,13 @@ def render_selection_reason_report(
             "**1) 필수 조건: 상승 초입 패턴** (모두 만족해야 선정 대상)",
             "",
             "- 120일선 20일 변화율 -3% 초과(장기 하락 아님), 종가가 60·120일선 중 낮은 쪽 이상, 종가가 20일선 위",
-            "- 20일선이 5일 동안 1% 넘게 떨어지지 않음, 직전 10일 중 종가가 20일선 +5% 이내였던 날이 있음(눌림/바닥 출발)",
-            "- 20일선 대비 +15% 이하, RSI 70 이하(과열 아님), 매수신호 2개 이상"
-            "(MACD 상승전환, 스토캐스틱 골든크로스, DI+ 우위, RSI 50~68, 거래량 1.3배+, OBV 상승)",
-            "- **A등급**: 당일 양봉이 직전 5일 종가 고점 돌파 / **B등급**: 당일 양봉, 최근 5일 음봉 1개 이하, 20일선 +10% 이내",
+            "- 20일선이 5일 동안 1% 넘게 떨어지지 않음, 직전 10일 중 종가가 20일선 +8% 이내였던 날이 있음(눌림/바닥 출발)",
+            "- 20일선 대비 +15% 이하, RSI 70 이하, 60일선 20일 변화율 +6% 이하, 20일 수익률 +30% 이하(과열·이미 많이 오른 종목 아님), "
+            "매수신호 2개 이상(MACD 상승전환, 스토캐스틱 골든크로스, DI+ 우위, RSI 50~68, 거래량 1.3배+, OBV 상승)",
+            "- **A등급**: 당일 양봉이 직전 5일 종가 고점 돌파 / **B등급**: 당일 양봉, 최근 5일 음봉 2개 이하, 20일선 +10% 이내",
             "- 거래대금이 시장 기준에 못 미쳐도 패턴 종목은 20일 평균 거래대금 50억 이상이면 통과",
             "",
-            "**2) 점수** (같은 등급·신호 개수 안에서 순위를 가름)",
+            "**2) 점수** (같은 등급 안에서 순위를 가름)",
             "",
             "| 구분 | 항목 | 배점 | 만점 조건 |",
             "| --- | --- | ---: | --- |",
@@ -626,7 +629,7 @@ def render_selection_reason_report(
             f"# Stock Selection Report (why each stock was picked) — {target_label}",
             "",
             f"> Reasons for the {len(selected_rows)} final picks of the g002 scanner (`{config.name}`), selected from "
-            f"{summary.get('eligible_pool_count', '-')} eligible stocks by pattern tier → number of buy signals → score.",
+            f"{summary.get('eligible_pool_count', '-')} eligible stocks by pattern tier → score.",
             "> Score details are copied from the actual scoring (`calculate_candidate_score_breakdown`).",
             "",
             "## How to read — selection method",
@@ -634,13 +637,13 @@ def render_selection_reason_report(
             "**1) Requirement: base-breakout (early-uptrend) pattern** (all must hold)",
             "",
             "- MA120 20-day change above -3% (not in a long-term decline), close above the lower of MA60/MA120, close above MA20",
-            "- MA20 has not fallen more than 1% over 5 days; in the prior 10 days the close was within +5% of MA20 at least once (started from a pullback/base)",
-            "- At most +15% above MA20 and RSI at most 70 (not overheated); 2+ buy signals "
+            "- MA20 has not fallen more than 1% over 5 days; in the prior 10 days the close was within +8% of MA20 at least once (started from a pullback/base)",
+            "- At most +15% above MA20, RSI at most 70, MA60 20-day change at most +6%, 20-day return at most +30% (not overheated/extended); 2+ buy signals "
             "(MACD turning up, stochastic golden cross, DI+ above DI-, RSI 50-68, volume 1.3x+, OBV rising)",
-            "- **Tier A**: bullish candle breaking the prior 5-day closing high / **Tier B**: bullish candle, at most 1 bearish candle in 5 days, within +10% of MA20",
+            "- **Tier A**: bullish candle breaking the prior 5-day closing high / **Tier B**: bullish candle, at most 2 bearish candles in 5 days, within +10% of MA20",
             "- Pattern stocks below the market liquidity benchmark still pass with a 20-day average traded value of at least 5bn KRW",
             "",
-            "**2) Score** (ranks stocks within the same tier and signal count)",
+            "**2) Score** (ranks stocks within the same tier)",
             "",
             "| type | item | points | full-marks condition |",
             "| --- | --- | ---: | --- |",
