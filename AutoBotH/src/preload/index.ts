@@ -9,6 +9,9 @@
  * - [2026-11-06] type=feat - getQuote (market:quote) for the chart tab's current price / order book
  * - [2026-11-07] type=feat - setReplayCursor (replay:cursor) for the past-day time replay bar
  * - [2026-11-06] type=feat - window.winCtl (title-bar window buttons) and window.appAbout (shared About dialog of the ☰ menu)
+ * - [2026-11-10] type=feat - Local mode channels: ctl:role / ctl:collectorStart / ctl:jobs / ctl:jobStart / ctl:jobStop / ctl:jobLog /
+ *   ctl:doctor, peer:* (the other host: status, role, stop, doctor, watchlist copy, KIS config import), settings:localCheck,
+ *   folder/file pickers with a title, scheduler state ('sched')
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -16,8 +19,14 @@ import type { AppStatus, ConditionsDoc, Settings, Snapshot } from '../shared/typ
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
 import type {
   ControlState,
+  DoctorReport,
   HistoryRow,
+  JobList,
+  JobLog,
+  JobStartOpts,
+  R016Status,
   RiskProfile,
+  RoleInfo,
   SchemaDoc,
   ServiceResult,
   SetResult,
@@ -25,6 +34,7 @@ import type {
   WatchlistDoc,
   WatchlistSetResult,
 } from '../shared/control';
+import type { SchedState } from '../main/scheduler';
 
 export interface CtlResult<T> {
   ok: boolean;
@@ -77,6 +87,29 @@ const api = {
   watchlistGet: (): Promise<CtlResult<WatchlistDoc>> => ipcRenderer.invoke('ctl:watchlistGet'),
   watchlistSet: (rows: WatchEntry[]): Promise<CtlResult<WatchlistSetResult>> => ipcRenderer.invoke('ctl:watchlistSet', rows),
   onControl: (cb: (s: ControlState) => void) => on('control', cb),
+
+  // [2026-11-10] local mode: host role, tick collector, data jobs, doctor (connected host)
+  ctlRole: (role?: 'primary' | 'standby'): Promise<CtlResult<RoleInfo>> => ipcRenderer.invoke('ctl:role', role),
+  ctlCollectorStart: (force?: boolean): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:collectorStart', force),
+  ctlJobs: (): Promise<CtlResult<JobList>> => ipcRenderer.invoke('ctl:jobs'),
+  ctlJobStart: (name: string, opts: JobStartOpts): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStart', name, opts),
+  ctlJobStop: (name: string): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStop', name),
+  ctlJobLog: (name: string, n?: number): Promise<CtlResult<JobLog>> => ipcRenderer.invoke('ctl:jobLog', name, n),
+  ctlDoctor: (): Promise<CtlResult<DoctorReport>> => ipcRenderer.invoke('ctl:doctor'),
+  // the other host (local mode: Raspberry Pi, remote mode: this PC)
+  peerInfo: (): Promise<{ kind: 'remote' | 'local'; label: string }> => ipcRenderer.invoke('peer:info'),
+  peerStatus: (): Promise<CtlResult<R016Status> & { notConfigured?: boolean }> => ipcRenderer.invoke('peer:status'),
+  peerRole: (role?: 'primary' | 'standby'): Promise<CtlResult<RoleInfo>> => ipcRenderer.invoke('peer:role', role),
+  peerStop: (): Promise<CtlResult<unknown>> => ipcRenderer.invoke('peer:stop'),
+  peerDoctor: (): Promise<CtlResult<DoctorReport>> => ipcRenderer.invoke('peer:doctor'),
+  peerSyncWatchlist: (): Promise<CtlResult<WatchlistSetResult> & { count?: number }> => ipcRenderer.invoke('peer:syncWatchlist'),
+  peerImportKis: (): Promise<{ ok: boolean; error?: string; cancelled?: boolean; path?: string }> => ipcRenderer.invoke('peer:importKis'),
+  localCheck: (s?: Settings): Promise<{ problem: string; paths: { root: string; codeDir: string; r016: string; python: string; runtime: string } }> =>
+    ipcRenderer.invoke('settings:localCheck', s),
+  pickFolderTitled: (title: string): Promise<string | null> => ipcRenderer.invoke('dialog:pickFolder', title),
+  pickFile: (title: string): Promise<string | null> => ipcRenderer.invoke('dialog:pickFile', title),
+  schedState: (): Promise<SchedState> => ipcRenderer.invoke('sched:get'),
+  onSched: (cb: (s: SchedState) => void) => on('sched', cb),
 };
 
 export type Api = typeof api;

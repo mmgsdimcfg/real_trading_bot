@@ -9,6 +9,7 @@
  * - [2026-11-07] type=feat - Past day: price files download progress ("주가 받는 중 3/22", then "주가 로컬 보관" or the failure count)
  * - [2026-11-07] type=feat - Past day in replay: the day pill shows "재현 HH:MM:SS" instead of "1회 로드"
  * - [2026-11-05] type=feat - Bot summary (봇: 실행 중 / 정지 / 미적용 변경 N, dry-run marker, external r003 warning) - opens the 제어 tab
+ * - [2026-11-10] type=feat - Host tag in the connection item (이 PC / 라즈베리파이) and "☕ 절전 방지" while the local r003 keeps the PC awake
  */
 
 import { useEffect, useState } from 'react';
@@ -111,9 +112,15 @@ export function StatusBar() {
       <div className="statusbar" onDoubleClick={(e) => e.target === e.currentTarget && window.winCtl.toggleMaximize()}>
       <span className={`conn conn-${status.conn}`} title={status.message || ''}>
         <i className="dot" />
+        {status.conn !== 'idle' && status.conn !== 'local' && <b className="host-tag">{status.mode === 'local' ? '이 PC' : '라즈베리파이'}</b>}
         {CONN_LABEL[status.conn] || status.conn}
         {retry !== null && status.conn === 'reconnecting' ? ` (${retry}s)` : ''}
       </span>
+      {status.keepAwake && (
+        <span className="sb-item muted" title="이 PC의 r003이 실행 중이라 절전을 막고 있습니다 (앱이 켜져 있는 동안)">
+          ☕ 절전 방지
+        </span>
+      )}
       {(control.status || control.busy) && (
         <button
           className={`sb-item linklike bot bot-${bot}`}

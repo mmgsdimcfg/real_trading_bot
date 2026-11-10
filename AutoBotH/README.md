@@ -1,5 +1,6 @@
 <!--
 Update log
+- [2026-11-10] type=docs - v2.3.0_001: local mode (r003 on this PC, Raspberry Pi as standby), host roles, data jobs tab, scheduler
 - [2026-11-06] type=docs - v2.2.0_008: chart tab for any code (server `bars` / `quote`, KIS on the server)
 - [2026-11-06] type=docs - v2.2.0_007: title bar + ☰ menu, chart tab
 - [2026-11-06] type=docs - v2.1.0_006: chart indicators (Bollinger, Ichimoku, RSI, MACD, ADX) and the server data request document
@@ -19,6 +20,8 @@ Since v2.1.0 the app can also **control** r003 (see "Remote control" below). Eve
 
 v1 (r006 run/simulate modes, remote strategy config editor) was removed in v2.0.0.
 
+Since v2.3.0 the bot can also run **on this PC** (local mode, see "Local mode" below). The Raspberry Pi then stays as the standby host for days the PC is not available. The same AutoBot code runs on both hosts.
+
 ## Views
 
 1. **Pipeline** - the 25 buy conditions in evaluation order (`order` from the condition JSON, not the number), on stage bands (STATE / TRIGGER / CONTEXT / PRE_ORDER / ORDER). `_008` is expanded into its sub-steps (cross trigger, candle/gap guard, live guard, chase-from-cross, legacy).
@@ -29,7 +32,8 @@ v1 (r006 run/simulate modes, remote strategy config editor) was removed in v2.0.
 3. **Timeline** - one symbol's day. Between the buy and sell evaluation charts there is a **price chart**: 틱봉 (tick bars, 1-300 trades per bar), 분봉 (minute bars, 1-60 min), 일봉 / 주봉 / 월봉 (daily / weekly / monthly). Tick and minute candles use the buy chart's time axis, so they line up with the evaluation dots. Daily, weekly and monthly bars end at the viewed day, which is highlighted. Data, read over SFTP: tick bars and minute bars come from the bot's tick files `runtime/data/ticks/YYYYMMDD/<code>.csv` (watched symbols only, kept about 5 days). Without a tick file, minute bars come from the real 1-minute rows (`raw_bar=1`) of `runtime/data/YYYYMMDD/<code>_<name>_10s.txt`. D/W/M bars come from `<code>_<name>_daily.csv` (about 200 trading days); the viewed day's bar is built from 09:00-15:30 intraday data when that file has no row for it yet. Indicators can be switched on above the chart: Bollinger and Ichimoku on the price pane, and RSI, MACD and ADX/DI each in a pane below. The formulas and periods match the bot (`r002_strategy_core_shared.py` `calculate_indicators()` with the r001 values BB 20/2, RSI 14 Wilder + signal 6, MACD 5/12/4, ADX 7). `tests/indicators.test.ts` checks them against pandas output of the bot's own code. Ichimoku is not used by the bot, so it uses the standard 9/26/52. Tick and minute charts compute the indicators over the previous trading day's last 120 bars plus the day's bars, so they are valid from the first bar. What the server could add for more accurate charts is listed in `docs/server_data_request_prompt_20261106.md`. The rest of the timeline: The x axis is KST time and the y axis is the depth reached (condition order). Dot shape and color show the result. Buy and sell fills appear as markers. Hovering a dot shows the raw line. A separate strip shows sell evaluations.
 4. **Chart (차트)** - an HTS-style chart for any symbol: pick a watched symbol or type any 6-digit code. Bars come from the server: the bot's files where they exist (tick files, 10-second files, `daily_history`), otherwise the server's `r016_control.py bars`, which queries the KIS OpenAPI on the server once that is added (`docs/server_kis_market_data_request_20261106.md`). The side panel shows the KIS current price, 10-level order book and latest trades through `r016_control.py quote` when the server has it. The app itself never talks to KIS and never sees a token or key. Tick, minute, daily, weekly and monthly bars; tick and minute charts show the previous trading day before the viewed day (can be turned off). Scroll the mouse wheel to zoom, drag to pan, double-click to return to the newest bars. Price axis on the right with a last-price tag and a price tag at the cursor. Overlays: moving averages 5/20/60/120, Bollinger, Ichimoku, VWAP. Panes: RSI, MACD, ADX/DI, stochastic, Williams %R, MFI, OBV, each with a legend. The side panel shows the current price and change vs. the previous close, the day's open/high/low/volume, best ask/bid and 체결강도 (buy/sell trade strength, from the tick file), the 200-day high/low, a data window for the bar under the cursor, a plain-language signal summary per indicator, the bot's state for the symbol and the latest trades. The bot's own indicators use the bot's formulas and periods. With the previous day off, they also use its warm-up (the previous day's last 180 one-minute bars; VWAP and OBV per day), so values match r003.
 5. **Trade results** - built from `YYYYMMDD_buy_sell.log`: headline numbers, cumulative realized P&L, P&L by sell condition, and the trade table. Gains are red and losses blue (Korean convention).
-6. **Control (제어)** - r003 service state and start/stop/restart, saved overrides, change history (see "Remote control").
+6. **Control (제어)** - r003 service state and start/stop/restart, saved overrides, change history (see "Remote control"). Since v2.3.0 also the host line (hostname, systemd or r020 supervisor, host role primary/standby, tick collector) and a panel for the other host (see "Local mode").
+6a. **Data jobs (데이터 작업)** - post-close pipeline and its steps on the connected host (`r016_control.py job`): collect (g001), daily history (g025), watchlist selection (g002 -> r004), Edge AI (g013/g014/g024), universe (g010). Date, workers, start/stop, step table with exit codes, log tail. One job at a time; jobs keep running when the app closes.
 7. **Settings / connection** - SSH settings (including an optional proxy, see below), remote root, Python path, poll interval, funnel start time, cache retention. 매매 시간 (서버 r003) (trading hours): the NXT session switch (`ENABLE_NXT_SESSION`, see "Remote control"). Also date selection, opening a local folder, refreshing the condition JSON, and the list of unknown tags/reasons.
 
 **Past-day replay (재현).** Open a past date (설정/연결 > 날짜 / 데이터 소스) or a local folder, and a replay bar appears under the tabs (not on 제어 and 설정/연결). Move the time slider, press ▶ 재생 (play) at 1x-600x, step -1분 / +1분, jump to the previous / next trade (yellow ticks on the slider are the buy_sell log entries), or type HH:MM and press Enter. Pipeline, board, timeline, chart trade markers and trade results then show the day as the logs stood at that time; tick and minute price bars after that time are hidden (daily / weekly / monthly bars are not cut). 전체 (whole day) ends the replay. It runs in the app's worker thread on the bytes already loaded, so the server does no extra work. Today's live day has no replay bar.
@@ -56,6 +60,18 @@ All calls run `cd <remote root>/real_trading_bot/AutoBot && R016_BY=autoboth@<Wi
 - **Watchlist (r004)** - 종목 보드 (symbol board) > 감시목록 편집 (edit watchlist): add, delete or reorder rows (row order = r003's activation priority). Codes must be 6 digits, at most 100 rows. Saving sends `watchlist set --stdin`; the server backs up the old file first, and the app shows the backup path. The g002 scanner export rewrites this file every morning.
 - **Nothing is hot-reloaded.** r003 reads the r001 constants and the r004 file only at start, so every change needs a restart. The service does not start at boot; after a server reboot, press 실행 (start) in the app.
 - **Confirmations** come from the main process, so the window cannot skip them: start or restart in live-order mode (dry-run unchecked), stop or restart during market hours (Mon-Fri 09:00-15:30 by the server's KST clock), reset, and watchlist save.
+
+## Local mode (this PC runs r003)
+
+설정/연결 > 실행 위치: **라즈베리파이 (SSH)** (remote, as before) or **이 PC (로컬)**. Applied with 저장 후 연결.
+
+- **Layout on the PC** (local root, e.g. `D:\make_utils`): `real_trading_bot/` (this repository), `runtime/` (data, logs, overrides - created by the bot), `open-trading-api/` (KIS official code, same commit as the Pi), `venv/` (Python **3.12** - r003 uses PEP 701 f-strings). KIS keys: `%USERPROFILE%\KIS\config\kis_devlp.yaml` (button 설정/연결 > KIS 설정 가져오기 copies it from the Pi once). 두 호스트 환경 비교 shows `r016 doctor` of both hosts side by side.
+- **Reading**: logs and price files are read in place from `<root>/runtime` (`host.ts` LocalHost behind the same FileHost interface as SFTP), logs every 2 s, `status` every 5 s. No download cache.
+- **Control**: `r016_control.py` is run locally with the venv Python (`localRunner.ts`: argv, no shell, UTF-8, no console window, process tree ended on timeout). On Windows, r016 start launches `live_trading/r020_supervisor.py` detached: it plays the systemd unit (reads `r003.env`, restarts a crashed r003 after 60 s, 3 times in 10 min; stop = stop-request file, r003 saves `live_state` and exits like Ctrl+C, forced after 90 s). r003 and its g011 keep running when the app closes. While the local r003 runs the app keeps the PC awake (powerSaveBlocker) and asks before closing, because the keep-awake ends with the app. Lid close / Windows Update restarts must be handled in the Windows power settings.
+- **One account, two hosts**: each host has a role in `runtime/config/host_role.json` (`r016 role get|set primary|standby`; no file = primary). On a standby host r003 refuses to start and the g022 cron starts no g011 (the KIS websocket allows one session per appkey). Before every start/restart the app checks the other host (`peer.ts`): its r003 running -> refused; primary -> switched to standby first; not reachable -> only after an explicit confirmation. Then this host is made primary. r003 reads its role under a lock shared with `role set`, so a switch to standby can never race an r003 start.
+- **Scheduler** (local mode, while the app runs): tick collector `collector start` every 5 min Mon-Fri 08:40-15:35; post-close job once per trading day at/after the set time (default 20:10, after the NXT session; never while r003 runs); after it finishes, the new watchlist is copied to the Pi (`watchlist set` there) so the Pi can take over the next day. Switches in 설정/연결.
+- **Watchlist edit during the session**: after saving the watchlist while r003 runs, the app offers an immediate restart so the new list is watched right away (held positions keep their sell evaluation).
+- **Pi day** (PC not available): on the Pi `role set primary` (Control tab > other host > primary 로, or SSH), switch 실행 위치 to 라즈베리파이 and press 실행 - the guard then switches the PC to standby if it is reachable.
 
 ## How it reads the server
 
@@ -104,18 +120,19 @@ scp -r user@host:/data/srv/autobot/runtime/log/20261104 fixtures/
 
 ## Release & auto update
 
-Unchanged from v1. `npm run release` builds and uploads to the target in `../release.config.json`. `updater.js` (shared by the make_utils apps, loaded at runtime from the app folder) checks `https://update.iccid.dev/AutoBotH/`. The version comes from `version.txt` (`<version>_<buildNumber>`, currently `2.0.0_001`).
+Unchanged from v1. `npm run release` builds and uploads to the target in `../release.config.json`. `updater.js` (shared by the make_utils apps, loaded at runtime from the app folder) checks `https://update.iccid.dev/AutoBotH/`. The version comes from `version.txt` (`<version>_<buildNumber>`, currently `2.3.0_001`).
 
 ## Project structure
 
 ```
 src/shared/       types, KST time helpers, line grammar (logLine), log->condition mapping, DayEngine (aggregation), LineBuffer
 src/shared/       control (r016 types, command builder, response parser, editor/watchlist checks), shell (quoting)
-src/main/         index (app controller + IPC), ssh (SFTP reads + exec), proxy (ProxyCommand/SOCKS5/HTTP tunnel), sources (remote + byte cache, local folder),
-                  session (offsets per file, worker), engineWorker, conditions (r016/r015 export + cache), settings (electron-store + safeStorage),
-                  control (r016 serial queue, status polling, confirmations, ctl:* IPC)
+src/main/         index (app controller + IPC, run mode), ssh (SFTP reads + exec), host (FileHost: SFTP / local files), proxy (ProxyCommand/SOCKS5/HTTP tunnel),
+                  sources (remote + byte cache, local folder), session (offsets per file, worker), engineWorker, conditions (r016/r015 export + cache),
+                  settings (electron-store + safeStorage, local paths), control (r016 serial queue, status polling, confirmations, ctl:* IPC),
+                  localRunner (local r016 child process), peer (other host, start guard, peer:* IPC), scheduler (local-mode automation)
 src/preload/      contextBridge API
-src/renderer/     React UI (views: Control, Pipeline, Board, Timeline, Trades, Settings; ValuesEditor, WatchlistEditor), zustand store; public/update-ui.js
+src/renderer/     React UI (views: Control, Jobs, Pipeline, Board, Timeline, Chart, Trades, Settings; ValuesEditor, WatchlistEditor), zustand store; public/update-ui.js
 resources/        conditions_snapshot.json (bundled fallback condition list)
 tests/            vitest
 updater.js        shared auto-update module

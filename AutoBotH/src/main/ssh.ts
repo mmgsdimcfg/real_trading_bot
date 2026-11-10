@@ -8,6 +8,8 @@
  * - [2026-11-05] type=feat - exec() takes an optional stdin string (written and closed right after the channel opens) for
  *   `r016_control.py watchlist set --stdin`; shellQuote/shellPath moved to shared/shell.ts (re-exported here). The class itself
  *   still has no file-write method: all server changes go through r016_control.py (main/control.ts)
+ * - [2026-11-10] type=feat - implements FileHost (host.ts) next to the local host: listPrefix (the `ls <code>_*` the price reader
+ *   used), readSmallFile + home() for the one-time KIS config import into the local mode. Still no write method
  */
 
 import { Client, type SFTPWrapper, type ConnectConfig } from 'ssh2';
@@ -15,14 +17,10 @@ import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import type { Duplex } from 'node:stream';
 import { openProxySocket, type ProxyConfig } from './proxy';
+import type { FileHost, RemoteEntry } from './host';
+import { shellQuote } from '../shared/shell';
 
-export interface RemoteEntry {
-  name: string;
-  size: number;
-  mtime: number;
-  isDir: boolean;
-}
-
+export type { RemoteEntry } from './host';
 export { shellQuote, shellPath } from '../shared/shell';
 
 export interface SshParams {
@@ -36,7 +34,8 @@ export interface SshParams {
   proxy?: ProxyConfig;
 }
 
-export class SshConnection extends EventEmitter {
+export class SshConnection extends EventEmitter implements FileHost {
+  readonly kind = 'remote' as const;
   private client: Client | null = null;
   private sftp: SFTPWrapper | null = null;
   private proxySock: Duplex | null = null;
@@ -170,6 +169,32 @@ export class SshConnection extends EventEmitter {
       rs.on('error', reject);
       rs.on('end', () => resolve(Buffer.concat(chunks)));
     });
+  }
+
+  /** names in `dir` starting with `prefix` (one `ls` exec - cheaper than a readdir of a 3000-file data folder over SFTP) */
+  async listPrefix(dir: string, prefix: string): Promise<string[]> {
+    if (!/^[0-9A-Za-z_.-]*$/.test(prefix)) throw new Error(`prefix 형식 오류: ${prefix}`);
+    const { out } = await this.exec(`cd ${shellQuote(dir)} 2>/dev/null && ls -1 -- ${prefix}* 2>/dev/null`, 20000);
+    return out
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  /** whole small file (null = missing) - KIS config import */
+  async readSmallFile(path: string, maxBytes = 1024 * 1024): Promise<Buffer | null> {
+    const st = await this.stat(path);
+    if (!st) return null;
+    if (st.size > maxBytes) throw new Error(`파일이 너무 큽니다 (${st.size} bytes): ${path}`);
+    return this.readRange(path, 0, st.size);
+  }
+
+  /** remote $HOME (for ~/KIS/config) */
+  async home(): Promise<string> {
+    const { out } = await this.exec('printf %s "$HOME"', 15000);
+    const h = out.trim();
+    if (!h.startsWith('/')) throw new Error(`서버 HOME 을 읽지 못했습니다: ${h}`);
+    return h;
   }
 
   exec(cmd: string, timeoutMs = 60000, stdin?: string): Promise<{ out: string; err: string; code: number | null }> {

@@ -22,6 +22,8 @@ TimeoutStopSec=90
 KillMode=process
 Restart=on-failure
 RestartSec=60
+# exit 3 = refused (another r003 holds the lock / host role standby): restarting gives the same answer
+RestartPreventExitStatus=3
 # r003 own file logs: <runtime>/log/<date>/. stdout/stderr -> journalctl --user -u autobot-r003
 StandardOutput=journal
 StandardError=journal

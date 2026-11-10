@@ -4,6 +4,7 @@
  * - [2026-11-06] type=feat - 차트 tab (HTS-style chart) after 타임라인
  * - [2026-11-07] type=feat - ReplayBar under the tabs (past day / local folder): time replay of the loaded day for every tab
  * - [2026-11-05] type=feat - 제어 tab (r003 start/stop/restart, pending changes, history) left of the pipeline tab
+ * - [2026-11-10] type=feat - 데이터 작업 tab (post-close collection / watchlist selection jobs) after 제어
  */
 
 import { useStore, type Tab } from './store';
@@ -11,6 +12,7 @@ import { StatusBar } from './components/StatusBar';
 import { ReplayBar } from './components/ReplayBar';
 import { PipelineView } from './views/PipelineView';
 import { ControlView } from './views/ControlView';
+import { JobsView } from './views/JobsView';
 import { BoardView } from './views/BoardView';
 import { TimelineView } from './views/TimelineView';
 import { ChartView } from './views/ChartView';
@@ -19,6 +21,7 @@ import { SettingsView } from './views/SettingsView';
 
 const TABS: [Tab, string][] = [
   ['control', '제어'],
+  ['jobs', '데이터 작업'],
   ['pipeline', '파이프라인'],
   ['board', '종목 보드'],
   ['timeline', '타임라인'],
@@ -40,9 +43,10 @@ export function App() {
           </button>
         ))}
       </nav>
-      {tab !== 'control' && tab !== 'settings' && <ReplayBar />}
+      {tab !== 'control' && tab !== 'settings' && tab !== 'jobs' && <ReplayBar />}
       <main className="view">
         {tab === 'control' && <ControlView />}
+        {tab === 'jobs' && <JobsView />}
         {tab === 'pipeline' && <PipelineView />}
         {tab === 'board' && <BoardView />}
         {tab === 'timeline' && <TimelineView />}

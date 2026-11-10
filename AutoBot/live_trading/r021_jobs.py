@@ -1,0 +1,442 @@
+# -*- coding: utf-8 -*-
+"""R021 - 데이터 작업 실행기 (장 마감 후 수집 / 일봉 이력 / 감시 종목 선별 / Edge AI 재학습 / 유니버스 갱신).
+
+AutoBotH 가 r016_control.py job ... 으로 부른다 (Linux 서버, Windows 노트북 공통). 작업은 앱과 독립된 백그라운드 프로세스
+(r019.spawn_detached)로 돌고, 앱을 꺼도 계속된다. 한 번에 한 작업만 (<runtime>/data/jobs/.r021.lock) - 모두 KIS 호출 제한 /
+CPU 를 많이 쓰는 일이다.
+
+  r016 job list                                 작업 목록 + 각 작업의 마지막 실행 상태 + 지금 도는 작업
+  r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai]
+  r016 job stop NAME                            지금 단계(자식 프로세스)를 끝내고 stopped 로 기록
+  r016 job log NAME [-n 200]                    마지막 실행 로그 끝부분
+
+작업 (단계는 순서대로, 각 단계 = data_simulation 스크립트 한 번 실행):
+  collect    g001 --date D                                   분봉/일봉 수집 (KIS, 오래 걸림)
+  history    g025 --append D                                 종목별 일봉 이력 갱신 (AutoBotH 일/주/월봉)
+  scan       g002 --date D --export-watchlist --for-next-trading-day   다음 거래일 감시목록(r004) 선별
+  edge_ai    g013 --live, g014, g024 --edge-ai                Edge AI 데이터셋/학습/점검 (g015_edge_ai_daily.sh 와 같음)
+  universe   g010                                             수집 대상 종목 목록(g004) 갱신
+  postclose  collect -> history -> scan [-> edge_ai]          장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지 않는다
+             (오래된 데이터로 감시목록을 만들지 않게). history 실패는 건너뛰고 계속.
+
+파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
+
+Update log:
+- [2026-11-10] type=feat owner=claude
+    summary: 신규 - AutoBotH(노트북 메인)에서 장 마감 후 데이터 취득과 감시 종목 선별을 실행/정지/진행 확인.
+    impact: tooling (스크립트 자체는 그대로 실행)
+    compatibility: backward-compatible (신규 파일)
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+
+HERE = Path(__file__).resolve().parent
+SIM = HERE.parent / "data_simulation"
+sys.path.insert(0, str(HERE))
+
+import r019_platform as r019  # noqa: E402
+
+POLL_SEC = 1.0
+STOP_GRACE_SEC = 15
+START_CONFIRM_SEC = 10.0
+
+
+def runtime_root() -> Path:
+    raw = os.environ.get("AUTO_TRADING_RUNTIME")
+    return Path(raw) if raw else HERE.parents[2] / "runtime"
+
+
+@dataclass
+class JobArgs:
+    date: str
+    workers: int | None = None
+    edge_ai: bool = False
+
+
+@dataclass
+class Step:
+    name: str
+    build: Callable[[JobArgs, dict], list[str]]  # (args, rcs of earlier steps) -> argv after python
+    required: bool = True  # False: a failure is recorded and the job goes on
+
+
+def _py(script: str, *a: str) -> list[str]:
+    return [str(SIM / script), *a]
+
+
+def _workers(a: JobArgs, default: int) -> str:
+    return str(a.workers if a.workers and a.workers > 0 else default)
+
+
+STEPS: dict[str, Step] = {
+    "collect": Step("collect", lambda a, rc: _py("g001_data_collect_symbols_daily.py", "--date", a.date,
+                                                 "--workers", _workers(a, 4))),
+    "history": Step("history", lambda a, rc: _py("g025_daily_history.py", "--append", a.date), required=False),
+    "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--export-watchlist",
+                                           "--for-next-trading-day")),
+    "edge_dataset": Step("edge_dataset", lambda a, rc: _py("g013_edge_ai_dataset.py", "--workers", _workers(a, 2), "--live"),
+                         required=False),
+    "edge_train": Step("edge_train", lambda a, rc: _py("g014_edge_ai_train.py", "--threads", _workers(a, 2)), required=False),
+    "edge_check": Step("edge_check", lambda a, rc: _py("g024_ops_check.py", "--edge-ai", "--rc-dataset",
+                                                       str(rc.get("edge_dataset", 0)), "--rc-train",
+                                                       str(rc.get("edge_train", 0))), required=False),
+    "universe": Step("universe", lambda a, rc: _py("g010_universe_update.py")),
+}
+
+JOBS: dict[str, dict] = {
+    "collect": {"title": "데이터 수집 (g001)", "steps": ["collect"]},
+    "history": {"title": "일봉 이력 (g025)", "steps": ["history"]},
+    "scan": {"title": "감시 종목 선별 (g002 -> r004)", "steps": ["scan"]},
+    "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check"]},
+    "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
+    "postclose": {"title": "장 마감 파이프라인 (수집 -> 이력 -> 선별)", "steps": ["collect", "history", "scan"]},
+}
+
+
+def job_steps(name: str, args: JobArgs) -> list[Step]:
+    names = list(JOBS[name]["steps"])
+    if name == "postclose" and args.edge_ai:
+        names += JOBS["edge_ai"]["steps"]
+    return [STEPS[n] for n in names]
+
+
+class Paths:
+    def __init__(self, root: Path | None = None):
+        self.root = Path(root) if root else runtime_root()
+        self.dir = self.root / "data" / "jobs"
+
+    @property
+    def lock(self) -> Path:
+        return self.dir / ".r021.lock"
+
+    def state(self, name: str) -> Path:
+        return self.dir / f"{name}.json"
+
+    def stop(self, name: str) -> Path:
+        return self.dir / f"{name}.stop"
+
+    def log(self, name: str, now: datetime) -> Path:
+        return self.root / "log" / "jobs" / now.strftime("%Y%m%d") / f"{name}_{now:%H%M%S}.log"
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        for i in range(40):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:  # Windows: a reader has the file open
+                if i == 39:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def read_state(paths: Paths, name: str) -> dict | None:
+    try:
+        d = json.loads(paths.state(name).read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def current(paths: Paths) -> dict | None:
+    """{pid, started_at, name, run_id} of the job holding the runner lock (None = no job running)."""
+    owner = r019.running_owner(paths.lock)
+    if owner is None:
+        return None
+    name = run_id = None
+    with contextlib.suppress(Exception):
+        parts = paths.lock.read_text(encoding="utf-8").splitlines()[1].split()
+        name = parts[0] if parts else None
+        run_id = parts[1] if len(parts) > 1 else None
+    return {**owner, "name": name, "run_id": run_id}
+
+
+def _effective(paths: Paths, name: str, st: dict | None, cur: dict | None) -> dict | None:
+    """A state file that says running while no runner holds the lock = the runner died (crash / reboot)."""
+    if st and st.get("state") == "running" and not (cur and cur.get("name") == name):
+        st = dict(st, state="failed", error=st.get("error") or "runner ended without finishing (crash / reboot)")
+    return st
+
+
+def list_jobs(paths: Paths) -> dict:
+    cur = current(paths)
+    rows = []
+    for name, spec in JOBS.items():
+        rows.append({"name": name, "title": spec["title"], "steps": spec["steps"],
+                     "last": _effective(paths, name, read_state(paths, name), cur)})
+    return {"ok": True, "running": cur, "jobs": rows, "generated_at": _now()}
+
+
+def start_job(paths: Paths, name: str, args: JobArgs, by: str, spawn=r019.spawn_detached) -> dict:
+    if name not in JOBS:
+        return {"ok": False, "error": f"unknown job {name!r} (one of {', '.join(JOBS)})"}
+    if not (len(args.date) == 8 and args.date.isdigit()):
+        return {"ok": False, "error": f"bad date {args.date!r} (YYYYMMDD)"}
+    cur = current(paths)
+    if cur:
+        return {"ok": False, "error": f"another job is running: {cur.get('name') or '?'} (pid {cur.get('pid')})", "running": cur}
+    paths.dir.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        paths.stop(name).unlink()
+    import uuid
+
+    run_id = uuid.uuid4().hex[:12]
+    argv = [r019.python_exe(), str(Path(__file__).resolve()), "run", name, "--date", args.date, "--by", by,
+            "--run-id", run_id, "--runtime", str(paths.root)]
+    if args.workers:
+        argv += ["--workers", str(args.workers)]
+    if args.edge_ai:
+        argv.append("--edge-ai")
+    now = datetime.now()
+    pid = spawn(argv, cwd=str(HERE), log_path=paths.root / "log" / "jobs" / "r021_runner.log",
+                env=r019.child_env({"AUTO_TRADING_RUNTIME": str(paths.root)}))
+    # success = THIS run (run_id) holds the runner lock, or already wrote its state (a very short job). Another start that won
+    # the race, or a runner that died at start, is reported as a failure.
+    deadline = time.time() + START_CONFIRM_SEC
+    while time.time() < deadline:
+        cur = current(paths)
+        if cur and cur.get("run_id") == run_id:
+            return {"ok": True, "name": name, "pid": pid, "run_id": run_id, "started_at": now.isoformat(timespec="seconds"),
+                    "running": cur}
+        if (read_state(paths, name) or {}).get("run_id") == run_id:
+            return {"ok": True, "name": name, "pid": pid, "run_id": run_id, "started_at": now.isoformat(timespec="seconds"),
+                    "running": cur, "finished": True}
+        time.sleep(0.1)
+    return {"ok": False, "error": f"job runner did not start (see {paths.root / 'log' / 'jobs' / 'r021_runner.log'})",
+            "running": current(paths), "run_id": run_id}
+
+
+def stop_job(paths: Paths, name: str) -> dict:
+    cur = current(paths)
+    if not cur or cur.get("name") != name:
+        return {"ok": False, "error": f"job {name!r} is not running", "running": cur}
+    paths.dir.mkdir(parents=True, exist_ok=True)
+    paths.stop(name).touch()
+    deadline = time.time() + STOP_GRACE_SEC + 10
+    while time.time() < deadline and current(paths):
+        time.sleep(0.2)
+    still = current(paths)
+    return {"ok": not still, "stopped": not still, "running": still,
+            **({} if not still else {"error": "runner did not end in time (it will stop after the current step ends)"})}
+
+
+def tail_log(paths: Paths, name: str, n: int = 200) -> dict:
+    st = read_state(paths, name)
+    if not st or not st.get("log"):
+        return {"ok": True, "name": name, "log": None, "lines": []}
+    p = Path(st["log"])
+    try:
+        with open(p, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 256 * 1024))
+            text = fh.read().decode("utf-8", errors="replace")
+    except OSError as exc:
+        return {"ok": False, "error": f"cannot read log ({type(exc).__name__})", "log": str(p)}
+    lines = text.splitlines()[-max(1, n):]
+    return {"ok": True, "name": name, "log": str(p), "size": size, "lines": lines, "state": st.get("state")}
+
+
+# ---------------------------------------------------------------------------
+# runner (the detached process)
+# ---------------------------------------------------------------------------
+class Runner:
+    def __init__(self, paths: Paths, name: str, args: JobArgs, by: str, run_id: str | None = None):
+        self.paths, self.name, self.args, self.by = paths, name, args, by
+        now = datetime.now()
+        self.log_path = paths.log(name, now)
+        self.state = {"name": name, "title": JOBS[name]["title"], "state": "running", "pid": os.getpid(), "by": by,
+                      "run_id": run_id,
+                      "started_at": now.isoformat(timespec="seconds"), "finished_at": None, "rc": None,
+                      "args": {"date": args.date, "workers": args.workers, "edge_ai": args.edge_ai},
+                      "log": str(self.log_path), "steps": [], "error": None}
+
+    def _save(self) -> None:
+        _write_json(self.paths.state(self.name), self.state)
+
+    def _stop_requested(self) -> bool:
+        return self.paths.stop(self.name).exists()
+
+    def _log(self, fh, text: str) -> None:
+        fh.write(f"[{_now()}] [r021] {text}\n".encode("utf-8"))
+        fh.flush()
+
+    def _run_step(self, step: Step, rcs: dict, fh) -> tuple[int | None, bool]:
+        argv = [r019.python_exe(), *step.build(self.args, rcs)]
+        row = {"name": step.name, "argv": argv[1:], "state": "running", "rc": None, "started_at": _now(), "finished_at": None}
+        self.state["steps"].append(row)
+        self._save()
+        self._log(fh, f"step {step.name}: {' '.join(argv[1:])}")
+        kw: dict = {"cwd": str(SIM), "stdin": subprocess.DEVNULL, "stdout": fh, "stderr": subprocess.STDOUT,
+                    "env": r019.child_env({"AUTO_TRADING_RUNTIME": str(self.paths.root)})}
+        if r019.IS_WINDOWS:
+            kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        else:
+            kw["start_new_session"] = True  # own process group: a stop ends its workers too (killpg)
+        proc = subprocess.Popen(argv, **kw)
+        stopped = False
+        while proc.poll() is None:
+            if self._stop_requested():
+                stopped = True
+                self._log(fh, f"stop requested - ending {step.name} and its child processes (pid {proc.pid})")
+                if r019.IS_WINDOWS:
+                    # taskkill /T /F: the venv launcher, the real interpreter and its multiprocessing workers
+                    r019.kill_tree(proc.pid)
+                else:
+                    import signal
+
+                    pgid = proc.pid  # start_new_session=True: the step leads its own group (kept even after it is reaped)
+                    with contextlib.suppress(OSError):
+                        os.killpg(pgid, signal.SIGTERM)  # g001/g013 workers get a chance to finish a file
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=STOP_GRACE_SEC)
+                    with contextlib.suppress(OSError):
+                        os.killpg(pgid, signal.SIGKILL)  # workers that ignored SIGTERM / outlived the parent
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=STOP_GRACE_SEC)
+                break
+            time.sleep(POLL_SEC)
+        rc = proc.wait()
+        row.update(state="stopped" if stopped else ("done" if rc == 0 else "failed"), rc=rc, finished_at=_now())
+        self._save()
+        self._log(fh, f"step {step.name} rc={rc}{' (stopped)' if stopped else ''}")
+        return rc, stopped
+
+    def run(self) -> int:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._save()
+        rcs: dict = {}
+        final_rc = 0
+        with open(self.log_path, "ab") as fh:
+            self._log(fh, f"job {self.name} start date={self.args.date} by={self.by}")
+            for step in job_steps(self.name, self.args):
+                if self._stop_requested():
+                    self.state.update(state="stopped")
+                    break
+                rc, stopped = self._run_step(step, rcs, fh)
+                rcs[step.name] = rc
+                if stopped:
+                    self.state.update(state="stopped")
+                    break
+                if rc != 0:
+                    final_rc = rc or 1
+                    if step.required:
+                        self.state.update(state="failed", error=f"{step.name} failed (rc={rc}) - later steps skipped")
+                        break
+                    self.state["error"] = f"{step.name} failed (rc={rc}) - continued"
+            if self.state["state"] == "running":
+                self.state["state"] = "done_with_errors" if self.state.get("error") else "done"
+            self.state.update(rc=final_rc, finished_at=_now())
+            self._save()
+            self._log(fh, f"job {self.name} {self.state['state']} rc={final_rc}")
+        with contextlib.suppress(OSError):
+            self.paths.stop(self.name).unlink()
+        return 0 if self.state["state"] in ("done", "stopped") else 1
+
+
+def run_detached_entry(name: str, args: JobArgs, by: str, paths: Paths | None = None, run_id: str | None = None) -> int:
+    paths = paths or Paths()
+    fh = r019.acquire_instance_lock(paths.lock)
+    if fh is None:
+        print(f"[r021] another job holds {paths.lock}", flush=True)
+        return 3
+    try:
+        fh.write(f"{name} {run_id or '-'}\n")  # second line = job name + run id (current())
+        fh.flush()
+        return Runner(paths, name, args, by, run_id).run()
+    finally:
+        fh.close()
+
+
+def _today() -> str:
+    return datetime.now().strftime("%Y%m%d")
+
+
+def add_job_parser(sub) -> None:
+    """r016 `job` sub-commands (shared with this file's own CLI)."""
+    p = sub.add_parser("job", help="data jobs: list | start NAME | stop NAME | log NAME")
+    p.add_argument("action", choices=["list", "start", "stop", "log"])
+    p.add_argument("name", nargs="?", default=None)
+    p.add_argument("--date", default=None)
+    p.add_argument("--workers", type=int, default=None)
+    p.add_argument("--edge-ai", action="store_true")
+    p.add_argument("--trading-day-only", action="store_true", help="start: skip (rc 0, skipped) on a weekend / r014 closed day")
+    p.add_argument("-n", type=int, default=200)
+
+
+def is_trading_day(ymd: str) -> bool:
+    d = datetime.strptime(ymd, "%Y%m%d")
+    if d.weekday() >= 5:
+        return False
+    try:
+        from r014_market_calendar import session_hours  # noqa: E402
+        return session_hours(d) is not None
+    except Exception:
+        return True
+
+
+def run_job_command(args, by: str, paths: Paths | None = None) -> tuple[dict, int]:
+    paths = paths or Paths()
+    if args.action == "list":
+        return list_jobs(paths), 0
+    if not args.name:
+        return {"ok": False, "error": "job name required"}, 2
+    if args.name not in JOBS:
+        return {"ok": False, "error": f"unknown job {args.name!r} (one of {', '.join(JOBS)})"}, 2
+    if args.action == "start":
+        date = args.date or _today()
+        if getattr(args, "trading_day_only", False) and len(date) == 8 and date.isdigit() and not is_trading_day(date):
+            return {"ok": True, "skipped": True, "reason": f"{date} is not a trading day"}, 0
+        out = start_job(paths, args.name, JobArgs(date=date, workers=args.workers, edge_ai=args.edge_ai), by)
+        return out, 0 if out.get("ok") else 3
+    if args.action == "stop":
+        out = stop_job(paths, args.name)
+        return out, 0 if out.get("ok") else 3
+    return tail_log(paths, args.name, args.n), 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="r021 data job runner")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("run")
+    p.add_argument("name", choices=list(JOBS))
+    p.add_argument("--date", default=None)
+    p.add_argument("--workers", type=int, default=None)
+    p.add_argument("--edge-ai", action="store_true")
+    p.add_argument("--by", default="cli")
+    p.add_argument("--run-id", default=None)
+    p.add_argument("--runtime", default=None, help="runtime root (a WMI-started process has no inherited env)")
+    args = ap.parse_args(argv)
+    if args.runtime:
+        os.environ["AUTO_TRADING_RUNTIME"] = args.runtime
+    return run_detached_entry(args.name, JobArgs(date=args.date or _today(), workers=args.workers, edge_ai=args.edge_ai), args.by,
+                              run_id=args.run_id)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

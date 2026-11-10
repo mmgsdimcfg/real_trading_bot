@@ -33,23 +33,34 @@
  *   win-minimize / win-toggle-maximize / win-close / win-is-maximized IPC + 'win-maximized-changed' events for the renderer's
  *   window buttons; shared About dialog IPC (app-about.js, initAppAbout) for the ☰ menu
  * - [2026-10-09] type=fix - (kept from v1) taskbar button width: window titles padded with invisible U+2800
+ * - [2026-11-10] type=feat - Run mode (settings.runMode): 'remote' = as before (Raspberry Pi over SSH), 'local' = r003 runs on this PC:
+ *   logs / price files read from <localRoot>/runtime directly (HostSwitch -> LocalHost, 2 s log poll, 5 s status poll), r016 run as a
+ *   local child process (R016Client.local), "today" = this PC's date. The other host (peer.ts) is checked and switched to standby
+ *   before every r003 start (control deps.beforeStart). Local mode also runs the scheduler (scheduler.ts: tick collector,
+ *   post-close job, watchlist copy to the Pi) and keeps the PC awake while the local r003 runs (powerSaveBlocker); closing the window
+ *   then asks first, because trading continues but the PC may sleep
  */
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell } from 'electron';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { basename, join } from 'node:path';
-import type { AppStatus, ConditionsDoc, Settings, Snapshot } from '../shared/types';
-import { getProxyConfig, getSecret, getSettings, saveSettings } from './settings';
+import type { AppStatus, ConditionsDoc, RunMode, Settings, Snapshot } from '../shared/types';
+import { getMeta, getProxyConfig, getSecret, getSettings, localPaths, localProblem, saveSettings, setMeta } from './settings';
 import { killAllProxyChildren } from './proxy';
 import { SshConnection } from './ssh';
-import { fetchConditions, loadLocalConditions } from './conditions';
+import { LocalHost, HostSwitch } from './host';
+import { makeLocalRunner } from './localRunner';
+import { fetchConditions, loadLocalConditions, r015Fallback } from './conditions';
 import { DaySession } from './session';
-import { createControl } from './control';
+import { createControl, R016Client } from './control';
+import { createPeer } from './peer';
+import { createScheduler, type SchedState } from './scheduler';
 import { PriceService } from './prices';
 import { PriceFileCache, prunePriceCache } from './priceCache';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
-import { CHART_CACHE_MS, quoteCacheMs, resolveSessionOpen } from '../shared/control';
+import { CHART_CACHE_MS, localYmd, quoteCacheMs, resolveSessionOpen, statusPollMs, writerName, type R016Status } from '../shared/control';
 import { LocalDirSource, RemoteDaySource, cacheDirFor, cachedDates, pruneCache } from './sources';
 
 const TASKBAR_TITLE_PAD = '⠀'.repeat(40);
@@ -64,25 +75,88 @@ app.on('browser-window-created', (_e, w) => {
 
 let win: BrowserWindow | null = null;
 const ssh = new SshConnection();
+const localHost = new LocalHost();
+/** run mode of the current connection (settings.runMode is applied on connect) */
+let mode: RunMode = getSettings().runMode;
+const files = new HostSwitch(ssh, localHost, () => mode);
 let conditions: ConditionsDoc = loadLocalConditions();
 let session: DaySession | null = null;
 let lastSnapshot: Snapshot | null = null;
-let status: AppStatus = { conn: 'idle', date: '', live: false, conditionsSource: conditions.source };
+let status: AppStatus = { conn: 'idle', date: '', live: false, conditionsSource: conditions.source, mode };
 let timer: NodeJS.Timeout | null = null;
 let backoffMs = 0;
 let lastDateCheck = 0;
 let loadedOnce = false;
 let wantConnected = false;
 
+const by = writerName(userInfo().username);
+const remoteClient = new R016Client(
+  (cmd, timeoutMs, stdin) => ssh.exec(cmd, timeoutMs, stdin),
+  () => ({ ...getSettings(), by }),
+);
+const localClient = R016Client.local(
+  makeLocalRunner(() => {
+    const p = localPaths();
+    return { python: p.python, script: p.r016, cwd: p.codeDir, by };
+  }),
+);
+const activeClient = () => (mode === 'local' ? localClient : remoteClient);
+const hostLabel = () => (mode === 'local' ? '이 PC' : '라즈베리파이');
+
+const windowVisible = (): boolean => !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized();
+
 const control = createControl({
-  exec: (cmd, timeoutMs, stdin) => ssh.exec(cmd, timeoutMs, stdin),
-  isConnected: () => ssh.connected,
-  settings: () => getSettings(),
+  client: activeClient,
+  isConnected: () => files.connected,
+  pollMs: () => {
+    const s = getSettings();
+    if (mode === 'local') return (windowVisible() ? s.localStatusPollSec : Math.max(s.localStatusPollSec, 30)) * 1000;
+    return statusPollMs(s.statusPollSec, windowVisible());
+  },
+  hostLabel,
   send: (ch, data) => send(ch, data),
   win: () => win,
   reloadConditions: () => refreshConditions(),
   onNxt: () => void applyFunnelOpen(),
+  onStatus: (s) => updateKeepAwake(s),
+  beforeStart: (_verb, client) => peer.guardStart(client),
 });
+
+const peer = createPeer({
+  mode: () => mode,
+  ssh,
+  connectSsh: () => connectSsh(),
+  remoteConfigured: () => !!getSettings().host,
+  localProblem: () => localProblem(),
+  remoteClient,
+  localClient,
+  localEverUsed: () => !!getMeta().localEverUsed,
+  win: () => win,
+  log: (m) => setStatus({ message: m }),
+});
+
+const scheduler = createScheduler({
+  active: () => mode === 'local' && localHost.connected,
+  settings: () => getSettings(),
+  client: () => localClient,
+  status: () => control.status(),
+  meta: () => getMeta(),
+  setMeta: (p) => setMeta(p),
+  syncToPeer: () => peer.syncWatchlist(),
+  send: (s: SchedState) => send('sched', s),
+});
+
+// ---- keep the PC awake while the local r003 trades ----
+let awakeId: number | null = null;
+function updateKeepAwake(s: R016Status | null): void {
+  const want = mode === 'local' && localHost.connected && getSettings().keepAwake && !!s?.running;
+  if (want && awakeId === null) awakeId = powerSaveBlocker.start('prevent-app-suspension');
+  else if (!want && awakeId !== null) {
+    powerSaveBlocker.stop(awakeId);
+    awakeId = null;
+  }
+  if (status.keepAwake !== (awakeId !== null)) setStatus({ keepAwake: awakeId !== null });
+}
 
 /** funnel start time for the log engine (see resolveSessionOpen) */
 function funnelOpen(): string {
@@ -106,7 +180,10 @@ async function applyFunnelOpen(): Promise<void> {
 /** a day before the server's today: its files no longer change (unknown today = offline -> treat as past, i.e. cache only) */
 const isPastDate = (d: string): boolean => (status.serverDate ? d < status.serverDate : true);
 const priceCache = new PriceFileCache(ssh);
-const prices = new PriceService(ssh, () => getSettings().remoteRoot, () => (ssh.connected ? control.client : null), priceCache, isPastDate);
+// one price reader per host: nothing read from one host (in-memory caches, requests still running) can answer for the other
+const remotePrices = new PriceService(ssh, () => getSettings().remoteRoot, () => (ssh.connected ? remoteClient : null), priceCache, isPastDate);
+const localPrices = new PriceService(localHost, () => localPaths().root, () => (localHost.connected ? localClient : null), null, isPastDate);
+const pricesFor = (m: RunMode) => (m === 'local' ? localPrices : remotePrices);
 /** session whose price files are being / were prefetched */
 let prefetchSession: DaySession | null = null;
 
@@ -116,7 +193,7 @@ async function runPrefetch(cur: DaySession): Promise<void> {
   const codes = (lastSnapshot?.symbols || []).map((x) => x.code).filter((c) => /^[0-9A-Z]{6}$/.test(c));
   if (!codes.length) return;
   try {
-    const p = await prices.prefetch(cur.date, codes, (pr) => cur === session && setStatus({ prefetch: pr }), () => cur !== session);
+    const p = await remotePrices.prefetch(cur.date, codes, (pr) => cur === session && setStatus({ prefetch: pr }), () => cur !== session);
     // stopped by a dropped connection: try again after the reconnect (cached files are skipped)
     if (p.done < p.total && cur === session) prefetchSession = null;
   } catch (e) {
@@ -127,6 +204,8 @@ async function runPrefetch(cur: DaySession): Promise<void> {
   }
 }
 const priceInFlight = new Map<string, Promise<PriceResponse>>();
+/** bumped on a run-mode switch: price / quote answers of the previous host are dropped */
+let hostGen = 0;
 
 const BACKOFF_MIN = 5000;
 const BACKOFF_MAX = 60000;
@@ -144,7 +223,7 @@ function setStatus(patch: Partial<AppStatus>): void {
 const errMsg = (e: unknown) => String((e as Error)?.message || e).split('\n')[0];
 
 function logDir(ymd: string): string {
-  return `${getSettings().remoteRoot}/runtime/log/${ymd}`;
+  return mode === 'local' ? `${localPaths().logDir}/${ymd}` : `${getSettings().remoteRoot}/runtime/log/${ymd}`;
 }
 
 async function connectSsh(): Promise<void> {
@@ -152,7 +231,9 @@ async function connectSsh(): Promise<void> {
   await ssh.connect({ ...s, secret: getSecret(), proxy: getProxyConfig() });
 }
 
+/** "today" of the host that runs r003: the server's date, or this PC's date in local mode */
 async function serverDate(): Promise<string> {
+  if (mode === 'local') return localYmd();
   const { out } = await ssh.exec('date +%Y%m%d', 15000);
   const d = out.trim();
   if (!/^\d{8}$/.test(d)) throw new Error(`서버 날짜를 읽지 못했습니다: ${d}`);
@@ -162,7 +243,7 @@ async function serverDate(): Promise<string> {
 async function refreshConditions(): Promise<{ ok: boolean; error?: string }> {
   try {
     const s = getSettings();
-    conditions = await fetchConditions(ssh, control.client, s.remoteRoot, s.pythonPath);
+    conditions = await fetchConditions(activeClient(), mode === 'remote' ? r015Fallback(ssh, s.remoteRoot, s.pythonPath) : undefined);
     session?.setConditions(conditions);
     send('conditions', conditions);
     setStatus({ conditionsSource: conditions.source });
@@ -196,6 +277,9 @@ async function pushSnapshot(): Promise<void> {
   }
 }
 
+/** live session on this PC (local mode): files read in place, polled every localPollSec */
+const isLocalLive = (cur: DaySession) => mode === 'local' && localHost.connected && cur.source.kind === 'local' && status.live;
+
 /** One loop step: reconnect if needed (back-off), poll, push snapshot, check the server date. */
 async function tick(): Promise<void> {
   const cur = session;
@@ -216,7 +300,8 @@ async function tick(): Promise<void> {
     backoffMs = 0;
     setStatus({ lastReceivedAt: cur.lastReceivedAt, message: cur.workerError ? `파서 오류: ${cur.workerError.split('\n')[0]}` : status.message });
 
-    if (status.live && cur.source.kind === 'remote' && Date.now() - lastDateCheck > DATE_CHECK_MS) {
+    const liveHere = (cur.source.kind === 'remote' && ssh.connected) || isLocalLive(cur);
+    if (status.live && liveHere && Date.now() - lastDateCheck > DATE_CHECK_MS) {
       lastDateCheck = Date.now();
       const d = await serverDate();
       setStatus({ serverDate: d });
@@ -234,20 +319,30 @@ async function tick(): Promise<void> {
       return;
     }
     setStatus({ message: errMsg(e) });
-    if (!loadedOnce && cur.source.kind === 'local') return;
+    if (!loadedOnce && cur.source.kind === 'local' && !isLocalLive(cur)) return;
   }
   if (cur !== session) return;
-  if (status.live || !loadedOnce) schedule(loadedOnce ? s.pollSec * 1000 : Math.max(backoffMs, BACKOFF_MIN));
+  const every = isLocalLive(cur) ? s.localPollSec * 1000 : s.pollSec * 1000;
+  if (status.live || !loadedOnce) schedule(loadedOnce ? every : Math.max(backoffMs, BACKOFF_MIN));
 }
 
 function openDay(ymd: string, live: boolean): void {
   stopSession();
-  const source = ssh.connected
-    ? new RemoteDaySource(ssh, logDir(ymd), ymd)
-    : new LocalDirSource(cacheDirFor(ymd), `캐시 ${ymd}`);
-  if (!ssh.connected) live = false;
+  let source;
+  if (mode === 'local' && localHost.connected) source = new LocalDirSource(logDir(ymd), `로컬 ${ymd}`);
+  else if (ssh.connected && mode === 'remote') source = new RemoteDaySource(ssh, logDir(ymd), ymd);
+  else {
+    source = new LocalDirSource(cacheDirFor(ymd), `캐시 ${ymd}`);
+    live = false;
+  }
   session = new DaySession(ymd, source, conditions, funnelOpen(), !live);
-  setStatus({ date: ymd, live, conn: ssh.connected ? 'connected' : status.conn === 'local' ? 'local' : status.conn, message: undefined, prefetch: undefined });
+  setStatus({
+    date: ymd,
+    live,
+    conn: files.connected ? 'connected' : status.conn === 'local' ? 'local' : status.conn,
+    message: undefined,
+    prefetch: undefined,
+  });
   send('snapshot', null);
   void tick();
 }
@@ -266,14 +361,35 @@ function openLocal(dir: string): void {
   void tick();
 }
 
-/** Connect, then open `ymd` (a past date chosen on the settings view) or the server's today. */
+/** Connect (run mode from the settings), then open `ymd` (a past date chosen on the settings view) or today. */
 async function connectAndOpenToday(ymd?: string): Promise<{ ok: boolean; error?: string }> {
+  // a start/stop/restart in progress is bound to the current host - never switch the host under it
+  if (control.busy() || peer.busy()) return { ok: false, error: '실행/정지 또는 역할 변경이 진행 중입니다. 끝난 뒤 다시 연결하세요.' };
   wantConnected = true;
   stopSession();
   control.stopPolling();
-  setStatus({ conn: 'connecting', message: undefined });
+  scheduler.stop();
+  const prevMode = mode;
+  mode = getSettings().runMode;
+  control.clear(); // old host's status / NXT answers still in flight are dropped
+  if (prevMode !== mode) {
+    pricesFor(prevMode).resetAll();
+    priceInFlight.clear();
+    quoteCache.clear();
+    quoteInFlight.clear();
+    hostGen++;
+  }
+  setStatus({ conn: 'connecting', message: undefined, mode });
   try {
-    await connectSsh();
+    if (mode === 'local') {
+      const prob = localProblem();
+      if (prob) throw new Error(prob);
+      localHost.connected = true;
+      setMeta({ localEverUsed: true });
+    } else {
+      localHost.connected = false;
+      await connectSsh();
+    }
     setStatus({ conn: 'connected' });
     const d = await serverDate();
     lastDateCheck = Date.now();
@@ -283,22 +399,25 @@ async function connectAndOpenToday(ymd?: string): Promise<{ ok: boolean; error?:
     const want = ymd && /^\d{8}$/.test(ymd) ? ymd : d;
     openDay(want, want === d);
     control.startPolling();
-    prices.resetServerSupport();
+    pricesFor(mode).resetServerSupport();
     quoteUnsupportedAt = 0;
+    if (mode === 'local') scheduler.start();
     return { ok: true };
   } catch (e) {
-    ssh.close();
+    if (mode === 'remote') ssh.close();
+    localHost.connected = false;
     setStatus({ conn: 'error', message: errMsg(e) });
     return { ok: false, error: errMsg(e) };
   }
 }
 
 ssh.on('log', (line: string) => {
-  if (status.conn === 'connecting' || status.conn === 'reconnecting') setStatus({ message: line });
+  if (mode === 'remote' && (status.conn === 'connecting' || status.conn === 'reconnecting')) setStatus({ message: line });
 });
 
 ssh.on('lost', (e: Error) => {
-  if (!wantConnected) return;
+  // local mode: SSH is only the on-demand link to the standby Raspberry Pi - its drop is not a connection loss of the app
+  if (!wantConnected || mode === 'local') return;
   setStatus({ conn: 'reconnecting', message: errMsg(e), nextRetryAt: Date.now() + BACKOFF_MIN });
   // a past day loaded once has no poll timer - start the reconnect loop here (tick reconnects remote sessions with back-off)
   if (session?.source.kind === 'remote') schedule(BACKOFF_MIN);
@@ -331,6 +450,7 @@ ipcMain.handle('settings:save', (_e, s: Settings) => {
     return { ok: false, error: errMsg(err) };
   }
 });
+ipcMain.handle('settings:localCheck', (_e, s?: Settings) => ({ problem: localProblem(s || getSettings()), paths: localPaths(s || getSettings()) }));
 ipcMain.handle('dialog:pickKey', async () => {
   const r = await dialog.showOpenDialog(win!, {
     title: '개인키 파일 선택',
@@ -339,8 +459,12 @@ ipcMain.handle('dialog:pickKey', async () => {
   });
   return r.canceled ? null : r.filePaths[0];
 });
-ipcMain.handle('dialog:pickFolder', async () => {
-  const r = await dialog.showOpenDialog(win!, { title: '로그 폴더 선택 (runtime/log/YYYYMMDD 복사본)', properties: ['openDirectory'] });
+ipcMain.handle('dialog:pickFolder', async (_e, title?: string) => {
+  const r = await dialog.showOpenDialog(win!, { title: title || '로그 폴더 선택 (runtime/log/YYYYMMDD 복사본)', properties: ['openDirectory'] });
+  return r.canceled ? null : r.filePaths[0];
+});
+ipcMain.handle('dialog:pickFile', async (_e, title?: string) => {
+  const r = await dialog.showOpenDialog(win!, { title: title || '파일 선택', properties: ['openFile'], filters: [{ name: 'Python', extensions: ['exe', '*'] }] });
   return r.canceled ? null : r.filePaths[0];
 });
 ipcMain.handle('conn:connect', (_e, ymd?: string) => connectAndOpenToday(ymd));
@@ -349,15 +473,18 @@ ipcMain.handle('conn:disconnect', () => {
   if (timer) clearTimeout(timer);
   timer = null;
   control.stopPolling();
+  scheduler.stop();
   ssh.close();
+  localHost.connected = false;
   control.clear();
+  updateKeepAwake(null);
   setStatus({ conn: 'idle', live: false, message: '연결 해제 (표시 중인 데이터는 유지)' });
   return { ok: true };
 });
 ipcMain.handle('day:open', (_e, ymd: string) => {
   if (!/^\d{8}$/.test(ymd)) return { ok: false, error: '날짜 형식 오류' };
-  const live = ssh.connected && ymd === (status.serverDate || '');
-  if (!ssh.connected && !existsSync(cacheDirFor(ymd))) return { ok: false, error: '연결되어 있지 않고 로컬 캐시도 없습니다.' };
+  const live = files.connected && ymd === (status.serverDate || '');
+  if (!files.connected && !existsSync(cacheDirFor(ymd))) return { ok: false, error: '연결되어 있지 않고 로컬 캐시도 없습니다.' };
   openDay(ymd, live);
   return { ok: true };
 });
@@ -371,64 +498,75 @@ ipcMain.handle('day:openLocal', (_e, dir: string) => {
 });
 ipcMain.handle('day:listDates', async () => {
   let remote: string[] = [];
-  if (ssh.connected) {
+  if (files.connected) {
     try {
-      remote = (await ssh.readdir(`${getSettings().remoteRoot}/runtime/log`)).filter((e) => e.isDir && /^\d{8}$/.test(e.name)).map((e) => e.name);
+      const root = mode === 'local' ? localPaths().logDir : `${getSettings().remoteRoot}/runtime/log`;
+      remote = (await files.readdir(root)).filter((e) => e.isDir && /^\d{8}$/.test(e.name)).map((e) => e.name);
     } catch {
       /* listing is optional */
     }
   }
-  return { remote: remote.sort().reverse(), cached: cachedDates().sort().reverse() };
+  return { remote: remote.sort().reverse(), cached: mode === 'local' ? [] : cachedDates().sort().reverse() };
 });
 ipcMain.handle('conditions:get', () => conditions);
-ipcMain.handle('conditions:refresh', () => (ssh.connected ? refreshConditions() : { ok: false, error: 'SSH가 연결되어 있지 않습니다.' }));
+ipcMain.handle('conditions:refresh', () => (files.connected ? refreshConditions() : { ok: false, error: `${hostLabel()}에 연결되어 있지 않습니다.` }));
 ipcMain.handle('snapshot:get', () => lastSnapshot);
 ipcMain.handle('status:get', () => status);
+ipcMain.handle('sched:get', () => scheduler.state());
 ipcMain.handle('price:get', (_e, req: PriceRequest): Promise<PriceResponse> | PriceResponse => {
   // past days are read from the local copy (pricecache) when offline
-  if (!ssh.connected && !isPastDate(req.date)) return { ok: false, bars: [], error: '서버에 연결되어 있지 않아 주가를 불러올 수 없습니다.' };
-  const key = `${req.date}/${req.code}/${req.kind}/${req.n}/${req.warmup ? 'w' : ''}${req.withName ? 'n' : ''}`;
+  if (!files.connected && !isPastDate(req.date)) return { ok: false, bars: [], error: '서버에 연결되어 있지 않아 주가를 불러올 수 없습니다.' };
+  const key = `${mode}/${req.date}/${req.code}/${req.kind}/${req.n}/${req.warmup ? 'w' : ''}${req.withName ? 'n' : ''}`;
   const running = priceInFlight.get(key);
   if (running) return running;
   const live = status.live && req.date === status.date;
-  const p = prices
+  const g = hostGen;
+  const p = pricesFor(mode)
     .get(req, live)
+    .then((r): PriceResponse => (g === hostGen ? r : { ok: false, bars: [], error: '실행 위치가 바뀌었습니다. 다시 불러오세요.' }))
     .catch((e): PriceResponse => ({ ok: false, bars: [], error: errMsg(e) }))
-    .finally(() => priceInFlight.delete(key));
+    .finally(() => {
+      if (priceInFlight.get(key) === p) priceInFlight.delete(key);
+    });
   priceInFlight.set(key, p);
   return p;
 });
 // current price + order book + latest trades (r016 `quote`, KIS on the server). unsupported = the server has no `quote` yet
 let quoteUnsupportedAt = 0;
 type QuoteAnswer = { ok: boolean; data?: MarketQuote; error?: string; unsupported?: boolean };
-/** last answer per code (reused for quoteCacheMs: 8 s in market hours, 5 min outside) + one in-flight call per code */
+/** last answer per code (reused for quoteCacheMs: 8 s in market hours, 5 min outside, errors 20 s) + one in-flight call per code */
 const quoteCache = new Map<string, { at: number; res: QuoteAnswer }>();
 const quoteInFlight = new Map<string, Promise<QuoteAnswer>>();
 ipcMain.handle('market:quote', async (_e, code: string) => {
-  if (!ssh.connected) return { ok: false, error: '서버에 연결되어 있지 않습니다.' };
+  if (!files.connected) return { ok: false, error: '서버에 연결되어 있지 않습니다.' };
   if (!/^[0-9A-Z]{6}$/.test(String(code))) return { ok: false, error: '종목 코드 형식 오류' };
   if (quoteUnsupportedAt && Date.now() - quoteUnsupportedAt < 600000) return { ok: false, unsupported: true };
-  const hit = quoteCache.get(code);
+  const key = `${mode}:${code}`;
+  const hit = quoteCache.get(key);
   if (hit && Date.now() - hit.at < quoteCacheMs()) return hit.res;
-  const running = quoteInFlight.get(code);
+  const running = quoteInFlight.get(key);
   if (running) return running;
-  const job = fetchQuote(code)
-    .then((res) => {
+  const g = hostGen;
+  const job: Promise<QuoteAnswer> = fetchQuote(code, g)
+    .then((res): QuoteAnswer => {
+      if (g !== hostGen) return { ok: false, error: '실행 위치가 바뀌었습니다.' }; // answer of the previous host: not kept, not shown
       // errors are kept 20 s (e.g. token_not_ready before r003 starts) so a failing code is not re-asked on every refresh
-      if (res.ok || !res.unsupported) quoteCache.set(code, { at: res.ok ? Date.now() : Date.now() - quoteCacheMs() + CHART_CACHE_MS.quoteFailed, res });
+      if (res.ok || !res.unsupported) quoteCache.set(key, { at: res.ok ? Date.now() : Date.now() - quoteCacheMs() + CHART_CACHE_MS.quoteFailed, res });
       if (quoteCache.size > 50) quoteCache.delete(quoteCache.keys().next().value as string);
       return res;
     })
-    .finally(() => quoteInFlight.delete(code));
-  quoteInFlight.set(code, job);
+    .finally(() => {
+      if (quoteInFlight.get(key) === job) quoteInFlight.delete(key);
+    });
+  quoteInFlight.set(key, job);
   return job;
 });
-async function fetchQuote(code: string): Promise<QuoteAnswer> {
+async function fetchQuote(code: string, g: number): Promise<QuoteAnswer> {
   try {
-    const r = await control.client.run<MarketQuote>(['quote', '--code', code, '--trades', '30'], { timeoutMs: 30000 });
+    const r = await activeClient().run<MarketQuote>(['quote', '--code', code, '--trades', '30'], { timeoutMs: 30000 });
     if (r.ok && r.data?.ok) return { ok: true, data: r.data };
     if (/invalid choice/.test(`${r.error || ''} ${r.stderr || ''}`)) {
-      quoteUnsupportedAt = Date.now();
+      if (g === hostGen) quoteUnsupportedAt = Date.now(); // an old host's answer must not block the new one
       return { ok: false, unsupported: true };
     }
     return { ok: false, error: r.data?.error || r.error };
@@ -454,6 +592,8 @@ ipcMain.handle('replay:cursor', async (_e, ts: number | null) => {
 
 // ---- window ----------------------------------------------------------------------------------
 
+let closeConfirmed = false;
+
 function createWindow(): void {
   win = new BrowserWindow({
     width: 1500,
@@ -478,6 +618,28 @@ function createWindow(): void {
   const w = win;
   w.on('maximize', () => w.webContents.send('win-maximized-changed', true));
   w.on('unmaximize', () => w.webContents.send('win-maximized-changed', false));
+  // local r003 keeps trading when the app closes (it is detached), but the keep-awake ends with the app
+  w.on('close', (e) => {
+    if (closeConfirmed || awakeId === null) return;
+    e.preventDefault();
+    void dialog
+      .showMessageBox(w, {
+        type: 'warning',
+        title: 'AutoBotH 종료',
+        message: '이 PC의 r003은 앱을 닫아도 계속 실행됩니다.',
+        detail: '다만 앱이 켜져 있는 동안 유지하던 절전 방지가 풀립니다. PC가 절전/최대 절전에 들어가면 매매가 멈추니 Windows 전원 설정을 확인하세요. 앱을 다시 열면 실행 중인 r003에 다시 연결됩니다.',
+        buttons: ['닫기', '취소'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      })
+      .then((r) => {
+        if (r.response === 0) {
+          closeConfirmed = true;
+          w.close();
+        }
+      });
+  });
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(__dirname, '../renderer/index.html'));
 }
@@ -512,8 +674,9 @@ void app.whenReady().then(() => {
   // `--open-local <dir>`: open a copied log folder (e.g. fixtures/20261104) without SSH
   const i = process.argv.indexOf('--open-local');
   const localArg = i >= 0 ? process.argv[i + 1] : undefined;
+  const s = getSettings();
   if (localArg && existsSync(localArg)) win!.webContents.once('did-finish-load', () => openLocal(localArg));
-  else if (getSettings().host) void connectAndOpenToday();
+  else if (s.runMode === 'local' ? !localProblem(s) : !!s.host) void connectAndOpenToday();
 });
 
 // ProxyCommand programs (cloudflared, ssh -W ...) are separate processes - make sure none outlive the app
@@ -521,6 +684,7 @@ app.on('will-quit', killAllProxyChildren);
 
 app.on('window-all-closed', () => {
   control.stopPolling();
+  scheduler.stop();
   stopSession();
   ssh.close();
   app.quit();

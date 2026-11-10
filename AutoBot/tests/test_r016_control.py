@@ -57,8 +57,16 @@ class Base(unittest.TestCase):
         self.sysctl = FakeSystemctl()
         self.sleep = mock.patch.object(r016.time, "sleep", lambda *_: None)
         self.sleep.start()
+        # [2026-11-10] these tests cover the systemd backend + /proc process discovery on any OS (the Windows process
+        # backend has its own tests in test_r020_supervisor.py)
+        self.backend = mock.patch.object(r016, "SERVICE_BACKEND", "systemd")
+        self.backend.start()
+        self.hasproc = mock.patch.object(r016, "_has_proc", lambda proc_root=None: True)
+        self.hasproc.start()
 
     def tearDown(self):
+        self.hasproc.stop()
+        self.backend.stop()
         self.sleep.stop()
         self.td.cleanup()
 
@@ -264,7 +272,9 @@ class ServiceTests(Base):
         self.write_snapshot(pid=1)   # pid 1 is not r003
         boot = r016._boot_epoch()
         self.sysctl.active, self.sysctl.pid = True, 999
-        self.sysctl.started = int((time.time() - boot) * 1e6)
+        # +1 s: on Windows the boot epoch comes from time.monotonic() (coarse), so "now" could land a few ms before the watchlist
+        # mtime written in setUp and count it as changed after the start
+        self.sysctl.started = int((time.time() - boot + 1) * 1e6)
         procs = [{"pid": 999, "cmdline": "x"}, {"pid": 1000, "cmdline": "screen r003"}]
         with mock.patch.object(r016, "find_r003_processes", return_value=procs), \
              mock.patch.object(r016, "_service_tree_pids", return_value={"999"}):

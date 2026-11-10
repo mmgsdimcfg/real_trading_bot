@@ -1,0 +1,14 @@
+# AutoBot runtime packages (both hosts: Raspberry Pi Ubuntu venv, Windows notebook venv). Python 3.12+ (r003 uses PEP 701 f-strings).
+# KIS official code (open-trading-api) is a separate checkout next to the repo, not a pip package.
+pandas>=2.2,<3
+numpy>=1.26
+requests>=2.31
+PyYAML>=6.0
+websockets>=12
+pycryptodome>=3.20
+holidays>=0.50
+# Edge AI (g013/g014, r011) and the g017/g019 simulators
+lightgbm>=4.0
+numba>=0.59
+# optional: g002 market-index fallback (pykrx) - g001 writes _market_index.json first
+# pykrx

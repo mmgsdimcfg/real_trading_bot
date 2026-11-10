@@ -4,6 +4,8 @@
  * - [2026-11-05] type=feat - Remote control: Condition.values_meta (editable/type/base/override/pending per value, from
  *   `r016_control.py conditions`) and ConditionsDoc.overrides / override_errors / overrides_file
  * - [2026-11-04] type=feat - Shared data model of the r003 condition pipeline viewer (main process, worker, renderer)
+ * - [2026-11-10] type=feat - Local mode: RunMode, AppStatus.mode, Settings.runMode / localRoot / localPython / local poll intervals,
+ *   scheduler switches (autoCollector, autoPostclose + postcloseTime / postcloseEdgeAi, syncWatchlistToPeer) and keepAwake
  */
 
 export type Stage = 'STATE' | 'TRIGGER' | 'CONTEXT' | 'PRE_ORDER' | 'GUARD' | 'EXIT' | 'ORDER' | string;
@@ -169,8 +171,13 @@ export interface ReplayInfo {
 
 export type ConnState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'local';
 
+/** where r003 runs and the logs are read: 'remote' = Raspberry Pi over SSH, 'local' = this Windows PC */
+export type RunMode = 'remote' | 'local';
+
 export interface AppStatus {
   conn: ConnState;
+  /** run mode of the open connection ('connected' + 'local' = this PC's runtime folder, read directly) */
+  mode?: RunMode;
   message?: string;
   date: string;
   live: boolean;
@@ -180,6 +187,8 @@ export interface AppStatus {
   nextRetryAt?: number;
   /** past day: background download of the day's price files (main/prices.ts PrefetchProgress) */
   prefetch?: { date: string; done: number; total: number; failed: number; error?: string };
+  /** local mode: the PC is kept awake while r003 runs (powerSaveBlocker) */
+  keepAwake?: boolean;
 }
 
 export interface Settings {
@@ -212,4 +221,26 @@ export interface Settings {
   /** funnel start time follows the server ENABLE_NXT_SESSION (08:00 / 09:00) */
   sessionOpenAuto: boolean;
   retentionDays: number;
+
+  // ---- [2026-11-10] local mode (r003 on this PC; the Raspberry Pi is the standby host) ----
+  runMode: RunMode;
+  /** folder that holds real_trading_bot/, runtime/, open-trading-api/ and venv/ (e.g. D:\make_utils) */
+  localRoot: string;
+  /** Python of the local venv ('' = <localRoot>\venv\Scripts\python.exe) */
+  localPython: string;
+  /** local log poll interval (s) - reading a local file is cheap */
+  localPollSec: number;
+  /** local r016 status interval (s) */
+  localStatusPollSec: number;
+  /** start the g011 tick collector on weekday mornings (r016 `collector start`, every 5 min in the window) */
+  autoCollector: boolean;
+  /** run the post-close job (collect -> history -> scan) on trading days at postcloseTime */
+  autoPostclose: boolean;
+  postcloseTime: string;
+  /** add the Edge AI steps to the post-close job */
+  postcloseEdgeAi: boolean;
+  /** after a successful post-close job, copy the new watchlist to the Raspberry Pi (standby host) */
+  syncWatchlistToPeer: boolean;
+  /** keep the PC from sleeping while the local r003 runs (Electron powerSaveBlocker) */
+  keepAwake: boolean;
 }

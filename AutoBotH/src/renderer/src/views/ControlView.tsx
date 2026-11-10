@@ -7,6 +7,9 @@
  *   market hours) are shown by the main process. Server times are shown as the server's KST strings, unconverted
  * - [2026-11-07] type=fix - Mode label: status.dry_run is null while the bot is stopped (no running snapshot); it was shown as a red
  *   '실주문'. Now '-' when stopped, '확인 불가' when running without a snapshot, dry-run/실주문 only from the snapshot
+ * - [2026-11-10] type=feat - Local mode: host line (hostname, systemd / r020 supervisor, host role primary|standby with a switch,
+ *   tick collector state + 시작), PeerPanel for the other host (status, its r003 stop, standby/primary, watchlist copy), local
+ *   wording for the external-r003 warning and the restart note
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -20,6 +23,7 @@ import {
   RISK_PROFILES,
   serviceButtons,
   type HistoryRow,
+  type R016Status,
   type RiskProfile,
   type SchemaKey,
 } from '../../../shared/control';
@@ -51,11 +55,160 @@ const ACTION_LABEL: Record<string, string> = {
   'service.start': '실행',
   'service.stop': '정지',
   'service.restart': '재시작',
+  role: '호스트 역할',
+  'collector.start': '틱 수집기 시작',
+  'collector.restart': '틱 수집기 재시작',
 };
+
+const roleLabel = (r: string | undefined) => (r === 'standby' ? 'standby (매매 안 함)' : 'primary (매매 호스트)');
+
+/** this host: role + tick collector */
+function HostLine() {
+  const control = useStore((s) => s.control);
+  const local = useStore((s) => s.status.mode === 'local');
+  const connected = useStore((s) => s.status.conn === 'connected');
+  const bumpHistory = useStore((s) => s.bumpHistory);
+  const [msg, setMsg] = useState('');
+  const st = control.status;
+  const role = st?.host?.role;
+  const coll = st?.collector;
+  const busy = !!control.busy;
+  const setRole = async (r: 'primary' | 'standby') => {
+    setMsg('');
+    const res = await window.api.ctlRole(r);
+    setMsg(res.ok ? `이 호스트를 ${r} 로 바꿨습니다.` : `실패: ${res.error}`);
+    bumpHistory();
+  };
+  const startCollector = async () => {
+    setMsg('틱 수집기 시작 중…');
+    const res = await window.api.ctlCollectorStart(false);
+    const d = res.data as { already_running?: boolean; pid?: number } | undefined;
+    setMsg(res.ok ? (d?.already_running ? `이미 실행 중 (pid ${d.pid})` : `시작했습니다 (pid ${d?.pid})`) : `실패: ${res.error}`);
+  };
+  if (!st?.host) return null;
+  return (
+    <div className="botline">
+      <span>
+        호스트 <b>{st.host.hostname}</b> ({st.host.platform}, {st.host.backend === 'process' ? 'r020 감시 프로세스' : 'systemd'})
+      </span>
+      <span className={role?.role === 'standby' ? 'pill pend' : 'pill live'} title={role?.set ? `${role.by || ''} ${role.at || ''} ${role.note || ''}` : '역할 파일 없음 = primary'}>
+        {roleLabel(role?.role)}
+      </span>
+      {role?.role === 'standby' ? (
+        <button className="mini" disabled={busy || !connected} onClick={() => void setRole('primary')}>
+          primary 로
+        </button>
+      ) : (
+        <button className="mini" disabled={busy || !connected || !!st.running} title={st.running ? 'r003 실행 중에는 standby 로 바꿀 수 없습니다' : ''} onClick={() => void setRole('standby')}>
+          standby 로
+        </button>
+      )}
+      <span title={coll?.missing?.length ? `구독 안 된 감시 종목: ${coll.missing.join(', ')}` : ''}>
+        틱 수집기 {coll?.running ? `실행 중 (pid ${coll.pid}, ${coll.symbols}종목, 마지막 기록 ${(coll.last_write || '-').replace('T', ' ').slice(11, 19)})` : '정지'}
+      </span>
+      {local && !coll?.running && (
+        <button className="mini" disabled={busy || !connected || role?.role === 'standby'} onClick={() => void startCollector()}>
+          틱 수집기 시작
+        </button>
+      )}
+      {msg && <span className="muted small">{msg}</span>}
+    </div>
+  );
+}
+
+/** the other host: Raspberry Pi (local mode) or this PC (remote mode) */
+function PeerPanel() {
+  const conn = useStore((s) => s.status.conn);
+  const mode = useStore((s) => s.status.mode);
+  const bumpHistory = useStore((s) => s.bumpHistory);
+  const [label, setLabel] = useState('');
+  const [peer, setPeer] = useState<R016Status | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = async () => {
+    setBusy(true);
+    setErr('');
+    const info = await window.api.peerInfo();
+    setLabel(info.label);
+    const r = await window.api.peerStatus();
+    setBusy(false);
+    if (r.ok && r.data) setPeer(r.data);
+    else {
+      setPeer(null);
+      setErr(r.notConfigured ? `${info.label}: 설정되지 않음 (${r.error})` : `${info.label} 상태 확인 실패: ${r.error}`);
+    }
+  };
+  useEffect(() => {
+    if (conn === 'connected') void load();
+  }, [conn, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const act = async (fn: () => Promise<{ ok: boolean; error?: string; cancelled?: boolean }>, okMsg: string) => {
+    setBusy(true);
+    setMsg('');
+    const r = await fn();
+    setBusy(false);
+    if (r.cancelled) return;
+    setMsg(r.ok ? okMsg : `실패: ${r.error}`);
+    bumpHistory();
+    await load();
+  };
+  const role = peer?.host?.role?.role;
+  const s = botSummary(peer);
+  return (
+    <section>
+      <h3>다른 호스트 - {label || (mode === 'local' ? '라즈베리파이' : '이 PC')}</h3>
+      <p className="muted small">
+        계좌는 하나이고 r003을 돌릴 수 있는 곳은 둘입니다. 여기서 [실행]을 누르면 먼저 다른 호스트를 확인해, r003이 돌고 있으면 거부하고 primary 이면 standby 로 바꾼 뒤 시작합니다
+        (standby 호스트는 r003 시작을 거부하고 틱 수집기 cron 을 띄우지 않습니다).
+      </p>
+      {err && <p className="err-text small">{err}</p>}
+      {peer && (
+        <div className="botline">
+          <span className={`bot bot-${s}`}>
+            <i className="dot" />
+            r003 {BOT_LABEL[s]}
+          </span>
+          <span>{peer.host ? `${peer.host.hostname} (${peer.host.platform})` : '이전 버전 서버 (역할 기능 없음 - git pull 필요)'}</span>
+          {peer.host && <span className={role === 'standby' ? 'pill pend' : 'pill live'}>{roleLabel(role)}</span>}
+          <span>틱 수집기 {peer.collector?.running ? '실행 중' : '정지'}</span>
+          <span className="muted small">기준 {isoShow(peer.generated_at)}</span>
+        </div>
+      )}
+      <div className="actions">
+        <button disabled={busy} onClick={() => void load()}>
+          상태 확인
+        </button>
+        <button disabled={busy || !peer?.running} onClick={() => void act(() => window.api.peerStop(), `${label} r003 을 정지했습니다.`)}>
+          {label} r003 정지
+        </button>
+        <button disabled={busy || !peer?.host || role === 'standby' || !!peer?.running} onClick={() => void act(() => window.api.peerRole('standby'), `${label} 를 standby 로 바꿨습니다.`)}>
+          standby 로
+        </button>
+        <button disabled={busy || !peer?.host || role !== 'standby'} onClick={() => void act(() => window.api.peerRole('primary'), `${label} 를 primary 로 바꿨습니다.`)}>
+          primary 로
+        </button>
+        <button disabled={busy || !peer} onClick={() => void act(() => window.api.peerSyncWatchlist(), `감시목록을 ${label} 로 보냈습니다.`)}>
+          감시목록 보내기 →
+        </button>
+        {busy && <i className="spinner" />}
+        <span className="muted small">{msg}</span>
+      </div>
+      {mode === 'local' && (
+        <p className="muted small">
+          노트북을 못 쓰는 날: 라즈베리파이를 primary 로 바꾸고 설정/연결 탭에서 실행 위치를 "라즈베리파이"로 바꿔 연결한 뒤 [실행]하세요. 장 마감 후 자동 작업이 끝나면 새 감시목록이
+          라즈베리파이로도 복사됩니다 (설정).
+        </p>
+      )}
+    </section>
+  );
+}
 
 export function ControlView() {
   const control = useStore((s) => s.control);
   const connected = useStore((s) => s.status.conn === 'connected');
+  const isLocal = useStore((s) => s.status.mode === 'local');
   const historyRev = useStore((s) => s.historyRev);
   const bumpHistory = useStore((s) => s.bumpHistory);
   const st = control.status;
@@ -138,7 +291,7 @@ export function ControlView() {
   if (!connected && !st) {
     return (
       <div className="control">
-        <div className="empty">서버에 연결되어 있지 않습니다 - 설정/연결 탭에서 연결하세요.</div>
+        <div className="empty">연결되어 있지 않습니다 - 설정/연결 탭에서 실행 위치(이 PC / 라즈베리파이)를 고르고 연결하세요.</div>
       </div>
     );
   }
@@ -146,7 +299,10 @@ export function ControlView() {
   return (
     <div className="control">
       <section>
-        <h3>봇 상태 (r003 · {svc?.unit || 'autobot-r003.service'})</h3>
+        <h3>
+          봇 상태 (r003 · {isLocal ? '이 PC' : '라즈베리파이'} · {svc?.unit || 'autobot-r003.service'})
+        </h3>
+        <HostLine />
         <div className="botline">
           <span className={`bot bot-${summary}`}>
             <i className="dot" />
@@ -222,7 +378,8 @@ export function ControlView() {
         <div className={st?.external_r003?.length ? 'callout danger' : 'muted small'}>
           {st?.external_r003?.length ? (
             <>
-              <b>외부 r003 감지</b> - 서버의 screen 세션에서 r003을 종료한 뒤 앱에서 실행하세요.
+              <b>외부 r003 감지</b> -{' '}
+              {isLocal ? '감시 프로세스 밖에서 실행된 r003입니다 (콘솔 등). [정지]를 누르면 상태를 저장하고 끝내도록 요청합니다.' : '서버의 screen 세션에서 r003을 종료한 뒤 앱에서 실행하세요.'}
               <ul>
                 {st.external_r003.map((p) => (
                   <li key={p.pid} className="mono">
@@ -239,9 +396,14 @@ export function ControlView() {
           <p className="callout small">봇이 꺼져 있습니다. 저장된 오버라이드 {st.override_count}건은 다음 실행 때 적용됩니다.</p>
         )}
         <p className="muted small">
-          서비스는 서버 부팅 시 자동으로 시작하지 않습니다. 서버를 재부팅한 뒤에는 여기서 [실행]을 눌러야 합니다. 상태 기준 시각 {isoShow(st?.generated_at)} (서버 KST)
+          {isLocal
+            ? '이 PC의 r003은 앱과 별개로 실행되어 앱을 닫아도 계속됩니다 (PC 재부팅·절전 시 멈춤 - 재부팅 후에는 여기서 [실행]). 크래시하면 60초 뒤 다시 시작합니다 (10분에 3회까지).'
+            : '서비스는 서버 부팅 시 자동으로 시작하지 않습니다. 서버를 재부팅한 뒤에는 여기서 [실행]을 눌러야 합니다.'}{' '}
+          상태 기준 시각 {isoShow(st?.generated_at)} (KST)
         </p>
       </section>
+
+      <PeerPanel />
 
       <section>
         <h3>미적용 변경 · 저장된 오버라이드 ({overrides.length})</h3>
