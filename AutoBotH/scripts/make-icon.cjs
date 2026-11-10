@@ -1,7 +1,10 @@
 // Update log
 // - [2026-11-05] type=feat (AutoBotH icon generator, same method as NoteH/MDViewerH: teal rounded-square gradient with three rising white
-//   candlesticks, drawn directly with supersampling, no external packages, producing build/icon.png (256), build/icon.ico (16-256,
+//   candlesticks (replaced by a line chart on 2026-11-10), drawn directly with supersampling, no external packages, producing build/icon.png (256), build/icon.ico (16-256,
 //   PNG-compressed entries) and resources/icon.png (window icon))
+// - [2026-11-10] type=feat (Design changed to a line chart: white zig-zag rising polyline with round joins and an end dot over a faint
+//   baseline/axis on the same teal background; also writes src/renderer/public/icon.png, used left of "AutoBotH" in the title bar
+//   and in the about dialog)
 //
 // Run: node scripts/make-icon.cjs  (only rerun when changing the icon design - the output is stored in build/ and resources/)
 
@@ -13,6 +16,7 @@ const zlib = require('zlib');
 
 const outDir = path.resolve(__dirname, '..', 'build');
 const resourcesDir = path.resolve(__dirname, '..', 'resources');
+const publicDir = path.resolve(__dirname, '..', 'src', 'renderer', 'public');
 
 function inRoundRect(x, y, x0, y0, x1, y1, r) {
   if (x < x0 || x > x1 || y < y0 || y > y1) return false;
@@ -27,20 +31,32 @@ function bgColor(x, y) {
   return [0x14 + (0x0f - 0x14) * t, 0xb8 + (0x5f - 0xb8) * t, 0xa6 + (0x73 - 0xa6) * t];
 }
 
-// Rising candlesticks in a 256-based coordinate system: center x, wick top/bottom, body top/bottom
-const CANDLES = [
-  { x: 82, wick: [124, 204], body: [144, 188] },
-  { x: 128, wick: [88, 180], body: [108, 160] },
-  { x: 174, wick: [52, 144], body: [70, 124] },
-];
+// Line chart in a 256-based coordinate system: rising zig-zag polyline, end dot, faint axis (left + bottom)
+const LINE = [[50, 178], [90, 136], [122, 158], [164, 100], [206, 66]];
+const LINE_HALF = 9; // half stroke width
+const DOT_R = 15;
+const AXIS = [[[46, 52], [46, 206]], [[46, 206], [212, 206]]];
+const AXIS_HALF = 4;
+const AXIS_ALPHA = 0.45;
+
+function distSeg(x, y, [ax, ay], [bx, by]) {
+  const dx = bx - ax, dy = by - ay;
+  const t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+}
 
 function pixel(x, y) {
   if (!inRoundRect(x, y, 8, 8, 248, 248, 52)) return null;
-  for (const c of CANDLES) {
-    if (inRoundRect(x, y, c.x - 16, c.body[0], c.x + 16, c.body[1], 5)) return [255, 255, 255];
-    if (inRoundRect(x, y, c.x - 4, c.wick[0], c.x + 4, c.wick[1], 4)) return [255, 255, 255];
+  const [ex, ey] = LINE[LINE.length - 1];
+  if (Math.hypot(x - ex, y - ey) <= DOT_R) return [255, 255, 255];
+  for (let i = 1; i < LINE.length; i++) {
+    if (distSeg(x, y, LINE[i - 1], LINE[i]) <= LINE_HALF) return [255, 255, 255];
   }
-  return bgColor(x, y);
+  const bg = bgColor(x, y);
+  if (AXIS.some(([a, b]) => distSeg(x, y, a, b) <= AXIS_HALF)) {
+    return bg.map((v) => v + (255 - v) * AXIS_ALPHA);
+  }
+  return bg;
 }
 
 function render(size) {
@@ -124,4 +140,5 @@ fs.writeFileSync(path.join(outDir, 'icon.ico'), Buffer.concat([header, dir, ...p
 fs.writeFileSync(path.join(outDir, 'icon.png'), pngs[sizes.length - 1]);
 fs.mkdirSync(resourcesDir, { recursive: true });
 fs.writeFileSync(path.join(resourcesDir, 'icon.png'), pngs[sizes.length - 1]);
-console.log('[icon] build/icon.ico, build/icon.png, resources/icon.png 생성');
+fs.writeFileSync(path.join(publicDir, 'icon.png'), pngs[sizes.length - 1]);
+console.log('[icon] build/icon.ico, build/icon.png, resources/icon.png, src/renderer/public/icon.png 생성');

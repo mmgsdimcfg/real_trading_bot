@@ -5,35 +5,62 @@
  *   workers, start / stop, the last run's steps (rc, times) and a log tail refreshed while it runs. Only one job runs at a time
  *   (r021 lock); jobs are detached and keep running when the app closes. The scheduler line shows the local-mode automation
  *   (tick collector / post-close / watchlist copy to the Raspberry Pi)
+ * - [2026-11-10] type=feat - New layout: section title + muted subtitle, job name with its script code in a muted monospace,
+ *   state as a dot + text, durations as m:ss, step commands shortened to the script code ("g001 --date ..." - full command in the
+ *   tooltip), date / workers inputs with placeholders and 시작 / 정지 on the right; the date and step start time moved to tooltips
+ * - [2026-11-10] type=feat - 기준일 is a date field (components/DatePicker): a click opens a small calendar, future days cannot be
+ *   picked; the job still receives YYYYMMDD
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
+import { DatePicker } from '../components/DatePicker';
 import { JOB_STATE_LABEL, localYmd, type JobList, type JobLog, type JobRun } from '../../../shared/control';
 
-const isoShow = (s: string | null | undefined) => (s ? s.replace('T', ' ').slice(5, 19) : '-');
+const isoShow = (s: string | null | undefined) => (s ? s.replace('T', ' ').slice(5, 16) : '-');
+/** elapsed time as m:ss (h:mm:ss from one hour) */
 const dur = (a: string | null | undefined, b: string | null | undefined) => {
   if (!a) return '';
   const t = (b ? Date.parse(b) : Date.now()) - Date.parse(a);
   if (!Number.isFinite(t) || t < 0) return '';
-  const m = Math.floor(t / 60000);
-  return m >= 60 ? `${Math.floor(m / 60)}시간 ${m % 60}분` : `${m}분 ${Math.floor((t % 60000) / 1000)}초`;
+  const sec = Math.floor(t / 1000);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const ss = String(sec % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+};
+/** "데이터 수집 (g001)" -> ["데이터 수집", "g001"] - the script codes are shown in a muted monospace after the name */
+const splitTitle = (t: string): [string, string] => {
+  const m = /^(.*?)\s*\(([^()]+)\)\s*$/.exec(t);
+  if (!m) return [t, ''];
+  // only script codes ("g001", "g013/g014/g024", "g002 -> r004") - a step list like "(수집 -> 이력 -> 선별)" is dropped
+  return [m[1], /[a-z]\d{3}/i.test(m[2]) ? m[2] : ''];
+};
+/** short state words for this view ("완료 (일부 실패)" -> "일부 실패") */
+const stateText = (st: string) => (st === 'done_with_errors' ? '일부 실패' : JOB_STATE_LABEL[st] || st);
+/** step command without the folder and the long script name: "g001_data_collect_symbols_daily.py --date 1" -> "g001 --date 1" */
+const shortCmd = (argv: string[]) => {
+  const [script = '', ...args] = argv;
+  const base = script.split(/[\\/]/).pop() || '';
+  const code = /^([a-z]\d{3})_.*\.py$/i.exec(base);
+  return [code ? code[1] : base, ...args].join(' ');
 };
 
 const DESC: Record<string, string> = {
-  postclose: '장 마감 후 한 번에: 수집(g001) → 일봉 이력(g025) → 다음 거래일 감시 종목 선별(g002 → r004 감시목록). 수집이 실패하면 선별하지 않습니다.',
-  collect: '분봉·일봉 데이터 수집 (KIS API, 전 종목 - 오래 걸림)',
-  history: '종목별 일봉 이력 갱신 (차트 일/주/월봉)',
-  scan: '수집된 데이터로 다음 거래일 감시 종목 선별 → r004 감시목록 저장',
-  edge_ai: 'Edge AI 데이터셋 생성 → 학습 → 점검 (CPU 많이 씀)',
-  universe: '수집 대상 종목 목록(g004) 갱신 - 신규상장/상장폐지/위험종목',
+  postclose: '수집 → 이력 → 다음 거래일 감시 종목 선별 · 수집 실패 시 선별 생략',
+  collect: '분봉·일봉 데이터 수집 · KIS API 전 종목 (오래 걸림)',
+  history: '종목별 일봉 이력 갱신 · 차트 일/주/월봉',
+  scan: '수집된 데이터로 다음 거래일 감시 종목 선별 · r004 감시목록 저장',
+  edge_ai: 'Edge AI 데이터셋 생성 → 학습 → 점검 · CPU 많이 씀',
+  universe: '수집 대상 종목 목록(g004) 갱신 · 신규상장/상장폐지/위험종목',
 };
 
+/** state as a dot + text (.st), colored by kind */
 function stateClass(st: string | undefined) {
-  if (st === 'running') return 'pill pend';
-  if (st === 'done') return 'pill live';
-  if (st === 'failed' || st === 'done_with_errors') return 'pill fail';
-  return 'pill';
+  if (st === 'running') return 'st st-run';
+  if (st === 'done') return 'st st-ok';
+  if (st === 'failed' || st === 'done_with_errors') return 'st st-fail';
+  return 'st st-none';
 }
 
 export function JobsView() {
@@ -108,76 +135,84 @@ export function JobsView() {
   return (
     <div className="control jobs">
       <section>
-        <h3>데이터 작업 ({local ? '이 PC' : '라즈베리파이'})</h3>
+        <h3>데이터 작업</h3>
+        <p className="subtitle">
+          {local ? '이 PC' : '라즈베리파이'}에서 실행 · 한 번에 한 작업만 실행됩니다
+          {running ? ` · 지금 실행 중: ${splitTitle(list?.jobs.find((j) => j.name === running)?.title || running)[0]}` : ''}
+        </p>
         {err && <p className="err-text small">{err}</p>}
-        <table className="grid compact">
+        <table className="grid">
           <thead>
             <tr>
               <th>작업</th>
               <th>마지막 실행</th>
               <th>상태</th>
-              <th>기준일</th>
               <th>소요</th>
             </tr>
           </thead>
           <tbody>
-            {(list?.jobs || []).map((j) => (
-              <tr key={j.name} className={j.name === sel ? 'sel' : ''} onClick={() => setSel(j.name)}>
-                <td>
-                  <b>{j.title}</b>
-                </td>
-                <td className="mono">{isoShow(j.last?.started_at)}</td>
-                <td>
-                  <span className={stateClass(j.last?.state)}>{j.last ? JOB_STATE_LABEL[j.last.state] || j.last.state : '없음'}</span>
-                </td>
-                <td className="mono">{j.last?.args?.date || '-'}</td>
-                <td>{j.last ? dur(j.last.started_at, j.last.finished_at) : ''}</td>
-              </tr>
-            ))}
+            {(list?.jobs || []).map((j) => {
+              const [name, code] = splitTitle(j.title);
+              return (
+                <tr key={j.name} className={j.name === sel ? 'sel' : ''} onClick={() => setSel(j.name)}>
+                  <td>
+                    <b>{name}</b> {code && <span className="code-tag">{code}</span>}
+                  </td>
+                  <td className="mono" title={j.last?.args?.date ? `기준일 ${j.last.args.date}` : ''}>
+                    {isoShow(j.last?.started_at)}
+                  </td>
+                  <td>
+                    <span className={stateClass(j.last?.state)}>{j.last ? stateText(j.last.state) : '없음'}</span>
+                  </td>
+                  <td className="mono">{j.last ? dur(j.last.started_at, j.last.finished_at) : ''}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
-        <p className="muted small">한 번에 한 작업만 실행됩니다{running ? ` - 지금 실행 중: ${list?.jobs.find((j) => j.name === running)?.title || running}` : ''}.</p>
       </section>
 
       <section>
-        <h3>{selRow?.title || sel}</h3>
-        <p className="muted small">{DESC[sel]}</p>
-        <div className="actions">
-          <label>
-            기준일 <input className="mono" style={{ width: 96 }} value={date} onChange={(e) => setDate(e.target.value.trim())} placeholder="YYYYMMDD" />
-          </label>
-          <button className="mini" onClick={() => setDate(localYmd())}>
-            오늘
-          </button>
+        <h3>{splitTitle(selRow?.title || sel)[0]}</h3>
+        <p className="subtitle">{DESC[sel]}</p>
+        <div className="job-form">
+          <DatePicker value={date} onChange={setDate} today={localYmd()} max={localYmd()} title="기준일 (누르면 달력, 기본은 오늘)" />
           {(sel === 'collect' || sel === 'postclose' || sel === 'edge_ai') && (
-            <label title="g001 수집 스레드 / Edge AI 프로세스 수 (비우면 기본값)">
-              작업자 수 <input type="number" min={1} max={32} style={{ width: 60 }} value={workers} onChange={(e) => setWorkers(e.target.value)} placeholder="기본" />
-            </label>
+            <input
+              type="number"
+              min={1}
+              max={32}
+              style={{ width: 120 }}
+              value={workers}
+              onChange={(e) => setWorkers(e.target.value)}
+              placeholder="작업자 수"
+              title="g001 수집 스레드 / Edge AI 프로세스 수 (비우면 기본값)"
+            />
           )}
           {sel === 'postclose' && (
-            <label className="check">
-              <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 재학습 포함
+            <label className="check" title="장 마감 파이프라인 끝에 Edge AI 재학습(g013/g014/g024)을 이어서 실행">
+              <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 포함
             </label>
           )}
-          <button className="primary" disabled={busy || !!running} title={running ? '다른 작업이 실행 중입니다' : ''} onClick={() => void start()}>
-            시작
-          </button>
-          <button disabled={busy || running !== sel} onClick={() => void stop()}>
-            정지
-          </button>
           {busy && <i className="spinner" />}
           <span className="muted small">{msg}</span>
+          <span className="push-right" />
+          <button className="primary wide" disabled={busy || !!running} title={running ? '다른 작업이 실행 중입니다' : ''} onClick={() => void start()}>
+            시작
+          </button>
+          <button className="wide" disabled={busy || running !== sel} onClick={() => void stop()}>
+            정지
+          </button>
         </div>
         {last && (
           <>
             {last.error && <p className={last.state === 'failed' ? 'err-text small' : 'muted small'}>{last.error}</p>}
-            <table className="grid compact">
+            <table className="grid">
               <thead>
                 <tr>
                   <th>단계</th>
                   <th>상태</th>
                   <th>rc</th>
-                  <th>시작</th>
                   <th>소요</th>
                   <th>명령</th>
                 </tr>
@@ -187,12 +222,15 @@ export function JobsView() {
                   <tr key={`${s.name}-${i}`} className="nohover">
                     <td>{s.name}</td>
                     <td>
-                      <span className={stateClass(s.state)}>{JOB_STATE_LABEL[s.state] || s.state}</span>
+                      <span className={stateClass(s.state)}>{stateText(s.state)}</span>
                     </td>
                     <td className="mono">{s.rc ?? ''}</td>
-                    <td className="mono">{isoShow(s.started_at)}</td>
-                    <td>{dur(s.started_at, s.finished_at)}</td>
-                    <td className="mono wrap small">{s.argv.slice(0, 1).map((a) => a.split(/[\\/]/).pop()).concat(s.argv.slice(1)).join(' ')}</td>
+                    <td className="mono" title={s.started_at ? `시작 ${isoShow(s.started_at)}` : ''}>
+                      {dur(s.started_at, s.finished_at)}
+                    </td>
+                    <td className="mono wrap" title={s.argv.join(' ')}>
+                      {shortCmd(s.argv)}
+                    </td>
                   </tr>
                 ))}
               </tbody>

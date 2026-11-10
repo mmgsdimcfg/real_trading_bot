@@ -1,5 +1,9 @@
 {
   "_updateLog": [
+    "[2026-11-10] type=feat - v2.3.2_003: new app icon - a white rising line chart (polyline, end dot, faint axis) on the teal background (scripts/make-icon.cjs -> build/icon.ico/png, resources/icon.png, src/renderer/public/icon.png); the title bar shows it left of \"AutoBotH\"",
+    "[2026-11-10] type=feat - v2.3.2_002: 데이터 작업 기준일 field opens a small calendar on click (components/DatePicker: YYYY-MM-DD, 일~토, month arrows, today/selected marked, future days disabled, 오늘 button)",
+    "[2026-11-10] type=feat - v2.3.2_001: new layout - sidebar in groups (운영 / 분석 / 시스템) with line icons and a rounded highlight, monochrome palette with the primary button in the text color, flat sections (title + subtitle, rules between) instead of cards, tables with muted headers and row rules, title bar with the secondary items as one line on the right; data jobs show state as dot + text, durations as m:ss and short step commands (g001 --date ...)",
+    "[2026-11-10] type=feat - v2.3.1_001: UI restyle - tabs moved to a vertical list on the left (rule between rows, accent bar on the active tab), tab content uses the full width (no max-width on the control/jobs/settings panels), base line-height 1.5 with roomier table rows, lists and check rows, cooler neutral palette (dark/light) with 4-6px radii for a more formal look",
     "[2026-11-10] type=fix - v2.3.0_002: the PC folders moved to make_utils/Trading (real_trading_bot, runtime, open-trading-api, venv) - local root detection also tries D:/make_utils/Trading and C:/make_utils/Trading, settings placeholders/README updated; release.cjs finds make_utils/release.config.json in the parent folders",
     "[2026-11-10] type=feat - v2.3.0_001: local mode - r003 runs on this PC (settings 실행 위치: 라즈베리파이 (SSH) / 이 PC (로컬)). Logs and price files read in place from <localRoot>/runtime (FileHost: SFTP or local fs), r016_control.py run as a local child process with the venv Python (no shell, UTF-8, tree kill on timeout); on Windows r016 starts the r020 supervisor (systemd replacement). One account, two hosts: host roles primary/standby (r016 role), every r003 start/restart first checks the other host (refuse if it trades, switch it to standby, ask when unreachable) and makes this host primary. New 데이터 작업 tab (r016 job: post-close collect -> daily history -> watchlist selection, Edge AI, universe). Local-mode scheduler (tick collector mornings, post-close job, watchlist copy to the Pi), keep-awake while the local r003 runs, other-host panel on the control tab, doctor comparison of both hosts, KIS config import from the Pi, restart offer after a watchlist save while r003 runs",
     "[2026-11-06] type=feat - v2.2.0_008: chart tab for any code - daily bars from the server's r016 `bars` (daily_history ~14 months, week/month built from them), tick/minute bars fall back to `bars` when the server has no file for the code/day; side panel uses r016 `quote` when the server has it (KIS current price, 10-level order book, trades, 체결강도, limits, 52-week high/low, PER/PBR, market cap, VI/halt) and completes today's daily/weekly/monthly candle from it. Older servers keep the SFTP-only path. docs/server_kis_market_data_request_20261106.md: KIS fallback in `bars` + new `quote` (read-only quote TRs, shared rate limit with r003, token reuse, cache)",
@@ -22,7 +26,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.0",
+  "version": "2.3.2",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -70,7 +74,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "003",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

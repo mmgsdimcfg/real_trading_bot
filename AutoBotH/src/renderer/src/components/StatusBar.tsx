@@ -9,6 +9,9 @@
  * - [2026-11-07] type=feat - Past day: price files download progress ("주가 받는 중 3/22", then "주가 로컬 보관" or the failure count)
  * - [2026-11-07] type=feat - Past day in replay: the day pill shows "재현 HH:MM:SS" instead of "1회 로드"
  * - [2026-11-05] type=feat - Bot summary (봇: 실행 중 / 정지 / 미적용 변경 N, dry-run marker, external r003 warning) - opens the 제어 tab
+ * - [2026-11-10] type=feat - Title bar like the new layout: plain "AutoBotH", left = connection (이 PC · 연결됨) / bot / day + LIVE,
+ *   right = one muted line (수신 · 경고 · 시장 · 감시 · 조건); files/bytes/lines moved into the tooltips
+ * - [2026-11-10] type=feat - App icon (line chart, scripts/make-icon.cjs) left of "AutoBotH" again
  * - [2026-11-10] type=feat - Host tag in the connection item (이 PC / 라즈베리파이) and "☕ 절전 방지" while the local r003 keeps the PC awake
  */
 
@@ -103,6 +106,9 @@ export function StatusBar() {
   const bot = botSummary(control.status);
   const nPend = control.status?.running ? pendingCount(control.status) : 0;
 
+  // Left: what is connected, the bot and the day. Right: the day's details as one "a · b · c" line (secondary information)
+  const connText = `${status.conn !== 'idle' && status.conn !== 'local' ? (status.mode === 'local' ? '이 PC · ' : '라즈베리파이 · ') : ''}${CONN_LABEL[status.conn] || status.conn}${retry !== null && status.conn === 'reconnecting' ? ` (${retry}s)` : ''}`;
+  const filesTip = snap?.files.map((f) => `${f.name}  ${f.offset}/${f.size}`).join('\n') || '';
   return (
     <header className="titlebar" onDoubleClick={(e) => e.target === e.currentTarget && window.winCtl.toggleMaximize()}>
       <span className="tb-brand">
@@ -110,64 +116,61 @@ export function StatusBar() {
         AutoBotH
       </span>
       <div className="statusbar" onDoubleClick={(e) => e.target === e.currentTarget && window.winCtl.toggleMaximize()}>
-      <span className={`conn conn-${status.conn}`} title={status.message || ''}>
-        <i className="dot" />
-        {status.conn !== 'idle' && status.conn !== 'local' && <b className="host-tag">{status.mode === 'local' ? '이 PC' : '라즈베리파이'}</b>}
-        {CONN_LABEL[status.conn] || status.conn}
-        {retry !== null && status.conn === 'reconnecting' ? ` (${retry}s)` : ''}
-      </span>
-      {status.keepAwake && (
-        <span className="sb-item muted" title="이 PC의 r003이 실행 중이라 절전을 막고 있습니다 (앱이 켜져 있는 동안)">
-          ☕ 절전 방지
+        <span className={`conn conn-${status.conn}`} title={status.message || ''}>
+          {connText}
         </span>
-      )}
-      {(control.status || control.busy) && (
-        <button
-          className={`sb-item linklike bot bot-${bot}`}
-          onClick={() => setTab('control')}
-          title={control.error ? `상태 조회 오류: ${control.error}` : '제어 탭 열기'}
-        >
-          <i className="dot" />
-          봇: {control.busy ? `${control.busy}…` : BOT_LABEL[bot]}
-          {control.status?.running && control.status.dry_run ? ' (dry-run)' : ''}
-          {nPend > 0 && <b className="pill pend">미적용 변경 {nPend}</b>}
-        </button>
-      )}
-      <span className="sb-item">
-        {status.date ? ymdDash(status.date) : '날짜 없음'}
-        <b className={status.live ? 'pill live' : snap?.replay?.cursor != null ? 'pill replay-pill' : 'pill'}>
-          {status.live ? 'LIVE' : snap?.replay?.cursor != null ? `재현 ${fmtKstTime(snap.replay.cursor)}` : '1회 로드'}
-        </b>
-      </span>
-      {status.prefetch && status.prefetch.date === status.date && (
-        <span
-          className={`sb-item ${status.prefetch.failed ? 'warn-text' : ''}`}
-          title={`지난 날짜의 주가 파일(틱·1분봉·일봉, 전날 예열분 포함)을 이 PC에 받아 둡니다. 받은 뒤에는 연결 없이도 차트가 보입니다.${status.prefetch.error ? `\n마지막 오류: ${status.prefetch.error}` : ''}`}
-        >
-          {status.prefetch.done < status.prefetch.total
-            ? `주가 받는 중 ${status.prefetch.done}/${status.prefetch.total}`
-            : status.prefetch.failed
-              ? `주가 ${status.prefetch.failed}종목 실패`
-              : '주가 로컬 보관'}
-        </span>
-      )}
-      <span className="sb-item" title="마지막으로 새 바이트를 받은 시각">
-        수신 {status.lastReceivedAt ? `${fmtKstTime(status.lastReceivedAt)} KST (${ago}s 전)` : '-'}
-      </span>
-      <span className="sb-item" title={snap?.files.map((f) => `${f.name}  ${f.offset}/${f.size}`).join('\n') || ''}>
-        파일 {snap?.files.length || 0} · {fmtBytes(bytes)} · {fmtInt(snap?.lines)}줄
-      </span>
-      <button className={`sb-item linklike ${snap?.warnings ? 'warn' : ''}`} onClick={() => setTab('settings')} title="알 수 없는 태그/사유 목록 (설정 화면)">
-        경고 {fmtInt(snap?.warnings || 0)}
-      </button>
-      <span className="sb-item">시장 {snap?.regime || 'N/A'}</span>
-      {snap?.wl && (
+        {(control.status || control.busy) && (
+          <button
+            className={`sb-item linklike bot bot-${bot}`}
+            onClick={() => setTab('control')}
+            title={control.error ? `상태 조회 오류: ${control.error}` : '제어 탭 열기'}
+          >
+            봇 {control.busy ? `${control.busy}…` : BOT_LABEL[bot]}
+            {control.status?.running && control.status.dry_run ? ' (dry-run)' : ''}
+            {nPend > 0 && <b className="pill pend">미적용 변경 {nPend}</b>}
+          </button>
+        )}
         <span className="sb-item">
-          감시 {snap.wl.active}/{snap.wl.backup}
+          {status.date ? ymdDash(status.date) : '날짜 없음'}
+          <b className={status.live ? 'pill live' : snap?.replay?.cursor != null ? 'pill replay-pill' : 'pill'}>
+            {status.live ? 'LIVE' : snap?.replay?.cursor != null ? `재현 ${fmtKstTime(snap.replay.cursor)}` : '1회 로드'}
+          </b>
         </span>
-      )}
-      <span className="sb-item">조건 {SRC_LABEL[status.conditionsSource || ''] || '-'}</span>
-      {status.message && <span className="sb-msg" title={status.message}>{status.message}</span>}
+        {status.keepAwake && (
+          <span className="sb-item muted" title="이 PC의 r003이 실행 중이라 절전을 막고 있습니다 (앱이 켜져 있는 동안)">
+            절전 방지
+          </span>
+        )}
+        {status.message && <span className="sb-msg" title={status.message}>{status.message}</span>}
+        <span className="sb-right">
+          {status.prefetch && status.prefetch.date === status.date && (
+            <span
+              className={status.prefetch.failed ? 'warn-text' : ''}
+              title={`지난 날짜의 주가 파일(틱·1분봉·일봉, 전날 예열분 포함)을 이 PC에 받아 둡니다. 받은 뒤에는 연결 없이도 차트가 보입니다.${status.prefetch.error ? `\n마지막 오류: ${status.prefetch.error}` : ''}`}
+            >
+              {status.prefetch.done < status.prefetch.total
+                ? `주가 받는 중 ${status.prefetch.done}/${status.prefetch.total}`
+                : status.prefetch.failed
+                  ? `주가 ${status.prefetch.failed}종목 실패`
+                  : '주가 로컬 보관'}
+            </span>
+          )}
+          {status.lastReceivedAt && (
+            <span title={`마지막으로 새 바이트를 받은 시각 (${ago}s 전)\n파일 ${snap?.files.length || 0} · ${fmtBytes(bytes)} · ${fmtInt(snap?.lines)}줄\n${filesTip}`}>
+              수신 {fmtKstTime(status.lastReceivedAt)}
+            </span>
+          )}
+          <button className={`linklike ${snap?.warnings ? 'warn' : ''}`} onClick={() => setTab('settings')} title="알 수 없는 태그/사유 목록 (설정 화면)">
+            경고 {fmtInt(snap?.warnings || 0)}
+          </button>
+          <span>시장 {snap?.regime || 'N/A'}</span>
+          {snap?.wl && (
+            <span>
+              감시 {snap.wl.active}/{snap.wl.backup}
+            </span>
+          )}
+          <span title={`파일 ${snap?.files.length || 0} · ${fmtBytes(bytes)} · ${fmtInt(snap?.lines)}줄`}>조건 {SRC_LABEL[status.conditionsSource || ''] || '-'}</span>
+        </span>
       </div>
       <WindowButtons />
     </header>
