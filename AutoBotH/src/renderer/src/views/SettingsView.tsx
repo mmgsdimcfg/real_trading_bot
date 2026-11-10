@@ -346,7 +346,7 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
           <div className="form">
             <label>로컬 루트 폴더</label>
             <div className="row">
-              <input value={form.localRoot} onChange={(e) => set('localRoot', e.target.value)} placeholder="D:\make_utils (real_trading_bot / runtime / venv 가 있는 폴더)" />
+              <input value={form.localRoot} onChange={(e) => set('localRoot', e.target.value)} placeholder="D:\make_utils\Trading (real_trading_bot / runtime / venv 가 있는 폴더)" />
               <button
                 onClick={async () => {
                   const p = await window.api.pickFolderTitled('로컬 루트 폴더 (real_trading_bot 이 있는 폴더)');
@@ -426,10 +426,10 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
           <ol>
             <li>Python 3.12 설치 (r003 은 3.12 문법을 씁니다): <code>winget install Python.Python.3.12</code></li>
             <li>
-              venv: <code>py -3.12 -m venv {form.localRoot || 'D:\\make_utils'}\venv</code> → <code>venv\Scripts\python -m pip install "pandas&lt;3" numpy requests pyyaml websockets pycryptodome holidays lightgbm numba</code>
+              venv: <code>py -3.12 -m venv {form.localRoot || 'D:\\make_utils\\Trading'}\venv</code> → <code>venv\Scripts\python -m pip install "pandas&lt;3" numpy requests pyyaml websockets pycryptodome holidays lightgbm numba</code>
             </li>
             <li>
-              KIS 공식 코드: <code>git clone https://github.com/koreainvestment/open-trading-api {form.localRoot || 'D:\\make_utils'}\open-trading-api</code> (라즈베리파이와 같은 커밋인지 환경 비교로 확인)
+              KIS 공식 코드: <code>git clone https://github.com/koreainvestment/open-trading-api {form.localRoot || 'D:\\make_utils\\Trading'}\open-trading-api</code> (라즈베리파이와 같은 커밋인지 환경 비교로 확인)
             </li>
             <li>KIS 설정: 위 [KIS 설정 가져오기] (앱키/시크릿/계좌가 든 kis_devlp.yaml)</li>
             <li>데이터: 선별(g002)은 지난 거래일들의 runtime/data 가 필요합니다 - 첫날은 [데이터 작업] 탭에서 며칠치를 수집하거나 라즈베리파이의 runtime/data 를 복사하세요.</li>
