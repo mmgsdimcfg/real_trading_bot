@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-10] type=fix (release.config.json is searched in the parent folders - the repository moved to make_utils/Trading/real_trading_bot, and the fixed '..' never reached make_utils)
 // - [2026-10-26] type=feat (--yml-only: only completes dist/latest.yml (buildNumber/portableFile/releaseNotes) without uploading and without needing release.config.json - run by postdist, so a plain npm run dist already gives the latest.yml to copy to the update site by hand)
 // - [2026-10-15] type=feat (Shared by every make_utils program: the .blockmap is uploaded only when present - BBoxH (PyInstaller/Inno Setup) has none)
 // - [2026-10-15] type=feat (Release upload for the self-hosted update feed https://update.iccid.dev/<Folder>/: copies the installer, its .blockmap,
@@ -35,7 +36,17 @@ const ymlOnly = process.argv.includes('--yml-only');
 
 // ---- Upload target ----
 let target = process.env.UPDATE_TARGET || '';
-const configFile = path.resolve(root, '..', 'release.config.json');
+// make_utils/release.config.json is looked up in the parent folders - AutoBotH sits deeper than the other apps
+// (make_utils/Trading/real_trading_bot/AutoBotH), so a fixed '..' pointed at a file that does not exist
+const configFile = (() => {
+  let dir = path.dirname(root);
+  for (let i = 0; i < 4; i++) {
+    const f = path.join(dir, 'release.config.json');
+    if (fs.existsSync(f)) return f;
+    dir = path.dirname(dir);
+  }
+  return path.resolve(root, '..', 'release.config.json');
+})();
 if (!target && fs.existsSync(configFile)) {
   try { target = JSON.parse(fs.readFileSync(configFile, 'utf8')).target || ''; } catch (e) { fail(`release.config.json 읽기 실패: ${e.message}`); }
 }

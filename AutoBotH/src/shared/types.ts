@@ -224,7 +224,7 @@ export interface Settings {
 
   // ---- [2026-11-10] local mode (r003 on this PC; the Raspberry Pi is the standby host) ----
   runMode: RunMode;
-  /** folder that holds real_trading_bot/, runtime/, open-trading-api/ and venv/ (e.g. D:\make_utils) */
+  /** folder that holds real_trading_bot/, runtime/, open-trading-api/ and venv/ (e.g. D:\make_utils\Trading) */
   localRoot: string;
   /** Python of the local venv ('' = <localRoot>\venv\Scripts\python.exe) */
   localPython: string;

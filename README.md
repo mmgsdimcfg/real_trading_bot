@@ -11,7 +11,7 @@
   (`runtime/config/host_role.json` = primary / standby, standby 호스트는 r003 시작을 거부).
 - 배치 (호스트마다 저장소 폴더와 같은 위치에 `runtime/`, `open-trading-api/`):
   - 라즈베리파이: `/data/srv/autobot/{real_trading_bot, runtime, open-trading-api}`, Python `~/venv`, systemd `autobot-r003.service`
-  - 노트북: 예) `D:\make_utils\{real_trading_bot, runtime, open-trading-api, venv}`, Python 3.12 venv, `live_trading/r020_supervisor.py`
+  - 노트북: 예) `D:\make_utils\Trading\{real_trading_bot, runtime, open-trading-api, venv}`, Python 3.12 venv, `live_trading/r020_supervisor.py`
   - `AUTO_TRADING_RUNTIME`, `OPEN_TRADING_API_ROOT` 환경변수로 바꿀 수 있다.
 - 운영 문서: `AutoBot/autoboth_local_mode_20261110.md` (노트북 메인 + 라즈베리파이 예비 구조, 전환 절차, r016 새 명령).
   이전 서버-앱 연동 문서: `AutoBot/autoboth_*.md`, `AutoBot/condition_viewer_implementation_prompt_20261104.md`.

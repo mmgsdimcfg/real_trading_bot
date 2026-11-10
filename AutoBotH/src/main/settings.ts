@@ -1,5 +1,6 @@
 /*
  * Update log
+ * - [2026-11-10] type=fix - detectLocalRoot() also tries D:/C:\make_utils\Trading (the PC folders moved under make_utils/Trading)
  * - [2026-11-04] type=feat - Settings in %APPDATA%/autoboth/autoboth-settings.json (electron-store). The key passphrase / password is
  *   stored only encrypted with safeStorage (DPAPI on Windows) - never in plain text and never sent back to the renderer.
  *   Settings from v1 (pemPath) are taken over as keyPath
@@ -75,7 +76,7 @@ export function detectLocalRoot(): string {
   } catch {
     /* no app path in tests */
   }
-  cands.push('D:\\make_utils', 'C:\\make_utils');
+  cands.push('D:\\make_utils\\Trading', 'C:\\make_utils\\Trading', 'D:\\make_utils', 'C:\\make_utils');
   return cands.find(isLocalRoot) || '';
 }
 
