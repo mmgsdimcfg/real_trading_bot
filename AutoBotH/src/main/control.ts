@@ -23,10 +23,14 @@
  *   a run-mode switch while a verb runs
  * - [2026-11-11] type=feat - ctl:jobStart keepWatchlist -> r021 --keep-watchlist (scan builds the picks files only, r004 stays);
  *   while r003 runs, a scan / postclose that WOULD rewrite r004 asks first (one dialog together with the KIS-load note)
+ * - [2026-11-11] type=feat - askConfirm(): confirmations are drawn by the renderer (ConfirmDialog) in the app's style instead of the
+ *   native message box; confirmBox() keeps its signature on top of it. The r003 start/restart/stop question is a card: LIVE / 장중
+ *   tag, "실주문 모드로 실행할까요?", one-line reason and rows 모드 / 프로파일 / 실행 위치 (host label + hostname)
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
 import type { ArgvRunner } from './localRunner';
+import type { ConfirmRequest, ConfirmRow, ConfirmSpec } from '../shared/types';
 import {
   argProblem,
   buildR016Command,
@@ -174,10 +178,47 @@ export interface OpResult<T = unknown> {
   data?: T | null;
 }
 
-export async function confirmBox(win: BrowserWindow | null, title: string, message: string, detail: string, okLabel: string): Promise<boolean> {
-  const opts = { type: 'warning' as const, title, message, detail, buttons: [okLabel, '취소'], defaultId: 1, cancelId: 1, noLink: true };
-  const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
-  return r.response === 0;
+/**
+ * [2026-11-11] Confirmations are shown by the renderer in the app's own style (components/ConfirmDialog): 'confirm:ask' carries the
+ * ConfirmSpec + id, 'confirm:answer' brings the answer back. A closed window answers "no". Electron's native message box is used
+ * only when there is no window to draw in (or it is still loading).
+ */
+const pendingConfirms = new Map<number, (ok: boolean) => void>();
+let confirmSeq = 0;
+let confirmIpcReady = false;
+export async function askConfirm(win: BrowserWindow | null, spec: ConfirmSpec): Promise<boolean> {
+  if (!win || win.isDestroyed() || win.webContents.isLoading()) {
+    const detail = [spec.message, ...(spec.rows || []).map((r) => `${r.k}: ${r.v}`)].filter(Boolean).join('\n');
+    const opts = { type: 'warning' as const, title: spec.kicker, message: spec.title, detail, buttons: [spec.okLabel, spec.cancelLabel || '취소'], defaultId: 1, cancelId: 1, noLink: true };
+    const r = win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+    return r.response === 0;
+  }
+  if (!confirmIpcReady) {
+    confirmIpcReady = true;
+    ipcMain.on('confirm:answer', (_e, id: number, ok: boolean) => {
+      const done = pendingConfirms.get(id);
+      if (done) done(!!ok);
+    });
+  }
+  const id = ++confirmSeq;
+  return new Promise<boolean>((resolve) => {
+    const onClosed = () => done(false);
+    const done = (ok: boolean) => {
+      if (!pendingConfirms.delete(id)) return;
+      win.removeListener('closed', onClosed);
+      resolve(ok);
+    };
+    pendingConfirms.set(id, done);
+    win.once('closed', onClosed);
+    if (win.isMinimized()) win.restore();
+    win.focus();
+    win.webContents.send('confirm:ask', { id, ...spec } as ConfirmRequest);
+  });
+}
+
+/** title = kicker line, message = the question, detail = the line under it (kept for the older call sites) */
+export function confirmBox(win: BrowserWindow | null, title: string, message: string, detail: string, okLabel: string): Promise<boolean> {
+  return askConfirm(win, { kicker: title, title: message, message: detail, okLabel });
 }
 
 export function createControl(deps: ControlDeps) {
@@ -313,14 +354,38 @@ export function createControl(deps: ControlDeps) {
         if (opts.profile && opts.profile !== cur.risk_profile) args.push('--profile', opts.profile);
       }
       const dryRun = opts.dryRun ?? cur.dry_run;
-      const warn: string[] = [];
-      if (verb !== 'stop' && !dryRun) warn.push(`실주문 모드로 실행합니다 (${deps.hostLabel()}). r003이 실제 매수/매도 주문을 보냅니다.`);
-      if (verb !== 'start' && isMarketHours(cur.generated_at)) warn.push('장중입니다. 정지된 동안 보유 종목 매도 조건 평가가 중단됩니다.');
-      if (warn.length && !skipConfirm) {
+      const live = verb !== 'stop' && !dryRun; // real orders
+      const market = verb !== 'start' && isMarketHours(cur.generated_at); // sell evaluation pauses while stopped
+      if ((live || market) && !skipConfirm) {
         const label = verb === 'start' ? '실행' : verb === 'stop' ? '정지' : '재시작';
         const prof = opts.profile || cur.risk_profile;
-        const detail = verb === 'stop' ? '' : `모드: ${dryRun ? 'dry-run (주문 안 냄)' : '실주문'} · 프로파일: ${prof}`;
-        if (!(await confirm(`r003 ${label}`, warn.join('\n'), detail, label))) return { ok: false, cancelled: true };
+        const where = `${deps.hostLabel()}${cur.host?.hostname ? ` · ${cur.host.hostname}` : ''}`;
+        const rows: ConfirmRow[] = [];
+        if (verb !== 'stop') {
+          rows.push({ k: '모드', v: dryRun ? 'dry-run (주문 안 냄)' : '실주문 (dry-run 꺼짐)', tone: live ? 'live' : undefined }, { k: '프로파일', v: String(prof || '-') });
+        }
+        rows.push({ k: '실행 위치', v: where });
+        const pause = verb === 'stop' ? '정지된 동안' : '재시작되는 동안';
+        const spec: ConfirmSpec = live
+          ? {
+              tag: 'LIVE',
+              tagTone: 'live',
+              kicker: `r003 ${label}`,
+              title: `실주문 모드로 ${label}할까요?`,
+              message: `r003이 ${deps.hostLabel()}에서 실제 매수·매도 주문을 전송합니다.${market ? ` 장중이라 ${pause} 보유 종목의 매도 조건 평가가 멈춥니다.` : ''}`,
+              rows,
+              okLabel: `실주문으로 ${label}`,
+            }
+          : {
+              tag: '장중',
+              tagTone: 'warn',
+              kicker: `r003 ${label}`,
+              title: `장중에 ${label}할까요?`,
+              message: `${pause} 보유 종목의 매도 조건 평가가 중단됩니다.`,
+              rows,
+              okLabel: label,
+            };
+        if (!(await askConfirm(deps.win(), spec))) return { ok: false, cancelled: true };
       }
       if (verb !== 'stop' && deps.beforeStart) {
         const g = await deps.beforeStart(verb, client);
