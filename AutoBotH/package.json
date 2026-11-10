@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-11] type=feat - v2.3.3_001: 제어 탭 맨 위에 \"매매 실행 위치\" 표 - 이 PC / 라즈베리파이 두 줄(역할, r003, 틱 수집기), \"실행 대상\" 줄이 [실행]이 r003을 시작하는 호스트. 다른 줄의 [여기서 실행]을 누르면 runMode 저장 후 다시 연결(설정/연결 탭에 갈 필요 없음). 실행 버튼은 \"이 PC에서 실행\" / \"라즈베리파이에서 실행\". 호스트 줄 + 다른 호스트 패널을 이 표로 합치고 역할/틱 수집기/다른 호스트 r003 정지/감시목록 복사는 \"고급\" 아래로",
     "[2026-11-10] type=feat - v2.3.2_003: new app icon - a white rising line chart (polyline, end dot, faint axis) on the teal background (scripts/make-icon.cjs -> build/icon.ico/png, resources/icon.png, src/renderer/public/icon.png); the title bar shows it left of \"AutoBotH\"",
     "[2026-11-10] type=feat - v2.3.2_002: 데이터 작업 기준일 field opens a small calendar on click (components/DatePicker: YYYY-MM-DD, 일~토, month arrows, today/selected marked, future days disabled, 오늘 button)",
     "[2026-11-10] type=feat - v2.3.2_001: new layout - sidebar in groups (운영 / 분석 / 시스템) with line icons and a rounded highlight, monochrome palette with the primary button in the text color, flat sections (title + subtitle, rules between) instead of cards, tables with muted headers and row rules, title bar with the secondary items as one line on the right; data jobs show state as dot + text, durations as m:ss and short step commands (g001 --date ...)",
@@ -26,7 +27,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -74,7 +75,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

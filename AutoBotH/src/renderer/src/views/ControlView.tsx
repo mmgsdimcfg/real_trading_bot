@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
+import type { RunMode } from '../../../shared/types';
 import {
   botSummary,
   fmtValue,
@@ -62,89 +63,67 @@ const ACTION_LABEL: Record<string, string> = {
 
 const roleLabel = (r: string | undefined) => (r === 'standby' ? 'standby (매매 안 함)' : 'primary (매매 호스트)');
 
-/** this host: role + tick collector */
-function HostLine() {
+const HOST_NAME: Record<RunMode, string> = { local: '이 PC', remote: '라즈베리파이' };
+
+/**
+ * [2026-11-11] 매매 실행 위치: both hosts as two rows (role, r003, tick collector). The selected row is the host the [실행] button
+ * starts r003 on (= settings.runMode / the open connection). "여기서 실행" on the other row saves runMode and reconnects (what
+ * 설정/연결 > 실행 위치 > [저장 후 연결] did). Role switches, collector start, the other host's r003 stop and the watchlist copy
+ * stay available under "고급".
+ */
+function HostPanel() {
   const control = useStore((s) => s.control);
-  const local = useStore((s) => s.status.mode === 'local');
-  const connected = useStore((s) => s.status.conn === 'connected');
+  const status = useStore((s) => s.status);
+  const settings = useStore((s) => s.settings);
   const bumpHistory = useStore((s) => s.bumpHistory);
-  const [msg, setMsg] = useState('');
-  const st = control.status;
-  const role = st?.host?.role;
-  const coll = st?.collector;
-  const busy = !!control.busy;
-  const setRole = async (r: 'primary' | 'standby') => {
-    setMsg('');
-    const res = await window.api.ctlRole(r);
-    setMsg(res.ok ? `이 호스트를 ${r} 로 바꿨습니다.` : `실패: ${res.error}`);
-    bumpHistory();
-  };
-  const startCollector = async () => {
-    setMsg('틱 수집기 시작 중…');
-    const res = await window.api.ctlCollectorStart(false);
-    const d = res.data as { already_running?: boolean; pid?: number } | undefined;
-    setMsg(res.ok ? (d?.already_running ? `이미 실행 중 (pid ${d.pid})` : `시작했습니다 (pid ${d?.pid})`) : `실패: ${res.error}`);
-  };
-  if (!st?.host) return null;
-  return (
-    <div className="botline">
-      <span>
-        호스트 <b>{st.host.hostname}</b> ({st.host.platform}, {st.host.backend === 'process' ? 'r020 감시 프로세스' : 'systemd'})
-      </span>
-      <span className={role?.role === 'standby' ? 'pill pend' : 'pill live'} title={role?.set ? `${role.by || ''} ${role.at || ''} ${role.note || ''}` : '역할 파일 없음 = primary'}>
-        {roleLabel(role?.role)}
-      </span>
-      {role?.role === 'standby' ? (
-        <button className="mini" disabled={busy || !connected} onClick={() => void setRole('primary')}>
-          primary 로
-        </button>
-      ) : (
-        <button className="mini" disabled={busy || !connected || !!st.running} title={st.running ? 'r003 실행 중에는 standby 로 바꿀 수 없습니다' : ''} onClick={() => void setRole('standby')}>
-          standby 로
-        </button>
-      )}
-      <span title={coll?.missing?.length ? `구독 안 된 감시 종목: ${coll.missing.join(', ')}` : ''}>
-        틱 수집기 {coll?.running ? `실행 중 (pid ${coll.pid}, ${coll.symbols}종목, 마지막 기록 ${(coll.last_write || '-').replace('T', ' ').slice(11, 19)})` : '정지'}
-      </span>
-      {local && !coll?.running && (
-        <button className="mini" disabled={busy || !connected || role?.role === 'standby'} onClick={() => void startCollector()}>
-          틱 수집기 시작
-        </button>
-      )}
-      {msg && <span className="muted small">{msg}</span>}
-    </div>
-  );
-}
-
-/** the other host: Raspberry Pi (local mode) or this PC (remote mode) */
-function PeerPanel() {
-  const conn = useStore((s) => s.status.conn);
-  const mode = useStore((s) => s.status.mode);
-  const bumpHistory = useStore((s) => s.bumpHistory);
-  const [label, setLabel] = useState('');
+  const connected = status.conn === 'connected';
+  const mode: RunMode = (connected && status.mode) || settings?.runMode || 'remote';
+  const peerKind: RunMode = mode === 'local' ? 'remote' : 'local';
+  const self = connected ? control.status : null;
   const [peer, setPeer] = useState<R016Status | null>(null);
-  const [err, setErr] = useState('');
+  const [peerErr, setPeerErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [msg, setMsg] = useState('');
+  const ctlBusy = !!control.busy;
 
-  const load = async () => {
+  const loadPeer = async () => {
     setBusy(true);
-    setErr('');
-    const info = await window.api.peerInfo();
-    setLabel(info.label);
+    setPeerErr('');
     const r = await window.api.peerStatus();
     setBusy(false);
     if (r.ok && r.data) setPeer(r.data);
     else {
       setPeer(null);
-      setErr(r.notConfigured ? `${info.label}: 설정되지 않음 (${r.error})` : `${info.label} 상태 확인 실패: ${r.error}`);
+      setPeerErr(r.notConfigured ? `설정되지 않음 (${r.error})` : `상태 확인 실패: ${r.error}`);
     }
   };
   useEffect(() => {
-    if (conn === 'connected') void load();
-  }, [conn, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (connected) void loadPeer();
+    else {
+      setPeer(null);
+      setPeerErr('');
+    }
+  }, [connected, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const act = async (fn: () => Promise<{ ok: boolean; error?: string; cancelled?: boolean }>, okMsg: string) => {
+  /** make `kind` the host that [실행] starts r003 on: save runMode, then connect (the view, the control and the scheduler follow) */
+  const switchTo = async (kind: RunMode) => {
+    if (!settings || switching) return;
+    setSwitching(true);
+    setMsg(kind === mode ? `${HOST_NAME[kind]}에 연결 중…` : `실행 위치를 ${HOST_NAME[kind]}로 바꾸는 중…`);
+    const s = await window.api.saveSettings({ ...settings, runMode: kind });
+    if (!s.ok) {
+      setMsg(`실패: ${s.error}`);
+      setSwitching(false);
+      return;
+    }
+    useStore.setState({ settings: s.settings });
+    const r = await window.api.connect();
+    setSwitching(false);
+    setMsg(r.ok ? `이제 [실행]은 ${HOST_NAME[kind]}에서 r003을 시작합니다.` : `${HOST_NAME[kind]} 연결 실패: ${r.error} - 설정/연결 탭에서 ${HOST_NAME[kind]} 연결 정보를 확인하세요.`);
+  };
+
+  const act = async (fn: () => Promise<{ ok: boolean; error?: string; cancelled?: boolean }>, okMsg: string, reloadPeer = true) => {
     setBusy(true);
     setMsg('');
     const r = await fn();
@@ -152,55 +131,139 @@ function PeerPanel() {
     if (r.cancelled) return;
     setMsg(r.ok ? okMsg : `실패: ${r.error}`);
     bumpHistory();
-    await load();
+    if (reloadPeer) await loadPeer();
   };
-  const role = peer?.host?.role?.role;
-  const s = botSummary(peer);
+  const startCollector = async () => {
+    setMsg('틱 수집기 시작 중…');
+    const res = await window.api.ctlCollectorStart(false);
+    const d = res.data as { already_running?: boolean; pid?: number } | undefined;
+    setMsg(res.ok ? (d?.already_running ? `이미 실행 중 (pid ${d.pid})` : `시작했습니다 (pid ${d?.pid})`) : `실패: ${res.error}`);
+  };
+
+  const selfRole = self?.host?.role?.role;
+  const peerRole = peer?.host?.role?.role;
+  const peerName = HOST_NAME[peerKind];
+  const anyBusy = busy || switching || ctlBusy;
+
+  const row = (kind: RunMode) => {
+    const selected = kind === mode;
+    const st = selected ? self : peer;
+    const role = st?.host?.role?.role;
+    const s = botSummary(st);
+    const hostText = st?.host ? `${st.host.hostname} (${st.host.platform})` : kind === 'local' ? 'Windows' : 'Linux · SSH';
+    return (
+      <tr key={kind} className={`nohover${selected ? ' sel' : ''}`}>
+        <td className="host-pick">
+          {selected ? (
+            <b className="pill live" title="[실행]을 누르면 이 호스트에서 r003이 시작됩니다">
+              실행 대상
+            </b>
+          ) : (
+            <button className="mini" disabled={anyBusy} title={`실행 위치를 ${HOST_NAME[kind]}로 바꿉니다 (설정 저장 후 다시 연결)`} onClick={() => void switchTo(kind)}>
+              여기서 실행
+            </button>
+          )}
+        </td>
+        <td>
+          <b>{HOST_NAME[kind]}</b> <span className="muted small">{hostText}</span>
+        </td>
+        <td>
+          {st?.host ? (
+            <span className={role === 'standby' ? 'pill pend' : 'pill live'} title={st.host.role?.set ? `${st.host.role.by || ''} ${st.host.role.at || ''} ${st.host.role.note || ''}` : '역할 파일 없음 = primary'}>
+              {roleLabel(role)}
+            </span>
+          ) : st ? (
+            <span className="muted small">이전 버전 서버 (git pull 필요)</span>
+          ) : (
+            '-'
+          )}
+        </td>
+        <td>
+          {st ? (
+            <span className={`bot bot-${s}`}>
+              <i className="dot" />
+              r003 {BOT_LABEL[s]}
+            </span>
+          ) : (
+            <span className="muted small">{selected ? (connected ? '상태 확인 중…' : '연결 안 됨') : peerErr || '확인 안 됨'}</span>
+          )}
+        </td>
+        <td className="muted small">{st ? `틱 수집기 ${st.collector?.running ? '실행 중' : '정지'}` : ''}</td>
+      </tr>
+    );
+  };
+
   return (
     <section>
-      <h3>다른 호스트 - {label || (mode === 'local' ? '라즈베리파이' : '이 PC')}</h3>
+      <h3>매매 실행 위치</h3>
       <p className="muted small">
-        계좌는 하나이고 r003을 돌릴 수 있는 곳은 둘입니다. 여기서 [실행]을 누르면 먼저 다른 호스트를 확인해, r003이 돌고 있으면 거부하고 primary 이면 standby 로 바꾼 뒤 시작합니다
-        (standby 호스트는 r003 시작을 거부하고 틱 수집기 cron 을 띄우지 않습니다).
+        r003(자동매매)은 계좌가 하나라 <b>한 곳에서만</b> 돌립니다. 아래에서 "실행 대상"인 호스트에서 [실행]이 r003을 시작합니다. 다른 호스트로 바꾸려면 그 줄의 [여기서 실행]을
+        누르세요.
       </p>
-      {err && <p className="err-text small">{err}</p>}
-      {peer && (
-        <div className="botline">
-          <span className={`bot bot-${s}`}>
-            <i className="dot" />
-            r003 {BOT_LABEL[s]}
-          </span>
-          <span>{peer.host ? `${peer.host.hostname} (${peer.host.platform})` : '이전 버전 서버 (역할 기능 없음 - git pull 필요)'}</span>
-          {peer.host && <span className={role === 'standby' ? 'pill pend' : 'pill live'}>{roleLabel(role)}</span>}
-          <span>틱 수집기 {peer.collector?.running ? '실행 중' : '정지'}</span>
-          <span className="muted small">기준 {isoShow(peer.generated_at)}</span>
-        </div>
-      )}
+      <table className="grid compact host-table">
+        <tbody>
+          {row('local')}
+          {row('remote')}
+        </tbody>
+      </table>
       <div className="actions">
-        <button disabled={busy} onClick={() => void load()}>
-          상태 확인
+        {!connected && (
+          <button className="primary" disabled={switching} onClick={() => void switchTo(mode)}>
+            {HOST_NAME[mode]}에 연결
+          </button>
+        )}
+        <button disabled={anyBusy || !connected} onClick={() => void loadPeer()}>
+          {peerName} 상태 확인
         </button>
-        <button disabled={busy || !peer?.running} onClick={() => void act(() => window.api.peerStop(), `${label} r003 을 정지했습니다.`)}>
-          {label} r003 정지
-        </button>
-        <button disabled={busy || !peer?.host || role === 'standby' || !!peer?.running} onClick={() => void act(() => window.api.peerRole('standby'), `${label} 를 standby 로 바꿨습니다.`)}>
-          standby 로
-        </button>
-        <button disabled={busy || !peer?.host || role !== 'standby'} onClick={() => void act(() => window.api.peerRole('primary'), `${label} 를 primary 로 바꿨습니다.`)}>
-          primary 로
-        </button>
-        <button disabled={busy || !peer} onClick={() => void act(() => window.api.peerSyncWatchlist(), `감시목록을 ${label} 로 보냈습니다.`)}>
-          감시목록 보내기 →
-        </button>
-        {busy && <i className="spinner" />}
-        <span className="muted small">{msg}</span>
+        {(busy || switching) && <i className="spinner" />}
+        {msg && <span className={/실패/.test(msg) ? 'err-text small' : 'muted small'}>{msg}</span>}
       </div>
-      {mode === 'local' && (
+      <details className="adv">
+        <summary>고급: 역할 바꾸기 · 틱 수집기 · {peerName} r003 정지 · 감시목록 복사</summary>
         <p className="muted small">
-          노트북을 못 쓰는 날: 라즈베리파이를 primary 로 바꾸고 설정/연결 탭에서 실행 위치를 "라즈베리파이"로 바꿔 연결한 뒤 [실행]하세요. 장 마감 후 자동 작업이 끝나면 새 감시목록이
-          라즈베리파이로도 복사됩니다 (설정).
+          [실행]은 시작 전에 {peerName}를 확인해 r003이 돌고 있으면 거부하고, primary 이면 standby 로 바꾼 뒤 {HOST_NAME[mode]}를 primary 로 해서 시작합니다 (standby 호스트는
+          r003 시작을 거부하고 틱 수집기 cron 을 띄우지 않습니다). 아래 버튼은 그 역할을 손으로 바꿀 때만 씁니다.
         </p>
-      )}
+        <div className="actions">
+          <span className="muted small">{HOST_NAME[mode]}:</span>
+          {selfRole === 'standby' ? (
+            <button className="mini" disabled={anyBusy || !connected} onClick={() => void act(() => window.api.ctlRole('primary'), `${HOST_NAME[mode]}를 primary 로 바꿨습니다.`, false)}>
+              primary 로
+            </button>
+          ) : (
+            <button
+              className="mini"
+              disabled={anyBusy || !connected || !self?.host || !!self?.running}
+              title={self?.running ? 'r003 실행 중에는 standby 로 바꿀 수 없습니다' : ''}
+              onClick={() => void act(() => window.api.ctlRole('standby'), `${HOST_NAME[mode]}를 standby 로 바꿨습니다.`, false)}
+            >
+              standby 로
+            </button>
+          )}
+          {mode === 'local' && !self?.collector?.running && (
+            <button className="mini" disabled={anyBusy || !connected || selfRole === 'standby'} onClick={() => void startCollector()}>
+              틱 수집기 시작
+            </button>
+          )}
+          <span className="muted small">{peerName}:</span>
+          <button className="mini" disabled={anyBusy || !peer?.running} onClick={() => void act(() => window.api.peerStop(), `${peerName} r003 을 정지했습니다.`)}>
+            r003 정지
+          </button>
+          <button className="mini" disabled={anyBusy || !peer?.host || peerRole === 'standby' || !!peer?.running} onClick={() => void act(() => window.api.peerRole('standby'), `${peerName}를 standby 로 바꿨습니다.`)}>
+            standby 로
+          </button>
+          <button className="mini" disabled={anyBusy || !peer?.host || peerRole !== 'standby'} onClick={() => void act(() => window.api.peerRole('primary'), `${peerName}를 primary 로 바꿨습니다.`)}>
+            primary 로
+          </button>
+          <button className="mini" disabled={anyBusy || !peer} onClick={() => void act(() => window.api.peerSyncWatchlist(), `감시목록을 ${peerName}로 보냈습니다.`)}>
+            감시목록 보내기 →
+          </button>
+        </div>
+        <p className="muted small">
+          노트북을 못 쓰는 날: 라즈베리파이 줄의 [여기서 실행]을 누른 뒤 [라즈베리파이에서 실행]. 노트북이 켜져 있으면 자동으로 standby 가 됩니다. 장 마감 후 자동 작업이 끝나면
+          새 감시목록이 라즈베리파이로도 복사됩니다 (설정).
+        </p>
+      </details>
     </section>
   );
 }
@@ -291,18 +354,19 @@ export function ControlView() {
   if (!connected && !st) {
     return (
       <div className="control">
-        <div className="empty">연결되어 있지 않습니다 - 설정/연결 탭에서 실행 위치(이 PC / 라즈베리파이)를 고르고 연결하세요.</div>
+        <HostPanel />
+        <div className="empty">연결되어 있지 않습니다 - 위에서 실행 위치를 고르고 [연결]을 누르세요 (연결 정보는 설정/연결 탭).</div>
       </div>
     );
   }
 
   return (
     <div className="control">
+      <HostPanel />
       <section>
         <h3>
           봇 상태 (r003 · {isLocal ? '이 PC' : '라즈베리파이'} · {svc?.unit || 'autobot-r003.service'})
         </h3>
-        <HostLine />
         <div className="botline">
           <span className={`bot bot-${summary}`}>
             <i className="dot" />
@@ -348,7 +412,7 @@ export function ControlView() {
         </div>
         <div className="actions">
           <button className="primary" disabled={!btn.start} title={btn.startReason || ''} onClick={() => void run('start')}>
-            실행
+            {isLocal ? '이 PC' : '라즈베리파이'}에서 실행
           </button>
           <button disabled={!btn.stop} onClick={() => void run('stop')}>
             정지
@@ -403,7 +467,6 @@ export function ControlView() {
         </p>
       </section>
 
-      <PeerPanel />
 
       <section>
         <h3>미적용 변경 · 저장된 오버라이드 ({overrides.length})</h3>

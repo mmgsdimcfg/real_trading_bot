@@ -338,7 +338,7 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
           </button>
         </div>
         <span className="muted small">
-          현재 연결: {status.conn === 'connected' ? (status.mode === 'local' ? '이 PC' : '라즈베리파이') : '없음'} - 바꾼 뒤 [저장 후 연결]을 누르면 적용됩니다.
+          현재 연결: {status.conn === 'connected' ? (status.mode === 'local' ? '이 PC' : '라즈베리파이') : '없음'} - 바꾼 뒤 [저장 후 연결]을 누르면 적용됩니다. 제어 탭 맨 위 "매매 실행 위치"에서 [여기서 실행]으로도 바꿀 수 있습니다.
         </span>
       </div>
       {local && (
