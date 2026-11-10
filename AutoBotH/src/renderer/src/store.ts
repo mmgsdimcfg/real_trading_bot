@@ -15,6 +15,7 @@
  * - [2026-11-08] type=feat - buyEvalOnly: "이 종목 평가된 항목만" checkbox state, kept in localStorage
  * - [2026-11-08] type=feat - sellEvalOnly: the same checkbox for the sell chart (merge of the Windows buyEvalOnly change)
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
+ * - [2026-11-10] type=feat - 'jobs' tab (데이터 작업) and the local-mode scheduler state (sched)
  */
 
 import { create } from 'zustand';
@@ -132,9 +133,19 @@ function loadFlag(key: string): boolean {
   }
 }
 
-export type Tab = 'control' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'trades' | 'settings';
+export type Tab = 'control' | 'jobs' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'trades' | 'settings';
+
+/** local-mode scheduler state pushed by main ('sched') */
+export interface SchedView {
+  enabled: boolean;
+  lastCollectorAt?: number;
+  lastCollectorMsg?: string;
+  lastPostcloseMsg?: string;
+  lastSyncMsg?: string;
+}
 
 interface State {
+  sched: SchedView | null;
   status: AppStatus;
   snapshot: Snapshot | null;
   conditions: ConditionsDoc | null;
@@ -173,6 +184,7 @@ interface State {
 }
 
 export const useStore = create<State>()((set, get) => ({
+  sched: null,
   status: { conn: 'idle', date: '', live: false },
   snapshot: null,
   conditions: null,
@@ -279,6 +291,8 @@ export function initStore(): void {
   api.onStatus((status) => useStore.setState({ status }));
   api.onConditions((conditions) => useStore.setState({ conditions }));
   void api.ctlState().then((control) => useStore.setState({ control }));
+  void api.schedState().then((sched) => useStore.setState({ sched }));
+  api.onSched((sched) => useStore.setState({ sched }));
   api.onControl((control) => {
     const prev = useStore.getState().control;
     useStore.setState({ control });

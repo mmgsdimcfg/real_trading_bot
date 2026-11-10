@@ -8,6 +8,8 @@
  *   (.version-foot) removed - version and update check live in the ☰ menu / About dialog
  * - [2026-11-05] type=feat - Remote control: control tab (bot state, spinner, callouts, history), node-header ON/OFF toggle and
  *   pending dot, value editor rows (toggle / input / JSON textarea, row errors), watchlist editor modal, status-bar bot item
+ * - [2026-11-10] type=feat - Local mode: host tag in the status bar, failed pill, data-jobs log box, automation check list,
+ *   doctor mismatch rows
  */
 
 :root {
@@ -487,3 +489,12 @@ table.ob td { padding: 2px 4px; border-bottom: 1px solid var(--grid); }
 .ob-bid { text-align: left; }
 tr.ob-cur .ob-price { outline: 1.5px solid var(--text-2); outline-offset: -1px; }
 tr.ob-total td { font-weight: 600; border-bottom: none; }
+
+/* [2026-11-10] local mode */
+.host-tag { font-size: 11px; font-weight: 700; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-2); margin-right: 2px; }
+.pill.fail { border-color: var(--st-fail); color: var(--st-fail); }
+.jobs .grid tbody tr { cursor: pointer; }
+.jobs .grid tbody tr.nohover { cursor: default; }
+.log-box { margin-top: 8px; max-height: 320px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; }
+.checks { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.grid tr.warn-row td { color: var(--st-hold); }

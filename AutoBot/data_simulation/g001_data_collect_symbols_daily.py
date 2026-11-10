@@ -280,7 +280,6 @@ Update log:
 from __future__ import annotations
 
 import argparse
-import fcntl
 import os
 import json
 import math
@@ -298,6 +297,7 @@ import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "live_trading"))  # r001_define_config, r002_strategy_core_shared
+import r019_platform as r019  # noqa: E402  [2026-11-10] Linux/Windows file locks
 PROJECT_ROOT = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[3] / "open-trading-api")))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_llm"))
 sys.path.insert(0, str(PROJECT_ROOT / "examples_user" / "domestic_stock"))
@@ -1983,9 +1983,7 @@ def main() -> None:
         output_dir = data_root_path / target_date
         output_dir.mkdir(parents=True, exist_ok=True)
         date_lock = open(output_dir / DATE_LOCK_FILE, "a")  # released when this loop iteration rebinds/ends
-        try:
-            fcntl.flock(date_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if not r019.try_lock(date_lock):
             date_lock.close()
             raise SystemExit(f"another g001 is collecting {target_date} ({output_dir / DATE_LOCK_FILE}) - aborting")
 

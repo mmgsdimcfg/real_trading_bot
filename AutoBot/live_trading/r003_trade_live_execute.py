@@ -20,6 +20,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-10] type=feat owner=claude
+    summary: 윈도우 노트북 실행(AutoBotH 로컬 모드) - (1) 단일 실행 잠금을 r019(flock/msvcrt)로, 종전 윈도우는 잠금 없이 실행
+      (2) 정지 요청 파일 <runtime>/data/live_runtime/r003.stop - 메인 루프가 매 턴 확인해 live_state 저장 후 Ctrl+C 와 같은
+      경로로 종료(윈도우는 SIGTERM 핸들러가 안 돎, r016 stop/r020 감시자가 씀). 시작 시 남은 파일 삭제 (3) 호스트 역할
+      <runtime>/config/host_role.json 이 standby 면 시작 거부 rc 3 (한 계좌로 두 호스트 동시 매매 방지, R003_IGNORE_ROLE=1 로
+      무시) (4) /proc 이 없으면 g011 실행 여부를 g011 잠금 파일로 판단.
+    impact: live (r003 재시작 후)
+    compatibility: backward-compatible (host_role.json 이 없으면 primary, 매매 판단 로직 불변)
 - [2026-11-05] type=feat owner=claude
     summary: 원격 제어(r016/AutoBotH) 안전장치 - (1) run() 시작 시 <runtime>/data/live_runtime/.r003.lock 에 flock(단일 실행,
       screen+systemd 이중 기동이면 rc 3 즉시 종료, 주문 전 단계) (2) 설정 확정 후 live_runtime/r003_running.json 에 실행
@@ -776,6 +784,10 @@ import re
 import sys
 import time
 import unicodedata
+
+# [2026-11-10] start baseline for the stop-request file: set before the slow imports (pandas, KIS modules); r020 passes the moment
+# it spawned us (R003_SPAWNED_AT) so a stop written while Python was still starting is not mistaken for a leftover
+_R003_IMPORT_STARTED = time.time()
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -937,6 +949,7 @@ sys.path.insert(0, str(current_dir))
 
 import kis_auth as ka
 import domestic_stock_functions as dsf
+import r019_platform as r019  # [2026-11-10] Linux/Windows locks + processes
 
 
 class _KisRequestsWithTimeout:
@@ -2396,7 +2409,9 @@ def _find_running_tick_collector() -> int | None:
     try:
         entries = os.listdir("/proc")
     except OSError:
-        return None
+        # [2026-11-10] no /proc (Windows): the g011 single-instance lock tells whether one runs (r019)
+        owner = r019.running_owner(RUNTIME_DATA_DIR / "ticks" / ".g011.lock")
+        return owner["pid"] if owner and owner.get("pid") and owner["pid"] != me else None
     for name in entries:
         if not name.isdigit() or int(name) == me:
             continue
@@ -5283,27 +5298,77 @@ def _shutdown_save_live_state(api: TradingAPI | None) -> None:
 R003_INSTANCE_LOCK_PATH = LIVE_RUNTIME_DIR / ".r003.lock"
 R003_RUNNING_SNAPSHOT_PATH = LIVE_RUNTIME_DIR / "r003_running.json"
 _R003_LOCK_FH = None
+# [2026-11-10] graceful stop request (r016 stop / r020 supervisor on Windows, where SIGTERM cannot run handlers): the main loop
+# checks this file every turn, saves live_state and ends like Ctrl+C. A leftover file is removed at start.
+R003_STOP_REQUEST_PATH = LIVE_RUNTIME_DIR / "r003.stop"
+def _process_start_baseline() -> float:
+    raw = (os.environ.get("R003_SPAWNED_AT") or "").strip()
+    try:
+        spawned = float(raw) if raw else None
+    except ValueError:
+        spawned = None
+    # a spawn time from the parent only counts when it is plausible (not in the future, not from an earlier run)
+    if spawned is not None and spawned <= _R003_IMPORT_STARTED + 1.0 and _R003_IMPORT_STARTED - spawned < 600:
+        return min(spawned, _R003_IMPORT_STARTED)
+    return _R003_IMPORT_STARTED
+
+
+_R003_PROCESS_STARTED = _process_start_baseline()
+
+
+def _stop_requested() -> bool:
+    try:
+        return R003_STOP_REQUEST_PATH.exists()
+    except OSError:
+        return False
+
+
+def _clear_stop_request() -> None:
+    with contextlib.suppress(OSError):
+        R003_STOP_REQUEST_PATH.unlink()
+
+
+def _clear_stale_stop_request() -> None:
+    """At start: remove a stop file older than this process (left over). One written after the process started (a stop sent
+    while r003 was still starting up) is kept, so the first loop turn ends the run as asked."""
+    try:
+        if R003_STOP_REQUEST_PATH.stat().st_mtime < _R003_PROCESS_STARTED - 1.0:
+            R003_STOP_REQUEST_PATH.unlink()
+    except OSError:
+        pass
+
+
+def _host_role_refusal() -> str | None:
+    """Reason to refuse the start on a standby host (r019 host_role.json), None = may trade. R003_IGNORE_ROLE=1 skips it.
+    Read under the role lock after the instance lock is held: r016 `role set standby` checks "no r003 here" under the same
+    lock, so the two cannot interleave."""
+    if (os.environ.get("R003_IGNORE_ROLE") or "").strip() == "1":
+        return None
+    root = RUNTIME_DATA_DIR.parent
+    try:
+        with r019.role_lock(root):
+            role = r019.read_host_role(root)
+    except TimeoutError:
+        return "host role lock busy (a role change is in progress) - refusing to start, try again"
+    if role.get("role") == "standby":
+        return f"host role is standby (set by {role.get('by') or '?'} at {role.get('at') or '?'}) - the other host trades"
+    return None
 
 
 def _acquire_instance_lock() -> bool:
-    """Hold an exclusive flock for the life of this process. False if another r003 already holds it."""
+    """Hold an exclusive lock for the life of this process (flock on Linux, msvcrt on Windows - r019). False if another r003
+    already holds it."""
     global _R003_LOCK_FH
-    try:
-        import fcntl
-    except ImportError:  # non-Linux dev box: no lock, keep running
-        return True
     try:
         fh = open(R003_INSTANCE_LOCK_PATH, "a+", encoding="utf-8")
     except OSError:
         return True  # unwritable runtime dir: do not block trading over bookkeeping
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    if not r019.try_lock(fh):
         fh.close()
         return False
     fh.seek(0)
     fh.truncate()
-    fh.write(f"{os.getpid()} {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    fh.write(f"{os.getpid()} {datetime.now():%Y-%m-%d %H:%M:%S} ppid={os.getppid()}\n")  # ppid: Windows venv launcher (r016)
     fh.flush()
     _R003_LOCK_FH = fh  # keep the descriptor open: closing it releases the lock
     return True
@@ -5359,6 +5424,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             held = R003_INSTANCE_LOCK_PATH.read_text(encoding="utf-8").strip()
         print(f"[R003 STOP   ] another r003 already holds {R003_INSTANCE_LOCK_PATH} ({held}) - refusing to start a second instance", flush=True)
         sys.exit(3)
+    refusal = _host_role_refusal()
+    if refusal:
+        print(f"[R003 STOP   ] {refusal} - refusing to start (r016 role set primary, or R003_IGNORE_ROLE=1)", flush=True)
+        log(f"R003 STOP | {refusal}")
+        sys.exit(3)
+    _clear_stale_stop_request()
     atexit.register(_remove_running_snapshot)
     log("R003 START | initializing live executor")
     log(f"  [R003 MODE   ] TRADING_STRATEGY_MODE={TRADING_STRATEGY_MODE}")
@@ -5595,6 +5666,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     while True:
         current_dt = datetime.now()
         _ensure_log_date_for(current_dt)
+        if _stop_requested():
+            # [2026-11-10] r016 stop (Windows r020 supervisor / any host): same exit as Ctrl+C
+            _log_pending_orders_on_shutdown(api)
+            with contextlib.suppress(Exception):
+                api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
+            log("MAIN LOOP STOP | reason=stop_request")
+            _clear_stop_request()
+            break
         _supervise_tick_collector(current_dt, tick_collector_codes)
 
         if current_dt.date() != current_trade_date:

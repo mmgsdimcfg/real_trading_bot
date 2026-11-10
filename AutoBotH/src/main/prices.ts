@@ -23,6 +23,9 @@
  *   server's daily answer (r016 bars --kind day) of a past day is kept there too. prefetch(date, codes) downloads the files of
  *   the day's symbols and the previous trading day's warm-up files in the background (one code per queue slot, so chart
  *   requests are not held up for the whole download). The live day keeps the incremental SFTP reads
+ * - [2026-11-10] type=feat - Reads through a FileHost (host.ts): the Raspberry Pi over SFTP or this PC's runtime folder (local mode).
+ *   The past-day download cache is used for the remote host only (local files are read in place); the "<code>_*" listing is
+ *   FileHost.listPrefix
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
@@ -49,7 +52,7 @@ import {
   type PriceResponse,
   type Tick,
 } from '../shared/price';
-import { shellQuote, type SshConnection } from './ssh';
+import type { FileHost } from './host';
 import { BOT_PARAMS } from '../shared/indicators';
 import type { R016Client } from './control';
 import type { PriceFileCache } from './priceCache';
@@ -99,7 +102,7 @@ export class PriceService {
   private noServerBars = false;
 
   constructor(
-    private ssh: SshConnection,
+    private host: FileHost,
     private root: () => string,
     private r016: () => R016Client | null = () => null,
     /** local copies of past days' files; null = always read the server */
@@ -109,12 +112,22 @@ export class PriceService {
   ) {}
 
   private cached(date: string): PriceFileCache | null {
-    return this.cache && this.isPast(date) ? this.cache : null;
+    return this.cache && this.host.kind === 'remote' && this.isPast(date) ? this.cache : null;
   }
 
   resetServerSupport(): void {
     this.noServerBars = false;
     this.serverCache.clear();
+  }
+
+  /** the host changed (run mode switch): forget everything read from the old one */
+  resetAll(): void {
+    this.resetServerSupport();
+    this.ticks.clear();
+    this.files.clear();
+    this.min1.clear();
+    this.daily.clear();
+    this.dirs = null;
   }
 
   /**
@@ -176,7 +189,7 @@ export class PriceService {
       }
       return remember(this.ticks, key, c).ticks;
     }
-    const st = await this.ssh.stat(path);
+    const st = await this.host.stat(path);
     if (!st) {
       this.ticks.delete(key);
       return null;
@@ -185,7 +198,7 @@ export class PriceService {
     if (!c || st.size < c.off) c = remember(this.ticks, key, { off: 0, lb: new LineBuffer(), ticks: [] });
     while (c.off < st.size) {
       const end = Math.min(st.size, c.off + MAX_READ);
-      const buf = await this.ssh.readRange(path, c.off, end);
+      const buf = await this.host.readRange(path, c.off, end);
       if (!buf.length) break;
       c.off += buf.length;
       let lines = c.lb.push(new Uint8Array(buf.buffer, buf.byteOffset, buf.length));
@@ -203,10 +216,7 @@ export class PriceService {
     const key = `${date}/${code}`;
     const hit = this.files.get(key);
     if (hit && (!live || Date.now() - hit.at < 60000)) return hit.names;
-    const ls = async () => {
-      const { out } = await this.ssh.exec(`cd ${shellQuote(this.dataDir(date))} 2>/dev/null && ls -1 -- ${code}_* 2>/dev/null`, 20000);
-      return out.split('\n').map((s) => s.trim()).filter(Boolean);
-    };
+    const ls = () => this.host.listPrefix(this.dataDir(date), `${code}_`);
     const fc = this.cached(date);
     const names = fc ? await fc.list(date, code, ls) : await ls();
     return remember(this.files, key, { at: Date.now(), names }).names;
@@ -224,27 +234,28 @@ export class PriceService {
       const buf = await fc.file(date, `data/${name}`, path);
       return buf ? remember(this.min1, path, { size: buf.length, bars: parse10sMinuteBars(buf.toString('utf8')) }).bars : null;
     }
-    const st = await this.ssh.stat(path);
+    const st = await this.host.stat(path);
     if (!st) return null;
     const hit = this.min1.get(path);
     if (hit && hit.size === st.size) return hit.bars;
-    const text = (await this.ssh.readRange(path, 0, st.size)).toString('utf8');
+    const text = (await this.host.readRange(path, 0, st.size)).toString('utf8');
     return remember(this.min1, path, { size: st.size, bars: parse10sMinuteBars(text) }).bars;
   }
 
   /** YYYYMMDD folders under runtime/data (cached 10 min) */
   private async dataFolders(): Promise<string[]> {
     if (this.dirs && Date.now() - this.dirs.at < 600000) return this.dirs.list;
-    if (!this.ssh.connected && this.cache) {
+    const remote = this.host.kind === 'remote';
+    if (!this.host.connected && this.cache && remote) {
       const saved = this.cache.loadFolders();
       if (saved.length) return saved; // offline: the last list seen
     }
-    const list = (await this.ssh.readdir(`${this.root()}/runtime/data`))
+    const list = (await this.host.readdir(`${this.root()}/runtime/data`))
       .filter((e) => e.isDir && /^\d{8}$/.test(e.name))
       .map((e) => e.name)
       .sort();
     this.dirs = { at: Date.now(), list };
-    this.cache?.saveFolders(list);
+    if (remote) this.cache?.saveFolders(list);
     return list;
   }
 
@@ -263,11 +274,11 @@ export class PriceService {
         if (!buf) continue;
         return { bars: remember(this.daily, path, { size: buf.length, bars: parseDailyCsv(buf.toString('utf8')) }).bars, folder };
       }
-      const st = await this.ssh.stat(path);
+      const st = await this.host.stat(path);
       if (!st) continue;
       const hit = this.daily.get(path);
       if (hit && hit.size === st.size) return { bars: hit.bars, folder };
-      const text = (await this.ssh.readRange(path, 0, st.size)).toString('utf8');
+      const text = (await this.host.readRange(path, 0, st.size)).toString('utf8');
       return { bars: remember(this.daily, path, { size: st.size, bars: parseDailyCsv(text) }).bars, folder };
     }
     return null;
@@ -309,7 +320,7 @@ export class PriceService {
       }
       p.done++;
       onProgress({ ...p });
-      if (!this.ssh.connected) {
+      if (!this.host.connected) {
         p.error = p.error || '연결이 끊겨 중단했습니다.';
         break;
       }

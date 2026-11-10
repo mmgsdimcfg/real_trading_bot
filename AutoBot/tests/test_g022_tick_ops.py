@@ -232,9 +232,9 @@ class G013DoneGateTest(unittest.TestCase):
             self.assertFalse(g013._day_settled(new, 30))
             marker.write_text(json.dumps({"scope": "full", "failed": 0}), encoding="utf-8")
             self.assertTrue(g013._day_settled(new, 30))
-            import fcntl
+            import r019_platform as r019  # flock (Linux) / msvcrt (Windows)
             with open(new / ".g001.lock", "a") as lk:  # g001 still collecting (another open file description)
-                fcntl.flock(lk, fcntl.LOCK_EX)
+                self.assertTrue(r019.lock(lk))
                 self.assertFalse(g013._day_settled(new, 30))
             self.assertTrue(g013._day_settled(new, 30))
             os.utime(new / "000001_x_10s.txt")  # rewritten just now -> not settled yet
@@ -301,12 +301,16 @@ class G024Test(unittest.TestCase):
                 self.assertEqual(g024.check_edge_ai(0, 0, None)[0], [])
 
 
+@unittest.skipIf(os.name == "nt", "g022 is the Linux cron script (Windows: r016 collector start, test_r020_supervisor)")
 class G022WindowTest(unittest.TestCase):
     """Runs g022 with a fake date/pgrep/setsid on PATH and checks whether it would start g011."""
 
-    def _run(self, today: str, hhmm: str, dow: int, cal_text: str) -> bool:
+    def _run(self, today: str, hhmm: str, dow: int, cal_text: str, role: str | None = None) -> bool:
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
+            if role:
+                (d / "rt" / "config").mkdir(parents=True)
+                (d / "rt" / "config" / "host_role.json").write_text(json.dumps({"role": role}), encoding="utf-8")
             sim = d / "data_simulation"
             sim.mkdir()
             (d / "live_trading").mkdir()
@@ -338,6 +342,11 @@ class G022WindowTest(unittest.TestCase):
         self.assertFalse(self._run("20261119", "09:00", 4, cal_text))   # CSAT: opens 10:00 -> window from 09:45
         self.assertTrue(self._run("20261119", "16:10", 4, cal_text))
         self.assertFalse(self._run("20261225", "10:00", 5, cal_text))   # holiday
+
+    def test_standby_host_skips(self):
+        cal_text = "20261225 closed\n"
+        self.assertFalse(self._run("20261102", "09:30", 1, cal_text, role="standby"))
+        self.assertTrue(self._run("20261102", "09:30", 1, cal_text, role="primary"))
         self.assertFalse(self._run("20261107", "10:00", 6, cal_text))   # Saturday
 
 

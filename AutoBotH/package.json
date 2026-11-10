@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-10] type=feat - v2.3.0_001: local mode - r003 runs on this PC (settings 실행 위치: 라즈베리파이 (SSH) / 이 PC (로컬)). Logs and price files read in place from <localRoot>/runtime (FileHost: SFTP or local fs), r016_control.py run as a local child process with the venv Python (no shell, UTF-8, tree kill on timeout); on Windows r016 starts the r020 supervisor (systemd replacement). One account, two hosts: host roles primary/standby (r016 role), every r003 start/restart first checks the other host (refuse if it trades, switch it to standby, ask when unreachable) and makes this host primary. New 데이터 작업 tab (r016 job: post-close collect -> daily history -> watchlist selection, Edge AI, universe). Local-mode scheduler (tick collector mornings, post-close job, watchlist copy to the Pi), keep-awake while the local r003 runs, other-host panel on the control tab, doctor comparison of both hosts, KIS config import from the Pi, restart offer after a watchlist save while r003 runs",
     "[2026-11-06] type=feat - v2.2.0_008: chart tab for any code - daily bars from the server's r016 `bars` (daily_history ~14 months, week/month built from them), tick/minute bars fall back to `bars` when the server has no file for the code/day; side panel uses r016 `quote` when the server has it (KIS current price, 10-level order book, trades, 체결강도, limits, 52-week high/low, PER/PBR, market cap, VI/halt) and completes today's daily/weekly/monthly candle from it. Older servers keep the SFTP-only path. docs/server_kis_market_data_request_20261106.md: KIS fallback in `bars` + new `quote` (read-only quote TRs, shared rate limit with r003, token reuse, cache)",
     "[2026-11-06] type=feat - v2.2.0_007: TermH-style title bar (frame:false, no File/Edit menu; icon + AutoBotH + status items + shared app-menu.js ☰ menu with 설정 / 업데이트 확인 / AutoBotH 정보 (app-about.js) + window buttons; the bottom-right version line removed). New 차트 tab (HTS-style): any 6-digit code, tick/minute (previous day shown)/day/week/month, wheel zoom + drag pan, right price axis with last/hover price tags, legends, MA 5/20/60/120, Bollinger, Ichimoku, VWAP, RSI, MACD, ADX, stochastic, Williams %R, MFI, OBV; side panel with current price, change, day OHLC, best ask/bid, 체결강도, 200-day high/low, data window, indicator signals, bot state, latest trades. New indicators match r002 calculate_indicators (tests); warm-up like the bot (previous day's last 180 one-minute bars of the 10-second file, VWAP/OBV per day)",
     "[2026-11-06] type=feat - v2.1.0_006: price chart indicators - Bollinger and Ichimoku overlays (cloud drawn 26 bars ahead), RSI / MACD / ADX+DI panes; formulas and periods match the bot (r002 calculate_indicators, r001 BB 20/2, RSI 14/6 Wilder, MACD 5/12/4, ADX 7; verified against pandas output of data_simulation/shared/indicators.py to 1e-6), Ichimoku standard 9/26/52; tick/minute charts get the previous trading day's 120 bars as warm-up; toggles kept in localStorage. docs/server_data_request_prompt_20261106.md: data requests for the server side. vitest: tests/indicators.test.ts + indicators_ref.json",
@@ -20,7 +21,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -68,7 +69,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

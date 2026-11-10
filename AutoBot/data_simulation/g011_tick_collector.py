@@ -33,6 +33,11 @@ Run:
   --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-10] type=feat owner=claude
+    summary: 윈도우 실행 - 단일 실행 잠금을 r019(flock/msvcrt)로, --runtime DIR(r001 import 전에 적용; WMI 로 시작된 프로세스는
+      환경변수를 물려받지 않음).
+    impact: collector
+    compatibility: backward-compatible
 - [2026-11-06] type=feat owner=claude
     summary: AutoBotH 차트 요청(P1-1) - 틱 CSV 끝에 venue(KRX), session(pre|regular|close_auction|post) 2열 추가
       (r009 TICK_FILE_COLUMNS v2). session 은 체결시각 vs r014 정규장 (open, close): open 전 pre, [open, close) regular,
@@ -64,7 +69,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
-import fcntl
 import json
 import os
 import random
@@ -78,9 +82,15 @@ HERE = Path(__file__).resolve().parent
 LIVE_DIR = HERE.parent / "live_trading"
 sys.path.insert(0, str(LIVE_DIR))
 
+# [2026-11-10] --runtime DIR (r016 collector start; a process started through WMI on Windows inherits no environment) must be
+# applied before r001 fixes RUNTIME_ROOT at import
+if "--runtime" in sys.argv[:-1]:
+    os.environ["AUTO_TRADING_RUNTIME"] = sys.argv[sys.argv.index("--runtime") + 1]
+
 from r001_define_config import RUNTIME_DATA_DIR, DEFINE_TODAY_CODE_PATH  # noqa: E402
 from r009_tick_bars import TICK_FILE_COLUMNS  # noqa: E402
 from r014_market_calendar import session_hours  # noqa: E402
+import r019_platform as r019  # noqa: E402  (Linux/Windows locks)
 
 # H0STCNT0 record layout (open-trading-api domestic_stock_functions_ws.ccnl_krx)
 H0STCNT0_COLUMNS = [
@@ -138,18 +148,7 @@ class _RequestsWithTimeout:
 def acquire_single_instance_lock(lock_dir: Path):
     """Open + exclusively flock the lock file; returns the open file (keep it for the process lifetime) or None
     when another collector holds it. Python fds are non-inheritable, so children never keep the lock."""
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / LOCK_NAME, "a+")
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fh.close()
-        return None
-    fh.seek(0)
-    fh.truncate()
-    fh.write(f"{os.getpid()} {datetime.now():%Y-%m-%d %H:%M:%S}\n")
-    fh.flush()
-    return fh
+    return r019.acquire_instance_lock(lock_dir / LOCK_NAME)  # [2026-11-10] flock (Linux) / msvcrt (Windows)
 
 
 def idle_check_window(day: datetime) -> tuple[datetime, datetime] | None:
@@ -477,6 +476,7 @@ def main() -> None:
     ap.add_argument("--dry-parse-test", action="store_true")
     ap.add_argument("--fill-from-scan", action="store_true",
                     help="after the watchlist codes, fill up to 40 with the newest g002 scan's ranked candidates")
+    ap.add_argument("--runtime", default=None, help="runtime root (applied at import, before r001)")
     args = ap.parse_args()
     if args.dry_parse_test:
         _self_test()

@@ -1,5 +1,8 @@
 /*
  * Update log
+ * - [2026-11-10] type=feat - Local mode: R016Status.host (platform / backend / host role) + collector, role / job / doctor
+ *   response types, JOB_NAMES, scheduler helpers (postcloseDue, collectorWindow, localYmd) and peerDecision() - the cross-host
+ *   guard before an r003 start (other host running -> refuse, primary -> switch it to standby, unknown -> ask)
  * - [2026-11-07] type=feat - NXT session: ControlState.nxt (r016 `get ENABLE_NXT_SESSION` - effective / running / pending),
  *   parseNxt() and resolveSessionOpen(): the app's funnel start time follows the server's NXT setting when sessionOpenAuto is on
  *   (NXT on -> 08:00 morning NXT session, off -> 09:00 regular session)
@@ -33,11 +36,15 @@ export interface ServiceState {
   started_at?: string | null;
   restarts?: number;
   result?: string;
+  /** process backend (Windows r020 supervisor) */
+  backend?: string;
+  supervisor_pid?: number | null;
 }
 
 export interface ExternalProc {
   pid: number;
   cmdline: string;
+  ppid?: number | null;
 }
 
 export interface PendingFile {
@@ -46,11 +53,36 @@ export interface PendingFile {
   changed_since_start: boolean;
 }
 
+/** r016 status.host / role get (2026-11-10) */
+export interface HostRole {
+  role: 'primary' | 'standby';
+  /** false = no host_role.json (treated as primary) */
+  set: boolean;
+  by?: string | null;
+  at?: string | null;
+  note?: string | null;
+}
+
+export interface HostInfo {
+  platform: string;
+  hostname: string;
+  machine?: string;
+  /** systemd (Linux) | process (r020 supervisor, Windows) */
+  backend: string;
+  role: HostRole;
+  runtime_root: string;
+}
+
+export type RoleInfo = HostRole & { ok: boolean; host?: HostInfo; error?: string };
+
 export interface R016Status {
   generated_at: string;
   service: ServiceState;
   running: boolean;
   external_r003: ExternalProc[];
+  /** older servers: missing */
+  host?: HostInfo;
+  collector?: { running: boolean; pid: number | null; started_at: string | null; symbols: number; last_write: string | null; missing?: string[] };
   env: Record<string, string>;
   dry_run: boolean;
   risk_profile: string;
@@ -304,12 +336,16 @@ export function serviceButtons(s: R016Status | null, busy: boolean): ButtonState
   const ext = (s.external_r003?.length || 0) > 0;
   const avail = s.service?.available !== false;
   let startReason: string | undefined;
+  const standby = s.host?.role?.role === 'standby';
   if (!avail) startReason = 'systemd 서비스가 없습니다 (autobot-r003.service 설치 필요)';
   else if (ext) startReason = '서비스 밖에서 r003이 실행 중입니다';
   else if (s.running) startReason = '이미 실행 중입니다';
+  else if (standby) startReason = '이 호스트는 standby 입니다 - 실행하면 primary 로 바꾼 뒤 시작합니다';
+  const processBackend = s.service?.backend === 'process';
   return {
     start: avail && !ext && !s.running,
-    stop: st === 'active' || st === 'activating',
+    // Windows (process backend): stop also ends an r003 started outside the supervisor (there is no other manager there)
+    stop: st === 'active' || st === 'activating' || (processBackend && ext),
     restart: st === 'active',
     startReason,
   };
@@ -471,6 +507,130 @@ export function historyText(r: HistoryRow): string {
     return `${k}=${fmtValue(v)}`;
   });
   return parts.join(', ');
+}
+
+// ---- data jobs (r021 via r016 `job`) / doctor - 2026-11-10 --------------------------------------
+
+export const JOB_NAMES = ['postclose', 'collect', 'history', 'scan', 'edge_ai', 'universe'];
+
+export interface JobStep {
+  name: string;
+  argv: string[];
+  state: 'running' | 'done' | 'failed' | 'stopped';
+  rc: number | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface JobRun {
+  name: string;
+  title: string;
+  /** running | done | done_with_errors | failed | stopped */
+  state: string;
+  pid: number;
+  by: string;
+  run_id?: string | null;
+  started_at: string;
+  finished_at: string | null;
+  rc: number | null;
+  args: { date: string; workers: number | null; edge_ai: boolean };
+  log: string;
+  steps: JobStep[];
+  error: string | null;
+}
+
+export interface JobList {
+  ok: boolean;
+  running: { pid: number | null; started_at: string | null; name: string | null; run_id?: string | null } | null;
+  jobs: { name: string; title: string; steps: string[]; last: JobRun | null }[];
+  generated_at: string;
+}
+
+export interface JobLog {
+  ok: boolean;
+  name: string;
+  log: string | null;
+  lines: string[];
+  state?: string;
+}
+
+export interface JobStartOpts {
+  date?: string;
+  workers?: number;
+  edgeAi?: boolean;
+  tradingDayOnly?: boolean;
+  /** scheduler: no confirmation dialog */
+  noConfirm?: boolean;
+}
+
+export interface DoctorReport {
+  ok: boolean;
+  problems: string[];
+  generated_at: string;
+  host: HostInfo;
+  python: string;
+  executable: string;
+  packages: Record<string, string | null>;
+  code: { dir: string; commit: string | null };
+  open_trading_api: { path: string; exists: boolean; commit: string | null };
+  kis_config: { dir: string; devlp_yaml: boolean; token_today: boolean };
+  runtime: { root: string; exists: boolean };
+}
+
+export const JOB_STATE_LABEL: Record<string, string> = {
+  running: '실행 중',
+  done: '완료',
+  done_with_errors: '완료 (일부 실패)',
+  failed: '실패',
+  stopped: '정지됨',
+};
+
+/** "HH:MM" -> minutes after midnight (NaN when malformed) */
+export function hmMinutes(hm: string): number {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || '').trim());
+  return m ? +m[1] * 60 + +m[2] : NaN;
+}
+
+/** this PC's local date as YYYYMMDD (the notebook runs on KST like r003's datetime.now()) */
+export function localYmd(d: Date = new Date()): string {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Post-close scheduler: run once per day at/after `at` (local time) on Mon-Fri - the job itself skips closed days
+ * (--trading-day-only). `lastYmd` = the day it last started.
+ */
+export function postcloseDue(now: Date, at: string, lastYmd: string | undefined): boolean {
+  const dow = now.getDay();
+  if (dow === 0 || dow === 6) return false;
+  const t = hmMinutes(at);
+  if (!Number.isFinite(t)) return false;
+  return now.getHours() * 60 + now.getMinutes() >= t && lastYmd !== localYmd(now);
+}
+
+/** Tick collector morning window on this PC (Mon-Fri 08:40-15:35): r016 `collector start` checks the exact calendar itself. */
+export function collectorWindow(now: Date): boolean {
+  const dow = now.getDay();
+  if (dow === 0 || dow === 6) return false;
+  const m = now.getHours() * 60 + now.getMinutes();
+  return m >= 8 * 60 + 40 && m < 15 * 60 + 35;
+}
+
+/**
+ * Cross-host guard before starting r003 on `self` (decision only; the main process does the calls).
+ *  - other host unknown (no SSH settings / not reachable): ask the user
+ *  - other host runs r003: refuse
+ *  - other host primary (or no role file): switch it to standby first
+ */
+export type PeerDecision = { action: 'refuse'; reason: string } | { action: 'ask'; reason: string } | { action: 'standby' } | { action: 'ok' };
+
+export function peerDecision(peer: R016Status | null, peerError: string | undefined, peerLabel: string): PeerDecision {
+  if (!peer) return { action: 'ask', reason: `${peerLabel} 상태를 확인하지 못했습니다${peerError ? ` (${peerError})` : ''}.` };
+  if (peer.running || (peer.external_r003?.length || 0) > 0) {
+    return { action: 'refuse', reason: `${peerLabel}에서 r003이 실행 중입니다. 같은 계좌를 두 곳에서 동시에 매매할 수 없으니 ${peerLabel}의 r003을 먼저 정지하세요.` };
+  }
+  if (peer.host && peer.host.role.role === 'standby') return { action: 'ok' };
+  return { action: 'standby' };
 }
 
 // ---- watchlist -------------------------------------------------------------------------------

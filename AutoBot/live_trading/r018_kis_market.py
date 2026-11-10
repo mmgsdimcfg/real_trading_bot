@@ -31,7 +31,6 @@ Update log:
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -42,6 +41,8 @@ from pathlib import Path
 
 import requests
 import yaml
+
+import r019_platform as r019  # [2026-11-10] Linux/Windows file locks
 
 CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
 RATE_MAX_PER_SEC = 2
@@ -142,14 +143,10 @@ def _rate_slot_inner(deadline: float) -> None:
     d.mkdir(parents=True, exist_ok=True)
     path = d / ".ratelimit"
     with open(path, "a+", encoding="utf-8") as fh:
-        while True:
-            try:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.time() > deadline:
-                    raise KisError("rate_busy", "shared KIS rate limiter busy") from None
-                time.sleep(0.05)
+        while not r019.try_lock(fh):
+            if time.time() > deadline:
+                raise KisError("rate_busy", "shared KIS rate limiter busy") from None
+            time.sleep(0.05)
         try:
             fh.seek(0)
             try:
@@ -175,7 +172,7 @@ def _rate_slot_inner(deadline: float) -> None:
             fh.write(json.dumps(stamps))
             fh.flush()
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            r019.unlock(fh)
 
 
 class Client:

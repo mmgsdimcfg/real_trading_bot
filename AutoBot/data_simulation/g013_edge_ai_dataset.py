@@ -58,7 +58,6 @@ Update log:
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import math
@@ -73,6 +72,7 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "live_trading"))
+import r019_platform as r019  # noqa: E402  [2026-11-10] Linux/Windows file locks
 
 import r001_define_config as cfg  # noqa: E402
 from r008_strategy_v2 import krx_tick_size  # noqa: E402
@@ -486,15 +486,7 @@ def _source_state(day_dir: Path) -> tuple:
 
 def _g001_collecting(day_dir: Path) -> bool:
     """True while a g001 run holds the date folder lock (g001 DATE_LOCK_FILE)."""
-    path = day_dir / ".g001.lock"
-    if not path.exists():
-        return False
-    try:
-        with open(path, "a") as fh:
-            fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except OSError:
-        return True
-    return False
+    return r019.is_locked(day_dir / ".g001.lock")  # [2026-11-10] r019 (Windows has no shared flock)
 
 
 def _day_settled(day_dir: Path, settle_minutes: int, verbose: bool = False) -> bool:

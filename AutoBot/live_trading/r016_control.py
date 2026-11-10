@@ -18,6 +18,15 @@
   collector status | collector restart      g011 틱 수집기 상태 / SIGTERM (g022 cron 또는 r003 감시자가 새 감시목록으로 재기동)
   indicators ... | bars ...        차트 데이터 (live_trading/r017_chart_data.py 로 위임 - 그 파일의 docstring 참조)
   quote --code C [--trades N]      KIS 현재가+호가+체결 (live_trading/r018_kis_market.py, 읽기 전용)
+  collector start [--force]        g011 을 --fill-from-scan 으로 분리 실행 (g022 cron 과 같은 규칙: 장 시작 15분 전~마감, standby 거부)
+  role get | role set primary|standby [--note T]   호스트 역할 (r019 host_role.json). standby 면 start/restart/collector start 거부
+  doctor                           실행 환경 점검 (Python/패키지 버전, open-trading-api, KIS 설정 파일 유무, 역할, 백엔드)
+  job list | job start NAME [--date D] [--workers N] [--edge-ai] | job stop NAME | job log NAME [-n N]
+                                   데이터 작업 (live_trading/r021_jobs.py: collect/history/scan/edge_ai/universe/postclose)
+
+서비스 백엔드: Linux = systemd --user autobot-r003.service, Windows = r020_supervisor.py (분리 실행 감시 프로세스, 같은 상태 JSON).
+AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는 /proc 이 없어 r003/g011 실행 여부를 각자의 단일 실행
+잠금 파일(r019)로 판단한다.
 
 파일(저장소 밖): <runtime>/config/live_overrides.json, live_overrides_history.jsonl, r003.env, watchlist_backup/, .r016.lock
 실행 스냅샷: <runtime>/data/live_runtime/r003_running.json (r003 이 시작 시 기록) - "지금 돌고 있는 값"의 근거.
@@ -28,6 +37,13 @@
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-10] type=feat owner=claude
+    summary: 윈도우 노트북 실행(AutoBotH 로컬 모드) - (1) 서비스 백엔드 분리: Windows 는 r020 감시 프로세스(start = 분리 실행,
+      stop = 정지 요청 파일 + 최대 90초 대기 후 강제 종료) (2) 쓰기 잠금 r019(flock/msvcrt) - 종전 Windows 는 잠금 없음,
+      os.replace 공유 위반 재시도 (3) /proc 없는 곳은 잠금 파일로 r003/g011 탐지 (4) SIGALRM 없는 곳의 마감 시각 중단
+      (5) role / doctor / collector start / job 명령 (6) status.host 블록(플랫폼·역할·백엔드).
+    impact: tooling (Linux 동작은 그대로 - systemd, /proc)
+    compatibility: backward-compatible (JSON 필드 추가, 새 명령)
 - [2026-11-07] type=feat owner=claude
     summary: quote 명령(r018 KIS 현재가/호가/체결, 읽기 전용, 토큰 미발급, 공용 호출 제한). bars 의 KIS 오류는 rc 3(kis_code).
     impact: tooling
@@ -79,8 +95,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 with contextlib.redirect_stdout(io.StringIO()):
     import r001_define_config as r001  # noqa: E402
+import r019_platform as r019  # noqa: E402  (stdlib only)
+import r020_supervisor as r020  # noqa: E402  (stdlib only)
 
 SERVICE_NAME = "autobot-r003.service"
+# systemd (Linux server) | process (r020 supervisor - Windows)
+SERVICE_BACKEND = (os.environ.get("AUTOBOT_SERVICE_BACKEND") or ("process" if r019.IS_WINDOWS else "systemd")).strip().lower()
+PROC_ROOT = Path("/proc")
+# True only when run as a script: the Windows deadline fallback may end the process with os._exit (never inside tests)
+_HARD_EXIT_FALLBACK = False
 R003_SCRIPT_NAME = "r003_trade_live_execute.py"
 G011_SCRIPT_NAME = "g011_tick_collector.py"
 WATCHLIST_MAX_CODES = 100
@@ -136,6 +159,14 @@ class ControlPaths:
     def ticks_dir(self) -> Path:
         return self.runtime_root / "data" / "ticks"
 
+    @property
+    def r003_lock(self) -> Path:
+        return self.runtime_root / "data" / "live_runtime" / ".r003.lock"
+
+    @property
+    def g011_lock(self) -> Path:
+        return self.ticks_dir / ".g011.lock"
+
 
 def default_paths() -> ControlPaths:
     return ControlPaths(runtime_root=Path(r001.RUNTIME_ROOT), live_trading_dir=Path(__file__).resolve().parent)
@@ -151,17 +182,20 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
 @contextlib.contextmanager
 def write_lock(paths: ControlPaths) -> Iterator[None]:
     """Serialize every read-modify-write of the editable files (two SSH calls can overlap)."""
-    paths.config_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(paths.lock, "a+", encoding="utf-8")
-    try:
-        try:
-            import fcntl
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        except ImportError:
-            pass
+    with r019.locked_file(paths.lock):  # flock (Linux) / msvcrt (Windows)
         yield
-    finally:
-        fh.close()
+
+
+def _replace(tmp: str, path: Path) -> None:
+    """os.replace; on Windows a reader that has `path` open makes it fail for a moment (sharing violation) - retry ~2 s."""
+    for i in range(40):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if not r019.IS_WINDOWS or i == 39:
+                raise
+            time.sleep(0.05)
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -170,7 +204,7 @@ def _atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
@@ -303,7 +337,15 @@ def _pid_cmdline(pid: int, proc_root: Path = Path("/proc")) -> list[str] | None:
     return [p.decode("utf-8", "replace") for p in raw.split(b"\0") if p]
 
 
-def _pid_is_r003(pid: int) -> bool:
+def _has_proc(proc_root: Path | None = None) -> bool:
+    return (proc_root or PROC_ROOT).is_dir()
+
+
+def _pid_is_r003(pid: int, paths: ControlPaths | None = None) -> bool:
+    if not _has_proc():
+        # Windows: the process holding r003's single-instance lock (r019) is the running r003
+        owner = r019.running_owner((paths or default_paths()).r003_lock)
+        return bool(owner) and owner.get("pid") == pid
     argv = _pid_cmdline(pid)
     return bool(argv) and any(a.endswith(R003_SCRIPT_NAME) for a in argv)
 
@@ -316,7 +358,7 @@ def read_running_snapshot(paths: ControlPaths) -> dict | None:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("pid"), int):
         return None
-    if not _pid_is_r003(int(data["pid"])):
+    if not _pid_is_r003(int(data["pid"]), paths):
         return None
     return data
 
@@ -398,8 +440,10 @@ def _boot_epoch() -> float:
     return time.time() - time.monotonic()
 
 
-def service_state(runner: Runner = _run) -> dict:
-    props = ["ActiveState", "SubState", "MainPID", "ActiveEnterTimestampMonotonic", "NRestarts", "Result", "LoadState"]
+def service_state(runner: Runner = _run, paths: ControlPaths | None = None) -> dict:
+    if SERVICE_BACKEND == "process":
+        return r020.service_state(r020.Paths((paths or default_paths()).runtime_root))
+    props =["ActiveState", "SubState", "MainPID", "ActiveEnterTimestampMonotonic", "NRestarts", "Result", "LoadState"]
     try:
         cp = runner(["systemctl", "--user", "show", SERVICE_NAME, "-p", ",".join(props)])
     except Exception as exc:
@@ -437,13 +481,32 @@ def _find_processes(script_name: str, proc_root: Path = Path("/proc")) -> list[d
     return found
 
 
-def find_r003_processes(proc_root: Path = Path("/proc")) -> list[dict]:
+def _lock_process(lock_path: Path, label: str) -> list[dict]:
+    """No /proc (Windows): the holder of a single-instance lock file as a one-element process list."""
+    owner = r019.running_owner(lock_path)
+    if not owner:
+        return []
+    return [{"pid": owner.get("pid") or 0, "cmdline": f"{label} (lock {lock_path.name}, since {owner.get('started_at') or '?'})",
+             "argv": [], "started_at": owner.get("started_at"), "ppid": owner.get("ppid")}]
+
+
+def find_r003_processes(proc_root: Path = Path("/proc"), paths: ControlPaths | None = None) -> list[dict]:
     """Every running r003 (systemd or screen/terminal) - used to refuse a second instance."""
+    if not _has_proc(proc_root):
+        return [{"pid": p["pid"], "cmdline": p["cmdline"], "ppid": p.get("ppid")}
+                for p in _lock_process((paths or default_paths()).r003_lock, R003_SCRIPT_NAME)]
     return [{"pid": p["pid"], "cmdline": p["cmdline"]} for p in _find_processes(R003_SCRIPT_NAME, proc_root)]
 
 
-def _service_tree_pids(main_pid: int | None, proc_root: Path = Path("/proc")) -> set[str]:
+def _in_tree(proc: dict, tree: set[str]) -> bool:
+    """proc belongs to the service: its pid, or (Windows venv launcher) its parent's pid is one of the service pids."""
+    return str(proc.get("pid")) in tree or (proc.get("ppid") is not None and str(proc.get("ppid")) in tree)
+
+
+def _service_tree_pids(main_pid: int | None, proc_root: Path = Path("/proc"), paths: ControlPaths | None = None) -> set[str]:
     """main pid + its direct children (the bash wrapper's python child is the real r003)."""
+    if SERVICE_BACKEND == "process":
+        return r020.tree_pids(r020.Paths((paths or default_paths()).runtime_root))
     if not main_pid:
         return set()
     out = {str(main_pid)}
@@ -538,9 +601,10 @@ def _pid_started_at(pid: int, proc_root: Path = Path("/proc")) -> str | None:
 def collector_status(paths: ControlPaths, watch_codes: list[str], now: datetime | None = None) -> dict:
     now = now or datetime.now()
     day = paths.ticks_dir / now.strftime("%Y%m%d")
-    procs = _find_processes(G011_SCRIPT_NAME)
+    procs = _g011_processes(paths)
+    started = (procs[0].get("started_at") or _pid_started_at(procs[0]["pid"])) if procs else None
     out = {"running": bool(procs), "pid": procs[0]["pid"] if procs else None, "pids": [p["pid"] for p in procs],
-           "started_at": _pid_started_at(procs[0]["pid"]) if procs else None,
+           "started_at": started,
            "subscribed": None, "symbols": 0, "last_write": None, "stale": [], "missing": [], "ticks_dir": str(day)}
     subscribed = _collector_codes_of(procs[0]["argv"], day) if procs else None
     if subscribed is not None:
@@ -565,28 +629,88 @@ def collector_status(paths: ControlPaths, watch_codes: list[str], now: datetime 
     return out
 
 
+def _g011_processes(paths: ControlPaths) -> list[dict]:
+    if not _has_proc():
+        return _lock_process(paths.g011_lock, G011_SCRIPT_NAME)
+    return _find_processes(G011_SCRIPT_NAME)
+
+
 def collector_restart(paths: ControlPaths, by: str) -> dict:
-    procs = _find_processes(G011_SCRIPT_NAME)
+    procs = _g011_processes(paths)
     if not procs:
         return {"ok": False, "error": "g011 tick collector is not running"}
     killed = []
     for p in procs:
-        with contextlib.suppress(OSError):
-            os.kill(p["pid"], signal.SIGTERM)
+        if p.get("pid") and r019.terminate(p["pid"]):  # SIGTERM (Linux) / TerminateProcess (Windows)
             killed.append(p["pid"])
     append_history(paths, "collector.restart", {"pids": killed}, by)
     return {"ok": bool(killed), "signalled": killed,
-            "note": "g022 cron (*/5 09-16) or the r003 supervisor restarts g011 with the current r004 list within ~5 min"}
+            "note": "g022 cron (*/5 09-16), the r003 supervisor or AutoBotH (collector start) restarts g011 with the current "
+                    "r004 list within ~5 min"}
+
+
+COLLECTOR_PRE_OPEN_MINUTES = 15  # g022: start 15 min before the session opens
+
+
+def collector_window(now: datetime) -> tuple[bool, str]:
+    """g022_tick_collect_daily.sh rules: weekday, not a closed day (r014 calendar), [open-15 min, close)."""
+    if now.weekday() >= 5:
+        return False, "weekend"
+    try:
+        from r014_market_calendar import session_hours  # noqa: E402
+        hours = session_hours(now)
+    except Exception:
+        hours = (MARKET_OPEN, MARKET_CLOSE)
+    if hours is None:
+        return False, "closed day (r014 calendar)"
+    open_t, close_t = hours
+    start = datetime.combine(now.date(), open_t).timestamp() - COLLECTOR_PRE_OPEN_MINUTES * 60
+    end = datetime.combine(now.date(), close_t).timestamp()
+    if not (start <= now.timestamp() < end):
+        return False, f"outside the collection window ({open_t:%H:%M} -{COLLECTOR_PRE_OPEN_MINUTES} min ~ {close_t:%H:%M})"
+    return True, "ok"
+
+
+def collector_start(paths: ControlPaths, by: str, force: bool = False, now: datetime | None = None,
+                    spawn=r019.spawn_detached) -> dict:
+    """Start g011 --fill-from-scan in the background (what g022 cron does on the server), unless one runs already."""
+    now = now or datetime.now()
+    role = r019.read_host_role(paths.runtime_root)
+    if role["role"] == "standby":
+        return {"ok": False, "error": "host role is standby - the other host collects ticks (KIS websocket: one session per appkey)",
+                "role": role}
+    procs = _g011_processes(paths)
+    if procs:
+        return {"ok": True, "already_running": True, "pid": procs[0]["pid"]}
+    ok, why = collector_window(now)
+    if not ok and not force:
+        return {"ok": False, "error": f"not started: {why} (--force to start anyway)", "window": why}
+    script = Path(__file__).resolve().parent.parent / "data_simulation" / G011_SCRIPT_NAME
+    log_path = paths.log_dir / now.strftime("%Y%m%d") / "g011_tick_collector.log"
+    pid = spawn([r019.python_exe(), str(script), "--fill-from-scan", "--runtime", str(paths.runtime_root)],
+                cwd=str(script.parent), log_path=log_path,
+                env=r019.child_env({"AUTO_TRADING_RUNTIME": str(paths.runtime_root)}))
+    append_history(paths, "collector.start", {"pid": pid, "force": force}, by)
+    return {"ok": True, "started": True, "pid": pid, "log": str(log_path)}
 
 
 # ---------------------------------------------------------------------------
 # status / service actions
 # ---------------------------------------------------------------------------
+def host_info(paths: ControlPaths) -> dict:
+    import platform
+    import socket
+
+    return {"platform": "windows" if r019.IS_WINDOWS else sys.platform, "hostname": socket.gethostname(),
+            "machine": platform.machine(), "backend": SERVICE_BACKEND, "role": r019.read_host_role(paths.runtime_root),
+            "runtime_root": str(paths.runtime_root)}
+
+
 def status(paths: ControlPaths, runner: Runner = _run) -> dict:
-    svc = service_state(runner)
-    procs = find_r003_processes()
-    tree = _service_tree_pids(svc.get("main_pid"))
-    external = [p for p in procs if str(p["pid"]) not in tree]
+    svc = service_state(runner, paths)
+    procs = find_r003_processes(paths=paths)
+    tree = _service_tree_pids(svc.get("main_pid"), paths=paths)
+    external = [p for p in procs if not _in_tree(p, tree)]
     started = svc.get("started_epoch")
     snapshot = read_running_snapshot(paths)
     diff = pending_diff(paths, snapshot, started)
@@ -612,17 +736,68 @@ def status(paths: ControlPaths, runner: Runner = _run) -> dict:
         "latest_main_log": latest_main_log(paths),
         "watchlist_codes": len(wl["codes"]),
         "collector": collector_status(paths, [c["code"] for c in wl["codes"]]),
+        "host": host_info(paths),
     }
+
+
+PROCESS_START_WAIT_SEC = 15.0
+
+
+def _process_service_verb(paths: ControlPaths, verb: str, by: str) -> subprocess.CompletedProcess:
+    """`systemctl --user <verb>` of the process backend (r020 supervisor). Returns a CompletedProcess like the runner."""
+    rp = r020.Paths(paths.runtime_root)
+    cmd = ["r020", verb]
+    if verb in ("stop", "restart"):
+        rp.live.mkdir(parents=True, exist_ok=True)
+        if r019.is_locked(rp.lock):
+            rp.stop_flag.touch()
+            rp.r003_stop.touch()
+            if not r019.wait_unlocked(rp.lock, r020.STOP_TIMEOUT + 15, poll=0.5):
+                return subprocess.CompletedProcess(cmd, 1, "", "supervisor did not stop within the timeout")
+        # no supervisor (it died, or r003 was started by hand on this PC): the r003 still trading must stop too - there is no
+        # other manager on Windows. Success only once its instance lock is free.
+        if r019.is_locked(paths.r003_lock):
+            rp.r003_stop.touch()
+            if not r019.wait_unlocked(paths.r003_lock, r020.STOP_TIMEOUT + 5, poll=0.5):
+                owner = r019.running_owner(paths.r003_lock) or {}
+                return subprocess.CompletedProcess(cmd, 1, "", f"r003 (pid {owner.get('pid')}) did not stop within "
+                                                               f"{r020.STOP_TIMEOUT + 5:.0f} s - end it by hand")
+        with contextlib.suppress(OSError):
+            rp.r003_stop.unlink()
+    if verb in ("start", "restart"):
+        if r019.is_locked(rp.lock):
+            return subprocess.CompletedProcess(cmd, 1, "", "supervisor already running")
+        for stale in (rp.stop_flag, rp.r003_stop):  # left by an earlier stop: must not end the new run
+            with contextlib.suppress(OSError):
+                stale.unlink()
+        script = Path(__file__).resolve().parent / "r020_supervisor.py"
+        r019.spawn_detached([r019.python_exe(), str(script), "run", "--by", by, "--runtime", str(paths.runtime_root)],
+                            cwd=str(script.parent), log_path=paths.log_dir / "r020_supervisor.log",
+                            env=r019.child_env({"AUTO_TRADING_RUNTIME": str(paths.runtime_root)}))
+        deadline = time.time() + PROCESS_START_WAIT_SEC
+        while time.time() < deadline:
+            st = r020.read_state(rp) or {}
+            if r019.is_locked(rp.lock) and st.get("pid") and st.get("active_state") in ("active", "activating"):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            time.sleep(0.2)
+        st = r020.service_state(rp)
+        return subprocess.CompletedProcess(cmd, 1, "", f"supervisor did not come up (state={st.get('active_state')}, "
+                                                       f"result={st.get('result')}) - see {paths.log_dir / 'r020_supervisor.log'}")
+    return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
 def service_action(paths: ControlPaths, verb: str, dry_run: bool | None, profile: str | None,
                    runner: Runner = _run, by: str = "cli") -> dict:
     if verb not in ("start", "stop", "restart"):
         raise ValueError(verb)
-    svc = service_state(runner)
+    svc = service_state(runner, paths)
     if verb in ("start", "restart"):
-        tree = _service_tree_pids(svc.get("main_pid"))
-        external = [p for p in find_r003_processes() if str(p["pid"]) not in tree]
+        role = r019.read_host_role(paths.runtime_root)
+        if role["role"] == "standby":
+            return {"ok": False, "error": "host role is standby - the other host trades this account. "
+                                          "Switch this host to primary first (role set primary).", "role": role}
+        tree = _service_tree_pids(svc.get("main_pid"), paths=paths)
+        external = [p for p in find_r003_processes(paths=paths) if not _in_tree(p, tree)]
         if external:
             return {"ok": False, "error": "r003 already running outside the service (screen/terminal?) - stop it first",
                     "external_r003": external}
@@ -642,13 +817,16 @@ def service_action(paths: ControlPaths, verb: str, dry_run: bool | None, profile
                 write_env_file(paths, env)
                 if changed:
                     append_history(paths, "env", changed, by)
-    cp = runner(["systemctl", "--user", verb, SERVICE_NAME])
+    if SERVICE_BACKEND == "process":
+        cp = _process_service_verb(paths, verb, by)
+    else:
+        cp = runner(["systemctl", "--user", verb, SERVICE_NAME])
     ok = cp.returncode == 0
     append_history(paths, f"service.{verb}", {"ok": ok}, by)
     out = {"ok": ok, "verb": verb, "stderr": (cp.stderr or "").strip()}
     if ok:
         time.sleep(1.0)
-        out["service"] = {k: v for k, v in service_state(runner).items() if k != "started_epoch"}
+        out["service"] = {k: v for k, v in service_state(runner, paths).items() if k != "started_epoch"}
     return out
 
 
@@ -770,9 +948,15 @@ class CommandDeadline(Exception):
 
 @contextlib.contextmanager
 def _hard_deadline(seconds: float):
-    """절대 시각 기준 강제 중단(SIGALRM). 느린 HTTP 응답(바이트가 조금씩 계속 오는 경우)도 끊는다. 메인 스레드에서만."""
-    if not hasattr(signal, "setitimer") or threading.current_thread() is not threading.main_thread():
+    """절대 시각 기준 강제 중단(SIGALRM). 느린 HTTP 응답(바이트가 조금씩 계속 오는 경우)도 끊는다. 메인 스레드에서만.
+    SIGALRM 이 없는 Windows: 타이머 스레드가 메인 스레드를 인터럽트(_thread.interrupt_main -> CommandDeadline)하고, 스크립트로
+    실행됐을 때는 그래도 안 끝나면(소켓 대기 등) 2초 뒤 JSON 을 쓰고 프로세스를 끝낸다(os._exit 3)."""
+    if threading.current_thread() is not threading.main_thread():
         yield
+        return
+    if not hasattr(signal, "setitimer"):
+        with _deadline_by_thread(seconds):
+            yield
         return
 
     def _fire(_signum, _frame):
@@ -785,6 +969,94 @@ def _hard_deadline(seconds: float):
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, prev)
+
+
+@contextlib.contextmanager
+def _deadline_by_thread(seconds: float):
+    import _thread
+
+    gate = threading.Lock()
+    fired = threading.Event()
+    done = threading.Event()
+
+    def _fire():
+        with gate:
+            if done.is_set():
+                return
+            fired.set()
+            _thread.interrupt_main()
+
+    def _kill():
+        with gate:
+            if done.is_set():
+                return
+            with contextlib.suppress(Exception):
+                sys.stdout.write(json.dumps({"ok": False, "error": f"command exceeded {seconds:.0f} s", "kis_code": "deadline"}) + "\n")
+                sys.stdout.flush()
+            os._exit(3)
+
+    timers = [threading.Timer(seconds, _fire)]
+    if _HARD_EXIT_FALLBACK:
+        timers.append(threading.Timer(seconds + 2.0, _kill))
+    for t in timers:
+        t.daemon = True
+        t.start()
+    try:
+        yield
+    except KeyboardInterrupt:
+        if fired.is_set():
+            raise CommandDeadline(f"command exceeded {seconds:.0f} s") from None
+        raise
+    finally:
+        with gate:
+            done.set()
+        for t in timers:
+            t.cancel()
+
+
+# ---------------------------------------------------------------------------
+# doctor (environment check - compared side by side by AutoBotH for the two hosts)
+# ---------------------------------------------------------------------------
+DOCTOR_PACKAGES = ("pandas", "numpy", "requests", "PyYAML", "websockets", "pycryptodome", "lightgbm", "numba", "holidays", "pykrx")
+
+
+def _git_commit(path: Path) -> str | None:
+    try:
+        cp = subprocess.run(["git", "-C", str(path), "log", "-1", "--format=%h %cs"], capture_output=True, text=True, timeout=5)
+        return (cp.stdout.strip() or None) if cp.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def doctor(paths: ControlPaths) -> dict:
+    import importlib.metadata as md
+
+    pk = {}
+    for name in DOCTOR_PACKAGES:
+        try:
+            pk[name] = md.version(name)
+        except md.PackageNotFoundError:
+            pk[name] = None
+    here = Path(__file__).resolve().parent
+    ota = Path(os.environ.get("OPEN_TRADING_API_ROOT") or (here.parents[2] / "open-trading-api"))
+    kis_dir = Path(os.path.expanduser("~")) / "KIS" / "config"
+    today_token = kis_dir / f"KIS{datetime.now():%Y%m%d}"
+    problems = []
+    if sys.version_info < (3, 12):
+        problems.append("Python 3.12+ required (r003 uses PEP 701 f-strings)")
+    for need in ("pandas", "numpy", "requests", "PyYAML", "websockets", "pycryptodome"):
+        if not pk.get(need):
+            problems.append(f"package {need} missing")
+    if not (ota / "examples_user" / "kis_auth.py").is_file():
+        problems.append(f"open-trading-api not found at {ota}")
+    if not (kis_dir / "kis_devlp.yaml").is_file():
+        problems.append(f"KIS config {kis_dir / 'kis_devlp.yaml'} missing")
+    return {"ok": not problems, "problems": problems, "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "host": host_info(paths), "python": sys.version.split()[0], "executable": sys.executable, "packages": pk,
+            "code": {"dir": str(here.parent), "commit": _git_commit(here.parent)},
+            "open_trading_api": {"path": str(ota), "exists": ota.is_dir(), "commit": _git_commit(ota)},
+            "kis_config": {"dir": str(kis_dir), "devlp_yaml": (kis_dir / "kis_devlp.yaml").is_file(), "token_today": today_token.is_file()},
+            "runtime": {"root": str(paths.runtime_root), "exists": paths.runtime_root.is_dir()}}
 
 
 class _JsonArgumentParser(argparse.ArgumentParser):
@@ -825,7 +1097,15 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("--codes", default=None, help='"005930,삼성전자;000660,SK하이닉스"')
     p.add_argument("--stdin", action="store_true", help="read entries (one per line) from stdin")
     p = sub.add_parser("collector")
-    p.add_argument("action", choices=["status", "restart"])
+    p.add_argument("action", choices=["status", "restart", "start"])
+    p.add_argument("--force", action="store_true", help="start: ignore the session window")
+    p = sub.add_parser("role")
+    p.add_argument("action", choices=["get", "set"])
+    p.add_argument("role", nargs="?", choices=list(r019.HOST_ROLES), default=None)
+    p.add_argument("--note", default="")
+    sub.add_parser("doctor")
+    import r021_jobs as r021  # noqa: E402  (stdlib only)
+    r021.add_job_parser(sub)
     # 차트 명령(indicators/bars)은 r017(pandas, r012/r002)을 불러와야 해서 기동이 ~1 s 느리다. 나머지 명령(status 폴링 등)은
     # 그 비용을 내지 않도록 자리만 등록하고, 이 두 명령일 때만 r017을 import해 r017의 인자 정의로 다시 파싱한다.
     for chart_cmd in ("indicators", "bars"):
@@ -879,11 +1159,38 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     if args.cmd == "collector":
         if args.action == "status":
             return _emit(collector_status(paths, [c["code"] for c in read_watchlist(paths)["codes"]]))
-        out = collector_restart(paths, args.by)
+        out = collector_start(paths, args.by, force=args.force) if args.action == "start" else collector_restart(paths, args.by)
         return _emit(out, 0 if out.get("ok") else 3)
 
+    if args.cmd == "role":
+        if args.action == "get":
+            return _emit({"ok": True, **r019.read_host_role(paths.runtime_root), "host": host_info(paths)})
+        if not args.role:
+            return _emit({"ok": False, "error": "role set needs primary|standby"}, 2)
+        if any(c in args.note for c in "\r\n"):
+            return _emit({"ok": False, "error": "note must be one line"}, 2)
+        try:
+            # role lock: r003 takes its instance lock, then reads the role under this lock - so "no r003 here" checked under
+            # it stays true until the standby file is written (no r003 can start in between and trade on a 'primary' read)
+            with r019.role_lock(paths.runtime_root), write_lock(paths):
+                if args.role == "standby" and (r019.is_locked(paths.r003_lock) or find_r003_processes(paths=paths)):
+                    return _emit({"ok": False, "error": "r003 is running on this host - stop it before switching to standby"}, 3)
+                before = r019.read_host_role(paths.runtime_root)
+                after = r019.write_host_role(paths.runtime_root, args.role, args.by, args.note)
+                append_history(paths, "role", {"from": before["role"], "to": after["role"], "note": args.note}, args.by)
+        except TimeoutError:
+            return _emit({"ok": False, "error": "host role lock busy - try again"}, 3)
+        return _emit({"ok": True, **after})
+
+    if args.cmd == "doctor":
+        return _emit(doctor(paths))
+
+    if args.cmd == "job":
+        out, rc = r021.run_job_command(args, args.by, r021.Paths(paths.runtime_root))
+        return _emit(out, rc)
+
     snapshot = read_running_snapshot(paths)
-    started = service_state(runner).get("started_epoch")
+    started = service_state(runner, paths).get("started_epoch")
     diff = pending_diff(paths, snapshot, started)
     pending_keys = set(diff["pending_keys"])
 
@@ -965,4 +1272,9 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
 
 
 if __name__ == "__main__":
+    _HARD_EXIT_FALLBACK = True
+    if r019.IS_WINDOWS:  # JSON (Korean names) must reach AutoBotH as UTF-8, not cp949
+        with contextlib.suppress(Exception):
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stdin.reconfigure(encoding="utf-8")
     sys.exit(main())

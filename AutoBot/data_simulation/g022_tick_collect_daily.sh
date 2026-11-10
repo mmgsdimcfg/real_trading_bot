@@ -13,6 +13,8 @@
 # Do not wrap it in another `flock`: that lock fd would be inherited by g011 and block every later run.
 #
 # Update log:
+# - [2026-11-10] type=feat owner=claude
+#     summary: standby 호스트(runtime/config/host_role.json, AutoBotH 노트북 메인)면 g011을 띄우지 않고 종료.
 # - [2026-11-02] type=fix owner=claude
 #     summary: 기동 구간을 r014 특수일 시간표에서 계산(휴장일 skip, 수능일 09:45~16:30). --until 기본값은 g011이
 #       시간표로 결정. g011 자체 단일 실행 잠금 추가에 맞춰 설명 갱신.
@@ -23,6 +25,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="${TICK_COLLECTOR_PYTHON:-$HOME/venv/bin/python}"
 RUNTIME="${AUTO_TRADING_RUNTIME:-$(cd "$HERE/../../.." && pwd)/runtime}"
 CALENDAR="$HERE/../live_trading/r014_market_calendar.txt"
+# [2026-11-10] standby host (r019 host_role.json - the other host trades this account): no g011 here, the KIS websocket
+# allows one session per appkey
+if grep -qE '"role"[[:space:]]*:[[:space:]]*"standby"' "$RUNTIME/config/host_role.json" 2>/dev/null; then
+  exit 0
+fi
 today=$(date +%Y%m%d)
 # r014 calendar: "YYYYMMDD closed" or "YYYYMMDD HH:MM HH:MM" (same rules as r014_market_calendar.py)
 special=$(awk -v d="$today" '{sub(/#.*/, "")} $1 == d {print $2, $3; exit}' "$CALENDAR" 2>/dev/null || true)

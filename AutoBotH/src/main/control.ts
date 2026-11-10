@@ -12,27 +12,41 @@
  *   the service start time changes); deps.onNxt lets the main process re-derive the funnel start time
  * - [2026-11-07] type=perf - status polling uses its own interval (settings.statusPollSec, default 30 s; 120 s while the window is
  *   minimized/hidden) instead of the 10 s log poll - each call starts a Python process on the Raspberry Pi
+ * - [2026-11-10] type=feat - Local mode: R016Client runs either a shell command over SSH (remote) or argv of a local child process
+ *   (R016Client.local, main/localRunner.ts) - same argument checks, same serial queue. The controller takes the client of the
+ *   connected host (deps.client), its poll interval (deps.pollMs) and a cross-host guard before start/restart (deps.beforeStart:
+ *   the other host must not trade the same account). New channels: ctl:role (get/set primary|standby), ctl:collectorStart,
+ *   ctl:jobs / ctl:jobStart / ctl:jobStop / ctl:jobLog (r021 data jobs), ctl:doctor. Saving the watchlist while r003 runs offers
+ *   an immediate restart so the new list is watched right away
+ * - [2026-11-10] type=fix - Codex review: a service verb pins its client (host) for the whole operation and passes it to the guard;
+ *   clear() bumps a connection generation so status / NXT answers of the previous host are dropped; busy() lets the connect refuse
+ *   a run-mode switch while a verb runs
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
-import { userInfo } from 'node:os';
+import type { ArgvRunner } from './localRunner';
 import {
+  argProblem,
   buildR016Command,
   isMarketHours,
   NXT_KEY,
   parseNxt,
   parseR016Output,
   setArgs,
-  statusPollMs,
   watchlistStdin,
-  writerName,
   checkWatchRows,
+  JOB_NAMES,
   type ControlState,
+  type DoctorReport,
   type HistoryRow,
+  type JobList,
+  type JobLog,
+  type JobStartOpts,
   type NxtState,
   type R016Result,
   type R016Status,
   type RiskProfile,
+  type RoleInfo,
   type SchemaDoc,
   type ServiceResult,
   type SetResult,
@@ -46,6 +60,8 @@ export type ExecFn = (cmd: string, timeoutMs: number, stdin?: string) => Promise
 export const R016_TIMEOUT = 30000;
 export const R016_SERVICE_TIMEOUT = 120000;
 export const R016_CONDITIONS_TIMEOUT = 90000;
+/** job start waits for the runner lock (10 s); job stop for the current step to end (up to ~25 s) */
+export const R016_JOB_TIMEOUT = 60000;
 
 export interface R016Config {
   remoteRoot: string;
@@ -53,7 +69,10 @@ export interface R016Config {
   by: string;
 }
 
-/** Serial queue around ssh exec of r016_control.py. */
+/**
+ * Serial queue around r016_control.py: remote = one shell command over ssh exec (`exec`), local = argv of a child process
+ * (`argv`, main/localRunner.ts). Arguments are checked the same way for both.
+ */
 export class R016Client {
   private tail: Promise<unknown> = Promise.resolve();
   private queued = 0;
@@ -61,9 +80,15 @@ export class R016Client {
   readonly stderrLog: string[] = [];
 
   constructor(
-    private exec: ExecFn,
+    private exec: ExecFn | null,
     private cfg: () => R016Config,
+    private argv: ArgvRunner | null = null,
   ) {}
+
+  /** local client: argv runner, no shell */
+  static local(runner: ArgvRunner): R016Client {
+    return new R016Client(null, () => ({ remoteRoot: '', pythonPath: '', by: '' }), runner);
+  }
 
   get busy(): boolean {
     return this.queued > 0;
@@ -75,15 +100,26 @@ export class R016Client {
   }
 
   run<T = unknown>(args: string[], opts: { timeoutMs?: number; stdin?: string } = {}): Promise<R016Result<T>> {
-    let cmd: string;
+    let call: (timeoutMs: number, stdin?: string) => Promise<{ out: string; err: string; code: number | null }>;
     try {
-      cmd = this.command(args);
+      if (this.argv) {
+        for (const a of args) {
+          const p = argProblem(a);
+          if (p) throw new Error(p);
+        }
+        const runner = this.argv;
+        call = (t, s) => runner(args, t, s);
+      } else {
+        const cmd = this.command(args);
+        const exec = this.exec!;
+        call = (t, s) => exec(cmd, t, s);
+      }
     } catch (e) {
       return Promise.resolve({ ok: false, rc: null, data: null, stderr: '', error: (e as Error).message });
     }
     this.queued++;
     const job = this.tail.then(async () => {
-      const r = await this.exec(cmd, opts.timeoutMs ?? R016_TIMEOUT, opts.stdin);
+      const r = await call(opts.timeoutMs ?? R016_TIMEOUT, opts.stdin);
       if (r.err.trim()) {
         this.stderrLog.push(`[${new Date().toISOString()}] ${args[0]}: ${r.err.trim().slice(0, 2000)}`);
         if (this.stderrLog.length > 50) this.stderrLog.shift();
@@ -99,15 +135,26 @@ export class R016Client {
 // ---- controller ------------------------------------------------------------------------------
 
 export interface ControlDeps {
-  exec: ExecFn;
+  /** r016 client of the host the app is connected to (remote Raspberry Pi or this PC) */
+  client: () => R016Client;
   isConnected: () => boolean;
-  settings: () => { remoteRoot: string; pythonPath: string; pollSec: number; statusPollSec?: number };
+  /** status poll interval in ms (run mode / window visibility) */
+  pollMs: () => number;
+  /** "라즈베리파이" / "이 PC" - used in messages */
+  hostLabel: () => string;
   send: (ch: string, data: unknown) => void;
   win: () => BrowserWindow | null;
   /** reload the condition JSON (values_meta) - called after set/unset/reset and when the service start time changes */
   reloadConditions: () => Promise<unknown>;
   /** the server NXT setting was read and changed (or read for the first time) */
   onNxt?: (nxt: NxtState) => void;
+  /** every successful status (keep-awake, scheduler) */
+  onStatus?: (s: R016Status) => void;
+  /**
+   * Before start/restart: make sure the other host does not trade this account (its r003 stopped, its role standby, this
+   * host primary). Returns an error to refuse, or cancelled when the user declined a confirmation.
+   */
+  beforeStart?: (verb: ServiceVerb, client: R016Client) => Promise<{ ok: boolean; error?: string; cancelled?: boolean }>;
 }
 
 const errMsg = (e: unknown) => String((e as Error)?.message || e).split('\n')[0];
@@ -125,35 +172,40 @@ export interface OpResult<T = unknown> {
   data?: T | null;
 }
 
+export async function confirmBox(win: BrowserWindow | null, title: string, message: string, detail: string, okLabel: string): Promise<boolean> {
+  const opts = { type: 'warning' as const, title, message, detail, buttons: [okLabel, '취소'], defaultId: 1, cancelId: 1, noLink: true };
+  const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+  return r.response === 0;
+}
+
 export function createControl(deps: ControlDeps) {
-  const by = writerName(userInfo().username);
-  const client = new R016Client(deps.exec, () => ({ ...deps.settings(), by }));
+  const cl = () => deps.client();
   let state: ControlState = { status: null, busy: null };
   let timer: NodeJS.Timeout | null = null;
   let statusInFlight: Promise<R016Status | null> | null = null;
+  /** connection generation: bumped by clear() (disconnect / run-mode switch) - answers of an older generation are dropped */
+  let gen = 0;
 
   const push = (patch: Partial<ControlState>) => {
     state = { ...state, ...patch };
     deps.send('control', state);
   };
 
-  async function confirm(title: string, message: string, detail: string, okLabel: string): Promise<boolean> {
-    const w = deps.win();
-    const opts = { type: 'warning' as const, title, message, detail, buttons: [okLabel, '취소'], defaultId: 1, cancelId: 1, noLink: true };
-    const r = w ? await dialog.showMessageBox(w, opts) : await dialog.showMessageBox(opts);
-    return r.response === 0;
-  }
+  const confirm = (title: string, message: string, detail: string, okLabel: string) => confirmBox(deps.win(), title, message, detail, okLabel);
+  const notConnected = () => `${deps.hostLabel()}에 연결되어 있지 않습니다.`;
 
   /** `status` (coalesced: concurrent callers share one call). */
   function refreshStatus(): Promise<R016Status | null> {
     if (statusInFlight) return statusInFlight;
-    statusInFlight = (async () => {
+    const myGen = gen;
+    const p: Promise<R016Status | null> = (async () => {
       if (!deps.isConnected()) {
-        push({ error: 'SSH가 연결되어 있지 않습니다.' });
+        push({ error: notConnected() });
         return null;
       }
       try {
-        const r = await client.run<R016Status>(['status']);
+        const r = await cl().run<R016Status>(['status']);
+        if (myGen !== gen) return null; // asked before a disconnect / host switch: the answer is about the old host
         if (!r.ok || !r.data) {
           push({ error: r.error || 'status 실패' });
           return null;
@@ -161,6 +213,7 @@ export function createControl(deps: ControlDeps) {
         const prev = state.status;
         const s = r.data;
         push({ status: s, statusAt: Date.now(), error: undefined });
+        deps.onStatus?.(s);
         // service (re)started or stopped since the last status -> pending marks in the condition JSON changed
         if (
           prev &&
@@ -171,18 +224,23 @@ export function createControl(deps: ControlDeps) {
         }
         return s;
       } catch (e) {
-        push({ error: errMsg(e) });
+        if (myGen === gen) push({ error: errMsg(e) });
         return null;
       }
-    })().finally(() => (statusInFlight = null));
-    return statusInFlight;
+    })().finally(() => {
+      if (statusInFlight === p) statusInFlight = null;
+    });
+    statusInFlight = p;
+    return p;
   }
 
   /** ENABLE_NXT_SESSION (base / override / running). Failures keep the last known value. */
   async function refreshNxt(): Promise<NxtState | undefined> {
     if (!deps.isConnected()) return state.nxt;
+    const myGen = gen;
     try {
-      const r = await client.run(['get', NXT_KEY]);
+      const r = await cl().run(['get', NXT_KEY]);
+      if (myGen !== gen) return state.nxt;
       const nxt = r.ok ? parseNxt(r.data) : null;
       if (!nxt) return state.nxt;
       const prev = state.nxt;
@@ -194,19 +252,14 @@ export function createControl(deps: ControlDeps) {
     }
   }
 
-  const windowVisible = (): boolean => {
-    const w = deps.win();
-    return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized();
-  };
-
   function startPolling(): void {
     stopPolling();
     const loop = () => {
       timer = setTimeout(async () => {
         // skip a poll while a write is queued - the action itself refreshes the status afterwards
-        if (deps.isConnected() && !state.busy && !client.busy) await refreshStatus();
+        if (deps.isConnected() && !state.busy && !cl().busy) await refreshStatus();
         if (timer) loop();
-      }, statusPollMs(deps.settings().statusPollSec, windowVisible()));
+      }, deps.pollMs());
     };
     loop();
     void refreshStatus();
@@ -232,15 +285,24 @@ export function createControl(deps: ControlDeps) {
     return s;
   }
 
-  async function service(verb: ServiceVerb, opts: ServiceOpts): Promise<OpResult<ServiceResult>> {
+  async function service(verb: ServiceVerb, opts: ServiceOpts, skipConfirm = false): Promise<OpResult<ServiceResult>> {
     if (state.busy) return { ok: false, error: `다른 작업(${state.busy}) 진행 중입니다.` };
-    if (!deps.isConnected()) return { ok: false, error: 'SSH가 연결되어 있지 않습니다.' };
+    if (!deps.isConnected()) return { ok: false, error: notConnected() };
+    // the host this operation acts on, fixed for its whole duration (connect refuses to switch the run mode while busy)
+    const client = cl();
+    const myGen = gen;
     push({ busy: verb });
     try {
       const cur = await refreshStatus();
       if (!cur) return { ok: false, error: state.error || '현재 상태를 읽지 못했습니다.' };
       if (verb === 'start' && cur.external_r003?.length) {
-        return { ok: false, error: '서비스 밖(screen/터미널)에서 r003이 실행 중입니다. 서버의 screen 세션에서 r003을 종료한 뒤 앱에서 실행하세요.' };
+        return {
+          ok: false,
+          error:
+            cur.host?.platform === 'windows'
+              ? '이 PC에서 감시 프로세스 밖으로 실행된 r003이 있습니다 (콘솔 등). [정지]로 먼저 끝낸 뒤 실행하세요.'
+              : '서비스 밖(screen/터미널)에서 r003이 실행 중입니다. 서버의 screen 세션에서 r003을 종료한 뒤 앱에서 실행하세요.',
+        };
       }
       const args: string[] = [verb];
       if (verb !== 'stop') {
@@ -250,14 +312,19 @@ export function createControl(deps: ControlDeps) {
       }
       const dryRun = opts.dryRun ?? cur.dry_run;
       const warn: string[] = [];
-      if (verb !== 'stop' && !dryRun) warn.push('실주문 모드로 실행합니다. r003이 실제 매수/매도 주문을 보냅니다.');
+      if (verb !== 'stop' && !dryRun) warn.push(`실주문 모드로 실행합니다 (${deps.hostLabel()}). r003이 실제 매수/매도 주문을 보냅니다.`);
       if (verb !== 'start' && isMarketHours(cur.generated_at)) warn.push('장중입니다. 정지된 동안 보유 종목 매도 조건 평가가 중단됩니다.');
-      if (warn.length) {
+      if (warn.length && !skipConfirm) {
         const label = verb === 'start' ? '실행' : verb === 'stop' ? '정지' : '재시작';
         const prof = opts.profile || cur.risk_profile;
         const detail = verb === 'stop' ? '' : `모드: ${dryRun ? 'dry-run (주문 안 냄)' : '실주문'} · 프로파일: ${prof}`;
         if (!(await confirm(`r003 ${label}`, warn.join('\n'), detail, label))) return { ok: false, cancelled: true };
       }
+      if (verb !== 'stop' && deps.beforeStart) {
+        const g = await deps.beforeStart(verb, client);
+        if (!g.ok) return { ok: false, error: g.error, cancelled: g.cancelled };
+      }
+      if (myGen !== gen || client !== cl()) return { ok: false, error: '연결이 바뀌어 취소했습니다.' };
       let r: R016Result<ServiceResult> | null = null;
       let unknown: string | undefined;
       try {
@@ -294,6 +361,7 @@ export function createControl(deps: ControlDeps) {
         return { ok: false, error: errMsg(e) };
       }
     });
+  const needConn = () => (deps.isConnected() ? null : { ok: false, error: notConnected() });
   ipcMain.handle('ctl:state', () => state);
   ipcMain.handle('ctl:status', async () => {
     await refreshStatus();
@@ -304,20 +372,20 @@ export function createControl(deps: ControlDeps) {
     return service(verb, opts || {});
   });
   handle('ctl:schema', async (all: boolean) => {
-    const r = await client.run<SchemaDoc>(all ? ['schema', '--all'] : ['schema']);
+    const r = await cl().run<SchemaDoc>(all ? ['schema', '--all'] : ['schema']);
     return { ok: r.ok, error: r.error, data: r.data };
   });
   handle('ctl:set', async (changes: Record<string, unknown>) => {
     const args = setArgs(changes || {});
     if (!args.length) return { ok: true, data: { ok: true, accepted: {}, rejected: {} } };
-    const r = await client.run<SetResult>(['set', ...args]);
+    const r = await cl().run<SetResult>(['set', ...args]);
     // accepted keys are stored even when others were rejected (rc 2) -> always reload
     if (r.data) await afterOverrideChange();
     return { ok: r.ok, error: r.error, data: r.data };
   });
   handle('ctl:unset', async (keys: string[]) => {
     if (!keys?.length) return { ok: true };
-    const r = await client.run(['unset', ...keys]);
+    const r = await cl().run(['unset', ...keys]);
     if (r.ok) await afterOverrideChange();
     return { ok: r.ok, error: r.error, data: r.data };
   });
@@ -325,16 +393,16 @@ export function createControl(deps: ControlDeps) {
     if (!(await confirm('설정값 전체 되돌리기', '저장된 오버라이드를 모두 지우고 기본값으로 되돌립니다.', '재시작 후 봇에 반영됩니다.', '전부 되돌리기'))) {
       return { ok: false, cancelled: true };
     }
-    const r = await client.run(['reset']);
+    const r = await cl().run(['reset']);
     if (r.ok) await afterOverrideChange();
     return { ok: r.ok, error: r.error, data: r.data };
   });
   handle('ctl:history', async (n: number) => {
-    const r = await client.run<{ rows: HistoryRow[] }>(['history', '-n', String(Math.max(1, Math.min(500, Number(n) || 20)))]);
+    const r = await cl().run<{ rows: HistoryRow[] }>(['history', '-n', String(Math.max(1, Math.min(500, Number(n) || 20)))]);
     return { ok: r.ok, error: r.error, data: r.data };
   });
   handle('ctl:watchlistGet', async () => {
-    const r = await client.run<WatchlistDoc>(['watchlist', 'get']);
+    const r = await cl().run<WatchlistDoc>(['watchlist', 'get']);
     return { ok: r.ok, error: r.error, data: r.data };
   });
   handle('ctl:watchlistSet', async (rows: WatchEntry[]) => {
@@ -345,26 +413,134 @@ export function createControl(deps: ControlDeps) {
     if (
       !(await confirm(
         '감시목록 저장',
-        `감시목록을 ${list.length}종목으로 바꿉니다.`,
-        '서버가 기존 파일을 watchlist_backup/에 백업한 뒤 교체합니다. r003 재시작 후 반영되며, 매일 아침 g002 스캐너 내보내기가 다시 씁니다.',
+        `감시목록을 ${list.length}종목으로 바꿉니다 (${deps.hostLabel()}).`,
+        '기존 파일을 watchlist_backup/에 백업한 뒤 교체합니다. r003 재시작 후 반영되며, 장 마감 후 g002 선별(감시 종목 선별 작업)이 다시 씁니다.',
         '저장',
       ))
     ) {
       return { ok: false, cancelled: true };
     }
-    const r = await client.run<WatchlistSetResult>(['watchlist', 'set', '--stdin'], { stdin: watchlistStdin(list) });
-    await refreshStatus();
+    const r = await cl().run<WatchlistSetResult>(['watchlist', 'set', '--stdin'], { stdin: watchlistStdin(list) });
+    const cur = await refreshStatus();
+    // add/remove symbols during the session -> watch the new list right away (restart re-reads r004; held positions keep their
+    // sell evaluation - r003 restores today's positions from live_state and the account)
+    if (r.ok && cur?.running && !state.busy) {
+      if (await confirm('감시 다시 시작', '새 감시목록을 바로 감시하려면 r003을 재시작해야 합니다.', '지금 재시작할까요? (보유 종목은 재시작 후에도 계속 매도 평가합니다)', '재시작')) {
+        void service('restart', {}, true);
+      }
+    }
     return { ok: r.ok, error: r.error, data: r.data };
   });
 
+  // [2026-11-10] host role / tick collector / data jobs / doctor (same r016 commands on both hosts)
+  /** run `fn` with the busy flag and the pinned client, after the cross-host guard (other host standby, this host primary) */
+  async function guarded<T>(label: string, fn: (c: R016Client) => Promise<T>): Promise<T | OpResult> {
+    if (state.busy) return { ok: false, error: `다른 작업(${state.busy}) 진행 중입니다.` };
+    const client = cl();
+    push({ busy: label });
+    try {
+      if (deps.beforeStart) {
+        const g = await deps.beforeStart('start', client);
+        if (!g.ok) return { ok: false, error: g.error, cancelled: g.cancelled };
+      }
+      if (client !== cl()) return { ok: false, error: '연결이 바뀌어 취소했습니다.' };
+      return await fn(client);
+    } finally {
+      push({ busy: null });
+    }
+  }
+  handle('ctl:role', async (role?: 'primary' | 'standby') => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (role && role !== 'primary' && role !== 'standby') return { ok: false, error: `알 수 없는 역할: ${role}` };
+    if (role === 'primary') {
+      // becoming primary = the same cross-host guard as an r003 start (other host checked and made standby, then this one primary)
+      const r = await guarded('role', async (c) => {
+        const g = await c.run<RoleInfo>(['role', 'get']);
+        return { ok: g.ok, error: g.error, data: g.data };
+      });
+      await refreshStatus();
+      return r;
+    }
+    const r = await cl().run<RoleInfo>(role ? ['role', 'set', role, '--note', 'AutoBotH'] : ['role', 'get']);
+    if (role) await refreshStatus();
+    return { ok: r.ok, error: r.error, data: r.data };
+  });
+  handle('ctl:collectorStart', async (force?: boolean) => {
+    const nc = needConn();
+    if (nc) return nc;
+    // a g011 here while the other host still collects would fight over the KIS websocket (one session per appkey)
+    const r = await guarded('collector', async (c) => {
+      const x = await c.run(['collector', 'start', ...(force ? ['--force'] : [])]);
+      return { ok: x.ok, error: x.error, data: x.data };
+    });
+    await refreshStatus();
+    return r;
+  });
+  handle('ctl:jobs', async () => {
+    const nc = needConn();
+    if (nc) return nc;
+    const r = await cl().run<JobList>(['job', 'list']);
+    return { ok: r.ok, error: r.error, data: r.data };
+  });
+  handle('ctl:jobStart', async (name: string, opts: JobStartOpts) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (!JOB_NAMES.includes(name)) return { ok: false, error: `알 수 없는 작업: ${name}` };
+    const o = opts || {};
+    const args = ['job', 'start', name];
+    if (o.date) {
+      if (!/^\d{8}$/.test(o.date)) return { ok: false, error: '날짜는 YYYYMMDD' };
+      args.push('--date', o.date);
+    }
+    if (o.workers) args.push('--workers', String(Math.max(1, Math.min(32, Math.floor(Number(o.workers)) || 1))));
+    if (o.edgeAi) args.push('--edge-ai');
+    if (o.tradingDayOnly) args.push('--trading-day-only');
+    if (!o.noConfirm && state.status?.running && (name === 'collect' || name === 'postclose')) {
+      if (!(await confirm('데이터 수집', 'r003이 실행 중입니다.', '수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다. 그래도 시작할까요?', '시작'))) {
+        return { ok: false, cancelled: true };
+      }
+    }
+    const r = await cl().run(args, { timeoutMs: R016_JOB_TIMEOUT });
+    return { ok: r.ok, error: r.error, data: r.data };
+  });
+  handle('ctl:jobStop', async (name: string) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (!JOB_NAMES.includes(name)) return { ok: false, error: `알 수 없는 작업: ${name}` };
+    const r = await cl().run(['job', 'stop', name], { timeoutMs: R016_JOB_TIMEOUT });
+    return { ok: r.ok, error: r.error, data: r.data };
+  });
+  handle('ctl:jobLog', async (name: string, n?: number) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (!JOB_NAMES.includes(name)) return { ok: false, error: `알 수 없는 작업: ${name}` };
+    const r = await cl().run<JobLog>(['job', 'log', name, '-n', String(Math.max(10, Math.min(2000, Number(n) || 200)))]);
+    return { ok: r.ok, error: r.error, data: r.data };
+  });
+  handle('ctl:doctor', async () => {
+    const nc = needConn();
+    if (nc) return nc;
+    const r = await cl().run<DoctorReport>(['doctor']);
+    return { ok: !!r.data, error: r.data ? undefined : r.error, data: r.data };
+  });
+
   return {
-    client,
-    by,
     startPolling,
     stopPolling,
     refreshStatus,
     refreshNxt,
+    /** start / stop / restart without the renderer (scheduler) - confirmations still apply unless skipConfirm */
+    service,
+    status: () => state.status,
     nxt: () => state.nxt,
-    clear: () => push({ status: null, statusAt: undefined, error: undefined }),
+    /** a service verb is running (the run mode must not change under it) */
+    busy: () => !!state.busy,
+    /** disconnect / run-mode switch: forget the old host's state and drop its answers still in flight */
+    clear: () => {
+      gen++;
+      statusInFlight = null;
+      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, lastAction: undefined });
+    },
   };
 }

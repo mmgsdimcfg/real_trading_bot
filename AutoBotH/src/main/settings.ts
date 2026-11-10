@@ -9,10 +9,14 @@
  *   the key get it on
  * - [2026-11-07] type=feat - statusPollSec (r016 status poll, default 30 s, min 15 s) separate from pollSec (log poll); stores without
  *   the key get the default
+ * - [2026-11-10] type=feat - Local mode settings (runMode, localRoot - auto-detected from the app/repo location, localPython,
+ *   local poll intervals, scheduler switches, keepAwake) + localPaths() helper and a small meta store (last post-close run day)
  */
 
 import Store from 'electron-store';
-import { safeStorage } from 'electron';
+import { app, safeStorage } from 'electron';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type { Settings } from '../shared/types';
 import type { ProxyConfig } from './proxy';
 import { STATUS_POLL_DEFAULT_SEC, STATUS_POLL_MIN_SEC } from '../shared/control';
@@ -43,9 +47,86 @@ const DEFAULTS: Stored = {
   sessionOpen: '09:00',
   sessionOpenAuto: true,
   retentionDays: 30,
+  runMode: 'remote',
+  localRoot: '',
+  localPython: '',
+  localPollSec: 2,
+  localStatusPollSec: 5,
+  autoCollector: true,
+  autoPostclose: false,
+  postcloseTime: '20:10',
+  postcloseEdgeAi: false,
+  syncWatchlistToPeer: true,
+  keepAwake: true,
 };
 
+const R016_REL = ['real_trading_bot', 'AutoBot', 'live_trading', 'r016_control.py'];
+const isLocalRoot = (dir: string) => !!dir && existsSync(join(dir, ...R016_REL));
+
+/** First folder above the app (dev: <root>/real_trading_bot/AutoBotH) or a usual place that holds real_trading_bot/AutoBot. */
+export function detectLocalRoot(): string {
+  const cands: string[] = [];
+  try {
+    let d = resolve(app.getAppPath());
+    for (let i = 0; i < 5; i++) {
+      cands.push(d);
+      d = dirname(d);
+    }
+  } catch {
+    /* no app path in tests */
+  }
+  cands.push('D:\\make_utils', 'C:\\make_utils');
+  return cands.find(isLocalRoot) || '';
+}
+
+export interface LocalPaths {
+  root: string;
+  codeDir: string;
+  r016: string;
+  python: string;
+  runtime: string;
+  logDir: string;
+}
+
+/** Paths of the local mode (forward slashes - Node fs accepts them on Windows; same joins as the remote paths). */
+export function localPaths(s: Settings = getSettings()): LocalPaths {
+  const root = (s.localRoot || '').replace(/[\\/]+$/, '').replace(/\\/g, '/');
+  const python = (s.localPython || '').trim() || `${root}/venv/Scripts/python.exe`;
+  return {
+    root,
+    codeDir: `${root}/real_trading_bot/AutoBot`,
+    r016: `${root}/real_trading_bot/AutoBot/live_trading/r016_control.py`,
+    python,
+    runtime: `${root}/runtime`,
+    logDir: `${root}/runtime/log`,
+  };
+}
+
+/** Why the local mode cannot start ('' = ok). */
+export function localProblem(s: Settings = getSettings()): string {
+  const p = localPaths(s);
+  if (!p.root) return '로컬 루트 폴더가 설정되지 않았습니다 (real_trading_bot / runtime / venv 가 있는 폴더).';
+  if (!existsSync(p.r016)) return `로컬 루트에 ${R016_REL.join('/')} 가 없습니다: ${p.root}`;
+  if (!existsSync(p.python)) return `로컬 Python 이 없습니다: ${p.python} (venv 를 만들고 패키지를 설치하세요 - 설정/연결 탭의 안내 참고)`;
+  return '';
+}
+
+/** small internal values that are not user settings */
+interface Meta {
+  lastPostcloseYmd?: string;
+  lastPostcloseSyncYmd?: string;
+  /** the local mode connected at least once (a detached local r003 may exist even when the local settings break later) */
+  localEverUsed?: boolean;
+}
+const metaStore = new Store<Meta>({ name: 'autoboth-meta', defaults: {} });
+export const getMeta = (): Meta => metaStore.store;
+export const setMeta = (patch: Meta): void => metaStore.set({ ...metaStore.store, ...patch });
+
 const store = new Store<Stored>({ name: 'autoboth-settings', defaults: DEFAULTS });
+if (!store.get('localRoot')) {
+  const d = detectLocalRoot();
+  if (d) store.set('localRoot', d);
+}
 
 // v1 -> v2: pemPath was the key file
 if (!store.get('keyPath') && store.get('pemPath')) store.set('keyPath', store.get('pemPath') as string);
@@ -72,6 +153,17 @@ export function getSettings(): Settings {
     sessionOpenAuto: s.sessionOpenAuto !== false,
     retentionDays: s.retentionDays,
     hasSecret: !!s.secretEnc,
+    runMode: s.runMode === 'local' ? 'local' : 'remote',
+    localRoot: s.localRoot || '',
+    localPython: s.localPython || '',
+    localPollSec: Math.max(1, Number(s.localPollSec) || DEFAULTS.localPollSec),
+    localStatusPollSec: Math.max(3, Number(s.localStatusPollSec) || DEFAULTS.localStatusPollSec),
+    autoCollector: s.autoCollector !== false,
+    autoPostclose: s.autoPostclose === true,
+    postcloseTime: /^\d{1,2}:\d{2}$/.test(String(s.postcloseTime || '')) ? s.postcloseTime : DEFAULTS.postcloseTime,
+    postcloseEdgeAi: s.postcloseEdgeAi === true,
+    syncWatchlistToPeer: s.syncWatchlistToPeer !== false,
+    keepAwake: s.keepAwake !== false,
   };
 }
 
@@ -94,6 +186,17 @@ export function saveSettings(next: Settings): Settings {
     sessionOpenAuto: rest.sessionOpenAuto !== false,
     sessionOpen: /^\d{1,2}:\d{2}$/.test(String(rest.sessionOpen || '').trim()) ? String(rest.sessionOpen).trim() : '09:00',
     remoteRoot: String(rest.remoteRoot || DEFAULTS.remoteRoot).replace(/\/+$/, ''),
+    runMode: rest.runMode === 'local' ? 'local' : 'remote',
+    localRoot: String(rest.localRoot || '').trim().replace(/[\\/]+$/, ''),
+    localPython: String(rest.localPython || '').trim(),
+    localPollSec: Math.max(1, Number(rest.localPollSec) || DEFAULTS.localPollSec),
+    localStatusPollSec: Math.max(3, Number(rest.localStatusPollSec) || DEFAULTS.localStatusPollSec),
+    autoCollector: rest.autoCollector !== false,
+    autoPostclose: rest.autoPostclose === true,
+    postcloseTime: /^\d{1,2}:\d{2}$/.test(String(rest.postcloseTime || '').trim()) ? String(rest.postcloseTime).trim() : DEFAULTS.postcloseTime,
+    postcloseEdgeAi: rest.postcloseEdgeAi === true,
+    syncWatchlistToPeer: rest.syncWatchlistToPeer !== false,
+    keepAwake: rest.keepAwake !== false,
   });
   if (secret !== undefined) storeEncrypted('secretEnc', secret);
   if (proxySecret !== undefined) storeEncrypted('proxySecretEnc', proxySecret);

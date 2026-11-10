@@ -10,6 +10,9 @@
  *   time ("장 시작 (집계 기준)") is automatic by default: it follows the server NXT setting (08:00 / 09:00); unticking it enables
  *   the manual time
  * - [2026-11-07] type=fix - The date select starts at (and follows) the loaded date; "저장 후 연결" opens the selected past date
+ * - [2026-11-10] type=feat - "실행 위치" section: 라즈베리파이 (SSH) / 이 PC (로컬), local root + venv Python (checked live), local poll
+ *   intervals, automation (tick collector, post-close job + time + Edge AI, watchlist copy to the Pi, keep awake), doctor of both
+ *   hosts side by side (version mismatches marked), KIS config import from the Pi and the one-time setup steps
  * - [2026-11-05] type=feat - "고급: 전체 설정값" (collapsed): `schema --all` (~380 r001 constants) with a search box and the same value
  *   editor as the pipeline panel (only changed keys are sent in one `set`); the read-only note now lists the r016 control calls
  */
@@ -19,7 +22,7 @@ import { useStore } from '../store';
 import type { Settings } from '../../../shared/types';
 import { fmtInt } from '../lib';
 import { ymdDash } from '../../../shared/time';
-import { NXT_KEY, resolveSessionOpen, type SchemaDoc } from '../../../shared/control';
+import { NXT_KEY, resolveSessionOpen, type DoctorReport, type SchemaDoc } from '../../../shared/control';
 import { EditorActions, useValueEditing, ValuesEditor, type EditItem } from '../components/ValuesEditor';
 
 export function SettingsView() {
@@ -68,8 +71,10 @@ export function SettingsView() {
 
   return (
     <div className="settings">
+      <RunModeSection form={form} set={set} onConnect={connect} onSave={save} msg={msg} />
+
       <section>
-        <h3>SSH 연결</h3>
+        <h3>라즈베리파이 SSH 연결 {form.runMode === 'local' ? '(예비 호스트 - 상태 확인 / standby 전환 / 감시목록 복사용)' : ''}</h3>
         <div className="form">
           <label>호스트</label>
           <input value={form.host} onChange={(e) => set('host', e.target.value)} placeholder="raspberrypi.local / 192.168.0.x" />
@@ -285,6 +290,201 @@ export function SettingsView() {
         </div>
       </section>
     </div>
+  );
+}
+
+type SetFn = <K extends keyof Settings>(k: K, v: Settings[K]) => void;
+
+/** [2026-11-10] where r003 runs + local mode paths + automation + environment check */
+function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings; set: SetFn; onConnect: () => void; onSave: () => Promise<boolean>; msg: string }) {
+  const status = useStore((s) => s.status);
+  const [check, setCheck] = useState<{ problem: string; paths: { python: string; r016: string; runtime: string } } | null>(null);
+  const [doc, setDoc] = useState<{ self?: DoctorReport | null; peer?: DoctorReport | null; selfErr?: string; peerErr?: string; peerLabel?: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [kisMsg, setKisMsg] = useState('');
+  const local = form.runMode === 'local';
+
+  useEffect(() => {
+    let alive = true;
+    void window.api.localCheck(form).then((r) => alive && setCheck(r));
+    return () => {
+      alive = false;
+    };
+  }, [form.localRoot, form.localPython]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const runDoctor = async () => {
+    setBusy(true);
+    setDoc(null);
+    const [a, info, b] = await Promise.all([window.api.ctlDoctor(), window.api.peerInfo(), window.api.peerDoctor()]);
+    setDoc({ self: a.data, selfErr: a.ok ? undefined : a.error, peer: b.data, peerErr: b.ok ? undefined : b.error, peerLabel: info.label });
+    setBusy(false);
+  };
+  const importKis = async () => {
+    setKisMsg('가져오는 중…');
+    const r = await window.api.peerImportKis();
+    setKisMsg(r.cancelled ? '' : r.ok ? `저장했습니다: ${r.path}` : `실패: ${r.error}`);
+  };
+
+  return (
+    <section>
+      <h3>실행 위치 (r003 자동매매)</h3>
+      <div className="actions">
+        <div className="seg">
+          <button className={!local ? 'on' : ''} onClick={() => set('runMode', 'remote')}>
+            라즈베리파이 (SSH)
+          </button>
+          <button className={local ? 'on' : ''} onClick={() => set('runMode', 'local')}>
+            이 PC (로컬)
+          </button>
+        </div>
+        <span className="muted small">
+          현재 연결: {status.conn === 'connected' ? (status.mode === 'local' ? '이 PC' : '라즈베리파이') : '없음'} - 바꾼 뒤 [저장 후 연결]을 누르면 적용됩니다.
+        </span>
+      </div>
+      {local && (
+        <>
+          <div className="form">
+            <label>로컬 루트 폴더</label>
+            <div className="row">
+              <input value={form.localRoot} onChange={(e) => set('localRoot', e.target.value)} placeholder="D:\make_utils (real_trading_bot / runtime / venv 가 있는 폴더)" />
+              <button
+                onClick={async () => {
+                  const p = await window.api.pickFolderTitled('로컬 루트 폴더 (real_trading_bot 이 있는 폴더)');
+                  if (p) set('localRoot', p);
+                }}
+              >
+                찾기…
+              </button>
+            </div>
+            <label>Python (venv)</label>
+            <div className="row">
+              <input value={form.localPython} onChange={(e) => set('localPython', e.target.value)} placeholder={check?.paths.python || '<루트>\\venv\\Scripts\\python.exe'} />
+              <button
+                onClick={async () => {
+                  const p = await window.api.pickFile('venv 의 python.exe');
+                  if (p) set('localPython', p);
+                }}
+              >
+                찾기…
+              </button>
+            </div>
+            <label>로그 폴링 (초)</label>
+            <input type="number" min={1} value={form.localPollSec} onChange={(e) => set('localPollSec', Number(e.target.value))} />
+            <label>봇 상태 확인 (초)</label>
+            <input type="number" min={3} value={form.localStatusPollSec} onChange={(e) => set('localStatusPollSec', Number(e.target.value))} />
+          </div>
+          {check?.problem ? <p className="err-text small">{check.problem}</p> : <p className="muted small">로컬 실행 준비됨 · 런타임 {check?.paths.runtime}</p>}
+
+          <h3>자동 실행 (앱이 켜져 있을 때)</h3>
+          <div className="checks">
+            <label className="check">
+              <input type="checkbox" checked={form.autoCollector} onChange={(e) => set('autoCollector', e.target.checked)} /> 평일 아침 틱 수집기(g011) 자동 시작 (08:45부터, 5분마다 확인)
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.autoPostclose} onChange={(e) => set('autoPostclose', e.target.checked)} /> 장 마감 작업 자동 실행 (수집 → 이력 → 감시 종목 선별)
+              <input value={form.postcloseTime} style={{ width: 64, marginLeft: 6 }} onChange={(e) => set('postcloseTime', e.target.value)} placeholder="20:10" /> 이후
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.postcloseEdgeAi} disabled={!form.autoPostclose} onChange={(e) => set('postcloseEdgeAi', e.target.checked)} /> 장 마감 작업에 Edge AI 재학습 포함
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.syncWatchlistToPeer} onChange={(e) => set('syncWatchlistToPeer', e.target.checked)} /> 장 마감 작업이 끝나면 새 감시목록을 라즈베리파이로 복사 (예비 실행 대비)
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.keepAwake} onChange={(e) => set('keepAwake', e.target.checked)} /> 이 PC의 r003이 실행 중이면 절전 방지
+            </label>
+          </div>
+          <p className="muted small">
+            NXT 운용 시 r003은 20:00까지 돌므로 장 마감 작업은 r003이 끝난 뒤 시작합니다. 덮개 닫힘·Windows 업데이트 재부팅은 절전 방지로 막을 수 없으니 전원 설정에서 "덮개를 닫을 때: 아무 것도
+            안 함"과 업데이트 사용 시간(장 시간 포함)을 설정하세요.
+          </p>
+        </>
+      )}
+      <div className="actions">
+        <button onClick={() => void onSave()}>저장</button>
+        <button className="primary" onClick={onConnect}>
+          저장 후 연결
+        </button>
+        <span className="muted">{msg}</span>
+      </div>
+
+      <h3>환경 점검 / 설정 가져오기</h3>
+      <div className="actions">
+        <button disabled={busy || status.conn !== 'connected'} onClick={() => void runDoctor()}>
+          두 호스트 환경 비교 (doctor)
+        </button>
+        <button disabled={!form.host} onClick={() => void importKis()} title="라즈베리파이 ~/KIS/config/kis_devlp.yaml -> %USERPROFILE%\KIS\config">
+          KIS 설정 가져오기 (라즈베리파이 → 이 PC)
+        </button>
+        {busy && <i className="spinner" />}
+        <span className="muted small">{kisMsg}</span>
+      </div>
+      {doc && <DoctorTable a={doc.self} b={doc.peer} aErr={doc.selfErr} bErr={doc.peerErr} aLabel={status.mode === 'local' ? '이 PC' : '라즈베리파이'} bLabel={doc.peerLabel || '다른 호스트'} />}
+      {local && (
+        <details className="small">
+          <summary>이 PC 처음 준비 (한 번만)</summary>
+          <ol>
+            <li>Python 3.12 설치 (r003 은 3.12 문법을 씁니다): <code>winget install Python.Python.3.12</code></li>
+            <li>
+              venv: <code>py -3.12 -m venv {form.localRoot || 'D:\\make_utils'}\venv</code> → <code>venv\Scripts\python -m pip install "pandas&lt;3" numpy requests pyyaml websockets pycryptodome holidays lightgbm numba</code>
+            </li>
+            <li>
+              KIS 공식 코드: <code>git clone https://github.com/koreainvestment/open-trading-api {form.localRoot || 'D:\\make_utils'}\open-trading-api</code> (라즈베리파이와 같은 커밋인지 환경 비교로 확인)
+            </li>
+            <li>KIS 설정: 위 [KIS 설정 가져오기] (앱키/시크릿/계좌가 든 kis_devlp.yaml)</li>
+            <li>데이터: 선별(g002)은 지난 거래일들의 runtime/data 가 필요합니다 - 첫날은 [데이터 작업] 탭에서 며칠치를 수집하거나 라즈베리파이의 runtime/data 를 복사하세요.</li>
+          </ol>
+        </details>
+      )}
+    </section>
+  );
+}
+
+function DoctorTable({ a, b, aErr, bErr, aLabel, bLabel }: { a?: DoctorReport | null; b?: DoctorReport | null; aErr?: string; bErr?: string; aLabel: string; bLabel: string }) {
+  const rows: [string, (d: DoctorReport) => string][] = [
+    ['호스트', (d) => `${d.host.hostname} (${d.host.platform})`],
+    ['역할', (d) => d.host.role.role + (d.host.role.set ? '' : ' (파일 없음)')],
+    ['Python', (d) => d.python],
+    ['코드 커밋', (d) => d.code.commit || '-'],
+    ['open-trading-api', (d) => (d.open_trading_api.exists ? d.open_trading_api.commit || '(git 아님)' : '없음')],
+    ['KIS 설정', (d) => (d.kis_config.devlp_yaml ? '있음' : '없음') + (d.kis_config.token_today ? ' · 오늘 토큰 있음' : '')],
+    ...Object.keys({ ...(a?.packages || {}), ...(b?.packages || {}) }).map((k): [string, (d: DoctorReport) => string] => [k, (d) => d.packages[k] || '없음']),
+  ];
+  const major = (v: string) => v.split('.').slice(0, 2).join('.');
+  return (
+    <>
+      <table className="grid compact">
+        <thead>
+          <tr>
+            <th>항목</th>
+            <th>{aLabel}</th>
+            <th>{bLabel}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([k, f]) => {
+            const va = a ? f(a) : aErr || '-';
+            const vb = b ? f(b) : bErr || '-';
+            const diff = !!a && !!b && k !== '호스트' && k !== '역할' && k !== 'KIS 설정' && major(va) !== major(vb);
+            return (
+              <tr key={k} className={diff ? 'nohover warn-row' : 'nohover'}>
+                <td>{k}</td>
+                <td className="mono">{va}</td>
+                <td className="mono">{vb}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {[a, b].map((d, i) =>
+        d?.problems?.length ? (
+          <p key={i} className="err-text small">
+            {i === 0 ? aLabel : bLabel}: {d.problems.join(' / ')}
+          </p>
+        ) : null,
+      )}
+      <p className="muted small">노란 줄 = 두 호스트의 버전(앞 두 자리)이 다름. 전략 결과가 같으려면 코드 커밋과 pandas/numpy 버전을 맞추는 것이 좋습니다.</p>
+    </>
   );
 }
 
