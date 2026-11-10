@@ -31,6 +31,11 @@ Run:
   ~/venv/bin/python data_simulation/g013_edge_ai_dataset.py --dates 20261022 --rebuild
 
 Update log:
+- [2026-11-10] type=fix owner=claude
+    summary: g001 완료 표식이 유효한 날(reason=ok)은 30분 무수정 대기 없이 확정 - postclose가 g001 직후 g013을 돌리면
+      방금 수집한 날이 조용히 빠지던 문제. 30분 규칙에 걸린 날도 skip 사유를 출력.
+    impact: sim (r021 postclose/edge_ai, g015)
+    compatibility: backward-compatible (표식 없는 옛 날짜는 기존 규칙)
 - [2026-11-02] type=fix owner=claude
     summary: 날짜 확정 조건에 g001 완료 표식(_g001_done.json, failed==0) 추가 - 20261103부터 표식 없는 날짜는
       "g001 미완료"로 건너뛰고 다음 실행에서 다시 본다(Codex 검토: 30분 무수정만으로는 중단/재실행 중인 날을 불완전한
@@ -500,7 +505,24 @@ def _day_settled(day_dir: Path, settle_minutes: int, verbose: bool = False) -> b
         newest = max((e.stat().st_mtime for e in os.scandir(day_dir) if e.name.endswith("_10s.txt")), default=None)
     except OSError:
         return False
-    return newest is not None and time.time() - newest >= settle_minutes * 60
+    if reason == "ok" and newest is not None:
+        # [2026-11-10] g001 writes the done marker after the last 10s file. If no 10s file is newer than the marker
+        # (lock already released), the day is complete - no settle wait. Otherwise postclose (g001 -> g013 a minute
+        # later) silently skipped the day it had just collected. A file rewritten after the marker still waits.
+        try:
+            if newest <= (day_dir / G001_DONE_MARKER).stat().st_mtime:
+                return True
+        except OSError:
+            return False
+    if newest is None:
+        if verbose:
+            print(f"  skip {day_dir.name}: no _10s files", flush=True)
+        return False
+    if time.time() - newest < settle_minutes * 60:
+        if verbose:
+            print(f"  skip {day_dir.name}: newest 10s file younger than {settle_minutes} min", flush=True)
+        return False
+    return True
 
 
 def main() -> None:

@@ -32,6 +32,11 @@ Update log:
     summary: Codex 1차 리뷰 ③ 반영 - current_model.txt 복사 제거, meta가 버전별 모델 파일을 가리키는 단일 원자 교체.
     impact: sim / live 모델 로드 경로(r011 v2와 함께 배포)
     compatibility: backward-compatible
+- [2026-11-10] type=fix owner=claude
+    summary: 데이터셋 일수가 walk-forward 최소치(min_train_days+embargo+1)보다 적으면 실패(rc=1) 대신 "SKIP training"
+      출력 후 rc=0 - 노트북처럼 이력이 아직 없는 runtime에서 장 마감 작업이 실패로 표시되던 문제. 모델은 그대로.
+    impact: sim / r021 postclose·edge_ai, g015
+    compatibility: backward-compatible (데이터가 충분하면 동작 불변)
 """
 from __future__ import annotations
 
@@ -328,8 +333,14 @@ def main() -> None:
     n_days = df["date"].nunique()
     print(f"dataset {ds_dir.name}: {len(df):,} events / {n_days} days, base win={df['y'].mean():.3f} "
           f"mean_net={df['net_ret'].mean():+.3f}%", flush=True)
-    if n_days < args.min_train_days + args.embargo_days + 1:
-        raise SystemExit("not enough days for walk-forward")
+    need_days = args.min_train_days + args.embargo_days + 1
+    if n_days < need_days:
+        # [2026-11-10] not an error: the data simply is not there yet (e.g. a fresh runtime on the notebook).
+        # rc 0 keeps the postclose job green; the current model (if any) stays deployed and g024 still reports
+        # a missing current_meta.json.
+        print(f"SKIP training: {n_days} day(s) in {ds_dir.name}, walk-forward needs >= {need_days} "
+              f"(min_train_days={args.min_train_days} + embargo={args.embargo_days} + 1) - model unchanged", flush=True)
+        return
 
     oos, folds = walk_forward(df, args)
     pm = promotion(oos, folds, args)
