@@ -15,7 +15,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppStatus, ConditionsDoc, Settings, Snapshot } from '../shared/types';
+import type { AppStatus, ConditionsDoc, ConfirmRequest, Settings, Snapshot } from '../shared/types';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
 import type {
   ControlState,
@@ -110,6 +110,9 @@ const api = {
   pickFile: (title: string): Promise<string | null> => ipcRenderer.invoke('dialog:pickFile', title),
   schedState: (): Promise<SchedState> => ipcRenderer.invoke('sched:get'),
   onSched: (cb: (s: SchedState) => void) => on('sched', cb),
+  // [2026-11-11] app-styled confirmations asked by the main process (control.ts askConfirm)
+  onConfirm: (cb: (req: ConfirmRequest) => void) => on('confirm:ask', cb),
+  answerConfirm: (id: number, ok: boolean) => ipcRenderer.send('confirm:answer', id, ok),
 };
 
 export type Api = typeof api;

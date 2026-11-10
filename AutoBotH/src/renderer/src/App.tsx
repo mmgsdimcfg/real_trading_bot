@@ -9,10 +9,12 @@
  *   content fill the area to its right (.app-main)
  * - [2026-11-10] type=feat - Sidebar in groups (운영 / 분석 / 시스템) with a line icon per tab; the current tab is a rounded
  *   highlight instead of rules between rows
+ * - [2026-11-11] type=feat - ConfirmDialog mounted in the shell: app-styled confirmations asked by the main process
  */
 
 import { useStore, type Tab } from './store';
 import { StatusBar } from './components/StatusBar';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { ReplayBar } from './components/ReplayBar';
 import { PipelineView } from './views/PipelineView';
 import { ControlView } from './views/ControlView';
@@ -75,6 +77,7 @@ export function App() {
   const setTab = useStore((s) => s.setTab);
   return (
     <div className="app">
+      <ConfirmDialog />
       <StatusBar />
       <div className="app-body">
         {/* sidebar: group captions, then one row per tab (icon + label); the current tab sits on a rounded highlight */}

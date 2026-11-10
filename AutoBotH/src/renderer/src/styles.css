@@ -604,3 +604,22 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .check { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .check input[type='checkbox'] { margin: 0; }
 .grid tr.warn-row td { color: var(--st-hold); }
+
+/* ---- [2026-11-11] app-styled confirmation (components/ConfirmDialog) ---- */
+.confirm-back { background: rgba(0, 0, 0, 0.55); z-index: 80; }
+.modal.confirm { width: min(640px, 92vw); padding: 26px 32px 28px; border-radius: 14px; gap: 0; }
+.confirm-kicker { display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 14px; }
+.confirm-tag { display: inline-block; padding: 1px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: var(--text-2); }
+.confirm-tag.live { border-color: var(--st-fail); color: var(--st-fail); }
+.confirm-tag.warn { border-color: var(--st-hold); color: var(--st-hold); }
+.modal.confirm h2 { margin: 14px 0 8px; font-size: 20px; font-weight: 600; line-height: 1.35; }
+.confirm-msg { margin: 0; color: var(--text-2); white-space: pre-line; }
+.confirm-rows { margin: 18px 0 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.confirm-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 13px 18px; }
+.confirm-row + .confirm-row { border-top: 1px solid var(--border); }
+.confirm-row .k { color: var(--text-3); }
+.confirm-row .v { color: var(--text); text-align: right; }
+.confirm-row .v.live { color: var(--st-fail); }
+.confirm-row .v.warn { color: var(--st-hold); }
+.confirm-btns { display: flex; justify-content: flex-end; gap: 12px; margin-top: 28px; }
+.confirm-btns button.wide { padding: 10px 24px; font-size: 14px; }

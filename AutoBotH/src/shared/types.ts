@@ -174,6 +174,30 @@ export type ConnState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | '
 /** where r003 runs and the logs are read: 'remote' = Raspberry Pi over SSH, 'local' = this Windows PC */
 export type RunMode = 'remote' | 'local';
 
+/** [2026-11-11] confirmation asked by the main process, shown by the renderer (components/ConfirmDialog) */
+export interface ConfirmRow {
+  k: string;
+  v: string;
+  /** 'live' = red (real orders), 'warn' = amber */
+  tone?: 'live' | 'warn';
+}
+export interface ConfirmSpec {
+  /** small pill left of the kicker, e.g. 'LIVE' */
+  tag?: string;
+  tagTone?: 'live' | 'warn';
+  /** small line above the title, e.g. 'r003 실행' */
+  kicker: string;
+  /** the question, e.g. '실주문 모드로 실행할까요?' */
+  title: string;
+  message?: string;
+  rows?: ConfirmRow[];
+  okLabel: string;
+  cancelLabel?: string;
+}
+export interface ConfirmRequest extends ConfirmSpec {
+  id: number;
+}
+
 export interface AppStatus {
   conn: ConnState;
   /** run mode of the open connection ('connected' + 'local' = this PC's runtime folder, read directly) */

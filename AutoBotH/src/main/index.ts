@@ -54,7 +54,7 @@ import { LocalHost, HostSwitch } from './host';
 import { makeLocalRunner } from './localRunner';
 import { fetchConditions, loadLocalConditions, r015Fallback } from './conditions';
 import { DaySession } from './session';
-import { createControl, R016Client } from './control';
+import { askConfirm, createControl, R016Client } from './control';
 import { createPeer } from './peer';
 import { createScheduler, type SchedState } from './scheduler';
 import { PriceService } from './prices';
@@ -622,23 +622,18 @@ function createWindow(): void {
   w.on('close', (e) => {
     if (closeConfirmed || awakeId === null) return;
     e.preventDefault();
-    void dialog
-      .showMessageBox(w, {
-        type: 'warning',
-        title: 'AutoBotH 종료',
-        message: '이 PC의 r003은 앱을 닫아도 계속 실행됩니다.',
-        detail: '다만 앱이 켜져 있는 동안 유지하던 절전 방지가 풀립니다. PC가 절전/최대 절전에 들어가면 매매가 멈추니 Windows 전원 설정을 확인하세요. 앱을 다시 열면 실행 중인 r003에 다시 연결됩니다.',
-        buttons: ['닫기', '취소'],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
-      })
-      .then((r) => {
-        if (r.response === 0) {
-          closeConfirmed = true;
-          w.close();
-        }
-      });
+    void askConfirm(w, {
+      kicker: 'AutoBotH 종료',
+      title: '이 PC의 r003은 앱을 닫아도 계속 실행됩니다.',
+      message:
+        '다만 앱이 켜져 있는 동안 유지하던 절전 방지가 풀립니다. PC가 절전/최대 절전에 들어가면 매매가 멈추니 Windows 전원 설정을 확인하세요. 앱을 다시 열면 실행 중인 r003에 다시 연결됩니다.',
+      okLabel: '닫기',
+    }).then((ok) => {
+      if (ok) {
+        closeConfirmed = true;
+        w.close();
+      }
+    });
   });
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(__dirname, '../renderer/index.html'));
