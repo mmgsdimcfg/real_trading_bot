@@ -9,6 +9,8 @@ CPU 를 많이 쓰는 일이다.
   r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai] [--keep-watchlist]
   r016 job stop NAME                            지금 단계(자식 프로세스)를 끝내고 stopped 로 기록
   r016 job log NAME [-n 200]                    마지막 실행 로그 끝부분
+  r016 job data --date YYYYMMDD                 그 날짜 폴더(<runtime>/data/D)의 수집 데이터 유무(10초봉/일봉 파일 수, 수집 목록)와
+                                                g002 선별 결과(_D_picks.txt) - 앱의 "감시 종목 선별" 카드가 기준일마다 읽는다
 
 작업 (단계는 순서대로, 각 단계 = data_simulation 스크립트 한 번 실행):
   collect    g001 --date D                                   분봉/일봉 수집 (KIS, 오래 걸림)
@@ -24,6 +26,12 @@ CPU 를 많이 쓰는 일이다.
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: job data --date D (date_data_info) - 그 날짜 폴더의 g001 산출물(*_10s.txt / *_daily.csv 수, _D_collected.txt 목록 수,
+      마지막 파일 시각)과 g002 선별 결과(_D_picks.txt 의 code,name 목록, 시각)를 돌려준다. 앱이 "수집된 날짜면 g002 선별만 실행"
+      과 "선별 후 r004 적용" 흐름에 쓴다(r016 가 r004 비교 블록을 덧붙임 - watchlist apply).
+    impact: tooling (읽기 전용 명령 추가)
+    compatibility: backward-compatible
 - [2026-11-10] type=feat owner=claude
     summary: 신규 - AutoBotH(노트북 메인)에서 장 마감 후 데이터 취득과 감시 종목 선별을 실행/정지/진행 확인.
     impact: tooling (스크립트 자체는 그대로 실행)
@@ -257,6 +265,79 @@ def stop_job(paths: Paths, name: str) -> dict:
             **({} if not still else {"error": "runner did not end in time (it will stop after the current step ends)"})}
 
 
+def _file_iso(p: Path) -> str | None:
+    try:
+        return datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        return None
+
+
+def read_picks(paths: Paths, date: str) -> tuple[Path, list[dict] | None]:
+    """g002 picks of a date (<runtime>/data/D/_D_picks.txt, "code,name" per line) -> (path, [{code, name}] or None)."""
+    p = paths.root / "data" / date / f"_{date}_picks.txt"
+    if not p.is_file():
+        return p, None
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = [x.strip() for x in s.split(",")]
+        code = parts[0].zfill(6)
+        if not code.isdigit() or len(code) != 6 or code in seen:
+            continue
+        seen.add(code)
+        rows.append({"code": code, "name": parts[1] if len(parts) > 1 and parts[1] else code})
+    return p, rows
+
+
+def date_data_info(paths: Paths, date: str) -> dict:
+    """[2026-11-11] What <runtime>/data/D holds: g001 output (10-second / daily files, the collected list) and the g002 picks.
+
+    scannable = at least one *_10s.txt (g002 reads the 10-second files of the date; daily files add the trend filters)."""
+    d = paths.root / "data" / date
+    out: dict = {"ok": True, "date": date, "dir": str(d), "exists": d.is_dir(), "scannable": False, "collected": False,
+                 "collected_count": 0, "files_10s": 0, "files_daily": 0, "data_mtime": None,
+                 "picks": None, "picks_file": str(d / f"_{date}_picks.txt"), "picks_mtime": None, "scan_log_mtime": None,
+                 "generated_at": _now()}
+    if not d.is_dir():
+        return out
+    latest = 0.0
+    try:
+        for p in d.iterdir():
+            name = p.name
+            if name.startswith("_"):
+                continue
+            if name.endswith("_10s.txt"):
+                out["files_10s"] += 1
+            elif name.endswith("_daily.csv"):
+                out["files_daily"] += 1
+            else:
+                continue
+            with contextlib.suppress(OSError):
+                latest = max(latest, p.stat().st_mtime)
+    except OSError as exc:
+        out["error"] = f"cannot list {d} ({type(exc).__name__})"
+    if latest:
+        out["data_mtime"] = datetime.fromtimestamp(latest).isoformat(timespec="seconds")
+    out["scannable"] = out["files_10s"] > 0
+    marker = d / f"_{date}_collected.txt"
+    if marker.is_file():
+        out["collected"] = True
+        with contextlib.suppress(OSError):
+            out["collected_count"] = sum(1 for ln in marker.read_text(encoding="utf-8-sig").splitlines()
+                                         if ln.strip() and not ln.strip().startswith("#"))
+    pf, picks = read_picks(paths, date)
+    if picks is not None:
+        out["picks"] = picks
+        out["picks_mtime"] = _file_iso(pf)
+    log = d / f"_{date}_scan.log"
+    if log.is_file():
+        out["scan_log_mtime"] = _file_iso(log)
+    return out
+
+
 def tail_log(paths: Paths, name: str, n: int = 200) -> dict:
     st = read_state(paths, name)
     if not st or not st.get("log"):
@@ -392,8 +473,8 @@ def _today() -> str:
 
 def add_job_parser(sub) -> None:
     """r016 `job` sub-commands (shared with this file's own CLI)."""
-    p = sub.add_parser("job", help="data jobs: list | start NAME | stop NAME | log NAME")
-    p.add_argument("action", choices=["list", "start", "stop", "log"])
+    p = sub.add_parser("job", help="data jobs: list | start NAME | stop NAME | log NAME | data --date D")
+    p.add_argument("action", choices=["list", "start", "stop", "log", "data"])
     p.add_argument("name", nargs="?", default=None)
     p.add_argument("--date", default=None)
     p.add_argument("--workers", type=int, default=None)
@@ -418,6 +499,11 @@ def run_job_command(args, by: str, paths: Paths | None = None) -> tuple[dict, in
     paths = paths or Paths()
     if args.action == "list":
         return list_jobs(paths), 0
+    if args.action == "data":  # [2026-11-11] the date folder's data / picks (no job name)
+        date = args.date or args.name or _today()
+        if not (len(date) == 8 and date.isdigit()):
+            return {"ok": False, "error": f"bad date {date!r} (YYYYMMDD)"}, 2
+        return date_data_info(paths, date), 0
     if not args.name:
         return {"ok": False, "error": "job name required"}, 2
     if args.name not in JOBS:

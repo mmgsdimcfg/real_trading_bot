@@ -200,6 +200,56 @@ class WatchlistTests(Base):
             rc, out = self.run_cli("watchlist", "set", "--stdin")
         self.assertEqual(out["count"], 2)
 
+    # [2026-11-11] watchlist apply --date D (r004 <- that date's g002 picks) and job data's r004 block
+    def _picks(self, date, text):
+        d = self.paths.runtime_root / "data" / date
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"_{date}_picks.txt").write_text(text, encoding="utf-8")
+        (d / "005930_x_10s.txt").write_text("t\n", encoding="utf-8")
+
+    def test_apply_picks_writes_r004_with_meta(self):
+        self._picks("20261110", "035720,카카오\n005930,삼성전자\n")
+        rc, out = self.run_cli("--by", "autoboth", "watchlist", "apply", "--date", "20261110")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((out["count"], out["date"]), (2, "20261110"))
+        self.assertTrue(Path(out["backup"]).is_file())
+        text = self.paths.watchlist.read_text(encoding="utf-8")
+        self.assertIn("# scan_date=20261110", text)
+        self.assertIn("# for_trading_day=", text)
+        self.assertIn("# [r016] applied from picks by autoboth", text)
+        self.assertEqual([l for l in text.splitlines() if l and not l.startswith("#")], ["035720,카카오", "005930,삼성전자"])
+        # a second apply replaces the meta lines instead of stacking them
+        self._picks("20261111", "000660,SK하이닉스\n")
+        rc, out = self.run_cli("watchlist", "apply", "--date", "20261111")
+        text = self.paths.watchlist.read_text(encoding="utf-8")
+        self.assertEqual(text.count("# scan_date="), 1)
+        self.assertIn("# scan_date=20261111", text)
+
+    def test_apply_without_picks_is_refused(self):
+        rc, out = self.run_cli("watchlist", "apply", "--date", "20261110")
+        self.assertEqual(rc, 2)
+        self.assertIn("no picks file", out["error"])
+        self.assertIn("005930", self.paths.watchlist.read_text(encoding="utf-8"))
+        rc, out = self.run_cli("watchlist", "apply", "--date", "bad")
+        self.assertEqual(rc, 2)
+
+    def test_job_data_reports_r004_match(self):
+        self._picks("20261110", "005930,삼성전자\n000660,SK하이닉스\n")
+        rc, out = self.run_cli("job", "data", "--date", "20261110")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out["scannable"])
+        self.assertEqual(len(out["picks"]), 2)
+        self.assertTrue(out["r004"]["applied"])  # Base r004 holds the same two codes (other order / names ignored)
+        self.assertEqual(out["r004"]["count"], 2)
+        self._picks("20261111", "035720,카카오\n")
+        rc, out = self.run_cli("job", "data", "--date", "20261111")
+        self.assertFalse(out["r004"]["applied"])
+        self.assertIsNone(out["r004"]["scan_date"])
+        rc, out = self.run_cli("job", "data", "--date", "20261112")
+        self.assertFalse(out["exists"])
+        self.assertIsNone(out["picks"])
+        self.assertFalse(out["r004"]["applied"])
+
 
 class ServiceTests(Base):
     def test_start_writes_env_and_calls_systemctl(self):
