@@ -227,8 +227,8 @@ class EntryOptimization20261111Tests(unittest.TestCase):
         cur = pd.Series({"volume": 1239.0, "VOL_MA20": 1200.0, "close": 199000.0})
         ctx = SimpleNamespace(cur=cur, live_price=199000.0)
         with mock.patch.object(r002, "ENABLE_MIN_ENTRY_TURNOVER_ALT", True), \
-                mock.patch.object(r002, "MIN_ENTRY_TURNOVER_KRW", 150_000_000), \
-                mock.patch.object(r002, "MIN_ENTRY_VOL_MA_TURNOVER_KRW", 100_000_000):
+                mock.patch.object(r002, "MIN_ENTRY_TURNOVER_ALT_KRW", 150_000_000), \
+                mock.patch.object(r002, "MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW", 100_000_000):
             ok, _, reason = r002._gate_min_liquidity_safety(ctx)
             self.assertTrue(ok, reason)
             # a cheap stock with the same share counts still fails (2,000 KRW x 1,239 = 2.5M KRW)
