@@ -21,6 +21,11 @@ This module never raises into the caller: TickTriggerFeed.evaluate() turns any e
 1-min trigger keeps working when the tick feed is broken.
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: tick_ma_golden_cross 워밍업 가드 - 시계열 첫 (slow-1)+CROSS_WARMUP_EXTRA_BARS 봉 안의 크로스는 ABSTAIN_WARMUP_CROSS
+      (r001 TICK_CROSS_WARMUP_EXTRA_BARS, r003/g003 가 피드 생성자 warmup_extra_bars 로 넘김). 086450 20261111 09:49 수집기 재시작 뒤 21번째 봉 크로스 매수.
+    impact: common
+    compatibility: backward-compatible (기본 0 = 종전; r001 값 5 적용 시 매수 감소 방향)
 - [2026-11-04] type=feat owner=claude
     summary: (1) TickCross.cross_close(크로스 봉 종가) - r002 evaluate_triple_trigger가 가장 최근 통과 크로스의 종가를
       cross_ref_price로 넘겨 r005/g003 추격폭 가드에 쓴다. (2) 틱 밀도 하한 - prints_per_minute/density_abstain: 최근
@@ -99,9 +104,16 @@ def _drop_session_edge_bars(bars: list[TickBar], today) -> list[TickBar]:
     return out
 
 
+# [2026-11-11] crosses inside the first (slow-1)+CROSS_WARMUP_EXTRA_BARS bars of a bar series are ignored (r001
+# TICK_CROSS_WARMUP_EXTRA_BARS, passed by r003/g003 to the feed constructors): right after a collector (re)start MA_slow comes out of its very
+# first window and the first "cross" there is an artifact (086450 2026-11-11: cross on bar 21 at 09:49 -> buy 09:50 -> -1.09%)
+CROSS_WARMUP_EXTRA_BARS = 0
+
+
 def tick_ma_golden_cross(bars: list[TickBar], now: datetime, n: int, fast: int, slow: int,
-                         max_age_s: float, same_day_only: bool = True) -> TickCross:
+                         max_age_s: float, same_day_only: bool = True, warmup_extra_bars: int | None = None) -> TickCross:
     tag = f"TICK{n}"
+    extra = int(CROSS_WARMUP_EXTRA_BARS if warmup_extra_bars is None else warmup_extra_bars)
     # same_day_only=False: prior-day bars loaded by the prior-day warmup also feed the MAs (HTS-like continuity)
     recent = [b for b in bars if b.available_at <= now and (not same_day_only or b.end_ts.date() == now.date())]
     if not same_day_only:
@@ -133,6 +145,9 @@ def tick_ma_golden_cross(bars: list[TickBar], now: datetime, n: int, fast: int, 
     if i - 1 < first:
         return TickCross(False, f"{tag}_NO_CROSS_IN_SESSION", n, ma_fast=f_last, ma_slow=s_last, bars=len(recent))
     cross_bar = recent[i]
+    if extra > 0 and i < first + extra:
+        return TickCross(False, f"{tag}_ABSTAIN_WARMUP_CROSS_{i}_LT_{first + extra}", n, cross_bar.available_at, f_last, s_last,
+                         len(recent))
     age = (now - cross_bar.available_at).total_seconds()
     if age > max_age_s:
         return TickCross(False, f"{tag}_CROSS_EXPIRED_{age:.0f}s", n, cross_bar.available_at, f_last, s_last, len(recent))
@@ -302,9 +317,10 @@ class _CodeFeed:
 class TickTriggerFeed:
     def __init__(self, data_dir: Path, sizes: tuple[int, ...], fast: int, slow: int, max_age_s: float,
                  stale_s: float, log: Callable[[str], None] | None = None, prior_day_warmup: bool = False,
-                 min_prints_per_min: float = 0.0, density_window_min: float = 30.0):
+                 min_prints_per_min: float = 0.0, density_window_min: float = 30.0, warmup_extra_bars: int = 0):
         self.data_dir = Path(data_dir)
         self.prior_day_warmup = bool(prior_day_warmup)
+        self.warmup_extra_bars = int(warmup_extra_bars or 0)  # [2026-11-11] r001 TICK_CROSS_WARMUP_EXTRA_BARS
         self.min_prints_per_min = float(min_prints_per_min)  # [2026-11-04] 0 = no density floor
         self.density_window_min = float(density_window_min)
         self.sizes = tuple(int(n) for n in sizes)
@@ -354,7 +370,7 @@ class TickTriggerFeed:
         result.prints_per_min = prints_per_minute(feed.builders[min(feed.builders)].bars, now, self.density_window_min)
         for n in self.sizes:
             c = tick_ma_golden_cross(feed.builders[n].bars, now, n, self.fast, self.slow, self.max_age_s,
-                                     same_day_only=not self.prior_day_warmup)
+                                     same_day_only=not self.prior_day_warmup, warmup_extra_bars=self.warmup_extra_bars)
             result.crosses[n] = c
             if c.ok:
                 self._log_cross(code, c)
@@ -380,10 +396,11 @@ class TickReplayFeed:
     received at or before `now`."""
 
     def __init__(self, data_dir: Path, sizes: tuple[int, ...], fast: int, slow: int, max_age_s: float,
-                 stale_s: float, prior_day_warmup: bool = False, min_prints_per_min: float = 0.0,
+                 stale_s: float, prior_day_warmup: bool = False, min_prints_per_min: float = 0.0, warmup_extra_bars: int = 0,
                  density_window_min: float = 30.0):
         self.data_dir = Path(data_dir)
         self.prior_day_warmup = bool(prior_day_warmup)
+        self.warmup_extra_bars = int(warmup_extra_bars or 0)  # [2026-11-11] r001 TICK_CROSS_WARMUP_EXTRA_BARS
         self.min_prints_per_min = float(min_prints_per_min)
         self.density_window_min = float(density_window_min)
         self.sizes = tuple(int(n) for n in sizes)
@@ -440,7 +457,7 @@ class TickReplayFeed:
         result.prints_per_min = prints_per_minute(builders[min(builders)].bars, now, self.density_window_min)
         for n in self.sizes:
             c = tick_ma_golden_cross(builders[n].bars, now, n, self.fast, self.slow, self.max_age_s,
-                                     same_day_only=not self.prior_day_warmup)
+                                     same_day_only=not self.prior_day_warmup, warmup_extra_bars=self.warmup_extra_bars)
             result.crosses[n] = c
             if c.ok and not result.ok:
                 result.ok, result.label, result.cross_time = True, f"TICK{n}_MA{self.fast}_MA{self.slow}", c.cross_time

@@ -204,6 +204,7 @@ from r001_define_config import (
     TRIPLE_1MIN_MA_FAST,
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
+    TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
     TRIPLE_1MIN_CONDITION,
     TRIPLE_TICK_CONDITION,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
@@ -705,6 +706,7 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     trig = evaluate_triple_trigger(
         ma, ma_age, crosses, TICK_TRIGGER_BAR_SIZES, TRIPLE_1MIN_CONDITION, TRIPLE_TICK_CONDITION,
         TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW,
+        above_max_age_s=TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
     )
     missing = list(trig["missing"])
     if not crosses:  # 피드 없음/ABSTAIN: 봉 크기별 사유 대신 피드 사유 하나

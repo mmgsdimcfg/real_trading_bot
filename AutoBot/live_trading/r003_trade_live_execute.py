@@ -799,6 +799,7 @@ from r001_define_config import (
     MARKET_REGIME_ETF,
     MARKET_REGIME_MA_FAST,
     MARKET_REGIME_MA_SLOW,
+    MARKET_REGIME_CONFIRM_BARS,
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
@@ -1108,7 +1109,7 @@ def _compute_market_regime(current_dt: datetime, frame_cache_1min: dict, frame_l
     for market, etf in MARKET_REGIME_ETF.items():
         try:
             frame = _get_or_refresh_1min_frame(str(etf).zfill(6), current_dt, False, frame_cache_1min, frame_last_refresh_at_1min)
-            ok, detail = market_regime_ok(frame, MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW)
+            ok, detail = market_regime_ok(frame, MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW, MARKET_REGIME_CONFIRM_BARS)
         except Exception as exc:
             ok, detail = None, f"ERROR_{type(exc).__name__}"
         out[market] = (ok, f"{market}_{etf}_{detail}")
@@ -2369,6 +2370,7 @@ def _make_tick_trigger_feed():
             prior_day_warmup=getattr(_cfg_mod, "TICK_TRIGGER_PRIOR_DAY_WARMUP", False),
             min_prints_per_min=getattr(_cfg_mod, "TICK_MIN_PRINTS_PER_MIN", 0.0),
             density_window_min=getattr(_cfg_mod, "TICK_MIN_PRINTS_WINDOW_MINUTES", 30),
+            warmup_extra_bars=int(getattr(_cfg_mod, "TICK_CROSS_WARMUP_EXTRA_BARS", 0) or 0),  # [2026-11-11]
         )
         log(f"  [TICK TRIG   ] enabled | sizes={feed.sizes} MA{feed.fast}/MA{feed.slow} dir={feed.data_dir} "
             f"prior_day_warmup={feed.prior_day_warmup} "

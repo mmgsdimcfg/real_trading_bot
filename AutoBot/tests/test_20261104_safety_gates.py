@@ -42,6 +42,20 @@ class TestMarketRegime(unittest.TestCase):
         self.assertIsNone(r002.market_regime_ok(_frame(up[:10]), 5, 20)[0])
         self.assertIsNone(r002.market_regime_ok(None, 5, 20)[0])
 
+    def test_market_regime_confirm_bars_tolerates_a_flicker(self):
+        # [2026-11-11] an uptrend whose last bar alone pulls MA5 under MA20: blocked with confirm_bars=1, tolerated with 3,
+        # blocked again once three trailing bars are below
+        up = [100 + i for i in range(30)]
+        flick = up + [60]
+        self.assertFalse(r002.market_regime_ok(_frame(flick), 5, 20, 1)[0])
+        ok, detail = r002.market_regime_ok(_frame(flick), 5, 20, 3)
+        self.assertTrue(ok)
+        self.assertIn("FLICKER_1bar_LT_3", detail)
+        ok, detail = r002.market_regime_ok(_frame(up + [60, 60, 60]), 5, 20, 3)
+        self.assertFalse(ok)
+        self.assertIn("NOT_ABOVE", detail)
+        self.assertEqual(r002.market_regime_ok(_frame(up), 5, 20, 3)[0], True)
+
     def test_load_symbol_market_map(self):
         d = tempfile.mkdtemp()
         p = Path(d) / "m.txt"

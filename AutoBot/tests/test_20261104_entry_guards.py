@@ -200,3 +200,43 @@ class TestG003Overrides(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntryOptimization20261111Tests(unittest.TestCase):
+    """[2026-11-11] above max age / liquidity turnover alternative."""
+
+    def test_above_mode_rejects_a_stale_cross(self):
+        ma = {"ok": True, "bars_since_cross": 30, "cross_bar_time": None}
+        crosses = {60: TickCross(True, "ok", 60, cross_time=datetime(2026, 11, 11, 9, 52), cross_close=100.0)}
+        out = r002.evaluate_triple_trigger(ma, 1920.0, crosses, (60, 120), "above", "any", 240.0, above_max_age_s=900.0)
+        self.assertFalse(out["ok"])
+        self.assertTrue(any("ABOVE_TOO_OLD_1920s_GT_900s" in m for m in out["missing"]), out["missing"])
+        out = r002.evaluate_triple_trigger(ma, 1920.0, crosses, (60, 120), "above", "any", 240.0, above_max_age_s=0.0)
+        self.assertTrue(out["ok"])
+        out = r002.evaluate_triple_trigger(ma, 120.0, crosses, (60, 120), "above", "any", 240.0, above_max_age_s=900.0)
+        self.assertTrue(out["ok"])
+        # unknown age (nan) is not a reason to reject
+        out = r002.evaluate_triple_trigger(ma, float("nan"), crosses, (60, 120), "above", "any", 240.0, above_max_age_s=900.0)
+        self.assertTrue(out["ok"])
+
+    def test_liquidity_gate_accepts_turnover_for_expensive_stocks(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        import pandas as pd
+
+        cur = pd.Series({"volume": 1239.0, "VOL_MA20": 1200.0, "close": 199000.0})
+        ctx = SimpleNamespace(cur=cur, live_price=199000.0)
+        with mock.patch.object(r002, "ENABLE_MIN_ENTRY_TURNOVER_ALT", True), \
+                mock.patch.object(r002, "MIN_ENTRY_TURNOVER_KRW", 150_000_000), \
+                mock.patch.object(r002, "MIN_ENTRY_VOL_MA_TURNOVER_KRW", 100_000_000):
+            ok, _, reason = r002._gate_min_liquidity_safety(ctx)
+            self.assertTrue(ok, reason)
+            # a cheap stock with the same share counts still fails (2,000 KRW x 1,239 = 2.5M KRW)
+            ctx2 = SimpleNamespace(cur=pd.Series({"volume": 1239.0, "VOL_MA20": 1200.0, "close": 2000.0}), live_price=2000.0)
+            ok, _, reason = r002._gate_min_liquidity_safety(ctx2)
+            self.assertFalse(ok)
+            self.assertIn("LOW_ABS_VOLUME_1239_LT_1500", reason)
+        with mock.patch.object(r002, "ENABLE_MIN_ENTRY_TURNOVER_ALT", False):
+            ok, _, reason = r002._gate_min_liquidity_safety(ctx)
+            self.assertFalse(ok)
+            self.assertIn("LOW_ABS_VOLUME_1239_LT_1500", reason)

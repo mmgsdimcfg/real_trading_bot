@@ -55,6 +55,22 @@ class TestTickMaGoldenCross(unittest.TestCase):
         self.assertEqual(c.cross_time, bars[self._cross_index(FALL_RISE)].available_at)
         self.assertGreater(c.ma_fast, c.ma_slow)
 
+    def test_warmup_guard_ignores_a_cross_in_the_first_bars(self):
+        # [2026-11-11] the cross of FALL_RISE sits at a low index: with a large warm-up margin it is abstained, with 0 it is ok
+        bars = _bars(FALL_RISE)
+        now = bars[-1].available_at + timedelta(seconds=5)
+        c = tick_ma_golden_cross(bars, now, 60, 5, 20, 240, warmup_extra_bars=1000)
+        self.assertFalse(c.ok)
+        self.assertIn("ABSTAIN_WARMUP_CROSS", c.reason)
+        self.assertTrue(tick_ma_golden_cross(bars, now, 60, 5, 20, 240, warmup_extra_bars=0).ok)
+        import r013_tick_trigger as mod
+        old = mod.CROSS_WARMUP_EXTRA_BARS
+        mod.CROSS_WARMUP_EXTRA_BARS = 1000
+        try:
+            self.assertIn("ABSTAIN_WARMUP_CROSS", tick_ma_golden_cross(bars, now, 60, 5, 20, 240).reason)
+        finally:
+            mod.CROSS_WARMUP_EXTRA_BARS = old
+
     def test_cross_expired(self):
         bars = _bars(FALL_RISE)
         now = bars[self._cross_index(FALL_RISE)].available_at + timedelta(seconds=241)
