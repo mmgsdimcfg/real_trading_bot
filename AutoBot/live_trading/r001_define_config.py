@@ -14,7 +14,7 @@
 #     summary: 사용자 요청(20261111 매매 7건 정밀 검토 - 매수가 상승 시작점보다 3~4분 늦어 하락 구간에서 체결) - 매수 시점 최적화.
 #       틱 경로 가정 실험: 018260 10:13 진입이면 +0.65%(실제 10:18 -1.06%), 010060 10:27~28 진입이면 +0.65~0.91%(실제 10:30 -1.09%),
 #       015760/010060#1 은 1분 크로스 직후 진입이 +1.1%. 새 상수 TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS(900), MARKET_REGIME_CONFIRM_BARS(3),
-#       ENABLE_MIN_ENTRY_TURNOVER_ALT/MIN_ENTRY_TURNOVER_KRW(1.5억)/MIN_ENTRY_VOL_MA_TURNOVER_KRW(1억), TICK_CROSS_WARMUP_EXTRA_BARS(5).
+#       ENABLE_MIN_ENTRY_TURNOVER_ALT/MIN_ENTRY_TURNOVER_ALT_KRW(1.5억)/MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW(1억), TICK_CROSS_WARMUP_EXTRA_BARS(5).
 #       r002(evaluate_triple_trigger above 나이, market_regime_ok 확인봉, _gate_min_liquidity_safety 거래대금), r013(워밍업 가드),
 #       r005/r003/g003 호출부. 하루 표본이라 g003 다중일 A/B 로 검증 필요(파이 틱 데이터).
 #     impact: common (r003 실전 / g003 백테스트)
@@ -1324,11 +1324,11 @@ TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS = 900.0
 #     결국 10:18 고점 매수(-1.06%). 롤백: 1.
 MARKET_REGIME_CONFIRM_BARS = 3
 # (3) 3분봉 유동성 게이트 거래대금 대체 기준 - 주수(MIN_ENTRY_VOLUME 1500 / MIN_ENTRY_VOL_MA 1000)가 모자라도 거래대금(주수 x 현재가)이
-#     이 값 이상이면 통과. 고가 종목엔 주수 기준이 과도 - 010060 OCI홀딩스 10:28 LOW_ABS_VOLUME_1239_LT_1500(= 약 2.5억원) 반려 뒤
+#     이 값(MIN_ENTRY_TURNOVER_ALT_KRW / MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW) 이상이면 통과. 고가 종목엔 주수 기준이 과도 - 010060 OCI홀딩스 10:28 LOW_ABS_VOLUME_1239_LT_1500(= 약 2.5억원) 반려 뒤
 #     10:30 고점 매수(-1.09%), 10:28 진입이면 +0.65%. 롤백: ENABLE_MIN_ENTRY_TURNOVER_ALT=False.
 ENABLE_MIN_ENTRY_TURNOVER_ALT = True
-MIN_ENTRY_TURNOVER_KRW = 150_000_000        # 3분봉 거래대금 하한 (volume x price)
-MIN_ENTRY_VOL_MA_TURNOVER_KRW = 100_000_000  # 3분봉 20봉 평균 거래대금 하한
+MIN_ENTRY_TURNOVER_ALT_KRW = 150_000_000        # 주수 미달 시 대체 기준: 3분봉 거래대금 하한 (volume x price). 기존 MIN_ENTRY_TURNOVER_KRW(1천만원, 별도 LOW_TURNOVER 게이트)와 다른 상수
+MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW = 100_000_000  # 주수 미달 시 대체 기준: 3분봉 20봉 평균 거래대금 하한
 # (4) 틱 크로스 워밍업 가드(r013) - 틱봉 시계열의 첫 (slow-1)+이 값 봉 안에서 난 크로스는 무시. 수집기 재시작 직후 MA20이 막
 #     계산되기 시작하는 봉의 크로스는 인위적 - 086450 09:49 21번째 봉 크로스 -> 09:50 매수 -> -1.09%. 0 = 종전.
 TICK_CROSS_WARMUP_EXTRA_BARS = 5
