@@ -237,7 +237,8 @@ class G013DoneGateTest(unittest.TestCase):
                 self.assertTrue(r019.lock(lk))
                 self.assertFalse(g013._day_settled(new, 30))
             self.assertTrue(g013._day_settled(new, 30))
-            os.utime(new / "000001_x_10s.txt")  # rewritten just now -> not settled yet
+            later = time.time() + 2  # [2026-11-11] explicitly after the marker (same-tick mtimes made this flaky)
+            os.utime(new / "000001_x_10s.txt", (later, later))  # rewritten after the marker -> not settled yet
             self.assertFalse(g013._day_settled(new, 30))
 
 

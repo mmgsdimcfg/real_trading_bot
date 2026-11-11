@@ -6,7 +6,7 @@ AutoBotH 가 r016_control.py job ... 으로 부른다 (Linux 서버, Windows 노
 CPU 를 많이 쓰는 일이다.
 
   r016 job list                                 작업 목록 + 각 작업의 마지막 실행 상태 + 지금 도는 작업
-  r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai] [--keep-watchlist]
+  r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply]
   r016 job stop NAME                            지금 단계(자식 프로세스)를 끝내고 stopped 로 기록
   r016 job log NAME [-n 200]                    마지막 실행 로그 끝부분
   r016 job data --date YYYYMMDD                 그 날짜 폴더(<runtime>/data/D)의 수집 데이터 유무(10초봉/일봉 파일 수, 수집 목록)와
@@ -15,17 +15,30 @@ CPU 를 많이 쓰는 일이다.
 작업 (단계는 순서대로, 각 단계 = data_simulation 스크립트 한 번 실행):
   collect    g001 --date D                                   분봉/일봉 수집 (KIS, 오래 걸림)
   history    g025 --append D                                 종목별 일봉 이력 갱신 (AutoBotH 일/주/월봉)
-  scan       g002 --date D --export-watchlist --for-next-trading-day   다음 거래일 감시목록(r004) 선별
-             --keep-watchlist 이면 g002 --date D --no-export-watchlist: 그 날짜의 선별 파일(_D_picks.txt, 리포트)만 만들고
-             r004 감시목록은 그대로 둔다 (과거 날짜 보충 수집 / Edge AI 데이터셋 - g013 은 전날 picks 파일을 읽는다)
+  scan       g002 --date D --no-export-watchlist             그 날짜의 선별 파일(_D_picks.txt, 리포트)만 만든다 (r004 는 안 건드림)
+             -> apply                                         r016 watchlist apply --date D: 선별 파일을 r004 에 반영(백업/이력)
   edge_ai    g013 --live, g014, g024 --edge-ai                Edge AI 데이터셋/학습/점검 (g015_edge_ai_daily.sh 와 같음)
   universe   g010                                             수집 대상 종목 목록(g004) 갱신
-  postclose  collect -> history -> scan [-> edge_ai]          장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지 않는다
+  postclose  collect -> history -> scan -> apply [-> edge_ai] 장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지 않는다
              (오래된 데이터로 감시목록을 만들지 않게). history 실패는 건너뛰고 계속.
+
+  [2026-11-11] 단계 선택 (postclose / scan): --no-collect (수집+이력 생략), --no-scan (선별 생략), --no-apply (r004 반영 생략).
+    1+2+3 = 기본, 2+3 = --no-collect (그 날짜 폴더에 수집 데이터가 있어야 함), 3 = --no-collect --no-scan (선별 파일이 있어야 함).
+    start 는 생략된 앞 단계의 산출물이 없으면 거부한다. --keep-watchlist 는 --no-apply 의 옛 이름.
+    apply 는 선별 파일이 없거나 비어 있거나, 이 실행의 scan 보다 오래된 파일(g002 가 후보 0 이면 파일을 안 만들고 옛 파일이
+    남는다)이면 건너뛴다(단계 state=skipped, note) - 옛 선별이 r004 에 들어가지 않게. 작업 자체는 done.
 
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: 파이프라인 단계 선택 - postclose = collect -> history -> scan -> apply. scan 단계는 항상 g002 --no-export-watchlist
+      (선별 파일만), r004 반영은 새 apply 단계(r016 watchlist apply --date D: 백업/이력/다음 거래일 헤더)가 한다. --no-collect /
+      --no-scan / --no-apply 로 1+2+3, 2+3, 3 조합을 고르고, start 는 앞 단계 산출물(10초봉 파일 / 선별 파일)이 없으면 거부.
+      --keep-watchlist 는 --no-apply 의 별칭으로 유지. 상태 파일 args 에 collect/scan/apply 기록 (keep_watchlist 대신).
+    impact: tooling (r003 영향 없음. g002 의 r004 내보내기 대신 r016 경로로 쓰므로 r004 헤더에 scanner_config 줄이 빠지고
+      for_trading_day 가 r014 다음 거래일로 바뀜 - r003 은 헤더를 읽지 않음)
+    compatibility: backward-compatible (앱 스케줄러의 `job start postclose` 기본 = 네 단계 전부)
 - [2026-11-11] type=feat owner=claude
     summary: job data --date D (date_data_info) - 그 날짜 폴더의 g001 산출물(*_10s.txt / *_daily.csv 수, _D_collected.txt 목록 수,
       마지막 파일 시각)과 g002 선별 결과(_D_picks.txt 의 code,name 목록, 시각)를 돌려준다. 앱이 "수집된 날짜면 g002 선별만 실행"
@@ -79,7 +92,15 @@ class JobArgs:
     date: str
     workers: int | None = None
     edge_ai: bool = False
-    keep_watchlist: bool = False  # scan: g002 --no-export-watchlist (past-date backfill / Edge AI: r004 stays as is)
+    # [2026-11-11] pipeline steps (postclose / scan): 1 collect (+history), 2 scan, 3 apply (r004 <- picks)
+    collect: bool = True
+    scan: bool = True
+    apply: bool = True
+    by: str = "cli"  # who started it - recorded in the r004 header / history by the apply step
+
+    @property
+    def keep_watchlist(self) -> bool:  # old name (2026-11-11 morning): r004 untouched
+        return not self.apply
 
 
 @dataclass
@@ -101,9 +122,11 @@ STEPS: dict[str, Step] = {
     "collect": Step("collect", lambda a, rc: _py("g001_data_collect_symbols_daily.py", "--date", a.date,
                                                  "--workers", _workers(a, 4))),
     "history": Step("history", lambda a, rc: _py("g025_daily_history.py", "--append", a.date), required=False),
-    "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date,
-                                           *(("--no-export-watchlist",) if a.keep_watchlist
-                                             else ("--export-watchlist", "--for-next-trading-day")))),
+    "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--no-export-watchlist")),
+    # r004 <- <runtime>/data/D/_D_picks.txt through r016 (write lock, backup, history, for_trading_day header, collector note)
+    # --restart-collector: a running g011 that misses new codes is restarted (it subscribes r004 only at its start)
+    "apply": Step("apply", lambda a, rc: [str(HERE / "r016_control.py"), "--by", a.by, "watchlist", "apply", "--date", a.date,
+                                          "--restart-collector"]),
     "edge_dataset": Step("edge_dataset", lambda a, rc: _py("g013_edge_ai_dataset.py", "--workers", _workers(a, 2), "--live"),
                          required=False),
     "edge_train": Step("edge_train", lambda a, rc: _py("g014_edge_ai_train.py", "--threads", _workers(a, 2)), required=False),
@@ -116,18 +139,34 @@ STEPS: dict[str, Step] = {
 JOBS: dict[str, dict] = {
     "collect": {"title": "데이터 수집 (g001)", "steps": ["collect"]},
     "history": {"title": "일봉 이력 (g025)", "steps": ["history"]},
-    "scan": {"title": "감시 종목 선별 (g002 -> r004)", "steps": ["scan"]},
+    "scan": {"title": "감시 종목 선별 (g002 -> r004)", "steps": ["scan", "apply"]},
     "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check"]},
     "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
-    "postclose": {"title": "장 마감 파이프라인 (수집 -> 이력 -> 선별)", "steps": ["collect", "history", "scan"]},
+    "postclose": {"title": "장 마감 파이프라인 (수집 -> 이력 -> 선별 -> r004)", "steps": ["collect", "history", "scan", "apply"]},
 }
+
+STEP_SWITCH = {"collect": "collect", "history": "collect", "scan": "scan", "apply": "apply"}  # step -> JobArgs flag
 
 
 def job_steps(name: str, args: JobArgs) -> list[Step]:
-    names = list(JOBS[name]["steps"])
+    names = [n for n in JOBS[name]["steps"] if getattr(args, STEP_SWITCH.get(n, ""), True)]
     if name == "postclose" and args.edge_ai:
         names += JOBS["edge_ai"]["steps"]
     return [STEPS[n] for n in names]
+
+
+def check_steps(paths: "Paths", name: str, args: JobArgs) -> str | None:
+    """[2026-11-11] a skipped earlier step must have left its output: scan without collect needs the date's 10-second files,
+    apply without scan needs the date's picks file. Returns the refusal text (None = fine)."""
+    names = [s.name for s in job_steps(name, args)]
+    if not names:
+        return "no steps selected"
+    info = date_data_info(paths, args.date) if ("scan" in names or "apply" in names) and "collect" not in names else None
+    if info is not None and "scan" in names and not info["scannable"]:
+        return f"no collected data for {args.date} ({info['dir']}) - run the collect step (g001) first"
+    if info is not None and "apply" in names and "scan" not in names and not info["picks"]:
+        return f"no picks file for {args.date} ({info['picks_file']}) - run the scan step (g002) first"
+    return None
 
 
 class Paths:
@@ -218,6 +257,9 @@ def start_job(paths: Paths, name: str, args: JobArgs, by: str, spawn=r019.spawn_
     cur = current(paths)
     if cur:
         return {"ok": False, "error": f"another job is running: {cur.get('name') or '?'} (pid {cur.get('pid')})", "running": cur}
+    problem = check_steps(paths, name, args)
+    if problem:
+        return {"ok": False, "error": problem}
     paths.dir.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(OSError):
         paths.stop(name).unlink()
@@ -230,8 +272,7 @@ def start_job(paths: Paths, name: str, args: JobArgs, by: str, spawn=r019.spawn_
         argv += ["--workers", str(args.workers)]
     if args.edge_ai:
         argv.append("--edge-ai")
-    if args.keep_watchlist:
-        argv.append("--keep-watchlist")
+    argv += [f"--no-{k}" for k in ("collect", "scan", "apply") if not getattr(args, k)]
     now = datetime.now()
     pid = spawn(argv, cwd=str(HERE), log_path=paths.root / "log" / "jobs" / "r021_runner.log",
                 env=r019.child_env({"AUTO_TRADING_RUNTIME": str(paths.root)}))
@@ -361,20 +402,47 @@ def tail_log(paths: Paths, name: str, n: int = 200) -> dict:
 class Runner:
     def __init__(self, paths: Paths, name: str, args: JobArgs, by: str, run_id: str | None = None):
         self.paths, self.name, self.args, self.by = paths, name, args, by
+        self.args.by = by
         now = datetime.now()
         self.log_path = paths.log(name, now)
         self.state = {"name": name, "title": JOBS[name]["title"], "state": "running", "pid": os.getpid(), "by": by,
                       "run_id": run_id,
                       "started_at": now.isoformat(timespec="seconds"), "finished_at": None, "rc": None,
                       "args": {"date": args.date, "workers": args.workers, "edge_ai": args.edge_ai,
-                               "keep_watchlist": args.keep_watchlist},
-                      "log": str(self.log_path), "steps": [], "error": None}
+                               "collect": args.collect, "scan": args.scan, "apply": args.apply},
+                      "log": str(self.log_path), "steps": [], "error": None, "note": None}
 
     def _save(self) -> None:
         _write_json(self.paths.state(self.name), self.state)
 
     def _stop_requested(self) -> bool:
         return self.paths.stop(self.name).exists()
+
+    def _apply_skip_reason(self) -> str | None:
+        """[2026-11-11] the apply step only publishes picks this run can vouch for: a picks file must exist, be non-empty and - when
+        the scan ran in this job - be written by that scan (g002 leaves no file when it finds no candidate, so an older file would
+        otherwise be applied)."""
+        pf, picks = read_picks(self.paths, self.args.date)
+        if not picks:
+            return f"no picks for {self.args.date} (the scan found no candidate) - r004 unchanged"
+        scans = [r for r in self.state["steps"] if r["name"] == "scan" and r.get("started_at")]
+        if scans:
+            started = datetime.fromisoformat(scans[-1]["started_at"]).timestamp()
+            try:
+                written = pf.stat().st_mtime
+            except OSError:
+                written = 0.0
+            if written < started - 1.0:
+                return f"picks file predates this run's scan (the scan found no candidate) - r004 unchanged"
+        return None
+
+    def _skip_step(self, step: Step, reason: str, fh) -> None:
+        now = _now()
+        self.state["steps"].append({"name": step.name, "argv": [], "state": "skipped", "rc": None, "started_at": now,
+                                    "finished_at": now, "note": reason})
+        self.state["note"] = f"{step.name} skipped: {reason}"
+        self._save()
+        self._log(fh, f"step {step.name} skipped: {reason}")
 
     def _log(self, fh, text: str) -> None:
         fh.write(f"[{_now()}] [r021] {text}\n".encode("utf-8"))
@@ -432,6 +500,12 @@ class Runner:
                 if self._stop_requested():
                     self.state.update(state="stopped")
                     break
+                if step.name == "apply":
+                    reason = self._apply_skip_reason()
+                    if reason:
+                        self._skip_step(step, reason, fh)
+                        rcs[step.name] = 0
+                        continue
                 rc, stopped = self._run_step(step, rcs, fh)
                 rcs[step.name] = rc
                 if stopped:
@@ -479,9 +553,22 @@ def add_job_parser(sub) -> None:
     p.add_argument("--date", default=None)
     p.add_argument("--workers", type=int, default=None)
     p.add_argument("--edge-ai", action="store_true")
-    p.add_argument("--keep-watchlist", action="store_true", help="scan: build the picks files only, do not write r004 (g002 --no-export-watchlist)")
+    _add_step_switches(p)
     p.add_argument("--trading-day-only", action="store_true", help="start: skip (rc 0, skipped) on a weekend / r014 closed day")
     p.add_argument("-n", type=int, default=200)
+
+
+def _add_step_switches(p) -> None:
+    p.add_argument("--no-collect", action="store_true", help="postclose: skip collect (g001) + history (g025) - the date must be collected")
+    p.add_argument("--no-scan", action="store_true", help="postclose/scan: skip the scan (g002) - the date must have a picks file")
+    p.add_argument("--no-apply", action="store_true", help="postclose/scan: do not write r004 (picks files only)")
+    p.add_argument("--keep-watchlist", action="store_true", help="old name of --no-apply")
+
+
+def _job_args(args, date: str) -> JobArgs:
+    return JobArgs(date=date, workers=args.workers, edge_ai=args.edge_ai,
+                   collect=not getattr(args, "no_collect", False), scan=not getattr(args, "no_scan", False),
+                   apply=not (getattr(args, "no_apply", False) or getattr(args, "keep_watchlist", False)))
 
 
 def is_trading_day(ymd: str) -> bool:
@@ -512,8 +599,7 @@ def run_job_command(args, by: str, paths: Paths | None = None) -> tuple[dict, in
         date = args.date or _today()
         if getattr(args, "trading_day_only", False) and len(date) == 8 and date.isdigit() and not is_trading_day(date):
             return {"ok": True, "skipped": True, "reason": f"{date} is not a trading day"}, 0
-        out = start_job(paths, args.name, JobArgs(date=date, workers=args.workers, edge_ai=args.edge_ai,
-                                                   keep_watchlist=getattr(args, "keep_watchlist", False)), by)
+        out = start_job(paths, args.name, _job_args(args, date), by)
         return out, 0 if out.get("ok") else 3
     if args.action == "stop":
         out = stop_job(paths, args.name)
@@ -529,16 +615,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--date", default=None)
     p.add_argument("--workers", type=int, default=None)
     p.add_argument("--edge-ai", action="store_true")
-    p.add_argument("--keep-watchlist", action="store_true", help="scan: build the picks files only, do not write r004 (g002 --no-export-watchlist)")
+    _add_step_switches(p)
     p.add_argument("--by", default="cli")
     p.add_argument("--run-id", default=None)
     p.add_argument("--runtime", default=None, help="runtime root (a WMI-started process has no inherited env)")
     args = ap.parse_args(argv)
     if args.runtime:
         os.environ["AUTO_TRADING_RUNTIME"] = args.runtime
-    return run_detached_entry(args.name, JobArgs(date=args.date or _today(), workers=args.workers, edge_ai=args.edge_ai,
-                                                   keep_watchlist=args.keep_watchlist), args.by,
-                              run_id=args.run_id)
+    return run_detached_entry(args.name, _job_args(args, args.date or _today()), args.by, run_id=args.run_id)
 
 
 if __name__ == "__main__":

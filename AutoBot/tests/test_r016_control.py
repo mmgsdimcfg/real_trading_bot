@@ -225,6 +225,12 @@ class WatchlistTests(Base):
         self.assertEqual(text.count("# scan_date="), 1)
         self.assertIn("# scan_date=20261111", text)
 
+    def test_apply_restart_collector_flag_without_a_running_collector(self):
+        self._picks("20261110", "035720,카카오\n")
+        rc, out = self.run_cli("watchlist", "apply", "--date", "20261110", "--restart-collector")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("collector_restart", out)  # nothing to restart (no g011)
+
     def test_apply_without_picks_is_refused(self):
         rc, out = self.run_cli("watchlist", "apply", "--date", "20261110")
         self.assertEqual(rc, 2)
