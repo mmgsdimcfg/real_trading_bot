@@ -14,14 +14,21 @@
  *   (auto until the user toggles it; follows the date again when the date changes). Off = r021 --keep-watchlist: the scan builds
  *   that day's picks files (what g013 reads for the Edge AI dataset) but the r004 watchlist stays, so a past-date backfill for
  *   Edge AI retraining does not change the stocks r003 watches. The last run shows whether it touched the watchlist
+ * - [2026-11-11] type=feat - Scan-only flow: the 감시 종목 선별 / 장 마감 파이프라인 cards show what the date folder holds (r016 job data:
+ *   10-second / daily files, the collected list, last file time) - 감시 종목 선별 cannot start on a date without collected data.
+ *   For 감시 종목 선별 the "감시목록(r004) 갱신" box is off by default: g002 runs alone (--keep-watchlist), the picks of the date are
+ *   listed under the run (name + code chips) with a "r004 감시목록에 적용" checkbox that applies them (r016 watchlist apply, after a
+ *   confirmation); the box shows checked when r004 already holds exactly those codes
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { DatePicker } from '../components/DatePicker';
-import { JOB_STATE_LABEL, localYmd, type JobList, type JobLog, type JobRun } from '../../../shared/control';
+import { JOB_STATE_LABEL, localYmd, type JobDataInfo, type JobList, type JobLog, type JobRun } from '../../../shared/control';
 
 const isoShow = (s: string | null | undefined) => (s ? s.replace('T', ' ').slice(5, 16) : '-');
+const hhmm = (s: string | null | undefined) => (s ? s.slice(11, 16) : '');
+const num = (n: number) => n.toLocaleString('ko-KR');
 /** elapsed time as m:ss (h:mm:ss from one hour) */
 const dur = (a: string | null | undefined, b: string | null | undefined) => {
   if (!a) return '';
@@ -54,7 +61,7 @@ const DESC: Record<string, string> = {
   postclose: '수집 → 이력 → 다음 거래일 감시 종목 선별 [→ Edge AI] · 수집 실패 시 선별 생략 · 과거 날짜는 기본으로 감시목록을 바꾸지 않음',
   collect: '분봉·일봉 데이터 수집 · KIS API 전 종목 (오래 걸림)',
   history: '종목별 일봉 이력 갱신 · 차트 일/주/월봉',
-  scan: '수집된 데이터로 다음 거래일 감시 종목 선별 · "감시목록 갱신"이 켜져 있으면 r004 감시목록 저장',
+  scan: '수집된 기준일 데이터로 감시 종목 선별(g002)만 실행 · 결과를 보고 아래 "r004 감시목록에 적용"을 체크하면 저장 ("감시목록 갱신"을 켜면 바로 저장)',
   edge_ai: 'Edge AI 데이터셋 생성 → 학습 → 점검 · CPU 많이 씀',
   universe: '수집 대상 종목 목록(g004) 갱신 · 신규상장/상장폐지/위험종목',
 };
@@ -82,9 +89,13 @@ export function JobsView() {
   /** 감시목록(r004) 갱신: null = automatic (today -> on, past date -> off), the user's click fixes it until the date changes */
   const [wlChoice, setWlChoice] = useState<boolean | null>(null);
   const isToday = date === localYmd();
-  const wlUpdate = wlChoice ?? isToday;
   const hasScan = sel === 'postclose' || sel === 'scan';
-  useEffect(() => setWlChoice(null), [date]);
+  // [2026-11-11] 감시 종목 선별 alone: picks first, apply afterwards (the checkbox under the result) - so off unless the user turns it on
+  const wlUpdate = wlChoice ?? (sel === 'scan' ? false : isToday);
+  useEffect(() => setWlChoice(null), [date, sel]);
+  /** [2026-11-11] what the date folder holds (r016 job data) - for the scan / postclose cards */
+  const [info, setInfo] = useState<JobDataInfo | null>(null);
+  const infoOk = info && info.date === date ? info : null;
   const [log, setLog] = useState<JobLog | null>(null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -104,6 +115,12 @@ export function JobsView() {
     const r = await window.api.ctlJobLog(name, 300);
     if (r.ok && r.data) setLog(r.data);
   };
+  const loadInfo = async (d = date) => {
+    if (!/^\d{8}$/.test(d)) return;
+    const r = await window.api.ctlJobData(d);
+    if (r.ok && r.data) setInfo(r.data);
+    else setInfo({ ok: false, date: d, dir: '', exists: false, scannable: false, collected: false, collected_count: 0, files_10s: 0, files_daily: 0, data_mtime: null, picks: null, picks_file: '', picks_mtime: null, scan_log_mtime: null, generated_at: '', error: r.error || '확인 실패' });
+  };
 
   // job list: every 5 s on this PC, 20 s on the Raspberry Pi (each call starts Python there); log while the selected job runs
   useEffect(() => {
@@ -119,9 +136,16 @@ export function JobsView() {
     const t = setInterval(() => void loadLog(sel), local ? 3000 : 15000);
     return () => clearInterval(t);
   }, [connected, sel, running, local]); // eslint-disable-line react-hooks/exhaustive-deps
+  // date folder info: on the scan / postclose cards, again when the date changes and when the selected job's run ends
+  useEffect(() => {
+    if (!connected || !hasScan) return;
+    void loadInfo(date);
+  }, [connected, hasScan, date, last?.finished_at, last?.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const noData = sel === 'scan' && !!infoOk && !infoOk.scannable;
   const start = async () => {
     if (!/^\d{8}$/.test(date)) return setMsg('날짜는 YYYYMMDD');
+    if (noData) return setMsg(`${date} 데이터가 없습니다 - 먼저 수집(g001) 또는 장 마감 파이프라인을 실행하세요.`);
     setBusy(true);
     setMsg('시작 중…');
     const r = await window.api.ctlJobStart(sel, {
@@ -143,6 +167,37 @@ export function JobsView() {
     setBusy(false);
     setMsg(r.ok ? '정지했습니다.' : `실패: ${r.error}`);
     await load();
+  };
+  /** [2026-11-11] r004 <- the picks of the date (r016 watchlist apply; main asks first) */
+  const apply = async () => {
+    if (!infoOk?.picks?.length) return;
+    setBusy(true);
+    setMsg('감시목록에 적용 중…');
+    const r = await window.api.ctlPicksApply(date, infoOk.picks.length);
+    setBusy(false);
+    if (r.cancelled) return setMsg('');
+    setMsg(r.ok ? `r004 감시목록에 ${r.data?.count ?? infoOk.picks.length}종목을 적용했습니다 (r003 재시작 후 반영).` : `실패: ${r.error}`);
+    await loadInfo(date);
+  };
+  const dataLine = () => {
+    if (!hasScan) return null;
+    if (!infoOk) return <span className="muted">기준일 데이터 확인 중…</span>;
+    if (infoOk.error && !infoOk.ok) return <span className="err-text">기준일 데이터 확인 실패: {infoOk.error}</span>;
+    if (!infoOk.exists || !infoOk.scannable) {
+      return sel === 'scan' ? (
+        <span className="warn-text">기준일 {date} 수집 데이터 없음 - 수집(g001) 또는 장 마감 파이프라인을 먼저 실행하세요</span>
+      ) : (
+        <span className="muted">기준일 {date} 수집 데이터 없음 - 수집부터 실행됩니다</span>
+      );
+    }
+    return (
+      <span className="muted" title={infoOk.dir}>
+        기준일 {date} 데이터 있음 · 10초봉 {num(infoOk.files_10s)}종목 · 일봉 {num(infoOk.files_daily)}
+        {infoOk.collected ? ` · 수집 목록 ${num(infoOk.collected_count)}종목` : ' · 수집 완료 표시 없음'}
+        {infoOk.data_mtime ? ` · 마지막 파일 ${isoShow(infoOk.data_mtime)}` : ''}
+        {infoOk.picks ? ` · 선별 결과 ${infoOk.picks.length}종목 (${hhmm(infoOk.picks_mtime)})` : ' · 선별 결과 없음'}
+      </span>
+    );
   };
 
   if (!connected) return <div className="control"><div className="empty">연결되어 있지 않습니다 - 설정/연결 탭에서 연결하세요.</div></div>;
@@ -190,6 +245,7 @@ export function JobsView() {
       <section>
         <h3>{splitTitle(selRow?.title || sel)[0]}</h3>
         <p className="subtitle">{DESC[sel]}</p>
+        {hasScan && <p className="small data-line">{dataLine()}</p>}
         <div className="job-form">
           <DatePicker value={date} onChange={setDate} today={localYmd()} max={localYmd()} title="기준일 (누르면 달력, 기본은 오늘)" />
           {(sel === 'collect' || sel === 'postclose' || sel === 'edge_ai') && (
@@ -217,12 +273,19 @@ export function JobsView() {
               <input type="checkbox" checked={wlUpdate} onChange={(e) => setWlChoice(e.target.checked)} /> 감시목록(r004) 갱신
             </label>
           )}
-          {hasScan && !wlUpdate && <span className="muted small">선별 파일만 만들고 지금 감시 중인 종목은 그대로 둡니다</span>}
+          {hasScan && !wlUpdate && (
+            <span className="muted small">{sel === 'scan' ? '선별 결과를 보고 아래에서 r004에 적용합니다' : '선별 파일만 만들고 지금 감시 중인 종목은 그대로 둡니다'}</span>
+          )}
           {hasScan && wlUpdate && !isToday && <span className="warn-text small">과거 날짜({date}) 기준으로 감시목록이 바뀝니다</span>}
           {busy && <i className="spinner" />}
           <span className="muted small">{msg}</span>
           <span className="push-right" />
-          <button className="primary wide" disabled={busy || !!running} title={running ? '다른 작업이 실행 중입니다' : ''} onClick={() => void start()}>
+          <button
+            className="primary wide"
+            disabled={busy || !!running || noData}
+            title={running ? '다른 작업이 실행 중입니다' : noData ? `${date} 수집 데이터가 없습니다` : ''}
+            onClick={() => void start()}
+          >
             시작
           </button>
           <button className="wide" disabled={busy || running !== sel} onClick={() => void stop()}>
@@ -261,7 +324,10 @@ export function JobsView() {
               </tbody>
             </table>
             {hasScan && last.state.startsWith('done') && last.args?.keep_watchlist && (
-              <p className="muted small">감시목록(r004)은 바꾸지 않았습니다 - 기준일 {last.args.date} 폴더의 선별 파일만 만들었습니다.</p>
+              <p className="muted small">
+                감시목록(r004)은 바꾸지 않았습니다 - 기준일 {last.args.date} 폴더의 선별 파일만 만들었습니다
+                {last.args.date === date ? ' (아래 선별 결과에서 적용할 수 있습니다).' : '.'}
+              </p>
             )}
             {hasScan && last.state.startsWith('done') && !last.args?.keep_watchlist && (
               <p className="small">
@@ -273,6 +339,39 @@ export function JobsView() {
               </p>
             )}
           </>
+        )}
+        {hasScan && infoOk?.picks && (
+          <div className="picks">
+            <div className="picks-head">
+              <b>선별 결과</b>
+              <span className="muted small" title={infoOk.picks_file}>
+                {date} · {infoOk.picks.length}종목{infoOk.picks_mtime ? ` · ${isoShow(infoOk.picks_mtime)}` : ''}
+              </span>
+              <label
+                className="check small"
+                title={
+                  infoOk.r004?.applied
+                    ? '지금 r004 감시목록이 이 선별 결과와 같습니다'
+                    : '체크하면 이 선별 결과를 r004 감시목록으로 저장합니다 (기존 파일 백업, r003 재시작 후 반영)'
+                }
+              >
+                <input type="checkbox" checked={!!infoOk.r004?.applied} disabled={busy || !!infoOk.r004?.applied || !infoOk.picks.length} onChange={() => void apply()} />
+                r004 감시목록에 적용{infoOk.r004?.applied ? ' (적용됨)' : ''}
+              </label>
+              {infoOk.r004 && !infoOk.r004.applied && (
+                <span className="muted small">
+                  현재 r004: {infoOk.r004.count}종목{infoOk.r004.scan_date ? ` (${infoOk.r004.scan_date} 선별)` : ''}
+                </span>
+              )}
+            </div>
+            <div className="pick-chips">
+              {infoOk.picks.map((p) => (
+                <span className="pick-chip" key={p.code}>
+                  {p.name} <span className="mono">{p.code}</span>
+                </span>
+              ))}
+            </div>
+          </div>
         )}
         <div className="log-box mono">
           {log?.lines?.length ? log.lines.map((l, i) => <div key={i}>{l}</div>) : <span className="muted">로그 없음</span>}

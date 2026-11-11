@@ -29,6 +29,9 @@
  * - [2026-11-11] type=feat - askConfirm(): confirmations are drawn by the renderer (ConfirmDialog) in the app's style instead of the
  *   native message box; confirmBox() keeps its signature on top of it. The r003 start/restart/stop question is a card: LIVE / 장중
  *   tag, "실주문 모드로 실행할까요?", one-line reason and rows 모드 / 프로파일 / 실행 위치 (host label + hostname)
+ * - [2026-11-11] type=feat - ctl:jobData (r016 `job data --date D`: collected data + g002 picks of a date, r004 comparison) and
+ *   ctl:picksApply (`watchlist apply --date D` after a confirmation; same g011 restart / r003 restart offer as ctl:watchlistSet,
+ *   now shared in afterWatchlistWrite) - the data jobs tab runs g002 alone on a collected date and applies the picks afterwards
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
@@ -48,9 +51,11 @@ import {
   type ControlState,
   type DoctorReport,
   type HistoryRow,
+  type JobDataInfo,
   type JobList,
   type JobLog,
   type JobStartOpts,
+  type PicksApplyResult,
   type NxtState,
   type R016Result,
   type R016Status,
@@ -475,6 +480,29 @@ export function createControl(deps: ControlDeps) {
     const r = await cl().run<WatchlistDoc>(['watchlist', 'get']);
     return { ok: r.ok, error: r.error, data: r.data };
   });
+  /** [2026-11-11] after r004 was rewritten (watchlist set / apply): g011 subscribes the watchlist once at its start, so a list
+   *  changed afterwards leaves the new codes without tick files (_009 1분봉 트리거 ABSTAIN_NO_FILE, empty tick chart) -> restart
+   *  it right away with the current r004; then offer an r003 restart so the new list is watched now (held positions keep their
+   *  sell evaluation - r003 restores today's positions from live_state and the account) */
+  const afterWatchlistWrite = async <T extends WatchlistSetResult>(r: { ok: boolean; error?: string; data?: T | null }) => {
+    let cur = await refreshStatus();
+    let collectorRestart: unknown = undefined;
+    if (r.ok && cur?.collector?.running && (cur.collector.missing?.length || 0) > 0) {
+      try {
+        const x = await cl().run(['collector', 'restart'], { timeoutMs: R016_SERVICE_TIMEOUT });
+        collectorRestart = x.ok ? x.data : { ok: false, error: x.error };
+      } catch (e) {
+        collectorRestart = { ok: false, error: errMsg(e) };
+      }
+      cur = await refreshStatus();
+    }
+    if (r.ok && cur?.running && !state.busy) {
+      if (await confirm('감시 다시 시작', '새 감시목록을 바로 감시하려면 r003을 재시작해야 합니다.', '지금 재시작할까요? (보유 종목은 재시작 후에도 계속 매도 평가합니다)', '재시작')) {
+        void service('restart', {}, true);
+      }
+    }
+    return { ok: r.ok, error: r.error, data: r.data && collectorRestart !== undefined ? { ...r.data, collector_restart: collectorRestart } : r.data };
+  };
   handle('ctl:watchlistSet', async (rows: WatchEntry[]) => {
     const list = (rows || []).map((r) => ({ code: String(r.code || '').trim(), name: String(r.name || '').trim() }));
     const chk = checkWatchRows(list);
@@ -491,27 +519,33 @@ export function createControl(deps: ControlDeps) {
       return { ok: false, cancelled: true };
     }
     const r = await cl().run<WatchlistSetResult>(['watchlist', 'set', '--stdin'], { stdin: watchlistStdin(list) });
-    let cur = await refreshStatus();
-    // g011 subscribes the watchlist once at its start: a list changed afterwards leaves the new codes without tick files
-    // (_009 1분봉 트리거 ABSTAIN_NO_FILE, empty tick chart) -> restart it right away with the current r004
-    let collectorRestart: unknown = undefined;
-    if (r.ok && cur?.collector?.running && (cur.collector.missing?.length || 0) > 0) {
-      try {
-        const x = await cl().run(['collector', 'restart'], { timeoutMs: R016_SERVICE_TIMEOUT });
-        collectorRestart = x.ok ? x.data : { ok: false, error: x.error };
-      } catch (e) {
-        collectorRestart = { ok: false, error: errMsg(e) };
-      }
-      cur = await refreshStatus();
+    return afterWatchlistWrite(r);
+  });
+  // [2026-11-11] scan-only flow of the data jobs tab: what the date folder holds, and r004 <- that date's picks
+  handle('ctl:jobData', async (date: string) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (!/^\d{8}$/.test(String(date))) return { ok: false, error: '날짜는 YYYYMMDD' };
+    const r = await cl().run<JobDataInfo>(['job', 'data', '--date', date]);
+    return { ok: r.ok, error: r.error, data: r.data };
+  });
+  handle('ctl:picksApply', async (date: string, count?: number) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (!/^\d{8}$/.test(String(date))) return { ok: false, error: '날짜는 YYYYMMDD' };
+    const n = Number(count) > 0 ? `${Number(count)}종목을` : '선별 결과를';
+    if (
+      !(await confirm(
+        '감시목록 적용',
+        `${date} 선별 결과 ${n} r004 감시목록으로 저장합니다 (${deps.hostLabel()}).`,
+        '기존 파일을 watchlist_backup/에 백업한 뒤 교체합니다. r003 재시작 후 반영되며, 장 마감 후 g002 선별(감시목록 갱신 켜짐)이 다시 씁니다.',
+        '적용',
+      ))
+    ) {
+      return { ok: false, cancelled: true };
     }
-    // add/remove symbols during the session -> watch the new list right away (restart re-reads r004; held positions keep their
-    // sell evaluation - r003 restores today's positions from live_state and the account)
-    if (r.ok && cur?.running && !state.busy) {
-      if (await confirm('감시 다시 시작', '새 감시목록을 바로 감시하려면 r003을 재시작해야 합니다.', '지금 재시작할까요? (보유 종목은 재시작 후에도 계속 매도 평가합니다)', '재시작')) {
-        void service('restart', {}, true);
-      }
-    }
-    return { ok: r.ok, error: r.error, data: r.data && collectorRestart !== undefined ? { ...r.data, collector_restart: collectorRestart } : r.data };
+    const r = await cl().run<PicksApplyResult>(['watchlist', 'apply', '--date', date]);
+    return afterWatchlistWrite(r);
   });
 
   // [2026-11-10] host role / tick collector / data jobs / doctor (same r016 commands on both hosts)
