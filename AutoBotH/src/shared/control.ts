@@ -371,7 +371,9 @@ export function kstNowIso(nowMs: number = Date.now()): string {
  * How long the main process reuses a server chart/quote answer before asking the server again (each ask starts Python on the
  * Raspberry Pi and may cost KIS calls). Market hours: just under the 10 s chart refresh; outside: values do not change.
  */
-export const CHART_CACHE_MS = { quoteLive: 8000, quoteIdle: 300000, quoteFailed: 20000, daily: 600000, failed: 60000, intradayIdle: 300000 } as const;
+/** [2026-11-11] quoteLive 8 s -> 4 s: the chart tab now takes price / best quotes / trades from the tick file, so the KIS quote only
+ *  refreshes the 10-level book - 3 KIS calls per 4 s for the viewed symbol stays inside the shared budget next to r003 (~1.6/s of 2/s) */
+export const CHART_CACHE_MS = { quoteLive: 4000, quoteIdle: 300000, quoteFailed: 20000, daily: 600000, failed: 60000, intradayIdle: 300000 } as const;
 
 export function quoteCacheMs(nowIso: string = kstNowIso()): number {
   return isMarketHours(nowIso) ? CHART_CACHE_MS.quoteLive : CHART_CACHE_MS.quoteIdle;
