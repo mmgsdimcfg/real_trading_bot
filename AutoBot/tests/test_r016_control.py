@@ -328,16 +328,38 @@ class ServiceTests(Base):
             self.assertEqual(out["subscribed"], ["005930"])
             self.assertEqual(out["missing"], ["000660"])
             self.assertIsNotNone(out["last_write"])
-            with mock.patch.object(r016.os, "kill") as kill:
+            # the mocked process never exits -> restart reports the kill, no respawn, and leaves it to cron / the app
+            with mock.patch.object(r016.os, "kill") as kill, mock.patch.object(r016, "COLLECTOR_RESTART_WAIT_SEC", 0.3):
                 rc, out = self.run_cli("collector", "restart")
             self.assertEqual(rc, 0)
             self.assertEqual(out["signalled"], [4321])
+            self.assertFalse(out["restarted"])
             kill.assert_called_once()
             rc, out = self.run_cli("watchlist", "set", "--codes", "000660,SK하이닉스")
             self.assertEqual(out["collector_missing"], ["000660"])
         with mock.patch.object(r016, "_find_processes", return_value=[]):
             rc, out = self.run_cli("collector", "restart")
             self.assertEqual(rc, 3)
+
+    def test_collector_restart_respawns_with_current_list(self):
+        procs = [{"pid": 4321, "cmdline": "python g011_tick_collector.py --codes 005930",
+                  "argv": ["python", "g011_tick_collector.py", "--codes", "005930"]}]
+        seen = {"n": 0}
+
+        def find(_name):
+            seen["n"] += 1
+            return procs if seen["n"] == 1 else []  # gone right after the kill
+
+        spawned = []
+        # spawn is injected (collector_start's default is bound at import time) - never start a real g011 from a test
+        with mock.patch.object(r016, "_find_processes", side_effect=find), mock.patch.object(r016.os, "kill"), \
+                mock.patch.object(r016, "collector_window", return_value=(True, "ok")):
+            out = r016.collector_restart(self.paths, "test", spawn=lambda argv, **kw: (spawned.append(argv), 777)[1])
+        self.assertTrue(out["ok"])
+        self.assertTrue(out["restarted"])
+        self.assertEqual(out["pid"], 777)
+        self.assertEqual(len(spawned), 1)
+        self.assertIn("--fill-from-scan", spawned[0])
 
     def test_concurrent_set_calls_do_not_lose_keys(self):
         import threading

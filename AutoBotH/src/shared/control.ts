@@ -82,7 +82,17 @@ export interface R016Status {
   external_r003: ExternalProc[];
   /** older servers: missing */
   host?: HostInfo;
-  collector?: { running: boolean; pid: number | null; started_at: string | null; symbols: number; last_write: string | null; missing?: string[] };
+  collector?: {
+    running: boolean;
+    pid: number | null;
+    started_at: string | null;
+    symbols: number;
+    last_write: string | null;
+    /** codes g011 was started with (null = unknown) */
+    subscribed?: string[] | null;
+    /** watch codes g011 does not collect (started before the watchlist changed) */
+    missing?: string[];
+  };
   env: Record<string, string>;
   dry_run: boolean;
   risk_profile: string;

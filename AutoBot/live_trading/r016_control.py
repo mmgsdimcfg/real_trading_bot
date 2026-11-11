@@ -38,6 +38,13 @@ AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는
 
 Update log:
 - [2026-11-10] type=feat owner=claude
+    summary: collector restart 가 g011 을 멈춘 뒤 바로 현재 r004 로 다시 띄운다(세션 창/standby 규칙은 collector start 와 같음).
+      감시목록이 장중에 바뀌면 새 종목의 틱 파일이 cron/앱 5분 확인까지 없거나(앱이 꺼져 있으면 영영) _009 1분봉 트리거가
+      ABSTAIN_NO_FILE 로 멈추던 문제. 응답에 restarted/pid/window 추가, COLLECTOR_RESTART_WAIT_SEC(15초) 안에 안 끝나면 예전처럼
+      cron/앱에 맡긴다.
+    impact: tooling (r016 collector restart 응답 확장, AutoBotH 가 감시목록 저장/5분 확인에서 호출)
+    compatibility: backward-compatible
+- [2026-11-10] type=feat owner=claude
     summary: 윈도우 노트북 실행(AutoBotH 로컬 모드) - (1) 서비스 백엔드 분리: Windows 는 r020 감시 프로세스(start = 분리 실행,
       stop = 정지 요청 파일 + 최대 90초 대기 후 강제 종료) (2) 쓰기 잠금 r019(flock/msvcrt) - 종전 Windows 는 잠금 없음,
       os.replace 공유 위반 재시도 (3) /proc 없는 곳은 잠금 파일로 r003/g011 탐지 (4) SIGALRM 없는 곳의 마감 시각 중단
@@ -635,7 +642,14 @@ def _g011_processes(paths: ControlPaths) -> list[dict]:
     return _find_processes(G011_SCRIPT_NAME)
 
 
-def collector_restart(paths: ControlPaths, by: str) -> dict:
+COLLECTOR_RESTART_WAIT_SEC = 15.0  # g011 saves and exits on SIGTERM; TerminateProcess on Windows is immediate
+
+
+def collector_restart(paths: ControlPaths, by: str, now: datetime | None = None, spawn=r019.spawn_detached) -> dict:
+    """Stop g011 and start it again with the current r004 list (it subscribes the watchlist only at its start).
+    [2026-11-11] respawns right here (collector_start rules: session window, standby refusal) instead of leaving the restart to
+    g022 cron / the supervisor / the app's 5-min check - a watchlist changed during the session got its tick files up to 5 min
+    late, or never on a PC where the app was closed. Outside the window g011 is only stopped (restarted=False, window=reason)."""
     procs = _g011_processes(paths)
     if not procs:
         return {"ok": False, "error": "g011 tick collector is not running"}
@@ -644,9 +658,22 @@ def collector_restart(paths: ControlPaths, by: str) -> dict:
         if p.get("pid") and r019.terminate(p["pid"]):  # SIGTERM (Linux) / TerminateProcess (Windows)
             killed.append(p["pid"])
     append_history(paths, "collector.restart", {"pids": killed}, by)
-    return {"ok": bool(killed), "signalled": killed,
-            "note": "g022 cron (*/5 09-16), the r003 supervisor or AutoBotH (collector start) restarts g011 with the current "
-                    "r004 list within ~5 min"}
+    out: dict = {"ok": bool(killed), "signalled": killed, "restarted": False}
+    if not killed:
+        return out
+    deadline = time.time() + COLLECTOR_RESTART_WAIT_SEC
+    while time.time() < deadline and _g011_processes(paths):
+        time.sleep(0.2)
+    if _g011_processes(paths):
+        out["note"] = ("g011 did not exit in time - g022 cron (*/5 09-16), the r003 supervisor or AutoBotH (collector start) "
+                       "restarts it with the current r004 list within ~5 min")
+        return out
+    started = collector_start(paths, by, now=now, spawn=spawn)
+    if started.get("started"):
+        out.update({"restarted": True, "pid": started.get("pid"), "log": started.get("log")})
+    else:
+        out["window"] = started.get("window") or started.get("error")
+    return out
 
 
 COLLECTOR_PRE_OPEN_MINUTES = 15  # g022: start 15 min before the session opens

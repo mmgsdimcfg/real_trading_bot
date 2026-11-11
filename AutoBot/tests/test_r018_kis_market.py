@@ -88,6 +88,14 @@ class TokenTest(Base):
         self.write_token("KIS20261105", "OLD", datetime.now() - timedelta(hours=1))
         self.assertEqual(r018.load_token(), "TOKEN_SECRET")
 
+    def test_prefers_per_server_prod_file_and_ignores_vps(self):
+        # kis_auth (prod/vps split): KIS<date> is a 0-byte placeholder, the real token sits in KIS<date>_prod
+        (self.kis / "KIS20261111").write_text("", encoding="utf-8")
+        self.write_token("KIS20261111_prod", "PROD_SECRET", datetime.now() + timedelta(hours=20))
+        self.write_token("KIS20261111_vps", "PAPER_SECRET", datetime.now() + timedelta(hours=20))
+        self.write_token("KIS20261112_vps", "PAPER_NEWER", datetime.now() + timedelta(hours=40))
+        self.assertEqual(r018.load_token(), "PROD_SECRET")
+
     def test_no_valid_token_raises_and_never_issues(self):
         for p in self.kis.glob("KIS2*"):
             p.unlink()

@@ -8,6 +8,8 @@
  *     r003 still runs (NXT session until 20:00)
  *   - after that job finished OK: copy the new watchlist to the standby Raspberry Pi (settings.syncWatchlistToPeer) so it can take
  *     over tomorrow
+ * - [2026-11-11] type=fix - The 5-min collector check restarts a running g011 whose subscription misses watch codes
+ *   (status.collector.missing - the watchlist changed after it started), so new watch symbols get tick files within 5 min
  * - [2026-11-10] type=fix - Codex review: the tick collector only on a host whose role is explicitly primary (set by a guarded r003
  *   start); every action re-checks that the local mode is still active; the watchlist copy is marked done only after it succeeded
  *   (retried every 10 min)
@@ -72,11 +74,23 @@ export function createScheduler(deps: SchedDeps) {
           push({ lastCollectorMsg: `${hm()} 틱 수집기 대기 - 이 PC가 명시적 primary 가 아님 (제어 탭 [실행] 시 라즈베리파이를 standby, 이 PC를 primary 로 정함)` });
         } else if (deps.active()) {
           try {
-            const r = await deps.client().run<{ already_running?: boolean; started?: boolean; pid?: number }>(['collector', 'start']);
-            const d = r.data;
-            push({
-              lastCollectorMsg: r.ok ? `${hm()} ${d?.started ? `틱 수집기 시작 (pid ${d.pid})` : '틱 수집기 실행 중'}` : `${hm()} 틱 수집기: ${r.error}`,
-            });
+            // a running g011 that misses watch codes (list changed after its start) is restarted with the current list
+            const coll = deps.status()?.collector;
+            const missing = coll?.running ? coll.missing || [] : [];
+            if (missing.length) {
+              const r = await deps.client().run<{ restarted?: boolean; pid?: number; window?: string }>(['collector', 'restart'], { timeoutMs: 60000 });
+              push({
+                lastCollectorMsg: r.ok
+                  ? `${hm()} 틱 수집기 재시작 - 구독 누락 ${missing.length}종목 (${missing.join(', ')})${r.data?.restarted ? ` -> pid ${r.data.pid}` : r.data?.window ? ` - 다시 시작 안 함: ${r.data.window}` : ''}`
+                  : `${hm()} 틱 수집기 재시작 실패: ${r.error}`,
+              });
+            } else {
+              const r = await deps.client().run<{ already_running?: boolean; started?: boolean; pid?: number }>(['collector', 'start']);
+              const d = r.data;
+              push({
+                lastCollectorMsg: r.ok ? `${hm()} ${d?.started ? `틱 수집기 시작 (pid ${d.pid})` : '틱 수집기 실행 중'}` : `${hm()} 틱 수집기: ${r.error}`,
+              });
+            }
           } catch (e) {
             push({ lastCollectorMsg: `${hm()} 틱 수집기: ${errMsg(e)}` });
           }
