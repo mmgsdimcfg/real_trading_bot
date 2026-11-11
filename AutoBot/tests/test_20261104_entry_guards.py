@@ -44,18 +44,28 @@ class TestChaseFromCross(unittest.TestCase):
         self.assertTrue(r002.check_chase_from_cross(101.0, float("nan"), 0.5)[0])
         self.assertTrue(r002.check_chase_from_cross(None, 100.0, 0.5)[0])
 
-    def test_evaluate_triple_trigger_picks_freshest_cross_close(self):
+    def test_evaluate_triple_trigger_cross_ref_earliest_by_default_latest_on_request(self):
+        from unittest import mock
+
         now = datetime(2026, 11, 4, 10, 0, 0)
         crosses = {
             60: TickCross(True, "ok", 60, cross_time=now - timedelta(seconds=20), cross_close=101.0),
             120: TickCross(True, "ok", 120, cross_time=now - timedelta(seconds=90), cross_close=99.0),
         }
         ma = {"ok": True, "bars_since_cross": 0, "cross_bar_time": None}
+        # [2026-11-11] default "earliest": the first cross of the setup (120-tick, 90 s ago) anchors the chase guard, so a later
+        # re-cross at a higher price cannot reset the distance
         out = r002.evaluate_triple_trigger(ma, 10.0, crosses, (60, 120), "above", "any", 240.0)
         self.assertTrue(out["ok"])
-        self.assertEqual(out["cross_ref_price"], 101.0)
-        # a cross without close (old TickCross) is ignored
-        crosses[60] = TickCross(True, "ok", 60, cross_time=now)
+        self.assertEqual(out["cross_ref_price"], 99.0)
+        with mock.patch.object(r002, "TRIPLE_CHASE_FROM_CROSS_REF", "latest"):
+            out = r002.evaluate_triple_trigger(ma, 10.0, crosses, (60, 120), "above", "any", 240.0)
+            self.assertEqual(out["cross_ref_price"], 101.0)
+            # a cross without close (old TickCross) is ignored
+            crosses[60] = TickCross(True, "ok", 60, cross_time=now)
+            out = r002.evaluate_triple_trigger(ma, 10.0, crosses, (60, 120), "above", "any", 240.0)
+            self.assertEqual(out["cross_ref_price"], 99.0)
+        crosses[60] = TickCross(True, "ok", 60, cross_time=now, cross_close=103.0)
         out = r002.evaluate_triple_trigger(ma, 10.0, crosses, (60, 120), "above", "any", 240.0)
         self.assertEqual(out["cross_ref_price"], 99.0)
 

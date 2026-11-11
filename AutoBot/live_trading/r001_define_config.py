@@ -10,6 +10,12 @@
 #     impact: live (r003 재시작 후 - 파일이 없으면 동작 동일) + g003/테스트(같은 파일을 읽으므로 라이브 parity;
 #       시뮬에서 끄려면 AUTO_TRADING_LIVE_OVERRIDES=0)
 #     compatibility: backward-compatible (파일 없음 = 기존과 동일)
+# - [2026-11-11] type=feat owner=claude
+#     summary: 사용자 결정(20261111 동국제약 손절 후 재상승 구간 매수 평가 없음 분석) - 손절 종목 당일 재진입 허용
+#       (HARD_STOP_BLOCK_REENTRY_TODAY True -> False), 종목당 당일 재매수 한도 10회(REENTRY_MAX_PER_CODE 1 -> 10,
+#       REENTRY_MAX_PER_CODE_AFTER_PROFIT 5 -> 10). 손절 집합 기록/보존(live_state hard_stop_today)과 3분 쿨다운은 그대로.
+#     impact: common (r003 실전 / g003 백테스트 공용) - 매수 증가 방향
+#     compatibility: breaking (롤백: HARD_STOP_BLOCK_REENTRY_TODAY=True, REENTRY_MAX_PER_CODE=1, _AFTER_PROFIT=5)
 # - [2026-11-04] type=feat owner=claude
 #     summary: 사용자 승인(Codex 2차 검토 안전 점검 4건 + 시장 추세 게이트) - PARTIAL_BUY_CANCEL_AFTER_SECONDS(부분체결 잔량 취소),
 #       ACCOUNT_SYNC_MAX_STALE_SECONDS/DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED(계좌 신선도·평가손익 포함 한도), ENABLE_QUOTE_STATUS_GATE
@@ -1075,7 +1081,9 @@ INTRABAR_ADX_MIN = 20.0
 # [2026-11-04] 손절 누적 서킷브레이커(HARD_STOP_CIRCUIT_BREAKER_COUNT=3 / COOLDOWN_MIN=60) 삭제 - 사용자 결정.
 # 실제 구현은 "연속"이 아니라 당일 누적이었고 차단 중 손절마다 60분이 재연장돼 20261104 11:24~13:02 전 종목 매수가 막혔다.
 # 당일 HARD_STOP_LOSS 발생 종목 재진입 차단 여부 (같은 날 같은 종목 손절 후 재매수 금지)
-HARD_STOP_BLOCK_REENTRY_TODAY = True
+# [2026-11-11] 사용자 결정: 손절(HARD/ATR) 종목도 당일 재진입 허용 (20261111 086450 동국제약 09:54 ATR 손절 뒤 10:10 재상승
+# 구간에 매수 평가조차 없었음). 손절 집합(hard_stop_today)은 계속 기록·보존하므로 True 로 되돌리면 종전 차단으로 복귀.
+HARD_STOP_BLOCK_REENTRY_TODAY = False
 # 같은 날 같은 종목 재매수를 막는 명시적 규칙은 두지 않는다(2026-09-20 사용자 결정 - 종전
 # ALLOW_REBUY_SAME_CODE=False는 실전이 읽은 적 없는 죽은 설정이라 삭제). 재진입 제어는
 # has_buy_exposure(보유/주문중)/TRADE_COOLDOWN_MINUTES/HARD_STOP_BLOCK_REENTRY_TODAY뿐이다.
@@ -1092,11 +1100,11 @@ TRADE_COOLDOWN_MINUTES = 3
 #   "live"   - 실제 재매수 주문. 종목당 REENTRY_MAX_PER_CODE회까지.
 # HARD_STOP 종목은 모드와 무관하게 기존 HARD_STOP_BLOCK_REENTRY_TODAY(_006)가 계속 차단한다.
 REENTRY_MODE = "live"  # [2026-10-02] 사용자 요청으로 shadow -> live 전환 (롤백: "shadow" 또는 "off")
-REENTRY_MAX_PER_CODE = 1   # 종목당 당일 재진입(=두 번째 이후 매수) 최대 횟수 (live/shadow 공통 재편입 한도)
+REENTRY_MAX_PER_CODE = 10   # 종목당 당일 재진입(=두 번째 이후 매수) 최대 횟수 (live/shadow 공통 재편입 한도) [2026-11-11] 1 -> 10 (사용자 결정)
 # [2026-11-04] 사용자 결정: 직전 청산(전량)의 실현손익이 비용 추정(수수료+세금) 차감 후 + 인 종목은 재진입 한도를
 # 이 값까지 늘린다(20261104 OCI홀딩스 13:13 +1.63% 익절 후 13:40~14:03 +4% 상승 재진입 불가). 직전 청산이 손실이면
 # REENTRY_MAX_PER_CODE가 그대로 적용된다(사용횟수는 공통 누적). 손절(HARD/ATR) 종목은 한도와 무관하게 _006이 차단.
-REENTRY_MAX_PER_CODE_AFTER_PROFIT = 5
+REENTRY_MAX_PER_CODE_AFTER_PROFIT = 10  # [2026-11-11] 5 -> 10: 손실/이익 청산 모두 종목당 10회 (사용자 결정 - 한도를 하나로)
 # 한도는 '재진입 주문 시도' 기준(live: place_buy_order 접수 성공 시, shadow: 신호 1회 기록 시 소진) - 미체결
 # 취소로 끝난 재진입 주문도 1회로 센다(보수적). shadow는 가상 보유를 추적하지 않아 첫 재진입 신호 1회만 기록한다.
 # 재진입 판정 = 봇이 당일 매수 예약(traded_today)했고 실제 보유수량>0이 관측된 뒤 전량 청산된 종목. 상태는
@@ -1292,6 +1300,11 @@ TRIPLE_REQUIRE_1MIN_ABOVE_MID = True
 # 롤백: ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD=False.
 ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD = True
 TRIPLE_CHASE_FROM_CROSS_MAX_PCT = 0.5
+# [2026-11-11] 추격폭 가드의 기준 크로스: "earliest" = 유효한 틱 크로스 중 가장 먼저 난 것(이 상승의 시작점), "latest" = 가장
+# 최근 것(종전). 20261111 018260 삼성에스디에스: 10:13 크로스 완성 후 시장 국면 게이트/추격 가드(0.65~0.86% > 0.50%)에 막혀
+# 기다리다 10:17~18 120틱이 고점에서 다시 크로스하자 기준가가 그 봉으로 바뀌어 추격폭이 0으로 리셋 -> 10:18 고점 234,500 매수
+# (10:29 -1.06% 청산). 기준을 최초 크로스로 두면 이미 달아난 뒤의 늦은 재크로스로는 사지 않는다. 롤백: "latest".
+TRIPLE_CHASE_FROM_CROSS_REF = "earliest"
 # (2) 틱 밀도 하한 - 최근 TICK_MIN_PRINTS_WINDOW_MINUTES분 체결 건수/분이 TICK_MIN_PRINTS_PER_MIN 미만이면 틱 트리거 기권
 # (TICK_LOW_DENSITY, r013 live/replay 공용). 11/04 체결/분: 010060 195, 017900 154 ... 159010 13, 204620 10, 434480 3 -
 # 60틱봉이 종목마다 18초~20분으로 시간 척도가 100배 다르고 저밀도 종목은 FEED_STALE 기권이 반복된다(11/03 12,926건).
