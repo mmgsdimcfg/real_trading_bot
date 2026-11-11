@@ -32,8 +32,10 @@
  *   changing a row by hand unchecks it and continues from the rows shown at that moment
  * - [2026-11-08] type=merge - Ubuntu (YPick shared by both charts, sell picker, heights) + Windows ("이 종목 평가된 항목만" checkbox
  *   that follows the selected symbol): the checkbox mode is now useRowPick and works on the buy and the sell chart
- * - [2026-11-11] type=feat - Hover details of the buy / sell evaluation charts move to a dock on the right of each chart (TipDock,
- *   .chart-row) with the reason in Korean (shared/reasonKo) + the code + the raw line; the floating tooltip no longer covers the dots
+ * - [2026-11-11] type=feat - Hover details of the buy / sell evaluation charts move to a dock (TipDock) with the reason in Korean
+ *   (shared/reasonKo) + the code + the raw line; the floating tooltip no longer covers the dots
+ * - [2026-11-11] type=feat - The dock sits under its evaluation chart (between it and the price chart) as a full-width strip, and the
+ *   hovered evaluation time drives the price chart's crosshair (PriceChart hoverTime) so both charts stay in sync
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -355,7 +357,6 @@ export function TimelineView() {
               evaluated={buyKeysWithEvents}
             />
           </div>
-          <div className="chart-row">
           <div className="chart-buy" style={{ height: buyH }}>
             <ResponsiveContainer>
               <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovBuy(pickPt(e))} onMouseLeave={() => setHovBuy(null)}>
@@ -372,7 +373,6 @@ export function TimelineView() {
             </ResponsiveContainer>
           </div>
           <TipDock pt={hovBuy} side="매수" />
-          </div>
           <HeightGrip height={buyH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ buyH: h })} onReset={() => setLayout({ buyH: undefined })} />
           {fullLen > 30 * 60000 && (
             <div className="time-window">
@@ -459,6 +459,7 @@ export function TimelineView() {
                 trades={trades}
                 buyPrice={sym?.position?.buyPrice}
                 date={day}
+                hoverTime={hovBuy ? hovBuy.ev.ts : hovSell ? hovSell.ev.ts : null}
               />
             )}
           </div>
@@ -475,7 +476,6 @@ export function TimelineView() {
               evaluated={sellKeysWithEvents}
             />
           </div>
-          <div className="chart-row">
           <div className="chart-sell" style={{ height: sellH }}>
             {sellPts.length === 0 && trades.length === 0 ? (
               <div className="empty small">오늘 이 종목의 매도 평가 로그가 없습니다.</div>
@@ -495,7 +495,6 @@ export function TimelineView() {
             )}
           </div>
           <TipDock pt={hovSell} side="매도" />
-          </div>
           <HeightGrip height={sellH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ sellH: h })} onReset={() => setLayout({ sellH: undefined })} />
           {trades.length > 0 && (
             <table className="grid compact">
