@@ -14,8 +14,9 @@
  *   changes still load; a missing server KIS token (r016 quote token_not_ready) is shown as a plain notice
  * - [2026-11-07] type=feat - Past-day replay: tick/minute bars of the viewed day that start after the replay time are hidden
  *   (barsUpTo); trade markers come from the replay snapshot. Daily / weekly / monthly bars are not cut
- * - [2026-11-11] type=fix - Symbol list: a <select> with every watched symbol (+ recent codes) next to the code input - the datalist
- *   only shows entries matching the typed text, so with a code in the box it listed just that one symbol
+ * - [2026-11-11] type=fix - Symbol list: a <select> with every watched symbol (+ recent codes) left of the code input, showing the
+ *   current symbol (like the timeline picker) - the datalist only shows entries matching the typed text, so with a code in the box
+ *   it listed just that one symbol
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -292,6 +293,16 @@ export function ChartView() {
   return (
     <div className="chartview">
       <div className="toolbar">
+        {/* today's watched symbols (+ recent codes) like the timeline picker; it shows the current symbol when it is one of them.
+            The code input next to it takes any 6-digit code (the datalist only offers entries matching the typed text) */}
+        <select className="picker sym-select" value={symbolOptions.some((o) => o.code === code) ? code : ''} title="감시 종목 / 최근 본 종목" onChange={(e) => e.target.value && choose(e.target.value)}>
+          <option value="">감시 종목 선택…</option>
+          {symbolOptions.map((o) => (
+            <option key={o.code} value={o.code}>
+              {o.label}
+            </option>
+          ))}
+        </select>
         <input
           className="sym-input"
           list="chart-symbols"
@@ -308,16 +319,7 @@ export function ChartView() {
             </option>
           ))}
         </datalist>
-        {/* the datalist only offers entries matching the typed text (so a filled input shows one row): this list always has every
-            watched symbol + recent codes */}
-        <select className="sym-select" value="" title="감시 종목 / 최근 본 종목" onChange={(e) => e.target.value && choose(e.target.value)}>
-          <option value="">종목 목록 ({symbolOptions.length})</option>
-          {symbolOptions.map((o) => (
-            <option key={o.code} value={o.code}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+
         <span className="sym-name">{name}</span>
         <div className="seg">
           {KINDS.map(([k, label]) => (
