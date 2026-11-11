@@ -353,7 +353,7 @@ class JobTests(unittest.TestCase):
 
     def fake_steps(self, rcs: dict, sleep: float = 0.0):
         steps = {}
-        for name in ("collect", "history", "scan"):
+        for name in ("collect", "history", "scan", "apply"):  # [2026-11-11] apply = the r004 step of the pipeline
             code = f"import time; time.sleep({sleep}); print('{name} out'); raise SystemExit({rcs.get(name, 0)})"
             steps[name] = r021.Step(name, (lambda c: lambda a, rc: ["-c", c])(code), required=(name != "history"))
         return mock.patch.dict(r021.STEPS, steps)
@@ -366,7 +366,7 @@ class JobTests(unittest.TestCase):
             self.assertEqual(self.run_job(), 0)
         st = r021.read_state(self.paths, "postclose")
         self.assertEqual(st["state"], "done")
-        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "scan"])
+        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "scan", "apply"])
         log = r021.tail_log(self.paths, "postclose")
         self.assertTrue(any("scan out" in ln for ln in log["lines"]))
 
@@ -379,7 +379,7 @@ class JobTests(unittest.TestCase):
             self.run_job()
         st = r021.read_state(self.paths, "postclose")
         self.assertEqual(st["state"], "done_with_errors")
-        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "scan"])
+        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "scan", "apply"])
 
     def test_busy_runner_refuses_and_dead_runner_is_failed(self):
         fh = r019.acquire_instance_lock(self.paths.lock)
@@ -397,7 +397,8 @@ class JobTests(unittest.TestCase):
 
     def test_start_reports_a_runner_that_never_came_up(self):
         with mock.patch.object(r021, "START_CONFIRM_SEC", 0.5):
-            out = r021.start_job(self.paths, "scan", r021.JobArgs(date="20261110"), "t", spawn=lambda *a, **k: 4242)
+            # collect: no input check (a scan on an empty runtime is refused before the runner is spawned)
+            out = r021.start_job(self.paths, "collect", r021.JobArgs(date="20261110"), "t", spawn=lambda *a, **k: 4242)
         self.assertFalse(out["ok"])
         self.assertIn("did not start", out["error"])
 

@@ -15,16 +15,18 @@
   history [-n N]                 최근 변경 이력
   conditions                     r015 조건 JSON + 각 상수의 editable/base/override/running/pending
   watchlist get | watchlist set (--codes "005930,삼성전자;000660" | --stdin)   r004 감시목록 읽기/쓰기(백업 후 교체)
-  watchlist apply --date D         그 날짜의 g002 선별 결과(<runtime>/data/D/_D_picks.txt)를 r004 에 적용 (set 과 같은 백업/이력,
-                                   헤더에 scan_date / for_trading_day 기록) - 앱의 "선별 후 r004 적용" 체크
+  watchlist apply --date D [--restart-collector]   그 날짜의 g002 선별 결과(<runtime>/data/D/_D_picks.txt)를 r004 에 적용 (set 과
+                                   같은 백업/이력, 헤더에 scan_date / for_trading_day). --restart-collector: 새 종목을 구독하지 않은
+                                   g011 이 돌고 있으면 collector restart (r021 apply 단계가 쓴다)
   collector status | collector restart      g011 틱 수집기 상태 / SIGTERM (g022 cron 또는 r003 감시자가 새 감시목록으로 재기동)
   indicators ... | bars ...        차트 데이터 (live_trading/r017_chart_data.py 로 위임 - 그 파일의 docstring 참조)
   quote --code C [--trades N]      KIS 현재가+호가+체결 (live_trading/r018_kis_market.py, 읽기 전용)
   collector start [--force]        g011 을 --fill-from-scan 으로 분리 실행 (g022 cron 과 같은 규칙: 장 시작 15분 전~마감, standby 거부)
   role get | role set primary|standby [--note T]   호스트 역할 (r019 host_role.json). standby 면 start/restart/collector start 거부
   doctor                           실행 환경 점검 (Python/패키지 버전, open-trading-api, KIS 설정 파일 유무, 역할, 백엔드)
-  job list | job start NAME [--date D] [--workers N] [--edge-ai] [--keep-watchlist] | job stop NAME | job log NAME [-n N]
-                                   데이터 작업 (live_trading/r021_jobs.py: collect/history/scan/edge_ai/universe/postclose)
+  job list | job start NAME [--date D] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] | job stop NAME | job log NAME [-n N]
+                                   데이터 작업 (live_trading/r021_jobs.py: collect/history/scan/edge_ai/universe/postclose;
+                                   postclose = 수집 -> 이력 -> 선별 -> r004 반영, --no-* 로 단계를 뺀다)
   job data --date D                그 날짜 폴더의 수집 데이터 유무 + g002 선별 결과 (r021) + r004 와의 비교 블록(r004: scan_date,
                                    same_codes, applied, count, mtime)
 
@@ -964,8 +966,10 @@ def _next_trading_day(ymd: str, r021) -> str | None:
     return None
 
 
-def apply_picks_to_watchlist(paths: ControlPaths, date: str, by: str) -> dict:
-    """[2026-11-11] r004 <- <runtime>/data/D/_D_picks.txt (the g002 picks of that date), through write_watchlist."""
+def apply_picks_to_watchlist(paths: ControlPaths, date: str, by: str, restart_collector: bool = False) -> dict:
+    """[2026-11-11] r004 <- <runtime>/data/D/_D_picks.txt (the g002 picks of that date), through write_watchlist.
+    restart_collector (r021 apply step): a running g011 that misses some of the new codes is restarted right away (the app does the
+    same after its watchlist save) - result in collector_restart."""
     import r021_jobs as r021  # noqa: E402  (stdlib only)
 
     if not (len(date) == 8 and date.isdigit()):
@@ -978,7 +982,10 @@ def apply_picks_to_watchlist(paths: ControlPaths, date: str, by: str) -> dict:
     nxt = _next_trading_day(date, r021)
     meta = {"scan_date": date, "for_trading_day": f"{nxt} (r014 next trading day)" if nxt else ""}
     out = write_watchlist(paths, picks, by, meta=meta)
-    return {**out, "date": date, "picks_file": str(pf), "for_trading_day": nxt}
+    out.update(date=date, picks_file=str(pf), for_trading_day=nxt)
+    if restart_collector and out.get("collector_missing") and collector_status(paths, [p["code"] for p in picks])["running"]:
+        out["collector_restart"] = collector_restart(paths, by)
+    return out
 
 
 def watchlist_vs_picks(paths: ControlPaths, picks: list[dict] | None) -> dict:
@@ -1188,6 +1195,7 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("--codes", default=None, help='"005930,삼성전자;000660,SK하이닉스"')
     p.add_argument("--stdin", action="store_true", help="read entries (one per line) from stdin")
     p.add_argument("--date", default=None, help="apply: the scan date whose _D_picks.txt becomes r004")
+    p.add_argument("--restart-collector", action="store_true", help="apply: restart a running g011 that misses the new codes")
     p = sub.add_parser("collector")
     p.add_argument("action", choices=["status", "restart", "start"])
     p.add_argument("--force", action="store_true", help="start: ignore the session window")
@@ -1354,7 +1362,7 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
         if args.action == "get":
             return _emit(read_watchlist(paths))
         if args.action == "apply":
-            out = apply_picks_to_watchlist(paths, args.date or "", args.by)
+            out = apply_picks_to_watchlist(paths, args.date or "", args.by, restart_collector=bool(args.restart_collector))
             return _emit(out, 0 if out.get("ok") else 2)
         text = sys.stdin.read() if args.stdin else (args.codes or "")
         try:

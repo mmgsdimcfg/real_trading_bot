@@ -56,18 +56,20 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 | `collector restart` | `{ok, signalled[], restarted, pid?, log?, window?, note?}` - g011 을 멈추고 현재 r004 로 다시 띄운다 (세션 창 밖이면 멈추기만, window=사유). 앱이 감시목록 저장 때와 5분 확인에서 구독 누락(status.collector.missing)이 있으면 부른다 | 0 / 3 |
 | `doctor` | `{ok, problems[], host, python, executable, packages{}, code{dir,commit}, open_trading_api{path,exists,commit}, kis_config{dir,devlp_yaml,token_today}, runtime{root,exists}}` | 0 |
 | `job list` | `{ok, running: {pid, started_at, name, run_id}\|null, jobs: [{name, title, steps, last}]}` | 0 |
-| `job start NAME [--date D] [--workers N] [--edge-ai] [--keep-watchlist] [--trading-day-only]` | `{ok, name, pid, run_id, running}` / 휴장일 `{ok, skipped, reason}` / 다른 작업 실행 중 `{ok:false, error, running}` | 0 / 3 |
+| `job start NAME [--date D] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] [--trading-day-only]` | `{ok, name, pid, run_id, running}` / 휴장일 `{ok, skipped, reason}` / 다른 작업 실행 중 `{ok:false, error, running}` | 0 / 3 |
 | `job stop NAME` | `{ok, stopped}` | 0 / 3 |
 | `job log NAME [-n N]` | `{ok, name, log, lines[], state}` | 0 |
 | `job data --date D` | `{ok, date, dir, exists, scannable, collected, collected_count, files_10s, files_daily, data_mtime, picks: [{code,name}]\|null, picks_file, picks_mtime, scan_log_mtime, r004: {scan_date, same_codes, applied, count, mtime}}` - [2026-11-11] 그 날짜 폴더의 수집 데이터 유무와 g002 선별 결과, r004 가 그 선별과 같은지 | 0 / 2 |
-| `watchlist apply --date D` | `watchlist set` 과 같은 `{ok, count, backup, path, restart_required, collector_missing, collector_note}` + `date, picks_file, for_trading_day` / picks 파일 없음 `{ok:false, error}` - [2026-11-11] 그 날짜의 `_D_picks.txt` 를 r004 로 (헤더 scan_date / for_trading_day) | 0 / 2 |
+| `watchlist apply --date D [--restart-collector]` | `watchlist set` 과 같은 `{ok, count, backup, path, restart_required, collector_missing, collector_note}` + `date, picks_file, for_trading_day` (+ `collector_restart` when --restart-collector and a running g011 misses new codes) / picks 파일 없음 `{ok:false, error}` - [2026-11-11] 그 날짜의 `_D_picks.txt` 를 r004 로 (헤더 scan_date / for_trading_day) | 0 / 2 |
 
-- 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --export-watchlist
-  --for-next-trading-day; `--keep-watchlist`면 g002 --date D --no-export-watchlist: 그 날짜의 선별 파일만 만들고 r004는 그대로 - 과거 날짜
-  보충 수집/Edge AI 재학습용, 앱의 "감시목록(r004) 갱신" 체크 해제; [2026-11-11] 앱의 "감시 종목 선별" 카드는 기본으로 이 모드로 돌린 뒤
-  `job data` 로 읽은 선별 결과를 보여주고 "r004 감시목록에 적용" 체크로 `watchlist apply` 를 부른다), `edge_ai`(g013 --live, g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> scan
-  [-> edge_ai]). collect/scan 실패 시 뒤 단계 생략, history 실패는 계속. 한 번에 한 작업. 상태 `runtime/data/jobs/<NAME>.json`,
-  로그 `runtime/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log`.
+- 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --no-export-watchlist ->
+  `apply`), `apply`(r016 watchlist apply --date D: 그 날짜의 `_D_picks.txt` 를 r004 로 - 백업/이력/다음 거래일 헤더), `edge_ai`(g013 --live,
+  g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> scan -> apply [-> edge_ai]). [2026-11-11] 단계 선택:
+  `--no-collect`(수집+이력 생략, 그 날짜에 10초봉 파일이 있어야 함), `--no-scan`(선별 생략, 선별 파일이 있어야 함), `--no-apply`(r004 반영
+  생략; `--keep-watchlist` 는 옛 이름). 앞 단계 산출물이 없으면 start 가 `{ok:false, error}` 로 거부. 앱의 장 마감 파이프라인 카드는
+  ① 수집 ② 선별 ③ r004 반영 체크로 이 스위치를 만든다(1+2+3 / 2+3 / 3). apply 는 선별 파일이 없거나 이 실행의 scan 보다 오래되면
+  건너뛴다(step state=skipped + note, 작업은 done; 상태 JSON `note`). collect/scan/apply 실패 시 뒤 단계 생략, history 실패는
+  계속. 한 번에 한 작업. 상태 `runtime/data/jobs/<NAME>.json`(args 에 collect/scan/apply), 로그 `runtime/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log`.
 - process 백엔드 `stop`은 감시자가 없더라도 r003 잠금이 잡혀 있으면 정지 요청을 보내고, 잠금이 풀릴 때만 성공한다.
 - 예전 서버(이 명령들이 없는 r016)에는 `invalid choice` 오류가 난다. 앱은 이를 "git pull 필요"로 안내한다.
 
