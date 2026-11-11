@@ -390,7 +390,7 @@ class ChartDispatchTests(Base):
         with mock.patch.object(r017, "bars", return_value={"ok": True, "bars": []}) as b:
             rc, out = self.run_cli("bars", "--date", "20261105", "--code", "5930", "--kind", "tick", "--ticks", "120", "--since-ts", "2026-11-05T09:00:00")
             self.assertEqual(rc, 0)
-            b.assert_called_once_with("20261105", "5930", "tick", None, 1, 120, 0, "2026-11-05T09:00:00", False)
+            b.assert_called_once_with("20261105", "5930", "tick", None, 1, 120, 0, "2026-11-05T09:00:00", False, "auto")  # [2026-11-11] --source
         with mock.patch.object(r017, "indicators", return_value={"ok": False, "error": "x"}) as i:
             rc, out = self.run_cli("indicators", "--date", "20261105", "--code", "005930", "--frame", "1m", "--last", "5")
             self.assertEqual(rc, 2)
