@@ -162,6 +162,10 @@ export interface PriceResponse {
   sourceDetail?: string;
   /** YYYYMMDD of the warm-up bars */
   warmDate?: string;
+  /** [2026-11-11] tick/min from a tick file: minute ranges (epoch ms, [from, to)) the tick collector missed inside the session */
+  gaps?: [number, number][];
+  /** min: how many 1-minute bars the KIS minute chart added for those gaps */
+  filled?: number;
 }
 
 export const WARMUP_BARS = 120;
@@ -408,4 +412,61 @@ export function dailyWithToday(daily: Bar[], ymd: string, intraday: Bar[]): Bar[
   if (!day.length) return upTo;
   const today: Bar = { t: d, o: day[0].o, h: Math.max(...day.map((b) => b.h)), l: Math.min(...day.map((b) => b.l)), c: day[day.length - 1].c, v: day.reduce((a, b) => a + b.v, 0) };
   return [...upTo, today];
+}
+
+// ---- [2026-11-11] tick-collector gaps: the minute chart fills them with the server's KIS minute bars ----
+const MINUTE_MS = 60000;
+/** regular session on `ymd`: [09:00, 15:30) KST as epoch ms */
+export function sessionRange(ymd: string): [number, number] {
+  const day = ymdEpoch(ymd);
+  return [day + 9 * 3600000, day + 15.5 * 3600000];
+}
+/**
+ * Minute slots missing from tick-derived 1-minute bars inside the regular session, as [from, to) epoch-ms ranges. Only runs of at
+ * least `minLen` minutes count (a quiet minute without a print is not an outage). `until` caps the scan (now while live - the
+ * current minute may still be forming, so the scan ends one minute before it).
+ */
+export function minuteGaps(m1: Bar[], ymd: string, until = Infinity, minLen = 3): [number, number][] {
+  const [open, close] = sessionRange(ymd);
+  const end = Math.min(close, until) - MINUTE_MS;
+  if (end <= open) return [];
+  const have = new Set(m1.map((b) => Math.floor(b.t / MINUTE_MS)));
+  const out: [number, number][] = [];
+  const first = Math.floor(open / MINUTE_MS);
+  const last = Math.floor(end / MINUTE_MS);
+  let run = -1;
+  const flush = (upto: number) => {
+    if (run >= 0 && upto - run >= minLen) out.push([run * MINUTE_MS, upto * MINUTE_MS]);
+    run = -1;
+  };
+  for (let m = first; m <= last; m++) {
+    if (have.has(m)) flush(m);
+    else if (run < 0) run = m;
+  }
+  flush(last + 1);
+  return out;
+}
+/** total minutes covered by gap ranges */
+export const gapMinutes = (gaps: [number, number][]): number => gaps.reduce((s, [a, b]) => s + Math.round((b - a) / MINUTE_MS), 0);
+/** "09:24~09:40, 11:02~11:05" (KST) */
+export function gapText(gaps: [number, number][]): string {
+  const hm = (t: number) => {
+    const d = new Date(t + 9 * 3600000);
+    return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  };
+  return gaps.map(([a, b]) => `${hm(a)}~${hm(b)}`).join(', ');
+}
+/**
+ * KIS 1-minute bars (complete for the day) as the base; tick-derived bars for minutes KIS does not have and from KIS's last
+ * minute on (that bar may be partial on the KIS side while the ticks are up to date).
+ */
+export function mergeMinuteBars(kis: Bar[], ticks: Bar[]): Bar[] {
+  const by = new Map<number, Bar>();
+  for (const b of kis) by.set(Math.floor(b.t / MINUTE_MS), b);
+  const lastKis = kis.length ? Math.floor(kis[kis.length - 1].t / MINUTE_MS) : -1;
+  for (const b of ticks) {
+    const m = Math.floor(b.t / MINUTE_MS);
+    if (!by.has(m) || m >= lastKis) by.set(m, b);
+  }
+  return [...by.entries()].sort((x, y) => x[0] - y[0]).map(([, b]) => b);
 }

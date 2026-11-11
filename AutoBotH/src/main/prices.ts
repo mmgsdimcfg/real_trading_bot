@@ -18,6 +18,10 @@
  * - [2026-11-06] type=feat - Warm-up like the bot (r012 load_prior_day_warmup): minute charts use the previous day's raw 1-minute bars
  *   of the 10-second file - warmBot = last PRIOR_DAY_WARMUP_MINUTES (180) resampled, warm = whole day (MA / Ichimoku); responses with
  *   a tick file carry a quote (last price, best ask/bid, buy/sell volume, latest 40 trades) for the chart tab
+ * - [2026-11-11] type=feat - Tick-collector gaps: for tick / min charts the tick-derived 1-minute bars are scanned for missing
+ *   minutes inside the regular session (shared/price minuteGaps, runs of 3+ minutes). The minute chart then merges the day's KIS
+ *   1-minute bars (r016 `bars --kind min --source kis`, kisMinuteFill, one call per minute per day/code) under the tick bars
+ *   (mergeMinuteBars); the tick chart only notes the gap. Response gains gaps / filled and a note
  * - [2026-11-07] type=feat - Past days read through PriceFileCache (priceCache.ts): tick / 10-second / daily files and the "<code>_*"
  *   lists are downloaded whole once into %APPDATA%/autoboth/pricecache/<date>/ and read locally after that - also offline. The
  *   server's daily answer (r016 bars --kind day) of a past day is kept there too. prefetch(date, codes) downloads the files of
@@ -32,7 +36,11 @@ import { LineBuffer } from '../shared/lineBuffer';
 import { CHART_CACHE_MS, isMarketHours, kstNowIso } from '../shared/control';
 import {
   dailyWithToday,
+  gapMinutes,
+  gapText,
+  mergeMinuteBars,
   minuteBarsFromTicks,
+  minuteGaps,
   monthBars,
   parse10sMinuteBars,
   parseDailyCsv,
@@ -77,6 +85,9 @@ interface TickCache {
 }
 
 /** keep at most MAX_ENTRIES (oldest inserted dropped) */
+/** KIS minute bars for gap filling are re-asked at most this often per day/code (the server caches them too) */
+const KIS_FILL_TTL_MS = 60000;
+
 function remember<K, V>(m: Map<K, V>, k: K, v: V): V {
   m.delete(k);
   m.set(k, v);
@@ -95,6 +106,8 @@ export class PriceService {
   private dirs: { at: number; list: string[] } | null = null;
   /** r016 `bars` answers reused for a while (each call = Python on the server, maybe KIS): key = args joined */
   private serverCache = new Map<string, { at: number; ttl: number; res: ServerBarsResult }>();
+  /** [2026-11-11] KIS minute bars used to fill tick-collector gaps, per day/code (re-asked at most every KIS_FILL_TTL_MS) */
+  private fillCache = new Map<string, { at: number; res: { bars?: Bar[]; error?: string } }>();
   /** requests run one at a time: two concurrent readers of the same incremental tick cache would read the same byte range twice */
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -144,6 +157,31 @@ export class PriceService {
       const ttl = !res.ok ? CHART_CACHE_MS.failed : isDaily ? CHART_CACHE_MS.daily : isMarketHours(kstNowIso()) ? 0 : CHART_CACHE_MS.intradayIdle;
       if (ttl > 0) remember(this.serverCache, key, { at: Date.now(), ttl, res });
     }
+    return res;
+  }
+
+  /**
+   * [2026-11-11] The day's KIS 1-minute bars (r016 `bars --kind min --source kis`) for filling minutes the tick collector missed.
+   * One server call per KIS_FILL_TTL_MS per day/code - the chart refreshes with every snapshot, the fill does not have to.
+   */
+  private async kisMinuteFill(date: string, code: string): Promise<{ bars?: Bar[]; error?: string }> {
+    const key = `${date}/${code}`;
+    const hit = this.fillCache.get(key);
+    if (hit && Date.now() - hit.at < KIS_FILL_TTL_MS) return hit.res;
+    let res: { bars?: Bar[]; error?: string };
+    const c = this.r016();
+    if (!c || this.noServerBars) res = { error: '서버에 bars 명령이 없습니다 (이전 버전 r016)' };
+    else {
+      try {
+        const r = await c.run<ServerBars>(['bars', '--date', date, '--code', code, '--kind', 'min', '--interval', '1', '--source', 'kis'], { timeoutMs: 60000 });
+        if (r.ok && r.data?.ok) res = { bars: serverRowsToBars(r.data.columns, r.data.bars) };
+        else if (/unrecognized arguments|invalid choice/.test(`${r.error || ''} ${r.stderr || ''}`)) res = { error: '서버 r017이 이전 버전이라 --source kis 가 없습니다 (git pull 필요)' };
+        else res = { error: r.data?.error || r.error || 'bars 실패' };
+      } catch (e) {
+        res = { error: String((e as Error)?.message || e).split('\n')[0] };
+      }
+    }
+    remember(this.fillCache, key, { at: Date.now(), res });
     return res;
   }
 
@@ -396,8 +434,28 @@ export class PriceService {
     if (kind === 'tick' || kind === 'min') {
       const ticks = await this.loadTicks(date, code);
       if (ticks && ticks.length) {
-        const bars = kind === 'tick' ? tickBars(ticks, n) : minuteBarsFromTicks(ticks, n);
-        return this.withWarmup({ ok: true, source: 'ticks', bars, quote: quoteFromTicks(ticks) }, req, kind, n);
+        // [2026-11-11] minutes the tick collector missed (g011 outage, a code subscribed late): the minute chart fills them with
+        // the server's KIS minute bars; tick bars cannot be filled (KIS keeps no tick history) and only say so
+        const m1 = minuteBarsFromTicks(ticks, 1);
+        const gaps = minuteGaps(m1, date, live ? Date.now() : Infinity);
+        const quote = quoteFromTicks(ticks);
+        if (kind === 'tick') {
+          const note = gaps.length ? `틱 수집이 끊긴 ${gapText(gaps)} (${gapMinutes(gaps)}분)은 틱봉에 없습니다 - 분봉은 KIS 분봉으로 채워 보여 줍니다` : undefined;
+          return this.withWarmup({ ok: true, source: 'ticks', bars: tickBars(ticks, n), quote, gaps, note }, req, kind, n);
+        }
+        let bars = resampleMinuteBars(m1, n);
+        let note: string | undefined;
+        let filled = 0;
+        if (gaps.length) {
+          const fill = await this.kisMinuteFill(date, code);
+          if (fill.bars?.length) {
+            const merged = mergeMinuteBars(fill.bars, m1);
+            filled = Math.max(0, merged.length - m1.length);
+            bars = resampleMinuteBars(merged, n);
+            note = `틱 수집이 끊긴 ${gapText(gaps)} (${gapMinutes(gaps)}분)을 KIS 분봉으로 채웠습니다 - 봇은 이 구간의 틱을 보지 못했습니다`;
+          } else note = `틱 수집이 끊긴 ${gapText(gaps)} (${gapMinutes(gaps)}분) - KIS 분봉으로 채우지 못함: ${fill.error || '분봉 없음'}`;
+        }
+        return this.withWarmup({ ok: true, source: 'ticks', bars, quote, gaps, filled, note }, req, kind, n);
       }
       const m1 = kind === 'min' ? await this.loadMin1(date, code, live) : null;
       if (m1 && m1.length) {
