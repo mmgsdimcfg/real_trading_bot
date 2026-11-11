@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-11] type=fix owner=claude
+    summary: 사용자 지적(20261111 12:02 GS건설을 감시목록에서 뺀 뒤 [실행] -> 12:03 ATR 손절 매도) - 감시목록 밖의 보유 종목은 매도
+      평가에서도 제외([HOLD SKIP] NOT_IN_WATCHLIST, 당일 매수분이라도). 15:20/19:59 청산은 종전부터 감시목록 종목만 대상.
+      r001 MANAGE_POSITIONS_OUTSIDE_WATCHLIST=True 면 종전 동작. 시작 시 WARN 에 '봇이 관리하지 않음' 표기.
+    impact: live (r003)
+    compatibility: breaking (감시목록에서 뺀 보유 종목의 손절/청산을 봇이 하지 않음 - 사용자 책임)
 - [2026-11-10] type=feat owner=claude
     summary: 윈도우 노트북 실행(AutoBotH 로컬 모드) - (1) 단일 실행 잠금을 r019(flock/msvcrt)로, 종전 윈도우는 잠금 없이 실행
       (2) 정지 요청 파일 <runtime>/data/live_runtime/r003.stop - 메인 루프가 매 턴 확인해 live_state 저장 후 Ctrl+C 와 같은
@@ -800,6 +806,7 @@ from r001_define_config import (
     MARKET_REGIME_MA_FAST,
     MARKET_REGIME_MA_SLOW,
     MARKET_REGIME_CONFIRM_BARS,
+    MANAGE_POSITIONS_OUTSIDE_WATCHLIST,
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     AFTERNOON_NXT_END,
     AFTERNOON_NXT_FORCE_EXIT,
@@ -3217,7 +3224,8 @@ def _log_account_watchlist_mismatch(api, watch_map: dict[str, str]) -> None:
     watch_codes = {str(c).zfill(6) for c in watch_map}
     extra = sorted(open_codes - watch_codes)
     if extra:
-        log(f"  [WARN        ] account holdings not in watchlist: {', '.join(extra)}")
+        note = "" if MANAGE_POSITIONS_OUTSIDE_WATCHLIST else " - not managed by the bot (no sell evaluation, no session close)"
+        log(f"  [WARN        ] account holdings not in watchlist: {', '.join(extra)}{note}")
 
 
 def _rebalance_active_watchlist(
@@ -5817,6 +5825,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 pos = api.get_open_positions().get(code)
                 if pos is not None and pos.get("quantity", 0) > 0 and not _is_today_buy_position(code, pos, date_str, traded_today):
                     log(f"  [🔴HOLD SKIP ] {symbol_label} | NOT_TODAY_BUY_POSITION")
+                    continue
+                # [2026-11-11] a holding whose code is not in today's watchlist (removed by the user, or never listed) is left alone:
+                # no sell evaluation here, no 15:20 / 19:59 close (run_scheduled_liquidations already skips non-watchlist codes).
+                # r001 MANAGE_POSITIONS_OUTSIDE_WATCHLIST=True restores the previous behaviour (today's buys managed regardless)
+                if (pos is not None and pos.get("quantity", 0) > 0 and not MANAGE_POSITIONS_OUTSIDE_WATCHLIST
+                        and code not in watch_map):
+                    log(f"  [🔴HOLD SKIP ] {symbol_label} | NOT_IN_WATCHLIST (sell / close left to the user)")
                     continue
 
                 cached_frame = frame_cache.get(code)

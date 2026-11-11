@@ -95,7 +95,9 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - 일봉/분봉 데이터(`runtime/data/YYYYMMDD`)와 Edge AI 모델은 호스트별로 따로 쌓인다. 라즈베리파이가 오래 예비로 있으면
   r012(전일 분봉 예열)는 노트북이 보낸 감시목록 종목의 전일 파일이 없을 수 있다 - 필요하면 라즈베리파이에서도 장 마감 작업을 돌린다
   (원격 모드의 데이터 작업 탭).
-- 보유 종목은 계좌 잔고(sync_positions_from_account)에서 복원된다. r003은 당일 매수분만 매도 평가하므로(HOLD SKIP)
+- 보유 종목은 계좌 잔고(sync_positions_from_account)에서 복원된다. [2026-11-11] 감시목록(r004)에 없는 보유 종목은 봇이 사지도
+  팔지도 않는다(HOLD SKIP NOT_IN_WATCHLIST, r001 MANAGE_POSITIONS_OUTSIDE_WATCHLIST) - 감시목록에서 뺀 종목의 청산은 사용자가 한다.
+  r003은 당일 매수분만 매도 평가하므로(HOLD SKIP)
   날짜가 바뀐 뒤의 호스트 전환은 live_state를 옮기지 않아도 된다. **장중 전환은 피한다** (당일 live_state가 다른 호스트에 있음).
 
 ## 5. 노트북 준비 (한 번)

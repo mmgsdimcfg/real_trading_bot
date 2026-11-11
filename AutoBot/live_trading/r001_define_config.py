@@ -1562,6 +1562,11 @@ AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS = 15
 AFTERNOON_NXT_FORCE_EXIT_PRESYNC_SECONDS = 3
 # 세션 종료 컷오프에서 전량 청산 강제 여부
 SESSION_FORCE_CLOSE_ALL_AT_CUTOFF = True
+# [2026-11-11] 감시목록(r004) 밖의 보유 종목을 봇이 관리할지. False(기본) = 감시목록에 없는 보유 종목은 사지도 팔지도 않는다
+# (매도 평가 제외 [HOLD SKIP] NOT_IN_WATCHLIST, 15:20/19:59 청산은 종전부터 감시목록 종목만). 20261111 12:02 GS건설을 감시목록에서
+# 뺀 뒤 재시작하자 계좌에서 복원된 당일 매수 포지션에 ATR 손절이 바로 걸려 매도됨 - 사용자: 감시 대상에서 빠지면 매매에서도 빠져야
+# 한다. True = 종전(당일 매수분이면 감시목록과 무관하게 매도 관리). 주의: False 면 그 종목의 손절/청산은 사용자가 직접 한다.
+MANAGE_POSITIONS_OUTSIDE_WATCHLIST = False
 # 세션 종료 홀드 예외 허용 여부
 ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP = False
 # 오전 NXT 신규 진입 종료 시각(별도 변수)
