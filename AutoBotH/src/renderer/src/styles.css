@@ -664,13 +664,15 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .profile-info .grid th.cur, .profile-info .grid td.cur { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .profile-info .grid td { white-space: normal; }
 /* ---- [2026-11-11] timeline hover dock + board fixed columns ---- */
-.chart-row { display: flex; gap: 10px; align-items: stretch; }
-.chart-row > .chart-buy, .chart-row > .chart-sell { flex: 1; min-width: 0; }
-.tip-dock { width: 300px; flex: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
 .tip-dock .reason-ko { color: var(--text); font-size: 13px; line-height: 1.45; }
-.tip-dock .raw { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--text-2); max-height: none; }
 .board-grid { table-layout: fixed; width: 100%; }
 .board-grid th, .board-grid td { white-space: normal; word-break: break-word; overflow-wrap: anywhere; padding: 8px 8px; vertical-align: top; }
 .board-grid td.mono { white-space: nowrap; }
 .board-grid td.reason { max-width: none; overflow: visible; text-overflow: clip; line-height: 1.4; }
 .board-grid th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* [2026-11-11] the dock is a strip under its evaluation chart (between it and the price chart) */
+.tip-dock { margin: 6px 0 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; display: grid; grid-template-columns: minmax(220px, 1fr) 2fr; gap: 2px 16px; align-items: start; min-height: 44px; }
+.tip-dock > div:first-child { grid-column: 1; }
+.tip-dock .reason-ko { grid-column: 1; }
+.tip-dock .mono.small { grid-column: 1; }
+.tip-dock .raw { grid-column: 2; grid-row: 1 / span 3; margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--text-2); max-height: 84px; overflow: auto; }

@@ -28,6 +28,8 @@
  *   difference to the latest close and to the position's average price; vertical lines show the time and that bar's OHLC / volume
  * - [2026-11-08] type=feat - Per-pane heights (oscHeights) and, with onResizePane, drag handles on the bottom edge of the price +
  *   volume area and of every indicator pane (drag = resize, double-click = default size); the chart grows / shrinks with them
+ * - [2026-11-11] type=feat - hoverTime prop: another chart's hovered time selects the bar here (timeline buy / sell evaluation
+ *   charts drive the price chart's crosshair and tooltip)
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -102,6 +104,9 @@ interface Props {
   tooltip?: boolean;
   /** hovered bar index (null = none) */
   onHover?: (i: number | null) => void;
+  /** [2026-11-11] external hover: epoch ms of a point in another chart - the bar holding that time is highlighted as if hovered
+   *  (null clears it, undefined = not driven from outside) */
+  hoverTime?: number | null;
   /** symbol code: shows the drawing tools (horizontal / vertical / trend line, clear) and the code's saved drawings */
   drawKey?: string;
 }
@@ -560,6 +565,19 @@ export function PriceChart(props: Props) {
     setHover(j);
     onHover?.(j === null || !model || model.empty ? null : model.slots[j].i);
   };
+  // external hover (timeline evaluation chart -> this chart): the last slot whose bar starts at or before the time
+  useEffect(() => {
+    if (props.hoverTime === undefined) return;
+    if (props.hoverTime === null || !model || model.empty) {
+      setHover(null);
+      return;
+    }
+    let j: number | null = null;
+    model.slots.forEach((s, k) => {
+      if (s.b.t <= props.hoverTime!) j = k;
+    });
+    setHover(j);
+  }, [props.hoverTime, model]); // eslint-disable-line react-hooks/exhaustive-deps
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!model || model.empty) return;
     const r = e.currentTarget.getBoundingClientRect();
