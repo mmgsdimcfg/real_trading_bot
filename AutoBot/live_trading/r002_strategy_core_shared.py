@@ -18,6 +18,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-11] type=fix owner=claude
+    summary: evaluate_triple_trigger의 cross_ref_price(추격폭 가드 기준)를 가장 최근 틱 크로스 대신 가장 먼저 난 틱 크로스의
+      봉 종가로(r001 TRIPLE_CHASE_FROM_CROSS_REF="earliest", "latest"면 종전). 20261111 018260: 가드에 막혀 기다리는 동안
+      120틱이 고점에서 재크로스해 기준가가 올라가며 추격폭이 리셋돼 고점 매수(234,500, -1.06%).
+    impact: common (r003/g003 _008 triple 추격 가드)
+    compatibility: breaking (매수 감소 방향 - 늦은 재크로스 매수 차단. 롤백: r001 TRIPLE_CHASE_FROM_CROSS_REF="latest")
 - [2026-10-30] type=feat+fix owner=claude
     summary: 사용자 요청(326030 SK바이오팜) - (1) r001 HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY=False면
       check_buy_condition_1min_hybrid_trigger가 크로스 없는 3분/1분 uptrend_continuation 경로를 인정하지 않음(룩백 크로스만).
@@ -444,6 +450,7 @@ import math
 import pandas as pd
 from r001_define_config import (
     ADX_PERIOD,
+    TRIPLE_CHASE_FROM_CROSS_REF,
     ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT,
     ANTI_CHASE_MAX_VWAP_GAP_PCT,
     ENABLE_ANTI_CHASE_DAY_GATE,
@@ -2124,7 +2131,11 @@ def evaluate_triple_trigger(
         one_min_label = f"1MIN_MA{fast}_MA{slow}"
     tick_missing: list[str] = []
     tick_cross_times: dict[int, object] = {}
-    cross_ref_price = float("nan")  # [2026-11-04] close of the freshest passing cross bar (chase-from-cross guard)
+    # [2026-11-04] chase-from-cross guard reference = close of a passing tick-cross bar. [2026-11-11] r001 TRIPLE_CHASE_FROM_CROSS_REF:
+    # "earliest" (default) = the first cross of this setup, so a late re-cross at a higher price cannot reset the chase distance;
+    # "latest" = the freshest cross (previous behaviour).
+    cross_ref_price = float("nan")
+    _ref_earliest = str(TRIPLE_CHASE_FROM_CROSS_REF).strip().lower() != "latest"
     cross_ref_time = None
     crosses = crosses or {}
     for n in sizes:
@@ -2136,8 +2147,11 @@ def evaluate_triple_trigger(
         else:
             tick_cross_times[int(n)] = c.cross_time
             _cc = float(getattr(c, "cross_close", float("nan")) or float("nan"))
-            if _cc == _cc and _cc > 0 and (cross_ref_time is None or (c.cross_time is not None and c.cross_time > cross_ref_time)):
-                cross_ref_price, cross_ref_time = _cc, c.cross_time
+            if _cc == _cc and _cc > 0:
+                _t = c.cross_time
+                _take = cross_ref_time is None or (_t is not None and (_t < cross_ref_time if _ref_earliest else _t > cross_ref_time))
+                if _take:
+                    cross_ref_price, cross_ref_time = _cc, _t
     if str(tick_condition).lower() == "any":
         if not tick_cross_times:
             missing.extend(tick_missing)
