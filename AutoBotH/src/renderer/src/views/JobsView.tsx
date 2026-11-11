@@ -19,6 +19,9 @@
  *   For 감시 종목 선별 the "감시목록(r004) 갱신" box is off by default: g002 runs alone (--keep-watchlist), the picks of the date are
  *   listed under the run (name + code chips) with a "r004 감시목록에 적용" checkbox that applies them (r016 watchlist apply, after a
  *   confirmation); the box shows checked when r004 already holds exactly those codes
+ * - [2026-11-11] type=fix - A date whose collection finished (_D_collected.txt) blocks 시작 of 장 마감 파이프라인 / 데이터 수집: the
+ *   user expects an already collected date to go through 감시 종목 선별 only (a link switches to it); "다시 수집" re-enables the start
+ *   for a deliberate re-collection. The data line now shows on the 데이터 수집 card too
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -90,6 +93,11 @@ export function JobsView() {
   const [wlChoice, setWlChoice] = useState<boolean | null>(null);
   const isToday = date === localYmd();
   const hasScan = sel === 'postclose' || sel === 'scan';
+  const hasCollect = sel === 'postclose' || sel === 'collect';
+  const showData = hasScan || hasCollect;
+  /** [2026-11-11] re-collect an already collected date on purpose (off again when the date / job changes) */
+  const [recollect, setRecollect] = useState(false);
+  useEffect(() => setRecollect(false), [date, sel]);
   // [2026-11-11] 감시 종목 선별 alone: picks first, apply afterwards (the checkbox under the result) - so off unless the user turns it on
   const wlUpdate = wlChoice ?? (sel === 'scan' ? false : isToday);
   useEffect(() => setWlChoice(null), [date, sel]);
@@ -138,14 +146,17 @@ export function JobsView() {
   }, [connected, sel, running, local]); // eslint-disable-line react-hooks/exhaustive-deps
   // date folder info: on the scan / postclose cards, again when the date changes and when the selected job's run ends
   useEffect(() => {
-    if (!connected || !hasScan) return;
+    if (!connected || !showData) return;
     void loadInfo(date);
-  }, [connected, hasScan, date, last?.finished_at, last?.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connected, showData, date, last?.finished_at, last?.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const noData = sel === 'scan' && !!infoOk && !infoOk.scannable;
+  const alreadyCollected = hasCollect && !!infoOk?.collected;
+  const blocked = noData || (alreadyCollected && !recollect);
   const start = async () => {
     if (!/^\d{8}$/.test(date)) return setMsg('날짜는 YYYYMMDD');
     if (noData) return setMsg(`${date} 데이터가 없습니다 - 먼저 수집(g001) 또는 장 마감 파이프라인을 실행하세요.`);
+    if (alreadyCollected && !recollect) return setMsg(`${date}는 이미 수집된 날짜입니다 - 선별만 하려면 감시 종목 선별을, 다시 받으려면 "다시 수집"을 켜세요.`);
     setBusy(true);
     setMsg('시작 중…');
     const r = await window.api.ctlJobStart(sel, {
@@ -180,7 +191,7 @@ export function JobsView() {
     await loadInfo(date);
   };
   const dataLine = () => {
-    if (!hasScan) return null;
+    if (!showData) return null;
     if (!infoOk) return <span className="muted">기준일 데이터 확인 중…</span>;
     if (infoOk.error && !infoOk.ok) return <span className="err-text">기준일 데이터 확인 실패: {infoOk.error}</span>;
     if (!infoOk.exists || !infoOk.scannable) {
@@ -245,7 +256,7 @@ export function JobsView() {
       <section>
         <h3>{splitTitle(selRow?.title || sel)[0]}</h3>
         <p className="subtitle">{DESC[sel]}</p>
-        {hasScan && <p className="small data-line">{dataLine()}</p>}
+        {showData && <p className="small data-line">{dataLine()}</p>}
         <div className="job-form">
           <DatePicker value={date} onChange={setDate} today={localYmd()} max={localYmd()} title="기준일 (누르면 달력, 기본은 오늘)" />
           {(sel === 'collect' || sel === 'postclose' || sel === 'edge_ai') && (
@@ -277,13 +288,26 @@ export function JobsView() {
             <span className="muted small">{sel === 'scan' ? '선별 결과를 보고 아래에서 r004에 적용합니다' : '선별 파일만 만들고 지금 감시 중인 종목은 그대로 둡니다'}</span>
           )}
           {hasScan && wlUpdate && !isToday && <span className="warn-text small">과거 날짜({date}) 기준으로 감시목록이 바뀝니다</span>}
+          {alreadyCollected && (
+            <>
+              <span className="muted small">
+                이미 수집된 날짜입니다{sel === 'postclose' ? ' · 선별만 하려면 ' : ' · 선별은 '}
+                <button className="linklike" onClick={() => setSel('scan')}>
+                  감시 종목 선별
+                </button>
+              </span>
+              <label className="check" title="이미 수집된 날짜를 일부러 다시 받습니다 (g001은 끝난 종목을 건너뛰고 이어받습니다)">
+                <input type="checkbox" checked={recollect} onChange={(e) => setRecollect(e.target.checked)} /> 다시 수집
+              </label>
+            </>
+          )}
           {busy && <i className="spinner" />}
           <span className="muted small">{msg}</span>
           <span className="push-right" />
           <button
             className="primary wide"
-            disabled={busy || !!running || noData}
-            title={running ? '다른 작업이 실행 중입니다' : noData ? `${date} 수집 데이터가 없습니다` : ''}
+            disabled={busy || !!running || blocked}
+            title={running ? '다른 작업이 실행 중입니다' : noData ? `${date} 수집 데이터가 없습니다` : blocked ? `${date}는 이미 수집된 날짜입니다` : ''}
             onClick={() => void start()}
           >
             시작
