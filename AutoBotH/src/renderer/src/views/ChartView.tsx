@@ -17,6 +17,9 @@
  * - [2026-11-11] type=fix - Symbol list: a <select> with every watched symbol (+ recent codes) left of the code input, showing the
  *   current symbol (like the timeline picker) - the datalist only shows entries matching the typed text, so with a code in the box
  *   it listed just that one symbol
+ * - [2026-11-11] type=feat - Side panel refresh: price / best ask-bid / strength / recent trades from the tick quote (every log poll,
+ *   1-2 s in local mode) whenever it is at least as new as the KIS quote; KIS (now cached 4 s in market hours) keeps the 10-level book,
+ *   day volume, limits and VI flags. The source line says "체결 기준 (틱) · 호가 HH:MM:SS KIS"
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -245,19 +248,25 @@ export function ChartView() {
   const quote = data?.ok ? data.quote : undefined;
   const lastBar = bars[bars.length - 1];
   const useQ = isToday && q ? q : null;
-  const price = useQ?.price ?? quote?.price ?? (intraday ? lastBar?.c : dayBar?.c) ?? lastBar?.c;
+  // [2026-11-11] the tick file (collector, read with every log poll) is fresher than the KIS quote (cached 4 s in market hours):
+  // price, best ask/bid, strength and the recent trades come from the ticks whenever today's tick quote is at least as new as the
+  // KIS answer. KIS keeps the 10-level book, day volume/amount, limits, VI flags, and is the fallback without a tick file
+  const kisAt = useQ?.asof ? Date.parse(`${useQ.asof.slice(0, 19).replace(' ', 'T')}+09:00`) : NaN;
+  const tickFirst = !!(isToday && quote && (Number.isNaN(kisAt) || quote.t >= kisAt - 1000));
+  const price = (tickFirst ? quote!.price : useQ?.price) ?? quote?.price ?? useQ?.price ?? (intraday ? lastBar?.c : dayBar?.c) ?? lastBar?.c;
   const prevC = useQ?.prev_close ?? prevClose;
-  const chg = useQ?.change ?? (ok(price) && ok(prevC) ? price - prevC : undefined);
-  const chgPct = useQ?.change_pct ?? (ok(price) && ok(prevC) ? pct(price, prevC) : undefined);
+  const chg = ok(price) && ok(prevC) ? price - prevC : useQ?.change;
+  const chgPct = ok(price) && ok(prevC) ? pct(price, prevC) : useQ?.change_pct;
   const dOpen = useQ?.open ?? dayBar?.o;
   const dHigh = useQ?.high ?? dayBar?.h;
   const dLow = useQ?.low ?? dayBar?.l;
   const dVol = useQ?.volume ?? quote?.volume ?? dayBar?.v;
   const hi200 = dBars.length ? Math.max(...dBars.map((b) => b.h)) : undefined;
   const lo200 = dBars.length ? Math.min(...dBars.map((b) => b.l)) : undefined;
-  const strength = q?.strength ?? (quote && quote.sellVol > 0 ? (quote.buyVol / quote.sellVol) * 100 : undefined);
-  const ask1 = q?.orderbook?.asks?.[0]?.[0] ?? quote?.ask;
-  const bid1 = q?.orderbook?.bids?.[0]?.[0] ?? quote?.bid;
+  const tickStrength = quote && quote.sellVol > 0 ? (quote.buyVol / quote.sellVol) * 100 : undefined;
+  const strength = tickFirst ? (tickStrength ?? q?.strength) : (q?.strength ?? tickStrength);
+  const ask1 = (tickFirst ? quote!.ask : undefined) ?? q?.orderbook?.asks?.[0]?.[0] ?? quote?.ask;
+  const bid1 = (tickFirst ? quote!.bid : undefined) ?? q?.orderbook?.bids?.[0]?.[0] ?? quote?.bid;
 
   const sym = snap?.symbols.find((s) => s.code === code);
   const name = sym?.name || q?.name || data?.name || '';
@@ -405,8 +414,10 @@ export function ChartView() {
               )}
             </div>
             <div className="muted small">
-              {useQ
-                ? `${useQ.asof ? useQ.asof.slice(11, 19) : ''} KIS 현재가`
+              {tickFirst && quote
+                ? `${fmtKstTime(quote.t)} 체결 기준 (틱)${useQ?.orderbook?.asof ? ` · 호가 ${useQ.orderbook.asof.slice(-8)} KIS` : ''}`
+                : useQ
+                  ? `${useQ.asof ? useQ.asof.slice(11, 19) : ''} KIS 현재가`
                 : quote
                   ? `${fmtKstTime(quote.t)} 체결 기준`
                   : dayBar
@@ -443,7 +454,7 @@ export function ChartView() {
               )}
               {ok(strength) && (
                 <>
-                  <span title={q?.strength !== undefined ? 'KIS 체결강도' : '매수 체결량 / 매도 체결량 × 100 (틱 파일의 체결 구분 기준)'}>체결강도</span>
+                  <span title={!tickFirst && q?.strength !== undefined ? 'KIS 체결강도' : '매수 체결량 / 매도 체결량 × 100 (틱 파일의 체결 구분 기준)'}>체결강도</span>
                   <b className={strength >= 100 ? 'gain' : 'loss'}>{strength.toFixed(1)}%</b>
                 </>
               )}
@@ -573,7 +584,7 @@ export function ChartView() {
             </section>
           )}
 
-          {q?.trades?.length ? (
+          {q?.trades?.length && !(tickFirst && quote?.recent.length) ? (
             <section className="ticks">
               <h4>체결 내역 (KIS, 최근 {q.trades.length}건)</h4>
               <table className="grid compact">
