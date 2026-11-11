@@ -32,10 +32,13 @@
  *   changing a row by hand unchecks it and continues from the rows shown at that moment
  * - [2026-11-08] type=merge - Ubuntu (YPick shared by both charts, sell picker, heights) + Windows ("이 종목 평가된 항목만" checkbox
  *   that follows the selected symbol): the checkbox mode is now useRowPick and works on the buy and the sell chart
+ * - [2026-11-11] type=feat - Hover details of the buy / sell evaluation charts move to a dock on the right of each chart (TipDock,
+ *   .chart-row) with the reason in Korean (shared/reasonKo) + the code + the raw line; the floating tooltip no longer covers the dots
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, Legend } from 'recharts';
+import { reasonKo } from '../../../shared/reasonKo';
 import { useStore } from '../store';
 import { SymbolPicker } from '../components/SymbolPicker';
 import { condTitle, fmtInt, fmtKrw, sortedConds } from '../lib';
@@ -159,17 +162,25 @@ function YPick(props: {
   );
 }
 
-function TipBox({ active, payload }: { active?: boolean; payload?: { payload: Pt }[] }) {
+/** [2026-11-11] hover details are shown in a dock beside the chart (TipDock) - a floating tooltip covered the dots around the cursor */
+function TipDock({ pt, side }: { pt: Pt | null; side: '매수' | '매도' }) {
   const conditions = useStore((s) => s.conditions);
-  if (!active || !payload?.length) return null;
-  const ev = payload[0].payload.ev;
+  if (!pt) {
+    return (
+      <div className="tip-dock">
+        <div className="muted small">{side} 평가 차트의 점 위에 마우스를 올리면 여기에 내용이 나옵니다.</div>
+      </div>
+    );
+  }
+  const ev = pt.ev;
   return (
-    <div className="tip">
+    <div className="tip-dock">
       <div>
         <b>{fmtKstTime(ev.ts)}</b> [{ev.tag}] {condTitle(conditions, ev.side, ev.condKey)}
         {ev.sub ? ` / ${ev.sub}` : ''}
       </div>
-      <div>{ev.reason}</div>
+      <div className="reason-ko">{reasonKo(ev.reason) || ev.reason}</div>
+      <div className="muted small mono">{ev.reason}</div>
       <pre className="raw">{ev.raw}</pre>
     </div>
   );
@@ -186,6 +197,14 @@ export function TimelineView() {
   const [price, setPrice] = useState<PriceResponse | null>(null);
   const [priceLoading, setPriceLoading] = useState(false);
   const reqSeq = useRef(0);
+  /** hovered dots of the buy / sell charts (shown in the docks beside them) */
+  const [hovBuy, setHovBuy] = useState<Pt | null>(null);
+  const [hovSell, setHovSell] = useState<Pt | null>(null);
+  // recharts gives the active payload with every mouse move; the Tooltip itself stays invisible (content null) and only drives the cursor
+  const pickPt = (e: unknown): Pt | null => {
+    const ap = (e as { activePayload?: { payload?: Pt }[] } | null)?.activePayload;
+    return ap && ap.length ? ap[0].payload || null : null;
+  };
 
   const buyConds = useMemo(() => sortedConds(conditions, 'buy'), [conditions]);
   const sellConds = useMemo(() => sortedConds(conditions, 'sell'), [conditions]);
@@ -336,13 +355,14 @@ export function TimelineView() {
               evaluated={buyKeysWithEvents}
             />
           </div>
+          <div className="chart-row">
           <div className="chart-buy" style={{ height: buyH }}>
             <ResponsiveContainer>
-              <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }}>
+              <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovBuy(pickPt(e))} onMouseLeave={() => setHovBuy(null)}>
                 <CartesianGrid stroke="var(--grid)" />
                 <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                 <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownRows.length - 1)]} ticks={[...Array(shownRows.length).keys()]} tickFormatter={buyLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
-                <Tooltip content={<TipBox />} isAnimationActive={false} />
+                <Tooltip content={() => null} isAnimationActive={false} />
                 <Legend verticalAlign="top" height={24} />
                 {markers}
                 {SERIES.map((s) => (
@@ -350,6 +370,8 @@ export function TimelineView() {
                 ))}
               </ScatterChart>
             </ResponsiveContainer>
+          </div>
+          <TipDock pt={hovBuy} side="매수" />
           </div>
           <HeightGrip height={buyH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ buyH: h })} onReset={() => setLayout({ buyH: undefined })} />
           {fullLen > 30 * 60000 && (
@@ -453,16 +475,17 @@ export function TimelineView() {
               evaluated={sellKeysWithEvents}
             />
           </div>
+          <div className="chart-row">
           <div className="chart-sell" style={{ height: sellH }}>
             {sellPts.length === 0 && trades.length === 0 ? (
               <div className="empty small">오늘 이 종목의 매도 평가 로그가 없습니다.</div>
             ) : (
               <ResponsiveContainer>
-                <ScatterChart margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
+                <ScatterChart margin={{ top: 8, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovSell(pickPt(e))} onMouseLeave={() => setHovSell(null)}>
                   <CartesianGrid stroke="var(--grid)" />
                   <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                   <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownSellRows.length - 1)]} ticks={[...Array(shownSellRows.length).keys()]} tickFormatter={sellLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
-                  <Tooltip content={<TipBox />} isAnimationActive={false} />
+                  <Tooltip content={() => null} isAnimationActive={false} />
                   {markers}
                   <Scatter name="발동" data={sellPts.filter((p) => p.ev.result === 'pass')} fill="var(--st-fail)" shape="cross" isAnimationActive={false} />
                   <Scatter name="보류" data={sellPts.filter((p) => p.ev.result === 'hold')} fill="var(--st-hold)" shape="diamond" isAnimationActive={false} />
@@ -470,6 +493,8 @@ export function TimelineView() {
                 </ScatterChart>
               </ResponsiveContainer>
             )}
+          </div>
+          <TipDock pt={hovSell} side="매도" />
           </div>
           <HeightGrip height={sellH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ sellH: h })} onReset={() => setLayout({ sellH: undefined })} />
           {trades.length > 0 && (

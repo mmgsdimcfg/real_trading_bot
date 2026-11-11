@@ -3,6 +3,8 @@
  * - [2026-11-04] type=feat - Symbol board: current state of every watched symbol (last evaluation, stopping condition, depth reached
  *   today, position, realized P&L); sortable, filter by stopping condition / holdings; a click opens the pipeline for that symbol
  * - [2026-11-05] type=feat - "감시목록 편집" button opens the r004 watchlist editor (WatchlistEditor)
+ * - [2026-11-11] type=feat - 사유 in Korean (shared/reasonKo; the code and the raw log line stay in the tooltip); fixed column
+ *   widths (colgroup, table-layout fixed) so the table never scrolls sideways - 종목명 / 멈춘 조건 / 사유 / 최다 막힘 wrap instead
  */
 
 import { useMemo, useState } from 'react';
@@ -11,6 +13,7 @@ import { condTitle, fmtInt, fmtKrw, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
 import type { SymbolSummary } from '../../../shared/types';
 import { WatchlistEditor } from '../components/WatchlistEditor';
+import { reasonKo } from '../../../shared/reasonKo';
 
 type SortKey = 'code' | 'name' | 'last' | 'cond' | 'depth' | 'blocks' | 'pnl';
 
@@ -90,7 +93,20 @@ export function BoardView() {
       </div>
       {wlOpen && <WatchlistEditor onClose={() => setWlOpen(false)} />}
       <div className="table-wrap">
-        <table className="grid">
+        <table className="grid board-grid">
+          <colgroup>
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '4%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '25%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+          </colgroup>
           <thead>
             <tr>
               {th('code', '코드')}
@@ -125,8 +141,8 @@ export function BoardView() {
                   <td className="mono">{fmtKstTime(ev?.ts)}</td>
                   <td className={`res-${ev?.result || ''}`}>{ev ? RESULT_LABEL[ev.result] || ev.result : '-'}</td>
                   <td>{ev && ev.condKey !== 'ORDER' ? condTitle(conditions, 'buy', ev.condKey) : ev ? '주문 단계' : '-'}</td>
-                  <td className="reason" title={ev?.raw}>
-                    {ev?.reason || '-'}
+                  <td className="reason" title={ev ? `${ev.reason}\n${ev.raw}` : ''}>
+                    {ev?.reason ? reasonKo(ev.reason) || ev.reason : '-'}
                   </td>
                   <td className="num">{s.furthestOrderToday >= total ? '전부' : `${s.furthestOrderToday + 1}/${total}`}</td>
                   <td>{tb ? `${condTitle(conditions, 'buy', tb[0])} (${fmtInt(tb[1])})` : '-'}</td>
