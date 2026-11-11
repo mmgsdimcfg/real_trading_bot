@@ -16,6 +16,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: r003/r005 parity - 매수 시점 최적화(r001 2026-11-11): triple above 최대 나이, 시장 국면 확인봉, 유동성 거래대금 대체,
+      r013 워밍업 가드(TickReplayFeed warmup_extra_bars). env 오버라이드는 없음(r001 값 그대로).
+    impact: sim
+    compatibility: breaking (매수 건수 변화)
 - [2026-11-04] type=feat owner=claude
     summary: Codex 2차 검토 - r005 _025 일일 손실 한도(실현+평가, 비용 근사)·_026 동시 보유 상한 parity(_portfolio_gate_sim).
       _027 스프레드/_028 Edge AI는 미재현(호가·모델 없음) - 리포트 해석 시 실전보다 매수가 많을 수 있음.
@@ -349,6 +354,8 @@ from r001_define_config import (
     TICK_TRIGGER_MA_FAST,
     TICK_TRIGGER_MA_SLOW,
     TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
+    TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
+    TICK_CROSS_WARMUP_EXTRA_BARS,
     TRIPLE_1MIN_CONDITION,
     TRIPLE_TICK_CONDITION,
     TICK_TRIGGER_PRIOR_DAY_WARMUP,
@@ -364,6 +371,7 @@ from r001_define_config import (
     MARKET_REGIME_ETF,
     MARKET_REGIME_MA_FAST,
     MARKET_REGIME_MA_SLOW,
+    MARKET_REGIME_CONFIRM_BARS,
     MARKET_REGIME_FAIL_OPEN,
     ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     TRIPLE_CHASE_FROM_CROSS_MAX_PCT,
@@ -2316,6 +2324,7 @@ def _triple_entry_decision(
     trig = evaluate_triple_trigger(
         ma, ma_age, crosses, TICK_TRIGGER_BAR_SIZES, TRIPLE_1MIN_CONDITION, TRIPLE_TICK_CONDITION,
         TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW,
+        above_max_age_s=TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
     )
     missing = list(trig["missing"])
     if not crosses:
@@ -2386,6 +2395,7 @@ def simulate_date(
             TICK_TRIGGER_CROSS_MAX_AGE_SECONDS, TICK_TRIGGER_FEED_STALE_SECONDS,
             prior_day_warmup=TICK_TRIGGER_PRIOR_DAY_WARMUP,
             min_prints_per_min=TICK_MIN_PRINTS_PER_MIN, density_window_min=TICK_MIN_PRINTS_WINDOW_MINUTES,
+            warmup_extra_bars=int(TICK_CROSS_WARMUP_EXTRA_BARS or 0),  # [2026-11-11] r003 parity
         )
     log(f"Entry trigger   : {entry_trigger_mode} (ENTRY_TRIGGER_MODE_SIM={ENTRY_TRIGGER_MODE_SIM}, "
         f"ticks={TICK_DATA_DIR / date_str})")
@@ -2622,7 +2632,7 @@ def simulate_date(
         fr = regime_frames_1min.get(mkt) if mkt else None
         if fr is None:
             return None, f"{mkt}_NO_ETF_FRAME"
-        ok, detail = market_regime_ok(fr[fr.index <= cut], MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW)
+        ok, detail = market_regime_ok(fr[fr.index <= cut], MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW, MARKET_REGIME_CONFIRM_BARS)
         return ok, f"{mkt}_{detail}"
 
     def _is_nxt_tradeable(code: str) -> bool:

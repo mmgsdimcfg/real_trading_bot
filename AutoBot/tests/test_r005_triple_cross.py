@@ -190,12 +190,20 @@ class TestR005Triple(unittest.TestCase):
         self.assertEqual((r005.TRIPLE_1MIN_CONDITION, r005.TRIPLE_TICK_CONDITION), ("above", "any"))
 
     def test_above_mode_passes_without_fresh_1min_cross(self):
-        # 09:36: 1-min MA5 above MA20 since 09:21 (cross expired) - "above" accepts the state
+        from unittest import mock
+
+        # 09:36: 1-min MA5 above MA20 since 09:21 (cross expired) - "above" accepts the state when the age limit is off
         now = datetime(2026, 10, 30, 9, 36, 39)
-        ok, ctx, logs, recs = self._run("2026-10-30 09:36", now, 78300.0, _tick(now))
+        with mock.patch.object(r005, "TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS", 0.0):
+            ok, ctx, logs, recs = self._run("2026-10-30 09:36", now, 78300.0, _tick(now))
         self.assertTrue(ok, logs)
         self.assertTrue(ctx.trigger_reason.startswith("TRIPLE_CROSS_1MIN_MA5_ABOVE_MA20+TICK60+TICK120"), ctx.trigger_reason)
         self.assertEqual(recs[-1]["result"], "TRIPLE_CROSS_PASS")
+        # [2026-11-11] with the default limit (900 s) a 15-minute-old cross is a stale "above" and is rejected
+        with mock.patch.object(r005, "TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS", 900.0):
+            ok, ctx, logs, recs = self._run("2026-10-30 09:36", now, 78300.0, _tick(now))
+        self.assertFalse(ok)
+        self.assertIn("ABOVE_TOO_OLD", logs[-1])
 
     def test_any_mode_one_tick_size_is_enough(self):
         now = datetime(2026, 10, 30, 9, 22, 13)

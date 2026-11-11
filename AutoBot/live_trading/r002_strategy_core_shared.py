@@ -18,6 +18,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: 매수 시점 최적화(r001 2026-11-11 Update log 참조) - (1) evaluate_triple_trigger above_max_age_s: above 모드에서도 오래된
+      1분 크로스는 반려, (2) market_regime_ok confirm_bars: 지수 MA5<=MA20 이 연속 확정봉 수만큼 유지될 때만 차단(깜빡임 허용),
+      (3) _gate_min_liquidity_safety: 주수 기준 미달이어도 거래대금(주수 x 현재가)이 r001 하한 이상이면 통과.
+    impact: common (r003/g003)
+    compatibility: breaking (매수 시점/건수 변화 - r001 상수로 롤백)
 - [2026-11-11] type=fix owner=claude
     summary: evaluate_triple_trigger의 cross_ref_price(추격폭 가드 기준)를 가장 최근 틱 크로스 대신 가장 먼저 난 틱 크로스의
       봉 종가로(r001 TRIPLE_CHASE_FROM_CROSS_REF="earliest", "latest"면 종전). 20261111 018260: 가드에 막혀 기다리는 동안
@@ -483,6 +489,9 @@ from r001_define_config import (
     CANDLE_GAIN_MIN_PCT,
     MIN_ENTRY_VOL_MA,
     MIN_ENTRY_VOLUME,
+    ENABLE_MIN_ENTRY_TURNOVER_ALT,
+    MIN_ENTRY_TURNOVER_KRW,
+    MIN_ENTRY_VOL_MA_TURNOVER_KRW,
     MIN_ENTRY_TURNOVER_KRW,
     ENABLE_MIN_ENTRY_ATR_FILTER,
     ENABLE_STOCHASTIC_BUY_GATE,
@@ -1589,9 +1598,15 @@ def _gate_min_liquidity_safety(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContex
     vol = _num(cur, "volume")
     vol_ma = _num(cur, "VOL_MA20")
     if not any(pd.isna(v) for v in (vol, vol_ma)):
-        if vol_ma < MIN_ENTRY_VOL_MA:
+        # [2026-11-11] 거래대금 대체 기준(r001 ENABLE_MIN_ENTRY_TURNOVER_ALT): 고가 종목은 주수가 적어도 대금이 크다 -
+        # 010060 20261111 10:28 LOW_ABS_VOLUME_1239_LT_1500 (약 2.5억원) 반려 -> 10:30 고점 매수
+        live_px = getattr(ctx, "live_price", None)
+        px = float(live_px) if live_px and float(live_px) > 0 else _num(cur, "close")
+        def _turnover_ok(shares: float, krw_min: float) -> bool:
+            return bool(ENABLE_MIN_ENTRY_TURNOVER_ALT and px == px and px > 0 and shares * px >= krw_min)
+        if vol_ma < MIN_ENTRY_VOL_MA and not _turnover_ok(vol_ma, MIN_ENTRY_VOL_MA_TURNOVER_KRW):
             return False, ctx, f"LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
-        if vol < MIN_ENTRY_VOLUME:
+        if vol < MIN_ENTRY_VOLUME and not _turnover_ok(vol, MIN_ENTRY_TURNOVER_KRW):
             return False, ctx, f"LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
         if vol_ma > 0:
             vol_ratio = vol / vol_ma
@@ -2101,8 +2116,11 @@ def find_1min_ma_golden_cross(frame_1min: pd.DataFrame, fast: int = 5, slow: int
 def evaluate_triple_trigger(
     ma: dict, ma_age_s: float, crosses: dict, sizes: tuple[int, ...], one_min_condition: str = "cross",
     tick_condition: str = "all", max_age_s: float = 240.0, fast: int = 5, slow: int = 20,
+    above_max_age_s: float = 0.0,
 ) -> dict:
     """[2026-11-02] r005 _008 3중 트리거 / g003 공용 판정 - 1분 조건 + 틱 조건 -> missing(반려 사유 목록)과 가드용 값.
+    [2026-11-11] above_max_age_s(r001 TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS): "above" 모드에서도 1분 크로스 봉이 이보다 오래됐으면
+    반려(...ABOVE_TOO_OLD...) - 추세 한참 뒤의 늦은 진입(015760 20261111 09:52, 크로스 후 32분) 차단. 0 = 제한 없음.
 
     ma: find_1min_ma_golden_cross 결과, ma_age_s: 그 크로스 봉 나이(초, 크로스 없으면 nan), crosses: r013 TickTriggerResult.crosses.
     one_min_condition "cross" = ma_age_s <= max_age_s인 새 크로스(종전), "above" = 마지막 봉 MA_fast > MA_slow 상태면 통과
@@ -2115,7 +2133,8 @@ def evaluate_triple_trigger(
     bars_since_cross = int(ma.get("bars_since_cross") or 0)
     if str(one_min_condition).lower() == "above":
         if ma.get("ok"):
-            pass  # MA_fast > MA_slow (cross age irrelevant)
+            if above_max_age_s and above_max_age_s > 0 and not pd.isna(ma_age_s) and ma_age_s > above_max_age_s:
+                missing.append(f"{tag}_ABOVE_TOO_OLD_{ma_age_s:.0f}s_GT_{above_max_age_s:.0f}s")
         elif str(ma.get("reason", "")).endswith("_NO_CROSS_IN_FRAME"):
             bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
         else:
@@ -2183,9 +2202,11 @@ def load_symbol_market_map(path) -> dict[str, str]:
     return out
 
 
-def market_regime_ok(frame_1min: pd.DataFrame | None, fast: int, slow: int) -> tuple[bool | None, str]:
+def market_regime_ok(frame_1min: pd.DataFrame | None, fast: int, slow: int, confirm_bars: int = 1) -> tuple[bool | None, str]:
     """[2026-11-04] 시장 추세 게이트(r005 _029 / g003 공용): 지수 ETF 1분봉 MA_fast > MA_slow(마지막 확정봉)면 (True, 사유),
-    아니면 (False, 사유). 프레임 없음/봉 부족이면 (None, 사유) - 호출측이 MARKET_REGIME_FAIL_OPEN으로 처리."""
+    아니면 (False, 사유). 프레임 없음/봉 부족이면 (None, 사유) - 호출측이 MARKET_REGIME_FAIL_OPEN으로 처리.
+    [2026-11-11] confirm_bars(r001 MARKET_REGIME_CONFIRM_BARS): MA_fast <= MA_slow 가 마지막 confirm_bars 개 확정봉에서 연속으로
+    유지될 때만 차단 - 봉 1~2개 깜빡임(018260 20261111 10:13/10:17)에는 (True, ..._FLICKER_...). 1 = 종전."""
     if frame_1min is None or len(frame_1min) < slow + 1:
         return None, f"ETF_1MIN_BARS_{0 if frame_1min is None else len(frame_1min)}_LT_{slow + 1}"
     ma = find_1min_ma_golden_cross(frame_1min, fast, slow)
@@ -2194,7 +2215,29 @@ def market_regime_ok(frame_1min: pd.DataFrame | None, fast: int, slow: int) -> t
     reason = str(ma.get("reason") or "")
     if reason.endswith("_NO_CROSS_IN_FRAME"):  # above since frame start = still above
         return True, f"MA{fast}_ABOVE_MA{slow}_SINCE_FRAME_START"
+    if int(confirm_bars or 1) > 1 and reason.endswith("_NOT_ABOVE") and "close" in frame_1min.columns:
+        run = _ma_below_run(frame_1min, fast, slow)
+        if run < int(confirm_bars):
+            return True, f"MA{fast}_NOT_ABOVE_MA{slow}_FLICKER_{run}bar_LT_{int(confirm_bars)}"
     return False, reason or f"MA{fast}_NOT_ABOVE_MA{slow}"
+
+
+def _ma_below_run(frame_1min: pd.DataFrame, fast: int, slow: int) -> int:
+    """number of trailing confirmed bars with MA_fast <= MA_slow (same MA sources as find_1min_ma_golden_cross)"""
+    close = pd.to_numeric(frame_1min["close"], errors="coerce")
+    fast_col = f"MA_{fast}"
+    ma_fast = (pd.to_numeric(frame_1min[fast_col], errors="coerce") if fast_col in frame_1min.columns
+               else close.rolling(fast, min_periods=fast).mean())
+    ma_slow = (pd.to_numeric(frame_1min["BB_MIDDLE"], errors="coerce")
+               if slow == BB_PERIOD and "BB_MIDDLE" in frame_1min.columns
+               else close.rolling(slow, min_periods=slow).mean())
+    f_vals, s_vals = ma_fast.to_numpy(), ma_slow.to_numpy()
+    run = 0
+    for k in range(len(f_vals) - 1, -1, -1):
+        if pd.isna(f_vals[k]) or pd.isna(s_vals[k]) or f_vals[k] > s_vals[k]:
+            break
+        run += 1
+    return run
 
 
 def check_chase_from_cross(live_price: float, cross_ref_price: float, max_pct: float) -> tuple[bool, str]:

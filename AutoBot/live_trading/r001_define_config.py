@@ -11,6 +11,15 @@
 #       시뮬에서 끄려면 AUTO_TRADING_LIVE_OVERRIDES=0)
 #     compatibility: backward-compatible (파일 없음 = 기존과 동일)
 # - [2026-11-11] type=feat owner=claude
+#     summary: 사용자 요청(20261111 매매 7건 정밀 검토 - 매수가 상승 시작점보다 3~4분 늦어 하락 구간에서 체결) - 매수 시점 최적화.
+#       틱 경로 가정 실험: 018260 10:13 진입이면 +0.65%(실제 10:18 -1.06%), 010060 10:27~28 진입이면 +0.65~0.91%(실제 10:30 -1.09%),
+#       015760/010060#1 은 1분 크로스 직후 진입이 +1.1%. 새 상수 TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS(900), MARKET_REGIME_CONFIRM_BARS(3),
+#       ENABLE_MIN_ENTRY_TURNOVER_ALT/MIN_ENTRY_TURNOVER_KRW(1.5억)/MIN_ENTRY_VOL_MA_TURNOVER_KRW(1억), TICK_CROSS_WARMUP_EXTRA_BARS(5).
+#       r002(evaluate_triple_trigger above 나이, market_regime_ok 확인봉, _gate_min_liquidity_safety 거래대금), r013(워밍업 가드),
+#       r005/r003/g003 호출부. 하루 표본이라 g003 다중일 A/B 로 검증 필요(파이 틱 데이터).
+#     impact: common (r003 실전 / g003 백테스트)
+#     compatibility: breaking (매수 시점/건수 변화. 롤백: 각 상수 주석의 종전값)
+# - [2026-11-11] type=feat owner=claude
 #     summary: 사용자 결정(20261111 동국제약 손절 후 재상승 구간 매수 평가 없음 분석) - 손절 종목 당일 재진입 허용
 #       (HARD_STOP_BLOCK_REENTRY_TODAY True -> False), 종목당 당일 재매수 한도 10회(REENTRY_MAX_PER_CODE 1 -> 10,
 #       REENTRY_MAX_PER_CODE_AFTER_PROFIT 5 -> 10). 손절 집합 기록/보존(live_state hard_stop_today)과 3분 쿨다운은 그대로.
@@ -1305,6 +1314,24 @@ TRIPLE_CHASE_FROM_CROSS_MAX_PCT = 0.5
 # 기다리다 10:17~18 120틱이 고점에서 다시 크로스하자 기준가가 그 봉으로 바뀌어 추격폭이 0으로 리셋 -> 10:18 고점 234,500 매수
 # (10:29 -1.06% 청산). 기준을 최초 크로스로 두면 이미 달아난 뒤의 늦은 재크로스로는 사지 않는다. 롤백: "latest".
 TRIPLE_CHASE_FROM_CROSS_REF = "earliest"
+# [2026-11-11] 20261111 실매매 7건 정밀 검토(틱 경로 가정 실험, 아래 Update log) - 매수 시점 최적화 4건. 공통 근거: 세 신호 중
+# 마지막이 뜰 때 사므로 상승 시작점보다 1~2% 위에서 진입했고, 좋은 시점은 아래 게이트에 막혔으며, 그 뒤 고점에서 들어갔다.
+# (1) 1분 MA5>MA20 "above" 상태의 최대 나이(초) - 크로스가 이보다 오래됐으면 반려. 015760 09:52 매수는 09:20 크로스 후 32분
+#     (-0.85%), 1분 크로스 직후 진입이면 +1.1%. 0 = 제한 없음(종전). 롤백: 0.
+TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS = 900.0
+# (2) 시장 국면 게이트 확인 봉 수 - 지수 ETF 1분 MA5<=MA20 이 이 수만큼 연속 확정봉에서 유지돼야 차단(1 = 종전, 봉 1개 깜빡임에도
+#     차단). 018260 10:13 세 크로스 완성 직후 KOSPI 게이트가 10:13/10:17 에 켜졌다 꺼지며 진입을 막았고(그 시점 진입이면 +0.65%)
+#     결국 10:18 고점 매수(-1.06%). 롤백: 1.
+MARKET_REGIME_CONFIRM_BARS = 3
+# (3) 3분봉 유동성 게이트 거래대금 대체 기준 - 주수(MIN_ENTRY_VOLUME 1500 / MIN_ENTRY_VOL_MA 1000)가 모자라도 거래대금(주수 x 현재가)이
+#     이 값 이상이면 통과. 고가 종목엔 주수 기준이 과도 - 010060 OCI홀딩스 10:28 LOW_ABS_VOLUME_1239_LT_1500(= 약 2.5억원) 반려 뒤
+#     10:30 고점 매수(-1.09%), 10:28 진입이면 +0.65%. 롤백: ENABLE_MIN_ENTRY_TURNOVER_ALT=False.
+ENABLE_MIN_ENTRY_TURNOVER_ALT = True
+MIN_ENTRY_TURNOVER_KRW = 150_000_000        # 3분봉 거래대금 하한 (volume x price)
+MIN_ENTRY_VOL_MA_TURNOVER_KRW = 100_000_000  # 3분봉 20봉 평균 거래대금 하한
+# (4) 틱 크로스 워밍업 가드(r013) - 틱봉 시계열의 첫 (slow-1)+이 값 봉 안에서 난 크로스는 무시. 수집기 재시작 직후 MA20이 막
+#     계산되기 시작하는 봉의 크로스는 인위적 - 086450 09:49 21번째 봉 크로스 -> 09:50 매수 -> -1.09%. 0 = 종전.
+TICK_CROSS_WARMUP_EXTRA_BARS = 5
 # (2) 틱 밀도 하한 - 최근 TICK_MIN_PRINTS_WINDOW_MINUTES분 체결 건수/분이 TICK_MIN_PRINTS_PER_MIN 미만이면 틱 트리거 기권
 # (TICK_LOW_DENSITY, r013 live/replay 공용). 11/04 체결/분: 010060 195, 017900 154 ... 159010 13, 204620 10, 434480 3 -
 # 60틱봉이 종목마다 18초~20분으로 시간 척도가 100배 다르고 저밀도 종목은 FEED_STALE 기권이 반복된다(11/03 12,926건).
