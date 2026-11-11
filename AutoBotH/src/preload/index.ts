@@ -12,7 +12,8 @@
  * - [2026-11-10] type=feat - Local mode channels: ctl:role / ctl:collectorStart / ctl:jobs / ctl:jobStart / ctl:jobStop / ctl:jobLog /
  *   ctl:doctor, peer:* (the other host: status, role, stop, doctor, watchlist copy, KIS config import), settings:localCheck,
  *   folder/file pickers with a title, scheduler state ('sched')
- * - [2026-11-11] type=feat - ctlJobData (ctl:jobData) / ctlPicksApply (ctl:picksApply) for the scan-only flow of the data jobs tab
+ * - [2026-11-11] type=feat - ctlJobData (ctl:jobData) for the pipeline card of the data jobs tab (ctlPicksApply existed for a few
+ *   hours and was dropped - r004 is written by the job's apply step)
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -26,7 +27,6 @@ import type {
   JobList,
   JobLog,
   JobStartOpts,
-  PicksApplyResult,
   R016Status,
   RiskProfile,
   RoleInfo,
@@ -100,9 +100,8 @@ const api = {
   ctlJobStart: (name: string, opts: JobStartOpts): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStart', name, opts),
   ctlJobStop: (name: string): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStop', name),
   ctlJobLog: (name: string, n?: number): Promise<CtlResult<JobLog>> => ipcRenderer.invoke('ctl:jobLog', name, n),
-  /** [2026-11-11] the date folder's collected data + g002 picks (r016 job data), and r004 <- those picks (watchlist apply) */
+  /** [2026-11-11] the date folder's collected data + g002 picks (r016 job data) - pipeline step defaults / refusals */
   ctlJobData: (date: string): Promise<CtlResult<JobDataInfo>> => ipcRenderer.invoke('ctl:jobData', date),
-  ctlPicksApply: (date: string, count?: number): Promise<CtlResult<PicksApplyResult>> => ipcRenderer.invoke('ctl:picksApply', date, count),
   ctlDoctor: (): Promise<CtlResult<DoctorReport>> => ipcRenderer.invoke('ctl:doctor'),
   // the other host (local mode: Raspberry Pi, remote mode: this PC)
   peerInfo: (): Promise<{ kind: 'remote' | 'local'; label: string }> => ipcRenderer.invoke('peer:info'),
