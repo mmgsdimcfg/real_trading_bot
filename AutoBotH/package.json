@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-11] type=feat - v2.3.9_001: (1) 타임라인 매수/매도 평가 차트의 마우스 오버 내용을 차트 오른쪽 고정 패널로 옮김 - 점 위에 툴팁이 떠서 그래프를 가리던 문제. (2) 종목 보드 \"사유\"를 한글로 풀어 표시(shared/reasonKo - 코드와 로그 원문은 툴팁), 타임라인 패널도 같은 한글 설명. (3) 종목 보드 열 너비 고정(colgroup) + 긴 칸은 줄바꿈 - 좌우 스크롤 없이 한 화면에",
     "[2026-11-11] type=feat - v2.3.8_002: 제어 탭 프로파일 선택 옆 \"!\" - 누르면 conservative/neutral/aggressive 한 줄 요약과 프로파일이 바꾸는 값 표(주문 금액 상한, 익절 후 트레일, 트레일링 스탑, 매수 직후 급락 가드, 본전 실패 가드, 무추세 청산 - 서버 risk_profiles/*.json 기준), 모든 프로파일에 공통인 손절/익절 규칙 안내",
     "[2026-11-11] type=feat - v2.3.8_001: 매매 결과 탭에 \"제세금 포함\" 체크 - 켜면 실현 손익 합계·누적 손익·조건별 손익·표의 손익/수익률을 예상 거래 비용(수수료 0.015% x 2 + 거래세 0.20%, 봇 r001 과 같은 비율)을 뺀 순손익으로 표시(로그의 수익금액은 비용 전). 새 탭 \"보유 현황\"(차트와 매매 결과 사이): 보유 종목·매수 시각/가격/수량·보유 시간·현재가(KIS 현재가 10초마다)·평가 손익/수익률·마지막 매도 평가, 위에 보유 종목 수/투자 금액/평가 손익 합계/오늘 실현 손익, 같은 \"제세금 포함\" 체크(두 탭이 공유, 기억됨)",
     "[2026-11-11] type=feat - v2.3.7_001: 틱 수집기가 끊긴 구간(g011 중단, 늦게 구독된 종목)이 있으면 분봉 차트(타임라인·차트 탭)는 서버의 KIS 1분봉(r016 bars --kind min --source kis, 종목당 1분에 1회)으로 그 구간을 채워 그린다 - 봇은 그 구간의 틱을 보지 못했다는 안내를 상태줄에 표시. 틱봉은 채울 수 없어 안내만. 응답에 gaps/filled 추가",
@@ -34,7 +35,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.8",
+  "version": "2.3.9",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -82,7 +83,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",
