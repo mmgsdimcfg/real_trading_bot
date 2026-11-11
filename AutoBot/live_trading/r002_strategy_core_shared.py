@@ -490,8 +490,8 @@ from r001_define_config import (
     MIN_ENTRY_VOL_MA,
     MIN_ENTRY_VOLUME,
     ENABLE_MIN_ENTRY_TURNOVER_ALT,
-    MIN_ENTRY_TURNOVER_KRW,
-    MIN_ENTRY_VOL_MA_TURNOVER_KRW,
+    MIN_ENTRY_TURNOVER_ALT_KRW,
+    MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW,
     MIN_ENTRY_TURNOVER_KRW,
     ENABLE_MIN_ENTRY_ATR_FILTER,
     ENABLE_STOCHASTIC_BUY_GATE,
@@ -1604,9 +1604,9 @@ def _gate_min_liquidity_safety(ctx: BuyEvalContext) -> tuple[bool, BuyEvalContex
         px = float(live_px) if live_px and float(live_px) > 0 else _num(cur, "close")
         def _turnover_ok(shares: float, krw_min: float) -> bool:
             return bool(ENABLE_MIN_ENTRY_TURNOVER_ALT and px == px and px > 0 and shares * px >= krw_min)
-        if vol_ma < MIN_ENTRY_VOL_MA and not _turnover_ok(vol_ma, MIN_ENTRY_VOL_MA_TURNOVER_KRW):
+        if vol_ma < MIN_ENTRY_VOL_MA and not _turnover_ok(vol_ma, MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW):
             return False, ctx, f"LOW_VOL_MA_ABS_{vol_ma:.0f}_LT_{MIN_ENTRY_VOL_MA}"
-        if vol < MIN_ENTRY_VOLUME and not _turnover_ok(vol, MIN_ENTRY_TURNOVER_KRW):
+        if vol < MIN_ENTRY_VOLUME and not _turnover_ok(vol, MIN_ENTRY_TURNOVER_ALT_KRW):
             return False, ctx, f"LOW_ABS_VOLUME_{vol:.0f}_LT_{MIN_ENTRY_VOLUME}"
         if vol_ma > 0:
             vol_ratio = vol / vol_ma
