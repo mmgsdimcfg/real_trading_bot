@@ -2,6 +2,8 @@
  * Update log
  * - [2026-11-04] type=feat - Trade results from YYYYMMDD_buy_sell.log: headline numbers, cumulative realized P&L over the day,
  *   P&L by sell condition, and the trade table (Korean convention: gain red, loss blue)
+ * - [2026-11-11] type=feat - "제세금 포함" switch (store.feesIncluded, shared with 보유 현황): every P&L figure (KPIs, cumulative
+ *   line, per-condition bars, table) is shown net of the estimated commission + sell tax (shared/fees) - the log's 수익금액 is gross
  */
 
 import { useMemo } from 'react';
@@ -9,14 +11,27 @@ import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, Res
 import { useStore } from '../store';
 import { condTitle, fmtInt, fmtKrw, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
+import { feeLabel, pnlKrw as netKrw, pnlPct as netPct } from '../../../shared/fees';
 
 export function TradesView() {
   const snap = useStore((s) => s.snapshot);
   const conditions = useStore((s) => s.conditions);
   const select = useStore((s) => s.select);
   const setTab = useStore((s) => s.setTab);
+  const net = useStore((s) => s.feesIncluded);
+  const setNet = useStore((s) => s.setFeesIncluded);
   const trades = snap?.trades || [];
-  const sells = trades.filter((t) => t.side === 'SELL');
+  // net figures need the buy price, the sell price and the quantity of the sell block; a sell without them stays gross
+  const sells = useMemo(
+    () =>
+      trades
+        .filter((t) => t.side === 'SELL')
+        .map((t) => {
+          const can = net && !!t.buyPrice && !!t.price && !!t.qty;
+          return { ...t, pnlKrw: can ? netKrw(t.buyPrice!, t.price, t.qty, true) : t.pnlKrw, pnlPct: can ? netPct(t.buyPrice!, t.price, t.qty, true) : t.pnlPct };
+        }),
+    [trades, net],
+  );
   const total = sells.reduce((a, t) => a + (t.pnlKrw || 0), 0);
   const wins = sells.filter((t) => (t.pnlKrw || 0) > 0).length;
 
@@ -54,7 +69,7 @@ export function TradesView() {
           <b>{sells.length}건</b>
         </div>
         <div className="kpi">
-          <span>실현 손익 합계</span>
+          <span>실현 손익 합계{net ? ' (제세금 포함)' : ''}</span>
           <b className={pnlClass(total)}>{fmtKrw(total)}</b>
         </div>
         <div className="kpi">
@@ -68,10 +83,13 @@ export function TradesView() {
           <span>매수 건수</span>
           <b>{trades.length - sells.length}건</b>
         </div>
+        <label className="check fee-switch" title={`손익에서 예상 거래 비용을 뺍니다: ${feeLabel()} (봇 설정 r001과 같은 비율). 로그의 수익금액은 비용 전 금액입니다`}>
+          <input type="checkbox" checked={net} onChange={(e) => setNet(e.target.checked)} /> 제세금 포함
+        </label>
       </div>
       <div className="trade-charts">
         <div className="panel">
-          <h4>누적 실현 손익 (원)</h4>
+          <h4>누적 실현 손익 (원{net ? ', 제세금 포함' : ''})</h4>
           <div className="chart-mid">
             {cum.length === 0 ? (
               <div className="empty small">매도 없음</div>
@@ -102,7 +120,7 @@ export function TradesView() {
           </div>
         </div>
         <div className="panel">
-          <h4>매도 조건별 손익 합계 (원)</h4>
+          <h4>매도 조건별 손익 합계 (원{net ? ', 제세금 포함' : ''})</h4>
           <div className="chart-mid">
             {byCond.length === 0 ? (
               <div className="empty small">매도 없음</div>
@@ -147,12 +165,12 @@ export function TradesView() {
               <th className="num">수량</th>
               <th>매도 조건</th>
               <th>사유</th>
-              <th className="num">손익</th>
-              <th className="num">수익률</th>
+              <th className="num">손익{net ? ' (순)' : ''}</th>
+              <th className="num">수익률{net ? ' (순)' : ''}</th>
             </tr>
           </thead>
           <tbody>
-            {[...trades].sort((a, b) => a.ts - b.ts).map((t, i) => (
+            {[...trades.filter((t) => t.side === 'BUY'), ...sells].sort((a, b) => a.ts - b.ts).map((t, i) => (
               <tr
                 key={i}
                 title={t.raw}

@@ -651,3 +651,6 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .hist td.c { white-space: normal; word-break: break-all; }
 button.danger-text:not(:disabled) { color: var(--st-fail); border-color: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
 button.danger-text:hover:not(:disabled) { background: color-mix(in srgb, var(--st-fail) 12%, var(--surface-2)); }
+/* ---- [2026-11-11] 매매 결과 / 보유 현황: "제세금 포함" switch sits at the end of the KPI row ---- */
+.kpis .fee-switch { margin-left: auto; align-self: center; color: var(--text-2); white-space: nowrap; }
+.positions .grid td.reason { max-width: 420px; }
