@@ -20,6 +20,8 @@
  *   the actions on the right). 매매 실행 위치 = radio rows (host, role, r003 state, tick collector); 봇 상태 = buttons in the head
  *   ([재시작] [정지] [<host>에서 실행]), a 4-cell stat strip (상태 / 모드 / 시작 / PID · 재시작), then the profile row with the
  *   external-r003 / restart note on the right; 미적용 변경 and 최근 변경 이력 as cards. [정지] is red while r003 runs
+ * - [2026-11-11] type=feat - "!" next to the profile select (ProfileInfo): one-line summary of conservative / neutral / aggressive
+ *   and a table of the keys each profile changes (server risk_profiles/*.json), plus what stays the same in all of them
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -74,6 +76,79 @@ const ACTION_LABEL: Record<string, string> = {
 };
 
 const roleLabel = (r: string | undefined) => (r === 'standby' ? 'standby (매매 안 함)' : 'primary (매매 호스트)');
+
+/**
+ * [2026-11-11] What the three risk profiles change (server live_trading/risk_profiles/<name>.json, applied over r001 when r003
+ * starts - only keys the live code reads are listed; TAKE_PROFIT_PERCENT / STOP_LOSS_* in those files are legacy and unused).
+ * Hard stop (-1.7% after 4 min), ATR stop (1.5 x ATR), TP1 (+3.0%, 40%) and profit lock are the same in every profile.
+ */
+const PROFILE_SUMMARY: Record<RiskProfile, string> = {
+  conservative: '보수 - 종목당 30만원, 작은 반납에도 빨리 정리',
+  neutral: '중립 - 종목당 50만원, 기본값 (현재 실전 기준)',
+  aggressive: '공격 - 종목당 70만원, 되돌림을 더 참고 추세를 길게 탐',
+};
+const PROFILE_ROWS: { k: string; v: Record<RiskProfile, string>; hint?: string }[] = [
+  { k: '종목당 주문 금액 상한', v: { conservative: '30만원', neutral: '50만원', aggressive: '70만원' } },
+  { k: '익절 후 트레일 (1차 익절 뒤 잔량, 고점 대비)', v: { conservative: '사용 안 함', neutral: '-1.0%', aggressive: '-0.7%' }, hint: 'ENABLE_TP_EXTENSION_TRAILING / TP_EXTENSION_TRAIL_FROM_PEAK' },
+  { k: '트레일링 스탑 (고점 대비 반납)', v: { conservative: '-1.2%', neutral: '-1.5%', aggressive: '-2.8%' }, hint: 'TRAILING_STOP_FROM_PEAK' },
+  { k: '매수 직후 급락 가드 (0~4분)', v: { conservative: '-0.5% · 25초', neutral: '-1.0% · 60초', aggressive: '-1.0% · 60초' }, hint: 'POST_BUY_BB_DROP_PCT / POST_BUY_DROP_CONFIRM_SECONDS' },
+  { k: '본전 실패 가드 (무장 손익 · 반납 · 확인)', v: { conservative: '+0.6% · 0.45% · 20초', neutral: '+1.0% · 0.8% · 60초', aggressive: '+1.2% · 1.0% · 45초' }, hint: 'BREAKEVEN_FAIL_ARM_PNL / GIVEBACK_PCT / CONFIRM_SECONDS' },
+  { k: '무추세 청산 (보유 · 고점 미만 · 손익 이하 · 확인)', v: { conservative: '15분 · +0.2% · -0.35% · 60초', neutral: '20분 · +0.3% · -0.45% · 90초', aggressive: '25분 · +0.5% · -0.8% · 120초' }, hint: 'NO_TREND_EXIT_*' },
+];
+
+/** "!" next to the profile select: a toggle that shows what each profile changes */
+function ProfileInfo({ current }: { current: RiskProfile }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className={`mini info${open ? ' on' : ''}`} title="프로파일 3개가 무엇을 바꾸는지 보기" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        !
+      </button>
+      {open && (
+        <div className="profile-info">
+          <ul className="small">
+            {RISK_PROFILES.map((p) => (
+              <li key={p} className={p === current ? 'cur' : ''}>
+                <b>{p}</b> {PROFILE_SUMMARY[p]}
+                {p === current && <span className="pill live">선택됨</span>}
+              </li>
+            ))}
+          </ul>
+          <table className="grid compact">
+            <thead>
+              <tr>
+                <th>항목</th>
+                {RISK_PROFILES.map((p) => (
+                  <th key={p} className={p === current ? 'cur' : ''}>
+                    {p}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {PROFILE_ROWS.map((r) => (
+                <tr key={r.k} className="nohover" title={r.hint || ''}>
+                  <td>{r.k}</td>
+                  {RISK_PROFILES.map((p) => (
+                    <td key={p} className={p === current ? 'cur' : ''}>
+                      {r.v[p]}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="muted small">
+            모든 프로파일에서 같은 것: 하드스탑 -1.7% (매수 4분 뒤 활성, 10초 확인), ATR 손절 1.5×ATR (4분 뒤, 20초 확인), 1차 익절 +3.0%에 40% (ATR 연동), 이익 잠금 +1.0% 뒤
+            -0.4% 반납 시 전량, 15:20 정규장 청산 (NXT 가능 종목은 19:59:58). 값은 서버 live_trading/risk_profiles/*.json 기준이며 바꾼 프로파일은 다음 실행/재시작부터
+            적용됩니다.
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
 const HOST_NAME: Record<RunMode, string> = { local: '이 PC', remote: '라즈베리파이' };
 
 /**
@@ -463,6 +538,7 @@ export function ControlView() {
               ))}
             </select>
           </label>
+          <ProfileInfo current={profile} />
           <label className="check">
             <input type="checkbox" checked={dryRun} disabled={busy} onChange={(e) => setMode({ dryRun: e.target.checked, profile })} /> dry-run
           </label>

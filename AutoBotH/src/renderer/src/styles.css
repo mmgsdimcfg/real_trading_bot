@@ -654,3 +654,12 @@ button.danger-text:hover:not(:disabled) { background: color-mix(in srgb, var(--s
 /* ---- [2026-11-11] 매매 결과 / 보유 현황: "제세금 포함" switch sits at the end of the KPI row ---- */
 .kpis .fee-switch { margin-left: auto; align-self: center; color: var(--text-2); white-space: nowrap; }
 .positions .grid td.reason { max-width: 420px; }
+/* ---- [2026-11-11] control tab: profile "!" info ---- */
+button.mini.info { width: 22px; height: 22px; padding: 0; border-radius: 50%; font-weight: 700; color: var(--text-2); }
+button.mini.info.on { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }
+.profile-info { flex-basis: 100%; margin-top: 4px; padding: 10px 12px 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.profile-info ul { margin: 0 0 8px; padding-left: 18px; }
+.profile-info li.cur { color: var(--text); }
+.profile-info .grid th { position: static; background: transparent; }
+.profile-info .grid th.cur, .profile-info .grid td.cur { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.profile-info .grid td { white-space: normal; }
