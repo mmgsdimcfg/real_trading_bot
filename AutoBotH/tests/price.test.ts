@@ -144,3 +144,54 @@ describe('server bars (r016 bars output)', () => {
     expect(re[0]).toMatchObject({ o: 4, h: 6, l: 3, c: 5, v: 10, t: ymdEpoch('20261105') });
   });
 });
+
+// [2026-11-11] tick-collector gaps and the KIS minute fill
+import { gapMinutes, gapText, mergeMinuteBars, minuteGaps, sessionRange } from '../src/shared/price';
+
+const MIN = 60000;
+const bar = (t: number, c = 100): { t: number; o: number; h: number; l: number; c: number; v: number } => ({ t, o: c, h: c, l: c, c, v: 1 });
+
+describe('minuteGaps', () => {
+  const ymd = '20261111';
+  const [open] = sessionRange(ymd);
+  it('finds a run of missing minutes inside the session and ignores short holes', () => {
+    const m1 = [];
+    for (let m = 0; m < 60; m++) {
+      if (m >= 24 && m < 40) continue; // 09:24-09:39 missing (collector down)
+      if (m === 50) continue; // one quiet minute
+      m1.push(bar(open + m * MIN));
+    }
+    const gaps = minuteGaps(m1, ymd, open + 60 * MIN);
+    expect(gaps).toEqual([[open + 24 * MIN, open + 40 * MIN]]);
+    expect(gapMinutes(gaps)).toBe(16);
+    expect(gapText(gaps)).toBe('09:24~09:40');
+  });
+  it('counts a late start and a dead tail, stops one minute before `until`', () => {
+    const m1 = [bar(open + 5 * MIN), bar(open + 6 * MIN)];
+    // scanning until 09:12 -> the scan ends at 09:11 (one minute before `until`), so the tail 09:07..09:11 (5 minutes) counts
+    expect(minuteGaps(m1, ymd, open + 12 * MIN)).toEqual([
+      [open, open + 5 * MIN],
+      [open + 7 * MIN, open + 12 * MIN],
+    ]);
+  });
+  it('is empty before the session and for complete bars', () => {
+    expect(minuteGaps([], ymd, open)).toEqual([]);
+    const m1 = Array.from({ length: 30 }, (_, m) => bar(open + m * MIN));
+    expect(minuteGaps(m1, ymd, open + 30 * MIN)).toEqual([]);
+  });
+});
+
+describe('mergeMinuteBars', () => {
+  const t0 = Date.UTC(2026, 10, 11, 0, 0); // 09:00 KST
+  it('uses KIS bars as the base and tick bars for KIS-less minutes and from the last KIS minute on', () => {
+    const kis = [bar(t0, 1), bar(t0 + MIN, 2), bar(t0 + 2 * MIN, 3), bar(t0 + 3 * MIN, 4)];
+    const ticks = [bar(t0, 11), bar(t0 + 3 * MIN, 44), bar(t0 + 4 * MIN, 55)];
+    const out = mergeMinuteBars(kis, ticks);
+    expect(out.map((b) => b.c)).toEqual([1, 2, 3, 44, 55]);
+  });
+  it('keeps tick bars where KIS has none (a minute KIS skipped)', () => {
+    const kis = [bar(t0, 1), bar(t0 + 2 * MIN, 3)];
+    const ticks = [bar(t0 + MIN, 22)];
+    expect(mergeMinuteBars(kis, ticks).map((b) => b.c)).toEqual([1, 22, 3]);
+  });
+});

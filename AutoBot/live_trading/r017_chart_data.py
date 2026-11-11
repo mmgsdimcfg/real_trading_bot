@@ -19,6 +19,11 @@
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: bars --source kis (min 전용) - 틱/_10s 파일이 있어도 KIS 1분봉(r018.minutes)으로 응답. AutoBotH 가 틱 수집기가
+      끊긴 구간(g011 중단 - 봇도 그 구간의 틱을 못 봄)을 KIS 분봉으로 채워 그리는 데 쓴다. 기본값 auto 는 기존과 같다.
+    impact: tooling
+    compatibility: backward-compatible (옵션 추가)
 - [2026-11-07] type=feat owner=claude
     summary: bars KIS 폴백(r018, 읽기 전용) - 서버 파일이 없을 때만: day/week/month = KIS 일봉 3년, min = KIS 1분봉(당일
       inquire_time_itemchartprice / 지난 날짜 inquire_time_dailychartprice, 직전일 예열 최대 3일 시도), tick 은 오류 문구 고정.
@@ -576,7 +581,7 @@ _KIS_CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
 
 
 def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: int = 1, ticks: int = 60, warmup: int = 0,
-         since_ts: str | None = None, all_sessions: bool = False) -> dict:
+         since_ts: str | None = None, all_sessions: bool = False, source: str = "auto") -> dict:
     t0 = time.time()
     code = str(code).zfill(6)
     name = None
@@ -598,7 +603,9 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
             df, src = res
         warm_rows, warm_date = [], None
     elif kind in ("tick", "min"):
-        res = _intraday_bars(date_str, code, kind, ticks, interval, all_sessions)
+        # [2026-11-11] --source kis: minute bars from KIS even when a tick / _10s file exists (AutoBotH fills the minutes the
+        # tick collector missed - a g011 outage leaves holes in the tick file that the bot could not see either)
+        res = None if (source == "kis" and kind == "min") else _intraday_bars(date_str, code, kind, ticks, interval, all_sessions)
         kis_used = False
         if res is None:
             if kind == "tick":
@@ -672,12 +679,15 @@ def add_subparsers(sub) -> None:
     p.add_argument("--warmup", type=int, default=0, help="also return the last K bars of the previous day")
     p.add_argument("--since-ts", dest="since_ts", default=None)
     p.add_argument("--all-sessions", dest="all_sessions", action="store_true")
+    p.add_argument("--source", choices=["auto", "kis"], default="auto",
+                   help="min: 'kis' = KIS minute bars even when the tick / _10s file exists (fill tick-collector gaps)")
 
 
 def run_command(args) -> dict:
     if args.cmd == "indicators":
         return indicators(args.date, args.code, args.frame, args.last)
-    return bars(args.date, args.code, args.kind, args.n, args.interval, args.ticks, args.warmup, args.since_ts, args.all_sessions)
+    return bars(args.date, args.code, args.kind, args.n, args.interval, args.ticks, args.warmup, args.since_ts, args.all_sessions,
+                getattr(args, "source", "auto"))
 
 
 def main(argv: list[str] | None = None) -> int:
