@@ -16,6 +16,10 @@
  *   The start button says where it starts ("이 PC에서 실행" / "라즈베리파이에서 실행")
  * - [2026-11-11] type=fix - Host row: tick collector shows its symbol count and "구독 누락 n종목" (watch codes it does not collect)
  *   with a [수집기 재시작] button on the selected host
+ * - [2026-11-11] type=feat - Card layout (reference design): every block is a card with a head row (title, muted subtitle / count,
+ *   the actions on the right). 매매 실행 위치 = radio rows (host, role, r003 state, tick collector); 봇 상태 = buttons in the head
+ *   ([재시작] [정지] [<host>에서 실행]), a 4-cell stat strip (상태 / 모드 / 시작 / PID · 재시작), then the profile row with the
+ *   external-r003 / restart note on the right; 미적용 변경 and 최근 변경 이력 as cards. [정지] is red while r003 runs
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -36,6 +40,8 @@ import {
 } from '../../../shared/control';
 
 const isoShow = (s: string | null | undefined) => (s ? s.replace('T', ' ').slice(0, 19) : '-');
+/** "HH:MM:SS" of a server KST string (the date stays in the tooltip) */
+const timeOnly = (s: string | null | undefined) => (s ? isoShow(s).slice(11) || '-' : '-');
 
 export const BOT_LABEL: Record<string, string> = {
   unknown: '상태 모름',
@@ -68,14 +74,12 @@ const ACTION_LABEL: Record<string, string> = {
 };
 
 const roleLabel = (r: string | undefined) => (r === 'standby' ? 'standby (매매 안 함)' : 'primary (매매 호스트)');
-
 const HOST_NAME: Record<RunMode, string> = { local: '이 PC', remote: '라즈베리파이' };
 
 /**
- * [2026-11-11] 매매 실행 위치: both hosts as two rows (role, r003, tick collector). The selected row is the host the [실행] button
- * starts r003 on (= settings.runMode / the open connection). "여기서 실행" on the other row saves runMode and reconnects (what
- * 설정/연결 > 실행 위치 > [저장 후 연결] did). Role switches, collector start, the other host's r003 stop and the watchlist copy
- * stay available under "고급".
+ * 매매 실행 위치: both hosts as radio rows (role, r003, tick collector). The checked row is the host the [실행] button starts r003
+ * on (= settings.runMode / the open connection); checking the other row saves runMode and reconnects (what 설정/연결 > 실행 위치 >
+ * [저장 후 연결] did). Role switches, collector start, the other host's r003 stop and the watchlist copy stay under "고급".
  */
 function HostPanel() {
   const control = useStore((s) => s.control);
@@ -162,56 +166,40 @@ function HostPanel() {
     const st = selected ? self : peer;
     const role = st?.host?.role?.role;
     const s = botSummary(st);
-    const hostText = st?.host ? `${st.host.hostname} (${st.host.platform})` : kind === 'local' ? 'Windows' : 'Linux · SSH';
+    const hostText = st?.host ? st.host.hostname : kind === 'local' ? 'Windows' : 'Linux · SSH';
+    const coll = st?.collector;
     return (
-      <tr key={kind} className={`nohover${selected ? ' sel' : ''}`}>
-        <td className="host-pick">
-          {selected ? (
-            <b className="pill live" title="[실행]을 누르면 이 호스트에서 r003이 시작됩니다">
-              실행 대상
-            </b>
-          ) : (
-            <button className="mini" disabled={anyBusy} title={`실행 위치를 ${HOST_NAME[kind]}로 바꿉니다 (설정 저장 후 다시 연결)`} onClick={() => void switchTo(kind)}>
-              여기서 실행
-            </button>
-          )}
-        </td>
-        <td>
-          <b>{HOST_NAME[kind]}</b> <span className="muted small">{hostText}</span>
-        </td>
-        <td>
-          {st?.host ? (
-            <span className={role === 'standby' ? 'pill pend' : 'pill live'} title={st.host.role?.set ? `${st.host.role.by || ''} ${st.host.role.at || ''} ${st.host.role.note || ''}` : '역할 파일 없음 = primary'}>
-              {roleLabel(role)}
-            </span>
-          ) : st ? (
-            <span className="muted small">이전 버전 서버 (git pull 필요)</span>
-          ) : (
-            '-'
-          )}
-        </td>
-        <td>
+      <label key={kind} className={`host-row${selected ? ' sel' : ''}`} title={selected ? '[실행]을 누르면 이 호스트에서 r003이 시작됩니다' : `실행 위치를 ${HOST_NAME[kind]}로 바꿉니다 (설정 저장 후 다시 연결)`}>
+        <input type="radio" name="run-host" checked={selected} disabled={anyBusy} onChange={() => void switchTo(kind)} />
+        <span className="hn">
+          {HOST_NAME[kind]}
+          <span>{hostText}</span>
+        </span>
+        <span className={role === 'standby' ? 'muted' : ''} title={st?.host?.role?.set ? `${st.host.role.by || ''} ${st.host.role.at || ''} ${st.host.role.note || ''}` : st?.host ? '역할 파일 없음 = primary' : ''}>
+          {st?.host ? (role === 'standby' ? 'standby' : 'primary') : st ? '이전 버전 (git pull 필요)' : '-'}
+        </span>
+        <span>
           {st ? (
             <span className={`bot bot-${s}`}>
               <i className="dot" />
-              r003 {BOT_LABEL[s]}
+              {BOT_LABEL[s]}
             </span>
           ) : (
             <span className="muted small">{selected ? (connected ? '상태 확인 중…' : '연결 안 됨') : peerErr || '확인 안 됨'}</span>
           )}
-        </td>
-        <td className="muted small">
+        </span>
+        <span className="muted small">
           {st && (
             <>
-              틱 수집기 {st.collector?.running ? `실행 중${st.collector.symbols ? ` (${st.collector.symbols}종목)` : ''}` : '정지'}
-              {st.collector?.running && !!st.collector.missing?.length && (
+              틱 수집기 {coll?.running ? `실행 중${coll.symbols ? ` (${coll.symbols}종목)` : ''}` : '정지'}
+              {coll?.running && !!coll.missing?.length && (
                 <>
                   {' '}
-                  <span className="warn-text" title={`수집기가 시작된 뒤 감시목록에 들어온 종목 - 틱 파일이 없어 1분봉 트리거가 평가되지 않습니다: ${st.collector.missing.join(', ')}`}>
-                    구독 누락 {st.collector.missing.length}종목
+                  <span className="warn-text" title={`수집기가 시작된 뒤 감시목록에 들어온 종목 - 틱 파일이 없어 1분봉 트리거가 평가되지 않습니다: ${coll.missing.join(', ')}`}>
+                    구독 누락 {coll.missing.length}종목
                   </span>{' '}
                   {selected && (
-                    <button className="mini" disabled={anyBusy || !connected} onClick={() => void restartCollector()}>
+                    <button className="mini" disabled={anyBusy || !connected} onClick={(e) => (e.preventDefault(), void restartCollector())}>
                       수집기 재시작
                     </button>
                   )}
@@ -219,37 +207,40 @@ function HostPanel() {
               )}
             </>
           )}
-        </td>
-      </tr>
+        </span>
+      </label>
     );
   };
 
   return (
-    <section>
-      <h3>매매 실행 위치</h3>
-      <p className="muted small">
-        r003(자동매매)은 계좌가 하나라 <b>한 곳에서만</b> 돌립니다. 아래에서 "실행 대상"인 호스트에서 [실행]이 r003을 시작합니다. 다른 호스트로 바꾸려면 그 줄의 [여기서 실행]을
-        누르세요.
-      </p>
-      <table className="grid compact host-table">
-        <tbody>
-          {row('local')}
-          {row('remote')}
-        </tbody>
-      </table>
-      <div className="actions">
-        {!connected && (
-          <button className="primary" disabled={switching} onClick={() => void switchTo(mode)}>
-            {HOST_NAME[mode]}에 연결
+    <section className="card">
+      <div className="card-head">
+        <div>
+          <span className="title">매매 실행 위치</span>
+          <span className="sub">r003은 계좌당 한 호스트에서만 실행됩니다</span>
+        </div>
+        <div className="card-actions">
+          {!connected && (
+            <button className="primary" disabled={switching} onClick={() => void switchTo(mode)}>
+              {HOST_NAME[mode]}에 연결
+            </button>
+          )}
+          <button disabled={anyBusy || !connected} onClick={() => void loadPeer()}>
+            {peerName} 상태 확인
           </button>
-        )}
-        <button disabled={anyBusy || !connected} onClick={() => void loadPeer()}>
-          {peerName} 상태 확인
-        </button>
-        {(busy || switching) && <i className="spinner" />}
-        {msg && <span className={/실패/.test(msg) ? 'err-text small' : 'muted small'}>{msg}</span>}
+        </div>
       </div>
-      <details className="adv">
+      <div className="host-rows">
+        {row('local')}
+        {row('remote')}
+      </div>
+      {(msg || busy || switching) && (
+        <div className="card-row">
+          {(busy || switching) && <i className="spinner" />}
+          {msg && <span className={/실패/.test(msg) ? 'err-text small' : 'muted small'}>{msg}</span>}
+        </div>
+      )}
+      <details className="adv card-adv">
         <summary>고급: 역할 바꾸기 · 틱 수집기 · {peerName} r003 정지 · 감시목록 복사</summary>
         <p className="muted small">
           [실행]은 시작 전에 {peerName}를 확인해 r003이 돌고 있으면 거부하고, primary 이면 standby 로 바꾼 뒤 {HOST_NAME[mode]}를 primary 로 해서 시작합니다 (standby 호스트는
@@ -291,8 +282,8 @@ function HostPanel() {
           </button>
         </div>
         <p className="muted small">
-          노트북을 못 쓰는 날: 라즈베리파이 줄의 [여기서 실행]을 누른 뒤 [라즈베리파이에서 실행]. 노트북이 켜져 있으면 자동으로 standby 가 됩니다. 장 마감 후 자동 작업이 끝나면
-          새 감시목록이 라즈베리파이로도 복사됩니다 (설정).
+          노트북을 못 쓰는 날: 라즈베리파이 줄을 고른 뒤 [라즈베리파이에서 실행]. 노트북이 켜져 있으면 자동으로 standby 가 됩니다. 장 마감 후 자동 작업이 끝나면 새 감시목록이
+          라즈베리파이로도 복사됩니다 (설정).
         </p>
       </details>
     </section>
@@ -320,6 +311,7 @@ export function ControlView() {
   const summary = botSummary(st);
   const svc = st?.service;
   const nPending = pendingCount(st);
+  const hostName = isLocal ? '이 PC' : '라즈베리파이';
 
   useEffect(() => {
     if (!connected) return;
@@ -384,48 +376,85 @@ export function ControlView() {
 
   if (!connected && !st) {
     return (
-      <div className="control">
+      <div className="control cards">
         <HostPanel />
         <div className="empty">연결되어 있지 않습니다 - 위에서 실행 위치를 고르고 [연결]을 누르세요 (연결 정보는 설정/연결 탭).</div>
       </div>
     );
   }
 
+  // mode cell: dry_run is null while the bot is stopped (no running snapshot) - never show that as 실주문
+  const modeCell =
+    st?.dry_run === true ? (
+      <span>dry-run</span>
+    ) : st?.dry_run === false ? (
+      <span className="live-mode">실주문</span>
+    ) : (
+      <span className="muted" title={st?.running ? '실행 스냅샷이 없어 실행 모드를 확인할 수 없습니다 (재시작 후 정확)' : '정지 중 - 다음 실행 모드는 아래 dry-run 체크'}>
+        {st?.running ? '확인 불가' : '-'}
+      </span>
+    );
+  const noteRight = [
+    st?.external_r003?.length ? `외부 r003 ${st.external_r003.length}개 감지` : '외부 r003 없음',
+    isLocal ? '크래시 시 60초 후 재시작 (10분 3회까지)' : '서버 재부팅 후에는 여기서 [실행]',
+  ].join(' · ');
+
   return (
-    <div className="control">
+    <div className="control cards">
       <HostPanel />
-      <section>
-        <h3>
-          봇 상태 (r003 · {isLocal ? '이 PC' : '라즈베리파이'} · {svc?.unit || 'autobot-r003.service'})
-        </h3>
-        <div className="botline">
-          <span className={`bot bot-${summary}`}>
-            <i className="dot" />
-            {BOT_LABEL[summary]}
-          </span>
-          <span>PID {svc?.main_pid ?? '-'}</span>
-          <span>시작 {isoShow(svc?.started_at)}</span>
-          <span>재시작 {svc?.restarts ?? 0}회</span>
-          <span>
-            {/* dry_run is null while the bot is stopped (no running snapshot) - never show that as 실주문 */}
-            모드{' '}
-            {st?.dry_run === true ? (
-              <b>dry-run</b>
-            ) : st?.dry_run === false ? (
-              <b className="live-mode">실주문</b>
-            ) : (
-              <b title={st?.running ? '실행 스냅샷이 없어 실행 모드를 확인할 수 없습니다 (재시작 후 정확)' : '정지 중 - 다음 실행 모드는 아래 dry-run 체크'}>
-                {st?.running ? '확인 불가' : '-'}
-              </b>
+
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <span className="title">봇 상태</span>
+            <span className="sub">r003 · {svc?.unit || 'autobot-r003.service'}</span>
+          </div>
+          <div className="card-actions">
+            {busy && (
+              <span className="busy small">
+                <i className="spinner" />
+                {BUSY_LABEL[control.busy!] || `${control.busy} 진행 중…`}
+              </span>
             )}
-          </span>
-          <span>프로파일 {st?.risk_profile || '-'}</span>
-          {svc?.sub_state === 'auto-restart' && <span className="warn-text">크래시 후 재시작 대기 중</span>}
-          {svc?.active_state === 'failed' && <span className="warn-text">마지막 실행 실패 (result={svc.result})</span>}
+            <button disabled={!btn.restart} onClick={() => void run('restart')}>
+              재시작
+            </button>
+            <button className={st?.running ? 'danger-text' : ''} disabled={!btn.stop} onClick={() => void run('stop')}>
+              정지
+            </button>
+            <button className="primary" disabled={!btn.start} title={btn.startReason || ''} onClick={() => void run('start')}>
+              {hostName}에서 실행
+            </button>
+          </div>
         </div>
-        <div className="actions">
+        <div className="stats">
+          <div>
+            <span className="k">상태</span>
+            <span className={`v bot bot-${summary}`}>
+              <i className="dot" />
+              {BOT_LABEL[summary]}
+            </span>
+          </div>
+          <div>
+            <span className="k">모드</span>
+            <span className="v">{modeCell}</span>
+          </div>
+          <div>
+            <span className="k">시작</span>
+            <span className="v" title={isoShow(svc?.started_at)}>
+              {timeOnly(svc?.started_at)}
+            </span>
+          </div>
+          <div>
+            <span className="k">PID · 재시작</span>
+            <span className="v">
+              {svc?.main_pid ?? '-'} · {svc?.restarts ?? 0}회
+            </span>
+          </div>
+        </div>
+        <div className="card-row">
           <label>
-            프로파일
+            프로파일{' '}
             <select value={profile} disabled={busy} onChange={(e) => setMode({ dryRun, profile: e.target.value as RiskProfile })}>
               {RISK_PROFILES.map((p) => (
                 <option key={p} value={p}>
@@ -435,135 +464,114 @@ export function ControlView() {
             </select>
           </label>
           <label className="check">
-            <input type="checkbox" checked={dryRun} disabled={busy} onChange={(e) => setMode({ dryRun: e.target.checked, profile })} /> dry-run (주문 안 냄)
+            <input type="checkbox" checked={dryRun} disabled={busy} onChange={(e) => setMode({ dryRun: e.target.checked, profile })} /> dry-run
           </label>
-          {mode && (mode.dryRun !== st?.dry_run || mode.profile !== st?.risk_profile) && (
-            <span className="muted small">다음 실행/재시작부터 적용 (r003.env에 저장)</span>
-          )}
-        </div>
-        <div className="actions">
-          <button className="primary" disabled={!btn.start} title={btn.startReason || ''} onClick={() => void run('start')}>
-            {isLocal ? '이 PC' : '라즈베리파이'}에서 실행
-          </button>
-          <button disabled={!btn.stop} onClick={() => void run('stop')}>
-            정지
-          </button>
-          <button disabled={!btn.restart} onClick={() => void run('restart')}>
-            재시작
-          </button>
+          {mode && (mode.dryRun !== st?.dry_run || mode.profile !== st?.risk_profile) && <span className="muted small">다음 실행/재시작부터 적용 (r003.env에 저장)</span>}
           {nPending > 0 && st?.running && (
             <span className="badge-warn" title="서비스 시작 이후 바뀐 파일이 있습니다">
               ⚠ 미적용 변경 {nPending}건 → 재시작 필요
             </span>
           )}
-          {busy && (
-            <span className="busy">
-              <i className="spinner" />
-              {BUSY_LABEL[control.busy!] || `${control.busy} 진행 중…`}
-            </span>
-          )}
+          <span className="push-right muted small" title={`상태 기준 시각 ${isoShow(st?.generated_at)} (KST)`}>
+            {noteRight}
+          </span>
         </div>
-        {msg && <p className="err-text">{msg}</p>}
-        {control.lastAction && !busy && (
-          <p className={control.lastAction.ok ? 'muted small' : 'err-text small'}>
-            마지막 동작: {control.lastAction.message}
-          </p>
-        )}
-        {control.error && <p className="err-text small">상태 조회 오류: {control.error}</p>}
-        <div className={st?.external_r003?.length ? 'callout danger' : 'muted small'}>
-          {st?.external_r003?.length ? (
-            <>
-              <b>외부 r003 감지</b> -{' '}
-              {isLocal ? '감시 프로세스 밖에서 실행된 r003입니다 (콘솔 등). [정지]를 누르면 상태를 저장하고 끝내도록 요청합니다.' : '서버의 screen 세션에서 r003을 종료한 뒤 앱에서 실행하세요.'}
-              <ul>
-                {st.external_r003.map((p) => (
-                  <li key={p.pid} className="mono">
-                    PID {p.pid} · {p.cmdline}
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : (
-            '외부 r003 감지: 없음'
-          )}
-        </div>
-        {st && !st.running && st.override_count > 0 && (
-          <p className="callout small">봇이 꺼져 있습니다. 저장된 오버라이드 {st.override_count}건은 다음 실행 때 적용됩니다.</p>
-        )}
-        <p className="muted small">
-          {isLocal
-            ? '이 PC의 r003은 앱과 별개로 실행되어 앱을 닫아도 계속됩니다 (PC 재부팅·절전 시 멈춤 - 재부팅 후에는 여기서 [실행]). 크래시하면 60초 뒤 다시 시작합니다 (10분에 3회까지).'
-            : '서비스는 서버 부팅 시 자동으로 시작하지 않습니다. 서버를 재부팅한 뒤에는 여기서 [실행]을 눌러야 합니다.'}{' '}
-          상태 기준 시각 {isoShow(st?.generated_at)} (KST)
-        </p>
-      </section>
-
-
-      <section>
-        <h3>미적용 변경 · 저장된 오버라이드 ({overrides.length})</h3>
-        {(st?.override_errors?.length || 0) > 0 && (
-          <div className="callout warn small">
-            서버(r001)가 거부한 오버라이드 항목:
-            <ul>
-              {st!.override_errors.map((e) => (
-                <li key={e}>{e}</li>
-              ))}
-            </ul>
+        {(msg || (control.lastAction && !busy) || control.error || st?.external_r003?.length || (st && !st.running && st.override_count > 0)) && (
+          <div className="card-body notes">
+            {msg && <p className="err-text">{msg}</p>}
+            {control.lastAction && !busy && <p className={control.lastAction.ok ? 'muted small' : 'err-text small'}>마지막 동작: {control.lastAction.message}</p>}
+            {control.error && <p className="err-text small">상태 조회 오류: {control.error}</p>}
+            {!!st?.external_r003?.length && (
+              <div className="callout danger">
+                <b>외부 r003 감지</b> -{' '}
+                {isLocal ? '감시 프로세스 밖에서 실행된 r003입니다 (콘솔 등). [정지]를 누르면 상태를 저장하고 끝내도록 요청합니다.' : '서버의 screen 세션에서 r003을 종료한 뒤 앱에서 실행하세요.'}
+                <ul>
+                  {st.external_r003.map((p) => (
+                    <li key={p.pid} className="mono">
+                      PID {p.pid} · {p.cmdline}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {st && !st.running && st.override_count > 0 && <p className="callout small">봇이 꺼져 있습니다. 저장된 오버라이드 {st.override_count}건은 다음 실행 때 적용됩니다.</p>}
+            {svc?.sub_state === 'auto-restart' && <p className="warn-text small">크래시 후 재시작 대기 중</p>}
+            {svc?.active_state === 'failed' && <p className="warn-text small">마지막 실행 실패 (result={svc.result})</p>}
           </div>
         )}
-        {pendingRows.length ? (
-          <table className="grid compact">
-            <tbody>
-              {pendingRows.map((r) => (
-                <tr key={r.k} className="nohover">
-                  <td>{r.pending ? <i className="pend-dot">미적용</i> : <i className="ovr-mark">{st?.running ? '◆ 적용 중' : '◆ 저장됨'}</i>}</td>
-                  <td className="mono wrap">{r.text}</td>
-                  <td>
-                    {r.key && (
-                      <button className="mini" disabled={busy || !connected} onClick={() => void unset(r.key!)}>
-                        기본값으로
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="muted">저장된 오버라이드나 재시작을 기다리는 변경이 없습니다.</p>
-        )}
-        <div className="actions">
-          <button disabled={busy || !connected || !overrides.length} onClick={() => void reset()}>
-            전체 기본값으로 되돌리기 (reset)
-          </button>
-          <span className="muted small">설정값은 파이프라인 탭에서 노드를 눌러 바꾸거나, 설정/연결 탭의 "고급: 전체 설정값"에서 바꿉니다.</span>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <span className="title">미적용 변경</span>
+            <span className="count">{pendingRows.length}건</span>
+          </div>
+          <div className="card-actions">
+            <button disabled={busy || !connected || !overrides.length} onClick={() => void reset()}>
+              기본값으로 되돌리기
+            </button>
+          </div>
+        </div>
+        <div className="card-body">
+          {(st?.override_errors?.length || 0) > 0 && (
+            <div className="callout warn small">
+              서버(r001)가 거부한 오버라이드 항목:
+              <ul>
+                {st!.override_errors.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {pendingRows.length ? (
+            <table className="grid compact">
+              <tbody>
+                {pendingRows.map((r) => (
+                  <tr key={r.k} className="nohover">
+                    <td>{r.pending ? <i className="pend-dot">미적용</i> : <i className="ovr-mark">{st?.running ? '◆ 적용 중' : '◆ 저장됨'}</i>}</td>
+                    <td className="mono wrap">{r.text}</td>
+                    <td>
+                      {r.key && (
+                        <button className="mini" disabled={busy || !connected} onClick={() => void unset(r.key!)}>
+                          기본값으로
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="muted">재시작을 기다리는 변경이 없습니다.</p>
+          )}
+          <p className="muted small">설정값은 파이프라인 탭에서 노드를 눌러 바꾸거나, 설정/연결 탭의 "고급: 전체 설정값"에서 바꿉니다.</p>
         </div>
       </section>
 
-      <section>
-        <h3>최근 변경 이력 (20건)</h3>
-        {histErr && <p className="err-text small">{histErr}</p>}
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <span className="title">최근 변경 이력</span>
+            <span className="count">{history.length}건</span>
+          </div>
+        </div>
+        {histErr && <p className="err-text small card-body">{histErr}</p>}
         <div className="table-wrap short">
-          <table className="grid compact">
-            <thead>
-              <tr>
-                <th>시각 (KST)</th>
-                <th>작성자</th>
-                <th>동작</th>
-                <th>내용</th>
-              </tr>
-            </thead>
+          <table className="hist">
             <tbody>
               {history.map((h, i) => (
-                <tr key={`${h.ts}-${i}`} className="nohover">
-                  <td className="mono">{isoShow(h.ts)}</td>
-                  <td>{h.by}</td>
-                  <td>{ACTION_LABEL[h.action] || h.action}</td>
-                  <td className="mono wrap">{historyText(h)}</td>
+                <tr key={`${h.ts}-${i}`}>
+                  <td className="t" title={isoShow(h.ts)}>
+                    {timeOnly(h.ts)}
+                  </td>
+                  <td className="a">{ACTION_LABEL[h.action] || h.action}</td>
+                  <td className="b muted">{h.by}</td>
+                  <td className="c mono wrap">{historyText(h)}</td>
                 </tr>
               ))}
               {!history.length && (
-                <tr className="nohover">
+                <tr>
                   <td colSpan={4} className="muted center">
                     이력 없음
                   </td>

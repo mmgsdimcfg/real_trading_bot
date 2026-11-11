@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-11] type=feat - v2.3.6_001: 제어 탭 카드 레이아웃 (참고 디자인) - 모든 블록이 카드(제목·부제/건수, 오른쪽 버튼). 매매 실행 위치 = 라디오 줄(호스트·역할·r003 상태·틱 수집기), 봇 상태 = 머리줄 버튼 [재시작] [정지] [<호스트>에서 실행] + 4칸 지표(상태/모드/시작/PID·재시작) + 프로파일 줄(오른쪽에 외부 r003·재시작 안내), 미적용 변경·최근 변경 이력 카드. 실행 중에는 [정지] 글자 빨간색. 차트 탭: 타임라인과 같은 감시 종목 드롭다운(현재 종목 표시)을 코드 입력 왼쪽에",
     "[2026-11-11] type=fix - v2.3.5_002: (1) 감시목록이 바뀐 뒤 틱 수집기(g011)가 새 종목을 구독하지 않아 틱 파일이 없던 문제(_009 1분봉 트리거 ABSTAIN_NO_FILE, 틱 차트 비어 있음) - 감시목록 저장 시 수집기 재시작, 5분 자동 확인에서도 구독 누락이면 재시작, 제어 탭 호스트 줄에 \"구독 누락 n종목\" + [수집기 재시작]. (2) 차트 탭 종목 목록이 입력값과 일치하는 1개만 보이던 문제 - 감시 종목 전체 <select> 추가. (3) 서버 r018 이 KIS<날짜>_prod 토큰 파일을 못 읽어 차트 분봉/현재가가 실패하던 문제 (서버 코드 수정, 파이도 pull 필요)",
     "[2026-11-11] type=feat - v2.3.5_001: 확인 팝업을 Electron 기본 메시지 박스 대신 앱 스타일 카드(components/ConfirmDialog)로 - 태그(LIVE/장중) + 작은 제목, 질문, 한 줄 설명, 모드/프로파일/실행 위치 표, [취소] [실주문으로 실행]. r003 실행/재시작/정지, 설정 되돌리기, 감시목록 저장/재시작, 데이터 작업, 다른 호스트 역할/정지/감시목록 보내기, KIS 설정 가져오기, 앱 종료 확인이 모두 같은 모양 (main control.ts askConfirm <-> confirm:ask/answer IPC; 창이 없을 때만 기본 메시지 박스)",
     "[2026-11-11] type=feat - v2.3.4_001: 데이터 작업 - 장 마감 파이프라인 / 감시 종목 선별에 \"감시목록(r004) 갱신\" 체크박스 (오늘이면 켜짐, 과거 날짜면 꺼짐 - 날짜를 바꾸면 다시 자동). 꺼지면 r021 --keep-watchlist 로 scan 이 g002 --no-export-watchlist 로 돌아 그 날짜의 선별 파일(picks·리포트, Edge AI 데이터셋 g013 이 읽음)만 만들고 지금 감시 중인 종목은 그대로. r003 실행 중에 감시목록을 덮어쓰는 작업은 시작 전 확인. 마지막 실행에 감시목록을 바꿨는지 표시",
@@ -30,7 +31,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.5",
+  "version": "2.3.6",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -78,7 +79,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

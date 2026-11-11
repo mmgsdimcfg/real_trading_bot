@@ -424,13 +424,6 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.6; }
 .grid td.wrap { white-space: normal; word-break: break-all; }
 button.mini { padding: 1px 7px; font-size: 11.5px; }
 .push-right { margin-left: auto; }
-/* [2026-11-11] 매매 실행 위치: one row per host, the selected row is the [실행] target */
-.host-table { width: auto; min-width: 60%; }
-.host-table td { vertical-align: middle; white-space: nowrap; }
-.host-table td.host-pick { width: 96px; }
-.host-table tr.sel td { background: var(--surface-2); }
-.host-table tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-.host-table .pill { margin-left: 0; }
 details.adv { margin-top: 10px; }
 details.adv > summary { cursor: pointer; color: var(--text-2); font-size: 12.5px; }
 details.adv > summary:hover { color: var(--text); }
@@ -624,3 +617,37 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .confirm-row .v.warn { color: var(--st-hold); }
 .confirm-btns { display: flex; justify-content: flex-end; gap: 12px; margin-top: 28px; }
 .confirm-btns button.wide { padding: 10px 24px; font-size: 14px; }
+
+/* ---- [2026-11-11] control tab cards (reference design) ---- */
+.control.cards { padding: 14px 26px 40px; }
+.control.cards section.card { margin: 0 0 16px; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 22px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.card-head .title { font-size: 15.5px; font-weight: 700; }
+.card-head .sub, .card-head .count { color: var(--text-3); margin-left: 10px; font-size: 13.5px; }
+.card-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.card-actions button { padding: 9px 18px; border-radius: 8px; font-size: 14px; }
+.card-body { padding: 14px 22px; }
+.card-body.notes p { margin: 4px 0; }
+.card-row { display: flex; align-items: center; gap: 16px; padding: 13px 22px; flex-wrap: wrap; border-top: 1px solid var(--border); }
+.card-head + .card-row, .host-rows + .card-row { border-top: 0; }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 16px 22px; }
+.stats .k { display: block; color: var(--text-3); font-size: 13px; margin-bottom: 6px; }
+.stats .v { font-weight: 600; font-size: 15px; }
+.stats .v.bot { display: inline-flex; }
+.host-rows { display: flex; flex-direction: column; }
+.host-row { display: grid; grid-template-columns: 18px minmax(180px, 1.2fr) 110px 150px minmax(200px, 1.6fr); align-items: center; gap: 14px; padding: 13px 22px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.host-row:last-child { border-bottom: 0; }
+.host-row.sel { background: var(--surface-2); }
+.host-row input[type='radio'] { margin: 0; accent-color: var(--text); }
+.host-row .hn { font-weight: 700; }
+.host-row .hn span { font-weight: 400; color: var(--text-3); margin-left: 6px; }
+.card-adv { margin: 0; padding: 10px 22px 14px; border-top: 1px solid var(--border); }
+.hist { width: 100%; border-collapse: collapse; font-size: 14px; }
+.hist td { padding: 11px 22px; border-top: 1px solid var(--border); white-space: nowrap; vertical-align: top; }
+.hist tr:first-child td { border-top: 0; }
+.hist td.t { font-family: Consolas, 'D2Coding', monospace; color: var(--text-2); width: 100px; }
+.hist td.a { width: 140px; }
+.hist td.b { width: 160px; }
+.hist td.c { white-space: normal; word-break: break-all; }
+button.danger-text:not(:disabled) { color: var(--st-fail); border-color: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
+button.danger-text:hover:not(:disabled) { background: color-mix(in srgb, var(--st-fail) 12%, var(--surface-2)); }
