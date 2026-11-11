@@ -59,10 +59,13 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 | `job start NAME [--date D] [--workers N] [--edge-ai] [--keep-watchlist] [--trading-day-only]` | `{ok, name, pid, run_id, running}` / 휴장일 `{ok, skipped, reason}` / 다른 작업 실행 중 `{ok:false, error, running}` | 0 / 3 |
 | `job stop NAME` | `{ok, stopped}` | 0 / 3 |
 | `job log NAME [-n N]` | `{ok, name, log, lines[], state}` | 0 |
+| `job data --date D` | `{ok, date, dir, exists, scannable, collected, collected_count, files_10s, files_daily, data_mtime, picks: [{code,name}]\|null, picks_file, picks_mtime, scan_log_mtime, r004: {scan_date, same_codes, applied, count, mtime}}` - [2026-11-11] 그 날짜 폴더의 수집 데이터 유무와 g002 선별 결과, r004 가 그 선별과 같은지 | 0 / 2 |
+| `watchlist apply --date D` | `watchlist set` 과 같은 `{ok, count, backup, path, restart_required, collector_missing, collector_note}` + `date, picks_file, for_trading_day` / picks 파일 없음 `{ok:false, error}` - [2026-11-11] 그 날짜의 `_D_picks.txt` 를 r004 로 (헤더 scan_date / for_trading_day) | 0 / 2 |
 
 - 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --export-watchlist
   --for-next-trading-day; `--keep-watchlist`면 g002 --date D --no-export-watchlist: 그 날짜의 선별 파일만 만들고 r004는 그대로 - 과거 날짜
-  보충 수집/Edge AI 재학습용, 앱의 "감시목록(r004) 갱신" 체크 해제), `edge_ai`(g013 --live, g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> scan
+  보충 수집/Edge AI 재학습용, 앱의 "감시목록(r004) 갱신" 체크 해제; [2026-11-11] 앱의 "감시 종목 선별" 카드는 기본으로 이 모드로 돌린 뒤
+  `job data` 로 읽은 선별 결과를 보여주고 "r004 감시목록에 적용" 체크로 `watchlist apply` 를 부른다), `edge_ai`(g013 --live, g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> scan
   [-> edge_ai]). collect/scan 실패 시 뒤 단계 생략, history 실패는 계속. 한 번에 한 작업. 상태 `runtime/data/jobs/<NAME>.json`,
   로그 `runtime/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log`.
 - process 백엔드 `stop`은 감시자가 없더라도 r003 잠금이 잡혀 있으면 정지 요청을 보내고, 잠금이 풀릴 때만 성공한다.

@@ -15,6 +15,8 @@
   history [-n N]                 최근 변경 이력
   conditions                     r015 조건 JSON + 각 상수의 editable/base/override/running/pending
   watchlist get | watchlist set (--codes "005930,삼성전자;000660" | --stdin)   r004 감시목록 읽기/쓰기(백업 후 교체)
+  watchlist apply --date D         그 날짜의 g002 선별 결과(<runtime>/data/D/_D_picks.txt)를 r004 에 적용 (set 과 같은 백업/이력,
+                                   헤더에 scan_date / for_trading_day 기록) - 앱의 "선별 후 r004 적용" 체크
   collector status | collector restart      g011 틱 수집기 상태 / SIGTERM (g022 cron 또는 r003 감시자가 새 감시목록으로 재기동)
   indicators ... | bars ...        차트 데이터 (live_trading/r017_chart_data.py 로 위임 - 그 파일의 docstring 참조)
   quote --code C [--trades N]      KIS 현재가+호가+체결 (live_trading/r018_kis_market.py, 읽기 전용)
@@ -23,6 +25,8 @@
   doctor                           실행 환경 점검 (Python/패키지 버전, open-trading-api, KIS 설정 파일 유무, 역할, 백엔드)
   job list | job start NAME [--date D] [--workers N] [--edge-ai] [--keep-watchlist] | job stop NAME | job log NAME [-n N]
                                    데이터 작업 (live_trading/r021_jobs.py: collect/history/scan/edge_ai/universe/postclose)
+  job data --date D                그 날짜 폴더의 수집 데이터 유무 + g002 선별 결과 (r021) + r004 와의 비교 블록(r004: scan_date,
+                                   same_codes, applied, count, mtime)
 
 서비스 백엔드: Linux = systemd --user autobot-r003.service, Windows = r020_supervisor.py (분리 실행 감시 프로세스, 같은 상태 JSON).
 AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는 /proc 이 없어 r003/g011 실행 여부를 각자의 단일 실행
@@ -37,6 +41,13 @@ AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: (1) watchlist apply --date D - 그 날짜의 g002 선별 파일(_D_picks.txt)을 r004 에 적용. write_watchlist 와 같은 잠금/백업/
+      이력/수집기 안내에 헤더 메타(scan_date, for_trading_day = r014 다음 거래일, [r016] applied from picks) 를 쓴다(meta 인자).
+      (2) job data --date D 응답에 r004 블록(scan_date, same_codes = r004 종목 집합이 그 날짜 picks 와 같음, applied, count, mtime).
+      앱 흐름: 수집된 날짜 -> g002 선별만 실행(--keep-watchlist) -> 결과를 보고 "r004 감시목록에 적용" 체크.
+    impact: tooling (명령 추가, 응답 필드 추가)
+    compatibility: backward-compatible
 - [2026-11-10] type=feat owner=claude
     summary: collector restart 가 g011 을 멈춘 뒤 바로 현재 r004 로 다시 띄운다(세션 창/standby 규칙은 collector start 와 같음).
       감시목록이 장중에 바뀌면 새 종목의 틱 파일이 cron/앱 5분 확인까지 없거나(앱이 꺼져 있으면 영영) _009 1분봉 트리거가
@@ -907,12 +918,22 @@ def parse_watchlist_entries(text: str) -> list[dict]:
     return entries
 
 
-def write_watchlist(paths: ControlPaths, entries: list[dict], by: str) -> dict:
+WATCHLIST_META_PREFIXES = ("# scan_date=", "# for_trading_day=", "# scanner_config=")
+
+
+def write_watchlist(paths: ControlPaths, entries: list[dict], by: str, meta: dict[str, str] | None = None) -> dict:
+    """Replace r004 (backup + history). meta (watchlist apply): the g002 export header lines (scan_date, for_trading_day,
+    scanner_config) are replaced by the given ones, so r004 says which scan it came from; None (set) keeps them as they are."""
     with write_lock(paths):
         current = read_watchlist(paths)
         header = current["header"] or ["# Daily live trading watchlist.", "# Format: code,name"]
         header = [h for h in header if not h.startswith("# [r016]")]
-        header.append(f"# [r016] edited by {by} at {datetime.now().isoformat(timespec='seconds')}")
+        if meta is not None:
+            header = [h for h in header if not h.startswith(WATCHLIST_META_PREFIXES)]
+            header += [f"# {k}={v}" for k, v in meta.items() if v]
+            header.append(f"# [r016] applied from picks by {by} at {datetime.now().isoformat(timespec='seconds')}")
+        else:
+            header.append(f"# [r016] edited by {by} at {datetime.now().isoformat(timespec='seconds')}")
         backup = None
         if paths.watchlist.is_file():
             paths.watchlist_backup_dir.mkdir(parents=True, exist_ok=True)
@@ -920,12 +941,55 @@ def write_watchlist(paths: ControlPaths, entries: list[dict], by: str) -> dict:
             shutil.copy2(paths.watchlist, backup)
         body = "\n".join(header) + "\n\n" + "\n".join(f"{e['code']},{e['name']}" for e in entries) + "\n"
         _atomic_write(paths.watchlist, body)
-        append_history(paths, "watchlist", {"codes": [e["code"] for e in entries], "backup": str(backup) if backup else None}, by)
+        append_history(paths, "watchlist", {"codes": [e["code"] for e in entries], "backup": str(backup) if backup else None,
+                                            **({"meta": meta} if meta else {})}, by)
     coll = collector_status(paths, [e["code"] for e in entries])
     return {"ok": True, "count": len(entries), "backup": str(backup) if backup else None, "path": str(paths.watchlist),
             "restart_required": True, "collector_missing": coll["missing"],
             "collector_note": ("running g011 does not subscribe these codes - run 'collector restart' (or wait for r003 restart) "
                                "so the tick/triple trigger can see them" if coll["missing"] else "")}
+
+
+def _next_trading_day(ymd: str, r021) -> str | None:
+    from datetime import timedelta
+
+    try:
+        d = datetime.strptime(ymd, "%Y%m%d")
+    except ValueError:
+        return None
+    for _ in range(14):
+        d += timedelta(days=1)
+        if r021.is_trading_day(d.strftime("%Y%m%d")):
+            return d.strftime("%Y%m%d")
+    return None
+
+
+def apply_picks_to_watchlist(paths: ControlPaths, date: str, by: str) -> dict:
+    """[2026-11-11] r004 <- <runtime>/data/D/_D_picks.txt (the g002 picks of that date), through write_watchlist."""
+    import r021_jobs as r021  # noqa: E402  (stdlib only)
+
+    if not (len(date) == 8 and date.isdigit()):
+        return {"ok": False, "error": f"bad date {date!r} (YYYYMMDD)"}
+    pf, picks = r021.read_picks(r021.Paths(paths.runtime_root), date)
+    if picks is None:
+        return {"ok": False, "error": f"no picks file for {date} ({pf}) - run the scan (g002) for that date first"}
+    if not picks:
+        return {"ok": False, "error": f"picks file of {date} is empty ({pf})"}
+    nxt = _next_trading_day(date, r021)
+    meta = {"scan_date": date, "for_trading_day": f"{nxt} (r014 next trading day)" if nxt else ""}
+    out = write_watchlist(paths, picks, by, meta=meta)
+    return {**out, "date": date, "picks_file": str(pf), "for_trading_day": nxt}
+
+
+def watchlist_vs_picks(paths: ControlPaths, picks: list[dict] | None) -> dict:
+    """r004 compared with a picks list: same_codes = the two code sets are equal (order and names ignored)."""
+    wl = read_watchlist(paths)
+    scan_date = None
+    for h in wl["header"]:
+        if h.startswith("# scan_date="):
+            scan_date = h.split("=", 1)[1].split()[0].strip() or None
+    same = picks is not None and bool(picks) and {p["code"] for p in picks} == {c["code"] for c in wl["codes"]}
+    return {"scan_date": scan_date, "same_codes": same, "applied": same, "count": len(wl["codes"]), "mtime": wl["mtime"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1120,9 +1184,10 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("-n", type=int, default=50)
     sub.add_parser("conditions")
     p = sub.add_parser("watchlist")
-    p.add_argument("action", choices=["get", "set"])
+    p.add_argument("action", choices=["get", "set", "apply"])
     p.add_argument("--codes", default=None, help='"005930,삼성전자;000660,SK하이닉스"')
     p.add_argument("--stdin", action="store_true", help="read entries (one per line) from stdin")
+    p.add_argument("--date", default=None, help="apply: the scan date whose _D_picks.txt becomes r004")
     p = sub.add_parser("collector")
     p.add_argument("action", choices=["status", "restart", "start"])
     p.add_argument("--force", action="store_true", help="start: ignore the session window")
@@ -1214,6 +1279,8 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
 
     if args.cmd == "job":
         out, rc = r021.run_job_command(args, args.by, r021.Paths(paths.runtime_root))
+        if args.action == "data" and out.get("ok"):  # [2026-11-11] + how r004 relates to that date's picks
+            out["r004"] = watchlist_vs_picks(paths, out.get("picks"))
         return _emit(out, rc)
 
     snapshot = read_running_snapshot(paths)
@@ -1286,6 +1353,9 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     if args.cmd == "watchlist":
         if args.action == "get":
             return _emit(read_watchlist(paths))
+        if args.action == "apply":
+            out = apply_picks_to_watchlist(paths, args.date or "", args.by)
+            return _emit(out, 0 if out.get("ok") else 2)
         text = sys.stdin.read() if args.stdin else (args.codes or "")
         try:
             entries = parse_watchlist_entries(text)

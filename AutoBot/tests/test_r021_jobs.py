@@ -64,3 +64,42 @@ class TestStartArgv(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDateDataInfo(unittest.TestCase):
+    """[2026-11-11] job data --date D: what the date folder holds (g001 files, collected list, g002 picks)."""
+
+    def test_missing_folder(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            info = r021.date_data_info(r021.Paths(Path(tmp)), "20261110")
+            self.assertTrue(info["ok"])
+            self.assertFalse(info["exists"])
+            self.assertFalse(info["scannable"])
+            self.assertIsNone(info["picks"])
+
+    def test_counts_marker_and_picks(self):
+        import argparse
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "data" / "20261110"
+            d.mkdir(parents=True)
+            for code in ("005930", "000660", "035720"):
+                (d / f"{code}_x_10s.txt").write_text("t\n", encoding="utf-8")
+            (d / "005930_x_daily.csv").write_text("d\n", encoding="utf-8")
+            (d / "_20261110_collected.txt").write_text("\ufeff005930,삼성전자\n000660,SK하이닉스\n\n", encoding="utf-8")
+            (d / "_20261110_picks.txt").write_text("005930,삼성전자\n# c\n660,SK하이닉스\n005930,dup\nabc,x\n", encoding="utf-8")
+            paths = r021.Paths(Path(tmp))
+            info = r021.date_data_info(paths, "20261110")
+            self.assertTrue(info["exists"] and info["scannable"] and info["collected"])
+            self.assertEqual((info["files_10s"], info["files_daily"], info["collected_count"]), (3, 1, 2))
+            self.assertIsNotNone(info["data_mtime"])
+            self.assertEqual(info["picks"], [{"code": "005930", "name": "삼성전자"}, {"code": "000660", "name": "SK하이닉스"}])
+            self.assertIsNotNone(info["picks_mtime"])
+            # through the r016 `job` parser: no job name needed, bad date -> rc 2
+            out, rc = r021.run_job_command(argparse.Namespace(action="data", name=None, date="20261110", n=10), "t", paths)
+            self.assertEqual((rc, out["files_10s"]), (0, 3))
+            out, rc = r021.run_job_command(argparse.Namespace(action="data", name=None, date="2026-11-10", n=10), "t", paths)
+            self.assertEqual(rc, 2)
