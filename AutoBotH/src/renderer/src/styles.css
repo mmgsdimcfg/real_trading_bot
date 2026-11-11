@@ -676,3 +676,10 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .tip-dock .reason-ko { grid-column: 1; }
 .tip-dock .mono.small { grid-column: 1; }
 .tip-dock .raw { grid-column: 2; grid-row: 1 / span 3; margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--text-2); max-height: 84px; overflow: auto; }
+/* [2026-11-11] 데이터 작업 - 기준일 데이터 상태 줄, 선별 결과(picks) 칩 + 적용 체크 */
+.data-line { margin: -6px 0 10px; }
+.picks { margin: 4px 0 14px; }
+.picks-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+.pick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pick-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 12px; font-size: 12.5px; background: var(--surface); }
+.pick-chip .mono { font-size: 11.5px; color: var(--text-3); }

@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-11] type=feat - v2.3.10_001: 데이터 작업 - 감시 종목 선별 카드에 기준일 폴더의 수집 데이터 상태(10초봉/일봉 파일 수, 수집 목록, 마지막 파일 시각, 선별 결과 유무) 표시(r016 job data). 수집 데이터가 없는 날짜는 선별 시작 불가. 감시 종목 선별은 기본으로 g002만 실행(감시목록 갱신 꺼짐)하고 끝나면 그 날짜의 선별 종목(이름·코드 칩)을 보여주며 \"r004 감시목록에 적용\" 체크박스로 적용(r016 watchlist apply: 백업·이력, 수집기 재구독, r003 재시작 안내). r004가 이미 그 선별과 같으면 체크된 상태로 표시",
     "[2026-11-11] type=feat - v2.3.9_003: 타임라인 - 매수/매도 평가 차트의 점 위에 마우스를 올리면 아래 주가 차트의 같은 시각 봉이 함께 강조(크로스헤어·툴팁 동기화, PriceChart hoverTime). 평가 내용 박스는 차트 오른쪽이 아니라 평가 차트 바로 아래(주가 차트와 사이)에 가로 띠로 표시",
     "[2026-11-11] type=feat - v2.3.9_002: 차트 탭 우측 패널 갱신 주기 - 현재가·매도1/매수1호가·체결강도·체결 내역은 틱 파일 기준(로그 폴링마다, 로컬 1~2초)으로 바꾸고 KIS 현재가 조회는 10단 호가·일중 거래량·상하한가·VI 표시에만 사용, 장중 KIS 캐시 8초 -> 4초 (r003과 나눠 쓰는 KIS 호출 한도 안). 틱이 KIS 응답보다 오래되면 KIS 값으로 복귀",
     "[2026-11-11] type=feat - v2.3.9_001: (1) 타임라인 매수/매도 평가 차트의 마우스 오버 내용을 차트 오른쪽 고정 패널로 옮김 - 점 위에 툴팁이 떠서 그래프를 가리던 문제. (2) 종목 보드 \"사유\"를 한글로 풀어 표시(shared/reasonKo - 코드와 로그 원문은 툴팁), 타임라인 패널도 같은 한글 설명. (3) 종목 보드 열 너비 고정(colgroup) + 긴 칸은 줄바꿈 - 좌우 스크롤 없이 한 화면에",
@@ -37,7 +38,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.9",
+  "version": "2.3.10",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -85,7 +86,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

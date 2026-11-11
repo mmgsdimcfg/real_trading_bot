@@ -18,6 +18,8 @@
  *   service button rules, the market-hours check on the server's KST timestamp, value-editor parsing per r001 type, the changed-
  *   keys collector for `set`, the history formatter and the watchlist row checks. Pure functions only (unit-tested in
  *   tests/control.test.ts); the app never re-implements the server's validation - it only blocks input it cannot send safely
+ * - [2026-11-11] type=feat - JobDataInfo (r016 `job data --date D`: collected data / g002 picks of a date + r004 comparison) and
+ *   PicksApplyResult (`watchlist apply --date D`) for the scan-only flow of the data jobs tab
  */
 
 import { shellPath, shellQuote } from './shell';
@@ -575,6 +577,37 @@ export interface JobStartOpts {
   keepWatchlist?: boolean;
   /** scheduler: no confirmation dialog */
   noConfirm?: boolean;
+}
+
+/** [2026-11-11] r016 `job data --date D`: what <runtime>/data/D holds (g001 files, the collected list, the g002 picks) and how
+ *  the r004 watchlist relates to those picks (applied = same code set) */
+export interface JobDataInfo {
+  ok: boolean;
+  date: string;
+  dir: string;
+  exists: boolean;
+  /** at least one *_10s.txt - g002 can run on this date */
+  scannable: boolean;
+  collected: boolean;
+  collected_count: number;
+  files_10s: number;
+  files_daily: number;
+  data_mtime: string | null;
+  picks: WatchEntry[] | null;
+  picks_file: string;
+  picks_mtime: string | null;
+  scan_log_mtime: string | null;
+  r004?: { scan_date: string | null; same_codes: boolean; applied: boolean; count: number; mtime: string | null };
+  generated_at: string;
+  error?: string;
+}
+
+/** r016 `watchlist apply --date D` (r004 <- that date's picks): the `watchlist set` result plus the date */
+export interface PicksApplyResult extends WatchlistSetResult {
+  date: string;
+  picks_file: string;
+  for_trading_day: string | null;
+  collector_restart?: unknown;
 }
 
 export interface DoctorReport {
