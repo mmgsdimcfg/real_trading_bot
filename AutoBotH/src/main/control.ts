@@ -23,6 +23,9 @@
  *   a run-mode switch while a verb runs
  * - [2026-11-11] type=feat - ctl:jobStart keepWatchlist -> r021 --keep-watchlist (scan builds the picks files only, r004 stays);
  *   while r003 runs, a scan / postclose that WOULD rewrite r004 asks first (one dialog together with the KIS-load note)
+ * - [2026-11-11] type=fix - Tick collector resubscribe: g011 takes the watchlist only when it starts, so codes added later had no
+ *   tick files (_009 ABSTAIN_NO_FILE, empty tick chart). ctl:watchlistSet restarts g011 (r016 `collector restart`, which now
+ *   respawns it) when status.collector.missing is not empty; new ctl:collectorRestart for the control tab button
  * - [2026-11-11] type=feat - askConfirm(): confirmations are drawn by the renderer (ConfirmDialog) in the app's style instead of the
  *   native message box; confirmBox() keeps its signature on top of it. The r003 start/restart/stop question is a card: LIVE / 장중
  *   tag, "실주문 모드로 실행할까요?", one-line reason and rows 모드 / 프로파일 / 실행 위치 (host label + hostname)
@@ -488,7 +491,19 @@ export function createControl(deps: ControlDeps) {
       return { ok: false, cancelled: true };
     }
     const r = await cl().run<WatchlistSetResult>(['watchlist', 'set', '--stdin'], { stdin: watchlistStdin(list) });
-    const cur = await refreshStatus();
+    let cur = await refreshStatus();
+    // g011 subscribes the watchlist once at its start: a list changed afterwards leaves the new codes without tick files
+    // (_009 1분봉 트리거 ABSTAIN_NO_FILE, empty tick chart) -> restart it right away with the current r004
+    let collectorRestart: unknown = undefined;
+    if (r.ok && cur?.collector?.running && (cur.collector.missing?.length || 0) > 0) {
+      try {
+        const x = await cl().run(['collector', 'restart'], { timeoutMs: R016_SERVICE_TIMEOUT });
+        collectorRestart = x.ok ? x.data : { ok: false, error: x.error };
+      } catch (e) {
+        collectorRestart = { ok: false, error: errMsg(e) };
+      }
+      cur = await refreshStatus();
+    }
     // add/remove symbols during the session -> watch the new list right away (restart re-reads r004; held positions keep their
     // sell evaluation - r003 restores today's positions from live_state and the account)
     if (r.ok && cur?.running && !state.busy) {
@@ -496,7 +511,7 @@ export function createControl(deps: ControlDeps) {
         void service('restart', {}, true);
       }
     }
-    return { ok: r.ok, error: r.error, data: r.data };
+    return { ok: r.ok, error: r.error, data: r.data && collectorRestart !== undefined ? { ...r.data, collector_restart: collectorRestart } : r.data };
   });
 
   // [2026-11-10] host role / tick collector / data jobs / doctor (same r016 commands on both hosts)
@@ -539,6 +554,16 @@ export function createControl(deps: ControlDeps) {
     // a g011 here while the other host still collects would fight over the KIS websocket (one session per appkey)
     const r = await guarded('collector', async (c) => {
       const x = await c.run(['collector', 'start', ...(force ? ['--force'] : [])]);
+      return { ok: x.ok, error: x.error, data: x.data };
+    });
+    await refreshStatus();
+    return r;
+  });
+  handle('ctl:collectorRestart', async () => {
+    const nc = needConn();
+    if (nc) return nc;
+    const r = await guarded('collector', async (c) => {
+      const x = await c.run(['collector', 'restart'], { timeoutMs: R016_SERVICE_TIMEOUT });
       return { ok: x.ok, error: x.error, data: x.data };
     });
     await refreshStatus();

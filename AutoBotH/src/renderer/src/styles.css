@@ -544,6 +544,7 @@ details.adv .actions { margin: 8px 0; }
 .chartview .ind-bar { padding-top: 0; }
 .sym-input { width: 170px; font-family: Consolas, monospace; }
 .sym-name { font-weight: 600; min-width: 80px; }
+.sym-select { max-width: 150px; }
 .chartview .seg button { padding: 3px 12px; }
 .chartview-body { flex: 1; min-height: 0; display: flex; gap: 0; border-top: 1px solid var(--border); }
 .chart-area { flex: 1; min-width: 0; position: relative; background: var(--surface); overflow: hidden; }

@@ -10,6 +10,12 @@
  * - [2026-11-10] type=feat - Local mode: host line (hostname, systemd / r020 supervisor, host role primary|standby with a switch,
  *   tick collector state + 시작), PeerPanel for the other host (status, its r003 stop, standby/primary, watchlist copy), local
  *   wording for the external-r003 warning and the restart note
+ * - [2026-11-11] type=feat - "매매 실행 위치" section on top (HostPanel): this PC and the Raspberry Pi as two rows (role, r003, tick
+ *   collector), the selected row is the host [실행] starts r003 on; [여기서 실행] on the other row saves runMode and reconnects
+ *   (no trip to 설정/연결). HostLine + PeerPanel merged into it; role / collector / peer stop / watchlist copy moved under "고급".
+ *   The start button says where it starts ("이 PC에서 실행" / "라즈베리파이에서 실행")
+ * - [2026-11-11] type=fix - Host row: tick collector shows its symbol count and "구독 누락 n종목" (watch codes it does not collect)
+ *   with a [수집기 재시작] button on the selected host
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -133,6 +139,12 @@ function HostPanel() {
     bumpHistory();
     if (reloadPeer) await loadPeer();
   };
+  const restartCollector = async () => {
+    setMsg('틱 수집기 재시작 중…');
+    const res = await window.api.ctlCollectorRestart();
+    const d = res.data || {};
+    setMsg(res.ok ? (d.restarted ? `틱 수집기를 현재 감시목록으로 다시 시작했습니다 (pid ${d.pid})` : `틱 수집기를 멈췄습니다${d.window ? ` - 다시 시작 안 함: ${d.window}` : ''}`) : `실패: ${res.error}`);
+  };
   const startCollector = async () => {
     setMsg('틱 수집기 시작 중…');
     const res = await window.api.ctlCollectorStart(false);
@@ -188,7 +200,26 @@ function HostPanel() {
             <span className="muted small">{selected ? (connected ? '상태 확인 중…' : '연결 안 됨') : peerErr || '확인 안 됨'}</span>
           )}
         </td>
-        <td className="muted small">{st ? `틱 수집기 ${st.collector?.running ? '실행 중' : '정지'}` : ''}</td>
+        <td className="muted small">
+          {st && (
+            <>
+              틱 수집기 {st.collector?.running ? `실행 중${st.collector.symbols ? ` (${st.collector.symbols}종목)` : ''}` : '정지'}
+              {st.collector?.running && !!st.collector.missing?.length && (
+                <>
+                  {' '}
+                  <span className="warn-text" title={`수집기가 시작된 뒤 감시목록에 들어온 종목 - 틱 파일이 없어 1분봉 트리거가 평가되지 않습니다: ${st.collector.missing.join(', ')}`}>
+                    구독 누락 {st.collector.missing.length}종목
+                  </span>{' '}
+                  {selected && (
+                    <button className="mini" disabled={anyBusy || !connected} onClick={() => void restartCollector()}>
+                      수집기 재시작
+                    </button>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </td>
       </tr>
     );
   };

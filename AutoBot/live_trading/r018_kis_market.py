@@ -5,7 +5,8 @@ AutoBotH 차트 탭용 KIS 시세 조회(읽기 전용) - r016 `quote` 명령과
 지키는 것 (r003 실매매 보호)
 - 시세 조회 TR 7개만 허용 목록(_TRS)으로 둔다. GET만 쓰고 주문·잔고·계좌 TR은 import도 하지 않는다(kis_auth/domestic_stock_functions
   자체를 import하지 않는다 - pandas/websockets 기동 비용도 없앤다).
-- 토큰을 **발급하지 않는다.** ~/KIS/config/KIS<YYYYMMDD> 토큰 파일 중 유효한 것을 읽기만 한다(r003이 아침에 발급).
+- 토큰을 **발급하지 않는다.** ~/KIS/config/KIS<YYYYMMDD>_prod (예전 kis_auth: KIS<YYYYMMDD>) 토큰 파일 중 유효한 것을 읽기만
+  한다(r003이 아침에 발급). 모의(_vps) 토큰은 쓰지 않는다.
   없거나 만료면 KisError("token_not_ready") - kis_auth의 토큰 파일 쓰기는 원자적이지 않아 여러 프로세스가 auth()를 부르면
   빈 파일을 읽고 재발급(1분 1회 제한)으로 r003 인증이 실패할 수 있다.
 - 프로세스 간 공용 호출 제한: <runtime>/cache/kis/.ratelimit 파일 락 + 최근 호출 시각, 초당 최대 RATE_MAX_PER_SEC건,
@@ -23,6 +24,12 @@ AutoBotH 차트 탭용 KIS 시세 조회(읽기 전용) - r016 `quote` 명령과
 - names.json: 종목명/시장(search_stock_info, 종목당 1회).
 
 Update log:
+- [2026-11-11] type=fix owner=claude
+    summary: load_token 이 kis_auth 의 서버별 토큰 파일 KIS<YYYYMMDD>_prod 를 읽지 못해(정규식이 KIS+날짜 8자리만 허용, 그 이름은 이제
+      0바이트 자리표시 파일) 노트북 로컬 모드에서 r003 이 떠 있어도 차트 탭 분봉/현재가가 "no valid KIS token file" 로 실패.
+      KIS<date>(_prod)? 를 받고 같은 날짜면 _prod 우선, _vps(모의)는 제외.
+    impact: tooling (AutoBotH 차트 탭 quote/bars KIS 폴백)
+    compatibility: backward-compatible
 - [2026-11-07] type=feat owner=claude
     summary: 신규 - AutoBotH 요청(server_kis_market_data_request_20261106) 읽기 전용 시세 조회. 토큰 미발급, 공용 호출 제한,
       캐시, 허용 TR 목록.
@@ -99,7 +106,14 @@ def _now() -> datetime:
 def load_token(now: datetime | None = None) -> str:
     """가장 최근의 유효한 토큰 파일(KIS<YYYYMMDD>)의 토큰. 발급하지 않는다."""
     now = now or _now()
-    files = sorted((p for p in _kis_config_dir().glob("KIS*") if re.fullmatch(r"KIS\d{8}", p.name)), key=lambda p: p.name, reverse=True)
+    # kis_auth writes KIS<YYYYMMDD>_prod (real) / _vps (paper) since the servers were split; older versions wrote KIS<YYYYMMDD>
+    # (now a 0-byte placeholder next to the _prod file). Newest date first, _prod before the bare file, _vps never.
+    found = []
+    for p in _kis_config_dir().glob("KIS*"):
+        m = re.fullmatch(r"KIS(\d{8})(_prod)?", p.name)
+        if m:
+            found.append((m.group(1), 1 if m.group(2) else 0, p))
+    files = [p for _, _, p in sorted(found, key=lambda t: (t[0], t[1]), reverse=True)]
     for p in files:
         try:
             data = yaml.safe_load(p.read_text(encoding="utf-8"))

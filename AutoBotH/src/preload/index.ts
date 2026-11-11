@@ -91,6 +91,8 @@ const api = {
   // [2026-11-10] local mode: host role, tick collector, data jobs, doctor (connected host)
   ctlRole: (role?: 'primary' | 'standby'): Promise<CtlResult<RoleInfo>> => ipcRenderer.invoke('ctl:role', role),
   ctlCollectorStart: (force?: boolean): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:collectorStart', force),
+  /** [2026-11-11] stop g011 and start it again with the current watchlist (r016 collector restart) */
+  ctlCollectorRestart: (): Promise<CtlResult<{ restarted?: boolean; pid?: number; window?: string }>> => ipcRenderer.invoke('ctl:collectorRestart'),
   ctlJobs: (): Promise<CtlResult<JobList>> => ipcRenderer.invoke('ctl:jobs'),
   ctlJobStart: (name: string, opts: JobStartOpts): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStart', name, opts),
   ctlJobStop: (name: string): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStop', name),
