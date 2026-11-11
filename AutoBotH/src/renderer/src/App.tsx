@@ -10,6 +10,7 @@
  * - [2026-11-10] type=feat - Sidebar in groups (운영 / 분석 / 시스템) with a line icon per tab; the current tab is a rounded
  *   highlight instead of rules between rows
  * - [2026-11-11] type=feat - ConfirmDialog mounted in the shell: app-styled confirmations asked by the main process
+ * - [2026-11-11] type=feat - 보유 현황 tab (PositionsView) between 차트 and 매매 결과
  */
 
 import { useStore, type Tab } from './store';
@@ -23,6 +24,7 @@ import { BoardView } from './views/BoardView';
 import { TimelineView } from './views/TimelineView';
 import { ChartView } from './views/ChartView';
 import { TradesView } from './views/TradesView';
+import { PositionsView } from './views/PositionsView';
 import { SettingsView } from './views/SettingsView';
 
 // 16 px line icons (stroke = currentColor, so they follow the item's text color and the theme)
@@ -51,6 +53,12 @@ const ICON: Record<Tab, JSX.Element> = {
   board: <path d="M2.5 3.5h2M2.5 8h2M2.5 12.5h2M7 3.5h6.5M7 8h6.5M7 12.5h6.5" />,
   timeline: <path d="M1.5 11.5l3.5-4 3 2.5 5.5-6M11 4h2.5v2.5" />,
   chart: <path d="M4 2v12M4 5h-1.5v6H5.5V5H4M10.5 3v11M9 6h3v4.5H9z" />,
+  positions: (
+    <>
+      <rect x="2" y="4.5" width="12" height="9" rx="1.5" />
+      <path d="M5.5 4.5v-2h5v2M2 8.5h12" />
+    </>
+  ),
   trades: (
     <>
       <path d="M3.5 1.5h9v13l-1.5-1-1.5 1-1.5-1-1.5 1-1.5-1-1.5 1z" />
@@ -68,7 +76,7 @@ const ICON: Record<Tab, JSX.Element> = {
 // Sidebar groups: 운영 (run the bot and its data jobs) / 분석 (look at the day) / 시스템
 const NAV: { group: string; tabs: [Tab, string][] }[] = [
   { group: '운영', tabs: [['control', '제어'], ['jobs', '데이터 작업'], ['pipeline', '파이프라인']] },
-  { group: '분석', tabs: [['board', '종목 보드'], ['timeline', '타임라인'], ['chart', '차트'], ['trades', '매매 결과']] },
+  { group: '분석', tabs: [['board', '종목 보드'], ['timeline', '타임라인'], ['chart', '차트'], ['positions', '보유 현황'], ['trades', '매매 결과']] },
   { group: '시스템', tabs: [['settings', '설정·연결']] },
 ];
 
@@ -97,7 +105,7 @@ export function App() {
           ))}
         </nav>
         <div className="app-main">
-          {tab !== 'control' && tab !== 'settings' && tab !== 'jobs' && <ReplayBar />}
+          {tab !== 'control' && tab !== 'settings' && tab !== 'jobs' && tab !== 'positions' && <ReplayBar />}
           <main className="view">
             {tab === 'control' && <ControlView />}
             {tab === 'jobs' && <JobsView />}
@@ -105,6 +113,7 @@ export function App() {
             {tab === 'board' && <BoardView />}
             {tab === 'timeline' && <TimelineView />}
             {tab === 'chart' && <ChartView />}
+            {tab === 'positions' && <PositionsView />}
             {tab === 'trades' && <TradesView />}
             {tab === 'settings' && <SettingsView />}
           </main>

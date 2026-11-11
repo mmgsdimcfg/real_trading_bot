@@ -16,6 +16,8 @@
  * - [2026-11-08] type=feat - sellEvalOnly: the same checkbox for the sell chart (merge of the Windows buyEvalOnly change)
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
  * - [2026-11-10] type=feat - 'jobs' tab (데이터 작업) and the local-mode scheduler state (sched)
+ * - [2026-11-11] type=feat - 'positions' tab (보유 현황) and feesIncluded ("제세금 포함" of the trade-results / positions tabs,
+ *   kept in localStorage)
  */
 
 import { create } from 'zustand';
@@ -124,6 +126,8 @@ function loadLayout(): TimelineLayout {
 }
 
 const BUY_EVAL_ONLY_KEY = 'autoboth.timelineBuyEvalOnly';
+/** [2026-11-11] 매매 결과 / 보유 현황: "제세금 포함" (net of the estimated commission + sell tax) */
+const FEES_INCLUDED_KEY = 'autoboth.feesIncluded';
 const SELL_EVAL_ONLY_KEY = 'autoboth.timelineSellEvalOnly';
 function loadFlag(key: string): boolean {
   try {
@@ -133,7 +137,7 @@ function loadFlag(key: string): boolean {
   }
 }
 
-export type Tab = 'control' | 'jobs' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'trades' | 'settings';
+export type Tab = 'control' | 'jobs' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'positions' | 'trades' | 'settings';
 
 /** local-mode scheduler state pushed by main ('sched') */
 export interface SchedView {
@@ -177,6 +181,9 @@ interface State {
   /** timeline sell chart: "이 종목 평가된 항목만" checked (sellHidden unused while on) */
   sellEvalOnly: boolean;
   setSellEvalOnly: (on: boolean) => void;
+  /** 매매 결과 / 보유 현황: P&L shown net of the estimated costs (shared/fees), kept in localStorage */
+  feesIncluded: boolean;
+  setFeesIncluded: (on: boolean) => void;
   setTab: (t: Tab) => void;
   setSide: (s: Side) => void;
   select: (code: string | null) => void;
@@ -226,6 +233,15 @@ export const useStore = create<State>()((set, get) => ({
     set({ layout });
     try {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+    } catch {
+      /* storage unavailable */
+    }
+  },
+  feesIncluded: loadFlag(FEES_INCLUDED_KEY),
+  setFeesIncluded: (on) => {
+    set({ feesIncluded: on });
+    try {
+      localStorage.setItem(FEES_INCLUDED_KEY, on ? '1' : '0');
     } catch {
       /* storage unavailable */
     }
