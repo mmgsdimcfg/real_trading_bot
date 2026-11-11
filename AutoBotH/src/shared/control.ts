@@ -20,6 +20,8 @@
  *   tests/control.test.ts); the app never re-implements the server's validation - it only blocks input it cannot send safely
  * - [2026-11-11] type=feat - JobDataInfo (r016 `job data --date D`: collected data / g002 picks of a date + r004 comparison) and
  *   PicksApplyResult (`watchlist apply --date D`) for the scan-only flow of the data jobs tab
+ * - [2026-11-11] type=refactor - JobStartOpts.collect / scan / apply (pipeline steps, r021 --no-*) replace keepWatchlist; JobRun.args
+ *   carries the same three flags; PicksApplyResult dropped (the apply step runs inside the r021 job now)
  */
 
 import { shellPath, shellQuote } from './shell';
@@ -530,7 +532,9 @@ export const JOB_NAMES = ['postclose', 'collect', 'history', 'scan', 'edge_ai', 
 export interface JobStep {
   name: string;
   argv: string[];
-  state: 'running' | 'done' | 'failed' | 'stopped';
+  /** skipped [2026-11-11]: the apply step found no picks of this run (note says why) */
+  state: 'running' | 'done' | 'failed' | 'stopped' | 'skipped';
+  note?: string;
   rc: number | null;
   started_at: string;
   finished_at: string | null;
@@ -547,10 +551,13 @@ export interface JobRun {
   started_at: string;
   finished_at: string | null;
   rc: number | null;
-  args: { date: string; workers: number | null; edge_ai: boolean; keep_watchlist?: boolean };
+  /** [2026-11-11] collect / scan / apply = the pipeline steps that were selected (older state files: keep_watchlist) */
+  args: { date: string; workers: number | null; edge_ai: boolean; collect?: boolean; scan?: boolean; apply?: boolean; keep_watchlist?: boolean };
   log: string;
   steps: JobStep[];
   error: string | null;
+  /** [2026-11-11] e.g. "apply skipped: no picks ..." - the job is done, but r004 was not written */
+  note?: string | null;
 }
 
 export interface JobList {
@@ -573,8 +580,11 @@ export interface JobStartOpts {
   workers?: number;
   edgeAi?: boolean;
   tradingDayOnly?: boolean;
-  /** scan / postclose: build the picks files only, r004 watchlist untouched (past-date backfill, Edge AI) */
-  keepWatchlist?: boolean;
+  /** [2026-11-11] postclose / scan steps - false skips the step (r021 --no-collect / --no-scan / --no-apply); undefined = on.
+   *  collect = g001 + g025, scan = g002 (picks files only), apply = r004 <- picks (r016 watchlist apply) */
+  collect?: boolean;
+  scan?: boolean;
+  apply?: boolean;
   /** scheduler: no confirmation dialog */
   noConfirm?: boolean;
 }
@@ -602,14 +612,6 @@ export interface JobDataInfo {
   error?: string;
 }
 
-/** r016 `watchlist apply --date D` (r004 <- that date's picks): the `watchlist set` result plus the date */
-export interface PicksApplyResult extends WatchlistSetResult {
-  date: string;
-  picks_file: string;
-  for_trading_day: string | null;
-  collector_restart?: unknown;
-}
-
 export interface DoctorReport {
   ok: boolean;
   problems: string[];
@@ -630,6 +632,7 @@ export const JOB_STATE_LABEL: Record<string, string> = {
   done_with_errors: '완료 (일부 실패)',
   failed: '실패',
   stopped: '정지됨',
+  skipped: '건너뜀',
 };
 
 /** "HH:MM" -> minutes after midnight (NaN when malformed) */

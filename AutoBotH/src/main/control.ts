@@ -32,6 +32,8 @@
  * - [2026-11-11] type=feat - ctl:jobData (r016 `job data --date D`: collected data + g002 picks of a date, r004 comparison) and
  *   ctl:picksApply (`watchlist apply --date D` after a confirmation; same g011 restart / r003 restart offer as ctl:watchlistSet,
  *   now shared in afterWatchlistWrite) - the data jobs tab runs g002 alone on a collected date and applies the picks afterwards
+ * - [2026-11-11] type=refactor - ctl:jobStart takes the pipeline steps (collect / scan / apply -> r021 --no-*) instead of
+ *   keepWatchlist; the r003-running note names ③ r004 반영. ctl:picksApply removed - r004 is written by the job's apply step
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
@@ -55,7 +57,6 @@ import {
   type JobList,
   type JobLog,
   type JobStartOpts,
-  type PicksApplyResult,
   type NxtState,
   type R016Result,
   type R016Status,
@@ -484,7 +485,7 @@ export function createControl(deps: ControlDeps) {
    *  changed afterwards leaves the new codes without tick files (_009 1분봉 트리거 ABSTAIN_NO_FILE, empty tick chart) -> restart
    *  it right away with the current r004; then offer an r003 restart so the new list is watched now (held positions keep their
    *  sell evaluation - r003 restores today's positions from live_state and the account) */
-  const afterWatchlistWrite = async <T extends WatchlistSetResult>(r: { ok: boolean; error?: string; data?: T | null }) => {
+  const afterWatchlistWrite = async (r: { ok: boolean; error?: string; data?: WatchlistSetResult | null }) => {
     let cur = await refreshStatus();
     let collectorRestart: unknown = undefined;
     if (r.ok && cur?.collector?.running && (cur.collector.missing?.length || 0) > 0) {
@@ -521,7 +522,7 @@ export function createControl(deps: ControlDeps) {
     const r = await cl().run<WatchlistSetResult>(['watchlist', 'set', '--stdin'], { stdin: watchlistStdin(list) });
     return afterWatchlistWrite(r);
   });
-  // [2026-11-11] scan-only flow of the data jobs tab: what the date folder holds, and r004 <- that date's picks
+  // [2026-11-11] pipeline card of the data jobs tab: what the date folder holds (step defaults / refusals, picks list)
   handle('ctl:jobData', async (date: string) => {
     const nc = needConn();
     if (nc) return nc;
@@ -529,24 +530,7 @@ export function createControl(deps: ControlDeps) {
     const r = await cl().run<JobDataInfo>(['job', 'data', '--date', date]);
     return { ok: r.ok, error: r.error, data: r.data };
   });
-  handle('ctl:picksApply', async (date: string, count?: number) => {
-    const nc = needConn();
-    if (nc) return nc;
-    if (!/^\d{8}$/.test(String(date))) return { ok: false, error: '날짜는 YYYYMMDD' };
-    const n = Number(count) > 0 ? `${Number(count)}종목을` : '선별 결과를';
-    if (
-      !(await confirm(
-        '감시목록 적용',
-        `${date} 선별 결과 ${n} r004 감시목록으로 저장합니다 (${deps.hostLabel()}).`,
-        '기존 파일을 watchlist_backup/에 백업한 뒤 교체합니다. r003 재시작 후 반영되며, 장 마감 후 g002 선별(감시목록 갱신 켜짐)이 다시 씁니다.',
-        '적용',
-      ))
-    ) {
-      return { ok: false, cancelled: true };
-    }
-    const r = await cl().run<PicksApplyResult>(['watchlist', 'apply', '--date', date]);
-    return afterWatchlistWrite(r);
-  });
+
 
   // [2026-11-10] host role / tick collector / data jobs / doctor (same r016 commands on both hosts)
   /** run `fn` with the busy flag and the pinned client, after the cross-host guard (other host standby, this host primary) */
@@ -622,12 +606,14 @@ export function createControl(deps: ControlDeps) {
     if (o.workers) args.push('--workers', String(Math.max(1, Math.min(32, Math.floor(Number(o.workers)) || 1))));
     if (o.edgeAi) args.push('--edge-ai');
     if (o.tradingDayOnly) args.push('--trading-day-only');
-    if (o.keepWatchlist) args.push('--keep-watchlist');
+    // [2026-11-11] pipeline steps: a step set to false is skipped (r021 --no-*); undefined keeps the server default (on)
+    const stepOn = (k: 'collect' | 'scan' | 'apply') => o[k] !== false;
+    for (const k of ['collect', 'scan', 'apply'] as const) if (!stepOn(k)) args.push(`--no-${k}`);
     if (!o.noConfirm && state.status?.running) {
       const notes: string[] = [];
-      if (name === 'collect' || name === 'postclose') notes.push('수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다.');
-      if ((name === 'scan' || name === 'postclose') && !o.keepWatchlist) {
-        notes.push('선별(g002)은 r004 감시목록을 덮어씁니다 - 지금 감시 중인 종목이 다음 실행/재시작부터 바뀝니다. 과거 날짜 데이터만 모으려면 "감시목록 갱신"을 끄세요.');
+      if ((name === 'collect' || name === 'postclose') && stepOn('collect')) notes.push('수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다.');
+      if ((name === 'scan' || name === 'postclose') && stepOn('apply')) {
+        notes.push('③ r004 반영은 감시목록을 덮어씁니다 - 지금 감시 중인 종목이 다음 실행/재시작부터 바뀝니다. 감시목록을 그대로 두려면 ③을 끄세요.');
       }
       if (notes.length && !(await confirm('데이터 작업', 'r003이 실행 중입니다.', `${notes.join(' ')} 그래도 시작할까요?`, '시작'))) {
         return { ok: false, cancelled: true };

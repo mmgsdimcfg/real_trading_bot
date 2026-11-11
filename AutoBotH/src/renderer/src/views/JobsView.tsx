@@ -10,18 +10,18 @@
  *   tooltip), date / workers inputs with placeholders and 시작 / 정지 on the right; the date and step start time moved to tooltips
  * - [2026-11-10] type=feat - 기준일 is a date field (components/DatePicker): a click opens a small calendar, future days cannot be
  *   picked; the job still receives YYYYMMDD
- * - [2026-11-11] type=feat - "감시목록(r004) 갱신" checkbox for 장 마감 파이프라인 / 감시 종목 선별: on for today, off for a past date
- *   (auto until the user toggles it; follows the date again when the date changes). Off = r021 --keep-watchlist: the scan builds
- *   that day's picks files (what g013 reads for the Edge AI dataset) but the r004 watchlist stays, so a past-date backfill for
- *   Edge AI retraining does not change the stocks r003 watches. The last run shows whether it touched the watchlist
- * - [2026-11-11] type=feat - Scan-only flow: the 감시 종목 선별 / 장 마감 파이프라인 cards show what the date folder holds (r016 job data:
- *   10-second / daily files, the collected list, last file time) - 감시 종목 선별 cannot start on a date without collected data.
- *   For 감시 종목 선별 the "감시목록(r004) 갱신" box is off by default: g002 runs alone (--keep-watchlist), the picks of the date are
- *   listed under the run (name + code chips) with a "r004 감시목록에 적용" checkbox that applies them (r016 watchlist apply, after a
- *   confirmation); the box shows checked when r004 already holds exactly those codes
- * - [2026-11-11] type=fix - A date whose collection finished (_D_collected.txt) blocks 시작 of 장 마감 파이프라인 / 데이터 수집: the
- *   user expects an already collected date to go through 감시 종목 선별 only (a link switches to it); "다시 수집" re-enables the start
- *   for a deliberate re-collection. The data line now shows on the 데이터 수집 card too
+ * - [2026-11-11] type=feat - "감시목록(r004) 갱신" checkbox (r021 --keep-watchlist when off) - replaced the same day, see below
+ * - [2026-11-11] type=feat - Scan-only flow (job data: what the date folder holds, picks list, apply checkbox) - replaced the same
+ *   day by the step model below
+ * - [2026-11-11] type=refactor - Pipeline steps: the 장 마감 파이프라인 card is the one place for ① 데이터 수집 (g001 + g025) ② 종목 선별
+ *   (g002) ③ r004 감시목록 반영 - each a checkbox, combined freely (1+2+3, 2+3, 3; r021 --no-collect / --no-scan / --no-apply).
+ *   Defaults follow the date folder (r016 job data): ① off when the date is already collected, ② on, ③ on for today only. A step
+ *   whose input is missing (② without collected data, ③ without a picks file) is refused with the reason and 시작 is disabled.
+ *   The picks of the date are listed under the form (name + code) with whether r004 already holds them. The separate collect /
+ *   history / scan rows left the job table (still r021 jobs for the CLI); Edge AI 재학습 and 유니버스 갱신 stay
+ * - [2026-11-11] type=fix - Codex review: a collect / history / scan job started from the CLI stays in the table while it runs (stop / log)
+ * - [2026-11-11] type=fix - Codex review: a skipped apply step (no picks of this run - r021 state note) is shown as 건너뜀 with its
+ *   reason; after an applied run while r003 runs, a line says the new list needs an r003 restart (link to the control tab)
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -30,7 +30,6 @@ import { DatePicker } from '../components/DatePicker';
 import { JOB_STATE_LABEL, localYmd, type JobDataInfo, type JobList, type JobLog, type JobRun } from '../../../shared/control';
 
 const isoShow = (s: string | null | undefined) => (s ? s.replace('T', ' ').slice(5, 16) : '-');
-const hhmm = (s: string | null | undefined) => (s ? s.slice(11, 16) : '');
 const num = (n: number) => n.toLocaleString('ko-KR');
 /** elapsed time as m:ss (h:mm:ss from one hour) */
 const dur = (a: string | null | undefined, b: string | null | undefined) => {
@@ -60,14 +59,19 @@ const shortCmd = (argv: string[]) => {
   return [code ? code[1] : base, ...args].join(' ');
 };
 
+/** jobs shown in the table - collect / history / scan are steps of the pipeline card now (r021 keeps them for the CLI) */
+const VISIBLE_JOBS = ['postclose', 'edge_ai', 'universe'];
+
 const DESC: Record<string, string> = {
-  postclose: '수집 → 이력 → 다음 거래일 감시 종목 선별 [→ Edge AI] · 수집 실패 시 선별 생략 · 과거 날짜는 기본으로 감시목록을 바꾸지 않음',
-  collect: '분봉·일봉 데이터 수집 · KIS API 전 종목 (오래 걸림)',
-  history: '종목별 일봉 이력 갱신 · 차트 일/주/월봉',
-  scan: '수집된 기준일 데이터로 감시 종목 선별(g002)만 실행 · 결과를 보고 아래 "r004 감시목록에 적용"을 체크하면 저장 ("감시목록 갱신"을 켜면 바로 저장)',
+  postclose: '기준일을 고르고 실행할 단계를 체크 · ① 수집(g001 분봉·일봉 + g025 일봉 이력) → ② 선별(g002) → ③ r004 감시목록 반영 · 앞 단계를 끄면 그 산출물이 이미 있어야 합니다',
   edge_ai: 'Edge AI 데이터셋 생성 → 학습 → 점검 · CPU 많이 씀',
   universe: '수집 대상 종목 목록(g004) 갱신 · 신규상장/상장폐지/위험종목',
+  collect: '분봉·일봉 데이터 수집 · KIS API 전 종목 (오래 걸림)',
+  history: '종목별 일봉 이력 갱신 · 차트 일/주/월봉',
+  scan: '수집된 데이터로 감시 종목 선별 후 r004 반영',
 };
+
+const STEP_LABEL: Record<string, string> = { collect: '수집', history: '이력', scan: '선별', apply: 'r004 반영', edge_dataset: 'Edge AI 데이터셋', edge_train: 'Edge AI 학습', edge_check: 'Edge AI 점검', universe: '유니버스' };
 
 /** state as a dot + text (.st), colored by kind */
 function stateClass(st: string | undefined) {
@@ -77,36 +81,39 @@ function stateClass(st: string | undefined) {
   return 'st st-none';
 }
 
+type StepKey = 'collect' | 'scan' | 'apply';
+
 export function JobsView() {
   const connected = useStore((s) => s.status.conn === 'connected');
   const local = useStore((s) => s.status.mode === 'local');
   const sched = useStore((s) => s.sched);
   const settings = useStore((s) => s.settings);
   const setTab = useStore((s) => s.setTab);
+  const r003Running = useStore((s) => !!s.control.status?.running);
   const [list, setList] = useState<JobList | null>(null);
   const [err, setErr] = useState('');
   const [sel, setSel] = useState('postclose');
   const [date, setDate] = useState(localYmd());
   const [workers, setWorkers] = useState('');
   const [edgeAi, setEdgeAi] = useState(false);
-  /** 감시목록(r004) 갱신: null = automatic (today -> on, past date -> off), the user's click fixes it until the date changes */
-  const [wlChoice, setWlChoice] = useState<boolean | null>(null);
-  const isToday = date === localYmd();
-  const hasScan = sel === 'postclose' || sel === 'scan';
-  const hasCollect = sel === 'postclose' || sel === 'collect';
-  const showData = hasScan || hasCollect;
-  /** [2026-11-11] re-collect an already collected date on purpose (off again when the date / job changes) */
-  const [recollect, setRecollect] = useState(false);
-  useEffect(() => setRecollect(false), [date, sel]);
-  // [2026-11-11] 감시 종목 선별 alone: picks first, apply afterwards (the checkbox under the result) - so off unless the user turns it on
-  const wlUpdate = wlChoice ?? (sel === 'scan' ? false : isToday);
-  useEffect(() => setWlChoice(null), [date, sel]);
-  /** [2026-11-11] what the date folder holds (r016 job data) - for the scan / postclose cards */
-  const [info, setInfo] = useState<JobDataInfo | null>(null);
-  const infoOk = info && info.date === date ? info : null;
   const [log, setLog] = useState<JobLog | null>(null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const isToday = date === localYmd();
+  const pipeline = sel === 'postclose';
+
+  /** what the date folder holds (r016 job data) - drives the step defaults and the refusals */
+  const [info, setInfo] = useState<JobDataInfo | null>(null);
+  const infoOk = info && info.date === date ? info : null;
+  /** the user's step choices; a step not chosen follows its default (reset when the date changes) */
+  const [choice, setChoice] = useState<Partial<Record<StepKey, boolean>>>({});
+  useEffect(() => setChoice({}), [date]);
+  const step: Record<StepKey, boolean> = {
+    collect: choice.collect ?? !infoOk?.collected,
+    scan: choice.scan ?? true,
+    apply: choice.apply ?? isToday,
+  };
+  const choose = (k: StepKey, v: boolean) => setChoice((c) => ({ ...c, [k]: v }));
 
   const running = list?.running?.name || null;
   const selRow = useMemo(() => list?.jobs.find((j) => j.name === sel), [list, sel]);
@@ -144,26 +151,34 @@ export function JobsView() {
     const t = setInterval(() => void loadLog(sel), local ? 3000 : 15000);
     return () => clearInterval(t);
   }, [connected, sel, running, local]); // eslint-disable-line react-hooks/exhaustive-deps
-  // date folder info: on the scan / postclose cards, again when the date changes and when the selected job's run ends
+  // date folder info: on the pipeline card, again when the date changes and when the pipeline's run ends
   useEffect(() => {
-    if (!connected || !showData) return;
+    if (!connected || !pipeline) return;
     void loadInfo(date);
-  }, [connected, showData, date, last?.finished_at, last?.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connected, pipeline, date, last?.finished_at, last?.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const noData = sel === 'scan' && !!infoOk && !infoOk.scannable;
-  const alreadyCollected = hasCollect && !!infoOk?.collected;
-  const blocked = noData || (alreadyCollected && !recollect);
+  // ---- pipeline checks (the server refuses the same cases; here they disable 시작 with the reason) ----
+  const chosen = pipeline ? (['collect', 'scan', 'apply'] as StepKey[]).filter((k) => step[k]) : [];
+  let problem = '';
+  if (pipeline) {
+    if (!chosen.length) problem = '실행할 단계를 하나 이상 체크하세요';
+    else if (step.scan && !step.collect && infoOk && !infoOk.scannable) problem = `${date} 수집 데이터가 없습니다 - ① 수집을 켜세요`;
+    else if (step.apply && !step.scan && infoOk && !infoOk.picks) problem = `${date} 선별 결과가 없습니다 - ② 선별을 켜세요`;
+  }
+  const planText = chosen.length
+    ? chosen.map((k) => ({ collect: '수집 → 이력', scan: '선별', apply: 'r004 반영' })[k]).join(' → ') + (edgeAi ? ' → Edge AI' : '')
+    : '';
+
   const start = async () => {
     if (!/^\d{8}$/.test(date)) return setMsg('날짜는 YYYYMMDD');
-    if (noData) return setMsg(`${date} 데이터가 없습니다 - 먼저 수집(g001) 또는 장 마감 파이프라인을 실행하세요.`);
-    if (alreadyCollected && !recollect) return setMsg(`${date}는 이미 수집된 날짜입니다 - 선별만 하려면 감시 종목 선별을, 다시 받으려면 "다시 수집"을 켜세요.`);
+    if (problem) return setMsg(problem);
     setBusy(true);
     setMsg('시작 중…');
     const r = await window.api.ctlJobStart(sel, {
       date,
       workers: Number(workers) || undefined,
-      edgeAi: sel === 'postclose' && edgeAi,
-      keepWatchlist: hasScan && !wlUpdate,
+      edgeAi: pipeline && edgeAi,
+      ...(pipeline ? { collect: step.collect, scan: step.scan, apply: step.apply } : {}),
     });
     setBusy(false);
     if (r.cancelled) return setMsg('');
@@ -179,37 +194,22 @@ export function JobsView() {
     setMsg(r.ok ? '정지했습니다.' : `실패: ${r.error}`);
     await load();
   };
-  /** [2026-11-11] r004 <- the picks of the date (r016 watchlist apply; main asks first) */
-  const apply = async () => {
-    if (!infoOk?.picks?.length) return;
-    setBusy(true);
-    setMsg('감시목록에 적용 중…');
-    const r = await window.api.ctlPicksApply(date, infoOk.picks.length);
-    setBusy(false);
-    if (r.cancelled) return setMsg('');
-    setMsg(r.ok ? `r004 감시목록에 ${r.data?.count ?? infoOk.picks.length}종목을 적용했습니다 (r003 재시작 후 반영).` : `실패: ${r.error}`);
-    await loadInfo(date);
-  };
+
   const dataLine = () => {
-    if (!showData) return null;
     if (!infoOk) return <span className="muted">기준일 데이터 확인 중…</span>;
     if (infoOk.error && !infoOk.ok) return <span className="err-text">기준일 데이터 확인 실패: {infoOk.error}</span>;
-    if (!infoOk.exists || !infoOk.scannable) {
-      return sel === 'scan' ? (
-        <span className="warn-text">기준일 {date} 수집 데이터 없음 - 수집(g001) 또는 장 마감 파이프라인을 먼저 실행하세요</span>
-      ) : (
-        <span className="muted">기준일 {date} 수집 데이터 없음 - 수집부터 실행됩니다</span>
-      );
-    }
+    if (!infoOk.exists || !infoOk.scannable) return <span className="muted">기준일 {date} 수집 데이터 없음</span>;
     return (
       <span className="muted" title={infoOk.dir}>
         기준일 {date} 데이터 있음 · 10초봉 {num(infoOk.files_10s)}종목 · 일봉 {num(infoOk.files_daily)}
-        {infoOk.collected ? ` · 수집 목록 ${num(infoOk.collected_count)}종목` : ' · 수집 완료 표시 없음'}
+        {infoOk.collected ? ` · 수집 완료 ${num(infoOk.collected_count)}종목` : ' · 수집 완료 표시 없음(중단됨?)'}
         {infoOk.data_mtime ? ` · 마지막 파일 ${isoShow(infoOk.data_mtime)}` : ''}
-        {infoOk.picks ? ` · 선별 결과 ${infoOk.picks.length}종목 (${hhmm(infoOk.picks_mtime)})` : ' · 선별 결과 없음'}
+        {infoOk.picks ? ` · 선별 결과 ${infoOk.picks.length}종목 (${isoShow(infoOk.picks_mtime)})` : ' · 선별 결과 없음'}
       </span>
     );
   };
+  /** last run of the pipeline: did it write r004? (older state files: keep_watchlist) */
+  const lastApplied = last?.args ? (last.args.apply ?? !last.args.keep_watchlist) : false;
 
   if (!connected) return <div className="control"><div className="empty">연결되어 있지 않습니다 - 설정/연결 탭에서 연결하세요.</div></div>;
 
@@ -232,23 +232,26 @@ export function JobsView() {
             </tr>
           </thead>
           <tbody>
-            {(list?.jobs || []).map((j) => {
-              const [name, code] = splitTitle(j.title);
-              return (
-                <tr key={j.name} className={j.name === sel ? 'sel' : ''} onClick={() => setSel(j.name)}>
-                  <td>
-                    <b>{name}</b> {code && <span className="code-tag">{code}</span>}
-                  </td>
-                  <td className="mono" title={j.last?.args?.date ? `기준일 ${j.last.args.date}` : ''}>
-                    {isoShow(j.last?.started_at)}
-                  </td>
-                  <td>
-                    <span className={stateClass(j.last?.state)}>{j.last ? stateText(j.last.state) : '없음'}</span>
-                  </td>
-                  <td className="mono">{j.last ? dur(j.last.started_at, j.last.finished_at) : ''}</td>
-                </tr>
-              );
-            })}
+            {(list?.jobs || [])
+              // a hidden job (collect / history / scan from the CLI) stays visible while it runs or is selected, so it can be stopped
+              .filter((j) => VISIBLE_JOBS.includes(j.name) || j.name === running || j.name === sel)
+              .map((j) => {
+                const [name, code] = splitTitle(j.title);
+                return (
+                  <tr key={j.name} className={j.name === sel ? 'sel' : ''} onClick={() => setSel(j.name)}>
+                    <td>
+                      <b>{name}</b> {code && <span className="code-tag">{code}</span>}
+                    </td>
+                    <td className="mono" title={j.last?.args?.date ? `기준일 ${j.last.args.date}` : ''}>
+                      {isoShow(j.last?.started_at)}
+                    </td>
+                    <td>
+                      <span className={stateClass(j.last?.state)}>{j.last ? stateText(j.last.state) : '없음'}</span>
+                    </td>
+                    <td className="mono">{j.last ? dur(j.last.started_at, j.last.finished_at) : ''}</td>
+                  </tr>
+                );
+              })}
           </tbody>
         </table>
       </section>
@@ -256,10 +259,10 @@ export function JobsView() {
       <section>
         <h3>{splitTitle(selRow?.title || sel)[0]}</h3>
         <p className="subtitle">{DESC[sel]}</p>
-        {showData && <p className="small data-line">{dataLine()}</p>}
+        {pipeline && <p className="small data-line">{dataLine()}</p>}
         <div className="job-form">
           <DatePicker value={date} onChange={setDate} today={localYmd()} max={localYmd()} title="기준일 (누르면 달력, 기본은 오늘)" />
-          {(sel === 'collect' || sel === 'postclose' || sel === 'edge_ai') && (
+          {(sel === 'postclose' || sel === 'edge_ai' || sel === 'collect') && (
             <input
               type="number"
               min={1}
@@ -271,54 +274,83 @@ export function JobsView() {
               title="g001 수집 스레드 / Edge AI 프로세스 수 (비우면 기본값)"
             />
           )}
-          {sel === 'postclose' && (
-            <label className="check" title="장 마감 파이프라인 끝에 Edge AI 재학습(g013/g014/g024)을 이어서 실행">
-              <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 포함
-            </label>
-          )}
-          {hasScan && (
-            <label
-              className="check"
-              title="켜짐: 선별 결과를 r004 감시목록에 저장 (다음 r003 실행부터 그 종목을 감시). 꺼짐: 기준일 폴더에 선별 파일(picks·리포트)만 만들고 감시목록은 그대로 - 과거 날짜 보충 수집 / Edge AI 데이터셋용"
-            >
-              <input type="checkbox" checked={wlUpdate} onChange={(e) => setWlChoice(e.target.checked)} /> 감시목록(r004) 갱신
-            </label>
-          )}
-          {hasScan && !wlUpdate && (
-            <span className="muted small">{sel === 'scan' ? '선별 결과를 보고 아래에서 r004에 적용합니다' : '선별 파일만 만들고 지금 감시 중인 종목은 그대로 둡니다'}</span>
-          )}
-          {hasScan && wlUpdate && !isToday && <span className="warn-text small">과거 날짜({date}) 기준으로 감시목록이 바뀝니다</span>}
-          {alreadyCollected && (
-            <>
-              <span className="muted small">
-                이미 수집된 날짜입니다{sel === 'postclose' ? ' · 선별만 하려면 ' : ' · 선별은 '}
-                <button className="linklike" onClick={() => setSel('scan')}>
-                  감시 종목 선별
-                </button>
-              </span>
-              <label className="check" title="이미 수집된 날짜를 일부러 다시 받습니다 (g001은 끝난 종목을 건너뛰고 이어받습니다)">
-                <input type="checkbox" checked={recollect} onChange={(e) => setRecollect(e.target.checked)} /> 다시 수집
+          {pipeline && (
+            <div className="steps">
+              <label className="check step" title="g001 분봉·일봉 수집 + g025 일봉 이력 · KIS API 전 종목, 오래 걸림 · 이미 수집된 날짜는 기본으로 꺼짐 (켜면 끝난 종목은 건너뛰고 이어받음)">
+                <input type="checkbox" checked={step.collect} onChange={(e) => choose('collect', e.target.checked)} />
+                <span className="step-num">1</span> 데이터 수집 <span className="code-tag">g001</span>
               </label>
-            </>
+              <label className="check step" title="g002 감시 종목 선별 · 기준일 폴더에 선별 파일(_D_picks.txt, 리포트)을 만듭니다 · r004는 ③이 씁니다">
+                <input type="checkbox" checked={step.scan} onChange={(e) => choose('scan', e.target.checked)} />
+                <span className="step-num">2</span> 종목 선별 <span className="code-tag">g002</span>
+              </label>
+              <label className="check step" title="기준일의 선별 결과를 r004 감시목록으로 저장 · 기존 파일은 watchlist_backup/에 백업 · r003 재시작 후 반영 · 과거 날짜는 기본으로 꺼짐">
+                <input type="checkbox" checked={step.apply} onChange={(e) => choose('apply', e.target.checked)} />
+                <span className="step-num">3</span> r004 감시목록 반영
+              </label>
+              <label className="check" title="③ 뒤에 Edge AI 재학습(g013/g014/g024)을 이어서 실행">
+                <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 포함
+              </label>
+            </div>
           )}
           {busy && <i className="spinner" />}
-          <span className="muted small">{msg}</span>
           <span className="push-right" />
-          <button
-            className="primary wide"
-            disabled={busy || !!running || blocked}
-            title={running ? '다른 작업이 실행 중입니다' : noData ? `${date} 수집 데이터가 없습니다` : blocked ? `${date}는 이미 수집된 날짜입니다` : ''}
-            onClick={() => void start()}
-          >
+          <button className="primary wide" disabled={busy || !!running || !!problem} title={running ? '다른 작업이 실행 중입니다' : problem} onClick={() => void start()}>
             시작
           </button>
           <button className="wide" disabled={busy || running !== sel} onClick={() => void stop()}>
             정지
           </button>
         </div>
+        {pipeline && (
+          <p className="small plan-line">
+            {problem ? (
+              <span className="warn-text">{problem}</span>
+            ) : (
+              <>
+                <span className="muted">실행: </span>
+                {planText}
+                {step.collect && infoOk?.collected && <span className="muted"> · 이미 수집된 날짜입니다 - ①을 끄면 선별부터 합니다</span>}
+                {step.apply && !isToday && <span className="warn-text"> · 과거 날짜({date}) 선별 기준으로 r004 감시목록이 바뀝니다</span>}
+                {step.apply && !step.scan && infoOk?.picks && <span className="muted"> · {isoShow(infoOk.picks_mtime)}에 만든 선별 결과 {infoOk.picks.length}종목을 반영합니다</span>}
+              </>
+            )}
+            {msg && <span className="muted"> · {msg}</span>}
+          </p>
+        )}
+        {!pipeline && msg && <p className="muted small">{msg}</p>}
+        {pipeline && infoOk?.picks && (
+          <div className="picks">
+            <div className="picks-head">
+              <b>선별 결과</b>
+              <span className="muted small" title={infoOk.picks_file}>
+                {date} · {infoOk.picks.length}종목{infoOk.picks_mtime ? ` · ${isoShow(infoOk.picks_mtime)}` : ''}
+              </span>
+              {infoOk.r004 && (
+                <span className={`small ${infoOk.r004.applied ? 'ok-text' : 'muted'}`}>
+                  {infoOk.r004.applied
+                    ? 'r004 감시목록에 반영됨'
+                    : `현재 r004: ${infoOk.r004.count}종목${infoOk.r004.scan_date ? ` (${infoOk.r004.scan_date} 선별)` : ''} - 아직 반영되지 않음`}
+                </span>
+              )}
+            </div>
+            <div className="pick-chips">
+              {infoOk.picks.map((p) => (
+                <span className="pick-chip" key={p.code}>
+                  {p.name} <span className="mono">{p.code}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         {last && (
           <>
+            <p className="muted small">
+              마지막 실행 {isoShow(last.started_at)} · 기준일 {last.args?.date}
+              {last.steps.length ? ` · ${last.steps.map((s) => STEP_LABEL[s.name] || s.name).join(' → ')}` : ''}
+            </p>
             {last.error && <p className={last.state === 'failed' ? 'err-text small' : 'muted small'}>{last.error}</p>}
+            {last.note && <p className="warn-text small">{last.note}</p>}
             <table className="grid">
               <thead>
                 <tr>
@@ -332,7 +364,7 @@ export function JobsView() {
               <tbody>
                 {last.steps.map((s, i) => (
                   <tr key={`${s.name}-${i}`} className="nohover">
-                    <td>{s.name}</td>
+                    <td>{STEP_LABEL[s.name] || s.name}</td>
                     <td>
                       <span className={stateClass(s.state)}>{stateText(s.state)}</span>
                     </td>
@@ -341,61 +373,32 @@ export function JobsView() {
                       {dur(s.started_at, s.finished_at)}
                     </td>
                     <td className="mono wrap" title={s.argv.join(' ')}>
-                      {shortCmd(s.argv)}
+                      {s.argv.length ? shortCmd(s.argv) : <span className="muted">{s.note || ''}</span>}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {hasScan && last.state.startsWith('done') && last.args?.keep_watchlist && (
-              <p className="muted small">
-                감시목록(r004)은 바꾸지 않았습니다 - 기준일 {last.args.date} 폴더의 선별 파일만 만들었습니다
-                {last.args.date === date ? ' (아래 선별 결과에서 적용할 수 있습니다).' : '.'}
-              </p>
-            )}
-            {hasScan && last.state.startsWith('done') && !last.args?.keep_watchlist && (
+            {pipeline && last.state.startsWith('done') && lastApplied && last.steps.some((s) => s.name === 'apply' && s.state === 'done') && (
               <p className="small">
                 새 감시목록은{' '}
                 <button className="linklike" onClick={() => setTab('board')}>
                   종목 보드
                 </button>
                 의 감시목록 편집에서 확인·수정할 수 있습니다 (다음 r003 실행부터 적용).
+                {r003Running && (
+                  <>
+                    {' '}
+                    <span className="warn-text">r003이 실행 중입니다 - 새 감시목록은 재시작 후 반영됩니다</span> (
+                    <button className="linklike" onClick={() => setTab('control')}>
+                      제어
+                    </button>
+                    ).
+                  </>
+                )}
               </p>
             )}
           </>
-        )}
-        {hasScan && infoOk?.picks && (
-          <div className="picks">
-            <div className="picks-head">
-              <b>선별 결과</b>
-              <span className="muted small" title={infoOk.picks_file}>
-                {date} · {infoOk.picks.length}종목{infoOk.picks_mtime ? ` · ${isoShow(infoOk.picks_mtime)}` : ''}
-              </span>
-              <label
-                className="check small"
-                title={
-                  infoOk.r004?.applied
-                    ? '지금 r004 감시목록이 이 선별 결과와 같습니다'
-                    : '체크하면 이 선별 결과를 r004 감시목록으로 저장합니다 (기존 파일 백업, r003 재시작 후 반영)'
-                }
-              >
-                <input type="checkbox" checked={!!infoOk.r004?.applied} disabled={busy || !!infoOk.r004?.applied || !infoOk.picks.length} onChange={() => void apply()} />
-                r004 감시목록에 적용{infoOk.r004?.applied ? ' (적용됨)' : ''}
-              </label>
-              {infoOk.r004 && !infoOk.r004.applied && (
-                <span className="muted small">
-                  현재 r004: {infoOk.r004.count}종목{infoOk.r004.scan_date ? ` (${infoOk.r004.scan_date} 선별)` : ''}
-                </span>
-              )}
-            </div>
-            <div className="pick-chips">
-              {infoOk.picks.map((p) => (
-                <span className="pick-chip" key={p.code}>
-                  {p.name} <span className="mono">{p.code}</span>
-                </span>
-              ))}
-            </div>
-          </div>
         )}
         <div className="log-box mono">
           {log?.lines?.length ? log.lines.map((l, i) => <div key={i}>{l}</div>) : <span className="muted">로그 없음</span>}
@@ -411,7 +414,7 @@ export function JobsView() {
               틱 수집기: {settings?.autoCollector ? '평일 08:40~15:35 5분마다 확인해 없으면 시작' : '꺼짐'} {sched?.lastCollectorMsg && <span className="muted">- {sched.lastCollectorMsg}</span>}
             </li>
             <li>
-              장 마감 작업: {settings?.autoPostclose ? `거래일 ${settings.postcloseTime} 이후 1회 (r003 종료 후)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}` : '꺼짐'}{' '}
+              장 마감 작업: {settings?.autoPostclose ? `거래일 ${settings.postcloseTime} 이후 1회 (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}` : '꺼짐'}{' '}
               {sched?.lastPostcloseMsg && <span className="muted">- {sched.lastPostcloseMsg}</span>}
             </li>
             <li>

@@ -106,7 +106,7 @@ export function createScheduler(deps: SchedDeps) {
           const r = await deps.client().run<{ ok: boolean; skipped?: boolean; reason?: string; error?: string }>(args, { timeoutMs: 60000 });
           if (r.ok) {
             deps.setMeta({ lastPostcloseYmd: today });
-            push({ lastPostcloseMsg: `${hm()} ${r.data?.skipped ? `장 마감 작업 건너뜀 - ${r.data.reason}` : '장 마감 작업 시작 (수집 -> 이력 -> 선별)'}` });
+            push({ lastPostcloseMsg: `${hm()} ${r.data?.skipped ? `장 마감 작업 건너뜀 - ${r.data.reason}` : '장 마감 작업 시작 (수집 -> 이력 -> 선별 -> r004 반영)'}` });
             if (r.data?.skipped) deps.setMeta({ lastPostcloseSyncYmd: today });
           } else push({ lastPostcloseMsg: `${hm()} 장 마감 작업 시작 실패: ${r.error} (다음 분에 다시 시도)` });
         }

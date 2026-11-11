@@ -683,3 +683,8 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .pick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .pick-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 12px; font-size: 12.5px; background: var(--surface); }
 .pick-chip .mono { font-size: 11.5px; color: var(--text-3); }
+/* [2026-11-11] pipeline steps (① 수집 ② 선별 ③ r004 반영) in the job form; the plan / refusal line under it */
+.steps { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.step-num { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border); font-size: 11px; color: var(--text-2); }
+.plan-line { margin: -10px 0 14px; }
+.ok-text { color: var(--st-pass); }

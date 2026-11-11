@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-11] type=refactor - v2.3.11_001: 데이터 작업 - 장 마감 파이프라인 카드 하나로 정리: 기준일 선택 후 ① 데이터 수집(g001+g025) ② 종목 선별(g002) ③ r004 감시목록 반영 을 체크로 골라 시작(1+2+3 / 2+3 / 3). 기본값은 기준일 폴더 상태를 따름(수집된 날짜는 ① 꺼짐, ③은 오늘만 켜짐). 앞 단계 산출물이 없으면(②에 수집 데이터 없음, ③에 선별 결과 없음) 사유와 함께 시작 불가(서버도 거부). 선별 결과 종목과 r004 반영 여부를 아래에 표시. r004 반영은 g002 내보내기 대신 r016 watchlist apply 단계(백업·이력). 작업 표에서 수집/이력/선별 개별 항목 제거(Edge AI 재학습·유니버스 갱신은 유지)",
     "[2026-11-11] type=fix - v2.3.10_002: 데이터 작업 - 수집이 끝난 날짜(_D_collected.txt)는 장 마감 파이프라인·데이터 수집의 시작을 비활성화하고 감시 종목 선별로 안내(링크). 일부러 다시 받을 때는 \"다시 수집\" 체크. 데이터 수집 카드에도 기준일 데이터 상태 표시",
     "[2026-11-11] type=feat - v2.3.10_001: 데이터 작업 - 감시 종목 선별 카드에 기준일 폴더의 수집 데이터 상태(10초봉/일봉 파일 수, 수집 목록, 마지막 파일 시각, 선별 결과 유무) 표시(r016 job data). 수집 데이터가 없는 날짜는 선별 시작 불가. 감시 종목 선별은 기본으로 g002만 실행(감시목록 갱신 꺼짐)하고 끝나면 그 날짜의 선별 종목(이름·코드 칩)을 보여주며 \"r004 감시목록에 적용\" 체크박스로 적용(r016 watchlist apply: 백업·이력, 수집기 재구독, r003 재시작 안내). r004가 이미 그 선별과 같으면 체크된 상태로 표시",
     "[2026-11-11] type=feat - v2.3.9_003: 타임라인 - 매수/매도 평가 차트의 점 위에 마우스를 올리면 아래 주가 차트의 같은 시각 봉이 함께 강조(크로스헤어·툴팁 동기화, PriceChart hoverTime). 평가 내용 박스는 차트 오른쪽이 아니라 평가 차트 바로 아래(주가 차트와 사이)에 가로 띠로 표시",
@@ -39,7 +40,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.10",
+  "version": "2.3.11",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -87,7 +88,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",
