@@ -32,6 +32,9 @@
  *   charts drive the price chart's crosshair and tooltip)
  * - [2026-11-12] type=fix - The floating tooltip no longer sits under the drawing tools (top right): when its box reaches them it
  *   starts below the tool bar
+ * - [2026-11-12] type=fix - the tooltip closed about a second after the mouse stopped on the chart (timeline): the external
+ *   hover effect also ran when the bars were refreshed and, with no external hover time, cleared the chart's own hover.
+ *   Now it clears only when an external hover ends (time -> null), never while the mouse itself is on this chart
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -253,6 +256,8 @@ export function PriceChart(props: Props) {
   const [width, setWidth] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
   const [hoverY, setHoverY] = useState<number | null>(null);
+  /** [2026-11-12] the hover currently comes from props.hoverTime (another chart), not from the mouse on this chart */
+  const extHoverRef = useRef(false);
   /** index mode viewport: last visible index (exclusive) + bar count; null = follow the newest bars */
   const [view, setView] = useState<{ end: number; count: number } | null>(null);
   const drag = useRef<{ x: number; end: number; count: number; slot: number } | null>(null);
@@ -570,7 +575,14 @@ export function PriceChart(props: Props) {
   // external hover (timeline evaluation chart -> this chart): the last slot whose bar starts at or before the time
   useEffect(() => {
     if (props.hoverTime === undefined) return;
-    if (props.hoverTime === null || !model || model.empty) {
+    const hadExternal = extHoverRef.current;
+    extHoverRef.current = props.hoverTime !== null;
+    if (props.hoverTime === null) {
+      // only the end of an external hover clears; a bar refresh (model change) must not close the mouse's own tooltip
+      if (hadExternal) setHover(null);
+      return;
+    }
+    if (!model || model.empty) {
       setHover(null);
       return;
     }
