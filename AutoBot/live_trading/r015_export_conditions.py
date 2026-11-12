@@ -48,7 +48,7 @@ BUY_FRAME_BY_FUNC = {
     "_004_same_bar_signal_dedup": "3m", "_005_no_open_buy_exposure": "none", "_006_hard_stop_reentry_block": "none",
     "_007_daily_loss_limit": "none", "_008_max_open_positions": "none",
     "_008_triple_cross_trigger": "1m+tick", "_009_hybrid_1min_trigger": "1m",
-    "_010_market_regime": "1m", "_011_context_frame_ready": "3m", "_012_min_entry_atr_volatility": "3m",
+    "_010_market_regime": "1m", "_011_context_frame_ready": "3m", "_012_min_entry_atr_volatility": "1m+3m",
     "_013_min_liquidity_safety": "3m", "_014_context_score_record": "3m",
     "_015_excessive_rise_from_prev_close": "live+daily", "_016_anti_chase_day_extension": "live+1m",
     "_017_opening_gap_volume_gate": "3m+daily", "_018_quote_status": "live", "_019_account_sync_fresh": "none",
@@ -62,6 +62,7 @@ SELL_FRAME_BY_FUNC = {
     "_009_post_buy_entry_drop_guard": "live", "_010_breakeven_fail_guard": "live", "_011_no_trend_time_exit": "live",
     "_012_atr_stop_loss": "live+3m", "_013_trailing_stop": "live", "_014_same_bar_sell_dedup": "3m",
     "_015_shared_reversal_sell": "3m",
+    "_s04_net_stop_loss": "live",   # [2026-11-12] AUTO_SELL_MODE="stop_only"
 }
 FRAMES_LEGEND = {
     "none": "데이터 무관(상태/시간/계좌)",
@@ -105,6 +106,7 @@ def build() -> dict:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "entry_trigger_mode": str(getattr(r001, "ENTRY_TRIGGER_MODE", "")),
         "trading_strategy_mode": str(getattr(r001, "TRADING_STRATEGY_MODE", "")),
+        "auto_sell_mode": r006.auto_sell_mode(),   # [2026-11-12] "all" | "stop_only" | "off" - decides the sell list below
         "frames": FRAMES_LEGEND,
         "warmup": {"prior_day_1m_bars": int(getattr(r001, "PRIOR_DAY_WARMUP_MINUTES", 0) or 0),
                    "enabled": bool(getattr(r001, "ENABLE_PRIOR_DAY_INDICATOR_WARMUP", False)),

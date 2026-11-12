@@ -56,7 +56,7 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 | `collector restart` | `{ok, signalled[], restarted, pid?, log?, window?, note?}` - g011 을 멈추고 현재 r004 로 다시 띄운다 (세션 창 밖이면 멈추기만, window=사유). 앱이 감시목록 저장 때와 5분 확인에서 구독 누락(status.collector.missing)이 있으면 부른다 | 0 / 3 |
 | `doctor` | `{ok, problems[], host, python, executable, packages{}, code{dir,commit}, open_trading_api{path,exists,commit}, kis_config{dir,devlp_yaml,token_today}, runtime{root,exists}}` | 0 |
 | `job list` | `{ok, running: {pid, started_at, name, run_id}\|null, jobs: [{name, title, steps, last}]}` | 0 |
-| `job start NAME [--date D] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] [--trading-day-only]` | `{ok, name, pid, run_id, running}` / 휴장일 `{ok, skipped, reason}` / 다른 작업 실행 중 `{ok:false, error, running}` | 0 / 3 |
+| `job start NAME [--date D] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] [--email] [--scheduled] [--trading-day-only]` | `{ok, name, pid, run_id, running}` / 휴장일 `{ok, skipped, reason}` / 다른 작업 실행 중 `{ok:false, error, running}` | 0 / 3 |
 | `job stop NAME` | `{ok, stopped}` | 0 / 3 |
 | `job log NAME [-n N]` | `{ok, name, log, lines[], state}` | 0 |
 | `job data --date D` | `{ok, date, dir, exists, scannable, collected, collected_count, files_10s, files_daily, data_mtime, picks: [{code,name}]\|null, picks_file, picks_mtime, scan_log_mtime, r004: {scan_date, same_codes, applied, count, mtime}}` - [2026-11-11] 그 날짜 폴더의 수집 데이터 유무와 g002 선별 결과, r004 가 그 선별과 같은지 | 0 / 2 |
@@ -69,7 +69,11 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   생략; `--keep-watchlist` 는 옛 이름). 앞 단계 산출물이 없으면 start 가 `{ok:false, error}` 로 거부. 앱의 장 마감 파이프라인 카드는
   ① 수집 ② 선별 ③ r004 반영 체크로 이 스위치를 만든다(1+2+3 / 2+3 / 3). apply 는 선별 파일이 없거나 이 실행의 scan 보다 오래되면
   건너뛴다(step state=skipped + note, 작업은 done; 상태 JSON `note`). collect/scan/apply 실패 시 뒤 단계 생략, history 실패는
-  계속. 한 번에 한 작업. 상태 `runtime/data/jobs/<NAME>.json`(args 에 collect/scan/apply), 로그 `runtime/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log`.
+  계속. [2026-11-11] `--email`(postclose/scan): scan 단계를 `g002 --notify-email` 로 실행해 선별 종목(본문)과 리포트 파일(첨부)을
+  메일로 보낸다(g016, 실행 호스트의 `~/.mail/mail_config.json`; scan 단계가 없으면 보내지 않음, 전송 실패는 작업 실패가 아님 -
+  로그의 `[EMAIL]` 줄). 앱은 파이프라인 카드의 "선별 결과 메일" 체크와 설정 `postcloseEmail`(자동 실행)로 붙인다.
+  `--scheduled`: 앱 스케줄러가 시작한 실행 표시(상태 JSON `args.scheduled`, 실행 내용은 같음 - 앱이 "자동 실행 / 수동 실행" 표시).
+  한 번에 한 작업. 상태 `runtime/data/jobs/<NAME>.json`(args 에 collect/scan/apply/email/scheduled), 로그 `runtime/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log`.
 - process 백엔드 `stop`은 감시자가 없더라도 r003 잠금이 잡혀 있으면 정지 요청을 보내고, 잠금이 풀릴 때만 성공한다.
 - 예전 서버(이 명령들이 없는 r016)에는 `invalid choice` 오류가 난다. 앱은 이를 "git pull 필요"로 안내한다.
 
@@ -113,3 +117,58 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
    (`r016 doctor`의 `open_trading_api.commit` 비교, 앱의 "두 호스트 환경 비교").
 4. KIS 설정: 앱 [KIS 설정 가져오기] -> `%USERPROFILE%\KIS\config\kis_devlp.yaml`.
 5. 전원: 덮개 닫힘 = 아무 것도 안 함, Windows Update 사용 시간에 장 시간 포함. 앱은 r003 실행 중 절전만 막는다.
+
+## 6. r016 `bars` - NXT 시간대 분봉 (2026-11-12)
+- 배경: 틱 수집기(g011)와 KIS 분봉 폴백(r018)은 KRX(J) 기준이라 09:00 이전(NXT 프리마켓)과 15:30 이후에는 분봉이 없었다.
+  AutoBotH 타임라인/차트 탭이 그 시간에 비었다.
+- `bars --kind min --source auto`(기본): 틱/10초 파일이 없거나 봉이 0개이면 KIS 분봉(J) -> 없으면 **KRX+NXT 통합 분봉(UN)**.
+- `bars --kind min --source kis-un`(신규): 통합 분봉(08:00~20:00)을 직접 요청. 앱은 NXT 종목의 분봉 차트에서 KRX 장외 시간
+  (09:00 이전, 15:30 이후)의 봉만 골라 틱 봉 아래에 합친다. `--source kis` 는 종전대로 J(틱 수집 공백 메우기).
+- 응답 형식은 같다. 통합 분봉이면 `source` 가 `kis:<tr>:UN` 이다. 거래량 0 인 분(체결 없음)은 빠진다 - NXT 비대상 종목은
+  장전에 봉이 없다(종전과 같은 오류 응답).
+- 캐시: `runtime/cache/kis/min_un/<date>/<code>.json` (J 캐시 `min/` 과 분리).
+- 틱봉(`--kind tick`)은 그대로 틱 파일이 필요하다. 앱은 틱 파일이 없으면 1분봉으로 대신 그린다(09:00 이전 포함).
+- 봇 판단(r003/r013)과 틱 수집기 기준은 바뀌지 않는다. 표시 전용 경로다.
+- 이전 서버(이 변경 전 r017)에 `--source kis-un` 을 보내면 argparse 오류가 난다 - 앱은 그 경우 통합 분봉 없이 그린다.
+
+## 7. 매매 방식 선택 / 가상 매매 (2026-11-12)
+- 앱 제어 탭의 "매매 방식"은 r016 `set` 으로 두 값을 함께 저장한다(r003 재시작 후 적용).
+
+  | 선택 | TRADING_STRATEGY_MODE | EDGE_ONLY_MODE |
+  |---|---|---|
+  | 현재 방식 (규칙 기반) | normal | off |
+  | 현재 방식 + Edge AI 가상 매매 | normal | paper |
+  | Edge AI 방식 (실제 주문) | edge | off |
+
+- 상태는 `get TRADING_STRATEGY_MODE EDGE_ONLY_MODE` 의 effective / running / pending 으로 읽는다. EDGE_ONLY_MODE 를 모르는
+  서버(이 변경 전)는 `unknown` 에 넣어 돌려주므로 앱은 가상 매매 / Edge AI 방식 선택을 막는다.
+- `TRADING_STRATEGY_MODE=edge`: r005 `EDGE_BUY_CONDITIONS`(_001~_008 + `_e09_edge_ai_signal` + _023~_025), r006
+  `EDGE_SELL_CONDITIONS`(`_e10` 익절 +2.0% / `_e11` 손절 -1.7% / `_e12` 60분). r015 `conditions` 가 이 목록을 내보내므로
+  파이프라인 탭도 edge 조건으로 바뀐다. 로그 사유: `EDGE_SIGNAL_*`(매수 반려), `EDGE_TP_*` / `EDGE_SL_*` / `EDGE_TIME_*`(매도).
+- `EDGE_ONLY_MODE=paper`: r022 가 `runtime/data/live_runtime/edge_only_<YYYYMMDD>.jsonl` 에 한 줄씩 쓴다. 앱 가상 매매 탭이
+  파일을 직접 읽는다(로컬 모드는 그 PC 파일, 원격 모드는 SFTP).
+  - `{"event":"ENTRY","ts","code","name","entry","price","prob","threshold","trigger","tp_px","sl_px","horizon","model_id"}`
+  - `{"event":"EXIT","ts","code","name","reason"(tp|sl|time|eod),"entry","exit","net_pct","held_min","prob"}`
+  - 로그 태그 `[EDGE ONLY   ]` (PAPER BUY / PAPER SELL). edge 방식일 때는 가상 매매를 돌리지 않는다.
+- 두 호스트 공통: 설정은 각 호스트의 `runtime/config/live_overrides.json` 에 따로 저장되고, 모델도 각 호스트의
+  `runtime/edge_ai` 것을 쓴다.
+
+## 8. 자동 매도 범위 / 골든크로스 변동성 게이트 (2026-11-12)
+- 앱 제어 탭의 "자동 매도"는 r016 `set AUTO_SELL_MODE=<값>` 으로 저장한다(r003 재시작 후 적용). 상태는
+  `get TRADING_STRATEGY_MODE EDGE_ONLY_MODE AUTO_SELL_MODE` 의 effective / running / pending 으로 읽는다. 키를 모르는 서버는
+  `unknown` 에 넣어 돌려주므로 앱은 선택을 막는다.
+
+  | 선택 | AUTO_SELL_MODE | 봇이 하는 매도 |
+  |---|---|---|
+  | 전체 자동 | all | TRADING_STRATEGY_MODE 의 매도 조건 전부 + 예약 청산(15:20 / NXT 19:59) |
+  | 손절만 자동 (기본값) | stop_only | 수수료+거래세 포함 순손익 <= -AUTO_SELL_STOP_NET_PCT(2%) 일 때 잔량 전량 시장가 매도 하나 |
+  | 끔 | off | 없음 (손절 포함 모든 매도를 사용자가 직접) |
+
+- `stop_only` / `off` 는 모든 TRADING_STRATEGY_MODE 에 우선하고 예약 청산도 하지 않는다(포지션이 다음 날로 넘어간다).
+  사용자가 직접 판 수량은 계좌 동기화에서 빠진다.
+- r015 `conditions` 출력에 `auto_sell_mode` 필드가 추가되고, `sell` 목록이 모드에 따라 바뀐다:
+  `stop_only` = `_001`, `_002`, `_s04_net_stop_loss`(no 4) / `off` = `_001`, `_002`.
+- 새 로그: `[SELL TRIGGER] ... | NET_STOP_LOSS_2.0PCT | price= entry= pnl= net=` (앱 매도 `_004`),
+  `[AUTO SELL   ] scheduled liquidation skipped | AUTO_SELL_MODE=...` (하루 1회 안내, 조건 아님).
+- 매수 `_012`(최소 변동성)는 1분봉 ATR% 를 먼저 본다(`ENABLE_GC_VOLATILITY_GATE`, `GC_VOLATILITY_MIN_ATR_1MIN_PCT`=0.5).
+  반려 사유 `GC_VOL_LOW_1MIN_ATR_<값>%_LT_<기준>%` / `GC_VOL_1MIN_ATR_UNAVAILABLE` (앱 매수 `_012`), r015 frame `1m+3m`.

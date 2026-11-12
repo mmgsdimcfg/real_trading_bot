@@ -298,8 +298,8 @@ def fast_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def history_window_start(last_label) -> pd.Timestamp:
     last = pd.Timestamp(last_label)
-    first = last.normalize() + pd.Timedelta(hours=SESSION_OPEN.hour, minutes=SESSION_OPEN.minute + 1)
-    return max(first, last - pd.Timedelta(minutes=FEATURE_HISTORY_BARS - 1))
+    first = last.normalize() + pd.Timedelta(SESSION_OPEN.hour * 60 + SESSION_OPEN.minute + 1, "min")
+    return max(first, last - pd.Timedelta(FEATURE_HISTORY_BARS - 1, "min"))
 
 
 def feature_frames(raw: pd.DataFrame | None) -> tuple[pd.DataFrame, pd.DataFrame | None] | None:
@@ -323,7 +323,7 @@ def completed_3min(m1: pd.DataFrame) -> pd.DataFrame | None:
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     ).dropna(subset=["close"])
     bars = bars[bars.index <= m1.index[-1]]
-    first_bucket_start = pd.Timestamp(m1.index[0]) - pd.Timedelta(minutes=1)
+    first_bucket_start = pd.Timestamp(m1.index[0]) - pd.Timedelta(1, "min")
     if not bars.empty and first_bucket_start != first_bucket_start.floor("3min"):
         bars = bars.iloc[1:]
     if bars.empty:
@@ -548,7 +548,7 @@ def compute_features(
     feats["gap_open_pct"] = _pct(day_open, prev_close)
     feats["vwap_gap_pct"] = _pct(price, day_vwap)
     now_ts = pd.Timestamp(now)
-    feats["minutes_since_open"] = (now_ts - now_ts.normalize() - pd.Timedelta(hours=9)).total_seconds() / 60.0
+    feats["minutes_since_open"] = (now_ts - now_ts.normalize() - pd.Timedelta(9, "h")).total_seconds() / 60.0
     feats["log_price"] = math.log10(price) if price and price > 0 else np.nan
     feats["tick_pct"] = krx_tick_size(price) / price * 100.0 if price and price > 0 else np.nan
     feats.update(daily_feats)

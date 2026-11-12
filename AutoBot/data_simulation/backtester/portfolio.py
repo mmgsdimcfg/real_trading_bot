@@ -73,7 +73,7 @@ class Portfolio:
 
     def set_cooldown(self, code: str, now: pd.Timestamp, minutes: int = 3) -> None:
         """Set cooldown period after trade."""
-        self.cooldown_until[code] = now + pd.Timedelta(minutes=minutes)
+        self.cooldown_until[code] = now + pd.Timedelta(minutes, "min")
 
     def buy(
         self,

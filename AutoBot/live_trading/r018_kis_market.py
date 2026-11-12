@@ -24,6 +24,11 @@ AutoBotH 차트 탭용 KIS 시세 조회(읽기 전용) - r016 `quote` 명령과
 - names.json: 종목명/시장(search_stock_info, 종목당 1회).
 
 Update log:
+- [2026-11-12] type=feat owner=claude
+    summary: minutes(market="UN") - KRX+NXT 통합 분봉(08:00~20:00, 캐시 min_un). KRX 개장 전(NXT 프리마켓)과 마감 후에는 J 분봉이
+      없어 AutoBotH 타임라인/차트 탭의 분봉이 비었다. 거래량 0 행(체결 없는 분)은 버린다. 기본값 J 는 그대로.
+    impact: tooling (r017 bars 의 KIS 분봉 폴백 / --source kis-un). 봇 판단·틱 수집기 기준(J)은 바꾸지 않음
+    compatibility: backward-compatible
 - [2026-11-11] type=fix owner=claude
     summary: load_token 이 kis_auth 의 서버별 토큰 파일 KIS<YYYYMMDD>_prod 를 읽지 못해(정규식이 KIS+날짜 8자리만 허용, 그 이름은 이제
       0바이트 자리표시 파일) 노트북 로컬 모드에서 r003 이 떠 있어도 차트 탭 분봉/현재가가 "no valid KIS token file" 로 실패.
@@ -61,7 +66,11 @@ DAILY_FINAL_AFTER = "18:00"  # KIS 일봉 당일 행은 16:38 이후에도 바�
 DAILY_YEARS = 3
 MIN_TODAY_CACHE_SEC = 5.0
 DEADLINE_SEC = 25.0  # 명령 하나 전체(모든 TR 호출·페이징·예열 합계) - r016/AutoBotH 타임아웃 30초 안
-MARKET = "J"  # KRX (틱 수집기·r003과 같은 기준). UN/NX는 쓰지 않는다.
+MARKET = "J"  # KRX (틱 수집기·r003과 같은 기준). 시세/일봉/기본 분봉은 UN/NX를 쓰지 않는다.
+# [2026-11-12] 분봉 한정 예외: minutes(market="UN") = KRX+NXT 통합 분봉(08:00~20:00). KRX 개장 전/마감 후에는 J 분봉이 없어
+# AutoBotH 차트가 비었다. 표시 전용이며 봇 판단(r003/r013)과 틱 수집기 기준(J)은 바꾸지 않는다.
+MARKET_UNIFIED = "UN"
+UNIFIED_HOURS = ("080000", "200000")  # NXT 프리마켓 시작 ~ 애프터마켓 종료
 
 # name -> (path, tr_id). 이 목록 밖의 TR은 _get이 거부한다 (주문/잔고/계좌 TR 없음).
 _TRS = {
@@ -518,8 +527,12 @@ def _session_hours(date_str: str) -> tuple[str, str] | None:
     return h[0].strftime("%H%M%S"), h[1].strftime("%H%M%S")
 
 
-def minutes(code: str, date_str: str, client: Client | None = None) -> dict | None:
-    """{"rows": [[HHMMSS, o, h, l, c, v], ...] 오름차순, "name", "source", "complete", "calls"} 또는 None(KIS에 없음)."""
+def minutes(code: str, date_str: str, client: Client | None = None, market: str = MARKET) -> dict | None:
+    """{"rows": [[HHMMSS, o, h, l, c, v], ...] 오름차순, "name", "source", "complete", "calls"} 또는 None(KIS에 없음).
+    market: "J"(기본, KRX 정규장) 또는 "UN"(KRX+NXT 통합, 08:00~20:00 - 캐시는 min_un 폴더에 따로 둔다)."""
+    if market not in (MARKET, MARKET_UNIFIED):
+        raise ValueError(f"market must be {MARKET} or {MARKET_UNIFIED}")
+    unified = market == MARKET_UNIFIED
     code = _check_code(code)
     now = _now()
     today = now.strftime("%Y%m%d")
@@ -529,17 +542,20 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
     hours = _session_hours(date_str)
     if hours is None:
         return None  # 휴장일(r014 달력)
-    open_hms, last_hms = hours
+    open_hms, last_hms = UNIFIED_HOURS if unified else hours
     if is_today and now.strftime("%H%M%S") < open_hms:
         return None  # 장 시작 전 - 오늘 분봉 없음
+    tag = f":{market}" if unified else ""
     tr = "inquire_time_itemchartprice" if is_today else "inquire_time_dailychartprice"
-    cpath = _cache_dir() / "min" / date_str / f"{code}.json"
+    cpath = _cache_dir() / ("min_un" if unified else "min") / date_str / f"{code}.json"
     cached = _read_json(cpath) or {}
     have: dict[str, list] = {r[0]: r for r in cached.get("rows") or []}
+    if unified and cached.get("rows"):
+        cached = dict(cached, rows=[r for r in cached["rows"] if (r[5] or 0) > 0] or cached["rows"][:0])
     if cached.get("complete") and not is_today:
-        return {"rows": cached["rows"], "name": cached.get("name"), "source": f"kis:{tr}", "complete": True, "calls": 0}
+        return {"rows": cached["rows"], "name": cached.get("name"), "source": f"kis:{tr}{tag}", "complete": True, "calls": 0}
     if is_today and have and time.time() - float(cached.get("fetched_at", 0)) < MIN_TODAY_CACHE_SEC:
-        return {"rows": cached["rows"], "name": cached.get("name"), "source": f"kis:{tr}", "complete": False, "calls": 0}
+        return {"rows": cached["rows"], "name": cached.get("name"), "source": f"kis:{tr}{tag}", "complete": False, "calls": 0}
     client = client or shared_client()
     name = cached.get("name")
     # 09:00부터 끊김 없이 받아 둔 경우에만 증분: 마지막 분은 미완성일 수 있어 다시 받고, 그 직전 분까지 겹치면 멈춘다.
@@ -549,8 +565,8 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
     reached_open = False
     overlapped = False
     fetched_any = False
-    for _page in range(16):
-        params = {"FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code, "FID_INPUT_HOUR_1": hour,
+    for _page in range(26 if unified else 16):   # 30분봉/호출: 정규장 390분 = 13, 통합 720분 = 24
+        params = {"FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": code, "FID_INPUT_HOUR_1": hour,
                   "FID_PW_DATA_INCU_YN": "Y"}
         if is_today:
             params["FID_ETC_CLS_CODE"] = ""
@@ -591,5 +607,10 @@ def minutes(code: str, date_str: str, client: Client | None = None) -> dict | No
     _write_json(cpath, {"fetched_at": time.time(), "rows": rows, "name": name, "complete": complete,
                         "complete_from_open": from_open})
     remember_name(code, name)
-    return {"rows": rows, "name": name, "source": f"kis:{tr}", "complete": complete, "calls": client.calls}
+    if unified:
+        # 통합 분봉은 체결이 없는 분도 전일 종가로 채운 행(거래량 0)을 준다 - NXT 비대상 종목은 장전 내내 그 행뿐이다
+        rows = [r for r in rows if (r[5] or 0) > 0]
+        if not rows:
+            return None
+    return {"rows": rows, "name": name, "source": f"kis:{tr}{tag}", "complete": complete, "calls": client.calls}
 

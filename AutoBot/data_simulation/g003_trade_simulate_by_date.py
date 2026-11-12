@@ -17,6 +17,11 @@ Update log format (append only):
 
 Update log:
 - [2026-11-11] type=feat owner=claude
+    summary: r005 _021 호가단위 비용 게이트 parity - 매수 확정 직전 호가단위/가격 > TICK_COST_MAX_PCT 이면 [REJECT] TICK_COST_TOO_HIGH.
+      env ENABLE_TICK_COST_GATE=0/1, TICK_COST_MAX_PCT 로 A/B 가능.
+    impact: sim
+    compatibility: breaking (매수 감소. 롤백: env ENABLE_TICK_COST_GATE=0)
+- [2026-11-11] type=feat owner=claude
     summary: r003/r005 parity - 매수 시점 최적화(r001 2026-11-11): triple above 최대 나이, 시장 국면 확인봉, 유동성 거래대금 대체,
       r013 워밍업 가드(TickReplayFeed warmup_extra_bars). env 오버라이드는 없음(r001 값 그대로).
     impact: sim
@@ -368,6 +373,8 @@ from r001_define_config import (
     DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED,
     ENABLE_MAX_OPEN_POSITIONS_GATE,
     MAX_OPEN_POSITIONS,
+    ENABLE_TICK_COST_GATE,
+    TICK_COST_MAX_PCT,
     MARKET_REGIME_ETF,
     MARKET_REGIME_MA_FAST,
     MARKET_REGIME_MA_SLOW,
@@ -656,6 +663,9 @@ ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD = _env_bool("ENABLE_TRIPLE_CHASE_FROM_CROSS
 TRIPLE_CHASE_FROM_CROSS_MAX_PCT = _env_float("TRIPLE_CHASE_FROM_CROSS_MAX_PCT", TRIPLE_CHASE_FROM_CROSS_MAX_PCT)
 TICK_MIN_PRINTS_PER_MIN = _env_float("TICK_MIN_PRINTS_PER_MIN", TICK_MIN_PRINTS_PER_MIN)
 ENABLE_MARKET_REGIME_GATE = _env_bool("ENABLE_MARKET_REGIME_GATE", ENABLE_MARKET_REGIME_GATE)
+# [2026-11-11] r005 _021 tick-cost gate parity (A/B: ENABLE_TICK_COST_GATE=0|1, TICK_COST_MAX_PCT=<percent>)
+ENABLE_TICK_COST_GATE = _env_bool("ENABLE_TICK_COST_GATE", ENABLE_TICK_COST_GATE)
+TICK_COST_MAX_PCT = _env_float("TICK_COST_MAX_PCT", TICK_COST_MAX_PCT)
 SYMBOL_MARKET_MAP: dict[str, str] = {}  # [2026-11-04] main()이 --symbols-file에서 채움 (r005 _029 parity)
 INTRABAR_MIN_ELAPSED_SECONDS = _env_float("INTRABAR_MIN_ELAPSED_SECONDS", INTRABAR_MIN_ELAPSED_SECONDS)
 INTRABAR_MFI_MIN = _env_float("INTRABAR_MFI_MIN", INTRABAR_MFI_MIN)
@@ -1057,7 +1067,7 @@ def _build_day_ref_frame(raw_df: pd.DataFrame) -> pd.DataFrame | None:
         m = m[(m.index.time >= REGULAR_START) & (m.index.time < REGULAR_END)]
         if m.empty:
             return None
-        out = pd.DataFrame(index=m.index + pd.Timedelta(minutes=1))
+        out = pd.DataFrame(index=m.index + pd.Timedelta(1, "min"))
         vol = pd.to_numeric(m["volume"], errors="coerce").fillna(0.0).to_numpy()
         close = pd.to_numeric(m["close"], errors="coerce").to_numpy()
         out["day_open"] = float(m["open"].iloc[0])
@@ -1957,7 +1967,7 @@ class Simulator:
         return until is not None and now < until
 
     def set_cooldown(self, code: str, now: pd.Timestamp) -> None:
-        self.cooldown_until[code] = now + pd.Timedelta(minutes=TRADE_COOLDOWN_MINUTES)
+        self.cooldown_until[code] = now + pd.Timedelta(TRADE_COOLDOWN_MINUTES, "min")
 
     def buy(self, code: str, name: str, price: float, now: pd.Timestamp, session: str, reason: str) -> bool:
         if self.in_cooldown(code, now) or price <= 0 or code in self.positions:
@@ -2089,7 +2099,7 @@ def _raw_bar_after(raw_frame: pd.DataFrame | None, after_ts: pd.Timestamp, offse
     호출측은 이를 CANCELLED로 처리한다."""
     if raw_frame is None or raw_frame.empty:
         return None
-    target_ts = after_ts + pd.Timedelta(seconds=offset_seconds)
+    target_ts = after_ts + pd.Timedelta(offset_seconds, "s")
     candidates = raw_frame[raw_frame.index >= target_ts]
     if candidates.empty:
         return None
@@ -2115,17 +2125,17 @@ def _simulate_passive_limit_fill(
     if bar1 is None:
         return "CANCELLED", None, None, 0, None
     if float(bar1["low"]) <= l1:
-        fill_time = t1 + pd.Timedelta(seconds=reprice_after)
+        fill_time = t1 + pd.Timedelta(reprice_after, "s")
         return "FILLED", l1, fill_time, int(reprice_after), 0.0
 
     # 2차 시도(1회 재호가): 새 지정가 L2 = 1차 봉 종가. t1+20s 시점 봉 저가가 L2 이하면 체결.
     l2 = float(bar1["close"])
-    t2 = t1 + pd.Timedelta(seconds=reprice_after)
+    t2 = t1 + pd.Timedelta(reprice_after, "s")
     bar2 = _raw_bar_after(raw_frame, t2, reprice_after)
     if bar2 is None:
         return "CANCELLED", None, None, 0, None
     if float(bar2["low"]) <= l2:
-        fill_time = t2 + pd.Timedelta(seconds=reprice_after)
+        fill_time = t2 + pd.Timedelta(reprice_after, "s")
         slippage_pct = (l2 / l1 - 1.0) * 100.0
         return "FILLED", l2, fill_time, int(reprice_after * 2), slippage_pct
 
@@ -2134,7 +2144,7 @@ def _simulate_passive_limit_fill(
     l3 = float(bar2["close"])
     chase_pct = (l3 / l1 - 1.0) * 100.0
     if chase_pct <= BUY_ORDER_REPRICE_MAX_CHASE_PCT:
-        fill_time = t2 + pd.Timedelta(seconds=reprice_after * 2)
+        fill_time = t2 + pd.Timedelta(reprice_after * 2, "s")
         return "FILLED", l3, fill_time, int(reprice_after * 3), chase_pct
     return "CANCELLED", None, None, 0, None
 
@@ -2183,7 +2193,7 @@ def _build_realtime_entry_frame_sim(
     frame: pd.DataFrame, ts: pd.Timestamp, live_price: float, warmup: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, float]:
     bar_start = ts.floor("3min")
-    bar_end = bar_start + pd.Timedelta(minutes=3)
+    bar_end = bar_start + pd.Timedelta(3, "min")
     elapsed_seconds = max(0.0, (ts - bar_start).total_seconds())
 
     if frame is None or frame.empty or pd.isna(live_price) or live_price <= 0:
@@ -2311,7 +2321,7 @@ def _triple_entry_decision(
 ) -> tuple[bool, str]:
     """r005 _008_triple_cross_trigger + 3분 컨텍스트(r002 run_3min_context_decision) parity. Returns (should_buy, reason)."""
     if ENTRY_1MIN_FRAME_REQUIRE_LATEST and len(frame_1min) > 0:
-        exp_label = (ts - pd.Timedelta(seconds=SIM_BAR_AVAIL_DELAY_SECONDS)).floor("1min")
+        exp_label = (ts - pd.Timedelta(SIM_BAR_AVAIL_DELAY_SECONDS, "s")).floor("1min")
         if pd.Timestamp(frame_1min.index[-1]) != exp_label:
             return False, (f"HYBRID_1MIN_FRAME_STALE_last={pd.Timestamp(frame_1min.index[-1]):%H:%M}"
                            f"_expected={exp_label:%H:%M}")
@@ -2728,7 +2738,7 @@ def simulate_date(
 
             latest_price_map[code] = live_price
 
-            _avail_cut = ts - pd.Timedelta(seconds=SIM_BAR_AVAIL_DELAY_SECONDS) if SIM_BAR_SEMANTICS == "causal" else ts
+            _avail_cut = ts - pd.Timedelta(SIM_BAR_AVAIL_DELAY_SECONDS, "s") if SIM_BAR_SEMANTICS == "causal" else ts
             available = frame[frame.index <= _avail_cut]
             if len(available) < MIN_BARS_REQUIRED:
                 continue
@@ -3152,7 +3162,7 @@ def simulate_date(
                             )
 
                     if trailing_condition:
-                        _bar_time_trail = ts.floor("3min") + pd.Timedelta(minutes=3)
+                        _bar_time_trail = ts.floor("3min") + pd.Timedelta(3, "min")
                         if reason_ts.startswith("TRAILING_STOP_GIVEBACK_"):
                             if pending_state is None:
                                 trailing_sell_confirm_state[code] = {
@@ -3269,7 +3279,7 @@ def simulate_date(
                 # [2026-10-07] r005 _008 parity: 진입용 1분봉은 직전 확정분이어야 함(ENTRY_1MIN_FRAME_REQUIRE_LATEST).
                 _frame_stale = False
                 if ENTRY_1MIN_FRAME_REQUIRE_LATEST and buy_available_1min is not None and len(buy_available_1min) > 0:
-                    _exp_label = (ts - pd.Timedelta(seconds=SIM_BAR_AVAIL_DELAY_SECONDS)).floor("1min")
+                    _exp_label = (ts - pd.Timedelta(SIM_BAR_AVAIL_DELAY_SECONDS, "s")).floor("1min")
                     if pd.Timestamp(buy_available_1min.index[-1]) != _exp_label:
                         _frame_stale = True
                         trigger_ok, trigger_reason = False, (
@@ -3323,6 +3333,12 @@ def simulate_date(
                 if _pg is not None:
                     buy_confirm_state.pop(code, None)
                     log_detail(f"  [BUY SKIP] {code} | {_pg}")
+                    should_buy = False
+            if should_buy and ENABLE_TICK_COST_GATE and price > 0:  # [2026-11-11] r005 _021 tick-cost parity
+                _tick_pct = krx_tick_size(price) / price * 100.0
+                if _tick_pct > float(TICK_COST_MAX_PCT) + 1e-9:
+                    buy_confirm_state.pop(code, None)
+                    log_detail(f"  [REJECT] {code} | TICK_COST_TOO_HIGH {_tick_pct:.3f}% > {float(TICK_COST_MAX_PCT):.3f}% | price={price:,.0f}")
                     should_buy = False
             if should_buy and ENABLE_MARKET_REGIME_GATE:  # [2026-11-04] r005 _029 parity
                 _rg_ok, _rg_detail = _market_regime_at(code, _avail_cut)

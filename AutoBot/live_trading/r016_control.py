@@ -24,7 +24,7 @@
   collector start [--force]        g011 을 --fill-from-scan 으로 분리 실행 (g022 cron 과 같은 규칙: 장 시작 15분 전~마감, standby 거부)
   role get | role set primary|standby [--note T]   호스트 역할 (r019 host_role.json). standby 면 start/restart/collector start 거부
   doctor                           실행 환경 점검 (Python/패키지 버전, open-trading-api, KIS 설정 파일 유무, 역할, 백엔드)
-  job list | job start NAME [--date D] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] | job stop NAME | job log NAME [-n N]
+  job list | job start NAME [--date D] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] [--email] [--scheduled] | job stop NAME | job log NAME [-n N]
                                    데이터 작업 (live_trading/r021_jobs.py: collect/history/scan/edge_ai/universe/postclose;
                                    postclose = 수집 -> 이력 -> 선별 -> r004 반영, --no-* 로 단계를 뺀다)
   job data --date D                그 날짜 폴더의 수집 데이터 유무 + g002 선별 결과 (r021) + r004 와의 비교 블록(r004: scan_date,
