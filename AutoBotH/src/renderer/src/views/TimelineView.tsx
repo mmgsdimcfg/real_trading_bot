@@ -41,6 +41,9 @@
  *   dot shows that one while the mouse is on it (2) the crosshair is linked both ways: hovering the price chart (tick / minute
  *   bars) draws a vertical line at that bar's time on the buy and sell evaluation charts - before, only the evaluation charts
  *   drove the price chart
+ * - [2026-11-12] type=feat - zoom: the price chart's wheel / drag selection sets a time span that all three charts follow
+ *   (전체 보기 or a double click on the price chart resets it); time ticks adapt to the span (30 min ... 1 min); the buy
+ *   evaluation chart is as tall as its rows need (one row no longer takes 200 px)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -301,10 +304,15 @@ export function TimelineView() {
   const fullLen = full[1] - full[0];
   const win = span > 0 && span < fullLen ? span : 0;
   const winStart = win ? full[0] + ((fullLen - win) * startPct) / 100 : full[0];
-  const domain: [number, number] = win ? [winStart, winStart + win] : full;
-  // explicit 30-minute ticks (recharts' automatic ticks on a time scale bunch up at the start)
+  /** [2026-11-12] span picked on the price chart (wheel / drag selection); null = the range chosen above */
+  const [zoom, setZoom] = useState<[number, number] | null>(null);
+  useEffect(() => setZoom(null), [selected, snap?.date, span, chart.kind]);
+  const zoomOk = zoom && intradayKind && zoom[1] > zoom[0] && zoom[0] < full[1] && zoom[1] > full[0];
+  const domain: [number, number] = zoomOk ? zoom : win ? [winStart, winStart + win] : full;
+  // explicit ticks (recharts' automatic ticks on a time scale bunch up at the start); the step follows the visible span
   const xTicks = useMemo(() => {
-    const step = 30 * 60 * 1000;
+    const len = (domain[1] - domain[0]) / 60000;
+    const step = (len > 180 ? 30 : len > 90 ? 15 : len > 40 ? 10 : len > 15 ? 5 : len > 6 ? 2 : 1) * 60 * 1000;
     const out: number[] = [];
     for (let t = Math.ceil(domain[0] / step) * step; t <= domain[1]; t += step) out.push(t);
     return out;
@@ -344,7 +352,7 @@ export function TimelineView() {
   const intradayDomain = useMemo<[number, number] | null>(() => (xs.length ? [domain[0], domain[1]] : null), [xs.length > 0, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const buyLabel = (v: number) => shownRows[v]?.label || '';
   // heights: dragged by the user (layout) or the defaults
-  const buyH = layout.buyH ?? Math.max(200, Math.min(520, 110 + shownRows.length * 15));
+  const buyH = layout.buyH ?? Math.max(GRIP_MIN, Math.min(520, 92 + shownRows.length * 16));
   const sellH = layout.sellH ?? Math.max(160, Math.min(SELL_DEFAULT_H, 70 + shownSellRows.length * 14));
   const priceBoxH = chartHeight(chart.ind, TL_OSC_H, layout.priceH ?? TL_PRICE_H, layout.osc);
   const sellLabel = (v: number) => shownSellRows[v]?.label || '';
@@ -422,7 +430,17 @@ export function TimelineView() {
                   </option>
                 ))}
               </select>
-              {win > 0 && (
+              {zoomOk && (
+                <>
+                  <span className="badge-warn" title="주가 차트에서 휠 또는 끌기로 확대한 구간">
+                    확대 {fmtKstTime(domain[0]).slice(0, 5)} ~ {fmtKstTime(domain[1]).slice(0, 5)}
+                  </span>
+                  <button className="small" onClick={() => setZoom(null)} title="확대를 풀고 위에서 고른 범위로 돌아갑니다 (주가 차트 더블클릭도 같음)">
+                    전체 보기
+                  </button>
+                </>
+              )}
+              {!zoomOk && win > 0 && (
                 <>
                   <input type="range" min={0} max={100} step={0.5} value={startPct} onChange={(e) => setStartPct(Number(e.target.value))} title="좌우로 끌어 시간대 이동" />
                   <span className="mono small">
@@ -489,6 +507,8 @@ export function TimelineView() {
                 n={chartN}
                 domain={intradayDomain}
                 xTicks={xTicks}
+                onZoom={intradayKind ? setZoom : undefined}
+                zoomLimit={full}
                 trades={trades}
                 buyPrice={sym?.position?.buyPrice}
                 date={day}

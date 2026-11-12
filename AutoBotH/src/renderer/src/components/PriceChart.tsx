@@ -35,6 +35,13 @@
  * - [2026-11-12] type=fix - the tooltip closed about a second after the mouse stopped on the chart (timeline): the external
  *   hover effect also ran when the bars were refreshed and, with no external hover time, cleared the chart's own hover.
  *   Now it clears only when an external hover ends (time -> null), never while the mouse itself is on this chart
+ * - [2026-11-12] type=feat - readability + zoom. (1) layer order: candles on top of the context layers - Bollinger is a faint
+ *   band (no upper / lower curves) with a dashed mid line, the Ichimoku cloud is a faint fill without span lines, the lagging
+ *   span is no longer drawn; one colour per family (red / blue stay with the candles, MAs are a grey ramp) (2) inline legend
+ *   with colour chips and the hovered bar's values at the top left of the price pane in every layout (3) time mode: mouse
+ *   wheel zooms the time axis around the cursor (shift + wheel pans), dragging with the left button selects a span to zoom
+ *   into, double click resets - reported through onZoom so the parent's other charts follow; index mode: drag = zoom into the
+ *   selected bars, shift + drag = pan (was plain drag)
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -69,7 +76,12 @@ const VOL_RATIO = 0.2 / 3; // volume pane share of the price+volume area (0.2 ->
 const KST = 9 * 3600000;
 const MIN_BARS = 10;
 
-export const MA_COLORS: Record<number, string> = { 5: '#e0559b', 20: '#e08a1e', 60: '#2aa1c9', 120: '#0ca30c' };
+/** [2026-11-12] grey ramp (theme tokens): the short average is the brightest; red / blue belong to the candles */
+export const MA_COLORS: Record<number, string> = { 5: 'var(--ma-1)', 20: 'var(--ma-2)', 60: 'var(--ma-3)', 120: 'var(--ma-4)' };
+/** colours of the price-pane overlays (legend chips, check boxes) - the lines themselves are styled by the .ind-* classes */
+export const OVERLAY_COLOR = { bb: '#9ca3af', vwap: '#a78bfa', tenkan: '#f59e0b', kijun: '#10b981' } as const;
+/** shortest time span the wheel / a drag selection may zoom into */
+const MIN_ZOOM_MS = 2 * 60000;
 
 interface Props {
   bars: Bar[];
@@ -114,6 +126,11 @@ interface Props {
   hoverTime?: number | null;
   /** symbol code: shows the drawing tools (horizontal / vertical / trend line, clear) and the code's saved drawings */
   drawKey?: string;
+  /** [2026-11-12] time mode: the user asked for another time span (wheel / drag selection); null = show everything again.
+   *  The parent owns the domain (it is shared with other charts) and passes it back through `domain` */
+  onZoom?: (domain: [number, number] | null) => void;
+  /** time mode: the widest span onZoom may ask for (the whole day) */
+  zoomLimit?: [number, number];
 }
 
 function niceTicks(lo: number, hi: number, count = 5): number[] {
@@ -261,6 +278,10 @@ export function PriceChart(props: Props) {
   /** index mode viewport: last visible index (exclusive) + bar count; null = follow the newest bars */
   const [view, setView] = useState<{ end: number; count: number } | null>(null);
   const drag = useRef<{ x: number; end: number; count: number; slot: number } | null>(null);
+  /** [2026-11-12] drag selection (zoom into a span): x of the press and of the pointer */
+  const selRef = useRef<{ x0: number; x1: number } | null>(null);
+  const [sel, setSel] = useState<{ x0: number; x1: number } | null>(null);
+  const applySel = useRef<(x0: number, x1: number) => void>(() => undefined);
 
   useEffect(() => {
     const el = ref.current;
@@ -412,19 +433,20 @@ export function PriceChart(props: Props) {
     const overlay: PaneLine[] = [];
     let cloudPaths: { up: string; dn: string } | null = null;
     if (S.ma) for (const p of MA_PERIODS) overlay.push({ color: MA_COLORS[p], d: line(pts(S.ma[p]), sy) });
-    if (S.bb) overlay.push({ cls: 'ind-bb', d: line(pts(S.bb.upper), sy) }, { cls: 'ind-bb', d: line(pts(S.bb.lower), sy) }, { cls: 'ind-bb-mid', d: line(pts(S.bb.mid), sy) });
+    // [2026-11-12] Bollinger: a faint band between upper and lower instead of two more curves, the mid line stays
+    let bandPath = '';
+    if (S.bb) {
+      const b = cloud(slots.map((sl) => ({ x: sl.x, a: S.bb!.upper[sl.i], b: S.bb!.lower[sl.i] })), sy);
+      bandPath = b.up + b.dn;
+      overlay.push({ cls: 'ind-bb-mid', d: line(pts(S.bb.mid), sy) });
+    }
     if (S.vwap) overlay.push({ cls: 'ind-vwap', d: line(pts(S.vwap), sy) });
     if (S.ichimoku) {
       const k = S.ichimoku;
       const cp = [...slots.map((sl) => ({ x: sl.x, a: k.senkouA[sl.i], b: k.senkouB[sl.i] })), ...futureIdx.map((f) => ({ x: f.x, a: k.senkouA[f.idx], b: k.senkouB[f.idx] }))];
       cloudPaths = cloud(cp, sy);
-      overlay.push(
-        { cls: 'ind-span-a', d: line(cp.map((p) => [p.x, p.a]), sy) },
-        { cls: 'ind-span-b', d: line(cp.map((p) => [p.x, p.b]), sy) },
-        { cls: 'ind-tenkan', d: line(pts(k.tenkan), sy) },
-        { cls: 'ind-kijun', d: line(pts(k.kijun), sy) },
-        { cls: 'ind-chikou', d: line(pts(k.chikou), sy) },
-      );
+      // [2026-11-12] the cloud is a fill only (no span lines) and the lagging span is not drawn: both crowded the candles
+      overlay.push({ cls: 'ind-tenkan', d: line(pts(k.tenkan), sy) }, { cls: 'ind-kijun', d: line(pts(k.kijun), sy) });
     }
 
     // ---- oscillator panes ----
@@ -519,7 +541,7 @@ export function PriceChart(props: Props) {
       for (const sl of slots) if (Math.abs(sl.x - x) < Math.abs(best.x - x)) best = sl;
       return best.b.t;
     };
-    return { empty: false as const, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, panes, xOfTime, xOfT, tOfX, dayLines, step };
+    return { empty: false as const, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, bandPath, panes, xOfTime, xOfT, tOfX, dayLines, step, d0, d1 };
   }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, date, width, intraday, L, W, priceH, volTop, volH, oscHs.join(), osc.join(), vp, shift, defaultCount, interactive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- drawings (HTS-style tools) ----
@@ -605,6 +627,10 @@ export function PriceChart(props: Props) {
       return;
     }
     if (pending) setGhost({ x: mx, y: my });
+    if (selRef.current) {
+      selRef.current = { x0: selRef.current.x0, x1: Math.min(L + W, Math.max(L, mx)) };
+      setSel(selRef.current);
+    }
     if (mx < L || mx > L + W) return setHov(null);
     setHoverY(my >= TOP && my <= TOP + priceH ? my : null);
     setHov(nearest(mx));
@@ -614,15 +640,83 @@ export function PriceChart(props: Props) {
       const r0 = e.currentTarget.getBoundingClientRect();
       if (drawClick(e.clientX - r0.left, e.clientY - r0.top)) return;
     }
-    if (!interactive || mode !== 'index' || e.button !== 0 || !model || model.empty) return;
+    if (e.button !== 0 || !model || model.empty) return;
     const r = e.currentTarget.getBoundingClientRect();
-    drag.current = { x: e.clientX - r.left, end: vp.end, count: vp.count, slot: Math.max(1, model.step) };
+    const mx = e.clientX - r.left;
+    const canZoom = mode === 'time' ? !!props.onZoom : interactive;
+    if (!canZoom || mx < L || mx > L + W) return;
+    if (mode === 'index' && e.shiftKey) {
+      drag.current = { x: mx, end: vp.end, count: vp.count, slot: Math.max(1, model.step) }; // shift + drag = pan
+      return;
+    }
+    // [2026-11-12] left drag = select a span to zoom into (applied on release)
+    e.preventDefault();
+    selRef.current = { x0: mx, x1: mx };
+    setSel(selRef.current);
+  };
+  applySel.current = (x0: number, x1: number) => {
+    if (!model || model.empty || Math.abs(x1 - x0) < 6) return; // a click, not a selection
+    const [a, b] = x0 < x1 ? [x0, x1] : [x1, x0];
+    if (mode === 'time') {
+      const t0 = model.tOfX(a);
+      const t1 = model.tOfX(b);
+      const mid = (t0 + t1) / 2;
+      props.onZoom?.(t1 - t0 >= MIN_ZOOM_MS ? [t0, t1] : [mid - MIN_ZOOM_MS / 2, mid + MIN_ZOOM_MS / 2]);
+      return;
+    }
+    const idx = (x: number) => vp.end - shift - (L + W - x) / Math.max(1, model.step);
+    const i0 = Math.max(0, Math.floor(idx(a)));
+    const i1 = Math.min(bars.length, Math.ceil(idx(b)));
+    const count = Math.max(MIN_BARS, i1 - i0);
+    setView({ end: Math.min(bars.length, Math.max(count, i1)), count });
   };
   useEffect(() => {
-    const up = () => (drag.current = null);
+    const up = () => {
+      drag.current = null;
+      const s0 = selRef.current;
+      if (s0) {
+        selRef.current = null;
+        setSel(null);
+        applySel.current(s0.x0, s0.x1);
+      }
+    };
     window.addEventListener('mouseup', up);
     return () => window.removeEventListener('mouseup', up);
   }, []);
+  // [2026-11-12] time mode: wheel = zoom the time axis around the cursor, shift + wheel (or a sideways wheel) = pan
+  const zoomRef = useRef<{ d0: number; d1: number; lim?: [number, number]; onZoom?: Props['onZoom'] }>({ d0: 0, d1: 0 });
+  zoomRef.current = { d0: model && !model.empty ? model.d0 : 0, d1: model && !model.empty ? model.d1 : 0, lim: props.zoomLimit, onZoom: props.onZoom };
+  const hasZoom = mode === 'time' && !!props.onZoom;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !hasZoom) return;
+    const onWheel = (e: WheelEvent) => {
+      const { d0, d1, lim, onZoom } = zoomRef.current;
+      if (!onZoom || !(d1 > d0)) return;
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (e.clientX - r.left - L) / W));
+      const span = d1 - d0;
+      let n0: number;
+      let n1: number;
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        const move = span * 0.15 * Math.sign(e.deltaX || e.deltaY);
+        [n0, n1] = [d0 + move, d1 + move];
+      } else {
+        const next = Math.max(MIN_ZOOM_MS, span * (e.deltaY > 0 ? 1.25 : 0.8));
+        const at = d0 + frac * span;
+        [n0, n1] = [at - frac * next, at + (1 - frac) * next];
+      }
+      if (lim) {
+        if (n1 - n0 >= lim[1] - lim[0]) return onZoom(null); // zoomed out to the whole range
+        if (n0 < lim[0]) [n0, n1] = [lim[0], lim[0] + (n1 - n0)];
+        if (n1 > lim[1]) [n0, n1] = [lim[1] - (n1 - n0), lim[1]];
+      }
+      onZoom([n0, n1]);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [hasZoom, L, W]);
   // wheel zoom (non-passive listener so the page does not scroll)
   useEffect(() => {
     const el = ref.current;
@@ -654,6 +748,7 @@ export function PriceChart(props: Props) {
   const legendX = axis === 'left' ? L + 4 : L + 4;
   const li = h ? h.i : last ? last.i : -1;
   const showLegend = axis === 'right';
+  const hasOverlayLegend = !!(S.ma || S.bb || S.vwap || S.ichimoku);
 
   // floating tooltip: right of the cursor when it fits, otherwise left of it (measured after render - its width depends on
   // the indicators shown)
@@ -683,7 +778,7 @@ export function PriceChart(props: Props) {
   return (
     <div className={`price-chart ${interactive ? 'interactive' : ''}`} ref={ref} style={{ height }}>
       {model && !model.empty && width > 0 && (
-        <svg className={tool !== 'pointer' ? 'drawing' : undefined} width={width} height={height} onMouseMove={onMove} onMouseDown={onDown} onMouseLeave={() => (setHov(null), setHoverY(null))} onDoubleClick={() => interactive && setView(null)}>
+        <svg className={tool !== 'pointer' ? 'drawing' : undefined} width={width} height={height} onMouseMove={onMove} onMouseDown={onDown} onMouseLeave={() => (setHov(null), setHoverY(null))} onDoubleClick={() => (mode === 'time' ? props.onZoom?.(null) : interactive && setView(null))}>
           <defs>
             <clipPath id={`pc-clip-${L}-${R}`}>
               <rect x={L} y={0} width={W} height={height} />
@@ -721,21 +816,23 @@ export function PriceChart(props: Props) {
           {model.highlight && <rect x={model.highlight.x} y={TOP} width={model.highlight.w} height={bottom - TOP} className="pc-today" />}
 
           <g clipPath={`url(#pc-clip-${L}-${R})`}>
+            {/* [2026-11-12] back to front: context fills, reference lines, then the candles on top */}
+            {model.bandPath && <path d={model.bandPath} className="ind-bb-band" />}
             {model.cloudPaths && (
               <>
                 <path d={model.cloudPaths.up} className="ind-cloud-up" />
                 <path d={model.cloudPaths.dn} className="ind-cloud-dn" />
               </>
             )}
+            {model.overlay.map((o, i) => (
+              <path key={i} d={o.d} className={`ind-line ${o.cls || ''}`} style={o.color ? { stroke: o.color } : undefined} />
+            ))}
             <path d={model.upW} className="pc-up-line" />
             <path d={model.dnW} className="pc-dn-line" />
             <path d={model.upB} className="pc-up" />
             <path d={model.dnB} className="pc-dn" />
             {showVol && <path d={model.upV} className="pc-up vol" />}
             {showVol && <path d={model.dnV} className="pc-dn vol" />}
-            {model.overlay.map((o, i) => (
-              <path key={i} d={o.d} className={`ind-line ${o.cls || ''}`} style={o.color ? { stroke: o.color } : undefined} />
-            ))}
             {model.panes.map((p) => (
               <g key={p.key}>
                 <rect x={L} y={p.top} width={W} height={p.h} className="pc-pane" />
@@ -774,7 +871,9 @@ export function PriceChart(props: Props) {
               )}
             </g>
           ))}
-          {showLegend && <Legends S={S} i={li} x={legendX} y={TOP + 12} volY={volTop + 11} vol={showVol && li >= 0 ? bars[li]?.v : undefined} />}
+          {(showLegend || hasOverlayLegend) && (
+            <Legends S={S} i={li} x={legendX} y={TOP + 12} volY={volTop + 11} vol={showLegend && showVol && li >= 0 ? bars[li]?.v : undefined} />
+          )}
 
           {/* position + fills */}
           {buyPrice && buyPrice > model.lo && buyPrice < model.hi && (
@@ -868,6 +967,11 @@ export function PriceChart(props: Props) {
           {/* last price tag (right axis) */}
           {axis === 'right' && last && (
             <PriceTag x={L + W + 2} y={model.sy(last.b.c)} text={fmtInt(last.b.c)} cls={last.b.c >= last.b.o ? 'up' : 'dn'} />
+          )}
+
+          {/* drag selection (released = zoom into it) */}
+          {sel && Math.abs(sel.x1 - sel.x0) >= 2 && (
+            <rect x={Math.min(sel.x0, sel.x1)} y={TOP} width={Math.abs(sel.x1 - sel.x0)} height={bottom - TOP} className="pc-sel" pointerEvents="none" />
           )}
 
           {/* hover */}
@@ -1004,25 +1108,27 @@ function Legends({ S, i, x, y, volY, vol }: { S: IndicatorSet; i: number; x: num
   const rows: Legend[][] = [];
   if (S.ma) rows.push(MA_PERIODS.map((p) => ({ label: `MA${p}`, color: MA_COLORS[p], value: S.ma![p][i], digits: 0 })));
   const r2: Legend[] = [];
-  if (S.bb) r2.push({ label: `BB(${BOT_PARAMS.bbPeriod},${BOT_PARAMS.bbMult}) 상`, value: S.bb.upper[i], digits: 0 }, { label: '중', value: S.bb.mid[i], digits: 0 }, { label: '하', value: S.bb.lower[i], digits: 0 });
-  if (S.vwap) r2.push({ label: 'VWAP', value: S.vwap[i], digits: 0 });
+  const C = OVERLAY_COLOR;
+  if (S.bb) r2.push({ label: `볼린저(${BOT_PARAMS.bbPeriod},${BOT_PARAMS.bbMult}) 상`, color: C.bb, value: S.bb.upper[i], digits: 0 }, { label: '중', color: C.bb, value: S.bb.mid[i], digits: 0 }, { label: '하', color: C.bb, value: S.bb.lower[i], digits: 0 });
+  if (S.vwap) r2.push({ label: 'VWAP', color: C.vwap, value: S.vwap[i], digits: 0 });
   if (r2.length) rows.push(r2);
   if (S.ichimoku) {
     const k = S.ichimoku;
     rows.push([
-      { label: '전환', value: k.tenkan[i], digits: 0 },
-      { label: '기준', value: k.kijun[i], digits: 0 },
-      { label: '선행A', value: k.senkouA[i], digits: 0 },
-      { label: '선행B', value: k.senkouB[i], digits: 0 },
+      { label: '전환', color: C.tenkan, value: k.tenkan[i], digits: 0 },
+      { label: '기준', color: C.kijun, value: k.kijun[i], digits: 0 },
+      { label: '구름 A', value: k.senkouA[i], digits: 0 },
+      { label: 'B', value: k.senkouB[i], digits: 0 },
     ]);
   }
   return (
     <g pointerEvents="none">
       {rows.map((row, j) => (
-        <text key={j} x={x} y={y + j * 14} className="pc-legend">
+        <text key={j} x={x} y={y + j * 14} className="pc-legend pc-legend-halo">
           {row.map((l, k) => (
-            <tspan key={k} dx={k ? 8 : 0} style={l.color ? { fill: l.color } : undefined}>
-              {l.label} {fmtNum(l.value, l.digits ?? 1)}
+            <tspan key={k} dx={k ? 9 : 0}>
+              {l.color && <tspan style={{ fill: l.color }}>■ </tspan>}
+              {l.label} <tspan className="pc-legend-val">{fmtNum(l.value, l.digits ?? 1)}</tspan>
             </tspan>
           ))}
         </text>

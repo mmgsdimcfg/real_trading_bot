@@ -45,7 +45,7 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell } from 'electron';
-import { parsePaperLines } from '../shared/paper';
+import { parseEdgeMeta, parsePaperLines } from '../shared/paper';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -579,6 +579,18 @@ ipcMain.handle('paper:get', async (_e, date: string) => {
     return { ok: true, trades: text ? parsePaperLines(text) : [] };
   } catch (e) {
     return { ok: false, trades: [], error: errMsg(e) };
+  }
+});
+// [2026-11-12] the Edge AI model in use (server file runtime/edge_ai/current_meta.json - r011 reloads it within a minute)
+ipcMain.handle('edge:model', async () => {
+  if (!files.connected) return { ok: false, model: null, error: `${hostLabel()}에 연결되어 있지 않습니다.` };
+  const g = hostGen;
+  try {
+    const text = await pricesFor(mode).edgeMeta();
+    if (g !== hostGen) return { ok: false, model: null, error: '실행 위치가 바뀌었습니다.' };
+    return { ok: true, model: text ? parseEdgeMeta(text) : null };
+  } catch (e) {
+    return { ok: false, model: null, error: errMsg(e) };
   }
 });
 // [2026-11-12] current price per watched symbol (r003 quote log of the viewed day; the replay cursor of a past day is honoured)

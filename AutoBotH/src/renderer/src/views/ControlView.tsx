@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, autoSellOf, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, type AutoSellMode, type TradeMode } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, autoSellOf, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, type AutoSellMode, type EdgeModelInfo, type TradeMode } from '../../../shared/paper';
 import { useStore } from '../store';
 import type { RunMode } from '../../../shared/types';
 import {
@@ -408,6 +408,19 @@ export function ControlView() {
       setModeBusy(false);
     }
   };
+  // [2026-11-12] the Edge AI model in use (current_meta.json of the connected host), re-read every minute like the bot does
+  const [edgeModel, setEdgeModel] = useState<EdgeModelInfo | null | undefined>(undefined);
+  useEffect(() => {
+    if (!connected) return setEdgeModel(undefined);
+    let alive = true;
+    const load = () => void window.api.getEdgeModel().then((r) => alive && setEdgeModel(r.ok ? r.model : undefined));
+    load();
+    const id = window.setInterval(load, 60000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [connected, isLocal]);
   // [2026-11-12] AUTO_SELL_MODE: which sells the bot makes by itself (all / only the net -2% stop / none)
   const autoSell = control.autoSell;
   const autoSellMode = autoSellOf(autoSell?.effective);
@@ -637,6 +650,7 @@ export function ControlView() {
           ) : (
             strategy && <span className="muted small">자동 매도 선택은 서버 코드 갱신 후 쓸 수 있습니다</span>
           )}
+          {edgeModel !== undefined && <EdgeModelLine m={edgeModel} tradeMode={tradeMode} />}
           {nPending > 0 && st?.running && (
             <span className="badge-warn" title="서비스 시작 이후 바뀐 파일이 있습니다">
               ⚠ 미적용 변경 {nPending}건 → 재시작 필요
@@ -752,5 +766,33 @@ export function ControlView() {
         </div>
       </section>
     </div>
+  );
+}
+
+const pct1 = (v: number) => `${(v * 100).toFixed(1)}%`;
+
+/** [2026-11-12] one line: which Edge AI model the bot uses now, what it was trained on and how it did out of sample */
+function EdgeModelLine({ m, tradeMode }: { m: EdgeModelInfo | null; tradeMode: TradeMode }) {
+  if (!m) return <span className="muted small">Edge AI 모델: 배포된 모델 없음 (runtime/edge_ai/current_meta.json)</span>;
+  const use = tradeMode === 'edge' ? '매수 신호로 사용 중' : tradeMode === 'rules+paper' ? '매수 필터(_020) + 가상 매매에 사용 중' : '매수 필터(_020)에 사용 중';
+  const detail = [
+    `모델 ${m.modelId} (생성 ${m.created.replace('T', ' ')})`,
+    `학습 대상: ${edgeLabelKo(m)}${m.horizon && m.target === 'y_tp' ? ` · 당일 장 마감까지 관찰` : ''}`,
+    `데이터셋 ${m.dataset || '-'} · ${m.nDays ?? '?'}일 · 최종 학습 구간 ${m.trainRange || '-'}`,
+    `확률 기준 ${m.threshold === null ? '-' : m.threshold.toFixed(3)} · 검증 AUC ${m.aucOos === null ? '-' : m.aucOos.toFixed(3)}`,
+    m.kept && m.base ? `검증 구간 순손익: 통과 ${m.kept.n.toLocaleString()}건 ${m.kept.meanNet.toFixed(3)}% / 전체 ${m.base.n.toLocaleString()}건 ${m.base.meanNet.toFixed(3)}%` : '',
+    m.runKept && m.runBase
+      ? `손절 전 도달률(통과 / 전체): +2% ${pct1(m.runKept.tp2)} / ${pct1(m.runBase.tp2)} · +3% ${pct1(m.runKept.tp3)} / ${pct1(m.runBase.tp3)} · +5% ${pct1(m.runKept.tp5)} / ${pct1(m.runBase.tp5)} · 손절 ${pct1(m.runKept.stopped)} / ${pct1(m.runBase.stopped)}`
+      : '',
+    m.promoted ? '승격됨: 검증 구간에서 통과 진입의 순손익이 0보다 컸습니다.' : '승격 안 됨: 검증 구간에서 통과 진입의 순손익이 0보다 크지 않았습니다.',
+    '봇은 이 파일이 바뀌면 1분 안에 새 모델을 읽습니다 (재시작 불필요).',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return (
+    <span className="muted small edge-model" title={detail}>
+      Edge AI 모델 <b className="mono">{m.modelId}</b> · {edgeLabelKo(m)} · 기준 {m.threshold === null ? '-' : m.threshold.toFixed(3)}
+      {m.runKept ? ` · +2% 도달 ${pct1(m.runKept.tp2)}` : ''} · <span className={m.promoted ? '' : 'warn-text'}>{m.promoted ? '승격됨' : '승격 안 됨'}</span> · {use}
+    </span>
   );
 }
