@@ -42,6 +42,8 @@
  *   wheel zooms the time axis around the cursor (shift + wheel pans), dragging with the left button selects a span to zoom
  *   into, double click resets - reported through onZoom so the parent's other charts follow; index mode: drag = zoom into the
  *   selected bars, shift + drag = pan (was plain drag)
+ * - [2026-11-12] type=fix - both modes: plain drag = pan (time mode: moves the zoomed span inside zoomLimit), ctrl + drag =
+ *   select a span to zoom into
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -279,6 +281,8 @@ export function PriceChart(props: Props) {
   const [view, setView] = useState<{ end: number; count: number } | null>(null);
   const drag = useRef<{ x: number; end: number; count: number; slot: number } | null>(null);
   /** [2026-11-12] drag selection (zoom into a span): x of the press and of the pointer */
+  /** [2026-11-12] time mode pan (plain drag): x of the press and the domain at that moment */
+  const panT = useRef<{ x: number; d0: number; d1: number } | null>(null);
   const selRef = useRef<{ x0: number; x1: number } | null>(null);
   const [sel, setSel] = useState<{ x0: number; x1: number } | null>(null);
   const applySel = useRef<(x0: number, x1: number) => void>(() => undefined);
@@ -626,6 +630,16 @@ export function PriceChart(props: Props) {
       setView({ end, count: drag.current.count });
       return;
     }
+    if (panT.current && mode === 'time') {
+      // [2026-11-12] plain drag = move the zoomed time span sideways (clamped to zoomLimit)
+      const { x, d0, d1 } = panT.current;
+      const span = d1 - d0;
+      let n0 = d0 - ((mx - x) / W) * span;
+      const lim = props.zoomLimit;
+      if (lim) n0 = Math.min(lim[1] - span, Math.max(lim[0], n0));
+      props.onZoom?.([n0, n0 + span]);
+      return;
+    }
     if (pending) setGhost({ x: mx, y: my });
     if (selRef.current) {
       selRef.current = { x0: selRef.current.x0, x1: Math.min(L + W, Math.max(L, mx)) };
@@ -645,11 +659,17 @@ export function PriceChart(props: Props) {
     const mx = e.clientX - r.left;
     const canZoom = mode === 'time' ? !!props.onZoom : interactive;
     if (!canZoom || mx < L || mx > L + W) return;
-    if (mode === 'index' && e.shiftKey) {
-      drag.current = { x: mx, end: vp.end, count: vp.count, slot: Math.max(1, model.step) }; // shift + drag = pan
+    // [2026-11-12] plain drag = pan, ctrl + drag = select a span to zoom into (was: drag = select, shift + drag = pan)
+    if (!e.ctrlKey) {
+      e.preventDefault();
+      if (mode === 'index') drag.current = { x: mx, end: vp.end, count: vp.count, slot: Math.max(1, model.step) };
+      else {
+        const lim = props.zoomLimit;
+        // nothing to move while the whole range is shown
+        if (!lim || model.d1 - model.d0 < lim[1] - lim[0] - 1) panT.current = { x: mx, d0: model.d0, d1: model.d1 };
+      }
       return;
     }
-    // [2026-11-12] left drag = select a span to zoom into (applied on release)
     e.preventDefault();
     selRef.current = { x0: mx, x1: mx };
     setSel(selRef.current);
@@ -673,6 +693,7 @@ export function PriceChart(props: Props) {
   useEffect(() => {
     const up = () => {
       drag.current = null;
+      panT.current = null;
       const s0 = selRef.current;
       if (s0) {
         selRef.current = null;
