@@ -428,7 +428,7 @@ export function JobsView() {
           <h3>자동 실행 (이 PC, 앱이 켜져 있을 때)</h3>
           <ul className="small">
             <li>
-              틱 수집기: {settings?.autoCollector ? '평일 08:40~15:35 5분마다 확인해 없으면 시작' : '꺼짐'} {sched?.lastCollectorMsg && <span className="muted">- {sched.lastCollectorMsg}</span>}
+              틱 수집기: {settings?.autoCollector ? '평일 07:55~19:55 5분마다 확인해 없으면 시작 (KRX 정규장 + NXT 08:00~20:00)' : '꺼짐'} {sched?.lastCollectorMsg && <span className="muted">- {sched.lastCollectorMsg}</span>}
             </li>
             <li>
               장 마감 작업: {settings?.autoPostclose ? `거래일 ${settings.postcloseTime} 이후 1회 (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}${settings.postcloseEmail ? ' + 선별 결과 메일' : ''}` : '꺼짐'}{' '}

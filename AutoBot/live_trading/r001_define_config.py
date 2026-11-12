@@ -1360,6 +1360,13 @@ TICK_MIN_PRINTS_WINDOW_MINUTES = 30
 # r003이 시작 시 g011_tick_collector를 자식 프로세스로 띄우고(이미 실행 중이면 재사용) 루프마다 생존 확인, 죽으면 재기동.
 TICK_COLLECTOR_AUTOSTART = True
 TICK_COLLECTOR_UNTIL = "15:31"
+# [2026-11-12] 틱 수집기(g011)가 NXT 체결(H0NXCNT0)도 받는다 (사용자 요청: NXT 종목은 08:00~20:00 수집).
+# - 감시목록 종목을 MORNING_NXT_START~AFTERNOON_NXT_END 동안 구독. 웹소켓 세션 한도 40 에서 KRX 구독이 쓰고 남은 자리만큼만
+#   (정규장 중에는 여유분, 장전·장후에는 전부). NXT 비대상 종목은 체결이 오지 않을 뿐이다.
+# - 파일: runtime/data/ticks/<날짜>/nxt/<종목>.csv (KRX 파일과 같은 열, venue=NXT). 수집 전용 - 봇의 틱 트리거(r013)는
+#   기존 KRX 파일(<종목>.csv)만 읽으므로 매매 동작은 바뀌지 않는다.
+# - r016 collector start 창도 NXT 시간(시작 5분 전 ~ 종료)으로 넓어진다. 롤백: False.
+TICK_COLLECT_NXT = True
 TICK_COLLECTOR_RESTART_MIN_INTERVAL_SECONDS = 60.0
 # 정규장 중 틱 피드 이상(파일 없음/stale)이 이 초 이상 이어지면 [TICK FEED] WARN (종목별 스로틀).
 TICK_FEED_WARN_AFTER_SECONDS = 180.0

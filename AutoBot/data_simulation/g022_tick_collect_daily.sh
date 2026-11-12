@@ -48,7 +48,14 @@ if [ "$(date +%u)" -ge 6 ]; then
 fi
 to_min() { local h=${1%%:*} m=${1##*:}; echo $((10#$h * 60 + 10#$m)); }
 now_min=$(to_min "$(date +%H:%M)")
-if [ "$now_min" -lt $(( $(to_min "$open_hm") - 15 )) ] || [ "$now_min" -ge "$(to_min "$close_hm")" ]; then
+start_min=$(( $(to_min "$open_hm") - 15 )); end_min=$(to_min "$close_hm")
+# [2026-11-12] TICK_COLLECT_NXT=1 (cron environment): g011 also records NXT executions, so the window covers the NXT
+# sessions 07:55~20:00 (r001 TICK_COLLECT_NXT must be True too; the cron line itself must run in those hours).
+if [ "${TICK_COLLECT_NXT:-0}" = "1" ]; then
+  [ "$start_min" -gt $(to_min "07:55") ] && start_min=$(to_min "07:55")
+  [ "$end_min" -lt $(to_min "20:00") ] && end_min=$(to_min "20:00")
+fi
+if [ "$now_min" -lt "$start_min" ] || [ "$now_min" -ge "$end_min" ]; then
   exit 0
 fi
 LOG_DIR="$RUNTIME/log/$(date +%Y%m%d)"

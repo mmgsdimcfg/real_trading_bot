@@ -2,7 +2,7 @@
  * Update log
  * - [2026-11-10] type=feat - Local-mode scheduler (replaces the Raspberry Pi cron while this PC is the main host; runs only while the
  *   app runs - the jobs it starts are detached and finish even if the app is closed):
- *   - tick collector: Mon-Fri 08:40-15:35 every 5 min r016 `collector start` (g022 rules on the PC: calendar window, standby refusal,
+ *   - tick collector: Mon-Fri 07:55-19:55 (KRX + NXT sessions, [2026-11-12] was 08:40-15:35) every 5 min r016 `collector start` (g022 rules on the PC: calendar window, standby refusal,
  *     no second g011)
  *   - post-close: once per day at/after settings.postcloseTime `job start postclose --trading-day-only [--edge-ai] [--email]`, never while
  *     r003 still runs (NXT session until 20:00)

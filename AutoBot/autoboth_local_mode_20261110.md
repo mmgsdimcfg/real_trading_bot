@@ -172,3 +172,15 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   `[AUTO SELL   ] scheduled liquidation skipped | AUTO_SELL_MODE=...` (하루 1회 안내, 조건 아님).
 - 매수 `_012`(최소 변동성)는 1분봉 ATR% 를 먼저 본다(`ENABLE_GC_VOLATILITY_GATE`, `GC_VOLATILITY_MIN_ATR_1MIN_PCT`=0.5).
   반려 사유 `GC_VOL_LOW_1MIN_ATR_<값>%_LT_<기준>%` / `GC_VOL_1MIN_ATR_UNAVAILABLE` (앱 매수 `_012`), r015 frame `1m+3m`.
+
+## 9. 틱 수집기 NXT 체결 (2026-11-12)
+- g011 이 같은 웹소켓 세션에서 NXT 체결(H0NXCNT0)도 받는다(r001 `TICK_COLLECT_NXT`, 기본 True). 감시목록 종목을
+  08:00~20:00 구독하되 세션 한도 40 에서 KRX 구독이 쓰고 남은 자리만큼만 받는다(정규장 중 여유분, 장전·장후 전부).
+  `--fill-from-scan` 은 감시목록 종목 수만큼 NXT 자리를 남기고 채운다.
+- 파일: `runtime/data/ticks/<YYYYMMDD>/nxt/<code>.csv` - KRX 파일(`<code>.csv`)과 같은 열, `venue=NXT`,
+  `session=pre|regular|post`. 수집 전용이다: r013 틱 트리거, r017 틱봉, 앱 틱 차트는 KRX 파일만 읽는다.
+- r016 `collector start` 의 허용 시간: 기존 (장 시작 15분 전 ~ 마감) 에 NXT (07:55 ~ 20:00) 를 더한 범위. 창 밖 거절 응답의
+  `window` 문구에 NXT 구간이 붙는다. `collector status` 응답 형식은 그대로다(nxt 폴더는 집계하지 않음).
+- 앱 스케줄러의 수집기 확인 시간대: 평일 07:55~19:55 (기존 08:40~15:35).
+- g011 로그 추가 줄: `NXT codes=N window=08:00~20:00 ...`, `SUBSCRIBED krx=A nxt=B (+x -y)`, `NXT SUBSCRIBE ERROR <code> ...`,
+  `STOPPED rows=... nxt_rows=...`. `START` / `CODES` 줄은 그대로(KRX 구독 목록).

@@ -378,7 +378,7 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
           <h3>자동 실행 (앱이 켜져 있을 때)</h3>
           <div className="checks">
             <label className="check">
-              <input type="checkbox" checked={form.autoCollector} onChange={(e) => set('autoCollector', e.target.checked)} /> 평일 아침 틱 수집기(g011) 자동 시작 (08:45부터, 5분마다 확인)
+              <input type="checkbox" checked={form.autoCollector} onChange={(e) => set('autoCollector', e.target.checked)} /> 평일 틱 수집기(g011) 자동 시작 (07:55~19:55 5분마다 확인 - KRX 정규장 + NXT 08:00~20:00)
             </label>
             <label className="check">
               <input type="checkbox" checked={form.autoPostclose} onChange={(e) => set('autoPostclose', e.target.checked)} /> 장 마감 작업 자동 실행 (수집 → 이력 → 감시 종목 선별)

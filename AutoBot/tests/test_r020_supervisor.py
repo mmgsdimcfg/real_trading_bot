@@ -319,8 +319,13 @@ class CollectorStartTests(unittest.TestCase):
         with mock.patch.object(r016, "_has_proc", return_value=False):
             out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 8, 10, 0), spawn=spawn)  # Sunday
             self.assertFalse(out["ok"])
-            out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 8, 40), spawn=spawn)  # before 08:45
+            with mock.patch.object(r016, "collector_nxt_hours", return_value=None):   # KRX only: before 08:45
+                out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 8, 40), spawn=spawn)
+                self.assertFalse(out["ok"])
+            # [2026-11-12] NXT collection (r001 TICK_COLLECT_NXT): the window opens 5 min before the 08:00 pre-market
+            out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 7, 50), spawn=spawn)
             self.assertFalse(out["ok"])
+            self.assertIn("NXT", out["window"])
             out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 8, 46), spawn=spawn)
             self.assertTrue(out["ok"], out)
             self.assertEqual(out["pid"], 777)
