@@ -690,12 +690,14 @@ export function postcloseDue(now: Date, at: string, lastYmd: string | undefined)
   return now.getHours() * 60 + now.getMinutes() >= t && lastYmd !== localYmd(now);
 }
 
-/** Tick collector morning window on this PC (Mon-Fri 08:40-15:35): r016 `collector start` checks the exact calendar itself. */
+/** Tick collector window on this PC (Mon-Fri 07:55-19:55): r016 `collector start` checks the exact calendar itself.
+ *  [2026-11-12] was 08:40-15:35 - g011 now also records NXT executions (08:00-20:00, r001 TICK_COLLECT_NXT); a server that
+ *  collects KRX only refuses the start outside its own window, which costs nothing. */
 export function collectorWindow(now: Date): boolean {
   const dow = now.getDay();
   if (dow === 0 || dow === 6) return false;
   const m = now.getHours() * 60 + now.getMinutes();
-  return m >= 8 * 60 + 40 && m < 15 * 60 + 35;
+  return m >= 7 * 60 + 55 && m < 19 * 60 + 55;
 }
 
 /**

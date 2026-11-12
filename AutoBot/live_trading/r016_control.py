@@ -690,6 +690,18 @@ def collector_restart(paths: ControlPaths, by: str, now: datetime | None = None,
 
 
 COLLECTOR_PRE_OPEN_MINUTES = 15  # g022: start 15 min before the session opens
+COLLECTOR_NXT_PRE_MINUTES = 5    # NXT collection (r001 TICK_COLLECT_NXT): start 5 min before the NXT pre-market
+
+
+def collector_nxt_hours():
+    """(start, end) times of the NXT collection window, or None when g011 collects KRX only (r001 TICK_COLLECT_NXT)."""
+    try:
+        import r001_define_config as cfg
+        if not bool(getattr(cfg, "TICK_COLLECT_NXT", False)):
+            return None
+        return cfg.MORNING_NXT_START, cfg.AFTERNOON_NXT_END
+    except Exception:
+        return None
 
 
 def collector_window(now: datetime) -> tuple[bool, str]:
@@ -706,8 +718,16 @@ def collector_window(now: datetime) -> tuple[bool, str]:
     open_t, close_t = hours
     start = datetime.combine(now.date(), open_t).timestamp() - COLLECTOR_PRE_OPEN_MINUTES * 60
     end = datetime.combine(now.date(), close_t).timestamp()
+    label = f"{open_t:%H:%M} -{COLLECTOR_PRE_OPEN_MINUTES} min ~ {close_t:%H:%M}"
+    nxt = collector_nxt_hours()
+    if nxt is not None:
+        # [2026-11-12] g011 also records NXT executions: the window covers the NXT sessions (5 min before the pre-market)
+        nxt_start = datetime.combine(now.date(), nxt[0]).timestamp() - COLLECTOR_NXT_PRE_MINUTES * 60
+        nxt_end = datetime.combine(now.date(), nxt[1]).timestamp()
+        start, end = min(start, nxt_start), max(end, nxt_end)
+        label += f", NXT {nxt[0]:%H:%M} -{COLLECTOR_NXT_PRE_MINUTES} min ~ {nxt[1]:%H:%M}"
     if not (start <= now.timestamp() < end):
-        return False, f"outside the collection window ({open_t:%H:%M} -{COLLECTOR_PRE_OPEN_MINUTES} min ~ {close_t:%H:%M})"
+        return False, f"outside the collection window ({label})"
     return True, "ok"
 
 

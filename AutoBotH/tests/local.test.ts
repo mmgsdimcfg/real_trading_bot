@@ -88,10 +88,11 @@ describe('scheduler rules', () => {
     expect(postcloseDue(at(2026, 11, 10, 21, 0), 'bad', undefined)).toBe(false);
   });
   it('tick collector window Mon-Fri 08:40-15:35', () => {
-    expect(collectorWindow(at(2026, 11, 10, 8, 39))).toBe(false);
-    expect(collectorWindow(at(2026, 11, 10, 8, 40))).toBe(true);
-    expect(collectorWindow(at(2026, 11, 10, 15, 34))).toBe(true);
-    expect(collectorWindow(at(2026, 11, 10, 15, 35))).toBe(false);
+    expect(collectorWindow(at(2026, 11, 10, 7, 54))).toBe(false);
+    expect(collectorWindow(at(2026, 11, 10, 7, 55))).toBe(true); // NXT pre-market starts at 08:00
+    expect(collectorWindow(at(2026, 11, 10, 15, 35))).toBe(true); // NXT after-market
+    expect(collectorWindow(at(2026, 11, 10, 19, 54))).toBe(true);
+    expect(collectorWindow(at(2026, 11, 10, 19, 55))).toBe(false);
     expect(collectorWindow(at(2026, 11, 7, 10, 0))).toBe(false); // Saturday
   });
   it('localYmd', () => {

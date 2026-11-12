@@ -33,6 +33,14 @@ Run:
   --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-12] type=feat owner=claude
+    summary: NXT 체결(H0NXCNT0) 수집 추가 (사용자 요청: NXT 종목은 08:00~20:00 수집). 같은 웹소켓 세션에서 시간대별로 구독을
+      바꾼다: KRX(H0STCNT0)는 기존대로 시작~--until, NXT 는 NXT 창(r001 MORNING_NXT_START~AFTERNOON_NXT_END) 동안 감시목록
+      종목을 구독하되 세션 한도 40 에서 KRX 가 쓰고 남은 자리만큼만(감시목록 순서). 구독 오류가 난 종목은 NXT 대상에서 뺀다.
+      NXT 틱은 ticks/<날짜>/nxt/<종목>.csv 에 따로 쓴다(venue=NXT, session=pre|regular|post) - 기존 <종목>.csv(KRX)는 그대로라
+      r013 틱 트리거/틱봉은 바뀌지 않는다. 끄기: r001 TICK_COLLECT_NXT=False 또는 --no-nxt.
+    impact: collector (프로세스가 NXT 종료 시각까지 살아 있다), r016 collector 창
+    compatibility: backward-compatible (KRX 파일/로그 형식 불변, nxt 하위 폴더 추가)
 - [2026-11-10] type=feat owner=claude
     summary: 윈도우 실행 - 단일 실행 잠금을 r019(flock/msvcrt)로, --runtime DIR(r001 import 전에 적용; WMI 로 시작된 프로세스는
       환경변수를 물려받지 않음).
@@ -87,6 +95,7 @@ sys.path.insert(0, str(LIVE_DIR))
 if "--runtime" in sys.argv[:-1]:
     os.environ["AUTO_TRADING_RUNTIME"] = sys.argv[sys.argv.index("--runtime") + 1]
 
+import r001_define_config as _cfg  # noqa: E402
 from r001_define_config import RUNTIME_DATA_DIR, DEFINE_TODAY_CODE_PATH  # noqa: E402
 from r009_tick_bars import TICK_FILE_COLUMNS  # noqa: E402
 from r014_market_calendar import session_hours  # noqa: E402
@@ -111,6 +120,11 @@ NCOL = len(H0STCNT0_COLUMNS)
 _IDX = {c: i for i, c in enumerate(H0STCNT0_COLUMNS)}
 MAX_SUBSCRIPTIONS = 40
 TR_ID = "H0STCNT0"
+# [2026-11-12] NXT executions: same record layout (one more trailing column), same websocket session
+NXT_TR_ID = "H0NXCNT0"
+VENUE_BY_TR = {TR_ID: "KRX", NXT_TR_ID: "NXT"}
+NXT_SUBDIR = "nxt"                 # <runtime>/data/ticks/<day>/nxt/<code>.csv - never read by the KRX tick readers
+SUBSCRIPTION_SYNC_SECONDS = 5.0    # how often the wanted subscriptions (by time of day) are compared with the active ones
 LOCK_NAME = ".g011.lock"           # in <runtime>/data/ticks/ (date-independent: one collector per machine)
 EXIT_ALREADY_RUNNING = 3
 AUTH_TIMEOUT_SECONDS = (5.0, 10.0)  # (connect, read) for /oauth2/Approval - kis_auth sets no timeout
@@ -185,6 +199,29 @@ def classify_session(trade_time: str, hours: tuple | None = None) -> str:
     return "post"
 
 
+def classify_nxt_session(trade_time: str, hours: tuple | None = None) -> str:
+    """pre | regular | post for an NXT print: before the KRX open = pre-market, after the KRX close = after-market."""
+    open_t, close_t = hours or _DEFAULT_HOURS
+    try:
+        hhmmss = str(trade_time).strip().zfill(6)
+        t = dt_time(int(hhmmss[0:2]), int(hhmmss[2:4]), int(hhmmss[4:6]))
+    except (TypeError, ValueError):
+        return ""
+    return "pre" if t < open_t else "regular" if t < close_t else "post"
+
+
+def subscription_plan(now: datetime, krx_codes: list[str], nxt_codes: list[str], krx_until: datetime,
+                      nxt_window: tuple[datetime, datetime] | None, cap: int = MAX_SUBSCRIPTIONS) -> list[tuple[str, str]]:
+    """(tr_id, code) wanted at `now`. KRX first (until krx_until), NXT fills what is left of the session cap during its
+    window, in watchlist order - outside KRX hours that is every NXT code."""
+    out: list[tuple[str, str]] = []
+    if now < krx_until:
+        out += [(TR_ID, c) for c in krx_codes[:cap]]
+    if nxt_window is not None and nxt_window[0] <= now < nxt_window[1]:
+        out += [(NXT_TR_ID, c) for c in nxt_codes[:max(0, cap - len(out))]]
+    return out
+
+
 def parse_frame(raw: str, hours: tuple | None = None) -> list[dict] | None:
     """Split one data frame into records. Returns None for non-data (JSON control) frames.
     Format: <encrypt flag>|<tr_id>|<record count>|<f1^f2^...> (count x NCOL fields).
@@ -192,10 +229,11 @@ def parse_frame(raw: str, hours: tuple | None = None) -> list[dict] | None:
     if not raw or raw[0] not in "01":
         return None
     parts = raw.split("|", 3)
-    if len(parts) < 4 or parts[1] != TR_ID:
+    if len(parts) < 4 or parts[1] not in VENUE_BY_TR:
         return []
+    venue = VENUE_BY_TR[parts[1]]
     if parts[0] == "1":
-        raise ValueError("encrypted H0STCNT0 frame is not expected")
+        raise ValueError(f"encrypted {parts[1]} frame is not expected")
     try:
         count = int(parts[2])
     except ValueError:
@@ -221,8 +259,8 @@ def parse_frame(raw: str, hours: tuple | None = None) -> list[dict] | None:
             "askp1": rec[_IDX["ASKP1"]],
             "bidp1": rec[_IDX["BIDP1"]],
             "hour_cls_code": rec[_IDX["HOUR_CLS_CODE"]],
-            "venue": VENUE,
-            "session": classify_session(rec[_IDX["STCK_CNTG_HOUR"]], hours),
+            "venue": venue,
+            "session": (classify_session if venue == VENUE else classify_nxt_session)(rec[_IDX["STCK_CNTG_HOUR"]], hours),
         })
     return out
 
@@ -329,8 +367,14 @@ def scan_fill_codes(data_dir: Path, today: str) -> tuple[str, list[str]]:
     return "", []
 
 
-async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -> None:
+async def run_collector(codes: list[str], until: datetime, out_dir: Path, log, nxt_codes: list[str] | None = None,
+                        nxt_window: tuple[datetime, datetime] | None = None) -> None:
+    """codes / until = the KRX subscriptions and their end (unchanged). nxt_codes + nxt_window add NXT executions on the
+    same session (see subscription_plan); the collector then runs until the later of the two ends."""
     session_hours_today = session_hours(datetime.now()) or _DEFAULT_HOURS
+    nxt_codes = list(nxt_codes or []) if nxt_window is not None else []
+    end_all = max(until, nxt_window[1]) if nxt_codes else until
+    nxt_failed: set = set()
     import websockets  # imported lazily so --dry-parse-test works without network deps
 
     open_api_root = Path(os.environ.get("OPEN_TRADING_API_ROOT", str(Path(__file__).resolve().parents[3] / "open-trading-api")))
@@ -338,11 +382,17 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
     sys.path.insert(0, str(open_api_root / "examples_user" / "domestic_stock"))
     import kis_auth as ka  # noqa: E402
     from domestic_stock_functions_ws import ccnl_krx  # noqa: E402
+    ccnl_nxt = getattr(sys.modules.get("domestic_stock_functions_ws"), "ccnl_nxt", None)
+    if nxt_codes and ccnl_nxt is None:
+        log("WARN open-trading-api has no ccnl_nxt (H0NXCNT0) - NXT executions are not collected")
+        nxt_codes, end_all = [], until
+    sub_fn = {TR_ID: ccnl_krx, NXT_TR_ID: ccnl_nxt}
 
     if not isinstance(ka.requests, _RequestsWithTimeout):
         ka.requests = _RequestsWithTimeout(ka.requests)
     idle_window = idle_check_window(datetime.now())
     writer = TickWriter(out_dir)
+    nxt_writer = TickWriter(out_dir / NXT_SUBDIR) if nxt_codes else None
     backoff = 1.0
     ack_reconnects = 0
     stop = asyncio.Event()
@@ -358,27 +408,52 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
             pass
 
     try:
-        while not stop.is_set() and datetime.now() < until:
+        while not stop.is_set() and datetime.now() < end_all:
             try:
                 ka.auth_ws()
                 url = f"{ka.getTREnv().my_url_ws}/tryitout/{TR_ID}"
                 async with websockets.connect(url, ping_interval=None, max_queue=4096) as ws:
-                    for code in codes:
-                        msg, _cols = ccnl_krx("1", code)
-                        await ws.send(json.dumps(msg))
-                        await asyncio.sleep(0.05)
-                    log(f"CONNECTED url={url} requested={len(codes)}")
+                    active: set = set()
+
+                    async def sync_subscriptions() -> None:
+                        # [2026-11-12] subscribe / unsubscribe so the session holds what the time of day asks for
+                        want = subscription_plan(datetime.now(), codes, [c for c in nxt_codes if c not in nxt_failed],
+                                                 until, nxt_window)
+                        want_set = set(want)
+                        drop = sorted(active - want_set)
+                        add = [k for k in want if k not in active]
+                        for tr, code in drop:            # free the slots first (session cap)
+                            msg, _cols = sub_fn[tr]("0", code)
+                            await ws.send(json.dumps(msg))
+                            active.discard((tr, code))
+                            await asyncio.sleep(0.05)
+                        for tr, code in add:
+                            msg, _cols = sub_fn[tr]("1", code)
+                            await ws.send(json.dumps(msg))
+                            active.add((tr, code))
+                            await asyncio.sleep(0.05)
+                        if nxt_codes and (drop or add):
+                            log(f"SUBSCRIBED krx={sum(tr == TR_ID for tr, _c in active)} "
+                                f"nxt={sum(tr == NXT_TR_ID for tr, _c in active)} (+{len(add)} -{len(drop)})")
+
+                    await sync_subscriptions()
+                    krx_req = [c for tr, c in active if tr == TR_ID]   # the codes whose ACK is checked below
+                    log(f"CONNECTED url={url} requested={len(active)}")
+                    last_sync = time.monotonic()
                     sub_ok: set = set()
                     sub_fail: set = set()
                     sub_reported = False
                     ack_checked = False
                     got_data = False
                     connected_at = last_data = last_flush = time.monotonic()
-                    while not stop.is_set() and datetime.now() < until:
+                    while not stop.is_set() and datetime.now() < end_all:
                         mono = time.monotonic()
+                        if nxt_codes and mono - last_sync >= SUBSCRIPTION_SYNC_SECONDS:
+                            last_sync = mono
+                            await sync_subscriptions()
                         if not ack_checked and mono - connected_at >= SUB_ACK_TIMEOUT_SECONDS:
                             ack_checked = True
-                            missing = sorted(set(codes) - sub_ok - sub_fail)
+                            missing = sorted(set(krx_req) - sub_ok - sub_fail)
                             if missing:
                                 if ack_reconnects < MAX_ACK_RECONNECTS:
                                     ack_reconnects += 1
@@ -390,13 +465,15 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                             else:
                                 ack_reconnects = 0
                         now_dt = datetime.now()
-                        if (idle_window is not None and idle_window[0] <= now_dt < idle_window[1]
+                        if (idle_window is not None and idle_window[0] <= now_dt < idle_window[1] and now_dt < until
                                 and mono - last_data >= IDLE_RECONNECT_SECONDS):
                             raise _Reconnect(f"IDLE no execution for {mono - last_data:.0f}s")
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                         except asyncio.TimeoutError:
                             writer.flush()
+                            if nxt_writer is not None:
+                                nxt_writer.flush()
                             continue
                         recv_ts = datetime.now().isoformat(timespec="milliseconds")
                         recs = parse_frame(raw, session_hours_today)
@@ -412,12 +489,18 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                             else:
                                 body = ctl.get("body") or {}
                                 key = ctl.get("header", {}).get("tr_key")
+                                if tr_id == NXT_TR_ID:
+                                    # NXT answers stay out of the KRX ACK accounting; a refused code leaves the NXT list
+                                    if body.get("rt_cd") not in (None, "0") and "UNSUBSCRIBE" not in str(body.get("msg1", "")).upper():
+                                        nxt_failed.add(key)
+                                        log(f"NXT SUBSCRIBE ERROR {key} {body.get('msg1')}")
+                                    continue
                                 if body.get("rt_cd") not in (None, "0"):
                                     sub_fail.add(key)
                                     log(f"SUBSCRIBE ERROR {key} {body.get('msg1')}")
                                 elif body.get("rt_cd") == "0":
                                     sub_ok.add(key)
-                                if len(sub_ok) + len(sub_fail) == len(codes) and not sub_reported:
+                                if krx_req and len(sub_ok) + len(sub_fail) >= len(krx_req) and not sub_reported:
                                     sub_reported = True
                                     ack_reconnects = 0  # every code answered (also when it arrives after the WARN)
                                     log(f"SUBSCRIPTIONS ok={len(sub_ok)} failed={len(sub_fail)} {sorted(sub_fail)}")
@@ -428,12 +511,19 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                                 got_data = True
                                 backoff = 1.0  # reset only once the feed really delivers (not on a bare connect)
                         for rec in recs:
-                            writer.write(recv_ts, rec)
+                            if rec["venue"] == VENUE:
+                                writer.write(recv_ts, rec)
+                            elif nxt_writer is not None:
+                                nxt_writer.write(recv_ts, rec)
                         if time.monotonic() - last_flush >= 1.0:
                             writer.flush()
+                            if nxt_writer is not None:
+                                nxt_writer.flush()
                             last_flush = time.monotonic()
             except Exception as exc:  # network / auth errors: back off and reconnect (gap is visible via ACML_VOL)
                 writer.flush()
+                if nxt_writer is not None:
+                    nxt_writer.flush()
                 wait = backoff * random.uniform(1.0, 1.3)
                 log(f"DISCONNECTED {type(exc).__name__}: {exc} | retry in {wait:.0f}s")
                 try:
@@ -443,7 +533,10 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log) -
                 backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
     finally:
         writer.close()
-        log(f"STOPPED rows={writer.rows}" + (f" torn_rows_closed={writer.torn_rows}" if writer.torn_rows else ""))
+        if nxt_writer is not None:
+            nxt_writer.close()
+        log(f"STOPPED rows={writer.rows}" + (f" torn_rows_closed={writer.torn_rows}" if writer.torn_rows else "")
+            + (f" nxt_rows={nxt_writer.rows}" if nxt_writer is not None else ""))
 
 
 def _self_test() -> None:
@@ -477,15 +570,20 @@ def main() -> None:
     ap.add_argument("--fill-from-scan", action="store_true",
                     help="after the watchlist codes, fill up to 40 with the newest g002 scan's ranked candidates")
     ap.add_argument("--runtime", default=None, help="runtime root (applied at import, before r001)")
+    ap.add_argument("--no-nxt", action="store_true", help="KRX executions only (default: r001 TICK_COLLECT_NXT)")
     args = ap.parse_args()
     if args.dry_parse_test:
         _self_test()
         return
     codes = load_codes(args)
+    watch_codes = list(codes)
+    nxt_on = not args.no_nxt and bool(getattr(_cfg, "TICK_COLLECT_NXT", False))
     fill_note = ""
-    if args.fill_from_scan and len(codes) < MAX_SUBSCRIPTIONS:
+    # [2026-11-12] with NXT collection the scan fill leaves one slot per watchlist code for its NXT subscription
+    fill_room = MAX_SUBSCRIPTIONS - len(codes) - (len(codes) if nxt_on else 0)
+    if args.fill_from_scan and fill_room > 0:
         scan_day, ranked = scan_fill_codes(RUNTIME_DATA_DIR, datetime.now().strftime("%Y%m%d"))
-        extra = [c for c in ranked if c not in codes][:MAX_SUBSCRIPTIONS - len(codes)]
+        extra = [c for c in ranked if c not in codes][:fill_room]
         codes += extra
         fill_note = f" (watchlist {len(codes) - len(extra)} + scan {scan_day or 'none'} {len(extra)})"
     if not codes:
@@ -518,7 +616,15 @@ def main() -> None:
 
     log(f"START codes={len(codes)}{fill_note} until={until:%H:%M} out={out_dir}")
     log("CODES " + ",".join(codes))
-    asyncio.run(run_collector(codes, until, out_dir, log))
+    # [2026-11-12] NXT executions of the watchlist codes (not the scan fill) during the NXT window
+    nxt_codes, nxt_window = [], None
+    if nxt_on:
+        nxt_codes = watch_codes
+        nxt_window = (datetime.combine(now.date(), getattr(_cfg, "MORNING_NXT_START", dt_time(8, 0))),
+                      datetime.combine(now.date(), getattr(_cfg, "AFTERNOON_NXT_END", dt_time(20, 0))))
+        log(f"NXT codes={len(nxt_codes)} window={nxt_window[0]:%H:%M}~{nxt_window[1]:%H:%M} out={out_dir / NXT_SUBDIR} "
+            f"(slots left by KRX, watchlist order)")
+    asyncio.run(run_collector(codes, until, out_dir, log, nxt_codes=nxt_codes, nxt_window=nxt_window))
 
 
 if __name__ == "__main__":
