@@ -7,6 +7,7 @@
  */
 
 import { useMemo } from 'react';
+import { NxtTag } from '../components/NxtTag';
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis, LabelList } from 'recharts';
 import { useStore } from '../store';
 import { condTitle, fmtInt, fmtKrw, fmtPct, pnlClass } from '../lib';
@@ -181,7 +182,7 @@ export function TradesView() {
               >
                 <td className="mono">{fmtKstTime(t.ts)}</td>
                 <td>
-                  {t.code} {t.name}
+                  {t.code} {t.name} <NxtTag code={t.code} />
                 </td>
                 <td>{t.side === 'BUY' ? '매수' : '매도'}</td>
                 <td className="num">{fmtInt(t.price)}</td>

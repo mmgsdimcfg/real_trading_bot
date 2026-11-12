@@ -18,6 +18,10 @@
  * - [2026-11-10] type=feat - 'jobs' tab (데이터 작업) and the local-mode scheduler state (sched)
  * - [2026-11-11] type=feat - 'positions' tab (보유 현황) and feesIncluded ("제세금 포함" of the trade-results / positions tabs,
  *   kept in localStorage)
+ * - [2026-11-12] type=fix - The viewed day changed (status.date): selected symbol, its timeline and the old snapshot are dropped.
+ *   Before, the reset compared two snapshots, but main sends a null snapshot between two days, so yesterday's symbol stayed
+ *   selected on the timeline / chart tabs after a date change
+ * - [2026-11-12] type=feat - quotes: current price per watched symbol (r003 quote log), re-read with every snapshot
  */
 
 import { create } from 'zustand';
@@ -25,6 +29,7 @@ import type { AppStatus, ConditionsDoc, EvalEvent, Settings, Side, Snapshot, Tra
 import type { ControlState } from '../../shared/control';
 import type { ChartKind } from '../../shared/price';
 import type { IndicatorKey } from '../../shared/indicators';
+import type { LiveQuote } from '../../shared/liveQuote';
 
 type ChartPrefs = { kind: ChartKind; tickN: number; minN: number; ind: IndicatorKey[] };
 const IND_KEYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'vwap', 'vol', 'rsi', 'macd', 'adx', 'stoch', 'williams', 'mfi', 'obv'];
@@ -137,7 +142,7 @@ function loadFlag(key: string): boolean {
   }
 }
 
-export type Tab = 'control' | 'jobs' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'positions' | 'trades' | 'settings';
+export type Tab = 'control' | 'jobs' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'positions' | 'trades' | 'paper' | 'settings';
 
 /** local-mode scheduler state pushed by main ('sched') */
 export interface SchedView {
@@ -152,6 +157,8 @@ interface State {
   sched: SchedView | null;
   status: AppStatus;
   snapshot: Snapshot | null;
+  /** current price per code of the viewed day (empty until read / when r003 wrote no quote log) */
+  quotes: Record<string, LiveQuote>;
   conditions: ConditionsDoc | null;
   settings: Settings | null;
   tab: Tab;
@@ -194,6 +201,7 @@ export const useStore = create<State>()((set, get) => ({
   sched: null,
   status: { conn: 'idle', date: '', live: false },
   snapshot: null,
+  quotes: {},
   conditions: null,
   settings: null,
   tab: 'pipeline',
@@ -304,7 +312,12 @@ export function initStore(): void {
   void api.getSnapshot().then((snapshot: Snapshot | null) => useStore.setState({ snapshot }));
   void api.getConditions().then((conditions: ConditionsDoc) => useStore.setState({ conditions }));
   void api.getSettings().then((settings: Settings) => useStore.setState({ settings }));
-  api.onStatus((status) => useStore.setState({ status }));
+  api.onStatus((status) => {
+    const prev = useStore.getState().status.date;
+    // another day: nothing of the old day may stay on screen (the new day's snapshot follows)
+    if (prev && status.date && prev !== status.date) useStore.setState({ status, snapshot: null, quotes: {}, selected: null, timeline: null });
+    else useStore.setState({ status });
+  });
   api.onConditions((conditions) => useStore.setState({ conditions }));
   void api.ctlState().then((control) => useStore.setState({ control }));
   void api.schedState().then((sched) => useStore.setState({ sched }));
@@ -320,5 +333,12 @@ export function initStore(): void {
     if (snapshot && prevDate && prevDate !== snapshot.date) useStore.setState({ selected: null, timeline: null });
     const st = useStore.getState();
     if (st.selected && (st.tab === 'timeline' || st.tab === 'pipeline')) void st.refreshTimeline();
+    // current prices of the day (at the replay time on a replayed past day)
+    if (snapshot) {
+      const day = snapshot.date;
+      void api.getQuotes(day, snapshot.replay?.cursor ?? null).then((quotes) => {
+        if (useStore.getState().snapshot?.date === day) useStore.setState({ quotes });
+      });
+    }
   });
 }

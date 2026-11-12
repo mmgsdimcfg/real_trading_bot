@@ -8,6 +8,8 @@
  */
 
 import { useMemo, useState } from 'react';
+import { PriceTag } from '../components/PriceTag';
+import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
 import { condTitle, fmtInt, fmtKrw, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
@@ -15,7 +17,7 @@ import type { SymbolSummary } from '../../../shared/types';
 import { WatchlistEditor } from '../components/WatchlistEditor';
 import { reasonKo } from '../../../shared/reasonKo';
 
-type SortKey = 'code' | 'name' | 'last' | 'cond' | 'depth' | 'blocks' | 'pnl';
+type SortKey = 'code' | 'name' | 'price' | 'last' | 'cond' | 'depth' | 'blocks' | 'pnl';
 
 const WATCH_LABEL: Record<string, string> = { active: '감시', backup: '백업', graduated: '졸업', dropped: '탈락', unknown: '-' };
 const RESULT_LABEL: Record<string, string> = { pass: '✓ 전부 통과', fail: '✕ 막힘', hold: '… 대기' };
@@ -26,6 +28,7 @@ export function BoardView() {
   const select = useStore((s) => s.select);
   const setTab = useStore((s) => s.setTab);
   const selected = useStore((s) => s.selected);
+  const quotes = useStore((s) => s.quotes);
   const [sort, setSort] = useState<{ k: SortKey; asc: boolean }>({ k: 'code', asc: true });
   const [condFilter, setCondFilter] = useState('');
   const [holdOnly, setHoldOnly] = useState(false);
@@ -44,6 +47,7 @@ export function BoardView() {
       switch (sort.k) {
         case 'code': return s.code;
         case 'name': return s.name;
+        case 'price': return quotes[s.code]?.pct ?? -1e9;
         case 'last': return s.lastEval?.ts || 0;
         case 'cond': return s.lastEval?.condKey || '';
         case 'depth': return s.furthestOrderToday;
@@ -58,7 +62,7 @@ export function BoardView() {
       return sort.asc ? c : -c;
     });
     return list;
-  }, [snap, sort, condFilter, holdOnly]);
+  }, [snap, sort, condFilter, holdOnly, quotes]);
 
   const th = (k: SortKey, label: string, cls = '') => (
     <th className={cls} onClick={() => setSort((s) => ({ k, asc: s.k === k ? !s.asc : true }))}>
@@ -97,13 +101,14 @@ export function BoardView() {
           <colgroup>
             <col style={{ width: '6%' }} />
             <col style={{ width: '10%' }} />
+            <col style={{ width: '13%' }} />
             <col style={{ width: '4%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '6%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '25%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '17%' }} />
             <col style={{ width: '6%' }} />
-            <col style={{ width: '12%' }} />
+            <col style={{ width: '9%' }} />
             <col style={{ width: '6%' }} />
             <col style={{ width: '6%' }} />
           </colgroup>
@@ -111,6 +116,7 @@ export function BoardView() {
             <tr>
               {th('code', '코드')}
               {th('name', '종목명')}
+              {th('price', '현재가 (전일 대비)', 'num')}
               <th>감시</th>
               {th('last', '마지막 평가')}
               <th>상태</th>
@@ -136,7 +142,12 @@ export function BoardView() {
                   }}
                 >
                   <td className="mono">{s.code}</td>
-                  <td>{s.name}</td>
+                  <td>
+                    {s.name} {s.nxt && <NxtMark />}
+                  </td>
+                  <td className="num">
+                    <PriceTag code={s.code} />
+                  </td>
                   <td>{WATCH_LABEL[s.watch]}</td>
                   <td className="mono">{fmtKstTime(ev?.ts)}</td>
                   <td className={`res-${ev?.result || ''}`}>{ev ? RESULT_LABEL[ev.result] || ev.result : '-'}</td>

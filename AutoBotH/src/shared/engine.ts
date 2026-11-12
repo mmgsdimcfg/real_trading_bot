@@ -104,10 +104,12 @@ export class DayEngine {
     this.lastLineTs = p.ts;
 
     if (p.kind === 'untagged') {
-      const w = /^WATCH \| (\d{6}) \| ([^|]+?) \|/.exec(p.body);
+      const w = /^WATCH \| (\d{6}) \| ([^|]+?) \|(.*)$/.exec(p.body);
       if (w) {
         this.setName(w[1], w[2].trim(), true);
         const s = this.sym(w[1]);
+        const nxt = /\bNXT=(True|False)\b/.exec(w[3]);
+        if (nxt) s.summary.nxt = nxt[1] === 'True';
         if (s.summary.watch === 'unknown') s.summary.watch = 'active';
       }
       return;

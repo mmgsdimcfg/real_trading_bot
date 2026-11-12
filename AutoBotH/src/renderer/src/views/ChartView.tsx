@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
 import { PriceChart, IndicatorLines } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
@@ -174,10 +175,26 @@ export function ChartView() {
   }, [selected, snap, code]);
 
   const day = snap?.date || status.date;
+  // [2026-11-12] another day: the symbol of the old day is dropped - the default-symbol effect picks the new day's first symbol
+  const dayRef = useRef(status.date);
+  useEffect(() => {
+    if (dayRef.current && status.date && dayRef.current !== status.date) {
+      setCode('');
+      setInput('');
+      setData(null);
+      setDaily(null);
+      setQuoteRes(null);
+    }
+    dayRef.current = status.date;
+  }, [status.date]);
   const n = prefs.kind === 'tick' ? prefs.tickN : prefs.minN;
   const intraday = prefs.kind === 'tick' || prefs.kind === 'min';
   const live = status.live ? snap?.generatedAt : 0;
-  const key = `${day}/${code}/${prefs.kind}/${n}`;
+  // NXT symbol (day's WATCH line): minute charts also get the combined minutes of the hours KRX is closed
+  const isNxt = !!snap?.symbols.find((s) => s.code === code)?.nxt;
+  const nxtRef = useRef(isNxt);
+  nxtRef.current = isNxt;
+  const key = `${day}/${code}/${prefs.kind}/${n}/${isNxt ? 'x' : ''}`;
   const lastKey = useRef('');
 
   useEffect(() => {
@@ -195,7 +212,7 @@ export function ChartView() {
     }
     if (changed) setQuoteRes(null);
     void Promise.all([
-      window.api.getPrice({ date: day, code, kind: prefs.kind, n, warmup: intraday, withName: true }),
+      window.api.getPrice({ date: day, code, kind: prefs.kind, n, warmup: intraday, withName: true, nxt: nxtRef.current }),
       prefs.kind === 'day' ? null : window.api.getPrice({ date: day, code, kind: 'day', n: 1 }),
       window.api.getQuote(code),
     ]).then(([r, d, q]) => {
@@ -294,7 +311,7 @@ export function ChartView() {
   const symbolOptions = useMemo(() => {
     const seen = new Set<string>();
     const out: { code: string; label: string }[] = [];
-    for (const s of snap?.symbols || []) if (!seen.has(s.code)) (seen.add(s.code), out.push({ code: s.code, label: `${s.code} ${s.name}${s.position ? ' (보유)' : ''}` }));
+    for (const s of snap?.symbols || []) if (!seen.has(s.code)) (seen.add(s.code), out.push({ code: s.code, label: `${s.code} ${s.name}${s.nxt ? ' [NXT]' : ''}${s.position ? ' (보유)' : ''}` }));
     for (const c of recent) if (!seen.has(c)) (seen.add(c), out.push({ code: c, label: `${c} (최근)` }));
     return out;
   }, [snap, recent]);
@@ -329,7 +346,9 @@ export function ChartView() {
           ))}
         </datalist>
 
-        <span className="sym-name">{name}</span>
+        <span className="sym-name">
+          {name} {sym?.nxt && <NxtMark />}
+        </span>
         <div className="seg">
           {KINDS.map(([k, label]) => (
             <button key={k} className={prefs.kind === k ? 'on' : ''} onClick={() => setPrefs({ kind: k })}>

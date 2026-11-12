@@ -95,6 +95,8 @@ export interface Position {
 export interface SymbolSummary {
   code: string;
   name: string;
+  /** [2026-11-12] also tradable on NXT - from the r003 WATCH line ("NXT=True"); undefined = not said (symbol not watched) */
+  nxt?: boolean;
   watch: WatchState;
   position?: Position;
   lastEval?: EvalEvent;
@@ -263,6 +265,8 @@ export interface Settings {
   postcloseTime: string;
   /** add the Edge AI steps to the post-close job */
   postcloseEdgeAi: boolean;
+  /** [2026-11-11] the scheduled post-close job mails the picks (r021 --email -> g002 --notify-email) */
+  postcloseEmail: boolean;
   /** after a successful post-close job, copy the new watchlist to the Raspberry Pi (standby host) */
   syncWatchlistToPeer: boolean;
   /** keep the PC from sleeping while the local r003 runs (Electron powerSaveBlocker) */

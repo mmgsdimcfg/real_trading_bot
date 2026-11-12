@@ -37,6 +37,7 @@
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
+import { AUTO_SELL_KEY, PAPER_KEY, STRATEGY_KEY, parseAutoSell, parseModes } from '../shared/paper';
 import type { ArgvRunner } from './localRunner';
 import type { ConfirmRequest, ConfirmRow, ConfirmSpec } from '../shared/types';
 import {
@@ -409,6 +410,7 @@ export function createControl(deps: ControlDeps) {
         unknown = errMsg(e);
       }
       const after = await settle(verb);
+      void refreshPaper(); // a (re)start applies a stored mode change: running / pending change with it
       const st = after?.service?.active_state || '?';
       let res: OpResult<ServiceResult>;
       if (unknown) res = { ok: false, error: `결과를 받지 못했습니다 (${unknown}). 상태를 다시 읽었습니다: ${st}` };
@@ -421,10 +423,25 @@ export function createControl(deps: ControlDeps) {
     }
   }
 
+  /** [2026-11-12] EDGE_ONLY_MODE (paper trading on / off, restart pending). A server without the key leaves it undefined. */
+  async function refreshPaper(): Promise<void> {
+    if (!deps.isConnected()) return;
+    const myGen = gen;
+    try {
+      const r = await cl().run(['get', STRATEGY_KEY, PAPER_KEY, AUTO_SELL_KEY]);
+      if (myGen !== gen) return;
+      const m = parseModes(r.data);
+      push({ paper: m.paper || undefined, strategy: m.strategy || undefined, autoSell: parseAutoSell(r.data) || undefined });
+    } catch {
+      /* keep the last known value */
+    }
+  }
+
   async function afterOverrideChange(): Promise<void> {
     await deps.reloadConditions();
     await refreshStatus();
     await refreshNxt();
+    await refreshPaper();
   }
 
   // ---- IPC ----
@@ -609,6 +626,8 @@ export function createControl(deps: ControlDeps) {
     // [2026-11-11] pipeline steps: a step set to false is skipped (r021 --no-*); undefined keeps the server default (on)
     const stepOn = (k: 'collect' | 'scan' | 'apply') => o[k] !== false;
     for (const k of ['collect', 'scan', 'apply'] as const) if (!stepOn(k)) args.push(`--no-${k}`);
+    // [2026-11-11] the scan step mails its picks (g002 --notify-email) - nothing to send without the scan step
+    if (o.email && stepOn('scan') && (name === 'postclose' || name === 'scan')) args.push('--email');
     if (!o.noConfirm && state.status?.running) {
       const notes: string[] = [];
       if ((name === 'collect' || name === 'postclose') && stepOn('collect')) notes.push('수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다.');
@@ -648,6 +667,7 @@ export function createControl(deps: ControlDeps) {
     stopPolling,
     refreshStatus,
     refreshNxt,
+    refreshPaper,
     /** start / stop / restart without the renderer (scheduler) - confirmations still apply unless skipConfirm */
     service,
     status: () => state.status,
@@ -658,7 +678,7 @@ export function createControl(deps: ControlDeps) {
     clear: () => {
       gen++;
       statusInFlight = null;
-      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, lastAction: undefined });
+      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, paper: undefined, strategy: undefined, autoSell: undefined, lastAction: undefined });
     },
   };
 }

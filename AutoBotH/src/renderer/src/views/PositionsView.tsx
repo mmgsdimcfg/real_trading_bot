@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
 import { condTitle, fmtInt, fmtKrw, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
@@ -129,7 +130,7 @@ export function PositionsView() {
                 }}
               >
                 <td>
-                  <b>{s.code}</b> {s.name}
+                  <b>{s.code}</b> {s.name} {s.nxt && <NxtMark />}
                 </td>
                 <td className="mono">{fmtKstTime(p.buyTs)}</td>
                 <td>{holdText(p.buyTs, now)}</td>

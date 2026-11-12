@@ -30,10 +30,17 @@
  * - [2026-11-10] type=feat - Reads through a FileHost (host.ts): the Raspberry Pi over SFTP or this PC's runtime folder (local mode).
  *   The past-day download cache is used for the remote host only (local files are read in place); the "<code>_*" listing is
  *   FileHost.listPrefix
+ * - [2026-11-12] type=fix - Charts were empty before the KRX open (NXT pre-market): the tick collector records KRX trades only and
+ *   the server had no minute bars before 09:00. (1) Minute chart without files: r016 `bars` now answers with KRX + NXT combined
+ *   minutes (server change); answers are reused 10 s in NXT-only hours. (2) Minute chart of an NXT symbol (req.nxt) with a tick
+ *   file: the combined minutes of the hours KRX is closed (r016 `bars --source kis-un`) are merged under the tick bars.
+ *   (3) Tick chart without a tick file: the day's 1-minute bars are shown instead of an error, with a note
+ * - [2026-11-12] type=feat - liveQuotes(date, upTo): current price per watched symbol from r003's quote log
+ *   (runtime/data/live_runtime/quote_ticks_<date>.csv), read incrementally by byte offset like the tick files
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
-import { CHART_CACHE_MS, isMarketHours, kstNowIso } from '../shared/control';
+import { CHART_CACHE_MS, isMarketHours, isNxtOnlyHours, kstNowIso } from '../shared/control';
 import {
   dailyWithToday,
   gapMinutes,
@@ -61,6 +68,7 @@ import {
   type Tick,
 } from '../shared/price';
 import type { FileHost } from './host';
+import { parseQuoteRows, quoteHeader, QuoteBook, type LiveQuote } from '../shared/liveQuote';
 import { BOT_PARAMS } from '../shared/indicators';
 import type { R016Client } from './control';
 import type { PriceFileCache } from './priceCache';
@@ -87,6 +95,20 @@ interface TickCache {
 /** keep at most MAX_ENTRIES (oldest inserted dropped) */
 /** KIS minute bars for gap filling are re-asked at most this often per day/code (the server caches them too) */
 const KIS_FILL_TTL_MS = 60000;
+/** r016 `bars` answers reused this long in NXT-only hours (each call starts Python; the chart refreshes with every log poll) */
+const NXT_HOURS_TTL_MS = 10000;
+/** KST minute of the day of a bar */
+const kstMinuteOfDay = (t: number) => Math.floor(((t + 9 * 3600000) % 86400000) / 60000);
+/** bars of the hours KRX is closed (before 09:00, from 15:30) */
+export const outsideKrxHours = (bars: Bar[]): Bar[] => bars.filter((b) => kstMinuteOfDay(b.t) < 9 * 60 || kstMinuteOfDay(b.t) >= 15 * 60 + 30);
+/**
+ * 1-minute bars of the day + the combined-market bars of the hours KRX is closed. In those minutes the combined bar wins: the tick
+ * file only has KRX pre-open / after-hours prints there, the combined bar has the NXT trades.
+ */
+export function mergeOutsideKrx(base: Bar[], outside: Bar[]): Bar[] {
+  const taken = new Set(outside.map((b) => Math.floor(b.t / 60000)));
+  return [...outside, ...base.filter((b) => !taken.has(Math.floor(b.t / 60000)))].sort((a, b) => a.t - b.t);
+}
 
 function remember<K, V>(m: Map<K, V>, k: K, v: V): V {
   m.delete(k);
@@ -108,6 +130,8 @@ export class PriceService {
   private serverCache = new Map<string, { at: number; ttl: number; res: ServerBarsResult }>();
   /** [2026-11-11] KIS minute bars used to fill tick-collector gaps, per day/code (re-asked at most every KIS_FILL_TTL_MS) */
   private fillCache = new Map<string, { at: number; res: { bars?: Bar[]; error?: string } }>();
+  /** r003 quote log of one day (the newest day asked): byte offset + parsed rows */
+  private quoteLog: { key: string; off: number; lb: LineBuffer; cols?: Map<string, number>; book: QuoteBook } | null = null;
   /** requests run one at a time: two concurrent readers of the same incremental tick cache would read the same byte range twice */
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -141,6 +165,48 @@ export class PriceService {
     this.min1.clear();
     this.daily.clear();
     this.dirs = null;
+    this.quoteLog = null;
+  }
+
+  /** Current price per code from r003's quote log of `date`, at or before `upTo` (replay cursor; omitted = newest). */
+  liveQuotes(date: string, upTo?: number | null): Promise<Record<string, LiveQuote>> {
+    const job = this.tail.then(() => this.readQuoteLog(date, upTo));
+    this.tail = job.catch(() => undefined);
+    return job;
+  }
+
+  /** [2026-11-12] text of the day's Edge-AI-only paper trade file (null = no file: the mode was off or nothing was bought) */
+  paperLog(date: string): Promise<string | null> {
+    const job = this.tail.then(async () => {
+      if (!/^\d{8}$/.test(date)) return null;
+      const path = `${this.root()}/runtime/data/live_runtime/edge_only_${date}.jsonl`;
+      const st = await this.host.stat(path);
+      if (!st || !st.size) return null;
+      return (await this.host.readRange(path, 0, st.size)).toString('utf8');
+    });
+    this.tail = job.catch(() => undefined);
+    return job;
+  }
+
+  private async readQuoteLog(date: string, upTo?: number | null): Promise<Record<string, LiveQuote>> {
+    if (!/^\d{8}$/.test(date)) return {};
+    const path = `${this.root()}/runtime/data/live_runtime/quote_ticks_${date}.csv`;
+    const st = await this.host.stat(path);
+    if (!st) return {};
+    let c = this.quoteLog;
+    if (!c || c.key !== path || st.size < c.off) c = this.quoteLog = { key: path, off: 0, lb: new LineBuffer(), book: new QuoteBook() };
+    while (c.off < st.size) {
+      const buf = await this.host.readRange(path, c.off, Math.min(st.size, c.off + MAX_READ));
+      if (!buf.length) break;
+      c.off += buf.length;
+      let lines = c.lb.push(new Uint8Array(buf.buffer, buf.byteOffset, buf.length));
+      if (!c.cols && lines.length) {
+        c.cols = quoteHeader(lines[0]);
+        lines = lines.slice(1);
+      }
+      if (c.cols) c.book.add(parseQuoteRows(lines, c.cols));
+    }
+    return c.book.latest(upTo);
   }
 
   /**
@@ -154,7 +220,8 @@ export class PriceService {
     const res = await this.serverBarsRaw(args);
     if (res) {
       const isDaily = args.includes('day');
-      const ttl = !res.ok ? CHART_CACHE_MS.failed : isDaily ? CHART_CACHE_MS.daily : isMarketHours(kstNowIso()) ? 0 : CHART_CACHE_MS.intradayIdle;
+      const now = kstNowIso();
+      const ttl = !res.ok ? CHART_CACHE_MS.failed : isDaily ? CHART_CACHE_MS.daily : isMarketHours(now) ? 0 : isNxtOnlyHours(now) ? NXT_HOURS_TTL_MS : CHART_CACHE_MS.intradayIdle;
       if (ttl > 0) remember(this.serverCache, key, { at: Date.now(), ttl, res });
     }
     return res;
@@ -164,8 +231,8 @@ export class PriceService {
    * [2026-11-11] The day's KIS 1-minute bars (r016 `bars --kind min --source kis`) for filling minutes the tick collector missed.
    * One server call per KIS_FILL_TTL_MS per day/code - the chart refreshes with every snapshot, the fill does not have to.
    */
-  private async kisMinuteFill(date: string, code: string): Promise<{ bars?: Bar[]; error?: string }> {
-    const key = `${date}/${code}`;
+  private async kisMinuteFill(date: string, code: string, unified = false): Promise<{ bars?: Bar[]; error?: string }> {
+    const key = `${date}/${code}${unified ? '/un' : ''}`;
     const hit = this.fillCache.get(key);
     if (hit && Date.now() - hit.at < KIS_FILL_TTL_MS) return hit.res;
     let res: { bars?: Bar[]; error?: string };
@@ -173,9 +240,9 @@ export class PriceService {
     if (!c || this.noServerBars) res = { error: '서버에 bars 명령이 없습니다 (이전 버전 r016)' };
     else {
       try {
-        const r = await c.run<ServerBars>(['bars', '--date', date, '--code', code, '--kind', 'min', '--interval', '1', '--source', 'kis'], { timeoutMs: 60000 });
+        const r = await c.run<ServerBars>(['bars', '--date', date, '--code', code, '--kind', 'min', '--interval', '1', '--source', unified ? 'kis-un' : 'kis'], { timeoutMs: 60000 });
         if (r.ok && r.data?.ok) res = { bars: serverRowsToBars(r.data.columns, r.data.bars) };
-        else if (/unrecognized arguments|invalid choice/.test(`${r.error || ''} ${r.stderr || ''}`)) res = { error: '서버 r017이 이전 버전이라 --source kis 가 없습니다 (git pull 필요)' };
+        else if (/unrecognized arguments|invalid choice/.test(`${r.error || ''} ${r.stderr || ''}`)) res = { error: `서버 r017이 이전 버전이라 --source ${unified ? 'kis-un' : 'kis'} 가 없습니다 (git pull 필요)` };
         else res = { error: r.data?.error || r.error || 'bars 실패' };
       } catch (e) {
         res = { error: String((e as Error)?.message || e).split('\n')[0] };
@@ -433,7 +500,10 @@ export class PriceService {
 
     if (kind === 'tick' || kind === 'min') {
       const ticks = await this.loadTicks(date, code);
-      if (ticks && ticks.length) {
+      // [2026-11-12] tick chart of an NXT symbol whose tick file has KRX pre-open prints only (08:30 - 09:00): not a tick chart
+      // yet - the minute bars below (combined market) are shown instead
+      const preOnly = kind === 'tick' && !!req.nxt && !!ticks?.length && !ticks.some((t) => kstMinuteOfDay(t.t) >= 9 * 60);
+      if (ticks && ticks.length && !preOnly) {
         // [2026-11-11] minutes the tick collector missed (g011 outage, a code subscribed late): the minute chart fills them with
         // the server's KIS minute bars; tick bars cannot be filled (KIS keeps no tick history) and only say so
         const m1 = minuteBarsFromTicks(ticks, 1);
@@ -446,14 +516,25 @@ export class PriceService {
         let bars = resampleMinuteBars(m1, n);
         let note: string | undefined;
         let filled = 0;
+        let base = m1;
         if (gaps.length) {
           const fill = await this.kisMinuteFill(date, code);
           if (fill.bars?.length) {
             const merged = mergeMinuteBars(fill.bars, m1);
             filled = Math.max(0, merged.length - m1.length);
+            base = merged;
             bars = resampleMinuteBars(merged, n);
             note = `틱 수집이 끊긴 ${gapText(gaps)} (${gapMinutes(gaps)}분)을 KIS 분봉으로 채웠습니다 - 봇은 이 구간의 틱을 보지 못했습니다`;
           } else note = `틱 수집이 끊긴 ${gapText(gaps)} (${gapMinutes(gaps)}분) - KIS 분봉으로 채우지 못함: ${fill.error || '분봉 없음'}`;
+        }
+        if (req.nxt) {
+          // NXT symbol: the tick file has KRX trades only - add the combined minutes of the hours KRX is closed (pre / after market)
+          const un = await this.kisMinuteFill(date, code, true);
+          const outside = un.bars ? outsideKrxHours(un.bars) : [];
+          if (outside.length) {
+            bars = resampleMinuteBars(mergeOutsideKrx(base, outside), n);
+            note = [note, `NXT 장전/장후 ${outside.length}분은 KIS 통합 분봉입니다 (틱 수집기는 KRX 체결만 수집)`].filter(Boolean).join(' · ');
+          }
         }
         return this.withWarmup({ ok: true, source: 'ticks', bars, quote, gaps, filled, note }, req, kind, n);
       }
@@ -462,12 +543,15 @@ export class PriceService {
         return this.withWarmup({ ok: true, source: 'min1', bars: resampleMinuteBars(m1, n), note: '틱 파일이 없어 서버의 1분봉(10초 파일)으로 그렸습니다.' }, req, kind, n);
       }
       // no file for this code/day (not collected, or today's minutes before g001 runs) -> server `bars` (KIS once the server adds it)
-      const sizeArg = kind === 'tick' ? ['--ticks', String(n)] : ['--interval', String(n)];
-      const sb = await this.serverBars(['--date', date, '--code', code, '--kind', kind, ...sizeArg, ...(req.warmup ? ['--warmup', String(WARMUP_BARS_MAX)] : [])]);
+      // [2026-11-12] tick chart without a tick file (before the KRX open the collector has nothing; a code that is not collected):
+      // the day's 1-minute bars are drawn instead of an error
+      const tickAsMin = kind === 'tick';
+      const sizeArg = tickAsMin ? ['--interval', '1'] : ['--interval', String(n)];
+      const sb = await this.serverBars(['--date', date, '--code', code, '--kind', 'min', ...sizeArg, ...(req.warmup ? ['--warmup', String(WARMUP_BARS_MAX)] : [])]);
       if (sb?.ok) {
         const d = sb.data;
         const warm = serverRowsToBars(d.columns, d.warm || undefined);
-        const botN = kind === 'tick' ? WARMUP_BARS : Math.ceil(BOT_PARAMS.warmupMinutes / n);
+        const botN = tickAsMin ? BOT_PARAMS.warmupMinutes : Math.ceil(BOT_PARAMS.warmupMinutes / n);
         return {
           ok: true,
           source: 'server',
@@ -477,7 +561,7 @@ export class PriceService {
           warmDate: d.warm_date || undefined,
           name: d.name,
           sourceDetail: d.source,
-          note: PriceService.sourceNote(d.source),
+          note: tickAsMin ? `틱 데이터가 없어 1분봉으로 표시합니다 (틱 수집기는 KRX 체결만 수집 - 09:00 이전에는 틱이 없습니다) · ${PriceService.sourceNote(d.source)}` : PriceService.sourceNote(d.source),
         };
       }
       const base =

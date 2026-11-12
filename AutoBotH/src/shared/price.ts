@@ -139,6 +139,8 @@ export interface PriceRequest {
   warmup?: boolean;
   /** also return the symbol name (chart tab) */
   withName?: boolean;
+  /** [2026-11-12] NXT symbol: minute charts add the KRX + NXT combined minute bars of the hours KRX is closed (08:00 - 09:00, 15:30 - 20:00) */
+  nxt?: boolean;
 }
 
 export interface PriceResponse {
