@@ -49,7 +49,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PriceTag } from '../components/PriceTag';
 import { NxtMark } from '../components/NxtTag';
-import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, Legend } from 'recharts';
+import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
 import { reasonKo } from '../../../shared/reasonKo';
 import { useStore } from '../store';
 import { SymbolPicker } from '../components/SymbolPicker';
@@ -395,6 +395,15 @@ export function TimelineView() {
               setEvalOnly={setBuyEvalOnly}
               evaluated={buyKeysWithEvents}
             />
+            {/* [2026-11-12] legend moved out of the plot (was a recharts Legend above the grid) to the right end of the head row */}
+            <span className="tl-legend">
+              {SERIES.map((s) => (
+                <span key={s.key}>
+                  <i style={{ background: s.color }} />
+                  {s.label}
+                </span>
+              ))}
+            </span>
           </div>
           <div className="chart-buy" style={{ height: buyH }}>
             <ResponsiveContainer>
@@ -403,7 +412,6 @@ export function TimelineView() {
                 <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                 <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownRows.length - 1)]} ticks={[...Array(shownRows.length).keys()]} tickFormatter={buyLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
                 <Tooltip content={() => null} isAnimationActive={false} />
-                <Legend verticalAlign="top" height={24} />
                 {markers}
                 {pinBuy && <ReferenceLine x={pinBuy.x} stroke="var(--accent)" strokeWidth={1.5} />}
                 {priceHovT !== null && <ReferenceLine x={priceHovT} stroke="var(--text-2)" strokeDasharray="3 3" ifOverflow="hidden" />}
@@ -432,7 +440,7 @@ export function TimelineView() {
               </select>
               {zoomOk && (
                 <>
-                  <span className="badge-warn" title="주가 차트에서 휠 또는 끌기로 확대한 구간">
+                  <span className="badge-warn" title="주가 차트에서 휠 또는 Ctrl+끌기로 확대한 구간 (그냥 끌면 좌우 이동)">
                     확대 {fmtKstTime(domain[0]).slice(0, 5)} ~ {fmtKstTime(domain[1]).slice(0, 5)}
                   </span>
                   <button className="small" onClick={() => setZoom(null)} title="확대를 풀고 위에서 고른 범위로 돌아갑니다 (주가 차트 더블클릭도 같음)">
@@ -481,7 +489,7 @@ export function TimelineView() {
               </select>
             )}
             <IndicatorToggles value={chart.ind} onChange={(ind) => setChart({ ind })} kind={chart.kind} />
-            <span className="muted small">
+            <span className="muted small" title="주가 차트: 휠 = 시간축 확대/축소, 끌기 = 좌우 이동, Ctrl+끌기 = 구간 확대, 더블클릭 = 전체">
               {priceLoading
                 ? '불러오는 중…'
                 : price?.ok

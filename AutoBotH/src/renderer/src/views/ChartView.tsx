@@ -383,7 +383,7 @@ export function ChartView() {
           화면 초기화
         </button>
         <span className="muted small">
-          {loading ? '불러오는 중…' : data?.ok ? `${bars.length.toLocaleString()}봉${data.note ? ` · ${data.note}` : ''} · 휠 확대/축소 · 끌어서 이동` : ''}
+          {loading ? '불러오는 중…' : data?.ok ? `${bars.length.toLocaleString()}봉${data.note ? ` · ${data.note}` : ''} · 휠 확대/축소 · 끌어서 이동 · Ctrl+끌기 구간 확대` : ''}
         </span>
       </div>
       <div className="toolbar ind-bar">

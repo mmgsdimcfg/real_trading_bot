@@ -237,6 +237,9 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 .picker { min-width: 220px; }
 .symline { color: var(--text-2); }
 .legend { display: inline-flex; gap: 10px; margin-left: auto; font-size: 12px; }
+.tl-legend { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; margin-left: auto; font-size: 12px; color: var(--text-2); }
+.tl-legend > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.tl-legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .lg { font-style: normal; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); }
 .lg.pass { border-color: var(--st-pass); }
 .lg.fail { border-color: var(--st-fail); }
