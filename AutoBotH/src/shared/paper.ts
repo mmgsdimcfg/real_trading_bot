@@ -192,3 +192,68 @@ export const TRADE_MODE_KO: Record<TradeMode, string> = {
   edge: 'Edge AI 방식 (실제 주문)',
   other: '기타',
 };
+
+/** [2026-11-12] the Edge AI model the bot uses now (server file runtime/edge_ai/current_meta.json, written by g014) */
+export interface EdgeModelInfo {
+  modelId: string;
+  created: string;
+  threshold: number | null;
+  promoted: boolean;
+  /** label column: 'y_tp' = +tp% reached before the stop, 'y' = net return > 0 (older models have no target = 'y') */
+  target: string;
+  tp: number | null;
+  sl: number | null;
+  horizon: number | null;
+  dataset: string;
+  nDays: number | null;
+  trainRange: string;
+  aucOos: number | null;
+  /** out-of-sample entries the model kept / all entries: count and mean net return (%) */
+  kept: { n: number; meanNet: number } | null;
+  base: { n: number; meanNet: number } | null;
+  /** share of kept / all entries that reached +2 / +3 / +5 % before the stop, and the stopped share (new label only) */
+  runKept: { tp2: number; tp3: number; tp5: number; stopped: number } | null;
+  runBase: { tp2: number; tp3: number; tp5: number; stopped: number } | null;
+}
+
+const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+/** current_meta.json text -> summary; null when the text is not a model meta */
+export function parseEdgeMeta(text: string): EdgeModelInfo | null {
+  let m: Record<string, any>;
+  try {
+    m = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!m || typeof m !== 'object' || typeof m.model_id !== 'string') return null;
+  const label = (m.label && typeof m.label === 'object' ? m.label : {}) as Record<string, unknown>;
+  const pm = (m.promotion && typeof m.promotion === 'object' ? m.promotion : {}) as Record<string, any>;
+  const stat = (s: any) => (s && numOrNull(s.n) !== null && numOrNull(s.mean_net) !== null ? { n: s.n as number, meanNet: s.mean_net as number } : null);
+  const run = (s: any) => (s && numOrNull(s.tp2) !== null ? { tp2: s.tp2 as number, tp3: Number(s.tp3) || 0, tp5: Number(s.tp5) || 0, stopped: Number(s.stopped) || 0 } : null);
+  return {
+    modelId: m.model_id,
+    created: typeof m.created === 'string' ? m.created : '',
+    threshold: numOrNull(m.threshold),
+    promoted: m.promoted === true,
+    target: typeof label.target === 'string' ? label.target : 'y',
+    tp: numOrNull(label.tp),
+    sl: numOrNull(label.sl),
+    horizon: numOrNull(label.horizon),
+    dataset: typeof m.dataset === 'string' ? m.dataset : '',
+    nDays: numOrNull(m.n_days),
+    trainRange: typeof m.train_range === 'string' ? m.train_range : '',
+    aucOos: numOrNull(pm.auc_oos),
+    kept: stat(pm.kept),
+    base: stat(pm.base),
+    runKept: run(pm.run_kept),
+    runBase: run(pm.run_base),
+  };
+}
+
+/** "손절(-1.77%) 전에 +2% 도달" / "+2% / -1.7% / 60분 순손익 > 0" */
+export function edgeLabelKo(m: EdgeModelInfo): string {
+  const tp = m.tp ?? '?';
+  const sl = m.sl ?? '?';
+  return m.target === 'y_tp' ? `손절(-${sl}%) 전에 +${tp}% 도달` : `+${tp}% / -${sl}% / ${m.horizon ?? '?'}분 순손익 > 0`;
+}

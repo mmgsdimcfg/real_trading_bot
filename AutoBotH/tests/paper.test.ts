@@ -144,3 +144,29 @@ describe('automatic sell mode (AUTO_SELL_MODE)', () => {
     expect(IGNORED_TAGS.has('AUTO SELL')).toBe(true);
   });
 });
+
+describe('Edge AI model meta (current_meta.json)', () => {
+  it('summarises the new-label model', async () => {
+    const { parseEdgeMeta, edgeLabelKo } = await import('../src/shared/paper');
+    const meta = {
+      model_id: '20261112_165714', created: '2026-11-12T16:57:14', threshold: 0.3388, promoted: false, dataset: 'v2_tp2_sl1.77_h400_0e91bb',
+      n_days: 89, train_range: '20260814~20261111', label: { tp: 2, sl: 1.77, horizon: 400, slip_ticks: 1, target: 'y_tp' },
+      promotion: { auc_oos: 0.718, base: { n: 244054, mean_net: -0.5636 }, kept: { n: 47583, mean_net: -0.586 },
+        run_base: { n: 244054, tp2: 0.196, tp3: 0.112, tp5: 0.042, stopped: 0.326 }, run_kept: { n: 47583, tp2: 0.355, tp3: 0.241, tp5: 0.111, stopped: 0.592 } },
+    };
+    const m = parseEdgeMeta(JSON.stringify(meta))!;
+    expect([m.modelId, m.threshold, m.promoted, m.target, m.nDays, m.aucOos]).toEqual(['20261112_165714', 0.3388, false, 'y_tp', 89, 0.718]);
+    expect(m.kept).toEqual({ n: 47583, meanNet: -0.586 });
+    expect(m.runKept).toEqual({ tp2: 0.355, tp3: 0.241, tp5: 0.111, stopped: 0.592 });
+    expect(edgeLabelKo(m)).toBe('손절(-1.77%) 전에 +2% 도달');
+  });
+
+  it('reads an older meta without target / run-up stats and rejects other text', async () => {
+    const { parseEdgeMeta, edgeLabelKo } = await import('../src/shared/paper');
+    const m = parseEdgeMeta(JSON.stringify({ model_id: '20261111_222939', threshold: 0.52, promoted: true, label: { tp: 2, sl: 1.7, horizon: 60 }, promotion: {} }))!;
+    expect([m.target, m.promoted, m.runKept, m.kept, m.aucOos]).toEqual(['y', true, null, null, null]);
+    expect(edgeLabelKo(m)).toBe('+2% / -1.7% / 60분 순손익 > 0');
+    expect(parseEdgeMeta('{broken')).toBeNull();
+    expect(parseEdgeMeta('{"threshold":0.5}')).toBeNull();
+  });
+});

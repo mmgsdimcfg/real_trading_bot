@@ -8,6 +8,15 @@
 
 import { BOT_PARAMS as P, INDICATOR_LABEL, MA_PERIODS, OSCILLATORS, OVERLAYS, VOLUME, type IndicatorKey } from '../../../shared/indicators';
 import type { ChartKind } from '../../../shared/price';
+import { MA_COLORS, OVERLAY_COLOR } from './PriceChart';
+
+/** [2026-11-12] colour chips of the price-pane overlays: the check box row doubles as the legend */
+const CHIPS: Partial<Record<IndicatorKey, string[]>> = {
+  ma: MA_PERIODS.map((p) => MA_COLORS[p]),
+  bb: [OVERLAY_COLOR.bb],
+  ichimoku: [OVERLAY_COLOR.tenkan, OVERLAY_COLOR.kijun],
+  vwap: [OVERLAY_COLOR.vwap],
+};
 
 export const INDICATOR_TITLE: Record<IndicatorKey, string> = {
   ma: `이동평균선 ${MA_PERIODS.join('/')} (단순, 차트 표준)`,
@@ -37,6 +46,7 @@ export function IndicatorToggles({ value, onChange, kind, keys }: { value: Indic
             checked={value.includes(k)}
             onChange={(e) => onChange(e.target.checked ? order.filter((x) => x === k || value.includes(x)) : value.filter((x) => x !== k))}
           />{' '}
+          {CHIPS[k]?.map((c, n) => <i key={n} className="ind-chip" style={{ background: c }} />)}
           {INDICATOR_LABEL[k]}
         </label>
       ))}

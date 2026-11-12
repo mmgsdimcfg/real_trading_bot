@@ -42,6 +42,10 @@
   --st-idle: #6e6e6e;
   --gain: #e86a68;
   --loss: #6f9be0;
+  --ma-1: #f3f4f6;
+  --ma-2: #c4c7ce;
+  --ma-3: #9097a3;
+  --ma-4: #6b7280;
   --band-STATE: rgba(57, 135, 229, 0.07);
   --band-TRIGGER: rgba(217, 89, 38, 0.08);
   --band-CONTEXT: rgba(25, 158, 112, 0.08);
@@ -56,6 +60,10 @@
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='dark']) {
+    --ma-1: #111827;
+    --ma-2: #4b5563;
+    --ma-3: #7b8494;
+    --ma-4: #a3a9b5;
     color-scheme: light;
     --bg: #ffffff;
     --surface: #ffffff;
@@ -81,6 +89,10 @@
   }
 }
 :root[data-theme='light'] {
+  --ma-1: #111827;
+  --ma-2: #4b5563;
+  --ma-3: #7b8494;
+  --ma-4: #a3a9b5;
   color-scheme: light;
   --bg: #ffffff;
   --surface: #ffffff;
@@ -513,15 +525,18 @@ details.adv .actions { margin: 8px 0; }
 .ind-toggles { display: inline-flex; gap: 10px; font-size: 12px; }
 .ind-toggles label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; }
 .ind-line { fill: none; stroke-width: 1.2; }
-.ind-bb { stroke: #9085e9; stroke-width: 1; }
-.ind-bb-mid { stroke: #9085e9; stroke-dasharray: 4 3; stroke-width: 1; }
-.ind-tenkan { stroke: #e08a1e; }
-.ind-kijun { stroke: #2aa1c9; }
-.ind-chikou { stroke: #b04fbf; stroke-dasharray: 2 2; }
-.ind-span-a { stroke: #0ca30c; stroke-width: 0.8; opacity: 0.7; }
-.ind-span-b { stroke: #d03b3b; stroke-width: 0.8; opacity: 0.7; }
-.ind-cloud-up { fill: #0ca30c; opacity: 0.1; }
-.ind-cloud-dn { fill: #d03b3b; opacity: 0.1; }
+/* [2026-11-12] one colour per family, context as faint fills: Bollinger = grey band + dashed mid, Ichimoku = orange / green
+   lines + faint cloud. Red and blue are the candles' colours only. */
+.ind-bb-band { fill: #9ca3af; fill-opacity: 0.07; stroke: #9ca3af; stroke-opacity: 0.28; stroke-width: 0.5; }
+.ind-bb-mid { stroke: #9ca3af; stroke-dasharray: 4 3; stroke-width: 1; }
+.ind-tenkan { stroke: #f59e0b; stroke-width: 1.5; }
+.ind-kijun { stroke: #10b981; stroke-width: 1.5; }
+.ind-cloud-up { fill: #10b981; opacity: 0.1; }
+.ind-cloud-dn { fill: #f59e0b; opacity: 0.1; }
+.ind-chip { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 2px; }
+.pc-sel { fill: var(--accent); fill-opacity: 0.14; stroke: var(--accent); stroke-opacity: 0.6; stroke-width: 1; }
+.pc-legend-halo { paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.pc-legend-val { fill: var(--text); }
 .ind-main { stroke: var(--text); }
 .ind-signal { stroke: #e08a1e; }
 .ind-di-plus { stroke: var(--gain); stroke-width: 1; }
@@ -556,7 +571,7 @@ table.sig td:first-child { color: var(--text-3); width: 90px; }
 .chart-side .ticks .grid td { padding: 2px 4px; }
 .price-chart.interactive svg { cursor: crosshair; }
 .ind-toggles label.sep { margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--border); }
-.ind-vwap { stroke: #c9a227; stroke-dasharray: 5 3; }
+.ind-vwap { stroke: #a78bfa; stroke-dasharray: 5 3; }
 .pc-dayline { stroke: var(--text-3); stroke-dasharray: 2 4; stroke-width: 1; }
 .pc-legend { font-size: 11px; fill: var(--text-2); font-variant-numeric: tabular-nums; }
 .pc-legend-name { font-weight: 600; fill: var(--text); }
