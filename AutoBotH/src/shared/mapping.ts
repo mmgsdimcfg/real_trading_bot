@@ -75,6 +75,7 @@ export const TRIGGER_SUB_LABEL: Record<string, string> = {
 // [REJECT] reasons (guide 3.1)
 const BUY_REJECT_RULES = sortRules([
   { p: 'SESSION_OPEN_WARMUP', cond: '_002' },
+  { p: 'EDGE_SIGNAL_', cond: '_009', sub: 'trigger' }, // [2026-11-12] TRADING_STRATEGY_MODE=edge: _e09_edge_ai_signal
   { p: 'TRIPLE_CROSS_MISSING_', cond: '_009', sub: 'trigger' },
   { p: 'TICK_LOW_DENSITY_', cond: '_009', sub: 'trigger' },
   { p: 'TRIPLE_CROSS_1MIN_CHASE_BUY_BB_GAP', cond: '_009', sub: 'candle' },
@@ -91,6 +92,7 @@ const BUY_REJECT_RULES = sortRules([
   { p: 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', cond: '_011' },
   { p: 'HYBRID_3MIN_CTX_MISSING_INDICATOR', cond: '_011' },
   { p: 'HYBRID_3MIN_CTX_LOW_ENTRY_ATR', cond: '_012' },
+  { p: 'GC_VOL_', cond: '_012' }, // [2026-11-12] golden-cross volatility gate: 1-minute ATR% below the limit / unavailable
   { p: 'HYBRID_3MIN_CTX_LOW_VOL_MA_ABS', cond: '_013' },
   { p: 'HYBRID_3MIN_CTX_LOW_ABS_VOLUME', cond: '_013' },
   { p: 'HYBRID_3MIN_CTX_LOW_VOLUME_RATIO', cond: '_013' },
@@ -121,6 +123,10 @@ const SELL_RULES = sortRules([
   { p: 'AUX_BLOCKED_SCORE', cond: '_015' },
   { p: 'AUX_TRIGGER_BUFFER_BLOCK', cond: '_015' },
   { p: 'HARD_STOP_LOSS', cond: '_004' },
+  { p: 'NET_STOP_LOSS', cond: '_004' }, // [2026-11-12] AUTO_SELL_MODE=stop_only: the only automatic sell (r006 _s04)
+  { p: 'EDGE_TP_', cond: '_010' }, // [2026-11-12] edge mode sells (r006 _e10 / _e11 / _e12)
+  { p: 'EDGE_SL_', cond: '_011' },
+  { p: 'EDGE_TIME_', cond: '_012' },
   { p: 'TP1_PARTIAL', cond: '_005' },
   { p: 'TP2_SURGE_LADDER', cond: '_006' },
   { p: 'TP3_SURGE_LADDER', cond: '_006' },
@@ -182,6 +188,8 @@ export const IGNORED_TAGS = new Set([
   'ACT GRADUATE',
   'ACT REENTER',
   'WARMUP', // prior-day bars loaded for indicator warmup
+  'AUTO SELL', // [2026-11-12] AUTO_SELL_MODE: "scheduled liquidation skipped" notice, not a condition
+  'EDGE ONLY', // [2026-11-12] Edge-AI-only paper trading (r022): virtual buys / sells, not a condition of the real pipeline
 ]);
 
 function reasonCandidates(rest: string): string[] {

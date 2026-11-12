@@ -319,6 +319,17 @@ describe('symbol list (2026-11-05 log changes)', () => {
     expect(snap.symbols.map((s) => s.code)).toEqual(['034730']);
     expect(snap.symbols[0].name).toBe('SK');
   });
+
+  it('NXT flag comes from the WATCH line; symbols without one have none', () => {
+    const e = new DayEngine('20261112', conditions);
+    e.feedMainLines([
+      '2026-11-12 07:58:01,000 [INFO] WATCH | 010060 | OCI홀딩스 | NXT=True',
+      '2026-11-12 07:58:01,001 [INFO] WATCH | 003380 | 하림지주 | NXT=False',
+      '2026-11-12 07:58:01,002 [INFO] WATCH | 159010 | 아스플로 | x',
+    ]);
+    const by = Object.fromEntries(e.snapshot().symbols.map((s) => [s.code, s.nxt]));
+    expect(by).toEqual({ '010060': true, '003380': false, '159010': undefined });
+  });
 });
 
 describe('server key remap (app / server numbering gap)', () => {

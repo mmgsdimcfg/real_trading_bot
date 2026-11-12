@@ -22,6 +22,12 @@
  * - [2026-11-11] type=fix - Codex review: a collect / history / scan job started from the CLI stays in the table while it runs (stop / log)
  * - [2026-11-11] type=fix - Codex review: a skipped apply step (no picks of this run - r021 state note) is shown as 건너뜀 with its
  *   reason; after an applied run while r003 runs, a line says the new list needs an r003 restart (link to the control tab)
+ * - [2026-11-11] type=feat - "선별 결과 메일" checkbox on the pipeline card (r021 --email -> g002 --notify-email: picks in the body,
+ *   report files attached); only with step ②, off by default; the plan line and the last-run line show it, the automation line
+ *   shows settings.postcloseEmail
+ * - [2026-11-11] type=feat - The last-run line says 자동 실행 (스케줄러) / 수동 실행 (state args.scheduled, r021 --scheduled) and that
+ *   the step checkboxes above apply to the next manual start only - a scheduled run with Edge AI under an unchecked
+ *   "Edge AI 포함" box looked like a bug
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -96,6 +102,7 @@ export function JobsView() {
   const [date, setDate] = useState(localYmd());
   const [workers, setWorkers] = useState('');
   const [edgeAi, setEdgeAi] = useState(false);
+  const [email, setEmail] = useState(false);
   const [log, setLog] = useState<JobLog | null>(null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -166,7 +173,7 @@ export function JobsView() {
     else if (step.apply && !step.scan && infoOk && !infoOk.picks) problem = `${date} 선별 결과가 없습니다 - ② 선별을 켜세요`;
   }
   const planText = chosen.length
-    ? chosen.map((k) => ({ collect: '수집 → 이력', scan: '선별', apply: 'r004 반영' })[k]).join(' → ') + (edgeAi ? ' → Edge AI' : '')
+    ? chosen.map((k) => ({ collect: '수집 → 이력', scan: step.scan && email ? '선별(메일 전송)' : '선별', apply: 'r004 반영' })[k]).join(' → ') + (edgeAi ? ' → Edge AI' : '')
     : '';
 
   const start = async () => {
@@ -178,7 +185,7 @@ export function JobsView() {
       date,
       workers: Number(workers) || undefined,
       edgeAi: pipeline && edgeAi,
-      ...(pipeline ? { collect: step.collect, scan: step.scan, apply: step.apply } : {}),
+      ...(pipeline ? { collect: step.collect, scan: step.scan, apply: step.apply, email: step.scan && email } : {}),
     });
     setBusy(false);
     if (r.cancelled) return setMsg('');
@@ -291,6 +298,9 @@ export function JobsView() {
               <label className="check" title="③ 뒤에 Edge AI 재학습(g013/g014/g024)을 이어서 실행">
                 <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 포함
               </label>
+              <label className="check" title={`② 선별이 끝나면 선별 종목(본문)과 리포트 파일(첨부)을 이메일로 전송 (g002 --notify-email) · ${local ? '이 PC' : '라즈베리파이'}의 ~/.mail/mail_config.json 설정 필요 · ②를 켜야 보냅니다 · 전송 결과는 아래 로그의 [EMAIL] 줄 (실패해도 작업은 계속)`}>
+                <input type="checkbox" checked={step.scan && email} disabled={!step.scan} onChange={(e) => setEmail(e.target.checked)} /> 선별 결과 메일
+              </label>
             </div>
           )}
           {busy && <i className="spinner" />}
@@ -346,9 +356,16 @@ export function JobsView() {
         {last && (
           <>
             <p className="muted small">
-              마지막 실행 {isoShow(last.started_at)} · 기준일 {last.args?.date}
+              마지막 실행 {isoShow(last.started_at)}
+              {last.args?.scheduled === true && <b title="스케줄러가 시작한 실행입니다 · 실행 단계는 설정/연결 탭의 자동 실행 설정을 따릅니다 (위 체크박스와 무관)"> · 자동 실행 (스케줄러)</b>}
+              {last.args?.scheduled === false && <b title="[시작] 버튼 또는 명령줄로 시작한 실행입니다"> · 수동 실행</b>}
+              {' '}· 기준일 {last.args?.date}
               {last.steps.length ? ` · ${last.steps.map((s) => STEP_LABEL[s.name] || s.name).join(' → ')}` : ''}
+              {last.args?.email ? ' · 선별 결과 메일 전송' : ''}
             </p>
+            {pipeline && last.args?.scheduled === true && (
+              <p className="muted small">자동 실행의 단계(Edge AI·메일 포함 여부)는 설정/연결 탭의 자동 실행 설정을 따릅니다 - 위 체크박스는 [시작]으로 직접 실행할 때만 적용됩니다.</p>
+            )}
             {last.error && <p className={last.state === 'failed' ? 'err-text small' : 'muted small'}>{last.error}</p>}
             {last.note && <p className="warn-text small">{last.note}</p>}
             <table className="grid">
@@ -414,7 +431,7 @@ export function JobsView() {
               틱 수집기: {settings?.autoCollector ? '평일 08:40~15:35 5분마다 확인해 없으면 시작' : '꺼짐'} {sched?.lastCollectorMsg && <span className="muted">- {sched.lastCollectorMsg}</span>}
             </li>
             <li>
-              장 마감 작업: {settings?.autoPostclose ? `거래일 ${settings.postcloseTime} 이후 1회 (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}` : '꺼짐'}{' '}
+              장 마감 작업: {settings?.autoPostclose ? `거래일 ${settings.postcloseTime} 이후 1회 (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}${settings.postcloseEmail ? ' + 선별 결과 메일' : ''}` : '꺼짐'}{' '}
               {sched?.lastPostcloseMsg && <span className="muted">- {sched.lastPostcloseMsg}</span>}
             </li>
             <li>

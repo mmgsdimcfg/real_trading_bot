@@ -30,6 +30,8 @@
  *   volume area and of every indicator pane (drag = resize, double-click = default size); the chart grows / shrinks with them
  * - [2026-11-11] type=feat - hoverTime prop: another chart's hovered time selects the bar here (timeline buy / sell evaluation
  *   charts drive the price chart's crosshair and tooltip)
+ * - [2026-11-12] type=fix - The floating tooltip no longer sits under the drawing tools (top right): when its box reaches them it
+ *   starts below the tool bar
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -644,12 +646,26 @@ export function PriceChart(props: Props) {
   // floating tooltip: right of the cursor when it fits, otherwise left of it (measured after render - its width depends on
   // the indicators shown)
   const tipRef = useRef<HTMLDivElement>(null);
+  const toolsRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = tipRef.current;
     if (!el || !h) return;
     const w = el.offsetWidth;
     const right = h.x + 12;
-    el.style.left = `${right + w <= width ? right : Math.max(0, h.x - 12 - w)}px`;
+    const left = right + w <= width ? right : Math.max(0, h.x - 12 - w);
+    el.style.left = `${left}px`;
+    // [2026-11-12] the drawing tools sit at the top right: a tooltip that reaches under them starts below them instead
+    const tools = toolsRef.current;
+    const box = ref.current;
+    let top = 8;
+    if (tools && box) {
+      const tr = tools.getBoundingClientRect();
+      const br = box.getBoundingClientRect();
+      const toolsLeft = tr.left - br.left;
+      const toolsBottom = tr.bottom - br.top;
+      if (tr.width > 0 && left + w > toolsLeft - 4 && left < toolsLeft + tr.width + 4) top = toolsBottom + 4;
+    }
+    el.style.top = `${top}px`;
   });
 
   return (
@@ -872,7 +888,7 @@ export function PriceChart(props: Props) {
         </svg>
       )}
       {drawKey && (
-        <div className="draw-tools" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="draw-tools" ref={toolsRef} onMouseDown={(e) => e.stopPropagation()}>
           {(
             [
               ['pointer', '↖', '선택 (그리기 끝)'],

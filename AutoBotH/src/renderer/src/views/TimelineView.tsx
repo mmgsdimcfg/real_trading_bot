@@ -36,9 +36,16 @@
  *   (shared/reasonKo) + the code + the raw line; the floating tooltip no longer covers the dots
  * - [2026-11-11] type=feat - The dock sits under its evaluation chart (between it and the price chart) as a full-width strip, and the
  *   hovered evaluation time drives the price chart's crosshair (PriceChart hoverTime) so both charts stay in sync
+ * - [2026-11-12] type=feat - (1) Clicking a dot of the buy / sell evaluation chart pins it: the dock keeps showing that dot
+ *   (marked 고정) after the mouse leaves, a line marks its time, a click on empty space or the ✕ releases it; hovering another
+ *   dot shows that one while the mouse is on it (2) the crosshair is linked both ways: hovering the price chart (tick / minute
+ *   bars) draws a vertical line at that bar's time on the buy and sell evaluation charts - before, only the evaluation charts
+ *   drove the price chart
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { PriceTag } from '../components/PriceTag';
+import { NxtMark } from '../components/NxtTag';
 import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, Legend } from 'recharts';
 import { reasonKo } from '../../../shared/reasonKo';
 import { useStore } from '../store';
@@ -165,19 +172,24 @@ function YPick(props: {
 }
 
 /** [2026-11-11] hover details are shown in a dock beside the chart (TipDock) - a floating tooltip covered the dots around the cursor */
-function TipDock({ pt, side }: { pt: Pt | null; side: '매수' | '매도' }) {
+function TipDock({ pt, side, pinned, onUnpin }: { pt: Pt | null; side: '매수' | '매도'; pinned?: boolean; onUnpin?: () => void }) {
   const conditions = useStore((s) => s.conditions);
   if (!pt) {
     return (
       <div className="tip-dock">
-        <div className="muted small">{side} 평가 차트의 점 위에 마우스를 올리면 여기에 내용이 나옵니다.</div>
+        <div className="muted small">{side} 평가 차트의 점 위에 마우스를 올리면 여기에 내용이 나옵니다. 점을 누르면 고정됩니다.</div>
       </div>
     );
   }
   const ev = pt.ev;
   return (
-    <div className="tip-dock">
+    <div className={`tip-dock ${pinned ? 'pinned' : ''}`}>
       <div>
+        {pinned && (
+          <button className="pin-chip" onClick={onUnpin} title="고정 해제 (차트의 빈 곳을 눌러도 해제)">
+            고정 ✕
+          </button>
+        )}
         <b>{fmtKstTime(ev.ts)}</b> [{ev.tag}] {condTitle(conditions, ev.side, ev.condKey)}
         {ev.sub ? ` / ${ev.sub}` : ''}
       </div>
@@ -202,6 +214,11 @@ export function TimelineView() {
   /** hovered dots of the buy / sell charts (shown in the docks beside them) */
   const [hovBuy, setHovBuy] = useState<Pt | null>(null);
   const [hovSell, setHovSell] = useState<Pt | null>(null);
+  /** [2026-11-12] dots pinned by a click (shown in the dock while nothing is hovered) */
+  const [pinBuy, setPinBuy] = useState<Pt | null>(null);
+  const [pinSell, setPinSell] = useState<Pt | null>(null);
+  /** [2026-11-12] time of the bar hovered on the price chart (tick / minute bars) - a vertical line on the evaluation charts */
+  const [priceHovT, setPriceHovT] = useState<number | null>(null);
   // recharts gives the active payload with every mouse move; the Tooltip itself stays invisible (content null) and only drives the cursor
   const pickPt = (e: unknown): Pt | null => {
     const ap = (e as { activePayload?: { payload?: Pt }[] } | null)?.activePayload;
@@ -255,6 +272,18 @@ export function TimelineView() {
   const sellY = useMemo(() => new Map(shownSellRows.map((r, i) => [r.key, i])), [shownSellRows]);
   const buyPts = useMemo(() => events.filter((e) => e.side === 'buy' && buyY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: buyY.get(ev.condKey)!, ev })), [events, buyY]);
   const sellPts = useMemo(() => events.filter((e) => e.side === 'sell' && sellY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: sellY.get(ev.condKey)!, ev })), [events, sellY]);
+  // per-series arrays kept stable: the charts re-render with every hovered bar of the price chart
+  const buySeries = useMemo(() => SERIES.map((sr) => ({ ...sr, data: buyPts.filter((p) => p.ev.result === sr.key) })), [buyPts]);
+  const sellSeries = useMemo(
+    () => ({ pass: sellPts.filter((p) => p.ev.result === 'pass'), hold: sellPts.filter((p) => p.ev.result === 'hold'), info: sellPts.filter((p) => p.ev.result === 'info') }),
+    [sellPts],
+  );
+  // a pinned dot belongs to one symbol's events: another symbol (or a reloaded day) releases it
+  useEffect(() => {
+    setPinBuy(null);
+    setPinSell(null);
+    setPriceHovT(null);
+  }, [selected, snap?.date]);
   const replayAt = snap?.replay?.cursor ?? null;
   // tick / minute bars of the day widen the axis too (evaluations may stop before the close, e.g. r003 stopped at 13:40)
   const intradayKind = chart.kind === 'tick' || chart.kind === 'min';
@@ -287,7 +316,7 @@ export function TimelineView() {
   const day = snap?.date || status.date;
   const liveTick = status.live ? snap?.generatedAt : 0;
   const warmup = chart.ind.length > 0 && (chart.kind === 'tick' || chart.kind === 'min');
-  const reqKey = `${day}/${selected}/${chart.kind}/${chartN}/${warmup ? 'w' : ''}`;
+  const reqKey = `${day}/${selected}/${chart.kind}/${chartN}/${warmup ? 'w' : ''}${sym?.nxt ? 'x' : ''}`;
   const lastKey = useRef('');
   useEffect(() => {
     if (!selected || !day) return setPrice(null);
@@ -298,7 +327,7 @@ export function TimelineView() {
       setPrice(null);
       setPriceLoading(true);
     }
-    void window.api.getPrice({ date: day, code: selected, kind: chart.kind, n: chartN, warmup }).then((r) => {
+    void window.api.getPrice({ date: day, code: selected, kind: chart.kind, n: chartN, warmup, nxt: !!sym?.nxt }).then((r) => {
       if (seq !== reqSeq.current) return;
       setPriceLoading(false);
       // a failed live refresh keeps the bars already shown
@@ -334,12 +363,14 @@ export function TimelineView() {
     <div className="timeline">
       <div className="toolbar">
         <SymbolPicker allowAll={false} />
+        {sym?.nxt && <NxtMark />}
+        {selected && <PriceTag code={selected} />}
         {sym && (
           <span className="symline">
             이벤트 {events.length.toLocaleString()}건 (최근 2,000건) · 거래 {trades.length}건{sym.realizedKrw ? ` · 실현 ${fmtKrw(sym.realizedKrw)}` : ''}
           </span>
         )}
-        <span className="muted">점 위에 마우스를 올리면 로그 원문을 보여 줍니다. 세로 점선: 매수/매도 체결</span>
+        <span className="muted">점 위에 마우스를 올리면 로그 원문을 보여 주고, 누르면 고정합니다. 세로 점선: 매수/매도 체결</span>
       </div>
       {!selected && <div className="empty">종목을 선택하세요.</div>}
       {selected && (
@@ -359,20 +390,22 @@ export function TimelineView() {
           </div>
           <div className="chart-buy" style={{ height: buyH }}>
             <ResponsiveContainer>
-              <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovBuy(pickPt(e))} onMouseLeave={() => setHovBuy(null)}>
+              <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovBuy(pickPt(e))} onMouseLeave={() => setHovBuy(null)} onClick={(e) => setPinBuy(pickPt(e))}>
                 <CartesianGrid stroke="var(--grid)" />
                 <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                 <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownRows.length - 1)]} ticks={[...Array(shownRows.length).keys()]} tickFormatter={buyLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
                 <Tooltip content={() => null} isAnimationActive={false} />
                 <Legend verticalAlign="top" height={24} />
                 {markers}
-                {SERIES.map((s) => (
-                  <Scatter key={s.key} name={s.label} data={buyPts.filter((p) => p.ev.result === s.key)} fill={s.color} shape={s.shape} isAnimationActive={false} />
+                {pinBuy && <ReferenceLine x={pinBuy.x} stroke="var(--accent)" strokeWidth={1.5} />}
+                {priceHovT !== null && <ReferenceLine x={priceHovT} stroke="var(--text-2)" strokeDasharray="3 3" ifOverflow="hidden" />}
+                {buySeries.map((s) => (
+                  <Scatter key={s.key} name={s.label} data={s.data} fill={s.color} shape={s.shape} isAnimationActive={false} />
                 ))}
               </ScatterChart>
             </ResponsiveContainer>
           </div>
-          <TipDock pt={hovBuy} side="매수" />
+          <TipDock pt={hovBuy || pinBuy} side="매수" pinned={!hovBuy && !!pinBuy} onUnpin={() => setPinBuy(null)} />
           <HeightGrip height={buyH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ buyH: h })} onReset={() => setLayout({ buyH: undefined })} />
           {fullLen > 30 * 60000 && (
             <div className="time-window">
@@ -460,6 +493,12 @@ export function TimelineView() {
                 buyPrice={sym?.position?.buyPrice}
                 date={day}
                 hoverTime={hovBuy ? hovBuy.ev.ts : hovSell ? hovSell.ev.ts : null}
+                onHover={(i) => {
+                  // only tick / minute bars share the evaluation charts' time axis
+                  const b = i === null || !intradayKind ? undefined : shownBars[i];
+                  const t = b ? b.t : null;
+                  setPriceHovT((cur) => (cur === t ? cur : t));
+                }}
               />
             )}
           </div>
@@ -481,20 +520,22 @@ export function TimelineView() {
               <div className="empty small">오늘 이 종목의 매도 평가 로그가 없습니다.</div>
             ) : (
               <ResponsiveContainer>
-                <ScatterChart margin={{ top: 8, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovSell(pickPt(e))} onMouseLeave={() => setHovSell(null)}>
+                <ScatterChart margin={{ top: 8, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovSell(pickPt(e))} onMouseLeave={() => setHovSell(null)} onClick={(e) => setPinSell(pickPt(e))}>
                   <CartesianGrid stroke="var(--grid)" />
                   <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                   <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownSellRows.length - 1)]} ticks={[...Array(shownSellRows.length).keys()]} tickFormatter={sellLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
                   <Tooltip content={() => null} isAnimationActive={false} />
                   {markers}
-                  <Scatter name="발동" data={sellPts.filter((p) => p.ev.result === 'pass')} fill="var(--st-fail)" shape="cross" isAnimationActive={false} />
-                  <Scatter name="보류" data={sellPts.filter((p) => p.ev.result === 'hold')} fill="var(--st-hold)" shape="diamond" isAnimationActive={false} />
-                  <Scatter name="정보" data={sellPts.filter((p) => p.ev.result === 'info')} fill="var(--st-idle)" shape="square" isAnimationActive={false} />
+                  {pinSell && <ReferenceLine x={pinSell.x} stroke="var(--accent)" strokeWidth={1.5} />}
+                  {priceHovT !== null && <ReferenceLine x={priceHovT} stroke="var(--text-2)" strokeDasharray="3 3" ifOverflow="hidden" />}
+                  <Scatter name="발동" data={sellSeries.pass} fill="var(--st-fail)" shape="cross" isAnimationActive={false} />
+                  <Scatter name="보류" data={sellSeries.hold} fill="var(--st-hold)" shape="diamond" isAnimationActive={false} />
+                  <Scatter name="정보" data={sellSeries.info} fill="var(--st-idle)" shape="square" isAnimationActive={false} />
                 </ScatterChart>
               </ResponsiveContainer>
             )}
           </div>
-          <TipDock pt={hovSell} side="매도" />
+          <TipDock pt={hovSell || pinSell} side="매도" pinned={!hovSell && !!pinSell} onUnpin={() => setPinSell(null)} />
           <HeightGrip height={sellH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ sellH: h })} onReset={() => setLayout({ sellH: undefined })} />
           {trades.length > 0 && (
             <table className="grid compact">

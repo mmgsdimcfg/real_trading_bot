@@ -39,9 +39,13 @@
  *   before every r003 start (control deps.beforeStart). Local mode also runs the scheduler (scheduler.ts: tick collector,
  *   post-close job, watchlist copy to the Pi) and keeps the PC awake while the local r003 runs (powerSaveBlocker); closing the window
  *   then asks first, because trading continues but the PC may sleep
+ * - [2026-11-12] type=fix - Host date check (checkDate) also runs from its own timer and before day:open. Before, the date was only
+ *   asked while a live day was polled: after viewing a past day the host date stayed stale, so the new day opened from the date
+ *   picker was loaded once as a past day (never polled) and the day that was "today" was not left at midnight
  */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell } from 'electron';
+import { parsePaperLines } from '../shared/paper';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -60,7 +64,7 @@ import { createScheduler, type SchedState } from './scheduler';
 import { PriceService } from './prices';
 import { PriceFileCache, prunePriceCache } from './priceCache';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
-import { CHART_CACHE_MS, localYmd, quoteCacheMs, resolveSessionOpen, statusPollMs, writerName, type R016Status } from '../shared/control';
+import { CHART_CACHE_MS, dayRollTarget, localYmd, quoteCacheMs, resolveSessionOpen, statusPollMs, writerName, type R016Status } from '../shared/control';
 import { LocalDirSource, RemoteDaySource, cacheDirFor, cachedDates, pruneCache } from './sources';
 
 const TASKBAR_TITLE_PAD = '⠀'.repeat(40);
@@ -301,15 +305,7 @@ async function tick(): Promise<void> {
     setStatus({ lastReceivedAt: cur.lastReceivedAt, message: cur.workerError ? `파서 오류: ${cur.workerError.split('\n')[0]}` : status.message });
 
     const liveHere = (cur.source.kind === 'remote' && ssh.connected) || isLocalLive(cur);
-    if (status.live && liveHere && Date.now() - lastDateCheck > DATE_CHECK_MS) {
-      lastDateCheck = Date.now();
-      const d = await serverDate();
-      setStatus({ serverDate: d });
-      if (d !== cur.date) {
-        openDay(d, true);
-        return;
-      }
-    }
+    if (status.live && liveHere && (await checkDate())) return;
   } catch (e) {
     if (cur !== session) return;
     if (cur.source.kind === 'remote' && !ssh.connected) {
@@ -325,6 +321,37 @@ async function tick(): Promise<void> {
   const every = isLocalLive(cur) ? s.localPollSec * 1000 : s.pollSec * 1000;
   if (status.live || !loadedOnce) schedule(loadedOnce ? every : Math.max(backoffMs, BACKOFF_MIN));
 }
+
+let dateChecking = false;
+/**
+ * [2026-11-12] Host date check (at most once per DATE_CHECK_MS unless `force`): keeps status.serverDate current and moves the
+ * session to the new day when dayRollTarget says so. Runs from the live poll loop and from its own timer, because a day that was
+ * loaded once (not live) has no poll loop - before this the date stayed stale there, a new day opened from the date picker was
+ * treated as a past day (loaded once, never polled) and yesterday kept being treated as today. Returns true when the day changed.
+ */
+async function checkDate(force = false): Promise<boolean> {
+  if (dateChecking || !files.connected || (!force && Date.now() - lastDateCheck <= DATE_CHECK_MS)) return false;
+  dateChecking = true;
+  try {
+    lastDateCheck = Date.now();
+    const prev = status.serverDate;
+    const d = await serverDate();
+    if (d !== prev) setStatus({ serverDate: d });
+    const cur = session;
+    // a folder opened by hand (openLocal) is not a day of this host - never moved
+    const target = cur && status.conn !== 'local' ? dayRollTarget(prev, d, cur.date, status.live) : null;
+    if (target) {
+      openDay(target, true);
+      return true;
+    }
+  } catch {
+    /* host not reachable right now - the next check retries */
+  } finally {
+    dateChecking = false;
+  }
+  return false;
+}
+setInterval(() => void checkDate(), DATE_CHECK_MS);
 
 function openDay(ymd: string, live: boolean): void {
   stopSession();
@@ -396,6 +423,7 @@ async function connectAndOpenToday(ymd?: string): Promise<{ ok: boolean; error?:
     setStatus({ serverDate: d });
     await refreshConditions();
     await control.refreshNxt(); // funnel start time (auto) before the first parse of the day
+    void control.refreshPaper();
     const want = ymd && /^\d{8}$/.test(ymd) ? ymd : d;
     openDay(want, want === d);
     control.startPolling();
@@ -481,8 +509,18 @@ ipcMain.handle('conn:disconnect', () => {
   setStatus({ conn: 'idle', live: false, message: '연결 해제 (표시 중인 데이터는 유지)' });
   return { ok: true };
 });
-ipcMain.handle('day:open', (_e, ymd: string) => {
+ipcMain.handle('day:open', async (_e, ymd: string) => {
   if (!/^\d{8}$/.test(ymd)) return { ok: false, error: '날짜 형식 오류' };
+  // [2026-11-12] today is asked again here: with a stale host date the new day opened as a past day (no polling)
+  if (files.connected) {
+    try {
+      const d = await serverDate();
+      lastDateCheck = Date.now();
+      if (d !== status.serverDate) setStatus({ serverDate: d });
+    } catch {
+      /* keep the last known date */
+    }
+  }
   const live = files.connected && ymd === (status.serverDate || '');
   if (!files.connected && !existsSync(cacheDirFor(ymd))) return { ok: false, error: '연결되어 있지 않고 로컬 캐시도 없습니다.' };
   openDay(ymd, live);
@@ -516,7 +554,7 @@ ipcMain.handle('sched:get', () => scheduler.state());
 ipcMain.handle('price:get', (_e, req: PriceRequest): Promise<PriceResponse> | PriceResponse => {
   // past days are read from the local copy (pricecache) when offline
   if (!files.connected && !isPastDate(req.date)) return { ok: false, bars: [], error: '서버에 연결되어 있지 않아 주가를 불러올 수 없습니다.' };
-  const key = `${mode}/${req.date}/${req.code}/${req.kind}/${req.n}/${req.warmup ? 'w' : ''}${req.withName ? 'n' : ''}`;
+  const key = `${mode}/${req.date}/${req.code}/${req.kind}/${req.n}/${req.warmup ? 'w' : ''}${req.withName ? 'n' : ''}${req.nxt ? 'x' : ''}`;
   const running = priceInFlight.get(key);
   if (running) return running;
   const live = status.live && req.date === status.date;
@@ -530,6 +568,29 @@ ipcMain.handle('price:get', (_e, req: PriceRequest): Promise<PriceResponse> | Pr
     });
   priceInFlight.set(key, p);
   return p;
+});
+// [2026-11-12] Edge-AI-only paper trades of a day (server r022 file runtime/data/live_runtime/edge_only_<date>.jsonl)
+ipcMain.handle('paper:get', async (_e, date: string) => {
+  if (!files.connected) return { ok: false, trades: [], error: `${hostLabel()}에 연결되어 있지 않습니다.` };
+  const g = hostGen;
+  try {
+    const text = await pricesFor(mode).paperLog(String(date));
+    if (g !== hostGen) return { ok: false, trades: [], error: '실행 위치가 바뀌었습니다.' };
+    return { ok: true, trades: text ? parsePaperLines(text) : [] };
+  } catch (e) {
+    return { ok: false, trades: [], error: errMsg(e) };
+  }
+});
+// [2026-11-12] current price per watched symbol (r003 quote log of the viewed day; the replay cursor of a past day is honoured)
+ipcMain.handle('quotes:get', async (_e, date: string, upTo?: number | null) => {
+  if (!files.connected) return {};
+  const g = hostGen;
+  try {
+    const q = await pricesFor(mode).liveQuotes(String(date), upTo);
+    return g === hostGen ? q : {};
+  } catch {
+    return {};
+  }
 });
 // current price + order book + latest trades (r016 `quote`, KIS on the server). unsupported = the server has no `quote` yet
 let quoteUnsupportedAt = 0;

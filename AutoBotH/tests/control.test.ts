@@ -14,6 +14,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ dialog: {}, ipcMain: { handle: vi.fn() } }));
 
 import {
+  dayRollTarget,
+  isNxtOnlyHours,
   buildR016Command,
   serverCodeDir,
   statusPollMs,
@@ -446,5 +448,39 @@ describe('NXT session setting', () => {
     expect(resolveSessionOpen(false, '09:10', n)).toBe('09:10');
     expect(resolveSessionOpen(true, '09:10', undefined)).toBe('09:10');
     expect(resolveSessionOpen(false, 'abc', n)).toBe('09:00');
+  });
+});
+
+describe('dayRollTarget (host date check)', () => {
+  it('a live day follows the host date', () => {
+    expect(dayRollTarget('20261111', '20261112', '20261111', true)).toBe('20261112');
+    expect(dayRollTarget(undefined, '20261112', '20261111', true)).toBe('20261112');
+    expect(dayRollTarget('20261112', '20261112', '20261112', true)).toBeNull();
+  });
+
+  it('a day loaded once follows only when it was today until now', () => {
+    expect(dayRollTarget('20261111', '20261112', '20261111', false)).toBe('20261112');
+    // a past day picked by the user stays, also across midnight
+    expect(dayRollTarget('20261111', '20261112', '20261105', false)).toBeNull();
+    expect(dayRollTarget('20261112', '20261112', '20261111', false)).toBeNull();
+    expect(dayRollTarget(undefined, '20261112', '20261111', false)).toBeNull();
+  });
+
+  it('a malformed host date changes nothing', () => {
+    expect(dayRollTarget('20261111', '', '20261111', true)).toBeNull();
+  });
+});
+
+describe('NXT-only hours', () => {
+  it('weekdays 08:00-09:00 and 15:30-20:00', () => {
+    expect(isNxtOnlyHours('2026-11-12T07:59:00')).toBe(false);
+    expect(isNxtOnlyHours('2026-11-12T08:00:00')).toBe(true);
+    expect(isNxtOnlyHours('2026-11-12T08:59:00')).toBe(true);
+    expect(isNxtOnlyHours('2026-11-12T09:00:00')).toBe(false); // KRX open: isMarketHours
+    expect(isMarketHours('2026-11-12T09:00:00')).toBe(true);
+    expect(isNxtOnlyHours('2026-11-12T15:30:00')).toBe(true);
+    expect(isNxtOnlyHours('2026-11-12T20:00:00')).toBe(false);
+    expect(isNxtOnlyHours('2026-11-14T08:30:00')).toBe(false); // Saturday
+    expect(isNxtOnlyHours(undefined)).toBe(false);
   });
 });

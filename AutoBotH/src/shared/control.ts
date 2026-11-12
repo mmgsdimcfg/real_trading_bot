@@ -25,6 +25,7 @@
  */
 
 import { shellPath, shellQuote } from './shell';
+import type { PaperModeState } from './paper';
 
 // ---- response types --------------------------------------------------------------------------
 
@@ -196,6 +197,12 @@ export interface ControlState {
   lastAction?: { verb: string; ok: boolean; message: string; at: number };
   /** server ENABLE_NXT_SESSION (r016 get) - undefined until read */
   nxt?: NxtState;
+  /** [2026-11-12] server EDGE_ONLY_MODE (Edge-AI-only paper trading, r022) - undefined until read / on a server without it */
+  paper?: PaperModeState;
+  /** [2026-11-12] server TRADING_STRATEGY_MODE (normal / basic / edge) - undefined until read */
+  strategy?: PaperModeState;
+  /** [2026-11-12] server AUTO_SELL_MODE (all / stop_only / off) - undefined until read / on a server without it */
+  autoSell?: PaperModeState;
 }
 
 /** r001 ENABLE_NXT_SESSION as r016 `get` reports it */
@@ -392,6 +399,16 @@ export function isMarketHours(serverIso: string | undefined): boolean {
   return hm >= 9 * 60 && hm < 15 * 60 + 30;
 }
 
+/** [2026-11-12] NXT pre-market / after-market (Mon-Fri 08:00 - 09:00, 15:30 - 20:00): KRX is closed but NXT symbols trade */
+export function isNxtOnlyHours(serverIso: string | undefined): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(serverIso || '');
+  if (!m) return false;
+  const dow = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay();
+  if (dow === 0 || dow === 6) return false;
+  const hm = +m[4] * 60 + +m[5];
+  return (hm >= 8 * 60 && hm < 9 * 60) || (hm >= 15 * 60 + 30 && hm < 20 * 60);
+}
+
 export type BotSummary = 'unknown' | 'running' | 'starting' | 'stopping' | 'stopped' | 'failed' | 'external';
 
 export function botSummary(s: R016Status | null): BotSummary {
@@ -551,8 +568,9 @@ export interface JobRun {
   started_at: string;
   finished_at: string | null;
   rc: number | null;
-  /** [2026-11-11] collect / scan / apply = the pipeline steps that were selected (older state files: keep_watchlist) */
-  args: { date: string; workers: number | null; edge_ai: boolean; collect?: boolean; scan?: boolean; apply?: boolean; keep_watchlist?: boolean };
+  /** [2026-11-11] collect / scan / apply = the pipeline steps that were selected (older state files: keep_watchlist);
+   *  scheduled = started by the app's scheduler (r021 --scheduled; undefined in older state files) */
+  args: { date: string; workers: number | null; edge_ai: boolean; collect?: boolean; scan?: boolean; apply?: boolean; keep_watchlist?: boolean; email?: boolean; scheduled?: boolean };
   log: string;
   steps: JobStep[];
   error: string | null;
@@ -585,6 +603,8 @@ export interface JobStartOpts {
   collect?: boolean;
   scan?: boolean;
   apply?: boolean;
+  /** [2026-11-11] mail the picks of the scan step (r021 --email -> g002 --notify-email, the host's ~/.mail/mail_config.json) */
+  email?: boolean;
   /** scheduler: no confirmation dialog */
   noConfirm?: boolean;
 }
@@ -644,6 +664,18 @@ export function hmMinutes(hm: string): number {
 /** this PC's local date as YYYYMMDD (the notebook runs on KST like r003's datetime.now()) */
 export function localYmd(d: Date = new Date()): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * [2026-11-12] Host date check: which day the app should switch to, or null to stay.
+ * - a live session always follows the host's today
+ * - a session that shows the day that was "today" until now (opened before the first check, or loaded once while the host date
+ *   was stale) follows too; a past day picked by the user stays
+ */
+export function dayRollTarget(prevToday: string | undefined, today: string, sessionDate: string, live: boolean): string | null {
+  if (!/^\d{8}$/.test(today) || sessionDate === today) return null;
+  if (live) return today;
+  return prevToday && prevToday !== today && sessionDate === prevToday ? today : null;
 }
 
 /**

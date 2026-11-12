@@ -688,3 +688,19 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .step-num { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border); font-size: 11px; color: var(--text-2); }
 .plan-line { margin: -10px 0 14px; }
 .ok-text { color: var(--st-pass); }
+
+/* [2026-11-12] NXT-tradable symbol mark */
+.nxt-tag { display: inline-block; padding: 0 4px; border-radius: 3px; font-size: 9.5px; font-weight: 700; line-height: 14px; letter-spacing: 0.2px; vertical-align: 1px; border: 1px solid var(--accent); color: var(--accent); }
+/* [2026-11-12] current price next to a symbol: red up / blue down */
+.price-tag { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.price-tag.up { color: var(--gain); }
+.price-tag.down { color: var(--loss); }
+.toolbar .price-tag { margin: 0 6px; font-size: 13px; }
+/* [2026-11-12] paper trading tab */
+.paper-view h4 { margin: 14px 16px 6px; font-size: 13px; color: var(--text-2); }
+.paper-view .kpi b.small { font-size: 13px; font-weight: 500; }
+.badge-mode { padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+.badge-mode.on { border-color: var(--st-pass); color: var(--st-pass); }
+/* [2026-11-12] timeline: a pinned evaluation dot in the dock */
+.tip-dock.pinned { border-color: var(--accent); }
+.pin-chip { margin-right: 6px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font-size: 11px; cursor: pointer; }

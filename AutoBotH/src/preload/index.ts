@@ -17,6 +17,8 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import type { PaperTrade } from '../shared/paper';
+import type { LiveQuote } from '../shared/liveQuote';
 import type { AppStatus, ConditionsDoc, ConfirmRequest, Settings, Snapshot } from '../shared/types';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
 import type {
@@ -72,6 +74,10 @@ const api = {
   /** past-day replay: show the state at ts (epoch ms), null = whole day */
   setReplayCursor: (ts: number | null): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('replay:cursor', ts),
   getPrice: (req: PriceRequest): Promise<PriceResponse> => ipcRenderer.invoke('price:get', req),
+  /** Edge-AI-only paper trades of a day (server r022) */
+  getPaper: (date: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date),
+  /** current price per watched symbol (r003 quote log); upTo = replay cursor of a past day */
+  getQuotes: (date: string, upTo?: number | null): Promise<Record<string, LiveQuote>> => ipcRenderer.invoke('quotes:get', date, upTo),
   getQuote: (code: string): Promise<{ ok: boolean; data?: MarketQuote; error?: string; unsupported?: boolean }> => ipcRenderer.invoke('market:quote', code),
   onStatus: (cb: (s: AppStatus) => void) => on('status', cb),
   onSnapshot: (cb: (s: Snapshot | null) => void) => on('snapshot', cb),

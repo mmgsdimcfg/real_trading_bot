@@ -13,6 +13,7 @@
  */
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from 'react';
+import { NxtMark } from '../components/NxtTag';
 import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import { useStore } from '../store';
@@ -498,7 +499,7 @@ export function PipelineView() {
               {sym && (
                 <>
                   <h4>
-                    {sym.code} {sym.name} - 이 조건의 마지막 로그
+                    {sym.code} {sym.name} {sym.nxt && <NxtMark />} - 이 조건의 마지막 로그
                   </h4>
                   {ev ? (
                     <>

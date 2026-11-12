@@ -387,6 +387,9 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
             <label className="check">
               <input type="checkbox" checked={form.postcloseEdgeAi} disabled={!form.autoPostclose} onChange={(e) => set('postcloseEdgeAi', e.target.checked)} /> 장 마감 작업에 Edge AI 재학습 포함
             </label>
+            <label className="check" title="g002 --notify-email: 선별 종목(본문)과 리포트 파일(첨부) · 이 PC의 ~/.mail/mail_config.json 설정 필요">
+              <input type="checkbox" checked={form.postcloseEmail} disabled={!form.autoPostclose} onChange={(e) => set('postcloseEmail', e.target.checked)} /> 장 마감 작업의 선별 결과를 이메일로 전송
+            </label>
             <label className="check">
               <input type="checkbox" checked={form.syncWatchlistToPeer} onChange={(e) => set('syncWatchlistToPeer', e.target.checked)} /> 장 마감 작업이 끝나면 새 감시목록을 라즈베리파이로 복사 (예비 실행 대비)
             </label>

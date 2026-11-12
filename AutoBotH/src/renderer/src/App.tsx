@@ -25,6 +25,7 @@ import { TimelineView } from './views/TimelineView';
 import { ChartView } from './views/ChartView';
 import { TradesView } from './views/TradesView';
 import { PositionsView } from './views/PositionsView';
+import { PaperView } from './views/PaperView';
 import { SettingsView } from './views/SettingsView';
 
 // 16 px line icons (stroke = currentColor, so they follow the item's text color and the theme)
@@ -65,6 +66,12 @@ const ICON: Record<Tab, JSX.Element> = {
       <path d="M6 5.5h4M6 8.5h4" />
     </>
   ),
+  paper: (
+    <>
+      <rect x="2.5" y="2" width="11" height="12" rx="1.5" strokeDasharray="2.2 1.6" />
+      <path d="M5 10l2-2.5 1.5 1.5L11 6" />
+    </>
+  ),
   settings: (
     <>
       <circle cx="8" cy="8" r="2.2" />
@@ -76,7 +83,7 @@ const ICON: Record<Tab, JSX.Element> = {
 // Sidebar groups: 운영 (run the bot and its data jobs) / 분석 (look at the day) / 시스템
 const NAV: { group: string; tabs: [Tab, string][] }[] = [
   { group: '운영', tabs: [['control', '제어'], ['jobs', '데이터 작업'], ['pipeline', '파이프라인']] },
-  { group: '분석', tabs: [['board', '종목 보드'], ['timeline', '타임라인'], ['chart', '차트'], ['positions', '보유 현황'], ['trades', '매매 결과']] },
+  { group: '분석', tabs: [['board', '종목 보드'], ['timeline', '타임라인'], ['chart', '차트'], ['positions', '보유 현황'], ['trades', '매매 결과'], ['paper', '가상 매매']] },
   { group: '시스템', tabs: [['settings', '설정·연결']] },
 ];
 
@@ -105,7 +112,7 @@ export function App() {
           ))}
         </nav>
         <div className="app-main">
-          {tab !== 'control' && tab !== 'settings' && tab !== 'jobs' && tab !== 'positions' && <ReplayBar />}
+          {tab !== 'control' && tab !== 'settings' && tab !== 'jobs' && tab !== 'positions' && tab !== 'paper' && <ReplayBar />}
           <main className="view">
             {tab === 'control' && <ControlView />}
             {tab === 'jobs' && <JobsView />}
@@ -115,6 +122,7 @@ export function App() {
             {tab === 'chart' && <ChartView />}
             {tab === 'positions' && <PositionsView />}
             {tab === 'trades' && <TradesView />}
+            {tab === 'paper' && <PaperView />}
             {tab === 'settings' && <SettingsView />}
           </main>
         </div>

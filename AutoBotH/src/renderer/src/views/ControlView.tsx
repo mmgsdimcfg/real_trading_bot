@@ -25,6 +25,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, autoSellOf, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, type AutoSellMode, type TradeMode } from '../../../shared/paper';
 import { useStore } from '../store';
 import type { RunMode } from '../../../shared/types';
 import {
@@ -380,6 +381,55 @@ export function ControlView() {
 
   // form follows the server until the user changes it
   const dryRun = mode?.dryRun ?? st?.dry_run ?? false;
+  const paper = control.paper;
+  const strategy = control.strategy;
+  const tradeMode = tradeModeOf(strategy?.effective, paper?.effective);
+  const runningMode = tradeModeOf(strategy?.running ?? strategy?.effective, paper?.running ?? paper?.effective);
+  const modePending = !!strategy && strategy.running !== null && (strategy.pending || !!paper?.pending || runningMode !== tradeMode);
+  const [modeBusy, setModeBusy] = useState(false);
+  const setTradeMode = async (next: TradeMode) => {
+    const changes = tradeModeChanges(next);
+    if (!changes || next === tradeMode) return;
+    if (
+      next === 'edge' &&
+      !window.confirm(
+        'Edge AI 방식은 모델 신호만으로 실제 주문을 냅니다.\n\n' +
+          '과거 검증(2026-08-14~11-11, 58일)에서는 모든 확률 기준에서 거래당 -0.43 ~ -0.58% 손실이었습니다.\n' +
+          '매도는 +2.0% 익절 / -1.7% 손절 / 60분 경과로 고정됩니다. 일일 손실 한도와 동시 보유 상한은 그대로 적용됩니다.\n\n' +
+          'r003 재시작 후부터 적용됩니다. 바꿀까요?',
+      )
+    )
+      return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet(changes);
+      if (!r.ok) window.alert(`매매 방식을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setModeBusy(false);
+    }
+  };
+  // [2026-11-12] AUTO_SELL_MODE: which sells the bot makes by itself (all / only the net -2% stop / none)
+  const autoSell = control.autoSell;
+  const autoSellMode = autoSellOf(autoSell?.effective);
+  const autoSellRunning = autoSellOf(autoSell?.running ?? autoSell?.effective);
+  const autoSellPending = !!autoSell && autoSell.running !== null && (autoSell.pending || autoSellRunning !== autoSellMode);
+  const setAutoSell = async (next: AutoSellMode) => {
+    if (next === autoSellMode) return;
+    const text =
+      next === 'all'
+        ? '봇이 익절·트레일링·손절·당일 청산(15:20 / NXT 19:59)을 모두 자동으로 합니다.'
+        : next === 'stop_only'
+          ? '봇은 수수료+거래세 포함 순손익 -2% 손절만 자동으로 매도합니다.\n익절·트레일링·당일 청산은 하지 않으므로 직접 매도해야 하고, 팔지 않으면 다음 날로 넘어갑니다.'
+          : '봇은 어떤 매도도 하지 않습니다(손절 포함). 모든 매도를 직접 해야 하고, 팔지 않으면 다음 날로 넘어갑니다.';
+    if (!window.confirm(`자동 매도: ${AUTO_SELL_KO[next]}\n\n${text}\n\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet({ [AUTO_SELL_KEY]: next });
+      if (!r.ok) window.alert(`자동 매도 설정을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setModeBusy(false);
+    }
+  };
   const profile = mode?.profile ?? ((st?.risk_profile as RiskProfile) || 'neutral');
   const busy = !!control.busy;
   const btn = serviceButtons(st, busy || !connected);
@@ -543,6 +593,50 @@ export function ControlView() {
             <input type="checkbox" checked={dryRun} disabled={busy} onChange={(e) => setMode({ dryRun: e.target.checked, profile })} /> dry-run
           </label>
           {mode && (mode.dryRun !== st?.dry_run || mode.profile !== st?.risk_profile) && <span className="muted small">다음 실행/재시작부터 적용 (r003.env에 저장)</span>}
+          {/* [2026-11-12] trade mode: rule-based / rule-based + Edge AI paper trading / Edge AI only with real orders */}
+          <label title="r003 재시작 후 적용됩니다. 가상 매매는 주문 없이 기록만 하고(가상 매매 탭), Edge AI 방식은 모델 신호만으로 실제 주문을 냅니다.">
+            매매 방식{' '}
+            <select value={tradeMode} disabled={busy || !strategy || !connected || modeBusy} onChange={(e) => void setTradeMode(e.target.value as TradeMode)}>
+              <option value="rules">{TRADE_MODE_KO.rules}</option>
+              <option value="rules+paper" disabled={!paper}>
+                {TRADE_MODE_KO['rules+paper']}
+              </option>
+              <option value="edge" disabled={!paper}>
+                {TRADE_MODE_KO.edge}
+              </option>
+              {tradeMode === 'other' && <option value="other">{strategy?.effective || '-'} (서버 설정)</option>}
+            </select>
+          </label>
+          {strategy && (
+            <span className={tradeMode === 'edge' ? 'badge-warn' : 'muted small'}>
+              {modePending
+                ? `→ r003 재시작 후 적용 (실행 중: ${TRADE_MODE_KO[runningMode]})`
+                : tradeMode === 'edge'
+                  ? 'Edge AI 신호만으로 실제 주문 중'
+                  : tradeMode === 'rules+paper' && paper?.running === 'paper'
+                    ? '가상 매매 진행 중'
+                    : ''}
+            </span>
+          )}
+          {!paper && strategy && <span className="muted small">가상 매매 / Edge AI 방식은 서버 코드 갱신 후 선택할 수 있습니다</span>}
+          {/* [2026-11-12] automatic sells: everything / only the net -2% stop / none (the user sells by hand) */}
+          <label title="r003 재시작 후 적용됩니다. '손절만'은 수수료+거래세 포함 순손익 -2%에서만 자동 매도하고, '끔'은 봇이 어떤 매도도 하지 않습니다. 두 경우 모두 당일 청산을 하지 않습니다.">
+            자동 매도{' '}
+            <select value={autoSellMode} disabled={busy || !autoSell || !connected || modeBusy} onChange={(e) => void setAutoSell(e.target.value as AutoSellMode)}>
+              {AUTO_SELL_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {AUTO_SELL_KO[m]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {autoSell ? (
+            <span className={autoSellMode === 'all' ? 'muted small' : 'badge-warn'}>
+              {autoSellPending ? `→ r003 재시작 후 적용 (실행 중: ${AUTO_SELL_KO[autoSellRunning]})` : autoSellMode === 'all' ? '' : '매도는 직접 해야 합니다 (당일 청산 없음)'}
+            </span>
+          ) : (
+            strategy && <span className="muted small">자동 매도 선택은 서버 코드 갱신 후 쓸 수 있습니다</span>
+          )}
           {nPending > 0 && st?.running && (
             <span className="badge-warn" title="서비스 시작 이후 바뀐 파일이 있습니다">
               ⚠ 미적용 변경 {nPending}건 → 재시작 필요

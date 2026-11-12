@@ -1,0 +1,194 @@
+/*
+ * Update log
+ * - [2026-11-12] type=feat - Edge-AI-only paper trading (server r022, r001 EDGE_ONLY_MODE): the day's virtual trades from
+ *   runtime/data/live_runtime/edge_only_YYYYMMDD.jsonl (ENTRY / EXIT lines -> one PaperTrade per entry, open while it has no
+ *   EXIT), the day summary, and the mode as r016 `get EDGE_ONLY_MODE` reports it (stored / running / restart pending)
+ * - [2026-11-12] type=feat - Trade mode choice of the control tab: TRADING_STRATEGY_MODE (normal / edge = Edge-AI-only with real
+ *   orders) + EDGE_ONLY_MODE (paper) read together (parseModes) and reduced to one of three choices (tradeModeOf);
+ *   tradeModeChanges() is the `set` a choice sends
+ */
+
+export interface PaperTrade {
+  code: string;
+  name: string;
+  /** epoch ms of the virtual buy */
+  entryTs: number;
+  /** virtual fill (live price + 1 tick) */
+  entry: number;
+  prob?: number;
+  threshold?: number;
+  trigger?: string;
+  tpPx?: number;
+  slPx?: number;
+  /** minutes until the time exit */
+  horizon?: number;
+  exitTs?: number;
+  exit?: number;
+  /** tp | sl | time | eod */
+  reason?: string;
+  /** net % after commission and sell tax */
+  netPct?: number;
+  heldMin?: number;
+}
+
+export const PAPER_EXIT_KO: Record<string, string> = { tp: '익절 (목표가)', sl: '손절', time: '시간 경과', eod: '장 마감' };
+
+const tsToEpoch = (s: unknown): number => {
+  // "2026-11-12T09:30:05" is KST wall time
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(String(s || ''));
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5], +m[6]) : NaN;
+};
+const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+
+/** jsonl text -> trades in entry order (a broken line is skipped; an EXIT closes the open trade of its code) */
+export function parsePaperLines(text: string): PaperTrade[] {
+  const out: PaperTrade[] = [];
+  const open = new Map<string, PaperTrade>();
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let r: Record<string, unknown>;
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const code = String(r.code || '');
+    const ts = tsToEpoch(r.ts);
+    if (!code || !Number.isFinite(ts)) continue;
+    if (r.event === 'ENTRY') {
+      const entry = num(r.entry);
+      if (!entry) continue;
+      const t: PaperTrade = {
+        code,
+        name: String(r.name || ''),
+        entryTs: ts,
+        entry,
+        prob: num(r.prob),
+        threshold: num(r.threshold),
+        trigger: typeof r.trigger === 'string' ? r.trigger : undefined,
+        tpPx: num(r.tp_px),
+        slPx: num(r.sl_px),
+        horizon: num(r.horizon),
+      };
+      out.push(t);
+      open.set(code, t);
+    } else if (r.event === 'EXIT') {
+      const t = open.get(code);
+      if (!t) continue;
+      t.exitTs = ts;
+      t.exit = num(r.exit);
+      t.reason = typeof r.reason === 'string' ? r.reason : undefined;
+      t.netPct = num(r.net_pct);
+      t.heldMin = num(r.held_min);
+      open.delete(code);
+    }
+  }
+  return out;
+}
+
+export interface PaperSummary {
+  closed: number;
+  open: number;
+  wins: number;
+  /** sum of the closed trades' net % (each trade = one equal slot) */
+  sumPct: number;
+  meanPct: number;
+  winRate: number;
+  byReason: Record<string, number>;
+}
+
+export function paperSummary(trades: PaperTrade[]): PaperSummary {
+  const closed = trades.filter((t) => t.exitTs !== undefined);
+  const nets = closed.map((t) => t.netPct ?? 0);
+  const sumPct = nets.reduce((a, b) => a + b, 0);
+  const wins = nets.filter((x) => x > 0).length;
+  const byReason: Record<string, number> = {};
+  for (const t of closed) byReason[t.reason || '?'] = (byReason[t.reason || '?'] || 0) + 1;
+  return {
+    closed: closed.length,
+    open: trades.length - closed.length,
+    wins,
+    sumPct,
+    meanPct: closed.length ? sumPct / closed.length : 0,
+    winRate: closed.length ? wins / closed.length : 0,
+    byReason,
+  };
+}
+
+/** unrealized % of an open trade at `price` (no costs - the trade is not closed) */
+export const paperOpenPct = (t: PaperTrade, price: number | undefined): number | undefined =>
+  price && price > 0 && t.entry > 0 ? (price / t.entry - 1) * 100 : undefined;
+
+// ---- mode (r016 get EDGE_ONLY_MODE) ----
+
+export const PAPER_KEY = 'EDGE_ONLY_MODE';
+
+export interface PaperModeState {
+  /** value r003 uses at its next start: 'off' | 'paper' */
+  effective: string;
+  /** value the running r003 uses (null = not running / unknown) */
+  running: string | null;
+  /** effective differs from running -> r003 restart needed */
+  pending: boolean;
+}
+
+export const STRATEGY_KEY = 'TRADING_STRATEGY_MODE';
+
+function modeOf(data: unknown, key: string): PaperModeState | null {
+  const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[key];
+  if (!v || typeof v.effective !== 'string') return null;
+  return { effective: v.effective.toLowerCase(), running: typeof v.running === 'string' ? v.running.toLowerCase() : null, pending: !!v.pending };
+}
+
+/** `get EDGE_ONLY_MODE` data -> state; null when the server does not know the key (older server code) */
+export const parsePaperMode = (data: unknown): PaperModeState | null => modeOf(data, PAPER_KEY);
+
+/** `get TRADING_STRATEGY_MODE EDGE_ONLY_MODE` data -> both states (each null when the server does not report it) */
+export function parseModes(data: unknown): { strategy: PaperModeState | null; paper: PaperModeState | null } {
+  return { strategy: modeOf(data, STRATEGY_KEY), paper: modeOf(data, PAPER_KEY) };
+}
+
+/**
+ * The control tab's choice:
+ *   rules        current rule-based trading only
+ *   rules+paper  current rule-based trading, Edge AI as paper trading beside it (no orders)
+ *   edge         Edge AI only, real orders (no paper trading - it would be the same policy twice)
+ *   other        a strategy mode this choice does not cover (e.g. basic) - shown as it is, not changed by accident
+ */
+export type TradeMode = 'rules' | 'rules+paper' | 'edge' | 'other';
+
+export function tradeModeOf(strategy: string | null | undefined, paper: string | null | undefined): TradeMode {
+  const s = String(strategy || '').toLowerCase();
+  if (s === 'edge') return 'edge';
+  if (s !== 'normal') return 'other';
+  return String(paper || '').toLowerCase() === 'paper' ? 'rules+paper' : 'rules';
+}
+
+/** r016 `set` values of a choice (null for 'other': nothing to send) */
+export function tradeModeChanges(mode: TradeMode): Record<string, string> | null {
+  if (mode === 'rules') return { [STRATEGY_KEY]: 'normal', [PAPER_KEY]: 'off' };
+  if (mode === 'rules+paper') return { [STRATEGY_KEY]: 'normal', [PAPER_KEY]: 'paper' };
+  if (mode === 'edge') return { [STRATEGY_KEY]: 'edge', [PAPER_KEY]: 'off' };
+  return null;
+}
+
+/** [2026-11-12] r001 AUTO_SELL_MODE: which sells the bot makes by itself */
+export const AUTO_SELL_KEY = 'AUTO_SELL_MODE';
+export type AutoSellMode = 'all' | 'stop_only' | 'off';
+export const AUTO_SELL_MODES: AutoSellMode[] = ['all', 'stop_only', 'off'];
+export const AUTO_SELL_KO: Record<AutoSellMode, string> = {
+  all: '전체 자동 (익절·트레일링·당일 청산 포함)',
+  stop_only: '손절만 자동 (비용 포함 -2%)',
+  off: '끔 (모든 매도 수동)',
+};
+/** `get AUTO_SELL_MODE` data -> state; null when the server does not know the key (older server code) */
+export const parseAutoSell = (data: unknown): PaperModeState | null => modeOf(data, AUTO_SELL_KEY);
+/** a server value as one of the three choices (anything else = the bot's fallback 'all') */
+export const autoSellOf = (v: string | null | undefined): AutoSellMode => (v === 'stop_only' || v === 'off' ? v : 'all');
+
+export const TRADE_MODE_KO: Record<TradeMode, string> = {
+  rules: '현재 방식 (규칙 기반)',
+  'rules+paper': '현재 방식 + Edge AI 가상 매매',
+  edge: 'Edge AI 방식 (실제 주문)',
+  other: '기타',
+};

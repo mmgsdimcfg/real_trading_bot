@@ -4,7 +4,7 @@
  *   app runs - the jobs it starts are detached and finish even if the app is closed):
  *   - tick collector: Mon-Fri 08:40-15:35 every 5 min r016 `collector start` (g022 rules on the PC: calendar window, standby refusal,
  *     no second g011)
- *   - post-close: once per day at/after settings.postcloseTime `job start postclose --trading-day-only [--edge-ai]`, never while
+ *   - post-close: once per day at/after settings.postcloseTime `job start postclose --trading-day-only [--edge-ai] [--email]`, never while
  *     r003 still runs (NXT session until 20:00)
  *   - after that job finished OK: copy the new watchlist to the standby Raspberry Pi (settings.syncWatchlistToPeer) so it can take
  *     over tomorrow
@@ -13,6 +13,8 @@
  * - [2026-11-10] type=fix - Codex review: the tick collector only on a host whose role is explicitly primary (set by a guarded r003
  *   start); every action re-checks that the local mode is still active; the watchlist copy is marked done only after it succeeded
  *   (retried every 10 min)
+ * - [2026-11-11] type=feat - settings.postcloseEmail adds --email to the scheduled post-close job (g002 --notify-email: picks by mail)
+ * - [2026-11-11] type=feat - The scheduled post-close job is started with --scheduled (state args.scheduled -> 자동 실행 in the jobs tab)
  */
 
 import { collectorWindow, localYmd, postcloseDue, type JobList, type R016Status } from '../shared/control';
@@ -102,7 +104,7 @@ export function createScheduler(deps: SchedDeps) {
         if (deps.status()?.running) {
           push({ lastPostcloseMsg: `${hm()} 장 마감 작업 대기 - r003 실행 중 (종료 후 시작)` });
         } else {
-          const args = ['job', 'start', 'postclose', '--date', today, '--trading-day-only', ...(s.postcloseEdgeAi ? ['--edge-ai'] : [])];
+          const args = ['job', 'start', 'postclose', '--date', today, '--trading-day-only', '--scheduled', ...(s.postcloseEdgeAi ? ['--edge-ai'] : []), ...(s.postcloseEmail ? ['--email'] : [])];
           const r = await deps.client().run<{ ok: boolean; skipped?: boolean; reason?: string; error?: string }>(args, { timeoutMs: 60000 });
           if (r.ok) {
             deps.setMeta({ lastPostcloseYmd: today });

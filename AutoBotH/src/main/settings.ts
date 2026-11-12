@@ -57,6 +57,7 @@ const DEFAULTS: Stored = {
   autoPostclose: false,
   postcloseTime: '20:10',
   postcloseEdgeAi: false,
+  postcloseEmail: false,
   syncWatchlistToPeer: true,
   keepAwake: true,
 };
@@ -163,6 +164,7 @@ export function getSettings(): Settings {
     autoPostclose: s.autoPostclose === true,
     postcloseTime: /^\d{1,2}:\d{2}$/.test(String(s.postcloseTime || '')) ? s.postcloseTime : DEFAULTS.postcloseTime,
     postcloseEdgeAi: s.postcloseEdgeAi === true,
+    postcloseEmail: s.postcloseEmail === true,
     syncWatchlistToPeer: s.syncWatchlistToPeer !== false,
     keepAwake: s.keepAwake !== false,
   };
@@ -196,6 +198,7 @@ export function saveSettings(next: Settings): Settings {
     autoPostclose: rest.autoPostclose === true,
     postcloseTime: /^\d{1,2}:\d{2}$/.test(String(rest.postcloseTime || '').trim()) ? String(rest.postcloseTime).trim() : DEFAULTS.postcloseTime,
     postcloseEdgeAi: rest.postcloseEdgeAi === true,
+    postcloseEmail: rest.postcloseEmail === true,
     syncWatchlistToPeer: rest.syncWatchlistToPeer !== false,
     keepAwake: rest.keepAwake !== false,
   });
