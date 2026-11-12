@@ -1615,7 +1615,7 @@ def _intraday_atr3_median_pct(df: "pd.DataFrame", dt: "pd.Series") -> tuple[floa
     if len(bars) < INTRADAY_ATR3_MIN_RAW_BARS:
         return None, "too_few_bars"
     ohlc = bars[["open", "high", "low", "close"]].apply(pd.to_numeric, errors="coerce")
-    ohlc.index = pd.DatetimeIndex(bars["_dt"]) + pd.Timedelta(minutes=1)
+    ohlc.index = pd.DatetimeIndex(bars["_dt"]) + pd.Timedelta(1, "min")
     ohlc = ohlc[~ohlc.index.duplicated(keep="last")].sort_index()
     b = ohlc.resample("3min", label="right", closed="right").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last"}

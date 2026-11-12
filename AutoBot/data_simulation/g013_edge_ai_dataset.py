@@ -141,7 +141,7 @@ def load_minute_bars(path: Path) -> pd.DataFrame | None:
     expansion = max(1.0, round(float(m_gaps.median()) / step)) if step > 0 and not m_gaps.empty else 1.0
     m = m.copy()
     m["volume"] = m["volume"].fillna(0.0) * expansion
-    m.index = m.index + pd.Timedelta(minutes=1)
+    m.index = m.index + pd.Timedelta(1, "min")
     return m
 
 

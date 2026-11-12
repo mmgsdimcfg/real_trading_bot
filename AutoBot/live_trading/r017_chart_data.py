@@ -19,6 +19,11 @@
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-12] type=feat owner=claude
+    summary: bars --kind min: 파일이 없고 KRX 분봉도 없으면 KRX+NXT 통합 분봉(r018 minutes market=UN)으로 폴백, --source kis-un
+      으로 통합 분봉을 직접 요청. 09:00 이전(NXT 프리마켓)에 AutoBotH 차트가 비던 문제.
+    impact: tooling (AutoBotH 차트). 출력 형식 동일, source 가 "kis:<tr>:UN" 으로 표시됨
+    compatibility: backward-compatible (--source 선택지 추가)
 - [2026-11-11] type=feat owner=claude
     summary: bars --source kis (min 전용) - 틱/_10s 파일이 있어도 KIS 1분봉(r018.minutes)으로 응답. AutoBotH 가 틱 수집기가
       끊긴 구간(g011 중단 - 봇도 그 구간의 틱을 못 봄)을 KIS 분봉으로 채워 그리는 데 쓴다. 기본값 auto 는 기존과 같다.
@@ -198,7 +203,7 @@ def minute_frames(date_str: str, code: str) -> tuple[pd.DataFrame, pd.DataFrame,
     m1 = pd.DataFrame({"open": mb["o"].to_numpy(), "high": mb["h"].to_numpy(), "low": mb["l"].to_numpy(),
                        "close": mb["c"].to_numpy(), "volume": mb["v"].to_numpy()}, index=pd.DatetimeIndex(mb["t"])).astype("float64")
     m1_end = m1.copy()
-    m1_end.index = m1_end.index + pd.Timedelta(minutes=1)
+    m1_end.index = m1_end.index + pd.Timedelta(1, "min")
     return m1, m1_end, _day_3min(m1_end), f"{tf} (ticks -> 1m, live approximation)"
 
 
@@ -284,10 +289,10 @@ def indicators(date_str: str, code: str, frame: str, last: int | None = None) ->
     w1, w3, why = warmup_frames(date_str, code)
     if frame == "1m":
         df, parity = _indicators_rolling(m1_end, w1, FRAME_CACHE_MAX_BARS, last)
-        offset = pd.Timedelta(minutes=1)
+        offset = pd.Timedelta(1, "min")
     else:
         df, parity = _indicators_rolling(m3, w3, FRAME_CACHE_MAX_BARS, last)
-        offset = pd.Timedelta(minutes=3)
+        offset = pd.Timedelta(3, "min")
     cols = [c for c in OHLCV + INDICATOR_COLUMNS if c in df.columns]
     if last:
         df = df.tail(int(last))
@@ -412,7 +417,7 @@ def _shape_daily(df: pd.DataFrame, date_str: str, kind: str) -> pd.DataFrame:
     if kind == "week":
         df = df.resample("W-FRI", label="left", closed="right").agg(
             {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open"])
-        df.index = df.index + pd.Timedelta(days=3)  # label left = previous Friday -> Monday of that week
+        df.index = df.index + pd.Timedelta(3, "D")  # label left = previous Friday -> Monday of that week
     elif kind == "month":
         df = df.resample("MS").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open"])
     out = pd.DataFrame({"t": df.index, "o": df["open"].to_numpy(), "h": df["high"].to_numpy(), "l": df["low"].to_numpy(),
@@ -438,8 +443,9 @@ def kis_day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str
     return _shape_daily(df, date_str, kind), d["source"], d.get("name")
 
 
-def kis_minute_bars(date_str: str, code: str, interval: int) -> tuple[pd.DataFrame, str, str | None] | None:
-    m = _kis().minutes(code, date_str)
+def kis_minute_bars(date_str: str, code: str, interval: int, market: str = "J") -> tuple[pd.DataFrame, str, str | None] | None:
+    """market "UN" = KRX+NXT combined minutes (08:00~20:00), for the hours KRX has no bars."""
+    m = _kis().minutes(code, date_str) if market == "J" else _kis().minutes(code, date_str, market=market)
     if not m or not m["rows"]:
         return None
     idx = pd.to_datetime([date_str + r[0] for r in m["rows"]], format="%Y%m%d%H%M%S")
@@ -605,14 +611,21 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
     elif kind in ("tick", "min"):
         # [2026-11-11] --source kis: minute bars from KIS even when a tick / _10s file exists (AutoBotH fills the minutes the
         # tick collector missed - a g011 outage leaves holes in the tick file that the bot could not see either)
-        res = None if (source == "kis" and kind == "min") else _intraday_bars(date_str, code, kind, ticks, interval, all_sessions)
+        # [2026-11-12] --source kis-un: KRX+NXT combined minute bars (08:00~20:00). With source auto and no file, KRX minutes
+        # are asked first and the combined ones when KRX has none (before 09:00 the chart of an NXT symbol was empty).
+        from_kis = source in ("kis", "kis-un") and kind == "min"
+        res = None if from_kis else _intraday_bars(date_str, code, kind, ticks, interval, all_sessions)
+        if res is not None and kind == "min" and res[0].empty:
+            res = None   # a tick file with pre-open prints only (08:30~09:00): no bar yet -> KIS minutes
         kis_used = False
         if res is None:
             if kind == "tick":
                 return {"ok": False, "error": "tick bars need the tick collector (not subscribed): use min"}
             r018 = _kis()
             try:
-                kres = kis_minute_bars(date_str, code, interval)
+                kres = kis_minute_bars(date_str, code, interval, "UN" if source == "kis-un" else "J")
+                if kres is None and source == "auto":
+                    kres = kis_minute_bars(date_str, code, interval, "UN")
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
             except r018.KisError as exc:
@@ -679,8 +692,9 @@ def add_subparsers(sub) -> None:
     p.add_argument("--warmup", type=int, default=0, help="also return the last K bars of the previous day")
     p.add_argument("--since-ts", dest="since_ts", default=None)
     p.add_argument("--all-sessions", dest="all_sessions", action="store_true")
-    p.add_argument("--source", choices=["auto", "kis"], default="auto",
-                   help="min: 'kis' = KIS minute bars even when the tick / _10s file exists (fill tick-collector gaps)")
+    p.add_argument("--source", choices=["auto", "kis", "kis-un"], default="auto",
+                   help="min: 'kis' = KIS minute bars even when the tick / _10s file exists (fill tick-collector gaps); "
+                        "'kis-un' = KRX+NXT combined minute bars (08:00~20:00)")
 
 
 def run_command(args) -> dict:

@@ -144,7 +144,7 @@ class TestPriorDayLoader(unittest.TestCase):
 
     def test_first_partial_bucket_dropped(self):
         m1, m3, _ = self._load(minutes=10)  # 1-min 15:11..15:31 (end labels) minus gaps
-        self.assertGreaterEqual(m3.index[0] - pd.Timedelta(minutes=2), m1.index[0])
+        self.assertGreaterEqual(m3.index[0] - pd.Timedelta(2, "min"), m1.index[0])
 
     def test_not_found(self):
         m1, m3, why = self.r012.load_prior_day_warmup(self.root, "20261028", "000001", 180, 7, 1000.0, 0.3)

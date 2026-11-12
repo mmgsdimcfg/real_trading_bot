@@ -481,8 +481,8 @@ def step_entry(
 
     # ---- opening-range level (breakout setup) ----
     if st.bo_state == "WAIT_LEVEL":
-        session_open = ts.normalize() + pd.Timedelta(hours=9)
-        or_end = session_open + pd.Timedelta(minutes=cfg.bo_opening_range_min)
+        session_open = ts.normalize() + pd.Timedelta(9, "h")
+        or_end = session_open + pd.Timedelta(cfg.bo_opening_range_min, "min")
         if ts >= or_end:
             or_bars = m1p_upto[(m1p_upto.index > session_open) & (m1p_upto.index <= or_end)]
             if len(or_bars) >= max(3, cfg.bo_opening_range_min // 3):
@@ -508,7 +508,7 @@ def step_entry(
         trend_ok = ctx["ema_rising"] and ctx["close"] >= floor_level * (1.0 - cfg.pb_max_close_below_support_pct / 100.0)
         if st.pb_state == "ARMED":
             st.pb_low = min(st.pb_low, low)
-            expired = st.pb_armed_at is not None and ts - st.pb_armed_at > pd.Timedelta(minutes=cfg.pb_arm_expiry_min)
+            expired = st.pb_armed_at is not None and ts - st.pb_armed_at > pd.Timedelta(cfg.pb_arm_expiry_min, "min")
             broken = ctx["close"] < floor_level * (1.0 - cfg.pb_max_close_below_support_pct / 100.0)
             too_deep = (st.pb_swing_high - st.pb_low) / ctx["atr"] > cfg.pb_max_depth_atr
             if expired or broken or too_deep or not ctx["ema_rising"]:
@@ -572,7 +572,7 @@ def step_entry(
                 st.bo_low = low
         elif st.bo_state == "ARMED":
             st.bo_low = min(st.bo_low, low)
-            expired = st.bo_armed_at is not None and ts - st.bo_armed_at > pd.Timedelta(minutes=cfg.bo_arm_expiry_min)
+            expired = st.bo_armed_at is not None and ts - st.bo_armed_at > pd.Timedelta(cfg.bo_arm_expiry_min, "min")
             if close < lvl * (1.0 - cfg.bo_retest_max_undercut_pct / 100.0) or st.bo_low < lvl * (1.0 - cfg.bo_retest_max_undercut_pct / 100.0):
                 st.bo_state = "FAILED"
                 st.last_reject = "BO_RETEST_LOST_LEVEL"

@@ -6,7 +6,7 @@ AutoBotH 가 r016_control.py job ... 으로 부른다 (Linux 서버, Windows 노
 CPU 를 많이 쓰는 일이다.
 
   r016 job list                                 작업 목록 + 각 작업의 마지막 실행 상태 + 지금 도는 작업
-  r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply]
+  r016 job start NAME [--date YYYYMMDD] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] [--email] [--scheduled]
   r016 job stop NAME                            지금 단계(자식 프로세스)를 끝내고 stopped 로 기록
   r016 job log NAME [-n 200]                    마지막 실행 로그 끝부분
   r016 job data --date YYYYMMDD                 그 날짜 폴더(<runtime>/data/D)의 수집 데이터 유무(10초봉/일봉 파일 수, 수집 목록)와
@@ -28,9 +28,25 @@ CPU 를 많이 쓰는 일이다.
     apply 는 선별 파일이 없거나 비어 있거나, 이 실행의 scan 보다 오래된 파일(g002 가 후보 0 이면 파일을 안 만들고 옛 파일이
     남는다)이면 건너뛴다(단계 state=skipped, note) - 옛 선별이 r004 에 들어가지 않게. 작업 자체는 done.
 
+  [2026-11-11] --email (postclose / scan): scan 단계를 g002 --notify-email 로 실행 - 선별 종목(본문)과 리포트 파일(첨부)을
+    g016_email_notify 로 보낸다 (그 호스트의 ~/.mail/mail_config.json). scan 단계가 없으면(--no-scan) 아무것도 보내지 않는다.
+    전송 실패는 작업 실패가 아니다 (g002 가 [EMAIL] 줄을 로그에 남김).
+
+  [2026-11-11] --scheduled: 앱 스케줄러(자동 실행)가 시작한 작업이라는 표시 - 상태 파일 args.scheduled 에만 기록되고 실행
+    내용은 같다 (앱이 마지막 실행을 "자동 실행 / 수동 실행"으로 구분해 보여준다).
+
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-11] type=feat owner=claude
+    summary: --scheduled (start/run) - 스케줄러가 시작한 실행 표시. 상태 파일 args.scheduled (true/false) 기록만 하고 단계는 불변.
+    impact: tooling (옵션 추가, 기본 동작 불변)
+    compatibility: backward-compatible (옛 상태 파일에는 args.scheduled 가 없다)
+- [2026-11-11] type=feat owner=claude
+    summary: --email (start/run) - scan 단계의 g002 에 --notify-email 을 붙여 선별 종목 메일을 보낸다 (g002 --notify-email 을
+      직접 실행했을 때와 같은 메일). 상태 파일 args 에 email 기록. 기본은 꺼짐.
+    impact: tooling (r016 job start 옵션 추가, 기본 동작 불변)
+    compatibility: backward-compatible
 - [2026-11-11] type=feat owner=claude
     summary: 파이프라인 단계 선택 - postclose = collect -> history -> scan -> apply. scan 단계는 항상 g002 --no-export-watchlist
       (선별 파일만), r004 반영은 새 apply 단계(r016 watchlist apply --date D: 백업/이력/다음 거래일 헤더)가 한다. --no-collect /
@@ -96,6 +112,8 @@ class JobArgs:
     collect: bool = True
     scan: bool = True
     apply: bool = True
+    email: bool = False  # [2026-11-11] scan step: g002 --notify-email (picks + report files by mail, g016)
+    scheduled: bool = False  # [2026-11-11] started by the app's scheduler (recorded in the state file only)
     by: str = "cli"  # who started it - recorded in the r004 header / history by the apply step
 
     @property
@@ -122,7 +140,8 @@ STEPS: dict[str, Step] = {
     "collect": Step("collect", lambda a, rc: _py("g001_data_collect_symbols_daily.py", "--date", a.date,
                                                  "--workers", _workers(a, 4))),
     "history": Step("history", lambda a, rc: _py("g025_daily_history.py", "--append", a.date), required=False),
-    "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--no-export-watchlist")),
+    "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--no-export-watchlist",
+                                           *(["--notify-email"] if a.email else []))),
     # r004 <- <runtime>/data/D/_D_picks.txt through r016 (write lock, backup, history, for_trading_day header, collector note)
     # --restart-collector: a running g011 that misses new codes is restarted (it subscribes r004 only at its start)
     "apply": Step("apply", lambda a, rc: [str(HERE / "r016_control.py"), "--by", a.by, "watchlist", "apply", "--date", a.date,
@@ -273,6 +292,10 @@ def start_job(paths: Paths, name: str, args: JobArgs, by: str, spawn=r019.spawn_
     if args.edge_ai:
         argv.append("--edge-ai")
     argv += [f"--no-{k}" for k in ("collect", "scan", "apply") if not getattr(args, k)]
+    if args.email:
+        argv.append("--email")
+    if args.scheduled:
+        argv.append("--scheduled")
     now = datetime.now()
     pid = spawn(argv, cwd=str(HERE), log_path=paths.root / "log" / "jobs" / "r021_runner.log",
                 env=r019.child_env({"AUTO_TRADING_RUNTIME": str(paths.root)}))
@@ -409,7 +432,8 @@ class Runner:
                       "run_id": run_id,
                       "started_at": now.isoformat(timespec="seconds"), "finished_at": None, "rc": None,
                       "args": {"date": args.date, "workers": args.workers, "edge_ai": args.edge_ai,
-                               "collect": args.collect, "scan": args.scan, "apply": args.apply},
+                               "collect": args.collect, "scan": args.scan, "apply": args.apply,
+                               "email": args.email, "scheduled": args.scheduled},
                       "log": str(self.log_path), "steps": [], "error": None, "note": None}
 
     def _save(self) -> None:
@@ -563,12 +587,15 @@ def _add_step_switches(p) -> None:
     p.add_argument("--no-scan", action="store_true", help="postclose/scan: skip the scan (g002) - the date must have a picks file")
     p.add_argument("--no-apply", action="store_true", help="postclose/scan: do not write r004 (picks files only)")
     p.add_argument("--keep-watchlist", action="store_true", help="old name of --no-apply")
+    p.add_argument("--email", action="store_true", help="postclose/scan: mail the picks of the scan step (g002 --notify-email)")
+    p.add_argument("--scheduled", action="store_true", help="started by the app's scheduler (recorded in the state file)")
 
 
 def _job_args(args, date: str) -> JobArgs:
     return JobArgs(date=date, workers=args.workers, edge_ai=args.edge_ai,
                    collect=not getattr(args, "no_collect", False), scan=not getattr(args, "no_scan", False),
-                   apply=not (getattr(args, "no_apply", False) or getattr(args, "keep_watchlist", False)))
+                   apply=not (getattr(args, "no_apply", False) or getattr(args, "keep_watchlist", False)),
+                   email=bool(getattr(args, "email", False)), scheduled=bool(getattr(args, "scheduled", False)))
 
 
 def is_trading_day(ymd: str) -> bool:

@@ -307,6 +307,83 @@ class MinutesTest(Base):
             self.assertIsNone(r018.minutes("035720", "20261110"))
 
 
+class UnifiedMinutesTest(Base):
+    """[2026-11-12] minutes(market="UN"): KRX + NXT combined bars for the hours KRX is closed."""
+
+    @staticmethod
+    def handler(date_str: str, traded: set[str]):
+        """Combined market: one row per minute from 08:00; minutes outside `traded` are flat rows with volume 0."""
+        def h(params):
+            assert params["FID_COND_MRKT_DIV_CODE"] == "UN"
+            hour = params["FID_INPUT_HOUR_1"]
+            mins = []
+            t = datetime.strptime(date_str + "080000", "%Y%m%d%H%M%S")
+            while t.strftime("%H%M%S") <= hour:
+                mins.append(t.strftime("%H%M%S"))
+                t += timedelta(minutes=1)
+            page = list(reversed(mins))[:30]
+            return {"output1": {"hts_kor_isnm": "OCI홀딩스"},
+                    "output2": [{"stck_bsop_date": date_str, "stck_cntg_hour": m, "stck_oprc": "10", "stck_hgpr": "11",
+                                 "stck_lwpr": "9", "stck_prpr": "10", "cntg_vol": "5" if m in traded else "0"} for m in page]}
+        return h
+
+    def test_pre_market_bars_before_the_krx_open(self):
+        now = datetime(2026, 11, 12, 8, 27, 30)
+        with mock.patch.object(r018, "_now", return_value=now):
+            # KRX (J) has nothing before 09:00 - and is not even asked
+            c0, s0 = self.client({})
+            self.assertIsNone(r018.minutes("010060", "20261112", client=c0))
+            self.assertEqual(s0.calls, [])
+            c, s = self.client({"FHKST03010200": self.handler("20261112", {"080000", "080100", "082700"})})
+            m = r018.minutes("010060", "20261112", client=c, market="UN")
+        self.assertEqual([r[0] for r in m["rows"]], ["080000", "080100", "082700"])      # zero-volume minutes dropped
+        self.assertEqual(m["source"], "kis:inquire_time_itemchartprice:UN")
+        self.assertTrue((self.runtime / "cache" / "kis" / "min_un" / "20261112" / "010060.json").is_file())
+        self.assertFalse((self.runtime / "cache" / "kis" / "min" / "20261112" / "010060.json").exists())
+
+    def test_symbol_without_nxt_trades_returns_none(self):
+        with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 12, 8, 27, 30)):
+            c, _ = self.client({"FHKST03010200": self.handler("20261112", set())})
+            self.assertIsNone(r018.minutes("006360", "20261112", client=c, market="UN"))
+
+    def test_before_0800_and_bad_market(self):
+        with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 12, 7, 50)):
+            c, s = self.client({})
+            self.assertIsNone(r018.minutes("010060", "20261112", client=c, market="UN"))
+            self.assertEqual(s.calls, [])
+        with self.assertRaises(ValueError):
+            r018.minutes("010060", "20261112", market="NX")
+
+    def test_r017_bars_fall_back_to_the_combined_market(self):
+        import r017_chart_data as r017
+        seen = []
+
+        def fake_minutes(code, date_str, client=None, market="J"):
+            seen.append(market)
+            if market == "J":
+                return None
+            return {"rows": [["080000", 10, 11, 9, 10, 5]], "name": "OCI홀딩스", "source": "kis:inquire_time_itemchartprice:UN",
+                    "complete": False, "calls": 1}
+
+        with mock.patch.object(r017, "_intraday_bars", return_value=None), mock.patch.object(r018, "minutes", fake_minutes):
+            out = r017.bars("20261112", "010060", "min")
+            self.assertEqual((out["ok"], out["count"], out["source"]), (True, 1, "kis:inquire_time_itemchartprice:UN"))
+            self.assertEqual(seen, ["J", "UN"])
+            seen.clear()
+            out = r017.bars("20261112", "010060", "min", source="kis-un")
+            self.assertEqual((out["ok"], seen), (True, ["UN"]))
+            seen.clear()
+            out = r017.bars("20261112", "010060", "min", source="kis")          # gap filling stays on the KRX basis
+            self.assertEqual((out["ok"], seen), (False, ["J"]))
+        # a tick file that holds pre-open prints only gives no bar: KIS minutes are used as well
+        import pandas as pd
+        empty = (pd.DataFrame(columns=["t", "o", "h", "l", "c", "v", "n", "t_last"]), "ticks.csv")
+        seen.clear()
+        with mock.patch.object(r017, "_intraday_bars", return_value=empty), mock.patch.object(r018, "minutes", fake_minutes):
+            out = r017.bars("20261112", "010060", "min")
+            self.assertEqual((out["ok"], out["count"], seen), (True, 1, ["J", "UN"]))
+
+
 class R016IntegrationTest(Base):
     def run16(self, argv):
         import r016_control as r016

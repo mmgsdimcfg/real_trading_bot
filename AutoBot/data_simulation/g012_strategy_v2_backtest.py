@@ -135,7 +135,7 @@ def load_1m_bars(path: Path, day: str) -> pd.DataFrame | None:
     start = pd.to_datetime(df["datetime"])
     keep = ((start >= pd.Timestamp(f"{day} 09:00")) & (start <= pd.Timestamp(f"{day} {SESSION_LAST_ENTRY_BAR_START}"))).to_numpy()
     df = df.assign(volume=df["volume"].astype(float) * 6.0)
-    df.index = pd.DatetimeIndex(start + pd.Timedelta(minutes=1))  # label by bar END
+    df.index = pd.DatetimeIndex(start + pd.Timedelta(1, "min"))  # label by bar END
     df = df[keep]
     df = df[~df.index.duplicated(keep="last")].sort_index()
     if df.empty:
@@ -241,7 +241,7 @@ def simulate_day(day: str, universe, bars: dict[str, pd.DataFrame], cfg: V2Confi
             sig = pending.pop(code)
             if code in pos:
                 continue
-            if (ts - sig.ts) > pd.Timedelta(minutes=2):
+            if (ts - sig.ts) > pd.Timedelta(2, "min"):
                 diag["skip_gap"] += 1
                 continue
             extra = cfg.slippage_extra_bps_small if tiers.get(code) == "small" else 0.0
@@ -256,7 +256,7 @@ def simulate_day(day: str, universe, bars: dict[str, pd.DataFrame], cfg: V2Confi
                 if qty <= 0:
                     diag["skip_size"] += 1
                 else:
-                    p = V2Position(code, sig.setup, ts - pd.Timedelta(minutes=1), fill, qty, sig.stop, fill - sig.stop)
+                    p = V2Position(code, sig.setup, ts - pd.Timedelta(1, "min"), fill, qty, sig.stop, fill - sig.stop)
                     buy_cost = fill_cost_krw("buy", fill, qty, cfg)
                     pos[code] = p
                     pos_meta[code] = {

@@ -19,6 +19,21 @@ class TestStepsAndArgv(unittest.TestCase):
         self.assertEqual(argv[1:], ["--date", "20261110", "--no-export-watchlist"])
         self.assertNotIn("--export-watchlist", argv)
 
+    def test_email_adds_notify_email_to_the_scan_step(self):
+        """[2026-11-11] --email -> g002 --notify-email (scan step only); off by default."""
+        import argparse
+
+        argv = r021.STEPS["scan"].build(r021.JobArgs(date="20261110", email=True), {})
+        self.assertEqual(argv[1:], ["--date", "20261110", "--no-export-watchlist", "--notify-email"])
+        for name in ("collect", "history", "apply"):
+            self.assertNotIn("--notify-email", r021.STEPS[name].build(r021.JobArgs(date="20261110", email=True), {}))
+        sub = argparse.ArgumentParser().add_subparsers(dest="cmd")
+        r021.add_job_parser(sub)
+        ns = sub.choices["job"].parse_args(["start", "postclose", "--date", "20261110", "--email"])
+        self.assertTrue(r021._job_args(ns, "20261110").email)
+        ns = sub.choices["job"].parse_args(["start", "postclose", "--date", "20261110"])
+        self.assertFalse(r021._job_args(ns, "20261110").email)
+
     def test_apply_step_calls_r016_watchlist_apply(self):
         argv = r021.STEPS["apply"].build(r021.JobArgs(date="20261110", by="autoboth"), {})
         self.assertTrue(argv[0].endswith("r016_control.py"))
@@ -86,7 +101,8 @@ class TestStartArgv(unittest.TestCase):
             old = r021.START_CONFIRM_SEC
             r021.START_CONFIRM_SEC = 0.0  # no runner is really started
             try:
-                r021.start_job(paths, "postclose", r021.JobArgs(date="20261110", edge_ai=True, collect=False, apply=False), "test",
+                r021.start_job(paths, "postclose", r021.JobArgs(date="20261110", edge_ai=True, collect=False, apply=False, email=True,
+                                                                  scheduled=True), "test",
                                spawn=fake_spawn)
             finally:
                 r021.START_CONFIRM_SEC = old
@@ -95,6 +111,8 @@ class TestStartArgv(unittest.TestCase):
         self.assertIn("--no-apply", captured[0])
         self.assertNotIn("--no-scan", captured[0])
         self.assertIn("--edge-ai", captured[0])
+        self.assertIn("--email", captured[0])
+        self.assertIn("--scheduled", captured[0])
 
 
 class TestDateDataInfo(unittest.TestCase):
@@ -181,3 +199,4 @@ class TestApplyGuard(unittest.TestCase):
             # scan skipped (step 3 alone): the existing file is applied as it is
             st = self._run(root, "raise SystemExit(9)", r021.JobArgs(date="20261110", collect=False, scan=False))
             self.assertEqual([(s["name"], s["state"]) for s in st["steps"]], [("apply", "done")])
+            self.assertIs(st["args"]["scheduled"], False)  # [2026-11-11] manual run; --scheduled -> True

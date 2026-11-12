@@ -24,7 +24,7 @@ DAY = "2026-10-20"
 def _m1_from_closes(closes, vols=None, start="09:00", highs=None, lows=None, opens=None) -> pd.DataFrame:
     """1m bars labelled by END time; open = previous close unless given."""
     n = len(closes)
-    idx = pd.date_range(f"{DAY} {start}", periods=n, freq="1min") + pd.Timedelta(minutes=1)
+    idx = pd.date_range(f"{DAY} {start}", periods=n, freq="1min") + pd.Timedelta(1, "min")
     c = np.asarray(closes, dtype=float)
     o = np.asarray(opens, dtype=float) if opens is not None else np.r_[c[0], c[:-1]]
     h = np.asarray(highs, dtype=float) if highs is not None else np.maximum(o, c) + 10
@@ -197,7 +197,7 @@ class TestExit(unittest.TestCase):
         cfg = V2Config()
         t0 = pd.Timestamp(f"{DAY} 10:00")
         p = V2Position("X", "PULLBACK", t0, 10000, 100, 9900, 100)
-        ts = t0 + pd.Timedelta(minutes=2)
+        ts = t0 + pd.Timedelta(2, "min")
         acts = step_exit(p, {"open": 9850, "high": 9870, "low": 9800, "close": 9820}, ts, self._m5(ts), cfg)
         self.assertEqual(len(acts), 1)
         self.assertEqual(acts[0].price, 9850)
@@ -208,7 +208,7 @@ class TestExit(unittest.TestCase):
         cfg = replace(V2Config(), trail_start_r=99)
         t0 = pd.Timestamp(f"{DAY} 10:00")
         p = V2Position("X", "PULLBACK", t0, 10000, 100, 9900, 100)
-        ts = t0 + pd.Timedelta(minutes=1, seconds=30)
+        ts = t0 + pd.Timedelta(90, "s")
         acts = step_exit(p, {"open": 10050, "high": 10160, "low": 10040, "close": 10150}, ts, self._m5(t0), cfg)
         self.assertEqual([a.reason for a in acts], ["TP1"])
         self.assertEqual(acts[0].qty, 50)
@@ -220,7 +220,7 @@ class TestExit(unittest.TestCase):
         cfg = V2Config()
         t0 = pd.Timestamp(f"{DAY} 10:00")
         p = V2Position("X", "PULLBACK", t0, 10000, 100, 9900, 100)
-        ts = t0 + pd.Timedelta(minutes=1, seconds=30)
+        ts = t0 + pd.Timedelta(90, "s")
         acts = step_exit(p, {"open": 10000, "high": 10300, "low": 9890, "close": 10200}, ts, self._m5(t0), cfg)
         self.assertEqual(acts[0].reason, "STOP_INITIAL")
 

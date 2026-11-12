@@ -34,6 +34,11 @@ Order [numbers = evaluation order since 2026-11-08, old number in brackets]
     번호는 재사용하지 않는다(로그/문서 호환).
 
 Update log (append only):
+- [2026-11-12] type=feat owner=claude
+    summary: TRADING_STRATEGY_MODE="edge" - EDGE_SELL_CONDITIONS(stale 보호, 추적 갱신, _e10 익절 / _e11 손절 / _e12 시간 상한).
+      모델 라벨 정의(+2.0% / -1.7% / 60분)로 전량 매도.
+    impact: live (edge 모드일 때만)
+    compatibility: backward-compatible (기본 normal 동작 불변)
 - [2026-11-08] type=refactor owner=claude
     summary: 사용자 요청(AutoBotH 평가 차트 번호 순차화, 매수 r005와 같은 작업) - 매도 조건 번호를 평가 순서대로 _001~_015로
       다시 매김(함수명/SellCondition.no 함께). 평가 순서와 로직은 무변경. 이전 -> 새 번호: _006->_005, _007->_006,
@@ -111,7 +116,14 @@ from typing import Any, Callable
 import pandas as pd
 
 from r001_define_config import (
+    AUTO_SELL_MODE,
+    AUTO_SELL_STOP_NET_PCT,
+    V2_COMMISSION_PCT,
+    V2_SELL_TAX_PCT,
     TRADING_STRATEGY_MODE,
+    EDGE_TP_PCT,
+    EDGE_SL_PCT,
+    EDGE_MAX_HOLD_MINUTES,
     BASIC_TP1_PCT,
     BASIC_TP1_RATIO,
     BASIC_TP2_PCT,
@@ -422,7 +434,7 @@ def _003_peak_next_bar_bearish_exit(ctx: SellContext) -> bool:
         and ctx.peak_pnl_pct >= ctx.atr_tp_pct
         and pos.get("peak_bar_time") is not None
         # [2026-10-15] 확정봉이 고점봉 '바로 다음 봉'일 때만 평가(프레임 지연으로 그 봉을 건너뛰었으면 평가하지 않음)
-        and bar_time == pos["peak_bar_time"] + pd.Timedelta(PEAK_BAR_INTERVAL)
+        and bar_time == pos["peak_bar_time"] + pd.Timedelta(pd.tseries.frequencies.to_offset(PEAK_BAR_INTERVAL).nanos, "ns")
         and pos.get("peak_next_bar_checked") != pos["peak_bar_time"]
     ):
         pos["peak_next_bar_checked"] = pos["peak_bar_time"]
@@ -1002,7 +1014,16 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
 
 def active_sell_conditions() -> tuple[SellCondition, ...]:
     """[2026-10-07] TRADING_STRATEGY_MODE에 따른 매도 조건 목록 ("basic"이면 기본 조건, 그 외 기존 normal)."""
-    return BASIC_SELL_CONDITIONS if str(TRADING_STRATEGY_MODE).lower() == "basic" else SELL_CONDITIONS
+    # [2026-11-12] AUTO_SELL_MODE 가 매매 방식보다 우선: "stop_only" = 순손익 손절만, "off" = 자동 매도 없음(사용자 수동 매도)
+    auto = auto_sell_mode()
+    if auto == "stop_only":
+        return STOP_ONLY_SELL_CONDITIONS
+    if auto == "off":
+        return MANUAL_SELL_CONDITIONS
+    mode = str(TRADING_STRATEGY_MODE).lower()
+    if mode == "edge":
+        return EDGE_SELL_CONDITIONS   # [2026-11-12] Edge AI 단독 실매매: 모델 라벨 정의로 매도
+    return BASIC_SELL_CONDITIONS if mode == "basic" else SELL_CONDITIONS
 
 
 def evaluate_sell_conditions(ctx: SellContext, conditions: tuple[SellCondition, ...] | None = None) -> SellDecision:
@@ -1148,4 +1169,93 @@ BASIC_SELL_CONDITIONS: tuple[SellCondition, ...] = (
     SellCondition(12, "_b12_basic_3min_dead_cross", "EXIT", "[basic] 3분봉 BB중심선 데드크로스 매도",
                   "확정 3분봉이 BB중심선 아래로 이탈(매수 이후 발생, 최근 N봉 이내)하면 잔량 매도",
                   ("BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS",), _b12_basic_3min_dead_cross),
+)
+
+
+# =============================================================================================
+# [2026-11-12] edge 모드 매도 조건 (r001 TRADING_STRATEGY_MODE="edge", 사용자 요청: Edge AI 메타 모델만으로 매매).
+# Edge AI 모델의 라벨 정의 그대로다: +EDGE_TP_PCT 익절 / -EDGE_SL_PCT 손절 / EDGE_MAX_HOLD_MINUTES 경과. 모두 잔량 전량.
+# 손익(pnl_pct)은 비용 제외 가격 기준(현재가/평균매입가-1). 당일 강제청산은 r003 이 그대로 처리한다.
+
+def _e10_edge_take_profit(ctx: SellContext) -> bool:
+    if ctx.pnl_pct < EDGE_TP_PCT - _BASIC_EPS:
+        return False
+    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_TP_{EDGE_TP_PCT*100:.1f}PCT")
+    return True
+
+
+def _e11_edge_stop_loss(ctx: SellContext) -> bool:
+    if ctx.pnl_pct > -EDGE_SL_PCT + _BASIC_EPS:
+        return False
+    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_SL_{EDGE_SL_PCT*100:.1f}PCT")
+    return True
+
+
+def _e12_edge_time_exit(ctx: SellContext) -> bool:
+    _, _token, held = _hold_info(ctx)
+    if held < float(EDGE_MAX_HOLD_MINUTES) * 60.0:
+        return False
+    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_TIME_{int(EDGE_MAX_HOLD_MINUTES)}MIN", f" held={held/60.0:.0f}min")
+    return True
+
+
+EDGE_SELL_CONDITIONS: tuple[SellCondition, ...] = (
+    _NORMAL_SELL_BY_NO[1],   # stale 현재가 보호
+    _NORMAL_SELL_BY_NO[2],   # 포지션 추적 갱신(최고가/고점 손익)
+    SellCondition(10, "_e10_edge_take_profit", "EXIT", "[edge] 익절",
+                  "손익 >= +EDGE_TP_PCT 이면 잔량 전량 매도 (모델 라벨 tp)", ("EDGE_TP_PCT",), _e10_edge_take_profit),
+    SellCondition(11, "_e11_edge_stop_loss", "EXIT", "[edge] 손절",
+                  "손익 <= -EDGE_SL_PCT 이면 잔량 전량 매도 (모델 라벨 sl, 확인 지연 없음)", ("EDGE_SL_PCT",), _e11_edge_stop_loss),
+    SellCondition(12, "_e12_edge_time_exit", "EXIT", "[edge] 보유 시간 상한",
+                  "매수 후 EDGE_MAX_HOLD_MINUTES 분이 지나면 잔량 전량 매도 (모델 라벨 horizon)",
+                  ("EDGE_MAX_HOLD_MINUTES",), _e12_edge_time_exit),
+)
+
+
+# =============================================================================================
+# [2026-11-12] AUTO_SELL_MODE (r001, 사용자 요청: 매수만 자동 / 매도는 수동 / 비용 포함 -2% 손절만 자동).
+# "stop_only": 포지션 추적(_002) + 순손익 손절 하나. "off": 포지션 추적만 - 봇은 어떤 매도 주문도 내지 않는다.
+# r003 의 예약 청산(run_scheduled_liquidations)도 "all" 이 아니면 건너뛴다.
+
+def auto_sell_mode() -> str:
+    mode = str(AUTO_SELL_MODE).strip().lower()
+    return mode if mode in ("all", "stop_only", "off") else "all"
+
+
+def net_pnl_pct(entry_price: float, price: float) -> float:
+    """순손익 비율(수수료 양쪽 + 매도 거래세 포함). 예: -0.02 = -2%."""
+    fee = float(V2_COMMISSION_PCT) / 100.0
+    tax = float(V2_SELL_TAX_PCT) / 100.0
+    if entry_price <= 0:
+        return 0.0
+    return price * (1.0 - fee - tax) / (entry_price * (1.0 + fee)) - 1.0
+
+
+def _s04_net_stop_loss(ctx: SellContext) -> bool:
+    net = net_pnl_pct(float(ctx.entry_price), float(ctx.price))
+    if net > -float(AUTO_SELL_STOP_NET_PCT) + _BASIC_EPS:
+        return False
+    code, pos, price = ctx.code, ctx.pos, ctx.price
+    reason = f"NET_STOP_LOSS_{float(AUTO_SELL_STOP_NET_PCT)*100:.1f}PCT"
+    ctx.log(
+        f"  [SELL TRIGGER] {ctx.symbol_label} | {reason} | price={price:,.0f} entry={ctx.entry_price:,.0f} "
+        f"pnl={ctx.pnl_pct*100:.2f}% net={net*100:.2f}%"
+    )
+    if ctx.api.place_sell_order(code, int(pos["quantity"]), ctx.current_dt, reason, ctx.nxt_tradeable, price=price, code_name=ctx.name, market_order=True):
+        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {reason} | qty={pos['quantity']} price={price:,.0f}")
+        _register_hard_stop(ctx, "NET_STOP")
+    ctx.state.signal_sell_bar[code] = ctx.bar_time
+    return True
+
+
+MANUAL_SELL_CONDITIONS: tuple[SellCondition, ...] = (
+    _NORMAL_SELL_BY_NO[1],   # stale 현재가 보호
+    _NORMAL_SELL_BY_NO[2],   # 포지션 추적 갱신(화면 표시용 최고가/손익) - 주문 없음
+)
+
+STOP_ONLY_SELL_CONDITIONS: tuple[SellCondition, ...] = MANUAL_SELL_CONDITIONS + (
+    SellCondition(4, "_s04_net_stop_loss", "EXIT", "[손절만] 비용 포함 순손익 손절",
+                  "수수료+거래세를 뺀 순손익 <= -AUTO_SELL_STOP_NET_PCT 이면 잔량 전량 시장가 매도 (확인 지연 없음). "
+                  "다른 매도는 모두 사용자가 직접 한다",
+                  ("AUTO_SELL_MODE", "AUTO_SELL_STOP_NET_PCT", "V2_COMMISSION_PCT", "V2_SELL_TAX_PCT"), _s04_net_stop_loss),
 )

@@ -1,6 +1,22 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-12] type=feat owner=claude
+#     summary: TRADING_STRATEGY_MODE 에 "edge" 추가(Edge AI 단독 실매매, 사용자 요청) + EDGE_TP_PCT / EDGE_SL_PCT /
+#       EDGE_MAX_HOLD_MINUTES. r005 EDGE_BUY_CONDITIONS / r006 EDGE_SELL_CONDITIONS 가 사용. 기본 normal.
+#     impact: live (edge 로 바꾸고 재시작했을 때만 실제 매매 방식이 바뀜)
+#     compatibility: backward-compatible (기본값 불변)
+# - [2026-11-12] type=feat owner=claude
+#     summary: EDGE_ONLY_MODE / EDGE_ONLY_MIN_PROB / EDGE_ONLY_MAX_POSITIONS / EDGE_ONLY_MAX_ENTRIES_PER_DAY 신설 -
+#       Edge AI 단독 매매 방식의 가상 매매(r022, 주문 없음). 기본 off.
+#     impact: live (paper 일 때 기록만)
+#     compatibility: backward-compatible
+# - [2026-11-11] type=feat owner=claude
+#     summary: 사용자 요청(매수/매도/손절 타이밍 산출, g026/g027 90거래일 1분봉 연구 + Codex 검토) - 호가단위 비용 게이트
+#       ENABLE_TICK_COST_GATE / TICK_COST_MAX_PCT(0.13) 추가(r005 _021 에서 판정). 손절폭/이익 잠금/트레일 값은 바꾸지 않았다
+#       (560개 청산 조합이 모두 비용 수준 손실, 조합 간 차이 0.05%p 이하 - analysis_20261111_timing_study.md).
+#     impact: live (r003 재시작 후 - 호가단위/현재가 > 0.13% 인 종목은 신규 매수 차단) + g003 parity
+#     compatibility: breaking (매수 빈도 감소. 롤백: ENABLE_TICK_COST_GATE=False 또는 r016 set ENABLE_TICK_COST_GATE=false)
 # - [2026-11-05] type=feat owner=claude
 #     summary: 원격 제어(AutoBotH)용 라이브 오버라이드 - risk profile 적용 직후 <runtime>/config/live_overrides.json
 #       (env AUTO_TRADING_LIVE_OVERRIDES=경로, "0"/"off"면 비활성)을 읽어 r001 상수를 덮어쓴다(_apply_live_overrides).
@@ -1359,7 +1375,19 @@ TICK_FEED_WARN_AFTER_SECONDS = 180.0
 #         고점이 +2% 이상 찍힌 뒤 손익이 +2% 아래로 내려와 BASIC_PEAK_PROTECT_CONFIRM_SECONDS 유지되면 잔량 전량 매도.
 #         확정 3분봉이 3분봉 BB중심선을 위->아래로 이탈(데드크로스, 매수 이후 발생분만)하면 잔량 전량 매도.
 #         하드손절(HARD_STOP_LOSS_PCT)과 당일 강제청산(15:20/NXT 19:59:58)은 안전장치로 유지.
-TRADING_STRATEGY_MODE = "normal"   # "normal" | "basic"
+# [2026-11-12] "edge" (사용자 요청): Edge AI 메타 모델만으로 실제 매수/매도.
+#   매수: 운영 안전 조건(_001~_008: 진입 시간대/워밍업/쿨다운/중복/미청산 노출/손절 재진입/일일 손실 한도/동시 보유 상한)
+#         + Edge AI 신호(_e09: 1분 하이브리드 트리거 + 모델 확률 >= EDGE_ONLY_MIN_PROB, 정규장만, 모델 없음/오류는 매수 안 함)
+#         + 매수 가능 수량/현재가 신선도/호가 잔량(_023~_025). 3분 컨텍스트·3중 크로스 등 normal 필터는 쓰지 않는다
+#         (ENTRY_TRIGGER_MODE="triple" 보다 우선).
+#   매도: +EDGE_TP_PCT 전량 익절 / -EDGE_SL_PCT 전량 손절 / EDGE_MAX_HOLD_MINUTES 경과 전량 매도 (모델 라벨 정의와 같음).
+#         당일 강제청산(15:20)은 그대로 유지.
+#   주의: 과거 검증(g029, 2026-08-14~11-11 58일)에서 모든 확률 기준이 거래당 -0.43 ~ -0.58% 였다.
+#   "edge" 일 때는 가상 매매(EDGE_ONLY_MODE="paper")를 돌리지 않는다(같은 방식의 중복).
+TRADING_STRATEGY_MODE = "normal"   # "normal" | "basic" | "edge"
+EDGE_TP_PCT = 0.020             # edge 모드 익절 (라벨 tp 2.0%)
+EDGE_SL_PCT = 0.017             # edge 모드 손절 (라벨 sl 1.7%)
+EDGE_MAX_HOLD_MINUTES = 60      # edge 모드 보유 시간 상한 (라벨 horizon 60분)
 BASIC_TP1_PCT = 0.015
 BASIC_TP1_RATIO = 0.40
 BASIC_TP2_PCT = 0.020
@@ -1833,6 +1861,44 @@ ENABLE_MAX_OPEN_POSITIONS_GATE = True  # [2026-11-04] 사용자 결정(기본 �
 MAX_OPEN_POSITIONS = 6
 ENABLE_SPREAD_GATE = True  # [2026-11-04] 사용자 결정(기본 안전장치 켜기, 434480 같은 3체결/분 종목). 롤백: False
 MAX_ENTRY_SPREAD_TICKS = 2
+# [2026-11-11] 호가단위 비용 게이트: 호가단위 / 현재가 x 100 > TICK_COST_MAX_PCT 이면 신규 매수 차단 (r005 _021, 스프레드보다 먼저 판정).
+#   근거(g026/g027, 2026-07-01~11-11 90거래일): 진입 신호의 비용 전 기대수익은 어느 조건에서도 0 근처이고, 거래당 순손익은
+#   호가단위 비율에만 일관되게 갈린다 - 패널 197만 건 net -0.40%(<=0.06%) ... -0.81%(>0.21%), 학습/검증 구간 동일, 실매매 195건도
+#   <=0.10% 는 비용 전 +0.02~+0.06%, 그 위는 -0.15~-0.44%. 왕복 체결 비용이 호가단위에 비례하기 때문(시장가 매수 = 매도1호가).
+#   0.13% 통과 가격대: 770~1,999 / 3,850~4,995 / 7,700~19,990 / 38,500~49,950 / 77,000~199,900 / 385,000~499,500 /
+#   770,000 이상 (호가단위가 커지는 경계 바로 위 가격대가 차단된다).
+#   수익을 만드는 조건이 아니라 손실을 줄이는 조건이다. 롤백: False.
+ENABLE_TICK_COST_GATE = True
+TICK_COST_MAX_PCT = 0.13
+
+# =============================================================================
+# [2026-11-12] 골든크로스 변동성 게이트 (사용자 요청: "골든크로스 후 +2~5% 변동이 확인되는 매수 조건을 현재 조건에 접목")
+# - 매수 조건 _012(최소 변동성)에서 1분봉 ATR%(ATR/종가 x 100, 최신 확정 1분봉)가 GC_VOLATILITY_MIN_ATR_1MIN_PCT 미만이면 차단.
+# - 근거(g028 스캔, 2026-07-01~11-11 90일 482종목, 1분 골든크로스 29.9만 건, 다음 봉 시가 매수 후 장 마감까지):
+#     전체 골든크로스   +2% 도달 23.4% / +3% 13.6% / +5% 5.4%  (최저점 중앙값 -1.25%)
+#     1분 ATR% >= 0.5   +2% 도달 50.3% / +3% 36.7% / +5% 19.3% (최저점 중앙값 -2.78%, -2% 이하로 내려간 비율 63.5%)
+#     1분 ATR% >= 0.7   +2% 도달 59.6% / +3% 46.7% / +5% 27.8% (최저점 중앙값 -3.67%)
+#   기간 앞/뒤 절반 모두 같은 수준. 방향을 맞추는 조건이 아니다 - 위아래 변동폭이 같이 커진다(현행 매도 기준 거래당 -0.59%로 동일).
+# - normal 모드에만 적용(_012 는 normal 조건 목록에만 있음). 롤백: False.
+# =============================================================================
+ENABLE_GC_VOLATILITY_GATE = True
+GC_VOLATILITY_MIN_ATR_1MIN_PCT = 0.5   # 퍼센트 단위 (0.5 = 0.5%)
+
+# =============================================================================
+# [2026-11-12] 자동 매도 범위 (사용자 요청: "매수만 자동, 매도는 수동. 비용 포함 -2% 손절만 자동. 자동 매도를 끄면 전부 수동")
+#   "all"        기존 그대로 - TRADING_STRATEGY_MODE 의 매도 조건 전부 + 예약 청산(15:20 / NXT 19:59)
+#   "stop_only"  손절 하나만 자동: 수수료+거래세를 뺀 순손익이 -AUTO_SELL_STOP_NET_PCT 이하이면 잔량 전량 시장가 매도.
+#                익절/트레일링/이익잠금/시간청산/반전매도/예약 청산(15:20, NXT 19:59)은 모두 하지 않는다 - 사용자가 HTS 등에서 직접 매도.
+#   "off"        자동 매도 없음 - 손절 포함 모든 매도를 사용자가 직접 한다.
+# - 순손익 = 현재가 x (1 - 수수료 - 거래세) / (평균매입가 x (1 + 수수료)) - 1  (V2_COMMISSION_PCT / V2_SELL_TAX_PCT).
+#   -2.0% 는 가격 기준 약 -1.77% 에 해당한다. 확인 지연 없이 첫 통과 폴링에서 시장가 매도(슬리피지로 실제 손실은 더 클 수 있다).
+# - 사용자가 직접 판 포지션은 계좌 동기화(ACCOUNT_SYNC_INTERVAL_SECONDS)에서 빠진다.
+# - 주의: "stop_only"/"off" 에서는 당일 청산을 하지 않으므로 포지션이 다음 날로 넘어간다. 다음 날 그 종목이 감시 목록(r004)에
+#   없으면 봇은 그 보유분을 건드리지 않는다(손절도 안 함).
+# - 모든 TRADING_STRATEGY_MODE(normal/basic/edge)에 우선한다. 변경: r016 set AUTO_SELL_MODE=... 후 r003 재시작.
+# =============================================================================
+AUTO_SELL_MODE = "stop_only"        # "all" | "stop_only" | "off"
+AUTO_SELL_STOP_NET_PCT = 0.02       # 비용 포함 순손익 손절 기준 (0.02 = -2.0%)
 
 
 # =============================================================================
@@ -1850,6 +1916,20 @@ MAX_ENTRY_SPREAD_TICKS = 2
 EDGE_AI_MODE = "gate"
 EDGE_AI_DIR = RUNTIME_ROOT / "edge_ai"
 EDGE_AI_MIN_PROB_OVERRIDE = 0.0  # >0이면 모델 메타의 임계값 대신 이 값 사용
+
+# =============================================================================
+# [2026-11-12] Edge AI 단독 매매 방식 (r022_edge_only.py) - 가상 매매(paper), 주문 없음
+# - 매수: 1분 하이브리드 트리거(모델 학습 대상 이벤트) + 모델 확률 >= EDGE_ONLY_MIN_PROB. 다른 규칙 게이트는 보지 않는다.
+# - 매도: 모델 라벨 정의(current_meta.json label: +2.0% / -1.7% / 60분 / 15:15).
+# - 기존 규칙 기반 매수/매도와 별개로 돌며 runtime/data/live_runtime/edge_only_YYYYMMDD.jsonl 과 로그에만 남긴다.
+# - 과거 데이터 검증: data_simulation/g029_edge_only_sim.py. 2026-08-14~11-11(58일, 학습에 쓰지 않은 구간) 결과는
+#   모든 확률 기준에서 거래당 -0.44 ~ -0.62% 였다(analysis_20261111_timing_study.md 9절). 그래서 실주문 경로는 만들지 않았다.
+# - 켜기: r016 set EDGE_ONLY_MODE=paper 후 r003 재시작. 롤백: off.
+# =============================================================================
+EDGE_ONLY_MODE = "off"              # "off" | "paper"
+EDGE_ONLY_MIN_PROB = 0.45           # 매수 확률 기준 (0 = 모델 메타의 threshold)
+EDGE_ONLY_MAX_POSITIONS = 3         # 동시 가상 보유 종목 수
+EDGE_ONLY_MAX_ENTRIES_PER_DAY = 10  # 하루 가상 매수 횟수 상한
 
 # =============================================================================
 # [2026-11-04] 주문/계좌 안전 점검 (Codex 2차 검토 #15~#18) + 시장 추세 게이트 - 사용자 승인

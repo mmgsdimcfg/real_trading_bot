@@ -917,6 +917,12 @@ from r001_define_config import (
     V2_COMMISSION_PCT,
     V2_SELL_TAX_PCT,
     V2_LIVE_MODE,
+    EDGE_ONLY_MODE,
+    AUTO_SELL_MODE,
+    EDGE_ONLY_MIN_PROB,
+    EDGE_ONLY_MAX_POSITIONS,
+    EDGE_ONLY_MAX_ENTRIES_PER_DAY,
+    EDGE_AI_DIR,
 )
 from r002_strategy_core_shared import (
     load_symbol_market_map,
@@ -2054,9 +2060,9 @@ def _normalize_intraday_frame(df: pd.DataFrame, target_date: str, nxt_tradeable:
     # "확정봉" 필터(index <= floor(now))를 통과해 데드크로스/골든크로스가 실시간 현재가로 판정됐고,
     # (2) 3분봉은 정규 경계(09:00/09:03..)보다 1분 밀린 구간(09:01~09:03분 봉)으로 묶이며 마지막 1분이
     # 형성 중이었다. 행 시각을 "종료" 시각(+1분)으로 옮겨 표준 경계의 확정봉만 남도록 한다.
-    out.index = out.index + pd.Timedelta(minutes=1)
+    out.index = out.index + pd.Timedelta(1, "min")
 
-    bar_minutes = max(1, int(pd.Timedelta(bar_interval).total_seconds() // 60))
+    bar_minutes = max(1, int(pd.Timedelta(pd.tseries.frequencies.to_offset(bar_interval).nanos, "ns").total_seconds() // 60))
     out = out.resample(bar_interval, label="right", closed="right").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "time": "count"}
     ).dropna(subset=["open", "high", "low", "close"])
@@ -2094,7 +2100,7 @@ def fetch_3min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
         if frame is not None and not frame.empty:
             # fetch 시점 기준으로 확정 완료된 3분봉까지만 사용 (거래소 API 반영 지연 감안,
             # CANDLE_CONFIRM_DELAY_SECONDS만큼 여유를 두고 확정 판정)
-            last_closed_bar = (pd.Timestamp(now) - pd.Timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("3min")
+            last_closed_bar = (pd.Timestamp(now) - pd.Timedelta(CANDLE_CONFIRM_DELAY_SECONDS, "s")).floor("3min")
             frame = frame[frame.index <= last_closed_bar]
             if frame.empty:
                 continue
@@ -2129,7 +2135,7 @@ def fetch_1min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
         if frame is not None and not frame.empty:
             # fetch 시점 기준으로 확정 완료된 1분봉까지만 사용 (거래소 API 반영 지연 감안,
             # CANDLE_CONFIRM_DELAY_SECONDS만큼 여유를 두고 확정 판정)
-            last_closed_bar = (pd.Timestamp(now) - pd.Timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("1min")
+            last_closed_bar = (pd.Timestamp(now) - pd.Timedelta(CANDLE_CONFIRM_DELAY_SECONDS, "s")).floor("1min")
             frame = frame[frame.index <= last_closed_bar]
             if frame.empty:
                 continue
@@ -2359,6 +2365,26 @@ def _make_v2_shadow_runner(date_str: str):
         return runner
     except Exception as exc:
         log(f"  [V2 SHADOW   ] init failed, shadow disabled: {exc}")
+        return None
+
+
+def _make_edge_only_runner(date_str: str):
+    """[2026-11-12] Edge-AI-only paper runner (r022) or None. Lazy import: EDGE_ONLY_MODE="off" adds nothing."""
+    if str(EDGE_ONLY_MODE).lower() != "paper":
+        return None
+    if str(TRADING_STRATEGY_MODE).lower() == "edge":
+        log("  [EDGE ONLY   ] paper mode skipped - TRADING_STRATEGY_MODE=edge trades the same policy with real orders")
+        return None
+    try:
+        from r022_edge_only import EdgeOnlyRunner
+        runner = EdgeOnlyRunner(EDGE_AI_DIR, DATA_DIR, LIVE_RUNTIME_DIR, date_str, log, SHARED_STRATEGY_CONFIG,
+                                min_prob=EDGE_ONLY_MIN_PROB, max_positions=EDGE_ONLY_MAX_POSITIONS,
+                                max_entries=EDGE_ONLY_MAX_ENTRIES_PER_DAY)
+        log(f"  [EDGE ONLY   ] paper mode enabled (no orders) | min_prob={EDGE_ONLY_MIN_PROB} "
+            f"max_positions={EDGE_ONLY_MAX_POSITIONS} max_entries={EDGE_ONLY_MAX_ENTRIES_PER_DAY} | out={runner.out_path}")
+        return runner
+    except Exception as exc:
+        log(f"  [EDGE ONLY   ] init failed, paper mode disabled: {exc}")
         return None
 
 
@@ -2757,7 +2783,7 @@ def _build_realtime_entry_frame(
 ) -> tuple[pd.DataFrame, float]:
     now_ts = pd.Timestamp(now)
     bar_start = now_ts.floor("3min")
-    bar_end = bar_start + pd.Timedelta(minutes=3)
+    bar_end = bar_start + pd.Timedelta(3, "min")
     elapsed_seconds = max(0.0, (now_ts - bar_start).total_seconds())
 
     if frame is None or frame.empty or pd.isna(live_price) or live_price <= 0:
@@ -5148,6 +5174,15 @@ def run_scheduled_liquidations(
         state["date"] = trade_date
         state["done_1520"] = False
         state["done_1959"] = False
+        state["auto_sell_skip_logged"] = False
+
+    # [2026-11-12] AUTO_SELL_MODE "stop_only"/"off": 예약 청산(15:20 / NXT 19:59)도 하지 않는다 - 매도는 사용자가 직접 한다.
+    if str(AUTO_SELL_MODE).strip().lower() in ("stop_only", "off"):
+        if not state.get("auto_sell_skip_logged") and current_time >= REGULAR_FORCE_EXIT:
+            state["auto_sell_skip_logged"] = True
+            held = [c for c, p in api.get_open_positions().items() if int(p.get("quantity", 0) or 0) > 0]
+            log(f"  [AUTO SELL   ] scheduled liquidation skipped | AUTO_SELL_MODE={AUTO_SELL_MODE} | open positions={len(held)} (manual sell)")
+        return
 
     if not state["done_1520"] and current_time >= REGULAR_FORCE_EXIT:
         state["done_1520"] = True
@@ -5237,6 +5272,8 @@ def _nxt_force_exit_pending(now: datetime, state: dict) -> bool:
     멈추고 바로 청산으로 가도록)."""
     if not ENABLE_NXT_SESSION or state.get("done_1959"):
         return False
+    if str(AUTO_SELL_MODE).strip().lower() in ("stop_only", "off"):
+        return False   # [2026-11-12] no scheduled liquidation in the manual-sell modes: nothing to wait for
     target = datetime.combine(now.date(), AFTERNOON_NXT_FORCE_EXIT)
     return now >= target - timedelta(seconds=AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS)
 
@@ -5654,6 +5691,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     if tick_feed is not None:
         buy_services.tick_trigger = tick_feed.evaluate
     v2_shadow = _make_v2_shadow_runner(date_str)
+    edge_only = _make_edge_only_runner(date_str)
     current_trade_date = now.date()
     loop_consecutive_errors = 0
     last_watchlist_mismatch_log_at: datetime | None = None
@@ -5704,6 +5742,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             tick_nofile_logged.clear()
             reentry_state = api.live_state.setdefault("reentry", {})  # 새 날짜 live_state 기준으로 재바인딩
             v2_shadow = _make_v2_shadow_runner(date_str)  # [2026-10-23] V2 shadow state is per day
+            edge_only = _make_edge_only_runner(date_str)  # [2026-11-12] Edge-AI-only paper state is per day
             risk.reset()
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()
@@ -5926,6 +5965,21 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         v2_shadow.on_symbol(code, name, current_dt, _v2_frame_1m, float(price))
                     except Exception as exc:
                         log(f"  [V2 SHADOW   ] {symbol_label} error: {exc}")
+
+                # [2026-11-12] Edge-AI-only paper trading (r022, no orders) - only when r001 EDGE_ONLY_MODE == "paper"
+                if (
+                    edge_only is not None
+                    and is_regular_session(current_dt)
+                    and price_source in ("live", "cached_live")
+                    and price is not None and price > 0
+                ):
+                    try:
+                        _eo_frame_1m = _get_or_refresh_1min_frame(
+                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
+                        )
+                        edge_only.on_symbol(code, name, current_dt, _eo_frame_1m, float(price))
+                    except Exception as exc:
+                        log(f"  [EDGE ONLY   ] {symbol_label} error: {exc}")
 
                 buy_frame = frame
                 if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:

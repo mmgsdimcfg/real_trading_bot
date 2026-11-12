@@ -23,14 +23,14 @@ from r008_strategy_v2 import V2Config  # noqa: E402
 from r010_v2_shadow import V2ShadowRunner  # noqa: E402
 
 
-def _ctx(realized=0.0, traded=(), exposure=(), bid=10000, ask=10010):
+def _ctx(realized=0.0, traded=(), exposure=(), bid=10000, ask=10010, price=10000.0):
     logs = []
     api = SimpleNamespace(live_state={"realized_pnl_krw": realized}, has_buy_exposure=lambda c: c in exposure)
     services = SimpleNamespace(get_order_spec=lambda now, nxt: {"exchange": "KRX"},
                                fetch_bid_ask=lambda code, mkt: (bid, ask))
-    return SimpleNamespace(api=api, services=services, log=logs.append, symbol_label="X", norm_code="000001",
+    return SimpleNamespace(api=api, services=services, log=logs.append, symbol_label="X", norm_code="000001", price=price,
                            current_dt=datetime(2026, 10, 23, 10), nxt_tradeable=False,
-                           state=SimpleNamespace(traded_today=set(traded))), logs
+                           code="000001", state=SimpleNamespace(traded_today=set(traded), buy_confirm_state={})), logs
 
 
 class TestPortfolioGates(unittest.TestCase):
@@ -40,7 +40,9 @@ class TestPortfolioGates(unittest.TestCase):
                       bid=10000, ask=11000)
         with mock.patch.object(r005, "ENABLE_DAILY_LOSS_LIMIT_GATE", False), \
                 mock.patch.object(r005, "ENABLE_MAX_OPEN_POSITIONS_GATE", False), \
-                mock.patch.object(r005, "ENABLE_SPREAD_GATE", False):
+                mock.patch.object(r005, "ENABLE_SPREAD_GATE", False), \
+                mock.patch.object(r005, "ENABLE_TICK_COST_GATE", False):
+            ctx.price = 2000.0      # tick 5 = 0.25%: passes only because the gate is off
             self.assertTrue(r005._007_daily_loss_limit(ctx))
             self.assertTrue(r005._008_max_open_positions(ctx))
             self.assertTrue(r005._021_entry_spread(ctx))
@@ -50,6 +52,8 @@ class TestPortfolioGates(unittest.TestCase):
         self.assertTrue(r001.ENABLE_DAILY_LOSS_LIMIT_GATE)
         self.assertTrue(r001.ENABLE_MAX_OPEN_POSITIONS_GATE)
         self.assertTrue(r001.ENABLE_SPREAD_GATE)
+        self.assertTrue(r001.ENABLE_TICK_COST_GATE)
+        self.assertEqual(r001.TICK_COST_MAX_PCT, 0.13)
         self.assertEqual(r001.EDGE_AI_MODE, "gate")
 
     def test_daily_loss_limit(self):
@@ -85,6 +89,78 @@ class TestPortfolioGates(unittest.TestCase):
             self.assertTrue(r005._021_entry_spread(_ctx(bid=10000, ask=10020)[0]))
             self.assertFalse(r005._021_entry_spread(_ctx(bid=10000, ask=10030)[0]))
             self.assertFalse(r005._021_entry_spread(_ctx(bid=None, ask=10030)[0]))
+
+    def test_tick_cost_pct_at_every_tick_boundary(self):
+        for price, tick in ((1999, 1), (2000, 5), (4995, 5), (5000, 10), (19990, 10), (20000, 50), (49950, 50),
+                            (50000, 100), (199900, 100), (200000, 500), (499500, 500), (500000, 1000)):
+            self.assertAlmostEqual(r005.tick_cost_pct(price), tick / price * 100.0, places=12, msg=str(price))
+        for bad in (0, -1, float("nan"), float("inf"), None, "x"):
+            self.assertIsNone(r005.tick_cost_pct(bad))
+
+    def test_tick_cost_gate(self):
+        with mock.patch.object(r005, "ENABLE_TICK_COST_GATE", True), mock.patch.object(r005, "TICK_COST_MAX_PCT", 0.13), \
+                mock.patch.object(r005, "ENABLE_SPREAD_GATE", False):
+            for price, ok in ((10000, True),        # tick 10 = 0.10%
+                              (7700, True),         # 0.1299%
+                              (7690, False),        # 0.1300..4% > 0.13
+                              (5000, False),        # tick 10 = 0.20%
+                              (4995, True),         # tick 5 = 0.1001%
+                              (3840, False),        # tick 5 = 0.1302%
+                              (20000, False),       # tick 50 = 0.25%
+                              (19990, True),        # tick 10 = 0.05%
+                              (50000, False),       # tick 100 = 0.20%
+                              (77000, True),        # tick 100 = 0.1299%
+                              ):
+                ctx, logs = _ctx(price=price)
+                self.assertEqual(r005._021_entry_spread(ctx), ok, msg=str(price))
+                if not ok:
+                    self.assertIn("TICK_COST_TOO_HIGH", logs[-1])
+            # exactly at the limit passes: tick 10 / 0.13% -> price 7692.3..., use a synthetic limit instead
+            with mock.patch.object(r005, "TICK_COST_MAX_PCT", 0.1):
+                self.assertTrue(r005._021_entry_spread(_ctx(price=10000)[0]))     # 0.1000% == limit
+                self.assertFalse(r005._021_entry_spread(_ctx(price=9990)[0]))
+
+    def test_tick_cost_gate_passes_a_missing_price_and_runs_before_the_quote_query(self):
+        calls = []
+
+        def quote(code, mkt):
+            calls.append(code)
+            return 10000, 10010
+        with mock.patch.object(r005, "ENABLE_TICK_COST_GATE", True), mock.patch.object(r005, "TICK_COST_MAX_PCT", 0.13), \
+                mock.patch.object(r005, "ENABLE_SPREAD_GATE", True), mock.patch.object(r005, "MAX_ENTRY_SPREAD_TICKS", 2):
+            for bad in (0.0, float("nan"), None):
+                ctx, _ = _ctx(price=bad)
+                ctx.services.fetch_bid_ask = quote
+                self.assertTrue(r005._021_entry_spread(ctx))            # fail-open, the spread check still runs
+            self.assertEqual(len(calls), 3)
+            ctx, _ = _ctx(price=20000)
+            ctx.services.fetch_bid_ask = quote
+            self.assertFalse(r005._021_entry_spread(ctx))
+            self.assertEqual(len(calls), 3)                             # blocked before the quote query
+
+    def test_tick_cost_rejection_clears_the_poll_confirmation(self):
+        # pass -> blocked poll -> pass must not count as two consecutive passes (_022)
+        with mock.patch.object(r005, "ENABLE_TICK_COST_GATE", True), mock.patch.object(r005, "TICK_COST_MAX_PCT", 0.13), \
+                mock.patch.object(r005, "ENABLE_SPREAD_GATE", False):
+            ctx, _ = _ctx(price=7700)
+            ctx.state.buy_confirm_state["000001"] = {"count": 1}
+            ctx.state.buy_confirm_state["000002"] = {"count": 1}
+            self.assertTrue(r005._021_entry_spread(ctx))
+            self.assertIn("000001", ctx.state.buy_confirm_state)        # a pass keeps it
+            ctx.price = 7690
+            self.assertFalse(r005._021_entry_spread(ctx))
+            self.assertNotIn("000001", ctx.state.buy_confirm_state)
+            self.assertIn("000002", ctx.state.buy_confirm_state)        # other symbols untouched
+
+    def test_tick_cost_constants_can_be_overridden_live(self):
+        import r001_define_config as r001
+        self.assertTrue(r001.live_override_key_allowed("ENABLE_TICK_COST_GATE", r001.ENABLE_TICK_COST_GATE))
+        self.assertTrue(r001.live_override_key_allowed("TICK_COST_MAX_PCT", r001.TICK_COST_MAX_PCT))
+
+    def test_tick_cost_defines_are_exported_with_the_condition(self):
+        cond = next(c for c in r005.BUY_CONDITIONS if c.func_name == "_021_entry_spread")
+        self.assertIn("ENABLE_TICK_COST_GATE", cond.related_defines)
+        self.assertIn("TICK_COST_MAX_PCT", cond.related_defines)
 
     def test_registration_order(self):
         names = [c.func_name for c in r005.BUY_CONDITIONS]

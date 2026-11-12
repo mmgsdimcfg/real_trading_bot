@@ -70,7 +70,7 @@ def load_minute_closes(data_dir: Path, date_str: str, code: str) -> pd.Series | 
     if df.empty:
         return None
     s = pd.Series(pd.to_numeric(df["close"], errors="coerce").to_numpy(),
-                  index=df["datetime"] + pd.Timedelta(minutes=1)).dropna()
+                  index=df["datetime"] + pd.Timedelta(1, "min")).dropna()
     return s[~s.index.duplicated(keep="last")].sort_index()
 
 
@@ -142,7 +142,7 @@ def main() -> None:
         price = float(r.get("price") or 0)
         row = r.to_dict()
         for h in args.horizons:
-            px = close_at(s, r["ts"] + pd.Timedelta(minutes=h)) if (s is not None and price > 0) else None
+            px = close_at(s, r["ts"] + pd.Timedelta(h, "min")) if (s is not None and price > 0) else None
             row[f"fwd{h}"] = None if px is None else (px / price - 1.0) * 100.0
         eod_ts = pd.Timestamp.combine(r["ts"].date(), EOD_TIME)
         px = close_at(s, eod_ts) if (s is not None and price > 0 and r["ts"] < eod_ts) else None

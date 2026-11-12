@@ -122,7 +122,7 @@ def causal_3min_slot_counts(raw_df: pd.DataFrame) -> pd.Series:
     버려진다. r003 _normalize_intraday_frame은 첫 부분봉만 버리므로, "3개가 다 찬" 판정은 raw_bar 도입 전과
     같은 슬롯 기준으로 유지하고(첫 부분봉/15:30 단일가 단독봉만 제외) 봉의 OHLCV만 원본 분봉으로 만든다."""
     slots = raw_df.index[(raw_df.index.second == 0)]
-    slots = slots[~session_gap_mask(slots)] + pd.Timedelta(minutes=1)
+    slots = slots[~session_gap_mask(slots)] + pd.Timedelta(1, "min")
     return pd.Series(1, index=slots).resample("3min", label="right", closed="right").sum()
 
 
@@ -159,7 +159,7 @@ def causal_minute_frames(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     m = m.copy()
     m["volume"] = m["volume"].fillna(0.0) * expansion
     m_end = m.copy()
-    m_end.index = m_end.index + pd.Timedelta(minutes=1)
+    m_end.index = m_end.index + pd.Timedelta(1, "min")
     return m, m_end
 
 
@@ -212,7 +212,7 @@ def load_prior_day_warmup(
         slots = causal_3min_slot_counts(raw).reindex(m3.index).fillna(0)
         m3 = m3[slots >= 3]
         # tail()로 잘린 첫 3분 구간은 1분봉 일부만 담긴 부분봉일 수 있다 - 1분봉 시작 이전 슬롯이 있으면 버린다.
-        if not m3.empty and m3.index[0] - pd.Timedelta(minutes=3) < m1.index[0] - pd.Timedelta(minutes=1):
+        if not m3.empty and m3.index[0] - pd.Timedelta(3, "min") < m1.index[0] - pd.Timedelta(1, "min"):
             m3 = m3.iloc[1:]
         return m1, (m3 if not m3.empty else None), f"prior_day={day} 1min={len(m1)} 3min={len(m3)}"
     return None, None, f"prior-day 10s file not found within {max_lookback_days}d"

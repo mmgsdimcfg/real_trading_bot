@@ -19,6 +19,17 @@ Overview
 - [2026-11-08] Renumbered `_001`..`_025` in evaluation order (numbers had drifted: added gates kept 25~31 and removed
   ones left gaps). Notes and update-log entries above this line use the numbers of their date - see the 2026-11-08 entry
   for the old -> new table.
+- [2026-11-12] type=feat owner=claude
+    summary: TRADING_STRATEGY_MODE="edge" - EDGE_BUY_CONDITIONS(_001~_008 + _e09_edge_ai_signal + _023~_025). _e09 는 1분
+      하이브리드 트리거 + Edge AI 확률 기준(EDGE_ONLY_MIN_PROB), fail-closed. active_buy_conditions 에서 triple 보다 우선.
+    impact: live (edge 모드일 때만)
+    compatibility: backward-compatible (기본 normal 동작 불변)
+- [2026-11-12] `_012` first checks the 1-minute ATR% (r001 ENABLE_GC_VOLATILITY_GATE, GC_VOLATILITY_MIN_ATR_1MIN_PCT): a golden
+  cross on a quiet symbol rarely moves +2% afterwards (g028 scan: 23% of all crosses, 50% at ATR% >= 0.5). Reject reason
+  GC_VOL_LOW_1MIN_ATR / GC_VOL_1MIN_ATR_UNAVAILABLE.
+- [2026-11-11] `_021` also blocks a symbol whose tick size is more than TICK_COST_MAX_PCT percent of the price (r001
+  ENABLE_TICK_COST_GATE, g026/g027 timing study: the round-trip cost is the only stable difference between entries).
+  It is checked before the quote query; a missing / non-finite price passes.
 - No broker imports: everything that talks to the broker / clock is injected through `BuyServices` and `ctx.api`, so the
   whole checklist can be unit-tested without authenticating.
 
@@ -162,6 +173,7 @@ Update log (append only):
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field, is_dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -196,6 +208,7 @@ from r001_define_config import (
     EDGE_AI_DIR,
     EDGE_AI_MIN_PROB_OVERRIDE,
     EDGE_AI_MODE,
+    EDGE_ONLY_MIN_PROB,
     RUNTIME_DATA_DIR,
     TICK_TRIGGER_MODE,
     TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID,
@@ -219,6 +232,10 @@ from r001_define_config import (
     QUOTE_STATUS_MAX_AGE_SECONDS,
     TRIPLE_CHASE_FROM_CROSS_MAX_PCT,
     REGULAR_START,
+    ENABLE_TICK_COST_GATE,
+    TICK_COST_MAX_PCT,
+    ENABLE_GC_VOLATILITY_GATE,
+    GC_VOLATILITY_MIN_ATR_1MIN_PCT,
 )
 from r008_strategy_v2 import krx_tick_size
 from r002_strategy_core_shared import (
@@ -502,7 +519,28 @@ def _008_max_open_positions(ctx: BuyContext) -> bool:
     return True
 
 
+def tick_cost_pct(price: float) -> float | None:
+    """KRX tick size as a percent of the price (None when the price is not a finite positive number)."""
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(p) and p > 0):
+        return None
+    return krx_tick_size(p) / p * 100.0
+
+
 def _021_entry_spread(ctx: BuyContext) -> bool:
+    # [2026-11-11] 호가단위 비용 게이트(r001 ENABLE_TICK_COST_GATE): 호가단위/현재가가 TICK_COST_MAX_PCT 를 넘으면 차단.
+    # 호가 조회(API) 전에 현재가만으로 판정한다. 현재가가 없거나 비정상이면 통과(fail-open - 신선도는 _024 가 본다).
+    if ENABLE_TICK_COST_GATE:
+        ratio = tick_cost_pct(ctx.price)
+        if ratio is not None and ratio > float(TICK_COST_MAX_PCT) + 1e-9:
+            # 연속 확인(_022)은 "모든 조건이 연속 통과"여야 하므로 차단된 폴링에서 확인 상태를 지운다(g003 과 동일, Codex 검토)
+            ctx.state.buy_confirm_state.pop(ctx.code, None)
+            ctx.log(f"  [REJECT      ] {ctx.symbol_label} | TICK_COST_TOO_HIGH {ratio:.3f}% > {float(TICK_COST_MAX_PCT):.3f}% "
+                    f"(tick={krx_tick_size(float(ctx.price))} price={float(ctx.price):,.0f})")
+            return False
     if not ENABLE_SPREAD_GATE or ctx.services.fetch_bid_ask is None:
         return True
     spec = ctx.services.get_order_spec(ctx.current_dt, ctx.nxt_tradeable)
@@ -905,7 +943,36 @@ def _011_context_frame_ready(ctx: BuyContext) -> bool:
     return True
 
 
+def atr_1min_pct(frame_1min: pd.DataFrame | None) -> float | None:
+    """ATR / close x 100 of the latest 1-minute bar; None when it cannot be computed."""
+    if frame_1min is None or len(frame_1min) < 2:
+        return None
+    try:
+        if "ATR" in frame_1min.columns:
+            last = frame_1min.iloc[-1]
+            atr, close = float(last["ATR"]), float(last["close"])
+        else:
+            from r002_strategy_core_shared import calculate_indicators
+            last = calculate_indicators(frame_1min.iloc[-300:]).iloc[-1]
+            atr, close = float(last["ATR"]), float(last["close"])
+    except Exception:
+        return None
+    if not (atr == atr and close == close) or close <= 0 or atr < 0:
+        return None
+    return atr / close * 100.0
+
+
 def _012_min_entry_atr_volatility(ctx: BuyContext) -> bool:
+    # [2026-11-12] 골든크로스 변동성 게이트(r001 ENABLE_GC_VOLATILITY_GATE): 1분봉 ATR% 가 기준 미만이면 차단.
+    # 값을 구할 수 없으면 매수하지 않는다(조용한 종목을 걸러내는 게 목적이라 모르면 통과시키지 않는다).
+    if ENABLE_GC_VOLATILITY_GATE:
+        ratio = atr_1min_pct(ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable))
+        if ratio is None:
+            _reject_hybrid(ctx, "GC_VOL_1MIN_ATR_UNAVAILABLE")
+            return False
+        if ratio < float(GC_VOLATILITY_MIN_ATR_1MIN_PCT) - 1e-9:
+            _reject_hybrid(ctx, f"GC_VOL_LOW_1MIN_ATR_{ratio:.3f}%_LT_{float(GC_VOLATILITY_MIN_ATR_1MIN_PCT):.3f}%")
+            return False
     return _context_gate(ctx, "min_entry_atr_volatility")
 
 
@@ -1204,6 +1271,76 @@ def _b09_basic_1min_golden_cross(ctx: BuyContext) -> bool:
     return True
 
 
+_EDGE_MODE_GATE = None
+
+
+def _edge_mode_gate(config):
+    """[2026-11-12] Edge AI gate of the "edge" strategy mode: always enforced, cut = EDGE_ONLY_MIN_PROB (0 = model threshold).
+    Its own instance - the normal-mode filter (_020, EDGE_AI_MODE) may be off or in shadow."""
+    global _EDGE_MODE_GATE
+    if _EDGE_MODE_GATE is None:
+        from r011_edge_ai import EdgeAIGate
+        _EDGE_MODE_GATE = EdgeAIGate("gate", EDGE_AI_DIR, RUNTIME_DATA_DIR, EDGE_AI_DIR / "live", config, EDGE_ONLY_MIN_PROB)
+    return _EDGE_MODE_GATE
+
+
+def _e09_edge_ai_signal(ctx: BuyContext) -> bool:
+    """[2026-11-12] "edge" 모드 매수 신호(사용자 요청: Edge AI 메타 모델만으로 매매). 모델이 학습한 이벤트와 같은 정의로 판단한다:
+    정규장 + 최신 확정 1분봉에서 1분 하이브리드 트리거(r011.hybrid_trigger_with_context, g013 과 동일) + 모델 확률 >= 기준.
+    모델 없음/이력 부족/예외는 매수하지 않는다(fail-closed - normal 의 _020 필터와 반대). 가상 매매 r022 와 같은 정의."""
+    ctx.trigger_flag = "-"
+    ctx.steps_text = "edge"
+
+    def reject(reason: str) -> bool:
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | EDGE_SIGNAL_{reason}")
+        return False
+
+    if ctx.services.classify_buy_session(ctx.current_dt) != "regular":
+        return reject("REGULAR_SESSION_ONLY")
+    frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+    if frame_1min is None or len(frame_1min) < 2:
+        return reject("1MIN_FRAME_UNAVAILABLE")
+    expected_label = pd.Timestamp(ctx.current_dt - timedelta(seconds=CANDLE_CONFIRM_DELAY_SECONDS)).floor("1min")
+    last_label = pd.Timestamp(frame_1min.index[-1])
+    if ENTRY_1MIN_FRAME_REQUIRE_LATEST and last_label != expected_label:
+        return reject(f"1MIN_FRAME_STALE_last={last_label:%H:%M}_expected={expected_label:%H:%M}")
+    try:
+        import r011_edge_ai as r011
+        raw = r011.session_raw_1min(frame_1min, ctx.current_dt.date())
+        if raw is None or len(raw) < r011.MIN_SESSION_BARS:
+            return reject("INSUFFICIENT_BARS")
+        m1 = r011.fast_indicators(raw)
+        last = m1.iloc[-1]
+        close_1m, mid_1m = float(last["close"]), float(last["BB_MIDDLE"])
+        if not close_1m > mid_1m:
+            return reject(f"NO_TRIGGER_BELOW_1MIN_MID | close={close_1m:,.0f} mid={mid_1m:,.1f}")
+        info: dict = {}
+        ok, trig_reason = r011.hybrid_trigger_with_context(m1.iloc[-200:], r011.completed_3min(m1), close_1m, info)
+        if not ok:
+            return reject(f"NO_TRIGGER | {trig_reason}")
+        if not ctx.price > mid_1m:
+            return reject(f"LIVE_BELOW_1MIN_MID | live={ctx.price:,.0f} mid={mid_1m:,.1f}")
+        if ctx.prev_close is None:
+            ctx.prev_close = ctx.services.fetch_prev_close(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+        if ctx.day_open is None or ctx.day_vwap is None:
+            ctx.day_open, ctx.day_vwap = ctx.services.fetch_day_ref_prices(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+        decision = _edge_mode_gate(ctx.config).evaluate(
+            ctx.code, ctx.current_dt, float(ctx.price), frame_1min, ctx.prev_close, ctx.day_open, ctx.day_vwap,
+            trigger_info=info,
+        )
+    except Exception as exc:
+        return reject(f"ERROR_{type(exc).__name__}: {exc}")
+    if decision.prob is None or decision.threshold is None:
+        return reject(f"NO_PROB_{decision.reason}")
+    if decision.prob < decision.threshold:
+        return reject(f"LOW_PROB_p={decision.prob:.3f}_LT_{decision.threshold:.3f} | {trig_reason}")
+    ctx.trigger_flag = "P"
+    ctx.trigger_reason = "EDGE_AI_SIGNAL"
+    ctx.trigger_info = info
+    ctx.buy_reason = f"EDGE_AI_SIGNAL_p={decision.prob:.3f}_thr={decision.threshold:.3f}_{trig_reason}_bar={last_label:%H:%M}"
+    return True
+
+
 _GATES_BY_NAME = {gate.name: gate for gate in DECISION_CONTEXT_GATES}
 
 # [2026-10-23] Portfolio guards - tuple position (not number) decides evaluation order.
@@ -1217,9 +1354,11 @@ _COND_020 = BuyCondition(20, "_020_edge_ai_meta_filter", "PRE_ORDER", "Edge AI �
                          "r011 LightGBM이 예측한 P(비용 차감 순수익>0) < 임계값이면 차단(EDGE_AI_MODE auto=승격 모델만/gate). "
                          "shadow는 기록만. 모델 없음/오류는 통과",
                          ("EDGE_AI_MODE", "EDGE_AI_DIR", "EDGE_AI_MIN_PROB_OVERRIDE"), _020_edge_ai_meta_filter)
-_COND_021 = BuyCondition(21, "_021_entry_spread", "PRE_ORDER", "호가 스프레드",
+_COND_021 = BuyCondition(21, "_021_entry_spread", "PRE_ORDER", "호가 비용(호가단위 비율/스프레드)",
+                         "호가단위/현재가 x 100 > TICK_COST_MAX_PCT면 차단(현재가만으로 판정). 그다음 "
                          "(매도1호가-매수1호가)/호가단위 > MAX_ENTRY_SPREAD_TICKS면 차단, 호가 없음도 차단 (API: 호가 조회)",
-                         ("ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"), _021_entry_spread)
+                         ("ENABLE_TICK_COST_GATE", "TICK_COST_MAX_PCT", "ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"),
+                         _021_entry_spread)
 _COND_010 = BuyCondition(10, "_010_market_regime", "CONTEXT", "시장 추세(지수 ETF)",
                          "종목 시장(KOSPI/KOSDAQ)의 지수 ETF 1분봉 MA5 > MA20이 아니면 차단. ETF 데이터 없으면 MARKET_REGIME_FAIL_OPEN",
                          ("ENABLE_MARKET_REGIME_GATE", "MARKET_REGIME_ETF", "MARKET_REGIME_MA_FAST", "MARKET_REGIME_MA_SLOW",
@@ -1265,7 +1404,10 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     BuyCondition(11, "_011_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _011_context_frame_ready),
     BuyCondition(12, "_012_min_entry_atr_volatility", "CONTEXT", "최소 변동성(ATR%)",
-                 "ATR% >= STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO", ("ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO"), _012_min_entry_atr_volatility),
+                 "1분봉 ATR% >= GC_VOLATILITY_MIN_ATR_1MIN_PCT (골든크로스 후 +2~5% 변동이 나오는 종목만) "
+                 "+ 3분봉 ATR% >= STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO",
+                 ("ENABLE_GC_VOLATILITY_GATE", "GC_VOLATILITY_MIN_ATR_1MIN_PCT", "ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO"),
+                 _012_min_entry_atr_volatility),
     BuyCondition(13, "_013_min_liquidity_safety", "CONTEXT", "최소 유동성",
                  "거래량/거래량MA/비율/거래대금 최소치", ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW"), _013_min_liquidity_safety),
     BuyCondition(14, "_014_context_score_record", "CONTEXT", "가점 합계 기록",
@@ -1318,6 +1460,9 @@ if _registered_gate_names != set(DECISION_CONTEXT_GATE_NAMES):
 
 def active_buy_conditions() -> tuple[BuyCondition, ...]:
     """[2026-10-07] TRADING_STRATEGY_MODE에 따른 매수 조건 목록 ("basic"이면 기본 조건, 그 외 기존 normal)."""
+    # [2026-11-12] "edge"(Edge AI 단독 실매매)는 triple 보다 우선 - 모델 신호 하나로만 매수한다
+    if str(TRADING_STRATEGY_MODE).lower() == "edge":
+        return EDGE_BUY_CONDITIONS
     # [2026-10-30] ENTRY_TRIGGER_MODE="triple"이면 basic보다 우선(basic 트리거는 3중 크로스를 강제하지 않음 - Codex 검토)
     if str(ENTRY_TRIGGER_MODE).lower() == "triple":
         return BUY_CONDITIONS
@@ -1345,8 +1490,8 @@ def evaluate_entry_time_shadow(ctx: BuyContext, kind: str) -> bool:
     사본으로 평가하고 로그는 끄므로 실제 매수 판정과 13:00 이후 동작에는 영향이 없다. 모두 통과하면 당일
     시가/VWAP 과열 지표(_016 기준)를 붙여 kind로 기록하고 True를 돌려준다. 연속 확인(_022)은 평가하지 않으므로
     '주문 직전 단계 도달' 기준이다."""
-    if str(TRADING_STRATEGY_MODE).lower() == "basic":
-        return False  # [2026-10-07] 점심/진입창 관찰은 normal 조건 기준이라 basic 모드에서는 기록하지 않는다
+    if str(TRADING_STRATEGY_MODE).lower() in ("basic", "edge"):
+        return False  # [2026-10-07] 점심/진입창 관찰은 normal 조건 기준이라 basic / edge 모드에서는 기록하지 않는다
     shadow_state = BuyState(
         buy_confirm_state=copy.deepcopy(ctx.state.buy_confirm_state),
         buy_trigger_age_state=copy.deepcopy(ctx.state.buy_trigger_age_state),
@@ -1385,5 +1530,16 @@ BASIC_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
     + [BuyCondition(9, "_b09_basic_1min_golden_cross", "TRIGGER", "[basic] 1분봉 BB중심선 골든크로스",
                     "최신 확정 1분봉이 BB중심선을 아래->위로 돌파 + 현재가 중심선 위 (1분봉 캐시 최신 필수)",
                     ("TRADING_STRATEGY_MODE", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _b09_basic_1min_golden_cross)]
+    + [_NORMAL_BY_NO[n] for n in (23, 24, 25)]
+)
+
+# [2026-11-12] edge 모드 매수 조건(사용자 요청: Edge AI 메타 모델만으로 매매) - basic 과 같은 구성 방식:
+# 운영 안전 조건(_001~_008, _023~_025)은 normal 함수를 그대로 쓰고, 전략 필터는 Edge AI 신호 하나로 대체한다.
+EDGE_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
+    [_NORMAL_BY_NO[n] for n in range(1, 9)]
+    + [BuyCondition(9, "_e09_edge_ai_signal", "TRIGGER", "[edge] Edge AI 신호",
+                    "정규장 + 최신 확정 1분봉의 1분 하이브리드 트리거 + Edge AI 모델 확률 >= EDGE_ONLY_MIN_PROB "
+                    "(0이면 모델 임계값). 모델 없음/이력 부족/오류는 매수 안 함",
+                    ("TRADING_STRATEGY_MODE", "EDGE_ONLY_MIN_PROB", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _e09_edge_ai_signal)]
     + [_NORMAL_BY_NO[n] for n in (23, 24, 25)]
 )
