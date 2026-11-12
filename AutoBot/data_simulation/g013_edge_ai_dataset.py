@@ -31,6 +31,12 @@ Run:
   ~/venv/bin/python data_simulation/g013_edge_ai_dataset.py --dates 20261022 --rebuild
 
 Update log:
+- [2026-11-12] type=feat owner=claude
+    summary: 라벨에 "손절 전 상승폭" 열 추가(run_mfe_pct / run_stopped / run_tp_bars / y_tp). 사용자 요청: 매수 후 +2~5% 상승이
+      실제로 나온 진입을 학습. 시간 제한/익절 없이 진입 후 FORCE_EXIT 까지 보되 -sl 손절에 먼저 닿으면 거기서 끝난다
+      (손절 봉의 고가는 세지 않음 - 보수적). y_tp = run_mfe_pct >= tp. 기존 열(y, net_ret 등)은 그대로.
+    impact: sim (g014 --target y_tp)
+    compatibility: backward-compatible (열 추가. 옛 데이터셋에는 없으므로 y_tp 학습은 새 태그로 다시 만든 뒤)
 - [2026-11-10] type=fix owner=claude
     summary: g001 완료 표식이 유효한 날(reason=ok)은 30분 무수정 대기 없이 확정 - postclose가 g001 직후 g013을 돌리면
       방금 수집한 날이 조용히 빠지던 문제. 30분 규칙에 걸린 날도 skip 사유를 출력.
@@ -246,9 +252,30 @@ def triple_barrier(o, h, l, c, times, i: int, args) -> dict | None:
     net = (exit_px - entry - cost) / entry
     out = {"entry_px": entry, "exit_px": exit_px, "exit_reason": reason, "hold_bars": j_exit - i,
            "net_ret": net * 100.0, "y": int(net > 0), "mfe_pct": mfe * 100.0, "mae_pct": mae * 100.0}
+    out.update(run_up(o, h, l, times, i, entry, sl, args.tp))
     for k in (10, 30, 60):
         out[f"fwd_{k}"] = (c[min(n - 1, i + k)] / entry - 1) * 100.0
     return out
+
+
+def run_up(o, h, l, times, i: int, entry: float, sl: float, tp_pct: float) -> dict:
+    """[2026-11-12] Rise after the entry with only the stop in force (no take profit, no time limit): the highest high
+    from bar i+1 until the stop is touched or FORCE_EXIT. The bar that touches the stop does not count (conservative:
+    the order inside a bar is unknown). run_tp_bars = bars until +tp_pct was first reached (-1 = never)."""
+    n = len(h)
+    best, stopped, tp_bars = 0.0, 0, -1
+    target = entry * (1 + tp_pct / 100.0)
+    for j in range(i + 1, n):
+        bar_open = entry if j == i + 1 else o[j]
+        if bar_open <= sl or l[j] <= sl:
+            stopped = 1
+            break
+        best = max(best, h[j] / entry - 1)
+        if tp_bars < 0 and h[j] >= target:
+            tp_bars = j - i
+        if times[j] >= FORCE_EXIT:
+            break
+    return {"run_mfe_pct": best * 100.0, "run_stopped": stopped, "run_tp_bars": tp_bars, "y_tp": int(tp_bars >= 0)}
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +466,8 @@ def build_day(task) -> tuple[str, int, float]:
         except Exception as exc:  # one bad file must not kill the day
             print(f"[WARN] {trade_date} {code}: {exc}", flush=True)
     cols = ["date", "code", "ts", "price", "trigger", *FEATURE_NAMES, "entry_px", "exit_px", "exit_reason",
-            "hold_bars", "net_ret", "y", "mfe_pct", "mae_pct", "fwd_10", "fwd_30", "fwd_60"]
+            "hold_bars", "net_ret", "y", "mfe_pct", "mae_pct", "fwd_10", "fwd_30", "fwd_60",
+            "run_mfe_pct", "run_stopped", "run_tp_bars", "y_tp"]
     df = pd.DataFrame(rows, columns=cols)
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(".tmp.gz")
@@ -531,8 +559,11 @@ def main() -> None:
     p.add_argument("--rebuild", action="store_true", help="rebuild days that already have a file")
     p.add_argument("--workers", type=int, default=3)
     p.add_argument("--tp", type=float, default=2.0, help="take-profit barrier %%")
-    p.add_argument("--sl", type=float, default=1.7, help="stop-loss barrier %% (r001 HARD_STOP_LOSS_PCT)")
-    p.add_argument("--horizon", type=int, default=60, help="time barrier in 1m bars")
+    # [2026-11-12] defaults follow the manual-sell regime (r001 AUTO_SELL_MODE="stop_only"): the only automatic exit is the
+    # stop at -2% net (about -1.77% in price) and nothing is sold by time, so the label watches until FORCE_EXIT (15:15).
+    # Old label: --sl 1.7 --horizon 60.
+    p.add_argument("--sl", type=float, default=1.77, help="stop-loss barrier %% (-2%% net of costs = AUTO_SELL_STOP_NET_PCT)")
+    p.add_argument("--horizon", type=int, default=400, help="time barrier in 1m bars (400 = to the 15:15 force exit)")
     p.add_argument("--slip-ticks", type=int, default=1)
     p.add_argument("--min-gap", type=int, default=5, help="min bars between events of one code")
     p.add_argument("--min-turnover", type=float, default=3e9, help="20d avg turnover KRW")

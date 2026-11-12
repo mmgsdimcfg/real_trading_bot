@@ -1927,7 +1927,9 @@ EDGE_AI_MIN_PROB_OVERRIDE = 0.0  # >0이면 모델 메타의 임계값 대신 �
 # - 켜기: r016 set EDGE_ONLY_MODE=paper 후 r003 재시작. 롤백: off.
 # =============================================================================
 EDGE_ONLY_MODE = "off"              # "off" | "paper"
-EDGE_ONLY_MIN_PROB = 0.45           # 매수 확률 기준 (0 = 모델 메타의 threshold)
+# [2026-11-12] 0.45 -> 0.0: 모델 라벨이 "손절 전에 +2% 도달"(g013 y_tp, 기준 달성률 약 21%)로 바뀌어 확률의 뜻이 달라졌다.
+# 고정값 대신 모델과 함께 배포되는 기준(메타 threshold = 검증 구간 상위 약 20%)을 쓴다. 0보다 크면 그 값으로 덮어쓴다.
+EDGE_ONLY_MIN_PROB = 0.0            # 매수 확률 기준 (0 = 모델 메타의 threshold)
 EDGE_ONLY_MAX_POSITIONS = 3         # 동시 가상 보유 종목 수
 EDGE_ONLY_MAX_ENTRIES_PER_DAY = 10  # 하루 가상 매수 횟수 상한
 

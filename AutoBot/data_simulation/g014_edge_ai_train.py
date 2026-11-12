@@ -24,6 +24,14 @@ current_meta.json whose "model_file" points at it. The meta file alone selects t
 publish interrupted at any point) never pairs a new booster with an old threshold/promoted flag.
 
 Update log:
+- [2026-11-12] type=feat owner=claude
+    summary: (1) --target: 학습 대상 열 선택. 기본값을 y_tp(g013: 손절 전에 +tp% 도달)로 변경 - 사용자 요청 "매수 후 +2~5%
+      상승이 실제로 나온 진입을 학습". "y" 는 옛 정의(순손익 > 0). (2) 승격 조건에 절대 기대값 추가(Codex/Gemini 검토):
+      선택된 진입의 평균 순손익을 거래일 단위 부트스트랩한 95% 하한이 0 보다 커야 promoted (--no-require-positive 로 끔).
+      승격 범위는 target 이 y 가 아니면 전체 이벤트(edge 모드는 3분 컨텍스트를 요구하지 않음). (3) 보고서에 손절 전 상승폭
+      (+2/+3/+5% 도달률, 손절률) 표 추가, meta.label 에 target 기록.
+    impact: sim / live 모델(current_*). 임계값 선택은 그대로 내부 검증 구간의 평균 순손익(+tp / -sl / 장 마감 기준) 최대화.
+    compatibility: y_tp 열이 없는 옛 데이터셋은 --target y 로만 학습 가능(오류로 안내)
 - [2026-10-26] type=feat owner=claude
     summary: 신규 - Edge AI(LightGBM) walk-forward 학습/임계값 선정/승격/모델 배포.
     impact: sim (live는 r011이 current_* 파일을 읽을 때만 반영)
@@ -97,8 +105,34 @@ def trade_stats(net: np.ndarray) -> dict:
             "sum_net": float(net.sum()), "pf": float(gains / losses) if losses > 0 else float("inf")}
 
 
+def target_of(args) -> str:
+    return str(getattr(args, "target", "y") or "y")
+
+
+def run_stats(sub: pd.DataFrame) -> dict | None:
+    """Rise before the stop (g013 run_up columns); None for a dataset without them."""
+    if "run_mfe_pct" not in sub.columns or len(sub) == 0:
+        return None
+    r = sub["run_mfe_pct"].to_numpy(float)
+    return {"n": int(len(sub)), "tp2": float((r >= 2).mean()), "tp3": float((r >= 3).mean()), "tp5": float((r >= 5).mean()),
+            "stopped": float(sub["run_stopped"].mean()), "median_run": float(np.median(r))}
+
+
+def day_bootstrap_lcb(sub: pd.DataFrame, n_boot: int = 1000, seed: int = 0) -> float:
+    """2.5% bound of the mean net return when whole trading days are resampled (trades of one day move together)."""
+    groups = [g.to_numpy(float) for _, g in sub.groupby("date")["net_ret"]]
+    if len(groups) < 5:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    sums = np.array([g.sum() for g in groups])
+    cnts = np.array([len(g) for g in groups])
+    idx = rng.integers(0, len(groups), size=(n_boot, len(groups)))
+    return float(np.percentile(sums[idx].sum(axis=1) / cnts[idx].sum(axis=1), 2.5))
+
+
 def choose_threshold(p: np.ndarray, net: np.ndarray, min_keep: float, min_n: int) -> float:
-    """Probability cut maximising mean net return/trade on the inner validation set (0.0 = keep all)."""
+    """Probability cut maximising the mean of `net` on the inner validation set (0.0 = keep all).
+    `net` = net return per trade (target y) or the 0/1 target itself (precision, other targets)."""
     best_t, best_mean = 0.0, float(np.mean(net)) if len(net) else 0.0
     for q in np.arange(0.05, 1.0 - min_keep + 1e-9, 0.05):
         t = float(np.quantile(p, q))
@@ -133,15 +167,19 @@ def fit_with_inner_val(df: pd.DataFrame, args, num_threads: int):
     tr = df[df["date"].isin(dates[:-n_val])]
     va = df[df["date"].isin(dates[-n_val:])]
     params = {**LGB_PARAMS, "num_threads": num_threads}
-    dtr = lgb.Dataset(tr[list(FEATURE_NAMES)].to_numpy(np.float32), tr["y"].to_numpy(),
+    target = target_of(args)
+    dtr = lgb.Dataset(tr[list(FEATURE_NAMES)].to_numpy(np.float32), tr[target].to_numpy(),
                       weight=recency_weights(tr["date"], args.halflife), free_raw_data=True)
-    dva = lgb.Dataset(va[list(FEATURE_NAMES)].to_numpy(np.float32), va["y"].to_numpy(), reference=dtr)
+    dva = lgb.Dataset(va[list(FEATURE_NAMES)].to_numpy(np.float32), va[target].to_numpy(), reference=dtr)
     booster = lgb.train(params, dtr, num_boost_round=args.max_rounds, valid_sets=[dva],
                         callbacks=[lgb.early_stopping(args.early_stop, verbose=False)])
     best_iter = max(20, int(booster.best_iteration or args.max_rounds))
     p_va = booster.predict(va[list(FEATURE_NAMES)].to_numpy(np.float32), num_iteration=best_iter)
-    threshold = choose_threshold(p_va, va["net_ret"].to_numpy(), args.min_keep, args.min_kept)
-    dall = lgb.Dataset(df[list(FEATURE_NAMES)].to_numpy(np.float32), df["y"].to_numpy(),
+    # [2026-11-12] y_tp 등 새 대상은 "대상 달성률(정밀도)"이 가장 높은 기준을 고른다(최소 유지 비율 안에서). 옛 대상 y 는
+    # 기존대로 평균 순손익 기준. 검증 결과 순손익은 확률 순위와 무관하게 평평해서(방향 정보 없음) 순손익으로 고르면 잡음이 된다.
+    score = va["net_ret"].to_numpy() if target == "y" else va[target].to_numpy(float)
+    threshold = choose_threshold(p_va, score, args.min_keep, args.min_kept)
+    dall = lgb.Dataset(df[list(FEATURE_NAMES)].to_numpy(np.float32), df[target].to_numpy(),
                        weight=recency_weights(df["date"], args.halflife))
     final = lgb.train(params, dall, num_boost_round=best_iter)
     return final, best_iter, threshold
@@ -166,10 +204,11 @@ def walk_forward(df: pd.DataFrame, args) -> tuple[pd.DataFrame, list[dict]]:
         test["keep"] = test["p"] >= threshold
         preds.append(test)
         fold = {"train": f"{train_dates[0]}~{train_dates[-1]}", "test": f"{test_dates[0]}~{test_dates[-1]}",
-                "best_iter": best_iter, "threshold": threshold, "auc": auc(test["y"], test["p"])}
+                "best_iter": best_iter, "threshold": threshold, "auc": auc(test[target_of(args)], test["p"])}
         for name, sub in (("all", test), ("ctx", test[test["m3_ctx_pass"] == 1])):
             fold[f"{name}_base"] = trade_stats(sub["net_ret"])
             fold[f"{name}_kept"] = trade_stats(sub.loc[sub["keep"], "net_ret"])
+        fold["run_base"], fold["run_kept"] = run_stats(test), run_stats(test[test["keep"]])
         folds.append(fold)
         print(f"  fold test {fold['test']}: auc={fold['auc']:.3f} thr={threshold:.3f} "
               f"all {fold['all_base']['mean_net']:+.3f}%->{fold['all_kept']['mean_net']:+.3f}% "
@@ -179,8 +218,10 @@ def walk_forward(df: pd.DataFrame, args) -> tuple[pd.DataFrame, list[dict]]:
 
 
 def promotion(oos: pd.DataFrame, folds: list[dict], args) -> dict:
+    target = target_of(args)
     ctx = oos[oos["m3_ctx_pass"] == 1]
-    scope = "ctx" if len(ctx) >= args.min_ctx_events else "all"
+    # the old target is the normal-mode filter (3-min context events); every other target serves the edge mode (all events)
+    scope = "ctx" if target == "y" and len(ctx) >= args.min_ctx_events else "all"
     sub = ctx if scope == "ctx" else oos
     base = trade_stats(sub["net_ret"])
     kept = trade_stats(sub.loc[sub["keep"], "net_ret"])
@@ -192,19 +233,24 @@ def promotion(oos: pd.DataFrame, folds: list[dict], args) -> dict:
         "uplift_win_rate": (kept["win_rate"] - base["win_rate"]) if kept["n"] else float("nan"),
         "kept_n": kept["n"],
         "fold_improved_ratio": fold_ratio,
+        "kept_mean_net_lcb95": day_bootstrap_lcb(sub[sub["keep"]]) if kept["n"] else float("nan"),
     }
     ok = (kept["n"] >= args.min_kept
           and checks["uplift_mean_net"] >= args.min_uplift
           and checks["uplift_win_rate"] > 0
           and fold_ratio >= args.min_fold_ratio)
-    return {"promoted": bool(ok), "scope": scope, "base": base, "kept": kept, "checks": checks,
-            "auc_oos": auc(oos["y"], oos["p"]), "n_folds": len(folds)}
+    if getattr(args, "require_positive", False):
+        # absolute expectancy: better-than-base is not enough, the kept entries themselves must make money
+        ok = ok and bool(checks["kept_mean_net_lcb95"] > 0)
+    return {"promoted": bool(ok), "scope": scope, "target": target, "base": base, "kept": kept, "checks": checks,
+            "run_base": run_stats(sub), "run_kept": run_stats(sub[sub["keep"]]),
+            "auc_oos": auc(oos[target], oos["p"]), "n_folds": len(folds)}
 
 
-def reliability(oos: pd.DataFrame, bins: int = 10) -> list[dict]:
+def reliability(oos: pd.DataFrame, bins: int = 10, target: str = "y") -> list[dict]:
     q = pd.qcut(oos["p"], bins, duplicates="drop")
     g = oos.groupby(q, observed=True)
-    return [{"p_range": str(k), "n": int(len(v)), "p_mean": float(v["p"].mean()), "win_rate": float(v["y"].mean()),
+    return [{"p_range": str(k), "n": int(len(v)), "p_mean": float(v["p"].mean()), "win_rate": float(v[target].mean()),
              "mean_net": float(v["net_ret"].mean())} for k, v in g]
 
 
@@ -271,6 +317,13 @@ def write_report(path: Path, meta: dict, folds: list[dict], rel: list[dict]) -> 
     for name in ("base", "kept"):
         s = pm[name]
         lines.append(f"| {pm['scope']} {name} | {s['n']} | {s['win_rate']:.3f} | {s['mean_net']:+.4f} | {s['pf']:.3f} |")
+    if pm.get("run_base") and pm.get("run_kept"):
+        lines += ["", "Rise before the stop (no take profit, to the close):", "",
+                  "| scope | n | +2% | +3% | +5% | stopped | median rise % |", "|---|---|---|---|---|---|---|"]
+        for name in ("run_base", "run_kept"):
+            s = pm[name]
+            lines.append(f"| {pm['scope']} {name[4:]} | {s['n']} | {s['tp2']:.3f} | {s['tp3']:.3f} | {s['tp5']:.3f} | "
+                         f"{s['stopped']:.3f} | {s['median_run']:+.2f} |")
     lines += ["", "## Folds", "", "| test | AUC | thr | all base -> kept (mean net %) | ctx base -> kept |", "|---|---|---|---|---|"]
     for f in folds:
         lines.append(
@@ -315,6 +368,10 @@ def main() -> None:
     p.add_argument("--min-fold-ratio", type=float, default=0.6)
     p.add_argument("--threads", type=int, default=3)
     p.add_argument("--no-publish", action="store_true", help="evaluate only, keep current model")
+    p.add_argument("--target", default="y_tp",
+                   help="label column: y_tp = +tp%% reached before the stop (g013 run_up), y = net return > 0 (old)")
+    p.add_argument("--no-require-positive", dest="require_positive", action="store_false",
+                   help="promote on uplift alone (default: the kept entries' mean net must be > 0 at the 95%% day-bootstrap bound)")
     args = p.parse_args()
 
     root = EDGE_AI_DIR / "dataset"
@@ -328,10 +385,14 @@ def main() -> None:
     files = sorted(ds_dir.glob("events_*.csv.gz"))
     frames = [pd.read_csv(f, dtype={"date": str, "code": str}) for f in files]
     df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
-    df = df.dropna(subset=["y", "net_ret"]).sort_values(["date", "ts"]).reset_index(drop=True)
+    target = target_of(args)
+    if target not in df.columns:
+        raise SystemExit(f"dataset {ds_dir.name} has no '{target}' column - rebuild it with the current g013 "
+                         f"(or train the old definition with --target y)")
+    df = df.dropna(subset=[target, "net_ret"]).sort_values(["date", "ts"]).reset_index(drop=True)
     df[list(FEATURE_NAMES)] = df[list(FEATURE_NAMES)].astype(np.float32)
     n_days = df["date"].nunique()
-    print(f"dataset {ds_dir.name}: {len(df):,} events / {n_days} days, base win={df['y'].mean():.3f} "
+    print(f"dataset {ds_dir.name}: {len(df):,} events / {n_days} days, target={target} base rate={df[target].mean():.3f} "
           f"mean_net={df['net_ret'].mean():+.3f}%", flush=True)
     need_days = args.min_train_days + args.embargo_days + 1
     if n_days < need_days:
@@ -344,7 +405,7 @@ def main() -> None:
 
     oos, folds = walk_forward(df, args)
     pm = promotion(oos, folds, args)
-    rel = reliability(oos)
+    rel = reliability(oos, target=target)
     print(f"OOS auc={pm['auc_oos']:.3f} scope={pm['scope']} base={pm['base']} kept={pm['kept']} "
           f"promoted={pm['promoted']}", flush=True)
 
@@ -363,7 +424,7 @@ def main() -> None:
         "threshold": threshold, "best_iter": best_iter, "promoted": pm["promoted"], "promotion": pm,
         "dataset": ds_dir.name, "n_events": int(len(df)), "n_days": int(n_days),
         "date_range": f"{dates[0]}~{dates[-1]}", "train_range": f"{final_dates[0]}~{final_dates[-1]}",
-        "label": {k: label.get(k) for k in ("tp", "sl", "horizon", "slip_ticks")},
+        "label": {**{k: label.get(k) for k in ("tp", "sl", "horizon", "slip_ticks")}, "target": target},
         "lgb_params": LGB_PARAMS, "args": vars(args), "feature_importance": importance,
         "live_feedback": live_feedback(ds_dir.name),
     }
@@ -372,7 +433,8 @@ def main() -> None:
     (reports / f"report_{model_id}.json").write_text(json.dumps({"meta": meta, "folds": folds, "reliability": rel},
                                                                 indent=2, default=str), encoding="utf-8")
     write_report(reports / f"report_{model_id}.md", meta, folds, rel)
-    oos[["date", "code", "ts", "p", "threshold", "keep", "y", "net_ret", "m3_ctx_pass"]].to_csv(
+    oos[[c for c in ("date", "code", "ts", "p", "threshold", "keep", "y", "y_tp", "run_mfe_pct", "run_stopped", "net_ret",
+                     "m3_ctx_pass") if c in oos.columns]].to_csv(
         reports / f"oos_{model_id}.csv.gz", index=False, compression="gzip")
     if args.no_publish:
         print(f"evaluated only (no publish): report_{model_id}.md")
