@@ -37,7 +37,7 @@
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
-import { AUTO_SELL_KEY, PAPER_KEY, STRATEGY_KEY, parseAutoSell, parseModes } from '../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_KEY, STRATEGY_KEY, parseAutoSell, parseAutoSellScope, parseModes } from '../shared/paper';
 import type { ArgvRunner } from './localRunner';
 import type { ConfirmRequest, ConfirmRow, ConfirmSpec } from '../shared/types';
 import {
@@ -54,6 +54,7 @@ import {
   type ControlState,
   type DoctorReport,
   type HistoryRow,
+  type HoldingsDoc,
   type JobDataInfo,
   type JobList,
   type JobLog,
@@ -428,10 +429,15 @@ export function createControl(deps: ControlDeps) {
     if (!deps.isConnected()) return;
     const myGen = gen;
     try {
-      const r = await cl().run(['get', STRATEGY_KEY, PAPER_KEY, AUTO_SELL_KEY]);
+      const r = await cl().run(['get', STRATEGY_KEY, PAPER_KEY, AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY]);
       if (myGen !== gen) return;
       const m = parseModes(r.data);
-      push({ paper: m.paper || undefined, strategy: m.strategy || undefined, autoSell: parseAutoSell(r.data) || undefined });
+      push({
+        paper: m.paper || undefined,
+        strategy: m.strategy || undefined,
+        autoSell: parseAutoSell(r.data) || undefined,
+        autoSellScope: parseAutoSellScope(r.data) || undefined,
+      });
     } catch {
       /* keep the last known value */
     }
@@ -488,6 +494,13 @@ export function createControl(deps: ControlDeps) {
     }
     const r = await cl().run(['reset']);
     if (r.ok) await afterOverrideChange();
+    return { ok: r.ok, error: r.error, data: r.data };
+  });
+  // [2026-11-13] account holdings snapshot with the bot's / hand-bought quantity (r016 holdings, read-only, no KIS call)
+  handle('ctl:holdings', async () => {
+    const off = needConn();
+    if (off) return off;
+    const r = await cl().run<HoldingsDoc>(['holdings']);
     return { ok: r.ok, error: r.error, data: r.data };
   });
   handle('ctl:history', async (n: number) => {
@@ -678,7 +691,7 @@ export function createControl(deps: ControlDeps) {
     clear: () => {
       gen++;
       statusInFlight = null;
-      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, paper: undefined, strategy: undefined, autoSell: undefined, lastAction: undefined });
+      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, paper: undefined, strategy: undefined, autoSell: undefined, autoSellScope: undefined, lastAction: undefined });
     },
   };
 }

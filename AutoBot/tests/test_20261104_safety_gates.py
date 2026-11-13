@@ -86,6 +86,91 @@ class TestMarketRegime(unittest.TestCase):
         with mock.patch.object(r005, "ENABLE_MARKET_REGIME_GATE", False):
             self.assertTrue(r005._010_market_regime(self._ctx(lambda c: (False, "x"))[0]))
 
+    # ---- [2026-11-13] relative-strength bypass ----
+    def test_market_relative_strength_ok(self):
+        flat = [100.0] * 30
+        strong = [100.0] * 20 + [100.0 + 0.08 * i for i in range(1, 11)]   # +0.80% over the last 10 minutes
+        weak = [100.0] * 20 + [100.0 - 0.05 * i for i in range(1, 11)]     # -0.50%
+        ok, detail = r002.market_relative_strength_ok(_frame(strong), _frame(flat), 10, 0.5)
+        self.assertTrue(ok)
+        self.assertIn("RS_EXCESS_0.80%p_GE_0.50%p", detail)
+        # stock up but not enough over the index
+        self.assertFalse(r002.market_relative_strength_ok(_frame(strong), _frame(flat), 10, 1.0)[0])
+        # exactly at the threshold passes
+        edge = [100.0] * 29 + [100.5]
+        self.assertTrue(r002.market_relative_strength_ok(_frame(edge), _frame(flat), 10, 0.5)[0])
+        # a stock that merely falls less than the index is not "strong"
+        ok, detail = r002.market_relative_strength_ok(_frame(flat), _frame(weak), 10, 0.3)
+        self.assertFalse(ok)
+        self.assertIn("RS_STOCK_NOT_UP", detail)
+        # off / no data / too few bars / different last labels
+        self.assertEqual(r002.market_relative_strength_ok(_frame(strong), _frame(flat), 10, 0), (False, "RS_OFF"))
+        self.assertEqual(r002.market_relative_strength_ok(_frame(strong), None, 10, 0.5), (False, "RS_NO_DATA_ETF"))
+        self.assertEqual(r002.market_relative_strength_ok(None, _frame(flat), 10, 0.5), (False, "RS_NO_DATA_STOCK"))
+        self.assertEqual(r002.market_relative_strength_ok(_frame(strong[:8]), _frame(flat), 10, 0.5), (False, "RS_NO_DATA_STOCK"))
+        ok, detail = r002.market_relative_strength_ok(_frame(strong), _frame(flat[:29]), 10, 0.5)
+        self.assertFalse(ok)
+        self.assertIn("RS_LABEL_MISMATCH", detail)
+
+    def test_return_over_minutes_reference_bar(self):
+        # the reference bar must be on the same day and not older than 2 x lookback
+        idx = list(pd.date_range("2026-11-03 15:10", periods=10, freq="1min")) + list(pd.date_range("2026-11-04 09:01", periods=5, freq="1min"))
+        prior_day = pd.DataFrame({"close": [100.0] * 10 + [103.0] * 5}, index=idx, dtype=float)
+        self.assertIsNone(r002._return_over_minutes(prior_day, 10))
+        idx = list(pd.date_range("2026-11-04 09:01", periods=5, freq="1min")) + list(pd.date_range("2026-11-04 09:40", periods=5, freq="1min"))
+        hole = pd.DataFrame({"close": [100.0] * 5 + [103.0] * 5}, index=idx, dtype=float)
+        self.assertIsNone(r002._return_over_minutes(hole, 10))
+        ret, last, ref = r002._return_over_minutes(_frame([100.0] * 20 + [101.0]), 10)
+        self.assertAlmostEqual(ret, 1.0)
+        self.assertEqual((last, ref), (pd.Timestamp("2026-11-04 09:21"), pd.Timestamp("2026-11-04 09:11")))
+        # [Codex] a missing reference-minute bar on one side = a different interval (stock 12 min vs ETF 10 min) -> no bypass
+        flat = _frame([100.0] * 30)
+        strong = _frame([100.0] * 20 + [100.0 + 0.08 * i for i in range(1, 11)])
+        gappy = strong.drop(strong.index[[18, 19]])   # 09:19 and 09:20 missing -> reference falls back to 09:18
+        ok, detail = r002.market_relative_strength_ok(gappy, flat, 10, 0.5)
+        self.assertFalse(ok)
+        self.assertIn("RS_LABEL_MISMATCH_09:18-09:30_09:20-09:30", detail)
+        self.assertTrue(r002.market_relative_strength_ok(gappy, flat.drop(flat.index[[18, 19]]), 10, 0.5)[0])  # same endpoints
+
+    def _rs_ctx(self, stock, etf):
+        logs = []
+        services = SimpleNamespace(market_regime=lambda c: (False, "KOSPI_069500_1MIN_MA5_MA20_NOT_ABOVE"),
+                                   market_regime_frame=lambda c: etf, get_frame_1min=lambda c, dt, nxt: stock)
+        return SimpleNamespace(norm_code="010060", code="010060", symbol_label="010060_x", log=logs.append,
+                               current_dt=datetime(2026, 11, 4, 9, 31), nxt_tradeable=True,
+                               state=SimpleNamespace(buy_confirm_state={"010060": {"count": 1}}), services=services), logs
+
+    def test_r005_010_relative_strength_bypass(self):
+        flat = _frame([100.0] * 30)
+        strong = _frame([100.0] * 20 + [100.0 + 0.08 * i for i in range(1, 11)])
+        self.assertEqual(r001.MARKET_REGIME_RS_BYPASS_PCT, 0.0)   # shipped OFF (see the r001 comment)
+        with mock.patch.object(r005, "ENABLE_MARKET_REGIME_GATE", True), mock.patch.object(r005, "MARKET_REGIME_RS_BYPASS_PCT", 0.5):
+            ctx, logs = self._rs_ctx(strong, flat)
+            self.assertTrue(r005._010_market_regime(ctx))
+            self.assertIn("[RS BYPASS   ]", logs[-1])
+            self.assertIn("010060", ctx.state.buy_confirm_state)   # the consecutive-confirm state survives a bypass
+            # not strong enough -> blocked, the RS reason is appended to the reject line
+            ctx, logs = self._rs_ctx(flat, flat)
+            self.assertFalse(r005._010_market_regime(ctx))
+            self.assertIn("MARKET_REGIME_DOWN_KOSPI_069500_1MIN_MA5_MA20_NOT_ABOVE | RS_STOCK_NOT_UP", logs[-1])
+            self.assertNotIn("010060", ctx.state.buy_confirm_state)
+            # rollback constant: 0 = the old behaviour and the old log line
+            with mock.patch.object(r005, "MARKET_REGIME_RS_BYPASS_PCT", 0):
+                ctx, logs = self._rs_ctx(strong, flat)
+                self.assertFalse(r005._010_market_regime(ctx))
+                self.assertTrue(logs[-1].endswith("MARKET_REGIME_DOWN_KOSPI_069500_1MIN_MA5_MA20_NOT_ABOVE"))
+            # no ETF frame / frame service raising -> stays blocked
+            self.assertFalse(r005._010_market_regime(self._rs_ctx(strong, None)[0]))
+            ctx, logs = self._rs_ctx(strong, flat)
+            ctx.services.market_regime_frame = lambda c: 1 / 0
+            self.assertFalse(r005._010_market_regime(ctx))
+            self.assertIn("RS_ERROR_ZeroDivisionError", logs[-1])
+            # an undeterminable index (None) with fail-closed is never bypassed
+            ctx, logs = self._rs_ctx(strong, flat)
+            ctx.services.market_regime = lambda c: (None, "no")
+            with mock.patch.object(r005, "MARKET_REGIME_FAIL_OPEN", False):
+                self.assertFalse(r005._010_market_regime(ctx))
+
 
 class TestSafetyConditions(unittest.TestCase):
     def _ctx(self, **services):
@@ -150,6 +235,9 @@ class TestR003OrderSafety(unittest.TestCase):
         api._last_sync_at = None; api._last_pending_poll_at = None; api._last_live_state_save_at = None
         api.sync_positions_from_account = lambda force=False: None
         api.persist_live_state = lambda *a, **k: None
+        # [2026-11-13] r023 ledger: these fixtures are positions the bot bought (AUTO_SELL_SCOPE=bot_only sells only those)
+        api.bot_ledger = {c: {"acct_qty": int(p.get("quantity", 0)), "bot_qty": int(p.get("quantity", 0))} for c, p in positions.items()}
+        api._bot_order_window = {"buy": {}, "sell": {}}
         return api
 
     def test_account_sync_age(self):

@@ -12,6 +12,14 @@
  *   were listed as name-less symbols with no events
  * - [2026-11-08] type=fix - Condition keys from the log rules (and sell trades) are translated to the server's numbers (mapping
  *   keyRemap, rebuilt in setConditions) so an app/server version gap does not show "조건 목록에 없음"
+ * - [2026-11-13] type=feat - held state 'manual': "[HOLD SKIP] ... NOT_BOT_POSITION" (bought by hand today, the bot leaves it
+ *   alone under AUTO_SELL_SCOPE=bot_only); carried / manual holdings stay fresh on "[SKIP] ... can_trade_code_now=False"
+ * - [2026-11-13] type=fix - (1) r003 restart: the watch state is rebuilt from the WATCH lines of the latest run ("R003 START").
+ *   A symbol watched by an earlier run but not by the latest one (r004 edited, then restarted) becomes 'removed' and is left out
+ *   of the snapshot when it has no events / trades - it used to stay on the board as 감시 for the rest of the day (251340 on
+ *   2026-11-13: deleted in the watchlist editor at 07:56, r003 restarted with 8 symbols, the board kept showing it).
+ *   (2) SymbolSummary.held: holdings not bought today - 'carried' from "[HOLD SKIP] ... NOT_TODAY_BUY_POSITION", 'unmanaged' from
+ *   "[WARN] account holdings not in watchlist: ..." - so the board can say 보유 instead of 졸업 / -
  */
 
 import type {
@@ -29,6 +37,10 @@ import { BS_BLOCK_RE, BS_DETAIL_RE, num, parseBuySellLine, parseKv, parseMainLin
 import { IGNORED_TAGS, STATUS_SUB, classify, condKeyOf, keyRemap, reasonShape, remapKey, sellReasonToCond, type Classified, type KeyRemap } from './mapping';
 
 const STATUS_GAP_MS = 60000;
+/** a held state is shown while its log line is this recent relative to the last line read ([HOLD SKIP] repeats every poll,
+ *  the holdings warning every 5 minutes) */
+const CARRIED_FRESH_MS = 3 * 60000;
+const UNMANAGED_FRESH_MS = 12 * 60000;
 import { hhmmToSeconds, kstDateTimeToEpoch, kstSecondOfDay } from './time';
 
 export const TIMELINE_CAP = 2000;
@@ -36,6 +48,12 @@ export const TIMELINE_CAP = 2000;
 interface SymState {
   summary: SymbolSummary;
   timeline: EvalEvent[];
+  /** watch state at the end of the previous r003 run (set on "R003 START") */
+  prevWatch?: WatchState;
+  carriedTs?: number;
+  unmanagedTs?: number;
+  /** [2026-11-13] last "[HOLD SKIP] ... NOT_BOT_POSITION": bought by hand today, the bot leaves it alone (AUTO_SELL_SCOPE=bot_only) */
+  manualTs?: number;
 }
 
 export interface EngineOptions {
@@ -104,13 +122,25 @@ export class DayEngine {
     this.lastLineTs = p.ts;
 
     if (p.kind === 'untagged') {
+      if (p.body.startsWith('R003 START')) {
+        // a new run re-reads r004: everything watched so far is 'removed' until this run logs its WATCH line
+        for (const st of this.syms.values()) {
+          if (st.summary.watch === 'unknown') continue;
+          if (st.summary.watch !== 'removed') st.prevWatch = st.summary.watch;
+          st.summary.watch = 'removed';
+        }
+        return;
+      }
       const w = /^WATCH \| (\d{6}) \| ([^|]+?) \|(.*)$/.exec(p.body);
       if (w) {
         this.setName(w[1], w[2].trim(), true);
         const s = this.sym(w[1]);
         const nxt = /\bNXT=(True|False)\b/.exec(w[3]);
         if (nxt) s.summary.nxt = nxt[1] === 'True';
-        if (s.summary.watch === 'unknown') s.summary.watch = 'active';
+        // a symbol that graduated (position opened) stays out of the active set after a restart (r003 restores the reentry state
+        // without logging [ACT GRADUATE] again)
+        if (s.summary.watch === 'removed') s.summary.watch = s.prevWatch === 'graduated' ? 'graduated' : 'active';
+        else if (s.summary.watch === 'unknown') s.summary.watch = 'active';
       }
       return;
     }
@@ -121,6 +151,10 @@ export class DayEngine {
       else if (p.tag === 'WL SPLIT') {
         const m = /active=(\d+)\s+backup=(\d+)/.exec(p.body);
         if (m) this.wl = { active: +m[1], backup: +m[2] };
+      } else if (p.tag === 'WARN') {
+        // "account holdings not in watchlist: 033780, 005930 - not managed by the bot (...)"
+        const h = /account holdings not in watchlist:\s*(.*)$/.exec(p.body);
+        if (h) for (const code of h[1].split(' - ')[0].match(/\d{6}/g) || []) this.sym(code).unmanagedTs = p.ts;
       }
       return;
     }
@@ -139,6 +173,15 @@ export class DayEngine {
       };
       if (next[p.tag]) s.summary.watch = next[p.tag];
       return;
+    }
+
+    if (p.tag === 'HOLD SKIP' && p.rest.trim().startsWith('NOT_TODAY_BUY_POSITION')) s.carriedTs = p.ts;
+    if (p.tag === 'HOLD SKIP' && p.rest.trim().startsWith('NOT_BOT_POSITION')) s.manualTs = p.ts;
+    // outside the symbol's session r003 logs [SKIP] can_trade_code_now=False instead of HOLD SKIP (a carried holding that is
+    // not NXT-tradeable, after the regular close) - the holding is still there, so keep it fresh
+    if (p.tag === 'SKIP' && p.rest.includes('can_trade_code_now=False')) {
+      if (s.carriedTs !== undefined) s.carriedTs = p.ts;
+      if (s.manualTs !== undefined) s.manualTs = p.ts;
     }
 
     const out = classify(p.tag, p.rest);
@@ -345,10 +388,23 @@ export class DayEngine {
       this.sym(t.code);
     }
     const symbols: SymbolSummary[] = [];
+    const traded = new Set(this.trades.map((t) => t.code));
+    const now = this.lastLineTs || 0;
     for (const [code, s] of this.syms) {
       const sum = { ...s.summary, realizedKrw: realized.get(code) || 0 };
       const p = pos.get(code);
       sum.position = p && p.qty > 0 ? { ...p } : undefined;
+      sum.held = sum.position
+        ? undefined
+        : s.carriedTs !== undefined && now - s.carriedTs <= CARRIED_FRESH_MS
+          ? 'carried'
+          : s.manualTs !== undefined && now - s.manualTs <= CARRIED_FRESH_MS
+            ? 'manual'
+          : s.unmanagedTs !== undefined && now - s.unmanagedTs <= UNMANAGED_FRESH_MS
+            ? 'unmanaged'
+            : undefined;
+      // taken off the watchlist before anything happened to it: not a symbol of the day
+      if (sum.watch === 'removed' && !s.timeline.length && !traded.has(code) && !sum.held) continue;
       symbols.push(sum);
     }
     symbols.sort((a, b) => a.code.localeCompare(b.code));

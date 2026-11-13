@@ -77,6 +77,12 @@ Update log (append only):
       조건 집합을 새 번호로 명시. 로그 문구에는 번호가 없어(앱은 사유 문자열 -> 번호 매핑) 과거 로그도 그대로 읽힘.
     impact: live(r003 표시/조건 JSON r015·r016) / app(autoboth mapping.ts 동시 수정)
     compatibility: 조건 JSON의 no/func 값 변경 - AutoBotH와 함께 배포해야 함. 매도 조건 번호는 무변경.
+- [2026-11-13] type=feat owner=claude
+    summary: 사용자 결정(20261113 010060 10:41 미매수) - _010 시장 추세 게이트 상대강도 예외: 지수 ETF 가 DOWN 이어도 종목 확정
+      1분봉의 최근 N분 수익률이 0 보다 크고 ETF 보다 MARKET_REGIME_RS_BYPASS_PCT(%p) 이상 높으면 통과(로그 [RS BYPASS]).
+      BuyServices.market_regime_frame(종목 -> ETF 1분봉) 주입. 미통과 사유는 REJECT 줄 뒤에 " | RS_..." 로 덧붙인다.
+    impact: live
+    compatibility: backward-compatible (r001 MARKET_REGIME_RS_BYPASS_PCT 기본 0 = 꺼짐. 0 보다 크게 켜면 매수 증가 방향)
 - [2026-11-04] type=feat owner=claude
     summary: 사용자 승인(Codex 2차 안전 점검 + 시장 추세) - _029 시장 추세(지수 ETF 1분 MA5>MA20, r002 market_regime_ok),
       _030 계좌 동기화 신선도(fail-closed), _031 시세 상태(VI/임시정지/시장경고/종목상태), _025에 당일 봇 포지션 평가손익 포함.
@@ -224,6 +230,8 @@ from r001_define_config import (
     ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     ENABLE_MARKET_REGIME_GATE,
     MARKET_REGIME_FAIL_OPEN,
+    MARKET_REGIME_RS_BYPASS_PCT,
+    MARKET_REGIME_RS_LOOKBACK_MINUTES,
     ACCOUNT_SYNC_MAX_STALE_SECONDS,
     DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED,
     ENABLE_QUOTE_STATUS_GATE,
@@ -253,6 +261,7 @@ from r002_strategy_core_shared import (
     find_1min_ma_golden_cross,
     evaluate_triple_trigger,
     check_chase_from_cross,
+    market_relative_strength_ok,
     gate_steps_diagnostic,
     passes_opening_gap_volume_gate,
     update_timed_condition_state,
@@ -317,6 +326,8 @@ class BuyServices:
     account_sync_age: Callable[[], float | None] | None = None      # 마지막 성공 잔고 동기화 이후 초 (None = 없음)
     quote_status: Callable[[str], dict | None] | None = None         # 최근 현재가 응답의 상태 필드(VI/정지/경고/종목상태)
     market_regime: Callable[[str], tuple[bool | None, str]] | None = None  # 종목 -> (지수 ETF 추세 OK, 사유)
+    # [2026-11-13] 종목 -> 그 시장 지수 ETF 의 1분봉(상대강도 예외용). None/프레임 없음이면 예외 없음(차단 유지).
+    market_regime_frame: Callable[[str], pd.DataFrame | None] | None = None
 
 
 @dataclass
@@ -572,12 +583,35 @@ def _010_market_regime(ctx: BuyContext) -> bool:
     if ok is None:
         if MARKET_REGIME_FAIL_OPEN:
             return True
-        ok = False
+        ctx.state.buy_confirm_state.pop(ctx.code, None)
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | MARKET_REGIME_DOWN_{detail}")
+        return False
     if ok:
         return True
+    # [2026-11-13] 상대강도 예외: 지수가 DOWN 이어도 종목이 지수보다 뚜렷이 강하면 통과 (지수 판정 불가(None)에는 적용하지 않음)
+    rs_ok, rs_detail = _market_relative_strength(ctx)
+    if rs_ok:
+        ctx.log(f"  [RS BYPASS   ] {ctx.symbol_label} | MARKET_REGIME_DOWN_{detail} | {rs_detail}")
+        return True
     ctx.state.buy_confirm_state.pop(ctx.code, None)
-    ctx.log(f"  [REJECT      ] {ctx.symbol_label} | MARKET_REGIME_DOWN_{detail}")
+    ctx.log(f"  [REJECT      ] {ctx.symbol_label} | MARKET_REGIME_DOWN_{detail}" + (f" | {rs_detail}" if rs_detail else ""))
     return False
+
+
+def _market_relative_strength(ctx: BuyContext) -> tuple[bool, str]:
+    """[2026-11-13] _010 상대강도 예외 판정 (통과 여부, 사유) - r002 market_relative_strength_ok.
+    기능 꺼짐/ETF 프레임 서비스 없음이면 (False, "")(로그에 덧붙이지 않음). 예외는 미통과로 처리(차단 유지)."""
+    frame_fn = getattr(ctx.services, "market_regime_frame", None)
+    try:
+        if float(MARKET_REGIME_RS_BYPASS_PCT) <= 0 or frame_fn is None:
+            return False, ""
+        etf_frame = frame_fn(ctx.norm_code)
+        stock_frame = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+        return market_relative_strength_ok(
+            stock_frame, etf_frame, MARKET_REGIME_RS_LOOKBACK_MINUTES, MARKET_REGIME_RS_BYPASS_PCT,
+        )
+    except Exception as exc:
+        return False, f"RS_ERROR_{type(exc).__name__}"
 
 
 def _019_account_sync_fresh(ctx: BuyContext) -> bool:
@@ -1360,9 +1394,12 @@ _COND_021 = BuyCondition(21, "_021_entry_spread", "PRE_ORDER", "호가 비용(�
                          ("ENABLE_TICK_COST_GATE", "TICK_COST_MAX_PCT", "ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"),
                          _021_entry_spread)
 _COND_010 = BuyCondition(10, "_010_market_regime", "CONTEXT", "시장 추세(지수 ETF)",
-                         "종목 시장(KOSPI/KOSDAQ)의 지수 ETF 1분봉 MA5 > MA20이 아니면 차단. ETF 데이터 없으면 MARKET_REGIME_FAIL_OPEN",
+                         "종목 시장(KOSPI/KOSDAQ)의 지수 ETF 1분봉 MA5 > MA20이 아니면 차단. ETF 데이터 없으면 MARKET_REGIME_FAIL_OPEN. "
+                         "상대강도 예외: 종목 1분봉의 최근 MARKET_REGIME_RS_LOOKBACK_MINUTES분 수익률이 0보다 크고 지수 ETF보다 "
+                         "MARKET_REGIME_RS_BYPASS_PCT(%p) 이상 높으면 통과 (0 = 예외 없음)",
                          ("ENABLE_MARKET_REGIME_GATE", "MARKET_REGIME_ETF", "MARKET_REGIME_MA_FAST", "MARKET_REGIME_MA_SLOW",
-                          "MARKET_REGIME_FAIL_OPEN"), _010_market_regime)
+                          "MARKET_REGIME_FAIL_OPEN", "MARKET_REGIME_RS_BYPASS_PCT", "MARKET_REGIME_RS_LOOKBACK_MINUTES"),
+                         _010_market_regime)
 _COND_019 = BuyCondition(19, "_019_account_sync_fresh", "PRE_ORDER", "계좌 동기화 신선도",
                          "마지막 성공 잔고 조회가 ACCOUNT_SYNC_MAX_STALE_SECONDS보다 오래됐거나 없으면 신규 매수 차단(fail-closed)",
                          ("ACCOUNT_SYNC_MAX_STALE_SECONDS",), _019_account_sync_fresh)

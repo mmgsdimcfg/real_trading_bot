@@ -173,6 +173,36 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - 매수 `_012`(최소 변동성)는 1분봉 ATR% 를 먼저 본다(`ENABLE_GC_VOLATILITY_GATE`, `GC_VOLATILITY_MIN_ATR_1MIN_PCT`=0.5).
   반려 사유 `GC_VOL_LOW_1MIN_ATR_<값>%_LT_<기준>%` / `GC_VOL_1MIN_ATR_UNAVAILABLE` (앱 매수 `_012`), r015 frame `1m+3m`.
 
+## 8-1. 봇 매수분 / 직접 매수분 구분 (2026-11-13)
+- r003 은 계좌 동기화마다 r023 장부(`<runtime>/data/live_runtime/bot_holdings.json`, 날짜를 넘겨 유지)를 갱신한다:
+  종목별 `acct_qty`(계좌 수량) / `bot_qty`(봇이 매수한 수량). 직접(MTS/HTS) 매수 수량 = acct_qty - bot_qty.
+  - 계좌 수량 증가: 그 종목에 봇 매수 주문이 걸려 있던 구간(주문이 사라진 뒤 동기화 2회까지)이면 봇, 아니면 직접.
+  - 계좌 수량 감소: 봇 매도 주문 구간이면 봇 수량부터, 아니면(직접 매도) 직접 수량부터 줄인다. bot_qty 는 0..acct_qty.
+  - 장부 파일이 없는 첫 실행: 오늘 또는 최근 10일 live state 에 봇 매수 흔적(traded_today / buy_session != synced / reentry.bot)이
+    있는 보유 종목은 계좌 수량 전부를 봇, 나머지는 직접으로 seed (`[BOT LEDGER  ] seeded ...` 로그).
+  - 한계: 봇 매수 주문이 걸려 있는 동안 같은 종목을 직접 사면 둘 다 봇 수량으로 잡힌다(계좌는 합계만 알려 준다).
+- r001 `AUTO_SELL_SCOPE` (r016 `set AUTO_SELL_SCOPE=<값>`, r003 재시작 후 적용. 앱 제어 탭 "자동 매도 대상"):
+
+  | 선택 | AUTO_SELL_SCOPE | 자동 매도 수량 |
+  |---|---|---|
+  | 봇 매수분만 (기본값) | bot_only | 봇이 매수한 수량까지만. 직접 매수분은 남긴다. 봇 수량 0 인 보유분은 매도 평가 없음 |
+  | 직접 매수분 포함 | all | 종전 동작 - 봇이 관리하는 종목은 계좌 수량 전부 |
+
+  관리 범위(오늘 감시 목록에 있고 오늘 매수된 종목만)는 어느 쪽이든 그대로다. dry_run 에는 적용하지 않는다.
+  앱은 `get ... AUTO_SELL_SCOPE` 의 effective / running / pending 으로 읽는다(키를 모르는 서버 = 선택 숨김).
+- 새 r016 명령 `holdings` (읽기 전용, KIS 호출 없음 - r003 이 계좌 동기화마다 쓰는 `live_runtime/holdings.json` 을 돌려준다):
+  ```json
+  {"ok": true, "available": true, "running": true, "age_seconds": 12.3, "schema": 1,
+   "updated_at": "2026-11-13T10:00:00", "date": "20261113", "auto_sell_scope": "bot_only",
+   "holdings": [{"code": "222800", "name": "심텍", "qty": 8, "bot_qty": 3, "manual_qty": 5, "avg_price": 130000.0,
+                 "current_price": 131000.0, "buy_time": "2026-11-13T09:48:30", "bought_today": true}]}
+  ```
+  스냅샷 파일이 없으면 `{"ok": true, "available": false, "running": <bool>, "holdings": []}`. `avg_price` 는 계좌 평균단가
+  (봇+직접 합산), `current_price` 는 동기화 시점 가격. r003 이 꺼져 있으면 마지막 스냅샷과 `age_seconds` 를 그대로 준다.
+- 새 로그: `[🔴HOLD SKIP ] ... | NOT_BOT_POSITION (...)` (bot_only 에서 봇 수량 0 인 보유분 - 앱 종목 보드 '보유'),
+  `[SELL LIMIT  ] ... | AUTO_SELL_SCOPE=bot_only | requested= bot= account=` (매도 수량을 봇 수량으로 줄임),
+  `[BOT LEDGER  ] ... | account=a->b bot=c->d` (장부 변화). 뒤 두 태그는 조건이 아니다(앱에서 무시).
+
 ## 9. 틱 수집기 NXT 체결 (2026-11-12)
 - g011 이 같은 웹소켓 세션에서 NXT 체결(H0NXCNT0)도 받는다(r001 `TICK_COLLECT_NXT`, 기본 True). 감시목록 종목을
   08:00~20:00 구독하되 세션 한도 40 에서 KRX 구독이 쓰고 남은 자리만큼만 받는다(정규장 중 여유분, 장전·장후 전부).

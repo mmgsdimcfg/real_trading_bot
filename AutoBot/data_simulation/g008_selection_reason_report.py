@@ -94,6 +94,7 @@ FAIL_REASON_DESC = {
     "price_floor": ("주가 2,000원 미만", "Price below 2,000 KRW"),
     "price_ceiling": ("주가 100만원 초과", "Price above 1,000,000 KRW"),
     "preferred_or_spac_excluded": ("우선주 또는 스팩", "Preferred share or SPAC"),
+    "derivative_etf_excluded": ("인버스/레버리지/선물 ETF", "Inverse / leveraged / futures ETF"),
     "admin_issue_or_halt_excluded": ("관리종목 또는 거래정지", "Administrative issue or trading halt"),
     "low_score": ("점수 15점 미만", "Score below 15"),
 }
@@ -122,6 +123,10 @@ SOFT_FLAG_DESC = {
     "liquidity_below_market_dual_pattern_exempt": ("시장 기준 미달이지만 상승 초입 패턴 + 20일 평균 거래대금 50억 이상이라 통과", "Below market benchmark but passed: base-breakout pattern with 20-day avg value >= 5bn KRW"),
     "sector_cap_swapped_in": ("업종 쏠림 제한(30%)으로 다른 종목 대신 교체 편입", "Swapped in by the 30% sector cap"),
     "fallback_selected": ("적격 종목 부족으로 보충 편입", "Added as fallback (not enough eligible stocks)"),
+    "fallback_blocked_peak_rollover": (
+        "고점 꺾임(종가가 5일선 아래, 최근 5일 종가 고점 대비 -7% 이상)이라 보충 제외",
+        "Not used as fallback: close below MA5 and 7%+ below the 5-day closing high",
+    ),
 }
 
 

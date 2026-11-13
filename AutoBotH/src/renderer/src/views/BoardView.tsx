@@ -5,6 +5,10 @@
  * - [2026-11-05] type=feat - "감시목록 편집" button opens the r004 watchlist editor (WatchlistEditor)
  * - [2026-11-11] type=feat - 사유 in Korean (shared/reasonKo; the code and the raw log line stay in the tooltip); fixed column
  *   widths (colgroup, table-layout fixed) so the table never scrolls sideways - 종목명 / 멈춘 조건 / 사유 / 최다 막힘 wrap instead
+ * - [2026-11-13] type=fix - 감시 column says 보유 for every held symbol (bought today, carried over from an earlier day, or held
+ *   outside the watchlist) instead of 졸업 / -; 제외 for a symbol taken off the watchlist by a restart; "보유 종목만" includes them
+ * - [2026-11-13] type=feat - a row click opens the timeline of that symbol (was the pipeline), like the holdings tab
+ * - [2026-11-13] type=feat - held state 'manual' (bought by hand today, "[HOLD SKIP] ... NOT_BOT_POSITION") also shows 보유
  */
 
 import { useMemo, useState } from 'react';
@@ -19,7 +23,16 @@ import { reasonKo } from '../../../shared/reasonKo';
 
 type SortKey = 'code' | 'name' | 'price' | 'last' | 'cond' | 'depth' | 'blocks' | 'pnl';
 
-const WATCH_LABEL: Record<string, string> = { active: '감시', backup: '백업', graduated: '졸업', dropped: '탈락', unknown: '-' };
+const WATCH_LABEL: Record<string, string> = { active: '감시', backup: '백업', graduated: '졸업', dropped: '탈락', removed: '제외', unknown: '-' };
+const HELD_TITLE: Record<string, string> = {
+  carried: '이전 거래일에 매수해 넘어온 보유 종목 (오늘 매수분이 아니라 봇이 매도 평가를 하지 않음)',
+  unmanaged: '감시목록에 없는 계좌 보유 종목 (봇이 관리하지 않음)',
+  manual: '오늘 직접(MTS 등) 매수한 보유 종목 - 자동 매도 대상이 "봇 매수분만"이라 봇이 매도 평가를 하지 않음',
+};
+const WATCH_TITLE: Record<string, string> = {
+  graduated: '오늘 매수 체결로 감시(신규 매수 평가)에서 빠짐',
+  removed: '재시작 후 감시목록에 없음 (오늘 앞선 실행에서는 감시)',
+};
 const RESULT_LABEL: Record<string, string> = { pass: '✓ 전부 통과', fail: '✕ 막힘', hold: '… 대기' };
 
 export function BoardView() {
@@ -42,7 +55,7 @@ export function BoardView() {
   const rows = useMemo(() => {
     let list = [...(snap?.symbols || [])];
     if (condFilter) list = list.filter((s) => s.lastEval?.condKey === condFilter);
-    if (holdOnly) list = list.filter((s) => s.position);
+    if (holdOnly) list = list.filter((s) => s.position || s.held);
     const val = (s: SymbolSummary): number | string => {
       switch (sort.k) {
         case 'code': return s.code;
@@ -89,7 +102,7 @@ export function BoardView() {
           <input type="checkbox" checked={holdOnly} onChange={(e) => setHoldOnly(e.target.checked)} /> 보유 종목만
         </label>
         <span className="muted">
-          {rows.length} / {snap?.symbols.length || 0} 종목 · 행을 누르면 파이프라인으로 이동
+          {rows.length} / {snap?.symbols.length || 0} 종목 · 행을 누르면 타임라인으로 이동
         </span>
         <button className="push-right" disabled={!connected} onClick={() => setWlOpen(true)} title="r004 감시목록 보기/고치기 (재시작 후 반영)">
           감시목록 편집
@@ -138,7 +151,7 @@ export function BoardView() {
                   className={s.code === selected ? 'sel' : ''}
                   onClick={() => {
                     select(s.code);
-                    setTab('pipeline');
+                    setTab('timeline');
                   }}
                 >
                   <td className="mono">{s.code}</td>
@@ -148,7 +161,9 @@ export function BoardView() {
                   <td className="num">
                     <PriceTag code={s.code} />
                   </td>
-                  <td>{WATCH_LABEL[s.watch]}</td>
+                  <td title={s.position ? '오늘 매수해 보유 중' : s.held ? HELD_TITLE[s.held] : WATCH_TITLE[s.watch] || ''}>
+                    {s.position || s.held ? '보유' : WATCH_LABEL[s.watch]}
+                  </td>
                   <td className="mono">{fmtKstTime(ev?.ts)}</td>
                   <td className={`res-${ev?.result || ''}`}>{ev ? RESULT_LABEL[ev.result] || ev.result : '-'}</td>
                   <td>{ev && ev.condKey !== 'ORDER' ? condTitle(conditions, 'buy', ev.condKey) : ev ? '주문 단계' : '-'}</td>

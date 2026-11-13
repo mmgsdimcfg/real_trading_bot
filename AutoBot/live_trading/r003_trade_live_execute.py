@@ -20,6 +20,18 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-13] type=feat owner=claude
+    summary: 사용자 요청(봇 매수분과 MTS 직접 매수분 구분) - (1) r023 장부: 계좌 동기화마다 종목별 봇 매수 수량 갱신
+      (TradingAPI._update_bot_ledger / _mark_bot_order_windows / bot_quantity) + 보유 스냅샷 holdings.json(r016 holdings).
+      (2) r001 AUTO_SELL_SCOPE="bot_only"(기본): place_sell_order 가 매도 수량을 봇 수량으로 제한([SELL LIMIT]), 메인 루프는
+      봇 수량 0 인 보유분을 매도 평가하지 않음([HOLD SKIP] NOT_BOT_POSITION). "all" = 종전(계좌 수량 전부). dry_run 미적용.
+    impact: live (r003 재시작 후 - 직접 매수한 수량은 봇이 팔지 않는다)
+    compatibility: breaking (자동 매도 수량 감소 방향. 롤백: r016 set AUTO_SELL_SCOPE=all)
+- [2026-11-13] type=feat owner=claude
+    summary: 시장 추세 게이트 상대강도 예외(r005 _010) - _compute_market_regime 이 판정에 쓴 ETF 1분봉을 market_regime_frames 에
+      남기고 BuyServices.market_regime_frame 으로 주입. 판정 로직은 r002 market_relative_strength_ok.
+    impact: live
+    compatibility: backward-compatible (r001 MARKET_REGIME_RS_BYPASS_PCT=0 이면 종전과 동일)
 - [2026-11-11] type=fix owner=claude
     summary: 사용자 지적(20261111 12:02 GS건설을 감시목록에서 뺀 뒤 [실행] -> 12:03 ATR 손절 매도) - 감시목록 밖의 보유 종목은 매도
       평가에서도 제외([HOLD SKIP] NOT_IN_WATCHLIST, 당일 매수분이라도). 15:20/19:59 청산은 종전부터 감시목록 종목만 대상.
@@ -806,6 +818,8 @@ from r001_define_config import (
     MARKET_REGIME_MA_FAST,
     MARKET_REGIME_MA_SLOW,
     MARKET_REGIME_CONFIRM_BARS,
+    MARKET_REGIME_RS_BYPASS_PCT,
+    MARKET_REGIME_RS_LOOKBACK_MINUTES,
     MANAGE_POSITIONS_OUTSIDE_WATCHLIST,
     ACCOUNT_SYNC_INTERVAL_SECONDS,
     AFTERNOON_NXT_END,
@@ -919,6 +933,7 @@ from r001_define_config import (
     V2_LIVE_MODE,
     EDGE_ONLY_MODE,
     AUTO_SELL_MODE,
+    AUTO_SELL_SCOPE,
     EDGE_ONLY_MIN_PROB,
     EDGE_ONLY_MAX_POSITIONS,
     EDGE_ONLY_MAX_ENTRIES_PER_DAY,
@@ -964,6 +979,7 @@ sys.path.insert(0, str(current_dir))
 import kis_auth as ka
 import domestic_stock_functions as dsf
 import r019_platform as r019  # [2026-11-10] Linux/Windows locks + processes
+import r023_bot_holdings as r023  # [2026-11-13] bot / manual quantity ledger + holdings snapshot
 
 
 class _KisRequestsWithTimeout:
@@ -1116,12 +1132,18 @@ def _load_symbol_market_map() -> dict[str, str]:
     return _SYMBOL_MARKET_MAP
 
 
-def _compute_market_regime(current_dt: datetime, frame_cache_1min: dict, frame_last_refresh_at_1min: dict) -> dict[str, tuple]:
-    """지수 ETF(MARKET_REGIME_ETF)별 1분봉 MA5>MA20 판정 - 루프 1회당 1번 계산. {market: (ok|None, detail)}"""
+def _compute_market_regime(current_dt: datetime, frame_cache_1min: dict, frame_last_refresh_at_1min: dict,
+                           frames_out: dict | None = None) -> dict[str, tuple]:
+    """지수 ETF(MARKET_REGIME_ETF)별 1분봉 MA5>MA20 판정 - 루프 1회당 1번 계산. {market: (ok|None, detail)}
+    [2026-11-13] frames_out 이 주어지면 판정에 쓴 ETF 1분봉을 {market: frame} 으로 채운다(r005 _010 상대강도 예외용)."""
     out: dict[str, tuple] = {}
+    if frames_out is not None:
+        frames_out.clear()
     for market, etf in MARKET_REGIME_ETF.items():
         try:
             frame = _get_or_refresh_1min_frame(str(etf).zfill(6), current_dt, False, frame_cache_1min, frame_last_refresh_at_1min)
+            if frames_out is not None and frame is not None:
+                frames_out[market] = frame
             ok, detail = market_regime_ok(frame, MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW, MARKET_REGIME_CONFIRM_BARS)
         except Exception as exc:
             ok, detail = None, f"ERROR_{type(exc).__name__}"
@@ -3501,6 +3523,11 @@ class TradingAPI:
         self._last_sync_at: datetime | None = None
         self._last_pending_poll_at: datetime | None = None
         self._last_live_state_save_at: datetime | None = None
+        # [2026-11-13] r023 봇/직접 매수 수량 장부(계좌 동기화마다 갱신). None = 파일 없음 -> 첫 동기화에서 seed.
+        # _bot_order_window[side][code] = 봇 주문이 사라진 뒤에도 그 종목의 수량 변화를 봇 것으로 볼 남은 동기화 횟수.
+        self.bot_ledger: dict[str, dict] | None = r023.load_ledger(LIVE_RUNTIME_DIR)
+        self._bot_order_window: dict[str, dict[str, int]] = {"buy": {}, "sell": {}}
+        self._bot_ledger_empty_syncs = 0
         self.sync_positions_from_account(force=True)
         self._apply_persisted_position_meta()
         for code, pos in self.positions.items():
@@ -3606,6 +3633,10 @@ class TradingAPI:
                 )
             else:
                 self.positions.clear()
+                # [2026-11-13] 빈 응답 1회로는 장부를 비우지 않는다(일시적 빈 응답이면 봇 매수분이 모두 '직접'으로 바뀜) - 2회 연속일 때만
+                self._bot_ledger_empty_syncs = int(getattr(self, "_bot_ledger_empty_syncs", 0)) + 1
+                if self._bot_ledger_empty_syncs >= 2:
+                    self._update_bot_ledger({})
             self._reconcile_pending_positions()
             return
 
@@ -3659,6 +3690,64 @@ class TradingAPI:
         self.positions = updated
         self._apply_persisted_position_meta()
         self._reconcile_pending_positions()
+        self._bot_ledger_empty_syncs = 0
+        self._update_bot_ledger(self.positions)
+
+    def _mark_bot_order_windows(self) -> None:
+        """[2026-11-13] 대기 중인 봇 주문이 있는 종목 표시 - 그 주문이 사라진 뒤 동기화 2회까지 수량 변화를 봇 것으로 본다."""
+        win = getattr(self, "_bot_order_window", None)
+        if win is None:
+            return
+        for code, pending in self.pending_orders.items():
+            win["buy" if pending.get("side") == "buy" else "sell"][str(code).zfill(6)] = 2
+
+    def _update_bot_ledger(self, positions: dict[str, dict]) -> None:
+        """[2026-11-13] r023 장부 갱신 + 보유 스냅샷(holdings.json) 기록. 계좌 동기화가 성공한 직후에만 호출한다.
+        실패해도 매매 루프는 계속(장부는 다음 동기화에서 다시 맞춰진다)."""
+        win = getattr(self, "_bot_order_window", None)
+        if win is None:  # 장부 없이 만들어진 인스턴스(테스트 등)
+            return
+        try:
+            now = datetime.now()
+            date_str = now.strftime("%Y%m%d")
+            self._mark_bot_order_windows()
+            if self.bot_ledger is None:
+                ledger = r023.seed_ledger(positions, self.live_state, LIVE_RUNTIME_DIR, date_str)
+                log("  [BOT LEDGER  ] seeded (no ledger file) | " + (", ".join(
+                    f"{c}:bot={r['bot_qty']}/{r['acct_qty']}" for c, r in sorted(ledger.items())) or "no holdings"))
+            else:
+                account_qty = {str(c).zfill(6): int(p.get("quantity", 0) or 0) for c, p in positions.items()}
+                ledger = r023.update_ledger(self.bot_ledger, account_qty, set(win["buy"]), set(win["sell"]))
+            changed = ledger != self.bot_ledger
+            if changed and self.bot_ledger is not None:
+                for code in sorted(set(ledger) | set(self.bot_ledger)):
+                    old, new = self.bot_ledger.get(code), ledger.get(code)
+                    if old != new:
+                        log(f"  [BOT LEDGER  ] {_sym_label(code)} | account={(old or {}).get('acct_qty', 0)}->{(new or {}).get('acct_qty', 0)} "
+                            f"bot={(old or {}).get('bot_qty', 0)}->{(new or {}).get('bot_qty', 0)}")
+            self.bot_ledger = ledger
+            for side in ("buy", "sell"):
+                for code in list(win[side]):
+                    pending = self.pending_orders.get(code)
+                    if pending is not None and ("buy" if pending.get("side") == "buy" else "sell") == side:
+                        continue
+                    win[side][code] -= 1
+                    if win[side][code] <= 0:
+                        del win[side][code]
+            if changed:
+                r023.save_ledger(LIVE_RUNTIME_DIR, ledger, now)
+            r023.save_snapshot(LIVE_RUNTIME_DIR, r023.build_snapshot(positions, ledger, _SYMBOL_NAME_MAP, date_str, AUTO_SELL_SCOPE, now))
+        except Exception as exc:
+            log(f"  [WARN        ] bot holdings ledger update failed: {exc}")
+
+    def bot_quantity(self, code: str) -> int:
+        """[2026-11-13] 이 종목 보유 수량 중 봇이 매수한 수량(r023 장부). 장부가 없으면 0."""
+        return r023.bot_quantity(getattr(self, "bot_ledger", None), code)
+
+    def sells_bot_quantity_only(self) -> bool:
+        """[2026-11-13] r001 AUTO_SELL_SCOPE: "all" 이 아니면 봇 매수 수량만 매도한다(모르는 값도 bot_only - 덜 파는 쪽).
+        dry_run 은 계좌 수량이 바뀌지 않아 장부가 의미 없으므로 종전(전량)대로."""
+        return str(AUTO_SELL_SCOPE).strip().lower() != "all" and not getattr(self, "dry_run", False)
 
     def get_open_positions(self) -> dict[str, dict]:
         return self.positions
@@ -3935,6 +4024,7 @@ class TradingAPI:
         self.pending_orders.pop(str(code).zfill(6), None)
 
     def refresh_pending_orders(self, now: datetime) -> None:
+        self._mark_bot_order_windows()  # [2026-11-13] 체결 확인으로 pending 이 사라지기 전에 봇 주문 종목을 표시(r023 장부)
         if not self.pending_orders:
             return
         if self._last_pending_poll_at is not None:
@@ -5059,6 +5149,13 @@ class TradingAPI:
 
         norm_code = str(code).zfill(6)
         qty = min(int(qty), int(pos["quantity"]))
+        # [2026-11-13] AUTO_SELL_SCOPE="bot_only": 봇이 매수한 수량까지만 판다 - 직접(MTS) 매수분은 남긴다 (r023 장부)
+        if self.sells_bot_quantity_only():
+            bot_left = self.bot_quantity(norm_code)
+            if bot_left < qty:
+                log(f"  [SELL LIMIT  ] {_sym_label(code)} | AUTO_SELL_SCOPE=bot_only | requested={qty} bot={bot_left} "
+                    f"account={int(pos['quantity'])} | reason={reason}")
+                qty = bot_left
         if qty <= 0 or self._in_cooldown(norm_code, now):
             return False
         # 피라미딩 추가매수 주문이 대기 중이어도(side=buy) 이미 확정 체결된 기존 수량(pos["quantity"])에
@@ -5676,6 +5773,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     )
     # [2026-11-04] 시장 추세 게이트 - 루프마다 _compute_market_regime으로 갱신, 종목 시장은 g004 master
     market_regime_state: dict[str, tuple] = {}
+    market_regime_frames: dict[str, pd.DataFrame] = {}
     if ENABLE_MARKET_REGIME_GATE:
         _load_symbol_market_map()
         log(f"  [MKT REGIME  ] enabled | etf={MARKET_REGIME_ETF} ma={MARKET_REGIME_MA_FAST}/{MARKET_REGIME_MA_SLOW} "
@@ -5687,6 +5785,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 return None, f"MARKET_UNKNOWN_{mkt}"
             return market_regime_state[mkt]
         buy_services.market_regime = _market_regime_for
+        # [2026-11-13] 상대강도 예외(r005 _010): 종목 시장의 ETF 1분봉 - 같은 루프에서 추세 판정에 쓴 프레임
+        buy_services.market_regime_frame = lambda _code: market_regime_frames.get(_SYMBOL_MARKET_MAP.get(str(_code).zfill(6)))
+        log(f"  [MKT REGIME  ] relative-strength bypass | excess>={MARKET_REGIME_RS_BYPASS_PCT}%p over "
+            f"{MARKET_REGIME_RS_LOOKBACK_MINUTES}min (0 = off)")
     tick_feed = _make_tick_trigger_feed()
     if tick_feed is not None:
         buy_services.tick_trigger = tick_feed.evaluate
@@ -5845,7 +5947,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             log(f"  [GAPDIP SHDW ] {_sym_label(_gc)} off-watchlist tracking error: {exc}")
 
             if ENABLE_MARKET_REGIME_GATE and is_regular_session(current_dt):
-                _new_regime = _compute_market_regime(current_dt, frame_cache_1min, frame_last_refresh_at_1min)
+                _new_regime = _compute_market_regime(current_dt, frame_cache_1min, frame_last_refresh_at_1min,
+                                                     market_regime_frames)
                 for _mk, _st in _new_regime.items():
                     if market_regime_state.get(_mk, (None, ""))[0] != _st[0]:
                         log(f"  [MKT REGIME  ] {_mk} -> {'UP' if _st[0] else ('DOWN' if _st[0] is False else 'N/A')} | {_st[1]}")
@@ -5864,6 +5967,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 pos = api.get_open_positions().get(code)
                 if pos is not None and pos.get("quantity", 0) > 0 and not _is_today_buy_position(code, pos, date_str, traded_today):
                     log(f"  [🔴HOLD SKIP ] {symbol_label} | NOT_TODAY_BUY_POSITION")
+                    continue
+                # [2026-11-13] AUTO_SELL_SCOPE="bot_only": 봇이 산 수량이 없는 보유분(MTS 직접 매수)은 매도 평가하지 않는다.
+                # 대기 중인 봇 주문이 있으면(체결 직후 장부 반영 전) 건너뛰지 않는다.
+                if (pos is not None and pos.get("quantity", 0) > 0 and api.sells_bot_quantity_only()
+                        and api.bot_quantity(code) <= 0 and not api.has_pending_order(code)):
+                    log(f"  [🔴HOLD SKIP ] {symbol_label} | NOT_BOT_POSITION (bought outside the bot - sell left to the user)")
                     continue
                 # [2026-11-11] a holding whose code is not in today's watchlist (removed by the user, or never listed) is left alone:
                 # no sell evaluation here, no 15:20 / 19:59 close (run_scheduled_liquidations already skips non-watchlist codes).

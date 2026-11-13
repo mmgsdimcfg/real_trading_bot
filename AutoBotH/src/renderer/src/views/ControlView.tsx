@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, autoSellOf, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, type AutoSellMode, type EdgeModelInfo, type TradeMode } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, type AutoSellMode, type EdgeModelInfo, type TradeMode } from '../../../shared/paper';
 import { useStore } from '../store';
 import type { RunMode } from '../../../shared/types';
 import {
@@ -443,6 +443,26 @@ export function ControlView() {
       setModeBusy(false);
     }
   };
+  // [2026-11-13] AUTO_SELL_SCOPE: the automatic sells sell only what the bot bought / the whole holding (hand-bought included)
+  const sellScope = control.autoSellScope;
+  const sellScopeMode = autoSellScopeOf(sellScope?.effective);
+  const sellScopeRunning = autoSellScopeOf(sellScope?.running ?? sellScope?.effective);
+  const sellScopePending = !!sellScope && sellScope.running !== null && (sellScope.pending || sellScopeRunning !== sellScopeMode);
+  const setSellScope = async (next: AutoSellScope) => {
+    if (next === sellScopeMode) return;
+    const text =
+      next === 'all'
+        ? '봇이 관리하는 종목(오늘 감시목록에 있고 오늘 매수된 종목)은 계좌 수량 전부를 자동 매도합니다.\nMTS 등으로 직접 매수한 수량도 함께 팔립니다.'
+        : '봇이 매수한 수량만 자동 매도합니다.\n같은 종목을 MTS 등으로 더 샀으면 봇 수량만 팔고 직접 매수분은 남기며, 전부 직접 매수한 종목은 매도 평가를 하지 않습니다.';
+    if (!window.confirm(`자동 매도 대상: ${AUTO_SELL_SCOPE_KO[next]}\n\n${text}\n\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet({ [AUTO_SELL_SCOPE_KEY]: next });
+      if (!r.ok) window.alert(`자동 매도 대상을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setModeBusy(false);
+    }
+  };
   const profile = mode?.profile ?? ((st?.risk_profile as RiskProfile) || 'neutral');
   const busy = !!control.busy;
   const btn = serviceButtons(st, busy || !connected);
@@ -649,6 +669,28 @@ export function ControlView() {
             </span>
           ) : (
             strategy && <span className="muted small">자동 매도 선택은 서버 코드 갱신 후 쓸 수 있습니다</span>
+          )}
+          {/* [2026-11-13] which quantity the automatic sells may sell: the bot's own buys only / hand-bought (MTS) shares too */}
+          {sellScope && (
+            <label title="r003 재시작 후 적용됩니다. '봇 매수분만'은 봇이 매수한 수량만 자동 매도하고 MTS 등으로 직접 매수한 수량은 남깁니다. '직접 매수분 포함'은 봇이 관리하는 종목의 계좌 수량 전부를 매도합니다. 어느 쪽이든 전일 이월·감시목록 밖 보유분은 매도하지 않습니다.">
+              자동 매도 대상{' '}
+              <select
+                value={sellScopeMode}
+                disabled={busy || !connected || modeBusy || autoSellMode === 'off'}
+                onChange={(e) => void setSellScope(e.target.value as AutoSellScope)}
+              >
+                {AUTO_SELL_SCOPES.map((m) => (
+                  <option key={m} value={m}>
+                    {AUTO_SELL_SCOPE_KO[m]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {sellScope && (sellScopePending || sellScopeMode === 'all') && (
+            <span className={sellScopePending ? 'badge-warn' : 'muted small'}>
+              {sellScopePending ? `→ r003 재시작 후 적용 (실행 중: ${AUTO_SELL_SCOPE_KO[sellScopeRunning]})` : '직접 매수한 수량도 자동 매도됩니다'}
+            </span>
           )}
           {edgeModel !== undefined && <EdgeModelLine m={edgeModel} tradeMode={tradeMode} />}
           {nPending > 0 && st?.running && (
