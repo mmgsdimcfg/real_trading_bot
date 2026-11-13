@@ -189,6 +189,8 @@ export const IGNORED_TAGS = new Set([
   'ACT REENTER',
   'WARMUP', // prior-day bars loaded for indicator warmup
   'AUTO SELL', // [2026-11-12] AUTO_SELL_MODE: "scheduled liquidation skipped" notice, not a condition
+  'BOT LEDGER', // [2026-11-13] r023 bot / manual quantity ledger changes, not a condition
+  'SELL LIMIT', // [2026-11-13] AUTO_SELL_SCOPE=bot_only: a sell was cut down to the bot's quantity (the order line follows)
   'EDGE ONLY', // [2026-11-12] Edge-AI-only paper trading (r022): virtual buys / sells, not a condition of the real pipeline
 ]);
 

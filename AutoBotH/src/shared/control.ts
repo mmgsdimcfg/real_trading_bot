@@ -203,6 +203,33 @@ export interface ControlState {
   strategy?: PaperModeState;
   /** [2026-11-12] server AUTO_SELL_MODE (all / stop_only / off) - undefined until read / on a server without it */
   autoSell?: PaperModeState;
+  /** [2026-11-13] server AUTO_SELL_SCOPE (bot_only / all) - undefined until read / on a server without it */
+  autoSellScope?: PaperModeState;
+}
+
+/** [2026-11-13] one account holding as r016 `holdings` reports it (r023 snapshot): the bot's and the hand-bought quantity */
+export interface HoldingRow {
+  code: string;
+  name: string;
+  qty: number;
+  bot_qty: number;
+  manual_qty: number;
+  avg_price: number;
+  current_price: number;
+  buy_time: string | null;
+  bought_today: boolean;
+}
+
+/** r016 `holdings`: available=false until r003 (with r023) has synced the account once */
+export interface HoldingsDoc {
+  ok: boolean;
+  available: boolean;
+  running: boolean;
+  age_seconds?: number | null;
+  updated_at?: string;
+  date?: string;
+  auto_sell_scope?: string;
+  holdings: HoldingRow[];
 }
 
 /** r001 ENABLE_NXT_SESSION as r016 `get` reports it */

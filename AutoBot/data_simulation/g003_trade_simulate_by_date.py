@@ -16,6 +16,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-13] type=feat owner=claude
+    summary: r005 _010 시장 추세 게이트 상대강도 예외 parity(_market_rs_at -> r002 market_relative_strength_ok) - 지수 DOWN 판정
+      때 종목/ETF 확정 1분봉(_avail_cut 까지)의 최근 N분 수익률 차가 기준 이상이면 통과([RS BYPASS] 로그).
+      env MARKET_REGIME_RS_BYPASS_PCT(A/B, 0 = 종전).
+    impact: sim
+    compatibility: backward-compatible (기본 MARKET_REGIME_RS_BYPASS_PCT=0 / ETF 데이터 없는 날짜는 종전과 동일)
 - [2026-11-11] type=feat owner=claude
     summary: r005 _021 호가단위 비용 게이트 parity - 매수 확정 직전 호가단위/가격 > TICK_COST_MAX_PCT 이면 [REJECT] TICK_COST_TOO_HIGH.
       env ENABLE_TICK_COST_GATE=0/1, TICK_COST_MAX_PCT 로 A/B 가능.
@@ -380,7 +386,9 @@ from r001_define_config import (
     MARKET_REGIME_MA_SLOW,
     MARKET_REGIME_CONFIRM_BARS,
     MARKET_REGIME_FAIL_OPEN,
-    ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
+    MARKET_REGIME_RS_BYPASS_PCT,
+    MARKET_REGIME_RS_LOOKBACK_MINUTES,
+ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     TRIPLE_CHASE_FROM_CROSS_MAX_PCT,
     TICK_MIN_PRINTS_PER_MIN,
     TICK_MIN_PRINTS_WINDOW_MINUTES,
@@ -564,6 +572,7 @@ from r002_strategy_core_shared import (
     check_chase_from_cross,
     load_symbol_market_map,
     market_regime_ok,
+    market_relative_strength_ok,
     build_context_eval,
     run_3min_context_decision,
     passes_opening_gap_volume_gate,
@@ -663,6 +672,8 @@ ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD = _env_bool("ENABLE_TRIPLE_CHASE_FROM_CROSS
 TRIPLE_CHASE_FROM_CROSS_MAX_PCT = _env_float("TRIPLE_CHASE_FROM_CROSS_MAX_PCT", TRIPLE_CHASE_FROM_CROSS_MAX_PCT)
 TICK_MIN_PRINTS_PER_MIN = _env_float("TICK_MIN_PRINTS_PER_MIN", TICK_MIN_PRINTS_PER_MIN)
 ENABLE_MARKET_REGIME_GATE = _env_bool("ENABLE_MARKET_REGIME_GATE", ENABLE_MARKET_REGIME_GATE)
+# [2026-11-13] 상대강도 예외 A/B (MARKET_REGIME_RS_BYPASS_PCT=0 이면 종전)
+MARKET_REGIME_RS_BYPASS_PCT = _env_float("MARKET_REGIME_RS_BYPASS_PCT", MARKET_REGIME_RS_BYPASS_PCT)
 # [2026-11-11] r005 _021 tick-cost gate parity (A/B: ENABLE_TICK_COST_GATE=0|1, TICK_COST_MAX_PCT=<percent>)
 ENABLE_TICK_COST_GATE = _env_bool("ENABLE_TICK_COST_GATE", ENABLE_TICK_COST_GATE)
 TICK_COST_MAX_PCT = _env_float("TICK_COST_MAX_PCT", TICK_COST_MAX_PCT)
@@ -2645,6 +2656,18 @@ def simulate_date(
         ok, detail = market_regime_ok(fr[fr.index <= cut], MARKET_REGIME_MA_FAST, MARKET_REGIME_MA_SLOW, MARKET_REGIME_CONFIRM_BARS)
         return ok, f"{mkt}_{detail}"
 
+    def _market_rs_at(code: str, cut, stock_1min) -> tuple:
+        """[2026-11-13] r005 _010 상대강도 예외 parity - cut 까지의 종목/ETF 확정 1분봉으로 r002 market_relative_strength_ok."""
+        if float(MARKET_REGIME_RS_BYPASS_PCT) <= 0:
+            return False, ""
+        mkt = SYMBOL_MARKET_MAP.get(str(code).zfill(6))
+        fr = regime_frames_1min.get(mkt) if mkt else None
+        if fr is None or stock_1min is None:
+            return False, "RS_NO_DATA"
+        return market_relative_strength_ok(
+            stock_1min, fr[fr.index <= cut], MARKET_REGIME_RS_LOOKBACK_MINUTES, MARKET_REGIME_RS_BYPASS_PCT,
+        )
+
     def _is_nxt_tradeable(code: str) -> bool:
         if code in nxt_flags_from_file:
             return nxt_flags_from_file[code]
@@ -3344,9 +3367,15 @@ def simulate_date(
                 _rg_ok, _rg_detail = _market_regime_at(code, _avail_cut)
                 if _rg_ok is None and not MARKET_REGIME_FAIL_OPEN:
                     _rg_ok = False
-                if _rg_ok is False:
+                    _rs_ok, _rs_detail = False, ""
+                elif _rg_ok is False:  # [2026-11-13] 상대강도 예외는 지수가 DOWN 으로 판정된 경우에만 (판정 불가에는 미적용)
+                    _rs_ok, _rs_detail = _market_rs_at(code, _avail_cut, buy_available_1min)
+                if _rg_ok is False and _rs_ok:
+                    log_detail(f"  [RS BYPASS] {code} | MARKET_REGIME_DOWN_{_rg_detail} | {_rs_detail} | price={price:,.0f}")
+                elif _rg_ok is False:
                     buy_confirm_state.pop(code, None)
-                    log_detail(f"  [REJECT] {code} | MARKET_REGIME_DOWN_{_rg_detail} | price={price:,.0f}")
+                    log_detail(f"  [REJECT] {code} | MARKET_REGIME_DOWN_{_rg_detail}"
+                               + (f" | {_rs_detail}" if _rs_detail else "") + f" | price={price:,.0f}")
                     should_buy = False
             if should_buy and classify_buy_session(ts) == "regular":
                 # [2026-10-04/05] r005 _016_anti_chase_day_extension parity (당일 시가/VWAP 대비 과열 차단).

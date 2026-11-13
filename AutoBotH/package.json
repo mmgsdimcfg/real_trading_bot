@@ -1,5 +1,9 @@
 {
   "_updateLog": [
+    "[2026-11-13] type=feat - v2.3.18_002: 종목 보드 - 종목 행을 누르면 파이프라인 대신 타임라인으로 이동 (보유 현황 탭과 같은 동작)",
+    "[2026-11-13] type=feat - v2.3.18_001: 봇 매수분 / 직접(MTS) 매수분 구분 - (1) 보유 현황: 계좌의 모든 보유 종목을 표시하고 '구분' 칸에 봇 / 직접 / 혼합을 표시, 혼합 보유는 수량을 '봇 n · 직접 m' 으로 나눠 보여 주며 전체 / 봇 매수 / 직접 매수 필터 추가(서버 r016 holdings - r003 계좌 동기화 기준, 스냅샷이 없으면 종전처럼 오늘 봇 매수분만) (2) 제어: '자동 매도 대상' 선택 추가(AUTO_SELL_SCOPE) - '봇 매수분만'(기본)은 봇이 매수한 수량만 자동 매도하고 직접 매수분은 남김, '직접 매수분 포함'은 종전처럼 계좌 수량 전부. r003 재시작 후 적용 (3) 종목 보드: 오늘 직접 매수해 봇이 매도 평가하지 않는 종목도 '보유'로 표시",
+    "[2026-11-13] type=fix - v2.3.17_006: 종목 보드 - 이전 거래일에서 넘어온 보유 종목이 NXT 거래 대상이 아니면 정규장 마감 뒤 '보유' 표시가 3분 만에 사라지던 문제 수정(Codex 검토). 마감 뒤 r003 은 HOLD SKIP 대신 [SKIP] can_trade_code_now=False 를 남기므로, 이미 보유로 확인된 종목은 그 줄로도 보유 상태를 유지한다",
+    "[2026-11-13] type=fix - v2.3.17_005: 종목 보드 - (1) 감시목록 편집에서 지운 종목이 재시작 뒤에도 '감시'로 남던 문제 수정. 봇(r003)은 편집된 목록으로 다시 시작했지만 보드가 그날 앞선 실행 로그의 종목을 계속 표시했다. 이제 r003 재시작마다 감시 상태를 다시 만들고, 목록에서 빠진 종목은 평가·매매 기록이 없으면 보드에서 빼고 있으면 '제외'로 표시 (2) 감시 칸에 보유 종목은 '보유'로 표시 - 오늘 매수분, 이전 거래일에서 넘어온 보유(기존 '졸업'), 감시목록 밖 계좌 보유(기존 '-'). '보유 종목만' 필터에도 포함",
     "[2026-11-12] type=fix - v2.3.17_004: 타임라인 매수 평가 차트의 범례(막힘/대기/통과/정보)를 차트 안에서 제목 줄 오른쪽 끝으로 옮김. 주가 차트 끌기 = 좌우 이동, Ctrl+끌기 = 구간 확대 (기존: 끌기 = 구간 확대)",
     "[2026-11-12] type=fix - v2.3.17_003: 틱 수집기 자동 확인 시간대를 평일 08:40~15:35 에서 07:55~19:55 로 넓힘 - 수집기(g011)가 NXT 체결(08:00~20:00)도 받게 되어 장전·장후에도 수집기가 꺼져 있으면 다시 시작한다. 작업/설정 화면 문구 수정",
     "[2026-11-12] type=feat - v2.3.17_002: 제어 탭에 현재 적용 중인 Edge AI 모델 표시 - 모델 ID, 학습 대상(손절 전 +2% 도달 등), 확률 기준, 검증 구간의 +2% 도달률, 승격 여부, 어디에 쓰이는지. 마우스를 올리면 데이터셋·AUC·순손익·+2/+3/+5% 도달률 상세. 연결된 호스트의 runtime/edge_ai/current_meta.json 을 1분마다 다시 읽는다",
@@ -55,7 +59,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.17",
+  "version": "2.3.18",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -103,7 +107,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "002",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

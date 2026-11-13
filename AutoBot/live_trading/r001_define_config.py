@@ -1,6 +1,18 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-13] type=feat owner=claude
+#     summary: 사용자 요청 - AUTO_SELL_SCOPE("bot_only" 기본 | "all"): 자동 매도가 봇이 매수한 수량만 팔지(직접 매수분은 남김),
+#       계좌 수량 전부를 팔지. 수량 구분은 r023 장부(r003 계좌 동기화). 관리 범위(오늘 감시 목록 + 오늘 매수)는 불변.
+#     impact: live (r003 재시작 후)
+#     compatibility: breaking (자동 매도 수량 감소 방향. 롤백: AUTO_SELL_SCOPE="all")
+# - [2026-11-13] type=feat owner=claude
+#     summary: 사용자 결정(20261113 010060 OCI홀딩스 10:41 미매수 - 시장 추세 게이트 DOWN 구간의 단독 강세) - 시장 추세 게이트
+#       상대강도 예외 MARKET_REGIME_RS_BYPASS_PCT(기본 0 = 꺼짐) / MARKET_REGIME_RS_LOOKBACK_MINUTES(10). r002
+#       market_relative_strength_ok, r005 _010, r003(ETF 1분봉 주입), g003 parity. 11/10~11/12 반려 시점 대입 결과가 음수라
+#       기본값은 꺼 둠(상수 주석 참조).
+#     impact: common (r003 / g003) - 기본값에서는 동작 변화 없음
+#     compatibility: backward-compatible (MARKET_REGIME_RS_BYPASS_PCT > 0 으로 켰을 때만 매수 증가 방향)
 # - [2026-11-12] type=feat owner=claude
 #     summary: TRADING_STRATEGY_MODE 에 "edge" 추가(Edge AI 단독 실매매, 사용자 요청) + EDGE_TP_PCT / EDGE_SL_PCT /
 #       EDGE_MAX_HOLD_MINUTES. r005 EDGE_BUY_CONDITIONS / r006 EDGE_SELL_CONDITIONS 가 사용. 기본 normal.
@@ -1906,6 +1918,16 @@ GC_VOLATILITY_MIN_ATR_1MIN_PCT = 0.5   # 퍼센트 단위 (0.5 = 0.5%)
 # =============================================================================
 AUTO_SELL_MODE = "stop_only"        # "all" | "stop_only" | "off"
 AUTO_SELL_STOP_NET_PCT = 0.02       # 비용 포함 순손익 손절 기준 (0.02 = -2.0%)
+# [2026-11-13] 자동 매도 대상 수량 (사용자 요청: 봇이 매수한 것과 MTS 로 직접 매수한 것을 구분해서 매도)
+#   "bot_only"  봇이 매수한 수량만 자동 매도한다(기본). 같은 종목을 MTS 로 더 샀으면 봇 수량만 팔고 직접 매수분은 남긴다.
+#               봇 수량이 0 인 보유분(전부 직접 매수)은 매도 평가를 하지 않는다([HOLD SKIP] NOT_BOT_POSITION).
+#   "all"       종전 동작 - 봇이 관리하는 종목은 계좌 수량 전부를 매도한다(직접 매수분 포함).
+# - 어느 쪽이든 관리 범위는 그대로다: 오늘 감시 목록(r004)에 있고 오늘 매수된 종목만. 전일 이월/감시 목록 밖 보유분은 손대지 않는다.
+# - 봇/직접 수량은 r023 장부(<runtime>/data/live_runtime/bot_holdings.json)가 계좌 동기화마다 계좌 수량 변화로 갱신한다:
+#   봇 매수 주문이 걸려 있던 동안 늘어난 수량 = 봇, 그 외 증가 = 직접. 직접 매도로 줄면 직접 수량부터 줄인다.
+# - 손익 판정에 쓰는 매수가는 계좌 평균단가(봇+직접 합산)다 - 같은 종목을 섞어 샀으면 봇 매수가와 다를 수 있다.
+# - AUTO_SELL_MODE 와 독립(자동 매도가 "off" 면 의미 없음). dry_run 에는 적용하지 않는다. 변경: r016 set AUTO_SELL_SCOPE=... 후 r003 재시작.
+AUTO_SELL_SCOPE = "bot_only"        # "bot_only" | "all"
 
 
 # =============================================================================
@@ -1968,6 +1990,16 @@ MARKET_REGIME_ETF = {"KOSPI": "069500", "KOSDAQ": "229200"}   # KODEX 200 / KODE
 MARKET_REGIME_MA_FAST = 5
 MARKET_REGIME_MA_SLOW = 20
 MARKET_REGIME_FAIL_OPEN = True
+# [2026-11-13] 상대강도 예외(사용자 결정): 시장 추세가 DOWN 이어도 종목 1분봉의 최근 MARKET_REGIME_RS_LOOKBACK_MINUTES 분 수익률이
+#     (a) 0 보다 크고 (b) 같은 구간 지수 ETF 수익률보다 MARKET_REGIME_RS_BYPASS_PCT(%p) 이상 높으면 통과(r002
+#     market_relative_strength_ok, r005 _010 / g003 parity). 근거: 20261113 010060 OCI홀딩스 - KOSPI 게이트가 10:35~11:00 DOWN 인
+#     동안 10:41 3중 크로스 완성(약 199,200원)이 막혔고 그 사이 203,500원까지 상승. 확정 1분봉 종가끼리만 비교(현재가 미사용),
+#     ETF 데이터 없음/봉 부족/라벨 불일치면 예외 없음(차단 유지).
+#     기본 0(꺼짐): 11/10~11/12 실전 MARKET_REGIME_DOWN 반려 시점에 대입한 결과(10분/0.5%p, 종목당 30분에 1회) 34건의 30분 뒤
+#     수익률 평균 -0.48%, 플러스 11건, 30분 내 -1.7%(하드스탑) 도달 6건. 기준을 1.0/1.5%p, 구간을 3/5/20분으로 바꿔도 평균이 모두
+#     음수(강할수록 더 나쁨) - 010060 11/13 은 예외적 사례였다. 켜려면 r016 set MARKET_REGIME_RS_BYPASS_PCT=0.5 (%p, 0 이하 = 예외 없음).
+MARKET_REGIME_RS_BYPASS_PCT = 0.0
+MARKET_REGIME_RS_LOOKBACK_MINUTES = 10
 
 
 def _apply_risk_profile_overrides() -> None:

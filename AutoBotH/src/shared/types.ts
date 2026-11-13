@@ -84,7 +84,12 @@ export interface Trade {
   raw: string;
 }
 
-export type WatchState = 'active' | 'backup' | 'graduated' | 'dropped' | 'unknown';
+/** 'removed' [2026-11-13]: watched by an earlier r003 run of the day but not in the watchlist of the latest run (r004 was edited) */
+export type WatchState = 'active' | 'backup' | 'graduated' | 'dropped' | 'removed' | 'unknown';
+
+/** [2026-11-13] a holding that was not bought today: 'carried' = in the watchlist ([HOLD SKIP] NOT_TODAY_BUY_POSITION),
+ *  'unmanaged' = not in the watchlist ("account holdings not in watchlist") */
+export type HeldState = 'carried' | 'unmanaged' | 'manual';
 
 export interface Position {
   qty: number;
@@ -99,6 +104,8 @@ export interface SymbolSummary {
   nxt?: boolean;
   watch: WatchState;
   position?: Position;
+  /** [2026-11-13] held but not bought today (no fill in today's buy_sell log, so `position` is empty) */
+  held?: HeldState;
   lastEval?: EvalEvent;
   lastSell?: EvalEvent;
   lastOrder?: EvalEvent;

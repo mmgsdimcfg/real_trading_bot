@@ -23,6 +23,8 @@
   quote --code C [--trades N]      KIS 현재가+호가+체결 (live_trading/r018_kis_market.py, 읽기 전용)
   collector start [--force]        g011 을 --fill-from-scan 으로 분리 실행 (g022 cron 과 같은 규칙: 장 시작 15분 전~마감, standby 거부)
   role get | role set primary|standby [--note T]   호스트 역할 (r019 host_role.json). standby 면 start/restart/collector start 거부
+  holdings                         계좌 보유 현황 스냅샷 (r003 이 계좌 동기화마다 쓰는 live_runtime/holdings.json - r023 장부의 봇/직접
+                                   매수 수량 포함). 읽기 전용, KIS 호출 없음. r003 이 꺼져 있으면 마지막 스냅샷 + age_seconds
   doctor                           실행 환경 점검 (Python/패키지 버전, open-trading-api, KIS 설정 파일 유무, 역할, 백엔드)
   job list | job start NAME [--date D] [--workers N] [--edge-ai] [--no-collect] [--no-scan] [--no-apply] [--email] [--scheduled] | job stop NAME | job log NAME [-n N]
                                    데이터 작업 (live_trading/r021_jobs.py: collect/history/scan/edge_ai/universe/postclose;
@@ -43,6 +45,11 @@ AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-13] type=feat owner=claude
+    summary: holdings 명령 - r003 이 쓰는 보유 스냅샷(<runtime>/data/live_runtime/holdings.json, r023)을 그대로 돌려준다:
+      종목별 계좌 수량 / 봇 매수 수량(bot_qty) / 직접 매수 수량(manual_qty) / 평균단가 / 스냅샷 시각. 파일이 없으면 available=false.
+    impact: tooling (명령 추가 - AutoBotH 보유 현황 탭)
+    compatibility: backward-compatible
 - [2026-11-11] type=feat owner=claude
     summary: (1) watchlist apply --date D - 그 날짜의 g002 선별 파일(_D_picks.txt)을 r004 에 적용. write_watchlist 와 같은 잠금/백업/
       이력/수집기 안내에 헤더 메타(scan_date, for_trading_day = r014 다음 거래일, [r016] applied from picks) 를 쓴다(meta 인자).
@@ -1146,6 +1153,22 @@ def _git_commit(path: Path) -> str | None:
         return None
 
 
+def holdings(paths: ControlPaths) -> dict:
+    """[2026-11-13] 계좌 보유 현황 스냅샷 (r023 holdings.json - r003 이 계좌 동기화마다 기록). 읽기 전용, KIS 호출 없음.
+    available=false: 스냅샷 파일이 아직 없다(r003 이 이 버전으로 한 번도 계좌를 읽지 않음)."""
+    import r023_bot_holdings as r023  # noqa: E402  (stdlib only)
+    running = bool(r019.is_locked(paths.r003_lock))
+    snap = r023.load_snapshot(paths.runtime_root / "data" / "live_runtime")
+    if snap is None:
+        return {"ok": True, "available": False, "running": running, "holdings": []}
+    age = None
+    try:
+        age = max(0.0, (datetime.now() - datetime.fromisoformat(str(snap.get("updated_at")))).total_seconds())
+    except (TypeError, ValueError):
+        pass
+    return {"ok": True, "available": True, "running": running, "age_seconds": age, **snap}
+
+
 def doctor(paths: ControlPaths) -> dict:
     import importlib.metadata as md
 
@@ -1224,6 +1247,7 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("role", nargs="?", choices=list(r019.HOST_ROLES), default=None)
     p.add_argument("--note", default="")
     sub.add_parser("doctor")
+    sub.add_parser("holdings", help="계좌 보유 현황 스냅샷 - 봇/직접 매수 수량 (읽기 전용, r023)")
     import r021_jobs as r021  # noqa: E402  (stdlib only)
     r021.add_job_parser(sub)
     # 차트 명령(indicators/bars)은 r017(pandas, r012/r002)을 불러와야 해서 기동이 ~1 s 느리다. 나머지 명령(status 폴링 등)은
@@ -1304,6 +1328,9 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
 
     if args.cmd == "doctor":
         return _emit(doctor(paths))
+
+    if args.cmd == "holdings":
+        return _emit(holdings(paths))
 
     if args.cmd == "job":
         out, rc = r021.run_job_command(args, args.by, r021.Paths(paths.runtime_root))

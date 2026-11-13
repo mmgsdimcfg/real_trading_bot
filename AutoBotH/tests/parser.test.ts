@@ -330,6 +330,85 @@ describe('symbol list (2026-11-05 log changes)', () => {
     const by = Object.fromEntries(e.snapshot().symbols.map((s) => [s.code, s.nxt]));
     expect(by).toEqual({ '010060': true, '003380': false, '159010': undefined });
   });
+
+  it('r003 restart: a symbol removed from r004 leaves the board; held symbols say so (2026-11-13)', () => {
+    const e = new DayEngine('20261113', conditions);
+    const T = (time: string, tag: string, body: string) => `2026-11-13 ${time},000 [INFO]   [${tag.padEnd(12)}] ${body}`;
+    e.feedMainLines([
+      '2026-11-13 07:51:21,900 [INFO] R003 START | initializing live executor',
+      '2026-11-13 07:51:28,008 [INFO] WATCH | 251340 | KODEX 코스닥150선물인버스 | NXT=False',
+      '2026-11-13 07:51:28,009 [INFO] WATCH | 068270 | 셀트리온 | NXT=True',
+      '2026-11-13 07:51:28,010 [INFO] WATCH | 018260 | 삼성에스디에스 | NXT=True',
+    ]);
+    expect(e.snapshot().symbols.map((s) => [s.code, s.watch])).toEqual([['018260', 'active'], ['068270', 'active'], ['251340', 'active']]);
+    // 251340 deleted in the watchlist editor, r003 restarted
+    e.feedMainLines([
+      '2026-11-13 07:56:21,905 [INFO] R003 START | initializing live executor',
+      '2026-11-13 07:56:27,578 [INFO] WATCH | 068270 | 셀트리온 | NXT=True',
+      '2026-11-13 07:56:27,579 [INFO] WATCH | 018260 | 삼성에스디에스 | NXT=True',
+      T('08:00:00', 'WARN', 'account holdings not in watchlist: 033780 - not managed by the bot (no sell evaluation, no session close)'),
+      '2026-11-13 08:00:00,334 [INFO]   [🔴HOLD SKIP ] 018260_삼성에스~  | NOT_TODAY_BUY_POSITION',
+      T('08:00:05', 'ACT GRADUATE', '018260_삼성에스~  | reason=POSITION_OPENED | active=7 backup=0'),
+    ]);
+    let by = Object.fromEntries(e.snapshot().symbols.map((s) => [s.code, [s.watch, s.held]]));
+    expect(by).toEqual({ '018260': ['graduated', 'carried'], '033780': ['unknown', 'unmanaged'], '068270': ['active', undefined] });
+    // second restart: no [ACT GRADUATE] is logged again, the symbol stays graduated
+    e.feedMainLines([
+      '2026-11-13 08:37:01,246 [INFO] R003 START | initializing live executor',
+      '2026-11-13 08:37:06,957 [INFO] WATCH | 068270 | 셀트리온 | NXT=True',
+      '2026-11-13 08:37:06,958 [INFO] WATCH | 018260 | 삼성에스디에스 | NXT=True',
+      '2026-11-13 08:37:07,210 [INFO]   [🔴HOLD SKIP ] 018260_삼성에스~  | NOT_TODAY_BUY_POSITION',
+    ]);
+    by = Object.fromEntries(e.snapshot().symbols.map((s) => [s.code, [s.watch, s.held]]));
+    expect(by['018260']).toEqual(['graduated', 'carried']);
+    expect(by['068270']).toEqual(['active', undefined]);
+    expect(by['251340']).toBeUndefined();
+    // the holding is gone once its lines stop (sold by hand): 4 minutes later it is no longer 'carried'
+    e.feedMainLines([T('08:41:30', 'WL SPLIT', 'active=7 backup=0 total=8')]);
+    expect(e.snapshot().symbols.find((s) => s.code === '018260')?.held).toBeUndefined();
+  });
+
+  it('a carried holding stays 보유 while r003 skips it outside its session', () => {
+    const e = new DayEngine('20261113', conditions);
+    const T = (t: string, tag: string, rest: string) => `2026-11-13 ${t},000 [INFO]   [${tag.padEnd(12)}] ${rest}`;
+    e.feedMainLines([
+      '2026-11-13 15:00:00,000 [INFO] WATCH | 018260 | 삼성에스디에스 | NXT=False',
+      '2026-11-13 15:00:01,000 [INFO] WATCH | 068270 | 셀트리온 | NXT=True',
+      '2026-11-13 15:19:50,000 [INFO]   [🔴HOLD SKIP ] 018260_삼성에스~  | NOT_TODAY_BUY_POSITION',
+      // after the regular close: no HOLD SKIP any more, only the session skip - other symbols keep logging
+      T('15:31:00', 'SKIP', '018260_삼성에스~  | can_trade_code_now=False | time=15:31:00 nxt=False'),
+      T('15:40:00', 'SKIP', '018260_삼성에스~  | can_trade_code_now=False | time=15:40:00 nxt=False'),
+      T('15:41:00', 'SKIP', '068270_셀트리온   | can_trade_code_now=False | time=15:41:00 nxt=True'),
+    ]);
+    const by = Object.fromEntries(e.snapshot().symbols.map((s) => [s.code, s.held]));
+    expect(by['018260']).toBe('carried');
+    expect(by['068270']).toBeUndefined(); // a session skip alone never makes a symbol a holding
+  });
+
+  it('a holding bought by hand today is held as manual (AUTO_SELL_SCOPE=bot_only)', () => {
+    const e = new DayEngine('20261113', conditions);
+    e.feedMainLines([
+      '2026-11-13 10:00:00,000 [INFO] WATCH | 010060 | OCI홀딩스 | NXT=True',
+      '2026-11-13 10:00:05,000 [INFO]   [🔴HOLD SKIP ] 010060_OCI홀딩스  | NOT_BOT_POSITION (bought outside the bot - sell left to the user)',
+      '2026-11-13 10:00:06,000 [INFO]   [BOT LEDGER  ] 010060_OCI홀딩스 | account=0->5 bot=0->0',
+      '2026-11-13 10:00:07,000 [INFO]   [SELL LIMIT  ] 010060_OCI홀딩스 | AUTO_SELL_SCOPE=bot_only | requested=5 bot=0 account=5 | reason=X',
+    ]);
+    const s = e.snapshot().symbols.find((x) => x.code === '010060');
+    expect(s?.held).toBe('manual');
+    expect(s?.lastEval).toBeUndefined(); // the ledger / limit notices are not buy evaluations
+  });
+
+  it('a symbol with evaluations stays on the board as removed after it leaves the watchlist', () => {
+    const e = new DayEngine('20261104', conditions);
+    e.feedMainLines([
+      '2026-11-04 08:50:00,000 [INFO] R003 START | initializing live executor',
+      '2026-11-04 08:50:05,000 [INFO] WATCH | 159010 | 아스플로 | NXT=True',
+      ...MAIN_SAMPLE,
+      '2026-11-04 12:00:00,000 [INFO] R003 START | initializing live executor',
+    ]);
+    const s = e.snapshot().symbols.find((x) => x.code === '159010');
+    expect(s?.watch).toBe('removed');
+  });
 });
 
 describe('server key remap (app / server numbering gap)', () => {

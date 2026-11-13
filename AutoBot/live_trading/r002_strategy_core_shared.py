@@ -18,6 +18,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-13] type=feat owner=claude
+    summary: market_relative_strength_ok(+ _return_over_minutes) - 시장 추세 게이트 상대강도 예외. 종목 확정 1분봉의 최근 N분
+      수익률이 0 보다 크고 지수 ETF 대비 기준(%p) 이상 높으면 True (r001 MARKET_REGIME_RS_BYPASS_PCT / _RS_LOOKBACK_MINUTES).
+    impact: common (r005 _010 / g003)
+    compatibility: backward-compatible (새 함수. 호출측에서 MARKET_REGIME_RS_BYPASS_PCT=0 이면 종전과 동일)
 - [2026-11-11] type=feat owner=claude
     summary: 매수 시점 최적화(r001 2026-11-11 Update log 참조) - (1) evaluate_triple_trigger above_max_age_s: above 모드에서도 오래된
       1분 크로스는 반려, (2) market_regime_ok confirm_bars: 지수 MA5<=MA20 이 연속 확정봉 수만큼 유지될 때만 차단(깜빡임 허용),
@@ -2238,6 +2243,58 @@ def _ma_below_run(frame_1min: pd.DataFrame, fast: int, slow: int) -> int:
             break
         run += 1
     return run
+
+
+def _return_over_minutes(frame_1min: pd.DataFrame | None, minutes: int) -> tuple[float, pd.Timestamp, pd.Timestamp] | None:
+    """(return % of the last confirmed 1-min close vs the close `minutes` earlier, last bar label, reference bar label) or None.
+    The reference bar is the latest bar at or before last - minutes; it must be on the same day as the last bar and not
+    older than last - 2*minutes (a longer hole = no usable reference)."""
+    if frame_1min is None or len(frame_1min) < 2 or "close" not in frame_1min.columns:
+        return None
+    close = pd.to_numeric(frame_1min["close"], errors="coerce").dropna()
+    if len(close) < 2:
+        return None
+    try:
+        last = pd.Timestamp(close.index[-1])
+        ref_cut = last - pd.Timedelta(int(minutes), "min")
+        ref = close[close.index <= ref_cut]
+        if ref.empty:
+            return None
+        ref_label = pd.Timestamp(ref.index[-1])
+    except Exception:
+        return None
+    if ref_label.date() != last.date() or ref_label < last - pd.Timedelta(2 * int(minutes), "min"):
+        return None
+    ref_close, last_close = float(ref.iloc[-1]), float(close.iloc[-1])
+    if ref_close <= 0 or last_close <= 0:
+        return None
+    return (last_close / ref_close - 1.0) * 100.0, last, ref_label
+
+
+def market_relative_strength_ok(
+    stock_1min: pd.DataFrame | None, etf_1min: pd.DataFrame | None, lookback_minutes: int, min_excess_pct: float,
+) -> tuple[bool, str]:
+    """[2026-11-13] 시장 추세 게이트 상대강도 예외(r005 _010 / g003 공용, r001 MARKET_REGIME_RS_BYPASS_PCT /
+    MARKET_REGIME_RS_LOOKBACK_MINUTES). 종목 확정 1분봉의 최근 lookback_minutes 분 수익률이 0 보다 크고, 같은 구간 지수 ETF
+    수익률보다 min_excess_pct(%p) 이상 높으면 (True, 사유). min_excess_pct <= 0, 프레임 없음/봉 부족, 두 프레임의 마지막 봉
+    라벨이 다르면 (False, 사유) - 예외 없음(호출측은 차단을 유지)."""
+    if float(min_excess_pct or 0) <= 0 or int(lookback_minutes or 0) <= 0:
+        return False, "RS_OFF"
+    stock = _return_over_minutes(stock_1min, lookback_minutes)
+    etf = _return_over_minutes(etf_1min, lookback_minutes)
+    if stock is None or etf is None:
+        return False, f"RS_NO_DATA_{'STOCK' if stock is None else 'ETF'}"
+    (stock_ret, stock_last, stock_ref), (etf_ret, etf_last, etf_ref) = stock, etf
+    # 양 끝 봉 라벨이 모두 같아야 같은 구간이다 - 한쪽 캐시가 늦거나(끝) 기준 분 봉이 비어 더 이른 봉을 고른(시작) 경우는 비교 불가
+    if stock_last != etf_last or stock_ref != etf_ref:
+        return False, (f"RS_LABEL_MISMATCH_{stock_ref:%H:%M}-{stock_last:%H:%M}_{etf_ref:%H:%M}-{etf_last:%H:%M}")
+    excess = stock_ret - etf_ret
+    text = f"STOCK_{stock_ret:+.2f}%_ETF_{etf_ret:+.2f}%_{int(lookback_minutes)}min"
+    if stock_ret <= 0:
+        return False, f"RS_STOCK_NOT_UP_{text}"
+    if excess + 1e-9 < float(min_excess_pct):
+        return False, f"RS_EXCESS_{excess:.2f}%p_LT_{float(min_excess_pct):.2f}%p_{text}"
+    return True, f"RS_EXCESS_{excess:.2f}%p_GE_{float(min_excess_pct):.2f}%p_{text}"
 
 
 def check_chase_from_cross(live_price: float, cross_ref_price: float, max_pct: float) -> tuple[bool, str]:

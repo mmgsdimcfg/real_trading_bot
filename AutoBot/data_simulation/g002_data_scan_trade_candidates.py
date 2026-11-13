@@ -24,6 +24,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-13] type=fix owner=claude
+    summary: 사용자 지적(20261112 KODEX 코스닥150선물인버스 251340이 고점에서 3일간 -10.8% 꺾였는데 보충 1순위로 선정).
+      원인: 최근 5일 음봉 3개로 패턴 탈락(pattern_bearish_candles)했지만 near-miss 보충 예외로 구제, MA5 > MA20(후행)이라
+      trend_state=up, 대상일 하루 반등 양봉으로 연속 하락 체크 통과, 거래대금 점수로 보충 1위.
+      (1) 보충의 고점 꺾임 차단(FALLBACK_ROLLOVER_MAX_DROP_5D 0.07, _fallback_peak_rollover_row): 종가 < MA5 이고 최근
+      5거래일 종가 고점 대비 -7% 이상이면 보충 제외(soft flag fallback_blocked_peak_rollover, 감점 없음). 패턴 A/B 적격에는 미적용.
+      87거래일 일봉 근사 검증에서 D+1 수익률 개선 근거는 없음(해당 +0.03% vs 풀 -0.02%) - 사용자 판단으로 적용.
+      (2) 인버스/레버리지/선물 ETF 하드 배제(derivative_etf_excluded, DERIVATIVE_ETF_NAME_KEYWORDS) - 수집 3,013종목 중 116건.
+    impact: scanner (보충 종목 감소 가능, 파생형 ETF 선정 제외)
+    compatibility: backward-compatible (scan_all/ranked 열 구성 변화 없음, fail_reason/soft_flag 값 2개 추가)
 - [2026-11-11] type=tune owner=claude
     summary: 사용자 요청("조건이 너무 타이트하거나 불필요한 조건이 좋은 종목을 누락 - 데이터 기반으로 정리/고도화")
       + Codex 검토. 검증: runtime/data/daily_history(3,009종목 x 226일)로 g002 scan()을 2026-07-06~11-09 85거래일
@@ -728,6 +738,23 @@ SELECTION_RANK_BY_SIGNAL_COUNT = False
 # [2026-11-11] 보충(fallback)이 구제하지 않는 패턴 탈락 사유(Codex 검토: 과열 상한은 패턴 탈락만 시키고 보충 경로로 되돌아올 수
 # 있었음). 과열 종목(MA20 +15%/RSI 70/MA60 20일 +6%/20일 +30%)은 보충에서도 제외한다.
 FALLBACK_BLOCKED_PATTERN_FAILS = ("pattern_overheated",)
+# [2026-11-13] 보충(fallback)의 '고점 꺾임' 차단(사용자 결정, 20261112 KODEX 코스닥150선물인버스 251340: 11/09 종가 3,180 ->
+# 11/12 2,835, 고점 대비 -10.8%인데 MA5 > MA20(후행)이라 trend_state=up + 하루 반등 양봉으로 보충 1순위 선정).
+# 종가가 MA5 아래이고 최근 5거래일(대상일 포함) 종가 고점 대비 이 비율 이상 내려온 종목은 보충하지 않는다. 패턴 A/B 적격
+# 선정에는 적용하지 않는다. 87거래일(7/06~11/11) 일봉 근사 풀(MA5>MA20, 종가>MA20, 이격 +10% 이내, 거래대금 50억+) 검증:
+# 해당 하루 약 16종목(풀 107), D+1 시가->종가 +0.03%(풀 -0.02%), D+5 -0.77%(풀 -0.92%) - 수익률 개선 근거는 없고
+# 차트상 꺾인 종목을 빼려는 사용자 판단으로 적용. 롤백: None.
+FALLBACK_ROLLOVER_MAX_DROP_5D = 0.07
+
+
+def _fallback_peak_rollover_row(row) -> bool:
+    """[2026-11-13] 고점 꺾임: 종가 < MA5 이고 최근 5거래일 종가 고점 대비 FALLBACK_ROLLOVER_MAX_DROP_5D 이상 하락."""
+    if FALLBACK_ROLLOVER_MAX_DROP_5D is None:
+        return False
+    price, ma5, drop = row.get("price"), row.get("ma5"), row.get("drop_from_5d_high")
+    if price is None or ma5 is None or drop is None:
+        return False
+    return price < ma5 and drop <= -FALLBACK_ROLLOVER_MAX_DROP_5D
 
 
 def _fallback_relaxable_row(row) -> bool:
@@ -1348,6 +1375,19 @@ def _is_preferred_or_spac_name(name: str) -> bool:
     return bool(PREFERRED_STOCK_NAME_RE.match(stripped))
 
 
+# [2026-11-13] 인버스/레버리지/선물 ETF 구조적 배제(사용자 결정). 지수 하락에 베팅하거나 배수로 움직이는 파생형 상품이라
+# 개별 종목 상승 초입 패턴 대상이 아니다(251340 사례 - 그동안은 장중 3분봉 ATR 0.40% 하한이 간접적으로만 걸러 줌).
+# 20261112 수집 목록 3,013종목 중 116건 해당, 전부 ETF 브랜드(KODEX/TIGER/RISE 등)였고 일반 종목 오탐 없음. 롤백: 빈 tuple.
+DERIVATIVE_ETF_NAME_KEYWORDS = ("인버스", "레버리지", "선물")
+
+
+def _is_derivative_etf_name(name: str) -> bool:
+    """[2026-11-13] 종목명에 DERIVATIVE_ETF_NAME_KEYWORDS 중 하나가 들어 있으면 True."""
+    if not name:
+        return False
+    return any(keyword in name for keyword in DERIVATIVE_ETF_NAME_KEYWORDS)
+
+
 def _is_box_range_no_progress(
     df,
     window=BOX_RANGE_NO_PROGRESS_WINDOW,
@@ -1947,7 +1987,17 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         if c0 is not None and c0 > 0 and c2 is not None:
             close_3d_return = (c2 / c0) - 1.0
 
+    # [2026-11-13] 최근 5거래일(대상일 포함) 종가 고점 대비 하락률 - 보충의 '고점 꺾임' 차단용(_fallback_peak_rollover_row).
+    # 서버 일봉에 대상일 행이 없으면 직전 4거래일 + price로 본다.
+    drop_from_5d_high = None
+    _recent_closes = [safe_float(v) for v in _check_df["close"].tail(5 if hist_is_current or daily_hist is None else 4)]
+    _recent_closes = [v for v in _recent_closes if v is not None and v > 0] + [price]
+    _peak_5d = max(_recent_closes)
+    if _peak_5d > 0:
+        drop_from_5d_high = price / _peak_5d - 1.0
+
     candidate.update({
+        "drop_from_5d_high": drop_from_5d_high,
         "price": price,
         "atr": atr,
         "atr_ratio": atr_ratio,
@@ -2019,6 +2069,10 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
     # 아니므로(본주와 다른 유동성/가격구조) 반전신호 예외 없이 항상 하드 배제.
     if _is_preferred_or_spac_name(name):
         candidate["fail_reasons"].append("preferred_or_spac_excluded")
+
+    # [2026-11-13] 인버스/레버리지/선물 ETF 구조적 배제 - 예외 없음(보충으로도 구제되지 않는다).
+    if _is_derivative_etf_name(name):
+        candidate["fail_reasons"].append("derivative_etf_excluded")
 
     # [2026-08-29] 관리종목/거래정지 구조적 배제 - KIS 주식기본조회(basic_info, g001이
     # search_stock_info로 스냅샷) 기반. basic_info가 없으면(g001을 이 기능 추가 전 버전으로
@@ -3537,6 +3591,15 @@ def scan(
             )
             and row["code"] not in selected_codes
         ]
+        # [2026-11-13] 고점 꺾임 종목은 보충하지 않는다. 사유가 scan_all에 보이도록 플래그만 남긴다(점수 계산 이후라 감점 없음).
+        _rollover = [row for row in fallback_rows if _fallback_peak_rollover_row(row)]
+        if _rollover:
+            for row in _rollover:
+                if "fallback_blocked_peak_rollover" not in row["soft_flags"]:
+                    row["soft_flags"].append("fallback_blocked_peak_rollover")
+            fallback_rows = [row for row in fallback_rows if not _fallback_peak_rollover_row(row)]
+            if verbose:
+                print(f"[INFO] 보충 후보 중 고점 꺾임(종가<MA5, 5일 종가 고점 대비 -{FALLBACK_ROLLOVER_MAX_DROP_5D:.0%} 이상) 제외 {len(_rollover)}종목")
         # [2026-10-20] 장중 지표(VWAP/ATR)는 스캔 루프에서 패턴 통과 종목만 읽었으므로, 아직 읽지 않은 보충 후보는 여기서
         # 읽어 VWAP 가점을 반영해 재채점하고 장중 ATR 하한을 같은 방식(fail-closed)으로 판정한다. 패턴 종목 전체가 데이터
         # 부재라 이번 스캔의 ATR 필터를 껐더라도 보충 후보는 각자 판정하고, 그 종목도 데이터 부재(_no_data)일 때만 필터 꺼짐

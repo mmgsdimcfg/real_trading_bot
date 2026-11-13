@@ -426,6 +426,11 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.6; }
 .warn-text { color: var(--st-hold); }
 .err-text { color: var(--st-fail); margin: 6px 0; }
 .badge-warn { color: var(--st-hold); font-weight: 600; }
+/* [2026-11-13] 보유 현황: who bought the holding (bot / by hand / both) */
+.origin { display: inline-block; padding: 0 7px; border: 1px solid var(--border); border-radius: 9px; font-size: 12px; line-height: 18px; }
+.origin-bot { border-color: var(--accent); color: var(--accent); }
+.origin-manual { color: var(--text-2); }
+.origin-mixed { border-color: var(--st-hold); color: var(--st-hold); }
 .pill.pend { border-color: var(--st-hold); color: var(--st-hold); }
 .busy { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); }
 .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: spin 0.8s linear infinite; }

@@ -189,5 +189,57 @@ class TestPatternTuning20261111(unittest.TestCase):
         self.assertNotIn("2d_close_downtrend", cand["fail_reasons"])
 
 
+class TestSelectionFix20261113(unittest.TestCase):
+    """2026-11-13: 251340 (inverse ETF, rolled over from its peak) was picked as the top fallback on 20261112."""
+
+    def test_derivative_etf_names(self):
+        for name in ("KODEX 코스닥150선물인버스", "KODEX 인버스", "KODEX 레버리지", "RISE 200선물레버리지", "KODEX 골드선물(H)"):
+            self.assertTrue(g002._is_derivative_etf_name(name), name)
+        for name in ("삼성전자", "셀트리온", "KODEX 200", "ACE 유럽방산TOP10", "", None):
+            self.assertFalse(g002._is_derivative_etf_name(name), name)
+        self.assertIn("derivative_etf_excluded", g008.FAIL_REASON_DESC)
+        self.assertNotIn("derivative_etf_excluded", g002.FALLBACK_RELAXABLE_FAIL_REASONS)
+
+    def test_derivative_etf_blocks_fallback(self):
+        base = {"close_ma20_ratio": 0.04, "amount_ma20": 3e10}
+        row = {**base, "fail_reasons": ["pattern_bearish_candles", "derivative_etf_excluded"]}
+        self.assertFalse(g002._fallback_relaxable_row(row))
+        self.assertFalse(g002._fallback_near_miss_row(row))
+
+    def test_peak_rollover_row(self):
+        self.assertAlmostEqual(g002.FALLBACK_ROLLOVER_MAX_DROP_5D, 0.07)
+        # 251340 on 20261112: close 2,835, MA5 2,983, 5-day closing high 3,180
+        self.assertTrue(g002._fallback_peak_rollover_row({"price": 2835.0, "ma5": 2983.0, "drop_from_5d_high": 2835 / 3180 - 1}))
+        self.assertFalse(g002._fallback_peak_rollover_row({"price": 2835.0, "ma5": 2800.0, "drop_from_5d_high": -0.108}))  # above MA5
+        self.assertFalse(g002._fallback_peak_rollover_row({"price": 2835.0, "ma5": 2983.0, "drop_from_5d_high": -0.069}))
+        self.assertTrue(g002._fallback_peak_rollover_row({"price": 2835.0, "ma5": 2983.0, "drop_from_5d_high": -0.07}))
+        self.assertFalse(g002._fallback_peak_rollover_row({"price": 2835.0, "ma5": None, "drop_from_5d_high": -0.2}))
+        self.assertFalse(g002._fallback_peak_rollover_row({"price": 2835.0, "ma5": 2983.0, "drop_from_5d_high": None}))
+        old = g002.FALLBACK_ROLLOVER_MAX_DROP_5D
+        try:
+            g002.FALLBACK_ROLLOVER_MAX_DROP_5D = None
+            self.assertFalse(g002._fallback_peak_rollover_row({"price": 2835.0, "ma5": 2983.0, "drop_from_5d_high": -0.2}))
+        finally:
+            g002.FALLBACK_ROLLOVER_MAX_DROP_5D = old
+        self.assertIn("fallback_blocked_peak_rollover", g008.SOFT_FLAG_DESC)
+
+    def test_evaluate_candidate_sets_drop_and_etf_fail(self):
+        import pandas as pd
+        dates = pd.to_datetime(["20261106", "20261109", "20261110", "20261111", "20261112"], format="%Y%m%d")
+        closes = [3110.0, 3180.0, 3005.0, 2785.0, 2835.0]
+        hist = pd.DataFrame({"date": dates, "open": [3200.0, 3160.0, 3035.0, 3020.0, 2810.0], "high": [3220.0, 3215.0, 3090.0, 3020.0, 2880.0],
+                             "low": [3025.0, 3050.0, 2970.0, 2785.0, 2765.0], "close": closes, "volume": [5e7] * 5})
+        hist["amount"] = hist["close"] * hist["volume"]
+        daily = pd.DataFrame({"open": [2810.0], "high": [2880.0], "low": [2765.0], "close": [2835.0], "volume": [5e7]}, index=[dates[-1]])
+        daily["amount"] = daily["close"] * daily["volume"]
+        cfg = g002.BALANCED_CONFIG.__class__(**{**g002.BALANCED_CONFIG.__dict__, "min_listing_days": 1})
+        cand = g002.evaluate_candidate("251340", "KODEX 코스닥150선물인버스", daily, cfg, daily_hist=hist)
+        self.assertAlmostEqual(cand["drop_from_5d_high"], 2835 / 3180 - 1)
+        self.assertIn("derivative_etf_excluded", cand["fail_reasons"])
+        self.assertTrue(g002._fallback_peak_rollover_row(cand))
+        plain = g002.evaluate_candidate("000001", "테스트", daily, cfg, daily_hist=hist)
+        self.assertNotIn("derivative_etf_excluded", plain["fail_reasons"])
+
+
 if __name__ == "__main__":
     unittest.main()

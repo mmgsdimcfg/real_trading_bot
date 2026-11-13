@@ -3,6 +3,8 @@
  * - [2026-11-12] type=feat - Edge-AI-only paper trading (server r022, r001 EDGE_ONLY_MODE): the day's virtual trades from
  *   runtime/data/live_runtime/edge_only_YYYYMMDD.jsonl (ENTRY / EXIT lines -> one PaperTrade per entry, open while it has no
  *   EXIT), the day summary, and the mode as r016 `get EDGE_ONLY_MODE` reports it (stored / running / restart pending)
+ * - [2026-11-13] type=feat - AUTO_SELL_SCOPE (r001): the automatic sells sell only the bot's own quantity (bot_only, default) or the
+ *   whole holding (all) - key, labels, parse helpers for the control tab
  * - [2026-11-12] type=feat - Trade mode choice of the control tab: TRADING_STRATEGY_MODE (normal / edge = Edge-AI-only with real
  *   orders) + EDGE_ONLY_MODE (paper) read together (parseModes) and reduced to one of three choices (tradeModeOf);
  *   tradeModeChanges() is the `set` a choice sends
@@ -185,6 +187,19 @@ export const AUTO_SELL_KO: Record<AutoSellMode, string> = {
 export const parseAutoSell = (data: unknown): PaperModeState | null => modeOf(data, AUTO_SELL_KEY);
 /** a server value as one of the three choices (anything else = the bot's fallback 'all') */
 export const autoSellOf = (v: string | null | undefined): AutoSellMode => (v === 'stop_only' || v === 'off' ? v : 'all');
+
+/** [2026-11-13] r001 AUTO_SELL_SCOPE: which quantity the automatic sells may sell (the bot's own buys only / the whole holding) */
+export const AUTO_SELL_SCOPE_KEY = 'AUTO_SELL_SCOPE';
+export type AutoSellScope = 'bot_only' | 'all';
+export const AUTO_SELL_SCOPES: AutoSellScope[] = ['bot_only', 'all'];
+export const AUTO_SELL_SCOPE_KO: Record<AutoSellScope, string> = {
+  bot_only: '봇 매수분만',
+  all: '직접 매수분 포함 (전량)',
+};
+/** `get AUTO_SELL_SCOPE` data -> state; null when the server does not know the key (older server code) */
+export const parseAutoSellScope = (data: unknown): PaperModeState | null => modeOf(data, AUTO_SELL_SCOPE_KEY);
+/** a server value as one of the two choices (anything but 'all' = the bot's fallback 'bot_only') */
+export const autoSellScopeOf = (v: string | null | undefined): AutoSellScope => (v === 'all' ? 'all' : 'bot_only');
 
 export const TRADE_MODE_KO: Record<TradeMode, string> = {
   rules: '현재 방식 (규칙 기반)',
