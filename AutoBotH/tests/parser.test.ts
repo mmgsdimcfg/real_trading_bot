@@ -385,6 +385,30 @@ describe('symbol list (2026-11-05 log changes)', () => {
     expect(by['068270']).toBeUndefined(); // a session skip alone never makes a symbol a holding
   });
 
+  it('a bot buy that was sold by hand is no longer held (no sell in the trade log)', () => {
+    const buy = (t: string, px: string, q: number) => [
+      `2026-11-13 ${t} [INFO] >>> 222800_심텍 Buy - reason=TRIPLE_CROSS_1MIN_MA5_ABOVE_MA20 signal=None live=${px} bb_mid=1.0`,
+      `2026-11-13 ${t} [INFO] *** 매수시각=2026-11-13 ${t} | 매수가격=${px} | 매수수량=${q}`,
+    ];
+    const held = (e: DayEngine) => e.snapshot().symbols.find((s) => s.code === '222800')?.position;
+    const e = new DayEngine('20261113', conditions);
+    e.feedMainLines(['2026-11-13 09:36:16,621 [INFO] WATCH | 222800 | 심텍 | NXT=True']);
+    e.feedBuySellLines(buy('09:48:50', '127,267', 3));
+    expect(held(e)?.qty).toBe(3);
+    // the user sells in the MTS; r003 sees the position gone and puts the symbol back on watch
+    e.feedMainLines(['2026-11-13 11:47:49,664 [INFO]   [ACT REENTER ] 222800_심텍       | mode=live bot=True filled=True used=0/10 last_exit_profit=False | active=14 backup=0']);
+    expect(held(e)).toBeUndefined();
+    expect(e.snapshot().symbols.find((s) => s.code === '222800')?.watch).toBe('active');
+    // a later bot buy is a new position with only its own quantity
+    e.feedBuySellLines(buy('13:10:00', '128,000', 2));
+    expect(held(e)).toMatchObject({ qty: 2, buyPrice: 128000 });
+    // the ledger line closes it as well (re-entry limit used up: no ACT REENTER); a partial drop does not
+    e.feedMainLines(['2026-11-13 13:20:00,000 [INFO]   [BOT LEDGER  ] 222800_심텍 | account=2->1 bot=2->1']);
+    expect(held(e)?.qty).toBe(2);
+    e.feedMainLines(['2026-11-13 13:30:00,000 [INFO]   [BOT LEDGER  ] 222800_심텍 | account=1->0 bot=1->0']);
+    expect(held(e)).toBeUndefined();
+  });
+
   it('a holding bought by hand today is held as manual (AUTO_SELL_SCOPE=bot_only)', () => {
     const e = new DayEngine('20261113', conditions);
     e.feedMainLines([

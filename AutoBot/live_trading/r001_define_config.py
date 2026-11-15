@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-15] type=feat owner=claude
+#     summary: 사용자 결정(적응형 익절·손절 엔진 설계 Q1 "shadow 먼저") - EXIT_ENGINE_MODE("shadow" 기본 | "off") /
+#       EXIT_ENGINE_CONFIG 신설. r003 이 r026 shadow 러너로 봇 포지션의 가상 사본을 r024 엔진으로 관리하고 기록만 남긴다.
+#     impact: live (r003 재시작 후 기록 파일 3개 + [EXIT SHADOW ] 로그 추가. 주문·매도 판정 무변경)
+#     compatibility: backward-compatible (롤백: EXIT_ENGINE_MODE="off")
 # - [2026-11-13] type=feat owner=claude
 #     summary: 사용자 요청 - AUTO_SELL_SCOPE("bot_only" 기본 | "all"): 자동 매도가 봇이 매수한 수량만 팔지(직접 매수분은 남김),
 #       계좌 수량 전부를 팔지. 수량 구분은 r023 장부(r003 계좌 동기화). 관리 범위(오늘 감시 목록 + 오늘 매수)는 불변.
@@ -1961,6 +1966,20 @@ EDGE_ONLY_MODE = "off"              # "off" | "paper"
 EDGE_ONLY_MIN_PROB = 0.0            # 매수 확률 기준 (0 = 모델 메타의 threshold)
 EDGE_ONLY_MAX_POSITIONS = 3         # 동시 가상 보유 종목 수
 EDGE_ONLY_MAX_ENTRIES_PER_DAY = 10  # 하루 가상 매수 횟수 상한
+
+# =============================================================================
+# [2026-11-15] 적응형 익절·손절 엔진 (r024 엔진 / r025 틱 특징 / r026 shadow 러너) - 사용자 결정(설계 Q1: shadow 먼저)
+# - 설계: AutoBot/adaptive_exit_design_20261115.md (§17~§20 우선), Codex 검토 문서 3개(adaptive_exit_codex_*).
+# - "shadow": 봇 보유 포지션마다 가상 사본을 만들어 엔진 판단·가상 체결만 기록한다. **주문 없음** - 실제 매도는 그대로
+#   AUTO_SELL_MODE(현재 stop_only) 가 한다. 기록: runtime/data/live_runtime/exit_engine_YYYYMMDD.jsonl(판단),
+#   exit_shadow_trades_YYYYMMDD.jsonl(가상 청산 결과), exit_shadow_YYYYMMDD.json(재시작 복구) + "[EXIT SHADOW ]" 로그.
+# - 실주문 전환(AUTO_SELL_MODE="adaptive")은 아직 없다 - shadow 검증(§17 C17 승급 기준) 후 AutoBotH 와 함께 추가.
+# - EXIT_ENGINE_CONFIG: r024 ExitConfig 필드 덮어쓰기(스칼라만, 소문자 필드명). 예) {"trail_arm_pct": 1.2}.
+#   잘못된 키/값이면 shadow 러너가 시작하지 않고 로그만 남긴다(r003 동작 무영향).
+# - 끄기: r016 set EXIT_ENGINE_MODE=off 후 r003 재시작.
+# =============================================================================
+EXIT_ENGINE_MODE = "shadow"         # "off" | "shadow"
+EXIT_ENGINE_CONFIG: dict = {}       # ExitConfig 필드 덮어쓰기 (예: {"pnl_basis": "net", "trail_arm_pct": 1.5})
 
 # =============================================================================
 # [2026-11-04] 주문/계좌 안전 점검 (Codex 2차 검토 #15~#18) + 시장 추세 게이트 - 사용자 승인

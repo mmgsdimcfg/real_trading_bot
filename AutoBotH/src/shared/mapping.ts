@@ -192,6 +192,7 @@ export const IGNORED_TAGS = new Set([
   'BOT LEDGER', // [2026-11-13] r023 bot / manual quantity ledger changes, not a condition
   'SELL LIMIT', // [2026-11-13] AUTO_SELL_SCOPE=bot_only: a sell was cut down to the bot's quantity (the order line follows)
   'EDGE ONLY', // [2026-11-12] Edge-AI-only paper trading (r022): virtual buys / sells, not a condition of the real pipeline
+  'EXIT SHADOW', // [2026-11-15] adaptive exit engine shadow (r026): virtual exits only, real selling unchanged
 ]);
 
 function reasonCandidates(rest: string): string[] {
