@@ -179,7 +179,7 @@ export const AUTO_SELL_KEY = 'AUTO_SELL_MODE';
 export type AutoSellMode = 'all' | 'stop_only' | 'off';
 export const AUTO_SELL_MODES: AutoSellMode[] = ['all', 'stop_only', 'off'];
 export const AUTO_SELL_KO: Record<AutoSellMode, string> = {
-  all: '전체 자동 (익절·트레일링·당일 청산 포함)',
+  all: '전체 자동 (익절·트레일링·손절·당일 청산 포함)',
   stop_only: '손절만 자동 (비용 포함 -2%)',
   off: '끔 (모든 매도 수동)',
 };

@@ -864,3 +864,62 @@ g032(리플레이) · tests.
 4. 첫날 관찰(§22.1): r003 턴 시간 변화, `dropped so far` 로그, `exit_shadow_trades_*.jsonl`의 INCOMPLETE 비율, 같은 종목 사본 수,
    `exit_engine_*.jsonl` 크기(하루 30 MB 상한).
 5. 2주 뒤: shadow 결과 + g032 재실행으로 §17 C17 승급 기준 판단 → 실주문 전환(r027 등) 여부 결정.
+
+## 24. 실매매 연결 (2026-11-15, 사용자 요청 "오늘 만든 매도 엔진을 바로 적용")
+
+§23.1 의 "2주 shadow 후 승급 판단"(§17 C17)을 **사용자 결정으로 생략**했다. 근거 자료는 g032 리플레이 33건뿐이다(엔진 -0.766%,
+실제 normal 매도 -0.723%, stop_only -1.121%, 순손익). 엔진이 현행 normal 매도보다 낫다는 근거는 없고, stop_only 보다는 나았다.
+
+### 24.1 구조
+- `r001 EXIT_ENGINE_MODE`: "off" | "shadow" | **"live"(기본)**. live 는 `AUTO_SELL_MODE="all"` 일 때만 쓰인다.
+  stop_only / off 가 우선한다(엔진 주문 없음). live 이면 shadow 러너는 만들지 않는다.
+- `r006 active_sell_conditions()`: all + live + 매매 방식 normal/basic -> `ADAPTIVE_SELL_CONDITIONS` = `_x02`(신선한 현재가일 때만
+  추적 갱신) + `_x10`(엔진). edge 방식은 모델 라벨 청산(_e10~_e12)을 유지한다.
+- `r027_exit_live.LiveExitManager`: 포지션별 엔진 상태((종목, 진입 시각) 키), r025 틱 창(g011 파일), 체결 반영, 재시작 복구.
+  판정만 하고 주문은 하지 않는다. `_x10` 이 `place_sell_order(..., market_order=True)` 로 낸다.
+- `r003`: `_make_exit_live_manager`, `TradingAPI.last_sell_confirm[code]`(사유·체결 수량·시각 - `_confirm_pending_sell`),
+  날짜 전환 시 재생성.
+- 기록: `exit_live_engine_YYYYMMDD.jsonl`(판단), `exit_live_trades_YYYYMMDD.jsonl`(포지션 종료), `exit_live_YYYYMMDD.json`(복구),
+  로그 `[EXIT ENGINE ]`, 주문은 기존 `[SELL TRIGGER] ADAPTIVE_<사유>` / `[SELL SUBMIT]` / `[SELL FILLED]`.
+
+### 24.2 가정 (설계와 다른 점)
+| 항목 | 설계 | 실매매 v1 | 이유 |
+|---|---|---|---|
+| 사다리 주문 | 지정가 max(목표, 매수1호가), 3초×2 정정 후 시장가 | KRX 시장가 | place_sell_order 에 KRX 지정가·정정 경로가 없다. 사다리 지정가는 원래 즉시 체결 가능한 가격이라 차이가 작다 |
+| VI 중 손절(※1) | 지정가 min(손절가, 예상가-2틱) | 시장가(단일가 매매 참여) | 같은 이유. VI 중 엔진은 STOP/FORCE 만 낸다 |
+| 15:15~15:18 강제 청산 | 지정가 -> 15:18 시장가 | 15:15 부터 시장가 | 같은 이유. r003 15:20 예약 청산은 그대로 백업 |
+| Edge AI | shadow | 꺼짐 | 청산 모델 없음(Q10) |
+| 정규장 밖 / 관리자 초기화 실패 / 엔진 예외 | - | 순손익 손절 `_s04` 하나 | 안전 대체 |
+
+### 24.3 체결 반영 규칙
+- r003 은 매도 pending 이 있으면 그 종목 평가를 건너뛴다 -> 주문이 끝난 뒤 다음 호출에서 맞춘다. 체결 수량은 `last_sell_confirm`
+  (같은 사유, 주문 이후 시각) 우선, 없으면 보유 수량 감소분. 체결 0 이면 단계를 되돌리고 5초 뒤 재평가.
+- 제출 실패(거절·쿨다운) -> 단계 되돌림, 5초 뒤 재시도. 접수 불명(r003 이 pending 으로 추적) -> 보낸 것으로 본다.
+- 보유 증가: BUY 진행 중이거나 아직 판 것이 없으면 즉시 rebase, 매도 후에는 30초 지속돼야 rebase(직후 계좌 지연과 구분).
+  보유 감소(엔진 주문 없이) -> 수동 매도로 보고 sync_holding.
+- 재시작: r003 은 pending 을 잊는다. 진행 중으로 복원된 주문(주문 직전 저장하는 "submitting" 표시 포함)은 보유가 줄 때까지(감소분만
+  체결) 최대 180초 기다린다. 그동안 STOP/FORCE 만, 진행 중 주문이 덮지 않는 수량만 판다. 마감까지 남은 수량은 미체결로 종료.
+- stale REST 현재가: 엔진에 가격을 주지 않고(price=None) 틱 파일로 판단한다(SAFE/DEAD, 시간 기반 FORCE). 정지·VI 플래그는 그
+  플래그를 실은 시세의 수신 시각(quote_status["at"]) 기준 60초 후 만료.
+
+### 24.4 Codex 검토 (원문: adaptive_exit_codex_live_review / _rereview / _final_20261115.md)
+| 차수 | 지적 | 조치 | 테스트 |
+|---|---|---|---|
+| 1 높음 | 재시작 후 미체결 주문을 종료로 처리 -> 중복 매도 | 24.3 재시작 규칙 | test_restart_* , test_crash_between_decide_and_submitted_* |
+| 1 높음 | stale 가드(_001)가 엔진 손절·FORCE 차단 | 적응형 목록에서 _001 제거, price=None | test_stale_rest_price_still_force_exits_on_ticks, test_stale_price_fallback_* |
+| 1 높음 | 정지 플래그 시각을 매번 갱신 -> 만료 안 됨 | quote_status["at"] 기준 | test_halt_flag_expires_by_its_own_quote_time |
+| 1 높음 | 매도 후 실제 증가 누락 | BUY 진행 중 즉시 / 30초 지속 | test_increase_after_a_sell_waits_then_rebases, test_increase_with_a_buy_in_flight_* |
+| 1 중간 | 메인 스레드 I/O | 측정: 포지션당 첫 판단 0.5~0.6초(노트북, 4~13MB 틱 파일), 이후 3~9ms. 유지(관찰) | - |
+| 2 높음 | 복원 주문 부분 체결 시 잔량까지 종료 | 감소분만 체결, 잔량은 마감까지 유지 | test_restart_partial_fill_* |
+| 2 높음 | 처음 보는 포지션 + stale REST 면 엔진 미생성 | 틱 가격으로 생성 | test_first_sight_* |
+| 3 | 가동 차단 결함 없음 -> **실매매 가동 가능** | 누락 테스트 2개 추가 | 753개 통과 |
+
+관찰 항목(Codex 3차): 복원 대기 중 다시 재시작하면 대기 시간과 부분 체결 집계가 새로 시작된다.
+
+### 24.5 가동 절차와 롤백
+1. 코드 배포(노트북·라즈베리파이 같은 커밋), r003 재시작. AutoBotH 자동 매도 = "전체 자동" 이어야 엔진이 판다.
+2. 확인 로그: `[EXIT ENGINE ] adaptive exit engine LIVE (real sell orders, market)`. 보유 시 `MANAGE`, 매도 시
+   `[SELL TRIGGER] ... | ADAPTIVE_...`. `init failed` 이면 순손익 손절만 동작한다.
+3. 첫날 관찰: 같은 종목 중복 매도 여부(`exit_live_engine_*.jsonl` ORDER / ORDER_DONE), `submit failed` 반복, `restored with an order
+   in flight`, 포지션당 첫 판단 지연(r003 턴 시간).
+4. 롤백: `r016 set EXIT_ENGINE_MODE=shadow` 후 r003 재시작(기존 normal 매도 조건 + shadow 기록), 또는 AutoBotH 에서 "손절만 자동".

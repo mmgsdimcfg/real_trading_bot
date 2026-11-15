@@ -141,7 +141,10 @@ describe('automatic sell mode (AUTO_SELL_MODE)', () => {
     expect(of('REJECT', 'GC_VOL_LOW_1MIN_ATR_0.310%_LT_0.500% | GATES a')).toEqual(['_012', 'fail']);
     expect(of('REJECT', 'GC_VOL_1MIN_ATR_UNAVAILABLE | GATES a')).toEqual(['_012', 'fail']);
     expect(of('SELL TRIGGER', 'NET_STOP_LOSS_2.0PCT | price=9,822 entry=10,000 pnl=-1.78% net=-2.01%')).toEqual(['_004', 'pass']);
+    expect(of('SELL TRIGGER', 'ADAPTIVE_TP1_NORMAL_2.0PCT | qty=40/100 price=10,200')).toEqual(['_010', 'pass']);
+    expect(of('SELL TRIGGER', 'ADAPTIVE_STOP_INITIAL_-1.50PCT | qty=100/100')).toEqual(['_010', 'pass']);
     expect(IGNORED_TAGS.has('AUTO SELL')).toBe(true);
+    expect(IGNORED_TAGS.has('EXIT ENGINE')).toBe(true);
   });
 });
 

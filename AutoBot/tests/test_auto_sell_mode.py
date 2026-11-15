@@ -44,9 +44,12 @@ def sell_ctx(price, api=None):
 
 class ModeListTest(unittest.TestCase):
     def test_default_is_stop_only(self):
-        self.assertEqual(r001.AUTO_SELL_MODE, "stop_only")
+        # the code default; a host's runtime/config/live_overrides.json may set another mode (r016 / AutoBotH)
+        default = r001.LIVE_OVERRIDES_BASE.get("AUTO_SELL_MODE", r001.AUTO_SELL_MODE)
+        self.assertEqual(default, "stop_only")
         self.assertAlmostEqual(r001.AUTO_SELL_STOP_NET_PCT, 0.02)
-        self.assertIs(r006.active_sell_conditions(), r006.STOP_ONLY_SELL_CONDITIONS)
+        with mock.patch.object(r006, "AUTO_SELL_MODE", "stop_only"):
+            self.assertIs(r006.active_sell_conditions(), r006.STOP_ONLY_SELL_CONDITIONS)
 
     def test_mode_wins_over_every_strategy_mode(self):
         for strategy in ("normal", "basic", "edge"):
@@ -55,10 +58,11 @@ class ModeListTest(unittest.TestCase):
                     self.assertIs(r006.active_sell_conditions(), r006.STOP_ONLY_SELL_CONDITIONS)
                 with mock.patch.object(r006, "AUTO_SELL_MODE", "off"):
                     self.assertIs(r006.active_sell_conditions(), r006.MANUAL_SELL_CONDITIONS)
-        with mock.patch.object(r006, "AUTO_SELL_MODE", "all"):
-            self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
-        with mock.patch.object(r006, "AUTO_SELL_MODE", "typo"):          # an unknown value keeps the full automatic sells
-            self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
+        with mock.patch.object(r006, "EXIT_ENGINE_MODE", "shadow"):     # [2026-11-15] live engine replaces "all" (test_r027)
+            with mock.patch.object(r006, "AUTO_SELL_MODE", "all"):
+                self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
+            with mock.patch.object(r006, "AUTO_SELL_MODE", "typo"):      # an unknown value keeps the full automatic sells
+                self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
 
     def test_lists_hold_no_other_exit(self):
         self.assertEqual([c.func_name for c in r006.STOP_ONLY_SELL_CONDITIONS],
