@@ -21,6 +21,12 @@ Update log format (append only):
 
 Update log:
 - [2026-11-15] type=feat owner=claude
+    summary: 매수 엔진 3단계 shadow 연결 - ENTRY_ENGINE_MODE="shadow"(기본)이면 _make_entry_shadow 가 r028 EntryShadowService
+      (별도 스레드, 감시 종목 틱 파일 -> 엔진 판단 기록)를 만든다. 매 턴 감시 종목·보유/미체결 종목을 넘기고(set_watch), 실매수
+      첫 주문(T4)과 체결 확인(T5)을 _entry_note 로 지연 기록에 넘긴다. 날짜 전환 시 재생성, 루프 종료 시 정지. 주문 없음.
+    impact: live (기록만 - entry_engine_YYYYMMDD.jsonl, entry_latency_YYYYMMDD.jsonl)
+    compatibility: backward-compatible (기존 매수 경로 무변경. 끄기: r016 set ENTRY_ENGINE_MODE=off)
+- [2026-11-15] type=feat owner=claude
     summary: 적응형 청산 엔진 실주문 연결(사용자 요청 "바로 적용") - EXIT_ENGINE_MODE="live" + AUTO_SELL_MODE="all" 이면
       _make_exit_live_manager 가 r027 LiveExitManager 를 만들어 sell_services.exit_live 로 넘긴다(r006 _x10 이 판정·주문).
       _confirm_pending_sell 이 last_sell_confirm[code](사유·체결 수량·시각)를 남겨 엔진이 자기 주문 체결량을 맞춘다.
@@ -954,6 +960,8 @@ from r001_define_config import (
     EDGE_AI_DIR,
     EXIT_ENGINE_MODE,
     EXIT_ENGINE_CONFIG,
+    ENTRY_ENGINE_MODE,
+    ENTRY_ENGINE_CONFIG,
 )
 from r002_strategy_core_shared import (
     load_symbol_market_map,
@@ -2449,6 +2457,44 @@ def _make_exit_shadow_runner(date_str: str):
     except Exception as exc:
         log(f"  [EXIT SHADOW ] init failed, shadow disabled: {exc}")
         return None
+
+
+_ENTRY_SHADOW = None   # [2026-11-15] r028 entry engine shadow service of the running loop (latency hooks use it)
+
+
+def _make_entry_shadow(date_str: str):
+    """[2026-11-15] r028 entry engine SHADOW service or None (ENTRY_ENGINE_MODE != "shadow" / bad config). Runs on its own
+    thread, reads the watchlist tick files, records decisions and T0~T5 latency only - never orders."""
+    if str(ENTRY_ENGINE_MODE).strip().lower() != "shadow":
+        return None
+    try:
+        import r001_define_config as _cfg_mod
+        from r028_entry_engine import EntryParams, EntryShadowRunner, EntryShadowService, make_file_logger
+        params = EntryParams.load(overrides=dict(ENTRY_ENGINE_CONFIG or {}))
+        tick_dir = _cfg_mod.TICK_DATA_DIR
+        # [Codex review #1] the worker never writes through the r003 logger (no shared handler lock with trading)
+        wlog = make_file_logger(Path(LIVE_RUNTIME_DIR) / f"entry_engine_{date_str}.log")
+        service = EntryShadowService(lambda: EntryShadowRunner(tick_dir, LIVE_RUNTIME_DIR, date_str, params, wlog), log=wlog)
+        log(f"  [ENTRY ENGINE] r028 entry engine shadow enabled (no orders, worker thread) | combo={params['signal']['combo']} "
+            f"overrides={sorted((ENTRY_ENGINE_CONFIG or {}).keys())} | out=entry_engine_{date_str}.jsonl / .log")
+        return service
+    except Exception as exc:
+        log(f"  [ENTRY ENGINE] init failed, shadow disabled: {exc}")
+        return None
+
+
+def _entry_note(kind: str, code: str, at: datetime, price: float, reason: str = "") -> None:
+    """[2026-11-15] real buy submit / fill -> r028 LatencyLogger (T4 / T5). Never raises, never blocks."""
+    svc = _ENTRY_SHADOW
+    if svc is None:
+        return
+    try:
+        if kind == "submit":
+            svc.note_submit(code, at, float(price), reason)
+        else:
+            svc.note_fill(code, at, float(price))
+    except Exception:
+        pass
 
 
 def _make_exit_live_manager(date_str: str):
@@ -4024,6 +4070,7 @@ class TradingAPI:
         self.startup_position_codes.discard(str(code).zfill(6))
         self.persist_live_state()
         self.pending_orders.pop(str(code).zfill(6), None)
+        _entry_note("fill", str(code).zfill(6), event_time, fill_price)  # [2026-11-15] T5 of the r028 latency record
 
     def _confirm_pending_sell(self, code: str, pending: dict, status: dict | None, remaining_qty: int) -> None:
         requested_qty = int(pending.get("quantity", 0))
@@ -5172,6 +5219,8 @@ class TradingAPI:
             )
             log(_submit_msg)
             log_trade(_submit_msg.strip(), mirror_main_log=False)
+            if not legs[:-1]:  # [2026-11-15] first leg of the attempt = T4 of the r028 latency record
+                _entry_note("submit", norm_code, now, requested_price, _short_reason or "")
             _log_trade_event_banner(
                 event="BUY SUBMITTED",
                 code=code,
@@ -5868,6 +5917,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     edge_only = _make_edge_only_runner(date_str)
     exit_shadow = _make_exit_shadow_runner(date_str)
     sell_services.exit_live = _make_exit_live_manager(date_str)   # [2026-11-15] None unless EXIT_ENGINE_MODE="live"
+    global _ENTRY_SHADOW
+    _ENTRY_SHADOW = _make_entry_shadow(date_str)                  # [2026-11-15] r028 entry engine shadow (no orders)
     sell_services.is_regular_session = is_regular_session
     sell_services.get_quote_status = get_quote_status
     current_trade_date = now.date()
@@ -5927,6 +5978,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 except Exception as exc:
                     log(f"  [EXIT SHADOW ] close error: {exc}")
             exit_shadow = _make_exit_shadow_runner(date_str)  # [2026-11-15] adaptive exit shadow state is per day
+            if _ENTRY_SHADOW is not None:  # [2026-11-15] r028 entry shadow is per day (files and bars)
+                try:
+                    _ENTRY_SHADOW.close(timeout_s=0, outcome="DATE_CHANGE")
+                except Exception as exc:
+                    log(f"  [ENTRY ENGINE] close error: {exc}")
+            _ENTRY_SHADOW = _make_entry_shadow(date_str)
             sell_services.exit_live = _make_exit_live_manager(date_str)  # [2026-11-15] live engine state is per day
             risk.reset()
             post_buy_bb_drop_state.clear()
@@ -6015,6 +6072,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 if int(p.get("quantity", 0) or 0) > 0
             }
             iter_codes = sorted(active_set | position_codes)
+            if _ENTRY_SHADOW is not None:  # [2026-11-15] r028 shadow watches the entry candidates; held symbols are blocked
+                try:
+                    _ENTRY_SHADOW.set_watch(active_set | position_codes,
+                                            {**{c: "POSITION" for c in position_codes}, **{c: "PENDING_ORDER" for c in
+                                                                                       api.pending_orders}})
+                except Exception as exc:
+                    log(f"  [ENTRY ENGINE] watch update error: {exc}")
 
             # [2026-10-04] GAPDIP 관찰: 감시 목록에서 빠진 종목의 가상 포지션도 청산까지 추적
             # [2026-10-05 Codex 2차] 종목별 예외 격리 - 관찰 경로 오류가 실제 포지션 감시 루프를 끊지 않도록.
@@ -6438,6 +6502,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             exit_shadow.close(finalize_reason=None, timeout_s=5.0)   # logs itself when the worker did not stop
         except Exception as exc:
             log(f"  [EXIT SHADOW ] close error: {exc}")
+    if _ENTRY_SHADOW is not None:
+        try:
+            if not _ENTRY_SHADOW.close(timeout_s=3.0):
+                log("  [ENTRY ENGINE] worker did not finish within 3s - last latency records may be missing")
+        except Exception as exc:
+            log(f"  [ENTRY ENGINE] close error: {exc}")
+        _ENTRY_SHADOW = None
 
 
 if __name__ == "__main__":

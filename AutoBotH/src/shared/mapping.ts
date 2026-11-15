@@ -24,6 +24,7 @@
  *   shown as "_022 (조건 목록에 없음)" by an app built before the sell renumbering)
  * - [2026-11-08] type=refactor - Sell condition numbers follow the evaluation order too (server r006 _001.._015): _006->_005,
  *   _007->_006, _023->_007, _015->_008, _016->_009, _017->_010, _018->_011, _019->_012, _020->_013, _021->_014, _022->_015
+ * - [2026-11-15] type=feat - [ENTRY ENGINE] / [ENTRY LAT   ] (r028 entry engine shadow, latency records) added to IGNORED_TAGS
  */
 
 import type { Condition, ConditionsDoc, EvalResult, Side } from './types';
@@ -195,6 +196,8 @@ export const IGNORED_TAGS = new Set([
   'EDGE ONLY', // [2026-11-12] Edge-AI-only paper trading (r022): virtual buys / sells, not a condition of the real pipeline
   'EXIT SHADOW', // [2026-11-15] adaptive exit engine shadow (r026): virtual exits only, real selling unchanged
   'EXIT ENGINE', // [2026-11-15] adaptive exit engine live (r027): engine state lines; the order itself logs [SELL TRIGGER]
+  'ENTRY ENGINE', // [2026-11-15] r028 entry engine shadow (no orders): candidate / shadow buy lines
+  'ENTRY LAT', // [2026-11-15] r028 latency record T0~T5 of a buy attempt
 ]);
 
 function reasonCandidates(rest: string): string[] {

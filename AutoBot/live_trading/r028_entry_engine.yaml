@@ -1,0 +1,53 @@
+# r028 entry engine parameters (entry_engine_analysis_20261115.md section 7).
+# Every default comes from the g034 stage-2 study (11 tick days, 237 symbol-days) and MUST be confirmed by more data /
+# paper trading before live use. "가정" = assumption without data support.
+# r001 ENTRY_ENGINE_CONFIG (dict) overrides any key here (r016 set), e.g. {"filter": {"vwap_gap_max_pct": 2.0}}.
+
+bars:
+  regime_minutes: 3            # F3: 3-minute bars = trend / regime filter (g034 F3/SEQ best full-sample + validation)
+  trigger_tick_sizes: [60, 120]  # trigger series (either one may fire)
+  time_bar_delay_s: 5.0        # a time bar is used this long after its end (r003 CANDLE_CONFIRM_DELAY_SECONDS)
+  max_bars: 400                # closed bars kept per series
+  warmup_prior_day: true       # prior-day tick file feeds the indicators (r013 prior_day_warmup)
+
+signal:
+  combo: SEQ                   # SEQ (BB mid cross -> MACD -> RSI in order) | WIN (all inside the window) | MA (MA5 x MA20)
+  window_bars: 10              # W: each SEQ step within W bars of the previous (g034 sensitivity: 5 / 10 / 15)
+  bb_period: 20
+  macd: [12, 26, 9]
+  rsi_period: 14
+  rsi_level: 50.0
+  intrabar: false              # evaluate the forming bar (T0). g033: bar close costs +0.03 % only -> off (record T0 anyway)
+  intrabar_confirm_prints: 3   # with intrabar=true: the provisional signal must survive this many prints
+  regime_rising_bars: 3        # regime: close > MA20 and MA20 above its value N bars ago
+
+entry:
+  valid_s: 60.0                # a completed signal must turn into an order within this time, else it is dropped
+  rearm_after_s: 0.0           # min time between two decisions of one symbol (0 = only the SEQ re-arm)
+
+filter:
+  start: "09:05:00"
+  end: "14:00:00"              # g034: 14:00~14:50 worst in every configuration (-0.60 vs -0.51 E_live)
+  chase_max_pct: 0.3           # price vs the FIRST signal price (T0, else T1). request value; g034 SEQ slippage ~0.05 %
+  vwap_gap_min_pct: 0.0        # g034 section 5: below VWAP worse in every series
+  vwap_gap_max_pct: 1.5        # above +1.5 % over VWAP worse (overheat, H4)
+  rsi_max: 75.0                # 가정 (H4: 데이터 부족, RSI>=70 실매수 6건)
+  bb_upper_gap_min_pct: 0.0    # 0 = off. 데이터 부족 (%B 표본 작음)
+  min_price: 0                 # 0 = off. g034 F3/SEQ: 1만원 이하 not worse (-0.29 vs -0.36); stage 1 said worse -> data split
+  rvol_min: 0.0                # 0 = off. H5 false (g033 / g034 section 5: no monotonic relation)
+  buy_share_change_min: null   # null = off (same reason)
+  max_tick_cost_pct: 0.0       # 0 = off (r005 _021 already covers the spread / tick cost)
+
+edge_ai:
+  mode: "off"                  # off | veto. veto: the model may only refuse or shrink, never approve a rule reject
+  timeout_s: 0.3
+  min_prob: 0.5
+  shrink_below_prob: 0.6       # prob in [min_prob, shrink_below_prob) -> qty x shrink_factor
+  shrink_factor: 0.5
+
+order:
+  style: "limit_best_ask"      # limit_best_ask | best_limit (KIS 최유리) | market
+  reprice_after_s: 3.0
+  max_reprices: 2
+  cancel_after_s: 10.0         # unfilled remainder cancelled after this (no market fallback - 가정)
+  max_reprice_chase_pct: 0.3   # never reprice above T0 price + this

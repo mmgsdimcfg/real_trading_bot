@@ -145,6 +145,8 @@ describe('automatic sell mode (AUTO_SELL_MODE)', () => {
     expect(of('SELL TRIGGER', 'ADAPTIVE_STOP_INITIAL_-1.50PCT | qty=100/100')).toEqual(['_010', 'pass']);
     expect(IGNORED_TAGS.has('AUTO SELL')).toBe(true);
     expect(IGNORED_TAGS.has('EXIT ENGINE')).toBe(true);
+    expect(IGNORED_TAGS.has('ENTRY ENGINE')).toBe(true);
+    expect(IGNORED_TAGS.has('ENTRY LAT')).toBe(true);
   });
 });
 
