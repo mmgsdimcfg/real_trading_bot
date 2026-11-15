@@ -52,7 +52,7 @@ class TestPortfolioGates(unittest.TestCase):
         self.assertTrue(r001.ENABLE_DAILY_LOSS_LIMIT_GATE)
         self.assertTrue(r001.ENABLE_MAX_OPEN_POSITIONS_GATE)
         self.assertTrue(r001.ENABLE_SPREAD_GATE)
-        self.assertTrue(r001.ENABLE_TICK_COST_GATE)
+        self.assertFalse(r001.ENABLE_TICK_COST_GATE)           # [2026-11-15] user decision: price-band gate off
         self.assertEqual(r001.TICK_COST_MAX_PCT, 0.13)
         self.assertEqual(r001.EDGE_AI_MODE, "gate")
 

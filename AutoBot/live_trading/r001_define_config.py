@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-15] type=tune owner=claude
+#     summary: 사용자 결정 - 호가단위 비용 게이트 끔(ENABLE_TICK_COST_GATE True -> False). 가격대(호가 구간 경계)에 따라 같은 종목의
+#       매수 가능 여부가 바뀌는 것이 부적절하고, 최근 선정 종목의 약 60% 가 막혀 있었다.
+#     impact: live (r003 재시작 후 _021 의 호가단위 비용 판정 생략 - 스프레드 판정은 그대로)
+#     compatibility: breaking (매수 증가 방향. 롤백: r016 set ENABLE_TICK_COST_GATE=true)
 # - [2026-11-15] type=feat owner=claude
 #     summary: 매수 엔진 3단계 - ENTRY_ENGINE_MODE("shadow" 기본 | "off") / ENTRY_ENGINE_CONFIG 신설. r003 이 r028 진입 엔진을
 #       별도 스레드에서 감시 종목 틱 파일로 돌려 판단과 지연(T0~T5)만 기록한다. 주문 없음. entry_engine_analysis_20261115.md §7.
@@ -1902,7 +1907,10 @@ MAX_ENTRY_SPREAD_TICKS = 2
 #   0.13% 통과 가격대: 770~1,999 / 3,850~4,995 / 7,700~19,990 / 38,500~49,950 / 77,000~199,900 / 385,000~499,500 /
 #   770,000 이상 (호가단위가 커지는 경계 바로 위 가격대가 차단된다).
 #   수익을 만드는 조건이 아니라 손실을 줄이는 조건이다. 롤백: False.
-ENABLE_TICK_COST_GATE = True
+# [2026-11-15] 사용자 결정으로 끔 - 가격대(호가 구간 경계)에 따라 같은 종목이 매수 가능/불가로 바뀌는 것이 부적절하고,
+#   최근 선정 종목의 약 60% 가 이 게이트에 막혀 있었다. 손실 축소 효과(리플레이 거래당 -0.42% vs -0.50%)는 포기한다.
+#   다시 켜기: r016 set ENABLE_TICK_COST_GATE=true (TICK_COST_MAX_PCT 값은 그대로 둔다).
+ENABLE_TICK_COST_GATE = False
 TICK_COST_MAX_PCT = 0.13
 
 # =============================================================================
