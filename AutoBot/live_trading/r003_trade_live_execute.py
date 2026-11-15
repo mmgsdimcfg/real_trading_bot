@@ -20,6 +20,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-15] type=feat owner=claude
+    summary: 적응형 익절·손절 엔진 shadow 연결(사용자 결정 Q1) - r001 EXIT_ENGINE_MODE="shadow"이면 r026 ShadowExitRunner를
+      만들고(작업 스레드 + 제한 큐 - 매매 스레드는 관측값만 넣는다), 보유 종목 루프에서 observe(REST 가격·VI/정지 상태·봇 수량),
+      날짜 전환 시 close(DATE_CHANGE), 메인 루프 종료 시 close(체크포인트)를 호출한다. 가상 체결만 기록하고 주문·매도 판정·
+      live_state는 건드리지 않는다. 모든 호출은 try/except로 감싸 r003 루프에 예외가 전파되지 않는다.
+    impact: live (기록 파일 + [EXIT SHADOW ] 로그 추가, 매매 동작 무변경)
+    compatibility: backward-compatible (롤백: EXIT_ENGINE_MODE="off" - r026 import 자체를 하지 않음)
 - [2026-11-13] type=feat owner=claude
     summary: 사용자 요청(봇 매수분과 MTS 직접 매수분 구분) - (1) r023 장부: 계좌 동기화마다 종목별 봇 매수 수량 갱신
       (TradingAPI._update_bot_ledger / _mark_bot_order_windows / bot_quantity) + 보유 스냅샷 holdings.json(r016 holdings).
@@ -938,6 +945,8 @@ from r001_define_config import (
     EDGE_ONLY_MAX_POSITIONS,
     EDGE_ONLY_MAX_ENTRIES_PER_DAY,
     EDGE_AI_DIR,
+    EXIT_ENGINE_MODE,
+    EXIT_ENGINE_CONFIG,
 )
 from r002_strategy_core_shared import (
     load_symbol_market_map,
@@ -2407,6 +2416,31 @@ def _make_edge_only_runner(date_str: str):
         return runner
     except Exception as exc:
         log(f"  [EDGE ONLY   ] init failed, paper mode disabled: {exc}")
+        return None
+
+
+def _make_exit_shadow_runner(date_str: str):
+    """[2026-11-15] Adaptive exit engine SHADOW runner (r026) or None. Lazy import: EXIT_ENGINE_MODE="off" adds nothing.
+    Virtual fills only - real selling stays with AUTO_SELL_MODE."""
+    if str(EXIT_ENGINE_MODE).strip().lower() != "shadow":
+        return None
+    try:
+        import r001_define_config as _cfg_mod
+        from r024_adaptive_exit import ExitConfig
+        from r026_exit_shadow import ShadowExitRunner, ShadowExitService
+        cfg = ExitConfig.from_mapping(dict(EXIT_ENGINE_CONFIG or {}))
+        cfg.validate()
+        tick_dir = _cfg_mod.TICK_DATA_DIR
+        # [2026-11-15 Codex wiring review #1 / re-review #5] all shadow work - including the runner's restore / cleanup
+        # file I/O - runs on its own worker thread; the trading thread only enqueues observations (bounded queue,
+        # dropped and counted when full)
+        service = ShadowExitService(
+            lambda: ShadowExitRunner(tick_dir, DATA_DIR, LIVE_RUNTIME_DIR, date_str, log, cfg), log=log)
+        log(f"  [EXIT SHADOW ] adaptive exit shadow enabled (no orders, worker thread) | basis={cfg.pnl_basis} "
+            f"overrides={sorted((EXIT_ENGINE_CONFIG or {}).keys())} | out=exit_engine_{date_str}.jsonl")
+        return service
+    except Exception as exc:
+        log(f"  [EXIT SHADOW ] init failed, shadow disabled: {exc}")
         return None
 
 
@@ -5794,6 +5828,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         buy_services.tick_trigger = tick_feed.evaluate
     v2_shadow = _make_v2_shadow_runner(date_str)
     edge_only = _make_edge_only_runner(date_str)
+    exit_shadow = _make_exit_shadow_runner(date_str)
     current_trade_date = now.date()
     loop_consecutive_errors = 0
     last_watchlist_mismatch_log_at: datetime | None = None
@@ -5845,6 +5880,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             reentry_state = api.live_state.setdefault("reentry", {})  # 새 날짜 live_state 기준으로 재바인딩
             v2_shadow = _make_v2_shadow_runner(date_str)  # [2026-10-23] V2 shadow state is per day
             edge_only = _make_edge_only_runner(date_str)  # [2026-11-12] Edge-AI-only paper state is per day
+            if exit_shadow is not None:  # [2026-11-15] previous day's open virtual copies end as INCOMPLETE
+                try:
+                    exit_shadow.close(finalize_reason="DATE_CHANGE", timeout_s=0)  # never blocks the loop
+                except Exception as exc:
+                    log(f"  [EXIT SHADOW ] close error: {exc}")
+            exit_shadow = _make_exit_shadow_runner(date_str)  # [2026-11-15] adaptive exit shadow state is per day
             risk.reset()
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()
@@ -6090,6 +6131,21 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     except Exception as exc:
                         log(f"  [EDGE ONLY   ] {symbol_label} error: {exc}")
 
+                # [2026-11-15] Adaptive exit SHADOW (r026, no orders) - held bot positions, real-time price only
+                if (
+                    exit_shadow is not None
+                    and pos is not None and int(pos.get("quantity", 0) or 0) > 0
+                    and is_regular_session(current_dt)
+                    and price_source in ("live", "cached_live")
+                    and price is not None and price > 0
+                ):
+                    try:
+                        _xs_bot_qty = api.bot_quantity(code) if api.sells_bot_quantity_only() else None
+                        exit_shadow.observe(code, name, current_dt, pos, _xs_bot_qty, float(price),
+                                            get_quote_status(code), "KRX")
+                    except Exception as exc:
+                        log(f"  [EXIT SHADOW ] {symbol_label} error: {exc}")
+
                 buy_frame = frame
                 if ENABLE_INTRABAR_LIVE_ENTRY_FILTER and price is not None and price > 0:
                     try:
@@ -6332,6 +6388,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         turn_elapsed_seconds = (datetime.now() - current_dt).total_seconds()
         if turn_elapsed_seconds < MAIN_LOOP_MIN_CYCLE_SECONDS:
             time.sleep(MAIN_LOOP_MIN_CYCLE_SECONDS - turn_elapsed_seconds)
+
+    # [2026-11-15] every loop exit (stop request / market end / Ctrl+C / max errors) lands here: checkpoint the adaptive
+    # exit shadow (open copies are kept for a restart; the session-end finalize already ran inside the worker at 15:30)
+    if exit_shadow is not None:
+        try:
+            exit_shadow.close(finalize_reason=None, timeout_s=5.0)   # logs itself when the worker did not stop
+        except Exception as exc:
+            log(f"  [EXIT SHADOW ] close error: {exc}")
 
 
 if __name__ == "__main__":

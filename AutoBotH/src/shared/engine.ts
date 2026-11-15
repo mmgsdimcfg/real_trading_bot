@@ -12,6 +12,8 @@
  *   were listed as name-less symbols with no events
  * - [2026-11-08] type=fix - Condition keys from the log rules (and sell trades) are translated to the server's numbers (mapping
  *   keyRemap, rebuilt in setConditions) so an app/server version gap does not show "조건 목록에 없음"
+ * - [2026-11-13] type=fix - a bot buy sold by hand (no sell in the trade log) stayed 보유 on the board: buys from before the last
+ *   "[ACT REENTER]" / "[BOT LEDGER] ... account=N->0" of the symbol no longer count as an open position (SymState.closedTs)
  * - [2026-11-13] type=feat - held state 'manual': "[HOLD SKIP] ... NOT_BOT_POSITION" (bought by hand today, the bot leaves it
  *   alone under AUTO_SELL_SCOPE=bot_only); carried / manual holdings stay fresh on "[SKIP] ... can_trade_code_now=False"
  * - [2026-11-13] type=fix - (1) r003 restart: the watch state is rebuilt from the WATCH lines of the latest run ("R003 START").
@@ -54,6 +56,9 @@ interface SymState {
   unmanagedTs?: number;
   /** [2026-11-13] last "[HOLD SKIP] ... NOT_BOT_POSITION": bought by hand today, the bot leaves it alone (AUTO_SELL_SCOPE=bot_only) */
   manualTs?: number;
+  /** [2026-11-13] the account no longer holds the symbol although the trade log has no sell for it (sold by hand): time of the
+   *  last "[ACT REENTER]" (r003 saw the bot's position gone and put the symbol back on watch) or "[BOT LEDGER] ... account=N->0" */
+  closedTs?: number;
 }
 
 export interface EngineOptions {
@@ -164,6 +169,7 @@ export class DayEngine {
     const s = this.sym(p.code);
     if (p.name) this.setName(p.code, p.name);
 
+    if (p.tag === 'ACT REENTER' || (p.tag === 'BOT LEDGER' && /\baccount=\d+->0\b/.test(p.rest))) s.closedTs = p.ts;
     if (p.tag.startsWith('ACT ')) {
       const next: Record<string, WatchState> = {
         'ACT PROMOTE': 'active',
@@ -371,8 +377,14 @@ export class DayEngine {
     // positions and realized P&L from the trade log (buy_sell log is the source of truth for fills)
     const pos = new Map<string, { qty: number; buyPrice: number; buyTs: number }>();
     const realized = new Map<string, number>();
+    // a buy from before the symbol's closedTs is no longer held (sold outside the bot: no sell in the trade log)
+    const closedBefore = (code: string, ts: number) => {
+      const c = this.syms.get(code)?.closedTs;
+      return c !== undefined && ts <= c;
+    };
     for (const t of this.trades) {
       if (t.side === 'BUY') {
+        if (closedBefore(t.code, t.ts)) continue;
         const cur = pos.get(t.code);
         const qty = Number.isFinite(t.qty) ? t.qty : 0;
         if (cur && cur.qty > 0) cur.qty += qty;
