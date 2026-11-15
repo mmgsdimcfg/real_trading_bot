@@ -40,7 +40,8 @@ class ModeListsTest(unittest.TestCase):
                         self.assertIs(r005.active_buy_conditions(), r005.EDGE_BUY_CONDITIONS)
                 self.assertIs(r006.active_sell_conditions(), r006.EDGE_SELL_CONDITIONS)
             self.assertIsNot(r005.active_buy_conditions(), r005.EDGE_BUY_CONDITIONS)      # default stays normal
-            self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
+            with mock.patch.object(r006, "EXIT_ENGINE_MODE", "shadow"):   # [2026-11-15] "live" -> ADAPTIVE (test_r027)
+                self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
 
     def test_edge_buy_keeps_the_safety_conditions_and_drops_the_strategy_filters(self):
         funcs = [c.func_name for c in r005.EDGE_BUY_CONDITIONS]

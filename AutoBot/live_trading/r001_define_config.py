@@ -2,6 +2,11 @@
 
 # Update log
 # - [2026-11-15] type=feat owner=claude
+#     summary: 사용자 요청("오늘 만든 매도 엔진을 바로 적용") - EXIT_ENGINE_MODE 기본 "shadow" -> "live". AUTO_SELL_MODE="all" 이면
+#       실제 매도 판정을 r024 엔진(r027 관리자, r006 ADAPTIVE_SELL_CONDITIONS)이 한다. 설계 §24.
+#     impact: live (r003 재시작 후, AUTO_SELL_MODE="all" 일 때만. stop_only/off 는 무변경)
+#     compatibility: breaking (매도 판정 교체. 롤백: r016 set EXIT_ENGINE_MODE=shadow)
+# - [2026-11-15] type=feat owner=claude
 #     summary: 사용자 결정(적응형 익절·손절 엔진 설계 Q1 "shadow 먼저") - EXIT_ENGINE_MODE("shadow" 기본 | "off") /
 #       EXIT_ENGINE_CONFIG 신설. r003 이 r026 shadow 러너로 봇 포지션의 가상 사본을 r024 엔진으로 관리하고 기록만 남긴다.
 #     impact: live (r003 재시작 후 기록 파일 3개 + [EXIT SHADOW ] 로그 추가. 주문·매도 판정 무변경)
@@ -1973,12 +1978,17 @@ EDGE_ONLY_MAX_ENTRIES_PER_DAY = 10  # 하루 가상 매수 횟수 상한
 # - "shadow": 봇 보유 포지션마다 가상 사본을 만들어 엔진 판단·가상 체결만 기록한다. **주문 없음** - 실제 매도는 그대로
 #   AUTO_SELL_MODE(현재 stop_only) 가 한다. 기록: runtime/data/live_runtime/exit_engine_YYYYMMDD.jsonl(판단),
 #   exit_shadow_trades_YYYYMMDD.jsonl(가상 청산 결과), exit_shadow_YYYYMMDD.json(재시작 복구) + "[EXIT SHADOW ]" 로그.
-# - 실주문 전환(AUTO_SELL_MODE="adaptive")은 아직 없다 - shadow 검증(§17 C17 승급 기준) 후 AutoBotH 와 함께 추가.
+# - [2026-11-15 사용자 요청 "바로 적용"] "live": AUTO_SELL_MODE="all" 일 때 실제 매도 판정을 r024 엔진이 한다(r027 관리자,
+#   r006 ADAPTIVE_SELL_CONDITIONS). 주문은 기존 place_sell_order(정규장 KRX 시장가). 기존 normal 매도 조건(_003~_015)은
+#   쓰지 않는다. AUTO_SELL_MODE="stop_only"/"off" 가 우선이다(그때는 엔진이 주문하지 않는다 - live 모드에서는 shadow 도 끈다).
+#   정규장 밖이거나 엔진 오류면 순손익 손절(_s04, AUTO_SELL_STOP_NET_PCT) 하나로 대체한다. 15:20 예약 청산은 그대로.
+#   기록: exit_live_engine_YYYYMMDD.jsonl / exit_live_trades_YYYYMMDD.jsonl / exit_live_YYYYMMDD.json + "[EXIT ENGINE ]" 로그.
+#   설계 §24. 롤백: r016 set EXIT_ENGINE_MODE=shadow 후 r003 재시작(기존 normal 매도 조건으로 복귀).
 # - EXIT_ENGINE_CONFIG: r024 ExitConfig 필드 덮어쓰기(스칼라만, 소문자 필드명). 예) {"trail_arm_pct": 1.2}.
 #   잘못된 키/값이면 shadow 러너가 시작하지 않고 로그만 남긴다(r003 동작 무영향).
 # - 끄기: r016 set EXIT_ENGINE_MODE=off 후 r003 재시작.
 # =============================================================================
-EXIT_ENGINE_MODE = "shadow"         # "off" | "shadow"
+EXIT_ENGINE_MODE = "live"           # "off" | "shadow" | "live" (live = AUTO_SELL_MODE "all" 의 매도를 엔진이 판정)
 EXIT_ENGINE_CONFIG: dict = {}       # ExitConfig 필드 덮어쓰기 (예: {"pnl_basis": "net", "trail_arm_pct": 1.5})
 
 # =============================================================================

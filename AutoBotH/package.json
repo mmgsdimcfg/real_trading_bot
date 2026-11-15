@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-15] type=feat - v2.3.19_001: 적응형 청산 엔진 실매매 연결 대응 - (1) 매도 사유 ADAPTIVE_* (r006 _x10 / r027, 서버 EXIT_ENGINE_MODE=live 기본)를 매도 조건 _010 으로 매핑 (2) 로그 태그 [EXIT ENGINE ] 를 알려진 태그로 등록 (3) 제어 탭 자동 매도 '전체 자동' 문구에 손절 포함, 바꿀 때 확인 창에 적응형 엔진이 매도를 판정한다는 안내 추가",
     "[2026-11-15] type=feat - v2.3.18_004: 로그 태그 [EXIT SHADOW ] (r026 적응형 청산 엔진 shadow - 가상 매도 기록, 실제 매도 무변경)를 알려진 태그로 등록해 타임라인의 unknown 목록에 뜨지 않게 함",
     "[2026-11-13] type=fix - v2.3.18_003: 종목 보드 - 봇이 매수한 뒤 MTS 등에서 직접 매도한 종목이 계속 '보유'(수량 표시)로 남던 문제 수정. 직접 매도는 매매 로그에 남지 않으므로, r003 이 보유 수량이 사라진 것을 확인하고 남기는 로그([ACT REENTER] 감시 복귀, [BOT LEDGER] account=N->0) 이후에는 그 이전 매수분을 보유로 보지 않는다",
     "[2026-11-13] type=feat - v2.3.18_002: 종목 보드 - 종목 행을 누르면 파이프라인 대신 타임라인으로 이동 (보유 현황 탭과 같은 동작)",
@@ -61,7 +62,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.18",
+  "version": "2.3.19",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -109,7 +110,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

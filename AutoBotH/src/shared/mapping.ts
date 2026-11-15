@@ -124,6 +124,7 @@ const SELL_RULES = sortRules([
   { p: 'AUX_TRIGGER_BUFFER_BLOCK', cond: '_015' },
   { p: 'HARD_STOP_LOSS', cond: '_004' },
   { p: 'NET_STOP_LOSS', cond: '_004' }, // [2026-11-12] AUTO_SELL_MODE=stop_only: the only automatic sell (r006 _s04)
+  { p: 'ADAPTIVE_', cond: '_010' }, // [2026-11-15] EXIT_ENGINE_MODE=live: adaptive exit engine sells (r006 _x10, r027)
   { p: 'EDGE_TP_', cond: '_010' }, // [2026-11-12] edge mode sells (r006 _e10 / _e11 / _e12)
   { p: 'EDGE_SL_', cond: '_011' },
   { p: 'EDGE_TIME_', cond: '_012' },
@@ -193,6 +194,7 @@ export const IGNORED_TAGS = new Set([
   'SELL LIMIT', // [2026-11-13] AUTO_SELL_SCOPE=bot_only: a sell was cut down to the bot's quantity (the order line follows)
   'EDGE ONLY', // [2026-11-12] Edge-AI-only paper trading (r022): virtual buys / sells, not a condition of the real pipeline
   'EXIT SHADOW', // [2026-11-15] adaptive exit engine shadow (r026): virtual exits only, real selling unchanged
+  'EXIT ENGINE', // [2026-11-15] adaptive exit engine live (r027): engine state lines; the order itself logs [SELL TRIGGER]
 ]);
 
 function reasonCandidates(rest: string): string[] {

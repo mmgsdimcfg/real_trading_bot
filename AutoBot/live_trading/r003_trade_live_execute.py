@@ -21,6 +21,13 @@ Update log format (append only):
 
 Update log:
 - [2026-11-15] type=feat owner=claude
+    summary: 적응형 청산 엔진 실주문 연결(사용자 요청 "바로 적용") - EXIT_ENGINE_MODE="live" + AUTO_SELL_MODE="all" 이면
+      _make_exit_live_manager 가 r027 LiveExitManager 를 만들어 sell_services.exit_live 로 넘긴다(r006 _x10 이 판정·주문).
+      _confirm_pending_sell 이 last_sell_confirm[code](사유·체결 수량·시각)를 남겨 엔진이 자기 주문 체결량을 맞춘다.
+      날짜 전환 시 관리자 재생성. live 모드에서는 shadow 러너를 만들지 않는다.
+    impact: live (매도 판정 교체 - 그 조합일 때만)
+    compatibility: breaking (롤백: r016 set EXIT_ENGINE_MODE=shadow)
+- [2026-11-15] type=feat owner=claude
     summary: 적응형 익절·손절 엔진 shadow 연결(사용자 결정 Q1) - r001 EXIT_ENGINE_MODE="shadow"이면 r026 ShadowExitRunner를
       만들고(작업 스레드 + 제한 큐 - 매매 스레드는 관측값만 넣는다), 보유 종목 루프에서 observe(REST 가격·VI/정지 상태·봇 수량),
       날짜 전환 시 close(DATE_CHANGE), 메인 루프 종료 시 close(체크포인트)를 호출한다. 가상 체결만 기록하고 주문·매도 판정·
@@ -2444,6 +2451,29 @@ def _make_exit_shadow_runner(date_str: str):
         return None
 
 
+def _make_exit_live_manager(date_str: str):
+    """[2026-11-15] Adaptive exit engine LIVE manager (r027) or None. Only EXIT_ENGINE_MODE="live" with AUTO_SELL_MODE="all"
+    builds it; r006 then sells through ADAPTIVE_SELL_CONDITIONS (None there -> net stop fallback)."""
+    if str(EXIT_ENGINE_MODE).strip().lower() != "live":
+        return None
+    if str(AUTO_SELL_MODE).strip().lower() != "all":
+        log(f"  [EXIT ENGINE ] EXIT_ENGINE_MODE=live but AUTO_SELL_MODE={AUTO_SELL_MODE} - engine not used (manual selling wins)")
+        return None
+    try:
+        import r001_define_config as _cfg_mod
+        from r024_adaptive_exit import ExitConfig
+        from r027_exit_live import LiveExitManager
+        cfg = ExitConfig.from_mapping(dict(EXIT_ENGINE_CONFIG or {}))
+        cfg.validate()
+        mgr = LiveExitManager(_cfg_mod.TICK_DATA_DIR, DATA_DIR, LIVE_RUNTIME_DIR, date_str, log, cfg)
+        log(f"  [EXIT ENGINE ] adaptive exit engine LIVE (real sell orders, market) | basis={cfg.pnl_basis} "
+            f"overrides={sorted((EXIT_ENGINE_CONFIG or {}).keys())} | out=exit_live_engine_{date_str}.jsonl")
+        return mgr
+    except Exception as exc:
+        log(f"  [EXIT ENGINE ] init failed - selling falls back to the net stop only: {exc}")
+        return None
+
+
 def _make_tick_trigger_feed():
     """[2026-10-29] r013 tick-chart trigger feed or None (r001 TICK_TRIGGER_MODE). Needs g011_tick_collector running.
     [2026-10-30] also created when ENTRY_TRIGGER_MODE="triple" (the triple-cross trigger requires the tick feed)."""
@@ -3554,6 +3584,8 @@ class TradingAPI:
         # 종목별 가장 최근 매도 체결가(_confirm_pending_sell 기록). 1차 익절 체결가를 급등 사다리 기준가로
         # 쓰기 위한 용도이며 메모리 전용(재시작 시 사다리 기준가는 live_state의 surge_ladder에서 복원).
         self.last_sell_fill_price: dict[str, float] = {}
+        # [2026-11-15] 종목별 마지막 매도 체결 확정(사유·체결 수량·시각) - r027 적응형 청산 엔진이 자기 주문의 체결 수량을 맞춘다
+        self.last_sell_confirm: dict[str, dict] = {}
         self._last_sync_at: datetime | None = None
         self._last_pending_poll_at: datetime | None = None
         self._last_live_state_save_at: datetime | None = None
@@ -4000,6 +4032,12 @@ class TradingAPI:
         fill_price = avg_price if avg_price > 0 else float(pending.get("requested_price", 0.0))
         if fill_price > 0:
             self.last_sell_fill_price[str(code).zfill(6)] = fill_price
+        if not hasattr(self, "last_sell_confirm"):
+            self.last_sell_confirm = {}
+        self.last_sell_confirm[str(code).zfill(6)] = {
+            "reason": str(pending.get("reason", "")), "filled_qty": int(filled_qty), "at": datetime.now(),
+            "order_no": str(pending.get("order_no", "") or ""), "remaining": int(remaining_qty),
+        }
         buy_price = float(pending.get("buy_price", 0.0))
         pnl_pct = ((fill_price / buy_price) - 1.0) * 100.0 if buy_price > 0 and fill_price > 0 else float("nan")
         profit_amount = (fill_price - buy_price) * filled_qty if buy_price > 0 and fill_price > 0 and filled_qty > 0 else float("nan")
@@ -5829,6 +5867,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     v2_shadow = _make_v2_shadow_runner(date_str)
     edge_only = _make_edge_only_runner(date_str)
     exit_shadow = _make_exit_shadow_runner(date_str)
+    sell_services.exit_live = _make_exit_live_manager(date_str)   # [2026-11-15] None unless EXIT_ENGINE_MODE="live"
+    sell_services.is_regular_session = is_regular_session
+    sell_services.get_quote_status = get_quote_status
     current_trade_date = now.date()
     loop_consecutive_errors = 0
     last_watchlist_mismatch_log_at: datetime | None = None
@@ -5886,6 +5927,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 except Exception as exc:
                     log(f"  [EXIT SHADOW ] close error: {exc}")
             exit_shadow = _make_exit_shadow_runner(date_str)  # [2026-11-15] adaptive exit shadow state is per day
+            sell_services.exit_live = _make_exit_live_manager(date_str)  # [2026-11-15] live engine state is per day
             risk.reset()
             post_buy_bb_drop_state.clear()
             breakeven_fail_state.clear()

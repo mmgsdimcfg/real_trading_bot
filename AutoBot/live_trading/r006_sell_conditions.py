@@ -34,6 +34,12 @@ Order [numbers = evaluation order since 2026-11-08, old number in brackets]
     번호는 재사용하지 않는다(로그/문서 호환).
 
 Update log (append only):
+- [2026-11-15] type=feat owner=claude
+    summary: EXIT_ENGINE_MODE="live" + AUTO_SELL_MODE="all" - ADAPTIVE_SELL_CONDITIONS(stale 보호, 추적 갱신, _x10 적응형 엔진).
+      _x10 은 r027 LiveExitManager.decide() 결과를 place_sell_order(시장가)로 낸다. 정규장 밖 / 관리자 없음 / 엔진 오류면
+      순손익 손절(_s04) 하나로 대체. 설계 adaptive_exit_design_20261115.md §24.
+    impact: live (그 조합일 때만 normal 매도 조건 대신)
+    compatibility: backward-compatible (EXIT_ENGINE_MODE="shadow"|"off" 면 기존과 동일)
 - [2026-11-12] type=feat owner=claude
     summary: TRADING_STRATEGY_MODE="edge" - EDGE_SELL_CONDITIONS(stale 보호, 추적 갱신, _e10 익절 / _e11 손절 / _e12 시간 상한).
       모델 라벨 정의(+2.0% / -1.7% / 60분)로 전량 매도.
@@ -117,6 +123,7 @@ import pandas as pd
 
 from r001_define_config import (
     AUTO_SELL_MODE,
+    EXIT_ENGINE_MODE,
     AUTO_SELL_STOP_NET_PCT,
     V2_COMMISSION_PCT,
     V2_SELL_TAX_PCT,
@@ -226,6 +233,10 @@ class SellServices:
     classify_buy_session: Callable[[datetime], str]
     get_frame_1min: Callable[[str, datetime, bool], pd.DataFrame | None]
     record_gate_decision: Callable[[dict], None] | None = None  # [2026-10-06] DC_REGIME 판정 jsonl 기록
+    # [2026-11-15] 적응형 청산 엔진 실주문 (EXIT_ENGINE_MODE="live"): r027 LiveExitManager, 정규장 판정, REST 시세 상태
+    exit_live: Any = None
+    is_regular_session: Callable[[datetime], bool] | None = None
+    get_quote_status: Callable[[str], dict | None] | None = None
 
 
 @dataclass
@@ -1021,6 +1032,9 @@ def active_sell_conditions() -> tuple[SellCondition, ...]:
     if auto == "off":
         return MANUAL_SELL_CONDITIONS
     mode = str(TRADING_STRATEGY_MODE).lower()
+    if exit_engine_mode() == "live" and mode != "edge":
+        # [2026-11-15] 적응형 청산 엔진이 매도 판정 (normal/basic). edge 는 모델 라벨 정의 청산(_e10~_e12)을 유지한다.
+        return ADAPTIVE_SELL_CONDITIONS
     if mode == "edge":
         return EDGE_SELL_CONDITIONS   # [2026-11-12] Edge AI 단독 실매매: 모델 라벨 정의로 매도
     return BASIC_SELL_CONDITIONS if mode == "basic" else SELL_CONDITIONS
@@ -1258,4 +1272,72 @@ STOP_ONLY_SELL_CONDITIONS: tuple[SellCondition, ...] = MANUAL_SELL_CONDITIONS + 
                   "수수료+거래세를 뺀 순손익 <= -AUTO_SELL_STOP_NET_PCT 이면 잔량 전량 시장가 매도 (확인 지연 없음). "
                   "다른 매도는 모두 사용자가 직접 한다",
                   ("AUTO_SELL_MODE", "AUTO_SELL_STOP_NET_PCT", "V2_COMMISSION_PCT", "V2_SELL_TAX_PCT"), _s04_net_stop_loss),
+)
+
+
+# =============================================================================================
+# [2026-11-15] 적응형 청산 엔진 실주문 (r001 EXIT_ENGINE_MODE="live" + AUTO_SELL_MODE="all", 사용자 요청 "바로 적용").
+# 엔진(r024)이 판정하고 r027 LiveExitManager 가 포지션별 상태·체결 반영·재시작 복구를 맡는다. 주문은 place_sell_order 시장가.
+
+def exit_engine_mode() -> str:
+    mode = str(EXIT_ENGINE_MODE).strip().lower()
+    return mode if mode in ("off", "shadow", "live") else "off"
+
+
+def _x02_track_if_fresh(ctx: SellContext) -> bool:
+    """_002 position tracking only on a fresh price (adaptive list has no _001 stale guard - Codex live review #2)."""
+    if not ctx.services.is_stale_live_price_source(ctx.price_source):
+        _002_update_position_tracking(ctx)
+    return False
+
+
+def _x10_adaptive_exit(ctx: SellContext) -> bool:
+    svc, api, code = ctx.services, ctx.api, ctx.code
+    mgr = svc.exit_live
+    stale = svc.is_stale_live_price_source(ctx.price_source)
+    regular = svc.is_regular_session(ctx.current_dt) if svc.is_regular_session else True
+    if mgr is None or not regular:
+        # safety fallback: net stop only, on a fresh price (same as stop_only = _001 then _s04)
+        return True if _001_stale_live_price_guard(ctx) else _s04_net_stop_loss(ctx)
+    norm = str(code).zfill(6)
+    pending = api.get_pending_order(code) if hasattr(api, "get_pending_order") else None
+    side = str((pending or {}).get("side", "")).lower()
+    bot_qty = api.bot_quantity(norm) if api.sells_bot_quantity_only() else None
+    fill = (getattr(api, "last_sell_confirm", None) or {}).get(norm)
+    quote = svc.get_quote_status(norm) if svc.get_quote_status else None
+    try:
+        # stale REST price -> None: the engine keeps running on the tick file (SAFE / DEAD, FORCE by time - design C7)
+        order = mgr.decide(norm, ctx.name, ctx.current_dt, ctx.pos, bot_qty, None if stale else float(ctx.price), quote,
+                           sell_fill=fill, sell_in_flight=(side == "sell"), buy_in_flight=(side == "buy"))
+    except RuntimeError as exc:
+        ctx.log(f"  [EXIT ENGINE ] {ctx.symbol_label} | {exc} | fallback: net stop")
+        return True if _001_stale_live_price_guard(ctx) else _s04_net_stop_loss(ctx)
+    if order is None:
+        return False
+    ctx.log(
+        f"  [SELL TRIGGER] {ctx.symbol_label} | {order.reason} | qty={order.qty}/{int(ctx.pos['quantity'])} "
+        f"price={ctx.price:,.0f} entry={ctx.entry_price:,.0f} pnl={ctx.pnl_pct*100:.2f}% engine_pnl={order.pnl:+.2f}%"
+    )
+    ok = api.place_sell_order(code, int(order.qty), ctx.current_dt, order.reason, ctx.nxt_tradeable, price=ctx.price,
+                              code_name=ctx.name, market_order=True)
+    after = api.get_pending_order(code) if hasattr(api, "get_pending_order") else None
+    unknown = (not ok) and after is not None and str(after.get("side", "")).lower() == "sell"
+    mgr.submitted(order, ok, unknown, ctx.current_dt)
+    if ok:
+        ctx.log(f"  [SELL EXEC   ] {ctx.symbol_label} | {order.reason} | qty={order.qty} price={ctx.price:,.0f}")
+        if order.kind == "STOP":
+            _register_hard_stop(ctx, "ADAPTIVE_STOP")
+    ctx.state.signal_sell_bar[code] = ctx.bar_time
+    return True
+
+
+ADAPTIVE_SELL_CONDITIONS: tuple[SellCondition, ...] = (
+    SellCondition(2, "_x02_track_if_fresh", "UPDATE", "포지션 추적 갱신(신선한 현재가일 때만)",
+                  "_002 와 같다. 현재가가 stale 이면 건너뛴다(적응형 경로에는 stale 가드 _001 이 없다 - 엔진이 틱으로 판단)",
+                  ("LIVE_PRICE_STALE_TTL_SECONDS",), _x02_track_if_fresh),
+    SellCondition(10, "_x10_adaptive_exit", "EXIT", "[적응형] 레짐·분할 익절·되돌림 트레일링·손절 엔진",
+                  "r024 엔진 판정(급등/일반 레짐, 분할 익절 2/3/4%·3/4/5%, 고점 되돌림 2단계, 올리기만 하는 손절, "
+                  "시간 손절, 15:15 강제 청산)을 시장가로 주문. 정규장 밖/엔진 오류면 순손익 손절",
+                  ("EXIT_ENGINE_MODE", "EXIT_ENGINE_CONFIG", "AUTO_SELL_MODE", "AUTO_SELL_STOP_NET_PCT"),
+                  _x10_adaptive_exit),
 )

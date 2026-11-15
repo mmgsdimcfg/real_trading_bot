@@ -63,6 +63,8 @@ SELL_FRAME_BY_FUNC = {
     "_012_atr_stop_loss": "live+3m", "_013_trailing_stop": "live", "_014_same_bar_sell_dedup": "3m",
     "_015_shared_reversal_sell": "3m",
     "_s04_net_stop_loss": "live",   # [2026-11-12] AUTO_SELL_MODE="stop_only"
+    "_x02_track_if_fresh": "live+3m",
+    "_x10_adaptive_exit": "live+tick",   # [2026-11-15] EXIT_ENGINE_MODE="live" (r027: REST 현재가 + g011 틱 파일)
 }
 FRAMES_LEGEND = {
     "none": "데이터 무관(상태/시간/계좌)",
