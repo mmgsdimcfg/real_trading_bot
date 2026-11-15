@@ -2,6 +2,11 @@
 
 # Update log
 # - [2026-11-15] type=feat owner=claude
+#     summary: 매수 엔진 3단계 - ENTRY_ENGINE_MODE("shadow" 기본 | "off") / ENTRY_ENGINE_CONFIG 신설. r003 이 r028 진입 엔진을
+#       별도 스레드에서 감시 종목 틱 파일로 돌려 판단과 지연(T0~T5)만 기록한다. 주문 없음. entry_engine_analysis_20261115.md §7.
+#     impact: live (기록만: entry_engine_YYYYMMDD.jsonl, entry_latency_YYYYMMDD.jsonl, "[ENTRY ENGINE]" 로그)
+#     compatibility: backward-compatible (기존 매수 경로 무변경. 끄기: r016 set ENTRY_ENGINE_MODE=off)
+# - [2026-11-15] type=feat owner=claude
 #     summary: 사용자 요청("오늘 만든 매도 엔진을 바로 적용") - EXIT_ENGINE_MODE 기본 "shadow" -> "live". AUTO_SELL_MODE="all" 이면
 #       실제 매도 판정을 r024 엔진(r027 관리자, r006 ADAPTIVE_SELL_CONDITIONS)이 한다. 설계 §24.
 #     impact: live (r003 재시작 후, AUTO_SELL_MODE="all" 일 때만. stop_only/off 는 무변경)
@@ -1990,6 +1995,19 @@ EDGE_ONLY_MAX_ENTRIES_PER_DAY = 10  # 하루 가상 매수 횟수 상한
 # =============================================================================
 EXIT_ENGINE_MODE = "live"           # "off" | "shadow" | "live" (live = AUTO_SELL_MODE "all" 의 매도를 엔진이 판정)
 EXIT_ENGINE_CONFIG: dict = {}       # ExitConfig 필드 덮어쓰기 (예: {"pnl_basis": "net", "trail_arm_pct": 1.5})
+
+# =============================================================================
+# [2026-11-15] 매수(진입) 엔진 r028 - 사용자 요청(매수 엔진 최적화 2·3단계). 분석: AutoBot/entry_engine_analysis_20261115.md
+# - "shadow": r003 이 감시 종목의 g011 틱 파일을 별도 스레드에서 읽어 r028 엔진(3분 레짐 + 60/120틱 SEQ, 필터)을 돌리고
+#   판단만 기록한다. **주문 없음** - 실제 매수는 기존 r005 _009 트리거와 게이트가 그대로 한다.
+#   기록: runtime/data/live_runtime/entry_engine_YYYYMMDD.jsonl(판단), entry_latency_YYYYMMDD.jsonl(T0~T5 지연: 엔진 후보와
+#   실제 매수 주문·체결) + "[ENTRY ENGINE]" / "[ENTRY LAT   ]" 로그.
+# - 파라미터: live_trading/r028_entry_engine.yaml. ENTRY_ENGINE_CONFIG(dict) 가 yaml 을 덮어쓴다(중첩 키).
+#   예) {"filter": {"vwap_gap_max_pct": 2.0}}. 잘못된 값이면 엔진이 시작하지 않고 로그만 남긴다(r003 동작 무영향).
+# - 끄기: r016 set ENTRY_ENGINE_MODE=off 후 r003 재시작.
+# =============================================================================
+ENTRY_ENGINE_MODE = "shadow"        # "off" | "shadow"
+ENTRY_ENGINE_CONFIG: dict = {}      # r028_entry_engine.yaml 덮어쓰기 (중첩 dict)
 
 # =============================================================================
 # [2026-11-04] 주문/계좌 안전 점검 (Codex 2차 검토 #15~#18) + 시장 추세 게이트 - 사용자 승인
