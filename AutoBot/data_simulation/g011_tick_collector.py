@@ -33,6 +33,12 @@ Run:
   --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-16] type=fix owner=claude
+    summary: 구독 해제 tr_type "0" -> "2" (KIS 웹소켓 규격: 1=등록, 2=해제). "0" 은 서버가 "invalid tr_type" 으로 거절해 해제가
+      한 번도 되지 않았음(20261116 15:31 KRX 26종목 해제 실패 로그). 정규장 전환(08:55) 때 감시 종목 NXT 구독을 풀고 그 자리에
+      스캔 채움 KRX 를 넣는 "held" 계획은 해제가 돼야 40 한도 안에서 동작한다.
+    impact: collector
+    compatibility: backward-compatible
 - [2026-11-16] type=feat owner=claude
     summary: 추가 수집 종목 - <runtime>/config/tick_collect_extra.json 의 codes 를 감시 종목 뒤(스캔 채움 앞)에 구독(KRX).
       시작 로그에 "ROLES watch=.. extra=.. scan=.." 한 줄 (r016 collector detail 이 종목 구분에 쓴다).
@@ -472,7 +478,7 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log, n
                         drop = sorted(active - want_set)
                         add = [k for k in want if k not in active]
                         for tr, code in drop:            # free the slots first (session cap)
-                            msg, _cols = sub_fn[tr]("0", code)
+                            msg, _cols = sub_fn[tr]("2", code)   # KIS: "1" = subscribe, "2" = unsubscribe ("0" -> invalid tr_type)
                             await ws.send(json.dumps(msg))
                             active.discard((tr, code))
                             await asyncio.sleep(0.05)

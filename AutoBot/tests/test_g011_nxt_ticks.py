@@ -166,8 +166,8 @@ class RunTest(unittest.TestCase):
     def test_krx_is_unsubscribed_at_its_end_and_nxt_keeps_running(self):
         conns, logs, files, rows = self._run(krx_until_in=0.4, nxt_window=(-1, 1.2))
         sent = [(m["tr"], m["type"], m["code"]) for m in conns[0].sent]
-        self.assertIn(("H0STCNT0", "0", "000001"), sent)                              # unsubscribed when the KRX end passed
-        self.assertNotIn(("H0NXCNT0", "0", "000001"), sent)
+        self.assertIn(("H0STCNT0", "2", "000001"), sent)                              # unsubscribed (tr_type 2) when the KRX end passed
+        self.assertNotIn(("H0NXCNT0", "2", "000001"), sent)
         self.assertEqual(len(conns), 1)                                               # same session, no reconnect
 
     def test_nxt_starts_later_on_the_same_session(self):
