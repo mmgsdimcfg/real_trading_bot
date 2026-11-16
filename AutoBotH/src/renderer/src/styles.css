@@ -744,6 +744,13 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .price-tag.up { color: var(--gain); }
 .price-tag.down { color: var(--loss); }
 .toolbar .price-tag { margin: 0 6px; font-size: 13px; }
+/* [2026-11-16] timeline quote line: price block + day's open / high / low / volume / value */
+.quote-line { display: inline-flex; align-items: baseline; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.quote-line .price-tag b { font-size: 15px; }
+.quote-detail { display: inline-flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.quote-detail b { font-weight: 500; color: var(--text-2); }
+.quote-detail b.up { color: var(--gain); }
+.quote-detail b.down { color: var(--loss); }
 /* [2026-11-12] paper trading tab */
 .paper-view h4 { margin: 14px 16px 6px; font-size: 13px; color: var(--text-2); }
 .paper-view .kpi b.small { font-size: 13px; font-weight: 500; }

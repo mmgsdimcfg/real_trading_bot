@@ -4,6 +4,10 @@
  *   one row per symbol per poll: ts, code, market, stck_prpr, ..., prdy_ctrt). parseQuoteRows() reads rows by header name,
  *   QuoteBook keeps them per code (latestAt(ts) for the replay cursor), quoteChange() derives the change in won from the price and
  *   the change rate (the file has no previous close): previous close = price / (1 + rate) rounded to the KRX tick of that price
+ * - [2026-11-16] type=feat - The day's open / high / low, accumulated volume and traded value of the row (stck_oprc / stck_hgpr /
+ *   stck_lwpr / acml_vol / acml_tr_pbmn) for the quote line of the timeline; fmtKrwShort ("2.7억")
+ * - [2026-11-16] type=feat - fromMarketQuote: a KIS current-price answer (r016 quote) as a LiveQuote (source 'kis') - the timeline
+ *   shows it for symbols r003 does not quote (holdings outside the watch list)
  */
 
 export interface LiveQuote {
@@ -17,6 +21,40 @@ export interface LiveQuote {
   change: number;
   /** J = KRX, NX = NXT - the market the price was asked on */
   market?: string;
+  /** [2026-11-16] the day's open / high / low, accumulated volume (shares) and traded value (won) - absent when the file has no column */
+  open?: number;
+  high?: number;
+  low?: number;
+  vol?: number;
+  value?: number;
+  /** [2026-11-16] 'kis' = asked from KIS by the app (r016 quote), otherwise r003's quote log */
+  source?: 'kis';
+}
+
+/** [2026-11-16] r016 `quote` answer (KIS inquire-price, KRX) -> LiveQuote; null without a price */
+export function fromMarketQuote(q: { code: string; asof?: string; price: number; change?: number; change_pct?: number; prev_close?: number;
+  open?: number; high?: number; low?: number; volume?: number; amount?: number } | null | undefined): LiveQuote | null {
+  if (!q || !(q.price > 0)) return null;
+  const t = q.asof ? tsToEpoch(q.asof) : NaN;
+  const pct = Number.isFinite(q.change_pct as number) ? (q.change_pct as number)
+    : q.prev_close && q.prev_close > 0 ? Math.round((q.price / q.prev_close - 1) * 10000) / 100 : 0;
+  const change = Number.isFinite(q.change as number) ? (q.change as number)
+    : q.prev_close && q.prev_close > 0 ? q.price - q.prev_close : quoteChange(q.price, pct);
+  const out: LiveQuote = { code: q.code, t: Number.isFinite(t) ? t : Date.now(), price: q.price, pct, change, source: 'kis' };
+  const pos = (v: number | undefined) => (v !== undefined && v !== null && Number.isFinite(v) && v > 0 ? v : undefined);
+  const extra = { open: pos(q.open), high: pos(q.high), low: pos(q.low), vol: pos(q.volume), value: pos(q.amount) };
+  for (const [k, v] of Object.entries(extra)) if (v !== undefined) (out as unknown as Record<string, number>)[k] = v;
+  return out;
+}
+
+/** 2.7억 / 3,450만 / 9,800 - traded value in short Korean units */
+export function fmtKrwShort(v: number): string {
+  if (!Number.isFinite(v)) return '-';
+  const a = Math.abs(v);
+  if (a >= 1e12) return `${(v / 1e12).toFixed(1)}조`;
+  if (a >= 1e8) return `${(v / 1e8).toLocaleString('ko-KR', { maximumFractionDigits: a >= 1e10 ? 0 : 1 })}억`;
+  if (a >= 1e4) return `${Math.round(v / 1e4).toLocaleString('ko-KR')}만`;
+  return Math.round(v).toLocaleString('ko-KR');
 }
 
 /** KRX tick size at a price (2023-01-25 table, KOSPI = KOSDAQ) */
@@ -55,11 +93,11 @@ export function quoteHeader(line: string): Map<string, number> {
   return new Map(line.replace(/^﻿/, '').trim().split(',').map((c, i) => [c.trim(), i]));
 }
 
-const tsToEpoch = (s: string): number => {
+function tsToEpoch(s: string): number {
   // "2026-11-12T09:07:06" is KST wall time
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(s);
   return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5], +m[6]) : NaN;
-};
+}
 
 /** data rows -> quotes (rows without a time, a 6-character code or a positive price are skipped) */
 export function parseQuoteRows(lines: string[], cols: Map<string, number>): LiveQuote[] {
@@ -68,6 +106,17 @@ export function parseQuoteRows(lines: string[], cols: Map<string, number>): Live
   const iM = cols.get('market');
   const iP = cols.get('stck_prpr') ?? 3;
   const iR = cols.get('prdy_ctrt');
+  const opt = (name: string) => cols.get(name);
+  const iO = opt('stck_oprc');
+  const iH = opt('stck_hgpr');
+  const iL = opt('stck_lwpr');
+  const iV = opt('acml_vol');
+  const iA = opt('acml_tr_pbmn');
+  const val = (f: string[], i: number | undefined) => {
+    if (i === undefined) return undefined;
+    const n = Number(f[i]);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
   const out: LiveQuote[] = [];
   for (const line of lines) {
     if (!line) continue;
@@ -78,7 +127,10 @@ export function parseQuoteRows(lines: string[], cols: Map<string, number>): Live
     if (!Number.isFinite(t) || !/^[0-9A-Z]{6}$/.test(code) || !(price > 0)) continue;
     const pct = iR === undefined ? NaN : Number(f[iR]);
     const p = Number.isFinite(pct) ? pct : 0;
-    out.push({ code, t, price, pct: p, change: quoteChange(price, p), market: iM === undefined ? undefined : (f[iM] || '').trim() || undefined });
+    const q: LiveQuote = { code, t, price, pct: p, change: quoteChange(price, p), market: iM === undefined ? undefined : (f[iM] || '').trim() || undefined };
+    const extra = { open: val(f, iO), high: val(f, iH), low: val(f, iL), vol: val(f, iV), value: val(f, iA) };
+    for (const [k, v] of Object.entries(extra)) if (v !== undefined) (q as unknown as Record<string, number>)[k] = v;
+    out.push(q);
   }
   return out;
 }

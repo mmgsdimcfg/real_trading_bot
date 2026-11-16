@@ -1,5 +1,8 @@
 {
   "_updateLog": [
+    "[2026-11-16] type=feat - v2.3.22_003: 종목 선택 메뉴(타임라인 / 파이프라인 / 차트 등 모든 화면)에도 감시 외 보유 종목의 가격 표시 - KIS 현재가 보조 조회를 타임라인 화면에서 앱 공통 상태(store)로 옮김. r003 현재가 기록이 없는 오늘 종목만, 종목당 30초에 한 번, 한 번에 최대 20종목, 오늘 실시간 화면에서만",
+    "[2026-11-16] type=feat - v2.3.22_002: 감시 종목이 아닌 보유 종목도 타임라인 시세 줄 표시 - r003 현재가 기록이 없으면 KIS 현재가 조회(r016 quote)로 현재가 / 등락 / 시가 / 고가 / 저가 / 전일 / 거래량 / 거래대금을 보여 줌(종목 선택 시 + 30초마다, 오늘 실시간 화면에서만; 지난날·재생 중에는 조회하지 않음). 끝에 KIS 표시",
+    "[2026-11-16] type=feat - v2.3.22_001: 타임라인 종목명 옆 시세 줄 - 현재가 / ▲▼ 등락폭 / 등락률에 더해 당일 시가 / 고가 / 저가(전일 종가 대비 색), 전일 종가, 거래량, 거래대금, 기준 시각(NXT 표시). 현재가 기록 전에는 - 대신 현재가 기록 없음 과 이유 표시. r003 현재가 기록(quote_ticks)의 시가/고가/저가/거래량/거래대금 열을 읽음",
     "[2026-11-16] type=fix - v2.3.21_003: (1) 막힌 기준값 줄의 입력칸이 붉은 배경에 묻혀 안 보이던 것 수정 - 입력칸에 배경과 붉은 테두리, 막힌 항목의 키 버튼(✎ 키 수정)을 누르면 그 줄로 이동해 입력칸을 바로 선택 (2) 퍼센트 단위 설정(GC_VOLATILITY_MIN_ATR_1MIN_PCT 0.5 = 0.5%, HYBRID_1MIN_TRIGGER_*_PCT, TRIPLE_*_PCT 등)이 x100 되어 0.5 = 50.00% 로 잘못 표시되던 것 수정",
     "[2026-11-16] type=feat - v2.3.21_002: 막힌 항목의 MA 조건도 숫자로 비교 - 서버가 3중 트리거 리젝 로그 끝에 남기는 MAVAL 구간(1분 / 60틱 / 120틱의 MA5, MA20 값과 틱봉 수)을 읽어 \"60틱봉 MA5가 MA20 아래\" 항목에 MA5 / MA20 값과 차이(%)를 표시. 사유 전체(A|B|C)는 로그 원문에서 읽어, 첫 항목만 보이던 문제도 해결",
     "[2026-11-16] type=feat - v2.3.21_001: 파이프라인 노드의 우측 패널에 \"막힌 항목\" 표시 - 선택 종목의 마지막 막힘 사유를 실패한 항목별로 나눠 (예: 1분 MA5>MA20 상태가 너무 오래됨 / 60틱 MA5<MA20 / 120틱 MA5<MA20) 현재값과 기준값을 비교해 보여 주고, 그 기준을 정하는 설정 키를 표시. 설정값 표에서 막은 기준 키는 붉은색(관련 키는 주황)으로 맨 위에 올리고 키 아래에 비교값을 적음. 서버 r005 _009 설정 목록에 triple 트리거 기준 키(TRIPLE_*, TICK_MIN_PRINTS_*) 추가 - 이제 여기서 바로 고칠 수 있음",
@@ -67,7 +70,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.21",
+  "version": "2.3.22",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",

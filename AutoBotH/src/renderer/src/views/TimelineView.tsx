@@ -44,6 +44,9 @@
  * - [2026-11-12] type=feat - zoom: the price chart's wheel / drag selection sets a time span that all three charts follow
  *   (전체 보기 or a double click on the price chart resets it); time ticks adapt to the span (30 min ... 1 min); the buy
  *   evaluation chart is as tall as its rows need (one row no longer takes 200 px)
+ * - [2026-11-16] type=feat - Symbols r003 does not quote (holdings outside the watch list) show the KIS price the store asks for
+ *   (store quotes, source 'kis') - live day only
+ * - [2026-11-16] type=feat - Quote line next to the symbol: price / change / rate + open, high, low, volume, traded value (PriceTag detail)
  * - [2026-11-16] type=feat - The time axis spans the whole trading session of the day from the start (NXT symbol 08:00 - 20:00,
  *   KRX 09:00 - 15:30): at the open the buy evaluation and price charts no longer stretch the first minutes over the full width,
  *   they fill in from the left at the scale of the finished day. Events / bars outside the session still widen the axis
@@ -380,7 +383,7 @@ export function TimelineView() {
       <div className="toolbar">
         <SymbolPicker allowAll={false} />
         {sym?.nxt && <NxtMark />}
-        {selected && <PriceTag code={selected} />}
+        {selected && <PriceTag code={selected} detail />}
         {sym && (
           <span className="symline">
             이벤트 {events.length.toLocaleString()}건 (최근 2,000건) · 거래 {trades.length}건{sym.realizedKrw ? ` · 실현 ${fmtKrw(sym.realizedKrw)}` : ''}

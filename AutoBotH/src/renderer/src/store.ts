@@ -22,6 +22,9 @@
  *   Before, the reset compared two snapshots, but main sends a null snapshot between two days, so yesterday's symbol stayed
  *   selected on the timeline / chart tabs after a date change
  * - [2026-11-12] type=feat - quotes: current price per watched symbol (r003 quote log), re-read with every snapshot
+ * - [2026-11-16] type=feat - quotes also hold KIS current prices (r016 quote) of the day's symbols r003 does not quote (holdings outside
+ *   the watch list): asked one at a time, each at most every KIS_QUOTE_EVERY_MS, only on the live day (not on a past day / replay),
+ *   at most KIS_QUOTE_MAX symbols per round. r003's quote wins when both exist. Every view (symbol pickers, timeline, board) sees them
  */
 
 import { create } from 'zustand';
@@ -29,7 +32,7 @@ import type { AppStatus, ConditionsDoc, EvalEvent, Settings, Side, Snapshot, Tra
 import type { ControlState } from '../../shared/control';
 import type { ChartKind } from '../../shared/price';
 import type { IndicatorKey } from '../../shared/indicators';
-import type { LiveQuote } from '../../shared/liveQuote';
+import { fromMarketQuote, type LiveQuote } from '../../shared/liveQuote';
 
 type ChartPrefs = { kind: ChartKind; tickN: number; minN: number; ind: IndicatorKey[] };
 const IND_KEYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'vwap', 'vol', 'rsi', 'macd', 'adx', 'stoch', 'williams', 'mfi', 'obv'];
@@ -327,6 +330,41 @@ export function initStore(): void {
     useStore.setState({ control });
     if (control.lastAction && control.lastAction.at !== prev.lastAction?.at) useStore.getState().bumpHistory();
   });
+  // [2026-11-16] KIS prices of symbols without r003 quotes (see the update log)
+  const KIS_QUOTE_EVERY_MS = 30000;
+  const KIS_QUOTE_MAX = 20;
+  let kisDay = '';
+  const kisCache: Record<string, { q?: LiveQuote; at: number }> = {};
+  let kisBusy = false;
+  const kisPart = (): Record<string, LiveQuote> => {
+    const out: Record<string, LiveQuote> = {};
+    for (const [code, v] of Object.entries(kisCache)) if (v.q) out[code] = v.q;
+    return out;
+  };
+  const refreshKis = async (day: string, codes: string[]) => {
+    if (kisBusy) return;
+    kisBusy = true;
+    try {
+      for (const code of codes.slice(0, KIS_QUOTE_MAX)) {
+        const st = useStore.getState();
+        if (st.snapshot?.date !== day || kisDay !== day) break;
+        if (st.quotes[code] && st.quotes[code].source !== 'kis') continue; // r003 quotes it now
+        const prev = kisCache[code];
+        if (prev && Date.now() - prev.at < KIS_QUOTE_EVERY_MS) continue;
+        kisCache[code] = { q: prev?.q, at: Date.now() };
+        const r = await api.getQuote(code).catch(() => null);
+        if (r?.unsupported) break; // an old server without `r016 quote`
+        const q = r?.ok ? fromMarketQuote(r.data) : null;
+        if (!q || kisDay !== day || useStore.getState().snapshot?.date !== day) continue;
+        kisCache[code] = { q, at: Date.now() };
+        const cur = useStore.getState().quotes;
+        if (!cur[code] || cur[code].source === 'kis') useStore.setState({ quotes: { ...cur, [code]: q } });
+      }
+    } finally {
+      kisBusy = false;
+    }
+  };
+
   api.onSnapshot((snapshot) => {
     const prevDate = useStore.getState().snapshot?.date;
     useStore.setState({ snapshot });
@@ -336,8 +374,17 @@ export function initStore(): void {
     // current prices of the day (at the replay time on a replayed past day)
     if (snapshot) {
       const day = snapshot.date;
-      void api.getQuotes(day, snapshot.replay?.cursor ?? null).then((quotes) => {
-        if (useStore.getState().snapshot?.date === day) useStore.setState({ quotes });
+      void api.getQuotes(day, snapshot.replay?.cursor ?? null).then((logged) => {
+        if (useStore.getState().snapshot?.date !== day) return;
+        const st = useStore.getState();
+        const liveDay = st.status.live && !snapshot.replay && st.status.conn === 'connected';
+        if (kisDay !== day) {
+          kisDay = day;
+          for (const k of Object.keys(kisCache)) delete kisCache[k];
+        }
+        // r003's quote wins; KIS fills the symbols it does not quote (live day only)
+        useStore.setState({ quotes: liveDay ? { ...kisPart(), ...logged } : logged });
+        if (liveDay) void refreshKis(day, snapshot.symbols.map((s) => s.code).filter((c) => !logged[c]));
       });
     }
   });

@@ -3,13 +3,14 @@
  * - [2026-11-12] type=test - current price from r003's quote log: change in won derived from price + rate (tick grid), row parsing by
  *   header name, newest row per code and the replay cursor, the display text, and PriceService.liveQuotes reading the growing file
  *   by byte offset (rows of the real 2026-11-12 file)
+ * - [2026-11-16] type=test - open / high / low / volume / value of a row, fmtKrwShort
  */
 
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ app: { getPath: () => '.' }, dialog: {}, ipcMain: { handle: () => undefined, on: () => undefined } }));
 
-import { krxTick, parseQuoteRows, quoteChange, quoteHeader, quoteText, QuoteBook } from '../src/shared/liveQuote';
+import { fmtKrwShort, fromMarketQuote, krxTick, parseQuoteRows, quoteChange, quoteHeader, quoteText, QuoteBook } from '../src/shared/liveQuote';
 import { PriceService } from '../src/main/prices';
 import type { FileHost } from '../src/main/host';
 
@@ -51,6 +52,23 @@ describe('quote log rows', () => {
     expect(q).toHaveLength(5);
     expect(q[0]).toMatchObject({ code: '010060', t: kst('08:03:05'), price: 207500, pct: 5.54, market: 'NX' });
     expect(q[3].change).toBe(-16400);
+  });
+
+  it('[2026-11-16] KIS quote answer as a LiveQuote', () => {
+    const q = fromMarketQuote({ code: '403870', asof: '2026-11-16T10:21:30', price: 37800, change: -1650, change_pct: -4.18, prev_close: 39450,
+      open: 41000, high: 41000, low: 37600, volume: 812345, amount: 31234567890 });
+    expect(q).toMatchObject({ code: '403870', t: Date.parse('2026-11-16T10:21:30+09:00'), price: 37800, change: -1650, pct: -4.18, source: 'kis',
+      open: 41000, high: 41000, low: 37600, vol: 812345, value: 31234567890 });
+    expect(fromMarketQuote({ code: '403870', price: 37800, prev_close: 40000 })).toMatchObject({ pct: -5.5, change: -2200 });
+    expect(fromMarketQuote({ code: '403870', price: 0 })).toBeNull();
+  });
+
+  it('[2026-11-16] keeps the day open / high / low / volume / value', () => {
+    const [q] = parseQuoteRows(ROWS.slice(3, 4), quoteHeader(HEADER));
+    expect(q).toMatchObject({ open: 209000, high: 209500, low: 191900, vol: 30909, value: 6097278800 });
+    const [old] = parseQuoteRows(['2026-11-12T09:10:00,005930,J,100,0.1'], quoteHeader('ts,code,market,stck_prpr,prdy_ctrt'));
+    expect(old.open).toBeUndefined();
+    expect([fmtKrwShort(6097278800), fmtKrwShort(272823500), fmtKrwShort(34_500_000), fmtKrwShort(9800), fmtKrwShort(1.2e12)]).toEqual(['61억', '2.7억', '3,450만', '9,800', '1.2조']);
   });
 
   it('newest per code, and the newest at or before a replay time', () => {
