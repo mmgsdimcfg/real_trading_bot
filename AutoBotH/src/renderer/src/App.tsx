@@ -20,6 +20,7 @@ import { ReplayBar } from './components/ReplayBar';
 import { PipelineView } from './views/PipelineView';
 import { ControlView } from './views/ControlView';
 import { JobsView } from './views/JobsView';
+import { CollectorView } from './views/CollectorView';
 import { BoardView } from './views/BoardView';
 import { TimelineView } from './views/TimelineView';
 import { ChartView } from './views/ChartView';
@@ -41,6 +42,14 @@ const ICON: Record<Tab, JSX.Element> = {
     <>
       <ellipse cx="8" cy="3.5" rx="5" ry="1.8" />
       <path d="M3 3.5v9c0 1 2.2 1.8 5 1.8s5-.8 5-1.8v-9M3 8c0 1 2.2 1.8 5 1.8S13 9 13 8" />
+    </>
+  ),
+  // [2026-11-16] 수집기: an antenna receiving prints
+  collector: (
+    <>
+      <path d="M8 9v5.5M5.5 14.5h5" />
+      <circle cx="8" cy="7.5" r="1.3" />
+      <path d="M5.2 4.8a4 4 0 0 0 0 5.4M10.8 4.8a4 4 0 0 1 0 5.4M3.2 2.8a6.8 6.8 0 0 0 0 9.4M12.8 2.8a6.8 6.8 0 0 1 0 9.4" />
     </>
   ),
   pipeline: (
@@ -82,7 +91,7 @@ const ICON: Record<Tab, JSX.Element> = {
 
 // Sidebar groups: 운영 (run the bot and its data jobs) / 분석 (look at the day) / 시스템
 const NAV: { group: string; tabs: [Tab, string][] }[] = [
-  { group: '운영', tabs: [['control', '제어'], ['jobs', '데이터 작업'], ['pipeline', '파이프라인']] },
+  { group: '운영', tabs: [['control', '제어'], ['jobs', '데이터 작업'], ['collector', '수집기'], ['pipeline', '파이프라인']] },
   { group: '분석', tabs: [['board', '종목 보드'], ['timeline', '타임라인'], ['chart', '차트'], ['positions', '보유 현황'], ['trades', '매매 결과'], ['paper', '가상 매매']] },
   { group: '시스템', tabs: [['settings', '설정·연결']] },
 ];
@@ -112,10 +121,11 @@ export function App() {
           ))}
         </nav>
         <div className="app-main">
-          {tab !== 'control' && tab !== 'settings' && tab !== 'jobs' && tab !== 'positions' && tab !== 'paper' && <ReplayBar />}
+          {tab !== 'control' && tab !== 'settings' && tab !== 'jobs' && tab !== 'collector' && tab !== 'positions' && tab !== 'paper' && <ReplayBar />}
           <main className="view">
             {tab === 'control' && <ControlView />}
             {tab === 'jobs' && <JobsView />}
+            {tab === 'collector' && <CollectorView />}
             {tab === 'pipeline' && <PipelineView />}
             {tab === 'board' && <BoardView />}
             {tab === 'timeline' && <TimelineView />}

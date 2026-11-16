@@ -21,6 +21,10 @@
   collector status | collector restart      g011 틱 수집기 상태 / SIGTERM (g022 cron 또는 r003 감시자가 새 감시목록으로 재기동)
   indicators ... | bars ...        차트 데이터 (live_trading/r017_chart_data.py 로 위임 - 그 파일의 docstring 참조)
   quote --code C [--trades N]      KIS 현재가+호가+체결 (live_trading/r018_kis_market.py, 읽기 전용)
+  collector detail [--date D] [--days N]   [2026-11-16] 수집기 탭: 상태·설정·그날 구독 계획/종목별 파일·일별 이력·디스크 (읽기 전용)
+  collector stop                   g011 중지 (r003 실행 중이면 감시자가 1분 안에 다시 띄운다)
+  collector extra [--set CODES...] 감시 종목 외 추가 수집 종목 (<runtime>/config/tick_collect_extra.json, 다음 g011 기동부터)
+  collector prune --keep-days N [--apply]   오래된 틱 날짜 폴더 삭제 계획/실행 (최소 30일 보관, 오늘 제외)
   collector start [--force]        g011 을 --fill-from-scan 으로 분리 실행 (g022 cron 과 같은 규칙: 장 시작 15분 전~마감, standby 거부)
   role get | role set primary|standby [--note T]   호스트 역할 (r019 host_role.json). standby 면 start/restart/collector start 거부
   holdings                         계좌 보유 현황 스냅샷 (r003 이 계좌 동기화마다 쓰는 live_runtime/holdings.json - r023 장부의 봇/직접
@@ -45,6 +49,13 @@ AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-16] type=feat owner=claude
+    summary: AutoBotH 수집기 탭 - collector detail(상태·설정·그날 구독 계획/역할·종목별 KRX/NXT 파일(체결 수 추정, 첫/마지막 체결,
+      끊김)·로그 이벤트·일별 이력·디스크, 읽기 전용) / stop / extra(추가 수집 종목, config/tick_collect_extra.json) /
+      prune(오래된 날짜 폴더, 미리보기 후 --apply, 최소 30일·오늘 제외). collector status 의 subscribed 는 g011 로그의 마지막
+      CODES 줄(감시+추가+스캔 채움)을 우선한다(--codes 는 감시 종목뿐). 계약: autoboth_local_mode_20261110.md.
+    impact: control CLI (새 명령, 기존 명령 응답 형식 불변 - subscribed 목록만 더 정확)
+    compatibility: backward-compatible
 - [2026-11-13] type=feat owner=claude
     summary: holdings 명령 - r003 이 쓰는 보유 스냅샷(<runtime>/data/live_runtime/holdings.json, r023)을 그대로 돌려준다:
       종목별 계좌 수량 / 봇 매수 수량(bot_qty) / 직접 매수 수량(manual_qty) / 평균단가 / 스냅샷 시각. 파일이 없으면 available=false.
@@ -597,6 +608,12 @@ def write_env_file(paths: ControlPaths, values: dict) -> None:
 # tick collector (g011)
 # ---------------------------------------------------------------------------
 def _collector_codes_of(argv: list[str], ticks_day_dir: Path) -> set[str] | None:
+    # [2026-11-16] the newest "CODES" line of today's log is the full list (watch + extra + scan fill); --codes is only the watchlist
+    with contextlib.suppress(Exception):
+        text = (ticks_day_dir / "_collector.log").read_text(encoding="utf-8", errors="replace")
+        last = [ln for ln in text.splitlines() if " CODES " in ln]
+        if last:
+            return {c.strip().zfill(6) for c in last[-1].split(" CODES ", 1)[1].split(",") if c.strip()}
     if "--codes" in argv:
         out = set()
         for a in argv[argv.index("--codes") + 1:]:
@@ -759,6 +776,267 @@ def collector_start(paths: ControlPaths, by: str, force: bool = False, now: date
                 env=r019.child_env({"AUTO_TRADING_RUNTIME": str(paths.runtime_root)}))
     append_history(paths, "collector.start", {"pid": pid, "force": force}, by)
     return {"ok": True, "started": True, "pid": pid, "log": str(log_path)}
+
+
+# ---------------------------------------------------------------------------
+# [2026-11-16] tick collector management (AutoBotH 수집기 tab): detail / stop / extra codes / prune
+# ---------------------------------------------------------------------------
+TICK_EXTRA_FILE = "tick_collect_extra.json"   # <runtime>/config - codes g011 also collects (after the watchlist, before the scan fill)
+TICK_EXTRA_MAX = 40
+PRUNE_MIN_KEEP_DAYS = 30                      # prune never keeps fewer collected days than this
+_CODE_RE = re.compile(r"[0-9A-Z]{6}")
+_COLLECTOR_EVENT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (START|CODES|ROLES|NXT|CONNECTED|SUBSCRIBED|RECONNECT|"
+                                 r"ERROR|WARN|STOP|EXIT|DONE|ACK|IDLE|SUBSCRIBE)\b(.*)$")
+
+
+def tick_extra_path(paths: ControlPaths) -> Path:
+    return paths.config_dir / TICK_EXTRA_FILE
+
+
+def read_tick_extra(paths: ControlPaths) -> dict:
+    p = tick_extra_path(paths)
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"codes": [], "updated_at": None, "by": None, "path": str(p)}
+    codes = [str(c).zfill(6) for c in d.get("codes") or [] if _CODE_RE.fullmatch(str(c).zfill(6))]
+    return {"codes": codes, "updated_at": d.get("updated_at"), "by": d.get("by"), "path": str(p)}
+
+
+def write_tick_extra(paths: ControlPaths, codes: list[str], by: str) -> dict:
+    clean: list[str] = []
+    for c in codes:
+        c = str(c).strip().upper().zfill(6)
+        if not _CODE_RE.fullmatch(c):
+            raise ValueError(f"bad code {c!r} (6 characters)")
+        if c not in clean:
+            clean.append(c)
+    if len(clean) > TICK_EXTRA_MAX:
+        raise ValueError(f"at most {TICK_EXTRA_MAX} codes")
+    before = read_tick_extra(paths)["codes"]
+    with write_lock(paths):
+        _write_json_atomic(tick_extra_path(paths), {"codes": clean, "updated_at": datetime.now().isoformat(timespec="seconds"), "by": by})
+        append_history(paths, "collector.extra", {"from": before, "to": clean}, by)
+    return {"ok": True, **read_tick_extra(paths), "note": "applies when g011 starts next (collector restart)"}
+
+
+def _write_json_atomic(path: Path, obj) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _tick_file_info(path: Path) -> dict | None:
+    """size / mtime / first and last trade time (HHMMSS) / estimated rows of one tick csv - reads only the head and the tail."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    out = {"size": st.st_size, "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+           "first": None, "last": None, "rows_est": 0}
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(65536).decode("utf-8", "replace").splitlines()
+            if len(head) < 2:
+                return out
+            cols = head[0].split(",")
+            i_t = cols.index("trade_time") if "trade_time" in cols else None
+            body = [ln for ln in head[1:-1] if ln.count(",") == len(cols) - 1] or head[1:2]
+            avg = max(1.0, sum(len(ln) + 1 for ln in body) / len(body))
+            out["rows_est"] = int(max(0, st.st_size - len(head[0]) - 1) / avg)
+            if i_t is not None:
+                out["first"] = body[0].split(",")[i_t].zfill(6) if body else None
+                fh.seek(max(0, st.st_size - 4096))
+                tail = [ln for ln in fh.read().decode("utf-8", "replace").splitlines() if ln.count(",") == len(cols) - 1]
+                if tail:
+                    out["last"] = tail[-1].split(",")[i_t].zfill(6)
+    except Exception:
+        pass
+    return out
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            with contextlib.suppress(OSError):
+                total += os.path.getsize(os.path.join(root, f))
+    return total
+
+
+def _tick_days(paths: ControlPaths) -> list[Path]:
+    try:
+        return sorted((p for p in paths.ticks_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d{8}", p.name)),
+                      key=lambda p: p.name, reverse=True)
+    except OSError:
+        return []
+
+
+def _scan_names(paths: ControlPaths, day: str) -> tuple[str, dict]:
+    """(scan date, {code: name}) of the newest g002 _<date>_scan_all.md dated <= day."""
+    data_root = paths.runtime_root / "data"
+    with contextlib.suppress(OSError):
+        for d in sorted((p.name for p in data_root.iterdir() if p.is_dir() and re.fullmatch(r"\d{8}", p.name) and p.name <= day),
+                        reverse=True)[:10]:
+            f = data_root / d / f"_{d}_scan_all.md"
+            if not f.exists():
+                continue
+            names = {}
+            for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                cols = [c.strip() for c in line.strip().strip("|").split("|")]
+                if len(cols) >= 4 and cols[0].isdigit() and _CODE_RE.fullmatch(cols[2]):
+                    names[cols[2]] = cols[3]
+            return d, names
+    return "", {}
+
+
+def _parse_collector_log(text: str) -> dict:
+    """START / CODES / ROLES / NXT / SUBSCRIBED lines of g011's _collector.log -> the newest run's plan + recent events."""
+    out = {"codes": [], "roles": {}, "nxt_codes": 0, "nxt_keep": [], "subscribed": None, "starts": 0, "reconnects": 0,
+           "errors": 0, "events": []}
+    events = []
+    for ln in text.splitlines():
+        m = _COLLECTOR_EVENT_RE.match(ln.strip())
+        if not m:
+            continue
+        ts, kind, rest = m.group(1), m.group(2), m.group(3).strip()
+        if kind == "START":
+            out.update({"codes": [], "roles": {}, "nxt_keep": [], "subscribed": None, "start": ts, "start_note": rest})
+            out["starts"] += 1
+        elif kind == "CODES":
+            out["codes"] = [c.strip() for c in rest.split(",") if _CODE_RE.fullmatch(c.strip())]
+        elif kind == "ROLES":
+            for part in rest.split():
+                k, _, v = part.partition("=")
+                out["roles"][k] = [c for c in v.split(",") if _CODE_RE.fullmatch(c)]
+        elif kind == "NXT":
+            mm = re.search(r"codes=(\d+)", rest)
+            out["nxt_codes"] = int(mm.group(1)) if mm else 0
+            keep = re.search(r"held \[([^\]]*)\]", rest)
+            out["nxt_keep"] = re.findall(r"[0-9A-Z]{6}", keep.group(1)) if keep else []
+        elif kind == "SUBSCRIBED":
+            mk, mn = re.search(r"krx=(\d+)", rest), re.search(r"nxt=(\d+)", rest)
+            out["subscribed"] = {"at": ts, "krx": int(mk.group(1)) if mk else None, "nxt": int(mn.group(1)) if mn else None}
+        elif kind == "RECONNECT":
+            out["reconnects"] += 1
+        elif kind == "ERROR":
+            out["errors"] += 1
+        if kind not in ("CODES",):
+            events.append({"ts": ts, "kind": kind, "text": rest[:300]})
+    out["events"] = events[-120:]
+    return out
+
+
+def collector_detail(paths: ControlPaths, date: str | None = None, days: int = 30, now: datetime | None = None) -> dict:
+    """Everything the 수집기 tab shows: status (today), config, the day's plan and per-symbol files, daily history, disk."""
+    now = now or datetime.now()
+    date = date or now.strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", date):
+        return {"ok": False, "error": "date must be YYYYMMDD"}
+    day_dir = paths.ticks_dir / date
+    wl = read_watchlist(paths)
+    watch = [c["code"] for c in wl["codes"]]
+    names = {c["code"]: c["name"] for c in wl["codes"]}
+    scan_day, scan_names = _scan_names(paths, date)
+    for k, v in scan_names.items():
+        names.setdefault(k, v)
+    try:
+        log_text = (day_dir / "_collector.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log_text = ""
+    plan = _parse_collector_log(log_text)
+    extra = read_tick_extra(paths)
+    roles = plan["roles"]
+    planned = plan["codes"]
+    w_set = set(roles.get("watch") or (watch if date == now.strftime("%Y%m%d") else []))
+    e_set = set(roles.get("extra") or [])
+    files_krx = {p.stem: p for p in day_dir.glob("*.csv") if _CODE_RE.fullmatch(p.stem)} if day_dir.is_dir() else {}
+    nxt_dir = day_dir / "nxt"
+    files_nxt = {p.stem: p for p in nxt_dir.glob("*.csv") if _CODE_RE.fullmatch(p.stem)} if nxt_dir.is_dir() else {}
+    order = list(dict.fromkeys(planned + sorted(files_krx) + sorted(files_nxt)))
+    in_session = MARKET_OPEN <= now.time() <= MARKET_CLOSE and now.weekday() < 5 and date == now.strftime("%Y%m%d")
+    symbols = []
+    for code in order:
+        role = "watch" if code in w_set else "extra" if code in e_set else "scan" if code in planned else "file_only"
+        krx = _tick_file_info(files_krx[code]) if code in files_krx else None
+        nxt = _tick_file_info(files_nxt[code]) if code in files_nxt else None
+        idle = None
+        if krx and krx.get("mtime"):
+            idle = int(now.timestamp() - datetime.fromisoformat(krx["mtime"]).timestamp())
+        symbols.append({"code": code, "name": names.get(code, ""), "role": role, "planned": code in planned,
+                        "nxt_keep": code in plan["nxt_keep"], "krx": krx, "nxt": nxt, "idle_s": idle,
+                        "stale": bool(in_session and role in ("watch", "extra", "scan") and (krx is None or (idle or 0) > COLLECTOR_STALE_SECONDS))})
+    hist = []
+    total = 0
+    for d in _tick_days(paths):
+        size = _dir_size(d)
+        total += size
+        if len(hist) < max(1, int(days)):
+            hist.append({"date": d.name, "krx": sum(1 for p in d.glob("*.csv") if _CODE_RE.fullmatch(p.stem)),
+                         "nxt": sum(1 for p in (d / "nxt").glob("*.csv")) if (d / "nxt").is_dir() else 0, "size": size})
+    try:
+        du = shutil.disk_usage(paths.ticks_dir if paths.ticks_dir.exists() else paths.runtime_root)
+        disk = {"total": du.total, "free": du.free}
+    except OSError:
+        disk = None
+    try:
+        import r001_define_config as cfg
+        config = {k: _jsonable(getattr(cfg, k, None)) for k in (
+            "TICK_COLLECTOR_AUTOSTART", "TICK_COLLECTOR_FILL_FROM_SCAN", "TICK_COLLECT_NXT", "TICK_COLLECT_NXT_REGULAR",
+            "TICK_COLLECTOR_UNTIL", "MORNING_NXT_START", "AFTERNOON_NXT_END", "TICK_TRIGGER_BAR_SIZES")}
+    except Exception:
+        config = {}
+    config["max_subscriptions"] = 40
+    win_ok, win_why = collector_window(now)
+    return {"ok": True, "date": date, "today": date == now.strftime("%Y%m%d"), "generated_at": now.isoformat(timespec="seconds"),
+            "status": collector_status(paths, watch, now) if date == now.strftime("%Y%m%d") else None,
+            "window": {"ok": win_ok, "reason": win_why}, "role": r019.read_host_role(paths.runtime_root),
+            "config": config, "extra": extra, "scan_date": scan_day, "watch": watch,
+            "plan": {k: v for k, v in plan.items() if k != "events"}, "events": plan["events"],
+            "symbols": symbols, "days": hist, "total_size": total, "day_count": len(_tick_days(paths)), "disk": disk,
+            "ticks_dir": str(paths.ticks_dir), "prune_min_keep_days": PRUNE_MIN_KEEP_DAYS}
+
+
+def collector_stop(paths: ControlPaths, by: str) -> dict:
+    """Stop g011 (SIGTERM / TerminateProcess). r003's supervisor (TICK_COLLECTOR_AUTOSTART) starts it again within a minute
+    while r003 runs - the answer says so."""
+    procs = _g011_processes(paths)
+    if not procs:
+        return {"ok": True, "stopped": [], "note": "g011 is not running"}
+    killed = [p["pid"] for p in procs if p.get("pid") and r019.terminate(p["pid"])]
+    append_history(paths, "collector.stop", {"pids": killed}, by)
+    r003_running = bool(find_r003_processes(paths=paths))
+    return {"ok": bool(killed), "stopped": killed, "r003_running": r003_running,
+            "note": "r003 is running: its supervisor restarts g011 within ~1 min (TICK_COLLECTOR_AUTOSTART)" if r003_running else None}
+
+
+def collector_prune(paths: ControlPaths, keep_days: int, apply: bool, by: str, now: datetime | None = None) -> dict:
+    """Delete the oldest collected days so that `keep_days` days remain (never fewer than PRUNE_MIN_KEEP_DAYS, never today).
+    Without apply only the plan is returned."""
+    now = now or datetime.now()
+    try:
+        keep = int(keep_days)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "keep_days must be a number"}
+    if keep < PRUNE_MIN_KEEP_DAYS:
+        return {"ok": False, "error": f"keep_days must be >= {PRUNE_MIN_KEEP_DAYS} (tick history is research data)"}
+    today = now.strftime("%Y%m%d")
+    days = [d for d in _tick_days(paths) if d.name != today]
+    victims = days[keep:]
+    plan = [{"date": d.name, "size": _dir_size(d)} for d in victims]
+    out = {"ok": True, "keep_days": keep, "apply": bool(apply), "delete": plan, "free_bytes": sum(p["size"] for p in plan)}
+    if apply and victims:
+        removed = []
+        for d in victims:
+            try:
+                shutil.rmtree(d)
+                removed.append(d.name)
+            except OSError as exc:
+                out.setdefault("errors", []).append(f"{d.name}: {exc}")
+        append_history(paths, "collector.prune", {"keep_days": keep, "removed": removed}, by)
+        out["removed"] = removed
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1240,8 +1518,14 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("--date", default=None, help="apply: the scan date whose _D_picks.txt becomes r004")
     p.add_argument("--restart-collector", action="store_true", help="apply: restart a running g011 that misses the new codes")
     p = sub.add_parser("collector")
-    p.add_argument("action", choices=["status", "restart", "start"])
+    p.add_argument("action", choices=["status", "restart", "start", "detail", "stop", "extra", "prune"])
     p.add_argument("--force", action="store_true", help="start: ignore the session window")
+    # [2026-11-16] AutoBotH 수집기 tab
+    p.add_argument("--date", default=None, help="detail: YYYYMMDD (default today)")
+    p.add_argument("--days", type=int, default=30, help="detail: rows of the daily history")
+    p.add_argument("--set", nargs="*", default=None, dest="extra_codes", help="extra: codes to collect besides the watchlist")
+    p.add_argument("--keep-days", type=int, default=None, help="prune: collected days to keep")
+    p.add_argument("--apply", action="store_true", help="prune: delete (default: show the plan)")
     p = sub.add_parser("role")
     p.add_argument("action", choices=["get", "set"])
     p.add_argument("role", nargs="?", choices=list(r019.HOST_ROLES), default=None)
@@ -1303,6 +1587,24 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     if args.cmd == "collector":
         if args.action == "status":
             return _emit(collector_status(paths, [c["code"] for c in read_watchlist(paths)["codes"]]))
+        if args.action == "detail":
+            out = collector_detail(paths, args.date, args.days)
+            return _emit(out, 0 if out.get("ok") else 2)
+        if args.action == "stop":
+            out = collector_stop(paths, args.by)
+            return _emit(out, 0 if out.get("ok") else 3)
+        if args.action == "extra":
+            if args.extra_codes is None:
+                return _emit({"ok": True, **read_tick_extra(paths)})
+            try:
+                return _emit(write_tick_extra(paths, args.extra_codes, args.by))
+            except ValueError as exc:
+                return _emit({"ok": False, "error": str(exc)}, 2)
+        if args.action == "prune":
+            if args.keep_days is None:
+                return _emit({"ok": False, "error": "prune needs --keep-days N"}, 2)
+            out = collector_prune(paths, args.keep_days, args.apply, args.by)
+            return _emit(out, 0 if out.get("ok") else 2)
         out = collector_start(paths, args.by, force=args.force) if args.action == "start" else collector_restart(paths, args.by)
         return _emit(out, 0 if out.get("ok") else 3)
 

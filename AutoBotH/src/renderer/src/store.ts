@@ -15,6 +15,7 @@
  * - [2026-11-08] type=feat - buyEvalOnly: "이 종목 평가된 항목만" checkbox state, kept in localStorage
  * - [2026-11-08] type=feat - sellEvalOnly: the same checkbox for the sell chart (merge of the Windows buyEvalOnly change)
  * - [2026-11-06] type=feat - 'chart' tab and its own preferences (chartTab: kind, bar sizes, indicators, previous day on/off)
+ * - [2026-11-16] type=feat - 'collector' tab (수집기)
  * - [2026-11-10] type=feat - 'jobs' tab (데이터 작업) and the local-mode scheduler state (sched)
  * - [2026-11-11] type=feat - 'positions' tab (보유 현황) and feesIncluded ("제세금 포함" of the trade-results / positions tabs,
  *   kept in localStorage)
@@ -145,7 +146,7 @@ function loadFlag(key: string): boolean {
   }
 }
 
-export type Tab = 'control' | 'jobs' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'positions' | 'trades' | 'paper' | 'settings';
+export type Tab = 'control' | 'jobs' | 'collector' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'positions' | 'trades' | 'paper' | 'settings';
 
 /** local-mode scheduler state pushed by main ('sched') */
 export interface SchedView {

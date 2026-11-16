@@ -33,6 +33,20 @@ Run:
   --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-16] type=feat owner=claude
+    summary: 추가 수집 종목 - <runtime>/config/tick_collect_extra.json 의 codes 를 감시 종목 뒤(스캔 채움 앞)에 구독(KRX).
+      시작 로그에 "ROLES watch=.. extra=.. scan=.." 한 줄 (r016 collector detail 이 종목 구분에 쓴다).
+    impact: collector
+    compatibility: backward-compatible (파일 없으면 종전과 동일)
+- [2026-11-16] type=feat owner=claude
+    summary: 학습용 틱 확대 (사용자 결정) - 정규장에는 KRX 구독이 자리를 우선 쓰고 NXT 는 보유 종목(--nxt-keep)만.
+      시간대별 구독(subscription_plan krx_open 지정 시): 장전(KRX 개장 5분 전까지) = 감시 종목 KRX + NXT 먼저, 남는 자리 KRX 채움
+      / 정규장(개장 5분 전 ~ --until) = KRX 전부(최대 40) 먼저, 남는 자리에 NXT 보유 종목, 그다음(r001 TICK_COLLECT_NXT_REGULAR
+      = "all" 일 때만) 나머지 NXT / 장후 = NXT 전부. --fill-from-scan 자리 계산도 NXT 예약을 보유 종목 수만큼만 뺀다
+      (종전: 감시 종목 수만큼 -> 감시 13개면 KRX 채움이 14개뿐). 개장 5분 전 전환: NXT 프리마켓(08:00~08:50)이 끝난 뒤라
+      놓치는 NXT 체결이 없고, KRX 09:00 첫 체결 전에 채움 종목이 구독된다.
+    impact: collector (r003 이 띄우는 g011 포함 - r003 재시작 후 반영)
+    compatibility: 정규장 NXT 파일이 보유 종목만 남는다(롤백: r001 TICK_COLLECT_NXT_REGULAR = "all"). KRX 파일 형식 불변.
 - [2026-11-12] type=feat owner=claude
     summary: NXT 체결(H0NXCNT0) 수집 추가 (사용자 요청: NXT 종목은 08:00~20:00 수집). 같은 웹소켓 세션에서 시간대별로 구독을
       바꾼다: KRX(H0STCNT0)는 기존대로 시작~--until, NXT 는 NXT 창(r001 MORNING_NXT_START~AFTERNOON_NXT_END) 동안 감시목록
@@ -124,6 +138,7 @@ TR_ID = "H0STCNT0"
 NXT_TR_ID = "H0NXCNT0"
 VENUE_BY_TR = {TR_ID: "KRX", NXT_TR_ID: "NXT"}
 NXT_SUBDIR = "nxt"                 # <runtime>/data/ticks/<day>/nxt/<code>.csv - never read by the KRX tick readers
+REGULAR_SWITCH_BEFORE_OPEN = timedelta(minutes=5)   # [2026-11-16] KRX-first plan starts 5 min before the KRX open
 SUBSCRIPTION_SYNC_SECONDS = 5.0    # how often the wanted subscriptions (by time of day) are compared with the active ones
 LOCK_NAME = ".g011.lock"           # in <runtime>/data/ticks/ (date-independent: one collector per machine)
 EXIT_ALREADY_RUNNING = 3
@@ -211,14 +226,44 @@ def classify_nxt_session(trade_time: str, hours: tuple | None = None) -> str:
 
 
 def subscription_plan(now: datetime, krx_codes: list[str], nxt_codes: list[str], krx_until: datetime,
-                      nxt_window: tuple[datetime, datetime] | None, cap: int = MAX_SUBSCRIPTIONS) -> list[tuple[str, str]]:
-    """(tr_id, code) wanted at `now`. KRX first (until krx_until), NXT fills what is left of the session cap during its
-    window, in watchlist order - outside KRX hours that is every NXT code."""
+                      nxt_window: tuple[datetime, datetime] | None, cap: int = MAX_SUBSCRIPTIONS,
+                      krx_open: datetime | None = None, nxt_keep: list[str] | None = None,
+                      nxt_regular: str = "all", watch_n: int | None = None) -> list[tuple[str, str]]:
+    """(tr_id, code) wanted at `now`. Without krx_open: KRX first (until krx_until), NXT fills what is left of the session cap
+    during its window, in watchlist order - outside KRX hours that is every NXT code.
+    [2026-11-16] With krx_open (the time-of-day plan):
+    - before krx_open - REGULAR_SWITCH_BEFORE_OPEN: the first watch_n KRX codes (the watchlist), then every NXT code, then the
+      rest of the KRX codes (scan fill) in what is left
+    - from then until krx_until: every KRX code first, then the NXT codes of nxt_keep (held symbols), then - only when
+      nxt_regular == "all" - the other NXT codes, in what is left
+    - after krx_until: NXT codes only."""
     out: list[tuple[str, str]] = []
+    in_nxt = nxt_window is not None and nxt_window[0] <= now < nxt_window[1]
+    if krx_open is None:
+        if now < krx_until:
+            out += [(TR_ID, c) for c in krx_codes[:cap]]
+        if in_nxt:
+            out += [(NXT_TR_ID, c) for c in nxt_codes[:max(0, cap - len(out))]]
+        return out
+    room = lambda: max(0, cap - len(out))  # noqa: E731
+    if now < krx_open - REGULAR_SWITCH_BEFORE_OPEN:
+        n = len(krx_codes) if watch_n is None else max(0, int(watch_n))
+        if now < krx_until:
+            out += [(TR_ID, c) for c in krx_codes[:min(n, cap)]]
+        if in_nxt:
+            out += [(NXT_TR_ID, c) for c in nxt_codes[:room()]]
+        if now < krx_until:
+            out += [(TR_ID, c) for c in krx_codes[n:][:room()]]
+        return out
     if now < krx_until:
         out += [(TR_ID, c) for c in krx_codes[:cap]]
-    if nxt_window is not None and nxt_window[0] <= now < nxt_window[1]:
-        out += [(NXT_TR_ID, c) for c in nxt_codes[:max(0, cap - len(out))]]
+        if in_nxt:
+            keep = [c for c in nxt_codes if c in set(nxt_keep or [])]
+            rest = [c for c in nxt_codes if c not in set(keep)] if str(nxt_regular).lower() == "all" else []
+            out += [(NXT_TR_ID, c) for c in (keep + rest)[:room()]]
+        return out
+    if in_nxt:
+        out += [(NXT_TR_ID, c) for c in nxt_codes[:cap]]
     return out
 
 
@@ -368,10 +413,13 @@ def scan_fill_codes(data_dir: Path, today: str) -> tuple[str, list[str]]:
 
 
 async def run_collector(codes: list[str], until: datetime, out_dir: Path, log, nxt_codes: list[str] | None = None,
-                        nxt_window: tuple[datetime, datetime] | None = None) -> None:
+                        nxt_window: tuple[datetime, datetime] | None = None, nxt_keep: list[str] | None = None,
+                        nxt_regular: str = "all", watch_n: int | None = None, time_plan: bool = False) -> None:
     """codes / until = the KRX subscriptions and their end (unchanged). nxt_codes + nxt_window add NXT executions on the
     same session (see subscription_plan); the collector then runs until the later of the two ends."""
     session_hours_today = session_hours(datetime.now()) or _DEFAULT_HOURS
+    # [2026-11-16] the time-of-day plan needs the KRX open (subscription_plan krx_open)
+    krx_open = datetime.combine(datetime.now().date(), session_hours_today[0]) if time_plan else None
     nxt_codes = list(nxt_codes or []) if nxt_window is not None else []
     end_all = max(until, nxt_window[1]) if nxt_codes else until
     nxt_failed: set = set()
@@ -418,7 +466,8 @@ async def run_collector(codes: list[str], until: datetime, out_dir: Path, log, n
                     async def sync_subscriptions() -> None:
                         # [2026-11-12] subscribe / unsubscribe so the session holds what the time of day asks for
                         want = subscription_plan(datetime.now(), codes, [c for c in nxt_codes if c not in nxt_failed],
-                                                 until, nxt_window)
+                                                 until, nxt_window, krx_open=krx_open, nxt_keep=nxt_keep,
+                                                 nxt_regular=nxt_regular, watch_n=watch_n)
                         want_set = set(want)
                         drop = sorted(active - want_set)
                         add = [k for k in want if k not in active]
@@ -571,21 +620,38 @@ def main() -> None:
                     help="after the watchlist codes, fill up to 40 with the newest g002 scan's ranked candidates")
     ap.add_argument("--runtime", default=None, help="runtime root (applied at import, before r001)")
     ap.add_argument("--no-nxt", action="store_true", help="KRX executions only (default: r001 TICK_COLLECT_NXT)")
+    ap.add_argument("--nxt-keep", nargs="*", default=None,
+                    help="[2026-11-16] codes whose NXT executions are also collected during the KRX session (held symbols)")
     args = ap.parse_args()
     if args.dry_parse_test:
         _self_test()
         return
     codes = load_codes(args)
     watch_codes = list(codes)
+    # [2026-11-16] extra codes chosen in AutoBotH (r016 collector extra), after the watchlist and before the scan fill
+    extra_codes: list[str] = []
+    try:
+        ex = json.loads((RUNTIME_DATA_DIR.parent / "config" / "tick_collect_extra.json").read_text(encoding="utf-8"))
+        extra_codes = [str(c).zfill(6) for c in ex.get("codes") or [] if str(c).zfill(6) not in codes]
+    except (OSError, ValueError):
+        pass
+    codes = (codes + extra_codes)[:MAX_SUBSCRIPTIONS]
+    extra_codes = [c for c in extra_codes if c in codes]
     nxt_on = not args.no_nxt and bool(getattr(_cfg, "TICK_COLLECT_NXT", False))
+    nxt_regular = str(getattr(_cfg, "TICK_COLLECT_NXT_REGULAR", "all")).lower()
+    nxt_keep = [c.zfill(6) for c in (args.nxt_keep or [])]
     fill_note = ""
     # [2026-11-12] with NXT collection the scan fill leaves one slot per watchlist code for its NXT subscription
-    fill_room = MAX_SUBSCRIPTIONS - len(codes) - (len(codes) if nxt_on else 0)
+    # [2026-11-16] "held": during the KRX session NXT keeps only the held codes -> reserve just those slots
+    reserve = 0
+    if nxt_on:
+        reserve = len([c for c in codes if c in set(nxt_keep)]) if nxt_regular == "held" else len(watch_codes)
+    fill_room = MAX_SUBSCRIPTIONS - len(codes) - reserve
     if args.fill_from_scan and fill_room > 0:
         scan_day, ranked = scan_fill_codes(RUNTIME_DATA_DIR, datetime.now().strftime("%Y%m%d"))
         extra = [c for c in ranked if c not in codes][:fill_room]
         codes += extra
-        fill_note = f" (watchlist {len(codes) - len(extra)} + scan {scan_day or 'none'} {len(extra)})"
+        fill_note = f" (watchlist {len(watch_codes)} + extra {len(extra_codes)} + scan {scan_day or 'none'} {len(extra)})"
     if not codes:
         print("no codes to subscribe")
         return
@@ -616,6 +682,8 @@ def main() -> None:
 
     log(f"START codes={len(codes)}{fill_note} until={until:%H:%M} out={out_dir}")
     log("CODES " + ",".join(codes))
+    scan_part = [c for c in codes if c not in watch_codes and c not in extra_codes]
+    log(f"ROLES watch={','.join(watch_codes) or '-'} extra={','.join(extra_codes) or '-'} scan={','.join(scan_part) or '-'}")
     # [2026-11-12] NXT executions of the watchlist codes (not the scan fill) during the NXT window
     nxt_codes, nxt_window = [], None
     if nxt_on:
@@ -623,8 +691,10 @@ def main() -> None:
         nxt_window = (datetime.combine(now.date(), getattr(_cfg, "MORNING_NXT_START", dt_time(8, 0))),
                       datetime.combine(now.date(), getattr(_cfg, "AFTERNOON_NXT_END", dt_time(20, 0))))
         log(f"NXT codes={len(nxt_codes)} window={nxt_window[0]:%H:%M}~{nxt_window[1]:%H:%M} out={out_dir / NXT_SUBDIR} "
-            f"(slots left by KRX, watchlist order)")
-    asyncio.run(run_collector(codes, until, out_dir, log, nxt_codes=nxt_codes, nxt_window=nxt_window))
+            + (f"(KRX session: NXT only for held {nxt_keep or '-'}; before the open watchlist KRX+NXT first)"
+               if nxt_regular == "held" else "(slots left by KRX, watchlist order)"))
+    asyncio.run(run_collector(codes, until, out_dir, log, nxt_codes=nxt_codes, nxt_window=nxt_window, nxt_keep=nxt_keep,
+                              nxt_regular=nxt_regular, watch_n=len(watch_codes), time_plan=nxt_regular == "held"))
 
 
 if __name__ == "__main__":

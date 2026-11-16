@@ -40,6 +40,8 @@ import {
   resolveSessionOpen,
   type R016Status,
   type SchemaKey,
+  fmtBytes,
+  parseTickCodes,
 } from '../src/shared/control';
 import { R016Client } from '../src/main/control';
 import { shellQuote } from '../src/shared/shell';
@@ -487,5 +489,16 @@ describe('NXT-only hours', () => {
     expect(isNxtOnlyHours('2026-11-12T20:00:00')).toBe(false);
     expect(isNxtOnlyHours('2026-11-14T08:30:00')).toBe(false); // Saturday
     expect(isNxtOnlyHours(undefined)).toBe(false);
+  });
+});
+
+// [2026-11-16] 수집기 tab helpers
+describe('tick collector helpers', () => {
+  it('parseTickCodes pads, upper-cases, dedups and reports bad tokens', () => {
+    expect(parseTickCodes('005930, 660;7660\n005930 0001a0 1234567 x-1')).toEqual({ codes: ['005930', '000660', '007660', '0001A0'], bad: ['1234567', 'x-1'] });
+    expect(parseTickCodes('  ')).toEqual({ codes: [], bad: [] });
+  });
+  it('fmtBytes', () => {
+    expect([fmtBytes(512), fmtBytes(2048), fmtBytes(79361919), fmtBytes(5.2 * 1024 ** 3), fmtBytes(null)]).toEqual(['512 B', '2 KB', '76 MB', '5.2 GB', '-']);
   });
 });

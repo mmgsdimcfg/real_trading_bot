@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-16] type=feat owner=claude
+    summary: 틱 수집기 기동 인자 - r001 TICK_COLLECTOR_FILL_FROM_SCAN 이면 --fill-from-scan(감시 종목 뒤 빈자리를 g002 스캔 상위로
+      40까지), 보유 종목은 --nxt-keep 으로 넘겨 정규장에도 NXT 체결을 받는다(g011 TICK_COLLECT_NXT_REGULAR="held").
+      보유 목록은 g011 기동 시점 기준(장중 새 보유는 다음 재기동부터).
+    impact: live (수집 종목 수만 늘어남 - 감시 종목 구독/틱 트리거 불변)
+    compatibility: backward-compatible (롤백: TICK_COLLECTOR_FILL_FROM_SCAN=False)
 - [2026-11-15] type=feat owner=claude
     summary: 매수 엔진 3단계 shadow 연결 - ENTRY_ENGINE_MODE="shadow"(기본)이면 _make_entry_shadow 가 r028 EntryShadowService
       (별도 스레드, 감시 종목 틱 파일 -> 엔진 판단 기록)를 만든다. 매 턴 감시 종목·보유/미체결 종목을 넘기고(set_watch), 실매수
@@ -862,6 +868,7 @@ from r001_define_config import (
     TICK_COLLECTOR_AUTOSTART,
     TICK_COLLECTOR_UNTIL,
     TICK_COLLECTOR_RESTART_MIN_INTERVAL_SECONDS,
+    TICK_COLLECTOR_FILL_FROM_SCAN,
     TICK_FEED_WARN_AFTER_SECONDS,
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
@@ -2597,7 +2604,7 @@ def _tick_collector_until(now: datetime) -> datetime:
     return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
-def _supervise_tick_collector(now: datetime, codes: list[str]) -> None:
+def _supervise_tick_collector(now: datetime, codes: list[str], held: list[str] | None = None) -> None:
     """Start g011 if it is not running (rate-limited), then warn when tick files stop updating in the regular session.
     Never raises - the tick feed is optional for the loop (the triple trigger itself fails closed without it)."""
     if not TICK_COLLECTOR_AUTOSTART:
@@ -2637,15 +2644,21 @@ def _supervise_tick_collector(now: datetime, codes: list[str]) -> None:
                         with contextlib.suppress(Exception):
                             st["log_fh"].close()
                     st["log_fh"] = open(log_dir / "g011_tick_collector.log", "a", encoding="utf-8")
+                    # [2026-11-16] scan fill up to 40 (TICK_COLLECTOR_FILL_FROM_SCAN) + held codes keep NXT during the KRX session
+                    extra_args = ["--fill-from-scan"] if TICK_COLLECTOR_FILL_FROM_SCAN else []
+                    keep = sorted({str(c).zfill(6) for c in (held or [])})
+                    if keep:
+                        extra_args += ["--nxt-keep", *keep]
                     st["proc"] = subprocess.Popen(
                         [sys.executable, str(_TICK_COLLECTOR_SCRIPT), "--codes", *sub_codes,
-                         "--until", str(TICK_COLLECTOR_UNTIL)],
+                         "--until", str(TICK_COLLECTOR_UNTIL), *extra_args],
                         cwd=str(_TICK_COLLECTOR_SCRIPT.parent), stdin=subprocess.DEVNULL,
                         stdout=st["log_fh"], stderr=subprocess.STDOUT, start_new_session=True,
                     )
                     st["reused_pid"] = None
                     log(f"  [TICK COLL   ] started g011 pid={st['proc'].pid} codes={len(sub_codes)} "
-                        f"until={TICK_COLLECTOR_UNTIL}")
+                        f"until={TICK_COLLECTOR_UNTIL}{' +scan fill' if TICK_COLLECTOR_FILL_FROM_SCAN else ''}"
+                        f"{f' nxt_keep={len(keep)}' if keep else ''}")
         if REGULAR_START <= now.time() <= REGULAR_END and now >= now.replace(hour=9, minute=3, second=0, microsecond=0):
             tick_dir = RUNTIME_DATA_DIR / "ticks" / now.strftime("%Y%m%d")
             newest = None
@@ -5951,7 +5964,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             log("MAIN LOOP STOP | reason=stop_request")
             _clear_stop_request()
             break
-        _supervise_tick_collector(current_dt, tick_collector_codes)
+        _supervise_tick_collector(current_dt, tick_collector_codes,
+                                  [c for c, p in (getattr(api, "positions", None) or {}).items() if int(p.get("quantity", 0) or 0) > 0])
 
         if current_dt.date() != current_trade_date:
             current_trade_date = current_dt.date()

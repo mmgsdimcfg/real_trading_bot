@@ -1,5 +1,6 @@
 /*
  * Update log
+ * - [2026-11-16] type=feat - 수집기 tab: CollectorDetail (r016 collector detail), CollectorPrune, TickExtra, validTickCode
  * - [2026-11-16] type=fix - pctHint: r001 *_PCT keys in percent units (GC_VOLATILITY_MIN_ATR_1MIN_PCT 0.5 = 0.5 %, HYBRID_1MIN_TRIGGER_*, TRIPLE_*,
  *   ANTI_CHASE_*, V2_* ...) are shown as they are - they were multiplied by 100 ("0.5 = 50.00%"); ratio keys unchanged
  * - [2026-11-10] type=feat - Local mode: R016Status.host (platform / backend / host role) + collector, role / job / doctor
@@ -786,4 +787,106 @@ export function checkWatchRows(rows: WatchEntry[]): { rows: Record<number, strin
 /** stdin body for `watchlist set --stdin`: one "code,name" (or "code") per line */
 export function watchlistStdin(rows: WatchEntry[]): string {
   return rows.map((r) => (r.name.trim() ? `${r.code.trim()},${r.name.trim()}` : r.code.trim())).join('\n') + '\n';
+}
+
+
+// ---- [2026-11-16] tick collector management (r016 collector detail / stop / extra / prune) ----
+export interface TickFileInfo {
+  size: number;
+  mtime: string;
+  /** first / last trade time HHMMSS */
+  first: string | null;
+  last: string | null;
+  rows_est: number;
+}
+export type CollectorRole = 'watch' | 'extra' | 'scan' | 'file_only';
+export interface CollectorSymbol {
+  code: string;
+  name: string;
+  role: CollectorRole;
+  planned: boolean;
+  nxt_keep: boolean;
+  krx: TickFileInfo | null;
+  nxt: TickFileInfo | null;
+  /** seconds since the KRX file was last written */
+  idle_s: number | null;
+  stale: boolean;
+}
+export interface TickExtra {
+  codes: string[];
+  updated_at: string | null;
+  by: string | null;
+  path?: string;
+}
+export interface CollectorDetail {
+  ok: boolean;
+  error?: string;
+  date: string;
+  today: boolean;
+  generated_at: string;
+  status: (NonNullable<R016Status['collector']> & { stale?: { code: string; last_write: string | null }[]; ticks_dir?: string }) | null;
+  window: { ok: boolean; reason: string };
+  role?: { role?: string; note?: string };
+  config: Record<string, unknown>;
+  extra: TickExtra;
+  scan_date: string;
+  watch: string[];
+  plan: {
+    codes: string[];
+    roles: Record<string, string[]>;
+    nxt_codes: number;
+    nxt_keep: string[];
+    subscribed: { at: string; krx: number | null; nxt: number | null } | null;
+    starts: number;
+    reconnects: number;
+    errors: number;
+    start?: string;
+    start_note?: string;
+  };
+  events: { ts: string; kind: string; text: string }[];
+  symbols: CollectorSymbol[];
+  days: { date: string; krx: number; nxt: number; size: number }[];
+  total_size: number;
+  day_count: number;
+  disk: { total: number; free: number } | null;
+  ticks_dir: string;
+  prune_min_keep_days: number;
+}
+export interface CollectorPrune {
+  ok: boolean;
+  error?: string;
+  keep_days: number;
+  apply: boolean;
+  delete: { date: string; size: number }[];
+  free_bytes: number;
+  removed?: string[];
+  errors?: string[];
+}
+
+/** a KIS stock code as r016 `collector extra` accepts it (6 characters, digits / capital letters) */
+export function validTickCode(c: string): boolean {
+  return /^[0-9A-Z]{6}$/.test(c);
+}
+
+/** "005930, 000660 7660" -> ["005930", "000660", "007660"] (zero-padded, upper case, duplicates removed) and the bad tokens */
+export function parseTickCodes(text: string): { codes: string[]; bad: string[] } {
+  const codes: string[] = [];
+  const bad: string[] = [];
+  for (const raw of text.split(/[\s,;]+/)) {
+    const t = raw.trim().toUpperCase();
+    if (!t) continue;
+    const c = t.padStart(6, '0');
+    if (!validTickCode(c)) bad.push(raw.trim());
+    else if (!codes.includes(c)) codes.push(c);
+  }
+  return { codes, bad };
+}
+
+/** 1.2 GB / 345 MB / 12 KB */
+export function fmtBytes(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '-';
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2).toLocaleString('ko-KR')} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
 }

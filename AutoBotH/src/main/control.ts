@@ -23,6 +23,8 @@
  *   a run-mode switch while a verb runs
  * - [2026-11-11] type=feat - ctl:jobStart keepWatchlist -> r021 --keep-watchlist (scan builds the picks files only, r004 stays);
  *   while r003 runs, a scan / postclose that WOULD rewrite r004 asks first (one dialog together with the KIS-load note)
+ * - [2026-11-16] type=feat - 수집기 tab: ctl:collectorDetail / ctl:collectorStop / ctl:collectorExtra / ctl:collectorPrune (r016 collector
+ *   detail / stop / extra / prune)
  * - [2026-11-11] type=fix - Tick collector resubscribe: g011 takes the watchlist only when it starts, so codes added later had no
  *   tick files (_009 ABSTAIN_NO_FILE, empty tick chart). ctl:watchlistSet restarts g011 (r016 `collector restart`, which now
  *   respawns it) when status.collector.missing is not empty; new ctl:collectorRestart for the control tab button
@@ -70,6 +72,10 @@ import {
   type WatchEntry,
   type WatchlistDoc,
   type WatchlistSetResult,
+  type CollectorDetail,
+  type CollectorPrune,
+  type TickExtra,
+  validTickCode,
 } from '../shared/control';
 
 export type ExecFn = (cmd: string, timeoutMs: number, stdin?: string) => Promise<{ out: string; err: string; code: number | null }>;
@@ -616,6 +622,47 @@ export function createControl(deps: ControlDeps) {
     });
     await refreshStatus();
     return r;
+  });
+  // [2026-11-16] 수집기 tab
+  handle('ctl:collectorDetail', async (date?: string) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (date && !/^\d{8}$/.test(date)) return { ok: false, error: '날짜는 YYYYMMDD' };
+    const r = await cl().run<CollectorDetail>(['collector', 'detail', '--days', '60', ...(date ? ['--date', date] : [])], { timeoutMs: 60000 });
+    if (!r.ok && /invalid choice/.test(`${r.error || ''}`)) return { ok: false, error: '서버의 AutoBot 이 이 기능보다 오래됐습니다 (r016 collector detail 없음) - git pull 필요' };
+    return { ok: r.ok && !!r.data?.ok, error: r.data?.error || r.error, data: r.data };
+  });
+  handle('ctl:collectorStop', async () => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (state.busy) return { ok: false, error: `다른 작업(${state.busy}) 진행 중입니다.` };
+    push({ busy: 'collector' });
+    try {
+      const r = await cl().run<{ stopped?: number[]; note?: string | null; r003_running?: boolean }>(['collector', 'stop'], { timeoutMs: 30000 });
+      return { ok: r.ok, error: r.error, data: r.data };
+    } finally {
+      push({ busy: null });
+      await refreshStatus();
+    }
+  });
+  handle('ctl:collectorExtra', async (codes?: string[] | null) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (codes === undefined || codes === null) {
+      const r = await cl().run<TickExtra>(['collector', 'extra']);
+      return { ok: r.ok, error: r.error, data: r.data };
+    }
+    if (!Array.isArray(codes) || codes.length > 40 || !codes.every((c) => validTickCode(String(c)))) return { ok: false, error: '종목코드는 6자리, 최대 40개' };
+    const r = await cl().run<TickExtra>(['collector', 'extra', '--set', ...codes.map(String)]);
+    return { ok: r.ok, error: r.data && (r.data as { error?: string }).error ? (r.data as { error?: string }).error : r.error, data: r.data };
+  });
+  handle('ctl:collectorPrune', async (keepDays: number, apply?: boolean) => {
+    const nc = needConn();
+    if (nc) return nc;
+    const n = Math.floor(Number(keepDays));
+    if (!Number.isFinite(n) || n < 1) return { ok: false, error: '보관 일수는 숫자' };
+    const r = await cl().run<CollectorPrune>(['collector', 'prune', '--keep-days', String(n), ...(apply ? ['--apply'] : [])], { timeoutMs: 120000 });
+    return { ok: r.ok && !!r.data?.ok, error: r.data?.error || r.error, data: r.data };
   });
   handle('ctl:jobs', async () => {
     const nc = needConn();

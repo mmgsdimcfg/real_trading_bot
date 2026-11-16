@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-16] type=feat owner=claude
+#     summary: 사용자 결정 - 학습용 틱 확대. TICK_COLLECTOR_FILL_FROM_SCAN=True(r003 기동 g011 도 빈자리를 스캔 상위로 40까지),
+#       TICK_COLLECT_NXT_REGULAR="held"(정규장에는 KRX 우선, NXT 는 보유 종목만; 장전·장후 NXT 는 감시 종목 전부 그대로).
+#     impact: collector (매매 판정 불변)
+#     compatibility: backward-compatible (롤백: TICK_COLLECTOR_FILL_FROM_SCAN=False, TICK_COLLECT_NXT_REGULAR="all")
 # - [2026-11-15] type=tune owner=claude
 #     summary: 사용자 결정 - 호가단위 비용 게이트 끔(ENABLE_TICK_COST_GATE True -> False). 가격대(호가 구간 경계)에 따라 같은 종목의
 #       매수 가능 여부가 바뀌는 것이 부적절하고, 최근 선정 종목의 약 60% 가 막혀 있었다.
@@ -1399,6 +1404,13 @@ TICK_COLLECTOR_UNTIL = "15:31"
 #   기존 KRX 파일(<종목>.csv)만 읽으므로 매매 동작은 바뀌지 않는다.
 # - r016 collector start 창도 NXT 시간(시작 5분 전 ~ 종료)으로 넓어진다. 롤백: False.
 TICK_COLLECT_NXT = True
+# [2026-11-16] 학습용 틱 확대(사용자 결정): 정규장(KRX 개장 5분 전 ~ 15:31)에는 KRX 구독이 40자리를 우선 쓰고 NXT 는 보유 종목만.
+# "held" = 위 동작(장전·장후 NXT 는 감시 종목 전부 그대로), "all" = 종전(정규장에도 남는 자리만큼 감시 종목 NXT). r013 틱 트리거는
+# KRX 파일만 읽으므로 매매 동작은 바뀌지 않는다.
+TICK_COLLECT_NXT_REGULAR = "held"
+# [2026-11-16] r003 이 g011 을 띄울 때 감시 종목 뒤 빈자리를 최근 g002 스캔 상위 후보로 채운다(--fill-from-scan, 최대 40).
+# 종전에는 r003 기동 시 감시 종목만(10~14개) 받아 날마다 수집 종목 수가 7~40개로 들쭉날쭉했다. 롤백: False.
+TICK_COLLECTOR_FILL_FROM_SCAN = True
 TICK_COLLECTOR_RESTART_MIN_INTERVAL_SECONDS = 60.0
 # 정규장 중 틱 피드 이상(파일 없음/stale)이 이 초 이상 이어지면 [TICK FEED] WARN (종목별 스로틀).
 TICK_FEED_WARN_AFTER_SECONDS = 180.0

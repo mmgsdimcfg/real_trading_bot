@@ -76,6 +76,26 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(len(self.plan(at(10), [f"{i:06d}" for i in range(40)], nxt)), 40)
         self.assertEqual(len(self.plan(at(18), krx, [f"{i:06d}" for i in range(45)])), 40)
 
+    # [2026-11-16] time-of-day plan (TICK_COLLECT_NXT_REGULAR="held")
+    def test_held_plan_by_time_of_day(self):
+        watch = [f"{i:06d}" for i in range(13)]
+        fill = [f"9{i:05d}" for i in range(26)]                                         # 40 - 13 watch - 1 held
+        krx, held = watch + fill, [watch[2]]
+        kw = dict(krx_open=at(9), nxt_keep=held, nxt_regular="held", watch_n=len(watch))
+        pre = g011.subscription_plan(at(8, 10), krx, watch, self.KRX_END, self.WIN, 40, **kw)
+        self.assertEqual([c for tr, c in pre if tr == "H0NXCNT0"], watch)               # pre-market: NXT of every watched code
+        self.assertEqual([c for tr, c in pre if tr == "H0STCNT0"][:13], watch)          # watchlist KRX before the fill
+        self.assertEqual(len(pre), 40)                                                  # fill only in what is left
+        day = g011.subscription_plan(at(8, 56), krx, watch, self.KRX_END, self.WIN, 40, **kw)
+        self.assertEqual(sum(tr == "H0STCNT0" for tr, _ in day), 39)                    # 5 min before the open: all KRX
+        self.assertEqual([c for tr, c in day if tr == "H0NXCNT0"], held)                # + NXT of the held code only
+        self.assertEqual(g011.subscription_plan(at(10), krx, watch, self.KRX_END, self.WIN, 40, **kw), day)
+        evening = g011.subscription_plan(at(18), krx, watch, self.KRX_END, self.WIN, 40, **kw)
+        self.assertEqual(evening, [("H0NXCNT0", c) for c in watch])
+        allmode = g011.subscription_plan(at(10), watch, watch, self.KRX_END, self.WIN, 40, **dict(kw, nxt_regular="all"))
+        self.assertEqual([c for tr, c in allmode if tr == "H0NXCNT0"][0], watch[2])     # "all": held first, then the rest
+        self.assertEqual(len(allmode), 26)
+
     def test_no_nxt_window_is_the_old_behaviour(self):
         self.assertEqual(g011.subscription_plan(at(10), ["000001"], ["000001"], self.KRX_END, None), [("H0STCNT0", "000001")])
 

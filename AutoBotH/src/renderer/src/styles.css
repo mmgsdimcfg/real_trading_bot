@@ -759,3 +759,38 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 /* [2026-11-12] timeline: a pinned evaluation dot in the dock */
 .tip-dock.pinned { border-color: var(--accent); }
 .pin-chip { margin-right: 6px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font-size: 11px; cursor: pointer; }
+
+/* [2026-11-16] 수집기 tab */
+.collector-view section { margin-bottom: 26px; }
+.coll-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 10px; }
+.coll-state { font-weight: 600; }
+.coll-state.ok { color: var(--st-pass, #4caf50); }
+.coll-state.bad { color: var(--st-fail); }
+.coll-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 8px 0 4px; }
+.coll-stats > div { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); display: flex; flex-direction: column; gap: 2px; }
+.coll-stats b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.coll-stats span { color: var(--text-2); font-size: 13px; }
+.coll-stats i { font-style: normal; color: var(--text-3); font-size: 12px; }
+.coll-stats > div.bad { border-color: var(--st-fail); }
+.coll-stats > div.bad b { color: var(--st-fail); }
+.coll-stats > div.warn { border-color: var(--st-hold); }
+.coll-cfg td:first-child { width: 120px; color: var(--text-2); }
+.coll-cfg td:nth-child(2) { width: 200px; }
+.small-seg { margin: 0 0 8px; }
+.small-seg button { padding: 4px 12px; font-size: 13px; }
+.seg button.on { background: var(--nav-active); }
+.role-tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); color: var(--text-2); }
+.role-tag.watch { border-color: var(--accent); color: var(--accent); }
+.role-tag.extra { border-color: var(--st-hold); color: var(--st-hold); }
+.role-tag.file_only { opacity: 0.7; }
+.coll-extra { display: flex; flex-direction: column; gap: 8px; max-width: 900px; }
+.coll-extra-actions { display: flex; align-items: center; gap: 10px; }
+.coll-extra-actions > span { margin-right: auto; }
+.coll-days { max-width: 560px; }
+.coll-prune { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 4px; }
+.coll-log { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--surface-2); font-size: 12.5px; }
+.coll-log .ev { padding: 2px 0; white-space: pre-wrap; word-break: break-all; color: var(--text-2); }
+.coll-log .ev b { color: var(--text); font-weight: 600; margin: 0 4px; }
+.coll-log .ev.err, .coll-log .ev.err b { color: var(--st-fail); }
+.coll-log .ev.warn b { color: var(--st-hold); }
+.coll-notes { margin: 0; padding-left: 18px; color: var(--text-2); line-height: 1.7; font-size: 13.5px; }

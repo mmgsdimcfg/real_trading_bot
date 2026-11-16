@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-16] type=feat - v2.3.23_001: 새 탭 수집기(운영 그룹) - 틱 수집기(g011) 상태와 시작 / 재시작 / 중지, 수집 설정 요약, 그날 구독 목록(감시 / 추가 / 스캔 채움 구분, 종목별 KRX·NXT 체결 수 추정, 첫·마지막 체결, 마지막 기록, 끊김 표시), 추가 수집 종목 편집(저장 / 저장 후 재시작), 일별 수집 이력과 디스크 사용량, 오래된 날짜 정리(미리보기 후 삭제, 최소 30일), 수집기 로그 이벤트, 알아 둘 점. 서버 r016 collector detail / stop / extra / prune 필요",
     "[2026-11-16] type=feat - v2.3.22_003: 종목 선택 메뉴(타임라인 / 파이프라인 / 차트 등 모든 화면)에도 감시 외 보유 종목의 가격 표시 - KIS 현재가 보조 조회를 타임라인 화면에서 앱 공통 상태(store)로 옮김. r003 현재가 기록이 없는 오늘 종목만, 종목당 30초에 한 번, 한 번에 최대 20종목, 오늘 실시간 화면에서만",
     "[2026-11-16] type=feat - v2.3.22_002: 감시 종목이 아닌 보유 종목도 타임라인 시세 줄 표시 - r003 현재가 기록이 없으면 KIS 현재가 조회(r016 quote)로 현재가 / 등락 / 시가 / 고가 / 저가 / 전일 / 거래량 / 거래대금을 보여 줌(종목 선택 시 + 30초마다, 오늘 실시간 화면에서만; 지난날·재생 중에는 조회하지 않음). 끝에 KIS 표시",
     "[2026-11-16] type=feat - v2.3.22_001: 타임라인 종목명 옆 시세 줄 - 현재가 / ▲▼ 등락폭 / 등락률에 더해 당일 시가 / 고가 / 저가(전일 종가 대비 색), 전일 종가, 거래량, 거래대금, 기준 시각(NXT 표시). 현재가 기록 전에는 - 대신 현재가 기록 없음 과 이유 표시. r003 현재가 기록(quote_ticks)의 시가/고가/저가/거래량/거래대금 열을 읽음",
@@ -70,7 +71,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.22",
+  "version": "2.3.23",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -118,7 +119,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

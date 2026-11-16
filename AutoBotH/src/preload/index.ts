@@ -39,6 +39,9 @@ import type {
   WatchEntry,
   WatchlistDoc,
   WatchlistSetResult,
+  CollectorDetail,
+  CollectorPrune,
+  TickExtra,
 } from '../shared/control';
 import type { SchedState } from '../main/scheduler';
 
@@ -106,6 +109,11 @@ const api = {
   ctlCollectorStart: (force?: boolean): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:collectorStart', force),
   /** [2026-11-11] stop g011 and start it again with the current watchlist (r016 collector restart) */
   ctlCollectorRestart: (): Promise<CtlResult<{ restarted?: boolean; pid?: number; window?: string }>> => ipcRenderer.invoke('ctl:collectorRestart'),
+  /** [2026-11-16] 수집기 tab (r016 collector detail / stop / extra / prune) */
+  ctlCollectorDetail: (date?: string): Promise<CtlResult<CollectorDetail>> => ipcRenderer.invoke('ctl:collectorDetail', date),
+  ctlCollectorStop: (): Promise<CtlResult<{ stopped?: number[]; note?: string | null; r003_running?: boolean }>> => ipcRenderer.invoke('ctl:collectorStop'),
+  ctlCollectorExtra: (codes?: string[] | null): Promise<CtlResult<TickExtra>> => ipcRenderer.invoke('ctl:collectorExtra', codes ?? null),
+  ctlCollectorPrune: (keepDays: number, apply?: boolean): Promise<CtlResult<CollectorPrune>> => ipcRenderer.invoke('ctl:collectorPrune', keepDays, !!apply),
   ctlJobs: (): Promise<CtlResult<JobList>> => ipcRenderer.invoke('ctl:jobs'),
   ctlJobStart: (name: string, opts: JobStartOpts): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStart', name, opts),
   ctlJobStop: (name: string): Promise<CtlResult<unknown>> => ipcRenderer.invoke('ctl:jobStop', name),
