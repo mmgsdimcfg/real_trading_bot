@@ -44,6 +44,9 @@
  * - [2026-11-12] type=feat - zoom: the price chart's wheel / drag selection sets a time span that all three charts follow
  *   (전체 보기 or a double click on the price chart resets it); time ticks adapt to the span (30 min ... 1 min); the buy
  *   evaluation chart is as tall as its rows need (one row no longer takes 200 px)
+ * - [2026-11-16] type=feat - The time axis spans the whole trading session of the day from the start (NXT symbol 08:00 - 20:00,
+ *   KRX 09:00 - 15:30): at the open the buy evaluation and price charts no longer stretch the first minutes over the full width,
+ *   they fill in from the left at the scale of the finished day. Events / bars outside the session still widen the axis
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -55,7 +58,7 @@ import { useStore } from '../store';
 import { SymbolPicker } from '../components/SymbolPicker';
 import { condTitle, fmtInt, fmtKrw, sortedConds } from '../lib';
 import { condKeyOf } from '../../../shared/mapping';
-import { fmtKstTime } from '../../../shared/time';
+import { fmtKstTime, tradingSessionRange } from '../../../shared/time';
 import type { EvalEvent, Trade } from '../../../shared/types';
 import { MIN_SIZES, TICK_SIZES, type ChartKind, type PriceResponse } from '../../../shared/price';
 import { OSC_PANE_H, PRICE_PANE_H, PriceChart, chartHeight } from '../components/PriceChart';
@@ -292,12 +295,17 @@ export function TimelineView() {
   const intradayKind = chart.kind === 'tick' || chart.kind === 'min';
   const barTs = intradayKind && price?.ok && price.bars.length ? [price.bars[0].t, price.bars[price.bars.length - 1].t2 ?? price.bars[price.bars.length - 1].t] : [];
   const xs = [...events.map((e) => e.ts), ...trades.map((t) => t.ts), ...barTs].filter(Number.isFinite);
-  // replay: the axis runs to the replay time, so it moves while playing even when the symbol has no new events (r003 stopped)
-  const full: [number, number] = xs.length
-    ? [Math.min(...xs), replayAt !== null ? Math.max(replayAt, Math.min(...xs) + 60000) : Math.max(...xs)]
-    : replayAt !== null
-      ? [replayAt - 30 * 60000, replayAt]
-      : [0, 1];
+  // [2026-11-16] the axis spans the day's whole trading session from the start (NXT symbol 08:00 - 20:00, KRX 09:00 - 15:30), so
+  // the charts fill in from the left at the final scale instead of stretching the first minutes over the whole width; events or
+  // bars outside the session widen it
+  const session = tradingSessionRange(snap?.date || status.date, !!snap?.symbols.find((s) => s.code === selected)?.nxt);
+  const full: [number, number] = session
+    ? [Math.min(session[0], ...xs), Math.max(session[1], ...xs)]
+    : xs.length
+      ? [Math.min(...xs), replayAt !== null ? Math.max(replayAt, Math.min(...xs) + 60000) : Math.max(...xs)]
+      : replayAt !== null
+        ? [replayAt - 30 * 60000, replayAt]
+        : [0, 1];
   // visible window: whole range or a span moved with the slider (both charts follow it)
   const [span, setSpan] = useState(0);
   const [startPct, setStartPct] = useState(100);
@@ -349,7 +357,7 @@ export function TimelineView() {
     [price, replayAt, chart.kind],
   );
   // memoized so hovering the price chart does not rebuild its paths
-  const intradayDomain = useMemo<[number, number] | null>(() => (xs.length ? [domain[0], domain[1]] : null), [xs.length > 0, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const intradayDomain = useMemo<[number, number] | null>(() => (xs.length || session ? [domain[0], domain[1]] : null), [xs.length > 0 || !!session, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const buyLabel = (v: number) => shownRows[v]?.label || '';
   // heights: dragged by the user (layout) or the defaults
   const buyH = layout.buyH ?? Math.max(GRIP_MIN, Math.min(520, 92 + shownRows.length * 16));
