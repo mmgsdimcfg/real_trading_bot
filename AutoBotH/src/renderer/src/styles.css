@@ -778,7 +778,7 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .coll-cfg td:nth-child(2) { width: 200px; }
 .small-seg { margin: 0 0 8px; }
 .small-seg button { padding: 4px 12px; font-size: 13px; }
-.seg button.on { background: var(--nav-active); }
+.small-seg button.on { background: var(--nav-active); border-color: var(--nav-active); color: var(--text); font-weight: 600; }
 .role-tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); color: var(--text-2); }
 .role-tag.watch { border-color: var(--accent); color: var(--accent); }
 .role-tag.extra { border-color: var(--st-hold); color: var(--st-hold); }
