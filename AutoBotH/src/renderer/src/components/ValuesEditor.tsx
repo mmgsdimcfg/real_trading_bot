@@ -124,16 +124,29 @@ function Widget({ it, ed, disabled }: { it: EditItem; ed: ValueEditing; disabled
   );
 }
 
-export function ValuesEditor({ items, ed, disabled }: { items: EditItem[]; ed: ValueEditing; disabled: boolean }) {
+/** [2026-11-16] alerts: key -> note of the last block ("막힘: ..." = the threshold that stopped the buy, red; "관련: ..." = keys of the same
+ *  check, amber). Rows get id "vrow-<key>" so the block list can scroll to them. */
+/** [2026-11-16] focus the value box of one row (block list "이 값 수정") */
+export function focusValueRow(key: string) {
+  const row = document.getElementById(`vrow-${key}`);
+  if (!row) return;
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const box = row.querySelector<HTMLInputElement | HTMLTextAreaElement>('.vw input:not([type=checkbox]), .vw textarea, .vw input');
+  if (box && !box.disabled) setTimeout(() => { box.focus(); if ('select' in box) box.select(); }, 250);
+}
+
+export function ValuesEditor({ items, ed, disabled, alerts }: { items: EditItem[]; ed: ValueEditing; disabled: boolean; alerts?: Record<string, string> }) {
   return (
     <table className="values edit">
       <tbody>
         {items.map((it) => {
           const err = ed.errors[it.key];
           const changed = it.key in ed.changes;
+          const alert = alerts?.[it.key];
+          const alertCls = alert ? (alert.includes('막힘:') ? 'blocked' : 'related') : '';
           return (
             <Fragment key={it.key}>
-              <tr className={`${err ? 'verr-row' : ''} ${changed ? 'changed' : ''} ${it.editable ? '' : 'readonly'}`}>
+              <tr id={`vrow-${it.key}`} className={`${err ? 'verr-row' : ''} ${changed ? 'changed' : ''} ${it.editable ? '' : 'readonly'} ${alertCls}`}>
                 <td>
                   <div className="vk mono">
                     {it.key}
@@ -149,6 +162,7 @@ export function ValuesEditor({ items, ed, disabled }: { items: EditItem[]; ed: V
                     {it.has_override && <b> · 저장값 {fmtValue(it.override)}</b>}
                     {!it.editable && ' · 읽기 전용'}
                   </div>
+                  {alert && <div className="vblock">{alert}</div>}
                 </td>
                 <td className="vw">
                   <Widget it={it} ed={ed} disabled={disabled} />

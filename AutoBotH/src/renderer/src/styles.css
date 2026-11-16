@@ -466,6 +466,31 @@ details.adv .actions { margin: 8px 0; }
 .values.edit .va { width: 1%; white-space: nowrap; }
 .values.edit tr.changed td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .values.edit tr.readonly .vk { color: var(--text-3); }
+/* [2026-11-16] last block of the selected symbol: threshold rows red, related rows amber, note under the key */
+.values.edit tr.blocked td { background: color-mix(in srgb, var(--st-fail) 14%, transparent); }
+.values.edit tr.blocked td:first-child { box-shadow: inset 3px 0 0 var(--st-fail); }
+.values.edit tr.blocked .vk { color: var(--st-fail); font-weight: 600; }
+.values.edit tr.related td:first-child { box-shadow: inset 3px 0 0 var(--st-hold); }
+.values.edit .vblock { margin-top: 2px; font-size: 11px; white-space: pre-line; color: var(--st-fail); }
+.values.edit tr.related .vblock { color: var(--st-hold); }
+/* the value box must stay visible on the tinted row: solid background, red border, a little wider */
+.values.edit tr.blocked .vw input, .values.edit tr.blocked .vw textarea { background: var(--surface); border-color: var(--st-fail); font-weight: 600; }
+.values.edit tr.related .vw input, .values.edit tr.related .vw textarea { background: var(--surface); }
+.blocklist { margin: 6px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--st-fail) 45%, transparent); border-radius: 6px;
+  background: color-mix(in srgb, var(--st-fail) 7%, transparent); }
+.blocklist .bl-head { font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
+.blocklist .bl-item { padding: 6px 0; border-top: 1px dashed color-mix(in srgb, var(--st-fail) 25%, transparent); }
+.blocklist .bl-item:first-of-type { border-top: none; }
+.blocklist .bl-label { color: var(--st-fail); font-weight: 600; font-size: 12.5px; }
+.blocklist .bl-cmp { display: flex; gap: 14px; font-size: 12px; margin-top: 2px; }
+.blocklist .bl-cmp b { font-weight: 600; }
+.blocklist .bl-cmp b.bad { color: var(--st-fail); }
+.blocklist .bl-keys { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.blocklist .bl-key { font: 11px Consolas, 'D2Coding', monospace; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); background: transparent;
+  color: var(--text-2); cursor: pointer; }
+.blocklist .bl-key.main { border-color: var(--st-fail); color: var(--st-fail); }
+.blocklist .bl-key.off { cursor: default; opacity: 0.8; }
+.blocklist .bl-code { font-size: 10.5px; color: var(--text-3); margin-top: 2px; word-break: break-all; }
 .values.edit tr.verr-row td { border-bottom: none; }
 .values.edit tr.verr td { color: var(--st-fail); font-size: 11.5px; padding-top: 0; }
 .ro { color: var(--text-3); word-break: break-all; }

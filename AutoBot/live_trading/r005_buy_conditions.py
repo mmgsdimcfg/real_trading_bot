@@ -19,6 +19,20 @@ Overview
 - [2026-11-08] Renumbered `_001`..`_025` in evaluation order (numbers had drifted: added gates kept 25~31 and removed
   ones left gaps). Notes and update-log entries above this line use the numbers of their date - see the 2026-11-08 entry
   for the old -> new table.
+- [2026-11-16] type=feat owner=claude
+    summary: 3중 트리거 리젝 로그 끝에 MA 값 구간 추가 - `| MAVAL 1m(5=..,20=..) t60(5=..,20=..,bars=n) t120(...)` (1분 / 각 틱봉의
+      마지막 MA_fast, MA_slow 값과 틱봉 개수). AutoBotH 파이프라인이 "60틱 MA5가 MA20 아래" 같은 항목을 숫자로 비교해 보여 준다.
+      사유(첫 구간)와 GATES / STEPS 구간은 그대로라 기존 파서와 호환.
+    impact: 로그 문자열만 (판정 변경 없음)
+    compatibility: backward-compatible
+- [2026-11-16] type=feat owner=claude
+    summary: `_009` 설정값 목록에 실제 트리거(triple) 기준 키 추가 - TRIPLE_1MIN_CONDITION / TRIPLE_TICK_CONDITION / TRIPLE_1MIN_MA_FAST /
+      TRIPLE_1MIN_MA_SLOW / TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS / TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS / TRIPLE_REQUIRE_1MIN_ABOVE_MID /
+      TRIPLE_CHASE_FROM_CROSS_MAX_PCT / TRIPLE_CHASE_FROM_CROSS_REF / TICK_MIN_PRINTS_PER_MIN / TICK_MIN_PRINTS_WINDOW_MINUTES.
+      반려 사유(예 1MIN_MA5_MA20_ABOVE_TOO_OLD_1428s_GT_900s)를 정한 키가 목록에 없어 AutoBotH 파이프라인에서 보고 고칠 수 없었다.
+      설명문도 triple 트리거 기준으로 갱신. 판정 로직 변경 없음.
+    impact: r016 conditions 출력(표시 목록)만
+    compatibility: backward-compatible
 - [2026-11-12] type=feat owner=claude
     summary: TRADING_STRATEGY_MODE="edge" - EDGE_BUY_CONDITIONS(_001~_008 + _e09_edge_ai_signal + _023~_025). _e09 는 1분
       하이브리드 트리거 + Edge AI 확률 기준(EDGE_ONLY_MIN_PROB), fail-closed. active_buy_conditions 에서 triple 보다 우선.
@@ -221,6 +235,8 @@ from r001_define_config import (
     ENTRY_TRIGGER_MODE,
     TICK_TRIGGER_BAR_SIZES,
     TRIPLE_1MIN_MA_FAST,
+    TICK_TRIGGER_MA_FAST,
+    TICK_TRIGGER_MA_SLOW,
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
     TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
@@ -354,6 +370,7 @@ class BuyContext:
     trigger_flag: str = "-"       # STEPS 로그의 1min_trigger(P|F|-)
     trigger_reason: str = ""
     steps_text: str = ""          # "1min_trigger(P) bb_slope_rising(P) ..." (_009에서 계산)
+    ma_values_text: str = ""      # [2026-11-16] "MAVAL 1m(5=..,20=..) t60(...)" - 3중 트리거 리젝 로그에 덧붙이는 MA 값
     eval_ctx: Any = None          # r002.BuyEvalContext
     buy_reason: str = ""
     prev_close: float | None = None
@@ -428,7 +445,27 @@ def _reject_hybrid(ctx: BuyContext, buy_reason: str) -> None:
     )
     if ctx.steps_text:
         detail = f"{detail} | STEPS {ctx.steps_text}"
+    if getattr(ctx, "ma_values_text", ""):  # [2026-11-16] MA values of the triple trigger (AutoBotH compares them in the pipeline panel)
+        detail = f"{detail} | {ctx.ma_values_text}"
     ctx.log(f"  [REJECT      ] {ctx.symbol_label} | {detail}")
+
+
+def _ma_values_text(ma: dict, crosses: dict, sizes) -> str:
+    """[2026-11-16] Last MA values behind a triple-trigger reject: "MAVAL 1m(5=86412.50,20=86500.20) t60(5=..,20=..,bars=45)".
+    1m = find_1min_ma_golden_cross ma_fast / ma_slow, t<n> = r013 TickCross ma_fast / ma_slow / bars of each evaluated size."""
+    def f(x) -> str:
+        try:
+            x = float(x)
+        except (TypeError, ValueError):
+            return "nan"
+        return "nan" if x != x else f"{x:.2f}"
+
+    out = [f"1m({TRIPLE_1MIN_MA_FAST}={f(ma.get('ma_fast'))},{TRIPLE_1MIN_MA_SLOW}={f(ma.get('ma_slow'))})"]
+    for n in sizes:
+        c = (crosses or {}).get(int(n))
+        if c is not None:
+            out.append(f"t{int(n)}({TICK_TRIGGER_MA_FAST}={f(c.ma_fast)},{TICK_TRIGGER_MA_SLOW}={f(c.ma_slow)},bars={int(c.bars or 0)})")
+    return "MAVAL " + " ".join(out)
 
 
 def _context_gate(ctx: BuyContext, gate_name: str) -> bool:
@@ -797,7 +834,9 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     ctx.trigger_flag = "F" if missing else "P"
     ctx.steps_text = _steps_text(ctx, triple_cross=True)  # triple 경로: 3분 게이트는 완화 ATR 하한으로 판정됨
     if missing:
+        ctx.ma_values_text = _ma_values_text(ma, crosses, TICK_TRIGGER_BAR_SIZES)
         _reject_hybrid(ctx, f"TRIPLE_CROSS_MISSING_{'|'.join(missing)}")
+        ctx.ma_values_text = ""
         return False
 
     label = trig["label"]
@@ -1424,7 +1463,11 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     _COND_007,
     _COND_008,
     BuyCondition(9, "_009_hybrid_1min_trigger", "TRIGGER", "1분봉 트리거",
-                 "1분봉 BB중심선 골든크로스(룩백)/우상향 지속 + 1분 캔들·BB갭 추격 가드 (r002 check_buy_condition_1min_hybrid_trigger) "
+                 "[triple] 1분 MA5>MA20(TRIPLE_1MIN_CONDITION above: 크로스 후 TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS 이내 / cross: "
+                 "TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS 이내) + 60/120틱 MA5>MA20 골든크로스(TRIPLE_TICK_CONDITION any/all, "
+                 "TICK_TRIGGER_CROSS_MAX_AGE_SECONDS 이내, 틱 밀도 TICK_MIN_PRINTS_PER_MIN 이상) + 크로스 대비 추격 "
+                 "TRIPLE_CHASE_FROM_CROSS_MAX_PCT 이하 + 1분 캔들/BB갭/현재가 가드. "
+                 "[hybrid] 1분봉 BB중심선 골든크로스(룩백)/우상향 지속 + 1분 캔들·BB갭 추격 가드 (r002 check_buy_condition_1min_hybrid_trigger) "
                  "+ 트리거 유효 지속시간이 HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS 초과 시 만료 반려 + 크로스 경로는 크로스 봉 확정 후 "
                  "HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS 초과 시 반려 + 1분봉 캐시가 직전 확정분이 아니면 반려 "
                  "+ 실시간가가 확정 1분봉 종가 대비 HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT 초과 하락/1분 BB중심선 이하이면 반려 "
@@ -1436,7 +1479,12 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "HYBRID_1MIN_CONTINUATION_REQUIRE_ABOVE_MID", "ENTRY_1MIN_FRAME_REQUIRE_LATEST",
                   "HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT", "TICK_TRIGGER_MODE", "TICK_TRIGGER_BAR_SIZES",
                   "TICK_TRIGGER_MA_FAST", "TICK_TRIGGER_MA_SLOW", "TICK_TRIGGER_CROSS_MAX_AGE_SECONDS",
-                  "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID"), _009_hybrid_1min_trigger),
+                  "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID",
+                  # [2026-11-16] triple trigger thresholds (the keys its reject reasons name)
+                  "TRIPLE_1MIN_CONDITION", "TRIPLE_TICK_CONDITION", "TRIPLE_1MIN_MA_FAST", "TRIPLE_1MIN_MA_SLOW",
+                  "TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS", "TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS", "TRIPLE_REQUIRE_1MIN_ABOVE_MID",
+                  "TRIPLE_CHASE_FROM_CROSS_MAX_PCT", "TRIPLE_CHASE_FROM_CROSS_REF", "TICK_MIN_PRINTS_PER_MIN",
+                  "TICK_MIN_PRINTS_WINDOW_MINUTES"), _009_hybrid_1min_trigger),
     _COND_010,
     BuyCondition(11, "_011_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _011_context_frame_ready),

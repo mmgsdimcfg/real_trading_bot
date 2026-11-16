@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-16] type=fix - pctHint: r001 *_PCT keys in percent units (GC_VOLATILITY_MIN_ATR_1MIN_PCT 0.5 = 0.5 %, HYBRID_1MIN_TRIGGER_*, TRIPLE_*,
+ *   ANTI_CHASE_*, V2_* ...) are shown as they are - they were multiplied by 100 ("0.5 = 50.00%"); ratio keys unchanged
  * - [2026-11-10] type=feat - Local mode: R016Status.host (platform / backend / host role) + collector, role / job / doctor
  *   response types, JOB_NAMES, scheduler helpers (postcloseDue, collectorWindow, localYmd) and peerDecision() - the cross-host
  *   guard before an r003 start (other host running -> refuse, primary -> switch it to standby, unknown -> ask)
@@ -542,10 +544,28 @@ export function setArgs(changes: Record<string, unknown>): string[] {
   return Object.entries(changes).map(([k, v]) => `${k}=${JSON.stringify(v)}`);
 }
 
-/** "= 0.40%" next to *_PCT values (the code stores ratios: 0.004 = 0.4%) */
+/** [2026-11-16] r001 *_PCT keys whose value is already in percent (0.5 = 0.5 %), checked against r001 comments / the reasons that
+ *  print them ("..._0.435%_LT_0.500%"). Every other *_PCT key is a ratio (0.004 = 0.4 %). */
+const PERCENT_UNIT_PCT: RegExp[] = [
+  /^GC_VOLATILITY_MIN_ATR_1MIN_PCT$/,
+  /^HYBRID_1MIN_TRIGGER_\w+_PCT$/,
+  /^TRIPLE_\w+_PCT$/,
+  /^ANTI_CHASE_\w+_PCT$/,
+  /^(BB_SLOPE_MIN|REBOUND_BB_SLOPE_FLOOR|BB_UPPER_GAP_MIN|CANDLE_GAIN_MIN|CANDLE_GAIN_MAX|BB_MID_CHASE_MAX_GAP)_PCT$/,
+  /^UPTREND_CONT_\w+_PCT$/,
+  /^GAPDIP_\w+_PCT$/,
+  /^(BUY_CONFIRM_MAX_PRICE_DRIFT|BUY_ORDER_REPRICE_MAX_CHASE|PRIOR_DAY_WARMUP_MAX_BASE_DIFF)_PCT$/,
+  /^V2_\w+_PCT$/,
+];
+
+export function isPercentUnitKey(key: string): boolean {
+  return PERCENT_UNIT_PCT.some((re) => re.test(key));
+}
+
+/** "= 0.40%" next to *_PCT values: ratio keys (0.004) x 100, percent-unit keys (0.5 = 0.5 %) as they are */
 export function pctHint(key: string, v: unknown): string {
   if (!/_PCT$/.test(key) || typeof v !== 'number' || !Number.isFinite(v)) return '';
-  return `= ${(v * 100).toFixed(2)}%`;
+  return isPercentUnitKey(key) ? `= ${+v.toFixed(4)}%` : `= ${(v * 100).toFixed(2)}%`;
 }
 
 export function fmtValue(v: unknown): string {

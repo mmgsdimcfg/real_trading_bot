@@ -166,6 +166,10 @@ class TestR005Triple(unittest.TestCase):
         self.assertFalse(ctx.triple_cross)
         self.assertIn("TRIPLE_CROSS_MISSING_1MIN_MA5_MA20_CROSS_EXPIRED_", logs[-1])
         self.assertNotIn("326030", ctx.state.buy_confirm_state)  # reject clears the 2-poll confirm state
+        # [2026-11-16] the reject line ends with the MA values behind it (AutoBotH pipeline compares them)
+        self.assertIn(" | MAVAL 1m(5=78600.00,20=77660.00) t60(", logs[-1])
+        self.assertRegex(logs[-1], r"t60\(5=(?:[\d.]+|nan),20=(?:[\d.]+|nan),bars=\d+\) t120\(")
+        self.assertEqual(ctx.ma_values_text, "")  # cleared after the log - a later gate's reject has no MA segment
 
     def test_tick_feed_missing_rejects(self):
         now = datetime(2026, 10, 30, 9, 22, 13)

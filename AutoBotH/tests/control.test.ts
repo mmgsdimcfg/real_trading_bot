@@ -307,6 +307,11 @@ describe('value editor', () => {
   it('percent hint', () => {
     expect(pctHint('PROFIT_LOCK_GIVEBACK_PCT', 0.004)).toBe('= 0.40%');
     expect(pctHint('MAX_OPEN_POSITIONS', 2)).toBe('');
+    // [2026-11-16] percent-unit keys are not multiplied (0.5 = 0.5 %, -0.4 = -0.4 %)
+    expect(pctHint('GC_VOLATILITY_MIN_ATR_1MIN_PCT', 0.5)).toBe('= 0.5%');
+    expect(pctHint('HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT', -0.4)).toBe('= -0.4%');
+    expect(pctHint('TRIPLE_CHASE_FROM_CROSS_MAX_PCT', 0.5)).toBe('= 0.5%');
+    expect(pctHint('HARD_STOP_LOSS_PCT', 0.017)).toBe('= 1.70%');
   });
 
   it('history text', () => {

@@ -14,6 +14,7 @@ const RULES: Rule[] = [
   // --- triple cross (r005 _008 / r002 evaluate_triple_cross) ---
   [/^TRIPLE_CROSS_MISSING_1MIN_MA(\d+)_MA(\d+)_NOT_ABOVE$/, (m) => `1분봉 MA${m[1]}가 MA${m[2]} 아래`],
   [/^1MIN_MA(\d+)_MA(\d+)_NOT_ABOVE$/, (m) => `1분봉 MA${m[1]}가 MA${m[2]} 아래`],
+  [/^(?:TRIPLE_CROSS_MISSING_)?1MIN_MA(\d+)_MA(\d+)_ABOVE_TOO_OLD_(\d+)s_GT_(\d+)s$/, (m) => `1분봉 MA${m[1]}>MA${m[2]} 상태가 너무 오래됨 (크로스 후 ${m[3]}초 > ${m[4]}초)`], // [2026-11-16]
   [/^1MIN_MA(\d+)_MA(\d+)_NO_CROSS_IN_FRAME$/, (m) => `1분봉 MA${m[1]}/MA${m[2]} 골든크로스 없음`],
   [/^(?:TRIPLE_CROSS_)?1MIN_MA(\d+)_ABOVE_MA(\d+)$/, (m) => `1분봉 MA${m[1]} > MA${m[2]}`],
   [/^TRIPLE_CROSS_MISSING_TICK(\d+)_MA(\d+)_NOT_ABOVE_MA(\d+)$/, (m) => `${TICK(m)} MA${m[2]}가 MA${m[3]} 아래`],

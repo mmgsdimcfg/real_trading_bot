@@ -10,6 +10,10 @@
  *   saved override is not yet in the running bot, and a ◆ mark while an override is active. Unsaved edits pin the focused node;
  *   switching nodes asks before discarding them
  * - [2026-11-08] type=fix - Trigger / STEPS / silent / info-only keys follow the server's numbering (mapping keyRemapOf)
+ * - [2026-11-16] type=feat - Side panel "막힌 항목": the selected symbol's last block of the node split into its failed checks (shared/
+ *   blockCheck) - what failed, the measured value against the limit, and the r001 keys of that limit. Those rows of the settings
+ *   table turn red (the threshold) / amber (related keys) with the comparison under the key and move to the top; a key chip scrolls
+ *   to its row. Keys that are not in this node's list show their current value in the block list
  */
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from 'react';
@@ -19,11 +23,12 @@ import dagre from '@dagrejs/dagre';
 import { useStore } from '../store';
 import { SymbolPicker } from '../components/SymbolPicker';
 import { condIndex, editItemsFor, fmtInt, fmtKrw, nodeEnableKey, PSEUDO_LABEL, sortedConds, STAGE_LABEL } from '../lib';
-import { EditorActions, useValueEditing, ValuesEditor } from '../components/ValuesEditor';
+import { EditorActions, focusValueRow, useValueEditing, ValuesEditor } from '../components/ValuesEditor';
 import { savedValue } from '../../../shared/control';
 import { INFO_ONLY_BUY, SILENT_BUY, STEP_TO_COND, TRIGGER_COND, TRIGGER_SUBS, TRIGGER_SUB_LABEL, condKeyOf, keyRemapOf, remapKey } from '../../../shared/mapping';
 import type { Condition, EvalEvent, Side, Snapshot, SymbolSummary } from '../../../shared/types';
 import { fmtKstTime } from '../../../shared/time';
+import { blockedKeyNotes, explainBlock, type BlockItem } from '../../../shared/blockCheck';
 
 type NState = 'pass' | 'fail' | 'hold' | 'idle' | 'none';
 
@@ -396,6 +401,26 @@ export function PipelineView() {
   const { nodes, edges } = useMemo(() => build(snap, conds, side, sym, focus, ext), [snap, conds, side, sym, focus, ext]);
   const ev = focusKey && sym ? lastEventAt(timeline?.code === sym.code ? timeline.events : undefined, focusKey, side) : undefined;
   const stat = focusKey ? (side === 'buy' ? snap?.buyStats[focusKey] : undefined) : undefined;
+  // [2026-11-16] the checks that failed in the last block of this node, with values; current settings from every condition
+  const blocks = useMemo<BlockItem[]>(() => {
+    if (side !== 'buy' || !ev || ev.result !== 'fail') return [];
+    const valueOf = (k: string) => {
+      for (const c of [...(conditions?.buy || []), ...(conditions?.sell || [])]) if (c.values && k in c.values) return c.values[k];
+      return undefined;
+    };
+    return explainBlock(ev.reason, valueOf, items.map((i) => i.key), ev.raw);
+  }, [side, ev, conditions, items]);
+  const alerts = useMemo(() => blockedKeyNotes(blocks), [blocks]);
+  const itemKeys = useMemo(() => new Set(items.map((i) => i.key)), [items]);
+  // blocked thresholds first, then related keys, then the rest (display order only)
+  const shownItems = useMemo(() => {
+    const rank = (k: string) => (alerts[k]?.includes('막힘:') ? 0 : alerts[k] ? 1 : 2);
+    return [...items].sort((a, b) => rank(a.key) - rank(b.key));
+  }, [items, alerts]);
+  const valueText = (k: string) => {
+    for (const c of [...(conditions?.buy || []), ...(conditions?.sell || [])]) if (c.values && k in c.values) return JSON.stringify(c.values[k]);
+    return '?';
+  };
   const sstat = focusKey && side === 'sell' ? snap?.sellStats[focusKey] : undefined;
 
   return (
@@ -506,6 +531,38 @@ export function PipelineView() {
                       <p>
                         {fmtKstTime(ev.ts)} [{ev.tag}] {ev.reason}
                       </p>
+                      {blocks.length > 0 && (
+                        <div className="blocklist">
+                          <div className="bl-head">막힌 항목 ({blocks.length}) - 빨간 설정값을 바꾸면 이 항목의 기준이 바뀝니다</div>
+                          {blocks.map((b) => (
+                            <div key={b.code} className="bl-item">
+                              <div className="bl-label">✕ {b.label}</div>
+                              {(b.actual || b.limit) && (
+                                <div className="bl-cmp">
+                                  {b.actual && <span>현재 <b className="bad">{b.actual}</b></span>}
+                                  {b.limit && <span>기준 <b>{b.limit}</b></span>}
+                                </div>
+                              )}
+                              {b.keys.length > 0 && (
+                                <div className="bl-keys">
+                                  {b.keys.map((k, i) => (itemKeys.has(k) ? (
+                                    <button key={k} className={`bl-key${i === 0 ? ' main' : ''}`}
+                                      title={canEdit ? '설정값 표의 이 줄로 이동해 값 입력칸을 선택합니다' : '설정값 표의 이 줄로 이동'}
+                                      onClick={() => focusValueRow(k)}>
+                                      {i === 0 && canEdit ? `✎ ${k} 수정` : k}
+                                    </button>
+                                  ) : (
+                                    <span key={k} className={`bl-key off${i === 0 ? ' main' : ''}`} title="이 노드의 설정값 목록에 없는 키 - 현재값만 표시">
+                                      {k} = {valueText(k)}
+                                    </span>
+                                  )))}
+                                </div>
+                              )}
+                              <div className="bl-code mono">{b.code}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <pre className="raw">{ev.raw}</pre>
                     </>
                   ) : (
@@ -531,7 +588,7 @@ export function PipelineView() {
                       {connected ? '서버의 r016 조건 JSON이 아니어서 읽기 전용입니다 (설정/연결 탭에서 조건 JSON 새로고침).' : '서버에 연결되어 있지 않아 읽기 전용입니다.'}
                     </p>
                   )}
-                  <ValuesEditor items={items} ed={ed} disabled={!canEdit} />
+                  <ValuesEditor items={shownItems} ed={ed} disabled={!canEdit} alerts={alerts} />
                   {canEdit && items.some((i) => i.editable) && (
                     <>
                       <EditorActions ed={ed} disabled={!canEdit} />
