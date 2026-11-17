@@ -235,17 +235,20 @@ function TipDock({ pt, side, pinned, onUnpin }: { pt: Pt | null; side: '매수' 
   const ev = pt.ev;
   return (
     <div className={`tip-dock ${pinned ? 'pinned' : ''}`}>
-      <div>
+      {/* [2026-11-17] one summary line (time, condition, Korean reason, reason code), the raw log line below it */}
+      <div className="tip-line">
         {pinned && (
           <button className="pin-chip" onClick={onUnpin} title="고정 해제 (차트의 빈 곳을 눌러도 해제)">
             고정 ✕
           </button>
         )}
-        <b>{fmtKstTime(ev.ts)}</b> [{ev.tag}] {condTitle(conditions, ev.side, ev.condKey)}
-        {ev.sub ? ` / ${ev.sub}` : ''}
+        <span>
+          <b>{fmtKstTime(ev.ts)}</b> [{ev.tag}] {condTitle(conditions, ev.side, ev.condKey)}
+          {ev.sub ? ` / ${ev.sub}` : ''}
+        </span>
+        <span className="reason-ko">{reasonKo(ev.reason) || ev.reason}</span>
+        <span className="muted small mono">{ev.reason}</span>
       </div>
-      <div className="reason-ko">{reasonKo(ev.reason) || ev.reason}</div>
-      <div className="muted small mono">{ev.reason}</div>
       <pre className="raw">{ev.raw}</pre>
     </div>
   );

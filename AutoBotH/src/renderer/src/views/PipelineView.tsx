@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-17] type=feat - Detail panel 700px by default (was 360px) and resizable with a drag handle on its left edge (double click =
+ *   default; the width is remembered in localStorage). The diagram always opens at zoom 1 so the wider panel does not shrink it
  * - [2026-11-04] type=feat - Pipeline diagram (main view). Buy conditions in evaluation order (Condition.order) laid out top-down
  *   with dagre, stage bands behind them, _008 expanded into its sub-steps. No symbol selected: funnel - node width and bar follow
  *   today's block count, badges show blocked/passed polls. Symbol selected: passed nodes green, the stopping node red (or amber for
@@ -16,7 +18,7 @@
  *   to its row. Keys that are not in this node's list show their current value in the block list
  */
 
-import { createContext, memo, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { NxtMark } from '../components/NxtTag';
 import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
@@ -333,6 +335,21 @@ function lastEventAt(events: EvalEvent[] | undefined, key: string, side: Side): 
   return undefined;
 }
 
+/** [2026-11-17] detail panel width: wider by default (the diagram keeps zoom 1), draggable, remembered per viewer */
+const DETAIL_W_KEY = 'autoboth.pipeline.detailW';
+const DETAIL_W_DEFAULT = 700;
+const DETAIL_W_MIN = 300;
+const FLOW_MIN_W = 320;
+
+function readDetailW(): number {
+  try {
+    const v = Number(localStorage.getItem(DETAIL_W_KEY));
+    return Number.isFinite(v) && v >= DETAIL_W_MIN ? v : DETAIL_W_DEFAULT;
+  } catch {
+    return DETAIL_W_DEFAULT;
+  }
+}
+
 export function PipelineView() {
   const snap = useStore((s) => s.snapshot);
   const conditions = useStore((s) => s.conditions);
@@ -343,6 +360,47 @@ export function PipelineView() {
   const connected = useStore((s) => s.status.conn === 'connected');
   const overrideErrors = conditions?.override_errors || [];
   const [focus, setFocus] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [detailW, setDetailW] = useState(readDetailW);
+  const [dragging, setDragging] = useState(false);
+  /** never wider than the body allows (window made smaller): the diagram keeps FLOW_MIN_W */
+  const clampW = useCallback((w: number) => {
+    const total = bodyRef.current?.clientWidth || window.innerWidth;
+    return Math.round(Math.max(DETAIL_W_MIN, Math.min(w, total - FLOW_MIN_W)));
+  }, []);
+  const startDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    setDragging(true);
+    const move = (ev: PointerEvent) => {
+      const right = bodyRef.current?.getBoundingClientRect().right ?? window.innerWidth;
+      setDetailW(clampW(right - ev.clientX));
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      setDragging(false);
+      setDetailW((w) => {
+        try {
+          localStorage.setItem(DETAIL_W_KEY, String(w));
+        } catch {
+          /* storage blocked - the width just is not remembered */
+        }
+        return w;
+      });
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+  }, [clampW]);
+  const resetW = useCallback(() => {
+    setDetailW(clampW(DETAIL_W_DEFAULT));
+    try {
+      localStorage.removeItem(DETAIL_W_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [clampW]);
 
   const conds = useMemo(() => sortedConds(conditions, side), [conditions, side]);
   const sym = snap?.symbols.find((s) => s.code === selected);
@@ -464,7 +522,7 @@ export function PipelineView() {
           )}
         </span>
       </div>
-      <div className="pipeline-body">
+      <div className="pipeline-body" ref={bodyRef}>
         <div className="flow">
           {!snap && <div className="empty-overlay">데이터 없음 - 설정/연결 탭에서 서버에 연결하거나 로컬 폴더를 여세요.</div>}
           <ToggleCtx.Provider value={toggleCtx}>
@@ -474,7 +532,8 @@ export function PipelineView() {
             edges={edges}
             nodeTypes={nodeTypes}
             fitView
-            fitViewOptions={{ padding: 0.04, minZoom: 0.6, maxZoom: 1 }}
+            // [2026-11-17] always start at zoom 1 (the wider detail panel must not shrink the diagram) - +/- and pinch still zoom
+            fitViewOptions={{ padding: 0.04, minZoom: 1, maxZoom: 1 }}
             minZoom={0.2}
             panOnScroll
             zoomOnScroll={false}
@@ -490,7 +549,13 @@ export function PipelineView() {
           </ReactFlow>
           </ToggleCtx.Provider>
         </div>
-        <aside className="detail">
+        <div
+          className={`detail-splitter${dragging ? ' dragging' : ''}`}
+          onPointerDown={startDrag}
+          onDoubleClick={resetW}
+          title="끌어서 설명 패널 폭 조절 (두 번 누르면 기본 폭)"
+        />
+        <aside className="detail" style={{ width: detailW }}>
           {!focusKey && <p className="muted">노드를 누르면 조건 설명과 마지막 로그 원문을 보여 줍니다.</p>}
           {focusKey && (
             <>

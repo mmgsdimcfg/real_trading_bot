@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-17] type=fix - v2.3.24_005: (1) 스크롤바를 TermH 와 같은 얇은 반투명 막대로(스크롤 영역에 마우스를 올렸을 때만 표시) (2) 파이프라인 설명 패널 기본 폭 700px(기존 360px), 왼쪽 경계를 끌어 폭 조절(두 번 누르면 기본, 폭 기억), 다이어그램은 항상 확대 1배로 시작 (3) 타임라인 점 설명을 위/아래로 - 요약 한 줄 + 아래에 로그 원문",
     "[2026-11-17] type=feat - v2.3.24_004: 일봉 시장 추세 게이트(r005 _010, MARKET_REGIME_DOWN_DAILY_MA60) 반려 사유의 한글 설명과 막힌 항목 키(ENABLE_MARKET_DAILY_TREND_GATE 등) 표시",
     "[2026-11-17] type=fix - v2.3.24_003: 파이프라인 막힌 항목 - 규칙이 없던 사유가 \"값이 같은 설정\"으로 추정돼 엉뚱한 키가 빨갛게 표시되던 문제(3분봉 ATR 하한 0.40%에 1분봉 GC_VOLATILITY_MIN_ATR_1MIN_PCT 표시). 3분봉 ATR 하한(RELAXED_ENTRY_ATR_MIN_PCT / MIN_ENTRY_ATR_TO_TP1_RATIO), 거래량 하한, Edge AI 확률, 반전 점수 매도 규칙 추가. 조건별 설정 목록에 빠졌던 키는 서버(r005/r006 related_defines)에서 추가",
     "[2026-11-17] type=fix - v2.3.24_002: 타임라인 매수 평가 차트에 오전 기록이 사라지던 문제(068270 11:00 이전 없음). 종목별 평가 이벤트 2,000개 상한에서 오래된 것을 잘라내던 방식을, 같은 조건/결과 반복을 시간 구간별로 솎아 하루 전체를 남기는 방식으로 변경(통과/주문과 최근 이벤트는 그대로)",
@@ -126,7 +127,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "005",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",
