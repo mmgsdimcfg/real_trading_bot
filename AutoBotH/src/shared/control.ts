@@ -1,5 +1,6 @@
 /*
  * Update log
+ * - [2026-11-17] type=feat - JobDatesInfo (r016 `job dates`: date folders with collected / scannable / picks)
  * - [2026-11-16] type=feat - 수집기 tab: CollectorDetail (r016 collector detail), CollectorPrune, TickExtra, validTickCode
  * - [2026-11-16] type=fix - pctHint: r001 *_PCT keys in percent units (GC_VOLATILITY_MIN_ATR_1MIN_PCT 0.5 = 0.5 %, HYBRID_1MIN_TRIGGER_*, TRIPLE_*,
  *   ANTI_CHASE_*, V2_* ...) are shown as they are - they were multiplied by 100 ("0.5 = 50.00%"); ratio keys unchanged
@@ -677,6 +678,25 @@ export interface JobDataInfo {
   scan_log_mtime: string | null;
   r004?: { scan_date: string | null; same_codes: boolean; applied: boolean; count: number; mtime: string | null };
   generated_at: string;
+  error?: string;
+}
+
+/** [2026-11-17] r016 `job dates` - every <runtime>/data/YYYYMMDD folder (newest first) and what it holds */
+export interface JobDateRow {
+  date: string;
+  /** g001 finished (_D_collected.txt) */
+  collected: boolean;
+  /** at least one *_10s.txt */
+  scannable: boolean;
+  /** g002 picks file (_D_picks.txt) */
+  picks: boolean;
+}
+
+export interface JobDatesInfo {
+  ok: boolean;
+  dir?: string;
+  dates: JobDateRow[];
+  generated_at?: string;
   error?: string;
 }
 

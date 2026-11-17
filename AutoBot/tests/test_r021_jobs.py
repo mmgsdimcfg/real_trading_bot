@@ -154,6 +154,47 @@ class TestDateDataInfo(unittest.TestCase):
             self.assertEqual(rc, 2)
 
 
+class TestListDataDates(unittest.TestCase):
+    """[2026-11-17] job dates: every YYYYMMDD folder of <runtime>/data, newest first, with collected / scannable / picks."""
+
+    def test_flags_order_and_non_date_folders(self):
+        import argparse
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            full, partial, empty = data / "20261113", data / "20261116", data / "20261117"
+            for d in (full, partial, empty, data / "ticks", data / "sim", data / "2026111"):
+                d.mkdir(parents=True)
+            (full / "005930_x_10s.txt").write_text("t\n", encoding="utf-8")
+            (full / "_20261113_collected.txt").write_text("005930\n", encoding="utf-8")
+            (full / "_20261113_picks.txt").write_text("005930,x\n", encoding="utf-8")
+            (partial / "000660_x_10s.txt").write_text("t\n", encoding="utf-8")       # collect stopped before the marker
+            (empty / "_20261117_collected.txt.tmp").write_text("", encoding="utf-8")
+            (data / "20261112.txt").write_text("", encoding="utf-8")                  # a file, not a folder
+            out = r021.list_data_dates(r021.Paths(Path(tmp)))
+            self.assertTrue(out["ok"])
+            self.assertEqual(out["dates"], [
+                {"date": "20261117", "collected": False, "scannable": False, "picks": False},
+                {"date": "20261116", "collected": False, "scannable": True, "picks": False},
+                {"date": "20261113", "collected": True, "scannable": True, "picks": True},
+            ])
+            ns = argparse.Namespace(action="dates", name=None, date=None, n=10)
+            out2, rc = r021.run_job_command(ns, "t", r021.Paths(Path(tmp)))
+            self.assertEqual((rc, len(out2["dates"])), (0, 3))
+            sub = argparse.ArgumentParser().add_subparsers(dest="cmd")
+            r021.add_job_parser(sub)
+            self.assertEqual(sub.choices["job"].parse_args(["dates"]).action, "dates")
+
+    def test_missing_data_root(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = r021.list_data_dates(r021.Paths(Path(tmp)))
+            self.assertFalse(out["ok"])
+            self.assertIn("cannot list", out["error"])
+
+
 
 class TestApplyGuard(unittest.TestCase):
     """[2026-11-11] the apply step runs only on picks written by this run's scan (or an existing file when the scan was skipped)."""

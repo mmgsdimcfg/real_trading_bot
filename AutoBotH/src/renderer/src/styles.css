@@ -411,6 +411,16 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.6; }
 .dp-day.sel, .dp-day.sel:hover:not(:disabled) { background: var(--primary-bg); color: var(--primary-fg); font-weight: 600; }
 .dp-day:disabled { opacity: 0.3; }
 .dp-foot { display: flex; justify-content: flex-end; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+/* [2026-11-17] saved days (DatePicker marks): bold + a dot under the number; accent = picks too, muted = partial files */
+.dp-day[class*="mark-"] { position: relative; }
+.dp-day.mark-data, .dp-day.mark-picks { font-weight: 700; }
+.dp-day[class*="mark-"]::after { content: ''; position: absolute; left: 50%; bottom: 3px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--text-2); }
+.dp-day.mark-picks::after { background: var(--accent); }
+.dp-day.mark-partial::after { background: none; box-shadow: inset 0 0 0 1px var(--text-3); }
+.dp-day.sel[class*="mark-"]::after { background: var(--primary-fg); }
+.dp-foot:has(.dp-legend) { justify-content: space-between; align-items: center; }
+.dp-legend { display: inline-flex; gap: 10px; font-size: 11px; color: var(--text-3); }
+.dp-legend .dp-day { height: auto; padding: 0 0 7px; font-size: 11px; color: var(--text-2); cursor: default; }
 .botline { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--text-2); }
 .botline + .botline { margin-top: 8px; }
 .control ul, .settings ul { margin: 6px 0; padding-left: 20px; }

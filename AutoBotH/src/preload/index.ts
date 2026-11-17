@@ -14,6 +14,7 @@
  *   folder/file pickers with a title, scheduler state ('sched')
  * - [2026-11-11] type=feat - ctlJobData (ctl:jobData) for the pipeline card of the data jobs tab (ctlPicksApply existed for a few
  *   hours and was dropped - r004 is written by the job's apply step)
+ * - [2026-11-17] type=feat - ctlJobDates (ctl:jobDates): saved date folders for the data jobs tab's calendar
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -27,6 +28,7 @@ import type {
   HistoryRow,
   HoldingsDoc,
   JobDataInfo,
+  JobDatesInfo,
   JobList,
   JobLog,
   JobStartOpts,
@@ -120,6 +122,7 @@ const api = {
   ctlJobLog: (name: string, n?: number): Promise<CtlResult<JobLog>> => ipcRenderer.invoke('ctl:jobLog', name, n),
   /** [2026-11-11] the date folder's collected data + g002 picks (r016 job data) - pipeline step defaults / refusals */
   ctlJobData: (date: string): Promise<CtlResult<JobDataInfo>> => ipcRenderer.invoke('ctl:jobData', date),
+  ctlJobDates: (): Promise<CtlResult<JobDatesInfo>> => ipcRenderer.invoke('ctl:jobDates'),
   ctlDoctor: (): Promise<CtlResult<DoctorReport>> => ipcRenderer.invoke('ctl:doctor'),
   // the other host (local mode: Raspberry Pi, remote mode: this PC)
   peerInfo: (): Promise<{ kind: 'remote' | 'local'; label: string }> => ipcRenderer.invoke('peer:info'),

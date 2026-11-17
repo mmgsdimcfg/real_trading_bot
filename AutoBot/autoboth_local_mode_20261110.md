@@ -64,6 +64,7 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 | `job stop NAME` | `{ok, stopped}` | 0 / 3 |
 | `job log NAME [-n N]` | `{ok, name, log, lines[], state}` | 0 |
 | `job data --date D` | `{ok, date, dir, exists, scannable, collected, collected_count, files_10s, files_daily, data_mtime, picks: [{code,name}]\|null, picks_file, picks_mtime, scan_log_mtime, r004: {scan_date, same_codes, applied, count, mtime}}` - [2026-11-11] 그 날짜 폴더의 수집 데이터 유무와 g002 선별 결과, r004 가 그 선별과 같은지 | 0 / 2 |
+| `job dates` | `{ok, dir, dates: [{date, collected, scannable, picks}], generated_at}` (최신 날짜 먼저) / 목록 실패 `{ok:false, error}` - [2026-11-17] `<runtime>/data` 의 YYYYMMDD 폴더마다 collected(g001 `_D_collected.txt`), scannable(`*_10s.txt` 있음), picks(`_D_picks.txt`). AutoBotH 장 마감 파이프라인 달력의 저장 날짜 표시 | 0 / 3 |
 | `watchlist apply --date D [--restart-collector]` | `watchlist set` 과 같은 `{ok, count, backup, path, restart_required, collector_missing, collector_note}` + `date, picks_file, for_trading_day` (+ `collector_restart` when --restart-collector and a running g011 misses new codes) / picks 파일 없음 `{ok:false, error}` - [2026-11-11] 그 날짜의 `_D_picks.txt` 를 r004 로 (헤더 scan_date / for_trading_day) | 0 / 2 |
 
 - 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --no-export-watchlist ->

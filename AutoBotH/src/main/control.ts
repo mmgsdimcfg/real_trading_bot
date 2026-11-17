@@ -36,6 +36,7 @@
  *   now shared in afterWatchlistWrite) - the data jobs tab runs g002 alone on a collected date and applies the picks afterwards
  * - [2026-11-11] type=refactor - ctl:jobStart takes the pipeline steps (collect / scan / apply -> r021 --no-*) instead of
  *   keepWatchlist; the r003-running note names ③ r004 반영. ctl:picksApply removed - r004 is written by the job's apply step
+ * - [2026-11-17] type=feat - ctl:jobDates (r016 `job dates`): the saved date folders for the pipeline card's calendar marks
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
@@ -58,6 +59,7 @@ import {
   type HistoryRow,
   type HoldingsDoc,
   type JobDataInfo,
+  type JobDatesInfo,
   type JobList,
   type JobLog,
   type JobStartOpts,
@@ -557,6 +559,13 @@ export function createControl(deps: ControlDeps) {
     }
     const r = await cl().run<WatchlistSetResult>(['watchlist', 'set', '--stdin'], { stdin: watchlistStdin(list) });
     return afterWatchlistWrite(r);
+  });
+  // [2026-11-17] pipeline card calendar: which dates already hold data (r016 `job dates`, read-only)
+  handle('ctl:jobDates', async () => {
+    const nc = needConn();
+    if (nc) return nc;
+    const r = await cl().run<JobDatesInfo>(['job', 'dates']);
+    return { ok: r.ok, error: r.error, data: r.data };
   });
   // [2026-11-11] pipeline card of the data jobs tab: what the date folder holds (step defaults / refusals, picks list)
   handle('ctl:jobData', async (date: string) => {

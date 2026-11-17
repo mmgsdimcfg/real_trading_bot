@@ -38,6 +38,11 @@ CPU 를 많이 쓰는 일이다.
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-17] type=feat owner=claude
+    summary: `job dates` - <runtime>/data 의 날짜 폴더 목록과 폴더마다 collected(g001 완료 표시 파일) / scannable(10초 파일 있음) /
+      picks(g002 선별 파일 있음). AutoBotH 장 마감 파이프라인 날짜 달력이 저장된 날짜를 표시한다.
+    impact: tooling (읽기 전용 새 action)
+    compatibility: backward-compatible (새 action. 계약 문서 autoboth_local_mode_20261110.md 에 추가)
 - [2026-11-11] type=feat owner=claude
     summary: --scheduled (start/run) - 스케줄러가 시작한 실행 표시. 상태 파일 args.scheduled (true/false) 기록만 하고 단계는 불변.
     impact: tooling (옵션 추가, 기본 동작 불변)
@@ -402,6 +407,30 @@ def date_data_info(paths: Paths, date: str) -> dict:
     return out
 
 
+def list_data_dates(paths: Paths) -> dict:
+    """[2026-11-17] Date folders under <runtime>/data (YYYYMMDD names, newest first) and what each holds - a cheap listing for the
+    app's calendar: collected = g001's _D_collected.txt marker, scannable = at least one *_10s.txt (stops at the first one),
+    picks = g002's _D_picks.txt."""
+    root = paths.root / "data"
+    out: dict = {"ok": True, "dir": str(root), "dates": [], "generated_at": _now()}
+    try:
+        names = sorted((p.name for p in root.iterdir() if p.is_dir() and len(p.name) == 8 and p.name.isdigit()), reverse=True)
+    except OSError as exc:
+        out.update({"ok": False, "error": f"cannot list {root} ({type(exc).__name__})"})
+        return out
+    for date in names:
+        d = root / date
+        scannable = False
+        with contextlib.suppress(OSError), os.scandir(d) as it:
+            for e in it:
+                if e.name.endswith("_10s.txt") and not e.name.startswith("_"):
+                    scannable = True
+                    break
+        out["dates"].append({"date": date, "collected": (d / f"_{date}_collected.txt").is_file(), "scannable": scannable,
+                             "picks": (d / f"_{date}_picks.txt").is_file()})
+    return out
+
+
 def tail_log(paths: Paths, name: str, n: int = 200) -> dict:
     st = read_state(paths, name)
     if not st or not st.get("log"):
@@ -571,8 +600,8 @@ def _today() -> str:
 
 def add_job_parser(sub) -> None:
     """r016 `job` sub-commands (shared with this file's own CLI)."""
-    p = sub.add_parser("job", help="data jobs: list | start NAME | stop NAME | log NAME | data --date D")
-    p.add_argument("action", choices=["list", "start", "stop", "log", "data"])
+    p = sub.add_parser("job", help="data jobs: list | start NAME | stop NAME | log NAME | data --date D | dates")
+    p.add_argument("action", choices=["list", "start", "stop", "log", "data", "dates"])
     p.add_argument("name", nargs="?", default=None)
     p.add_argument("--date", default=None)
     p.add_argument("--workers", type=int, default=None)
@@ -618,6 +647,9 @@ def run_job_command(args, by: str, paths: Paths | None = None) -> tuple[dict, in
         if not (len(date) == 8 and date.isdigit()):
             return {"ok": False, "error": f"bad date {date!r} (YYYYMMDD)"}, 2
         return date_data_info(paths, date), 0
+    if args.action == "dates":  # [2026-11-17] every date folder and what it holds (app calendar marks)
+        out = list_data_dates(paths)
+        return out, 0 if out.get("ok") else 3
     if not args.name:
         return {"ok": False, "error": "job name required"}, 2
     if args.name not in JOBS:

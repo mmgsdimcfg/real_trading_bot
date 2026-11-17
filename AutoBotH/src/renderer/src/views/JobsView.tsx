@@ -28,11 +28,13 @@
  * - [2026-11-11] type=feat - The last-run line says 자동 실행 (스케줄러) / 수동 실행 (state args.scheduled, r021 --scheduled) and that
  *   the step checkboxes above apply to the next manual start only - a scheduled run with Edge AI under an unchecked
  *   "Edge AI 포함" box looked like a bug
+ * - [2026-11-17] type=feat - The 기준일 calendar marks the dates that already hold data (r016 `job dates`): bold + dot = collected,
+ *   accent dot = picks too, muted dot = files without the collected marker. Loaded with the tab, again when the pipeline run ends
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { DatePicker } from '../components/DatePicker';
+import { DatePicker, type DayMark } from '../components/DatePicker';
 import { JOB_STATE_LABEL, localYmd, type JobDataInfo, type JobList, type JobLog, type JobRun } from '../../../shared/control';
 
 const isoShow = (s: string | null | undefined) => (s ? s.replace('T', ' ').slice(5, 16) : '-');
@@ -121,6 +123,8 @@ export function JobsView() {
     apply: choice.apply ?? isToday,
   };
   const choose = (k: StepKey, v: boolean) => setChoice((c) => ({ ...c, [k]: v }));
+  /** [2026-11-17] dates that already hold data (r016 job dates) -> calendar marks */
+  const [dateMarks, setDateMarks] = useState<Record<string, DayMark> | undefined>(undefined);
 
   const running = list?.running?.name || null;
   const selRow = useMemo(() => list?.jobs.find((j) => j.name === sel), [list, sel]);
@@ -136,6 +140,16 @@ export function JobsView() {
   const loadLog = async (name = sel) => {
     const r = await window.api.ctlJobLog(name, 300);
     if (r.ok && r.data) setLog(r.data);
+  };
+  const loadDates = async () => {
+    const r = await window.api.ctlJobDates();
+    if (!r.ok || !r.data?.ok) return; // keep the last marks (an older server has no `job dates` - the calendar stays plain)
+    const m: Record<string, DayMark> = {};
+    for (const row of r.data.dates) {
+      if (row.collected) m[row.date] = row.picks ? 'picks' : 'data';
+      else if (row.scannable || row.picks) m[row.date] = 'partial';
+    }
+    setDateMarks(m);
   };
   const loadInfo = async (d = date) => {
     if (!/^\d{8}$/.test(d)) return;
@@ -163,6 +177,11 @@ export function JobsView() {
     if (!connected || !pipeline) return;
     void loadInfo(date);
   }, [connected, pipeline, date, last?.finished_at, last?.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  // [2026-11-17] saved dates for the calendar: with the pipeline card and again when a run ends (a new date may be collected)
+  useEffect(() => {
+    if (!connected || !pipeline) return;
+    void loadDates();
+  }, [connected, pipeline, last?.finished_at]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- pipeline checks (the server refuses the same cases; here they disable 시작 with the reason) ----
   const chosen = pipeline ? (['collect', 'scan', 'apply'] as StepKey[]).filter((k) => step[k]) : [];
@@ -268,7 +287,14 @@ export function JobsView() {
         <p className="subtitle">{DESC[sel]}</p>
         {pipeline && <p className="small data-line">{dataLine()}</p>}
         <div className="job-form">
-          <DatePicker value={date} onChange={setDate} today={localYmd()} max={localYmd()} title="기준일 (누르면 달력, 기본은 오늘)" />
+          <DatePicker
+            value={date}
+            onChange={setDate}
+            today={localYmd()}
+            max={localYmd()}
+            title="기준일 (누르면 달력, 기본은 오늘) - 굵은 날짜는 이미 데이터가 저장된 날"
+            marks={pipeline ? dateMarks : undefined}
+          />
           {(sel === 'postclose' || sel === 'edge_ai' || sel === 'collect') && (
             <input
               type="number"

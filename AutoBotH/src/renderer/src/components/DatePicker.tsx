@@ -3,6 +3,9 @@
  * - [2026-11-10] type=feat - Small calendar date field (YYYYMMDD value): the field shows YYYY-MM-DD, a click opens a month
  *   calendar under it (일~토, ‹ › months, today / selected marked, days after `max` disabled, 오늘 button); outside click or Esc
  *   closes it. Drawn in the app (not the native <input type="date">, whose text follows the OS locale - 11/10/2026)
+ * - [2026-11-17] type=feat - `marks` (YYYYMMDD -> 'picks' | 'data' | 'partial'): days that already hold data are bold with a dot
+ *   under the number (accent = picks too, muted = files without the collected marker), a tooltip says what is saved, and a legend
+ *   sits in the footer
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -18,9 +21,18 @@ interface Props {
   max?: string; // YYYYMMDD - later days cannot be picked
   today: string; // YYYYMMDD
   title?: string;
+  /** [2026-11-17] saved days: 'picks' = collected + picks, 'data' = collected, 'partial' = some files, no collected marker */
+  marks?: Record<string, DayMark>;
 }
 
-export function DatePicker({ value, onChange, max, today, title }: Props) {
+export type DayMark = 'picks' | 'data' | 'partial';
+const MARK_TITLE: Record<DayMark, string> = {
+  picks: '수집 데이터 + 선별 결과 저장됨',
+  data: '수집 데이터 저장됨',
+  partial: '일부 파일만 있음 (수집 완료 표시 없음)',
+};
+
+export function DatePicker({ value, onChange, max, today, title, marks }: Props) {
   const [open, setOpen] = useState(false);
   const base = /^\d{8}$/.test(value) ? value : today;
   const [view, setView] = useState({ y: Number(base.slice(0, 4)), m: Number(base.slice(4, 6)) - 1 });
@@ -86,15 +98,24 @@ export function DatePicker({ value, onChange, max, today, title }: Props) {
             {cells.map((d, i) => {
               if (d === null) return <span key={`e${i}`} />;
               const v = ymd(view.y, view.m, d);
-              const cls = ['dp-day', v === value ? 'sel' : '', v === today ? 'today' : '', i % 7 === 0 ? 'sun' : i % 7 === 6 ? 'sat' : ''].filter(Boolean).join(' ');
+              const mark = marks?.[v];
+              const cls = ['dp-day', v === value ? 'sel' : '', v === today ? 'today' : '', i % 7 === 0 ? 'sun' : i % 7 === 6 ? 'sat' : '', mark ? `mark-${mark}` : '']
+                .filter(Boolean)
+                .join(' ');
               return (
-                <button key={v} type="button" className={cls} disabled={!!max && v > max} onClick={() => pick(v)}>
+                <button key={v} type="button" className={cls} disabled={!!max && v > max} onClick={() => pick(v)} title={mark ? MARK_TITLE[mark] : undefined}>
                   {d}
                 </button>
               );
             })}
           </div>
           <div className="dp-foot">
+            {marks && (
+              <span className="dp-legend">
+                <span className="dp-day mark-data">저장</span>
+                <span className="dp-day mark-picks">선별까지</span>
+              </span>
+            )}
             <button type="button" className="mini" onClick={() => pick(today)}>
               오늘
             </button>
