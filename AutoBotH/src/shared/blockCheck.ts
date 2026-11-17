@@ -7,6 +7,11 @@
  * - [2026-11-16] type=feat - MA checks with numbers: the server ends a triple-trigger reject with "| MAVAL 1m(5=..,20=..) t60(5=..,20=..,
  *   bars=n) ..." (r005 _ma_values_text); "MA5 below MA20" items show both values and the gap. The full reason is read from the raw
  *   line (fullReason) - the app's event reason keeps only the first part of "A|B|C"
+ * - [2026-11-17] type=fix - Reasons without a rule fell back to "a key of the condition whose value equals the limit", which picked the
+ *   wrong key: HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.38%_LT_0.40% marked GC_VOLATILITY_MIN_ATR_1MIN_PCT (then 0.4) although the 3-minute
+ *   floor is RELAXED_ENTRY_ATR_MIN_PCT (0.004) from 12:00 / on the triple path, else STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO.
+ *   Rules added for the 3-minute ATR floor, the liquidity floors (LOW_VOL_MA_ABS / LOW_ABS_VOLUME + turnover alternative), the
+ *   Edge AI probability and the aux sell score
  */
 
 /** one failed check of a reject reason */
@@ -137,6 +142,23 @@ const SPECIFIC: [RegExp, Builder][] = [
   [/^(TICK_FEED_UNAVAILABLE|TICK_NO_RESULT|TICK_ABSTAIN_\w+)$/, (m) => ({
     label: `틱 데이터로 판정 못 함 (${m[1]})`, keys: ['TICK_TRIGGER_MODE', 'TICK_TRIGGER_FEED_STALE_SECONDS'],
   })],
+  // r002 _gate_min_entry_atr_volatility: min(STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO, RELAXED_ENTRY_ATR_MIN_PCT when relaxed)
+  [/^HYBRID_(\d+)MIN_CTX_LOW_ENTRY_ATR_([\d.]+)%_LT_([\d.]+)%$/, (m, v) => {
+    const relaxed = num(v('RELAXED_ENTRY_ATR_MIN_PCT'));
+    const isRelaxed = relaxed !== null && Math.abs(relaxed * 100 - Number(m[3])) < 0.006;
+    const base = ['MIN_ENTRY_ATR_TO_TP1_RATIO', 'STAGED_TP1_PCT'];
+    const rel = ['RELAXED_ENTRY_ATR_MIN_PCT', 'RELAXED_ENTRY_ATR_FROM', 'ENABLE_RELAXED_ENTRY_ATR'];
+    return {
+      label: `${m[1]}분봉 변동성(ATR%) 부족 - ${isRelaxed ? '완화 하한 RELAXED_ENTRY_ATR_MIN_PCT (비율, 0.004 = 0.4%)' : '하한 = STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO'}`,
+      actual: `${fmtNum(m[2])}%`, limit: `≥ ${fmtNum(m[3])}%`,
+      keys: [...(isRelaxed ? rel : base), ...(isRelaxed ? base : rel), 'ENABLE_MIN_ENTRY_ATR_FILTER'],
+    };
+  }],
+  // r002 aux reversal sell: the minimum pnl of that score
+  [/^AUX_BLOCKED_SCORE_(\d+)_PNL_(-?[\d.]+)%_LT_(-?[\d.]+)%$/, (m) => ({
+    label: `반전 점수 ${m[1]} 매도 최소 수익 미달`, actual: `${fmtNum(m[2])}%`, limit: `≥ ${fmtNum(m[3])}%`,
+    keys: [`AUX_SELL_MIN_PNL_SCORE${Math.min(4, Math.max(2, Number(m[1])))}`, 'AUX_SELL_MIN_REALIZED_TARGET_PCT', 'AUX_SELL_TRIGGER_SLIPPAGE_BUFFER_PCT'],
+  })],
   [/^(\d+)MIN_LIVE_BELOW_BB_MID$/, (m) => ({
     label: `현재가가 ${m[1]}분봉 볼린저 중심선 아래`, limit: '중심선 위', keys: ['TRIPLE_REQUIRE_1MIN_ABOVE_MID'],
   })],
@@ -154,6 +176,9 @@ const COMPARE: [string, string, string[]][] = [
   ['GC_VOL_LOW_1MIN_ATR', '1분봉 변동성(ATR%) 부족', ['GC_VOLATILITY_MIN_ATR_1MIN_PCT']],
   ['HYBRID_1MIN_TRIGGER_EXPIRED', '1분봉 트리거 유효시간 지남', ['HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS']],
   ['HYBRID_1MIN_TRIGGER_CROSS_EXPIRED', '1분봉 크로스 유효시간 지남', ['HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS']],
+  ['LOW_VOL_MA_ABS', '3분봉 거래량 평균(MA20) 부족', ['MIN_ENTRY_VOL_MA', 'ENABLE_MIN_ENTRY_TURNOVER_ALT', 'MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW']],
+  ['LOW_ABS_VOLUME', '3분봉 거래량 부족', ['MIN_ENTRY_VOLUME', 'ENABLE_MIN_ENTRY_TURNOVER_ALT', 'MIN_ENTRY_TURNOVER_ALT_KRW']],
+  ['EDGE_AI_LOW_PROB', 'Edge AI 예측 수익 확률 부족', ['EDGE_AI_MIN_PROB_OVERRIDE', 'EDGE_AI_MODE']],
   ['CANDLE_NOT_BULLISH', '캔들 상승률 부족', []],
   ['CHASE_BUY_INTRABAR', '봉 안에서 급등 (추격 매수 금지)', []],
   ['CHASE_BUY_BB_GAP', '볼린저 중심선보다 너무 위 (추격 매수 금지)', []],

@@ -72,3 +72,27 @@ describe('explainBlock', () => {
     expect(n.TRIPLE_1MIN_CONDITION).toMatch(/^관련: /);
   });
 });
+
+describe('explainBlock - keys of reasons without a fallback guess (2026-11-17)', () => {
+  const S: Record<string, unknown> = { GC_VOLATILITY_MIN_ATR_1MIN_PCT: 0.4, RELAXED_ENTRY_ATR_MIN_PCT: 0.004, MIN_ENTRY_ATR_TO_TP1_RATIO: 0.2, STAGED_TP1_PCT: 0.03 };
+  const val = (k: string) => S[k];
+  const cand = ['ENABLE_GC_VOLATILITY_GATE', 'GC_VOLATILITY_MIN_ATR_1MIN_PCT', 'MIN_ENTRY_ATR_TO_TP1_RATIO'];
+
+  it('3-minute ATR floor: the relaxed floor, not the 1-minute key that happens to equal 0.4', () => {
+    const [a] = explainBlock('HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.38%_LT_0.40%', val, cand);
+    expect(a).toMatchObject({ actual: '0.38%', limit: '≥ 0.4%' });
+    expect(a.keys[0]).toBe('RELAXED_ENTRY_ATR_MIN_PCT');
+    expect(a.keys).not.toContain('GC_VOLATILITY_MIN_ATR_1MIN_PCT');
+    const [b] = explainBlock('HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.45%_LT_0.60%', val, cand);
+    expect(b.keys[0]).toBe('MIN_ENTRY_ATR_TO_TP1_RATIO');
+  });
+
+  it('liquidity, Edge AI and aux sell score', () => {
+    expect(explainBlock('HYBRID_3MIN_CTX_LOW_VOL_MA_ABS_946_LT_1000', val)[0].keys[0]).toBe('MIN_ENTRY_VOL_MA');
+    expect(explainBlock('HYBRID_3MIN_CTX_LOW_ABS_VOLUME_1266_LT_1500', val)[0].keys[0]).toBe('MIN_ENTRY_VOLUME');
+    const [e] = explainBlock('EDGE_AI_LOW_PROB_p=0.293_LT_0.310', val);
+    expect(e).toMatchObject({ actual: '0.293', limit: '≥ 0.31' });
+    expect(e.keys[0]).toBe('EDGE_AI_MIN_PROB_OVERRIDE');
+    expect(explainBlock('AUX_BLOCKED_SCORE_3_PNL_-0.62%_LT_0.80%', val)[0].keys[0]).toBe('AUX_SELL_MIN_PNL_SCORE3');
+  });
+});

@@ -34,6 +34,11 @@ Order [numbers = evaluation order since 2026-11-08, old number in brackets]
     번호는 재사용하지 않는다(로그/문서 호환).
 
 Update log (append only):
+- [2026-11-17] type=fix owner=claude
+    summary: 사용자 요청(조건이 읽는데 앱 설정 목록에 없어 바꿀 수 없던 키) - related_defines 추가: `_006` ENABLE_STAGED_TAKE_PROFIT /
+      ENABLE_SURGE_LADDER_TP, `_013` ENABLE_TP_EXTENSION_TRAILING. 판정 로직 무변경.
+    impact: 표시/편집 목록만
+    compatibility: compatible
 - [2026-11-15] type=feat owner=claude
     summary: EXIT_ENGINE_MODE="live" + AUTO_SELL_MODE="all" - ADAPTIVE_SELL_CONDITIONS(stale 보호, 추적 갱신, _x10 적응형 엔진).
       _x10 은 r027 LiveExitManager.decide() 결과를 place_sell_order(시장가)로 낸다. 정규장 밖 / 관리자 없음 / 엔진 오류면
@@ -989,7 +994,7 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
                    "ENABLE_SURGE_LADDER_TP", "SURGE_SPEED_MIN_PCT", "SURGE_SPEED_ATR_MULT", "SURGE_VOLUME_RATIO_MIN", "SURGE_MIN_CONFIRMS"), _005_staged_tp1_partial),
     SellCondition(6, "_006_surge_ladder_tp", "EXIT", "급등 사다리 익절(TP2/TP3)",
                   "급등 중 1차 익절한 포지션: TP1 체결가 +SURGE_TP2_PCT에서 진입수량 일부, +SURGE_TP3_PCT에서 잔량 전량",
-                  ("SURGE_TP2_PCT", "SURGE_TP3_PCT", "SURGE_TP2_RATIO"), _006_surge_ladder_tp),
+                  ("SURGE_TP2_PCT", "SURGE_TP3_PCT", "SURGE_TP2_RATIO", "ENABLE_STAGED_TAKE_PROFIT", "ENABLE_SURGE_LADDER_TP"), _006_surge_ladder_tp),
     # [2026-11-02] 신규(당시 번호 23, 2026-11-08 평가 순서대로 _007). [2026-11-04] 옛 _012 되돌림 가드 삭제(잠금이 항상 먼저 발동해 도달 불가)
     SellCondition(7, "_007_profit_lock", "EXIT", "이익 잠금(고점 대비 하락 1차 매도 + 잔량 본전 청산)",
                   "TP1 전 고점 손익 >= PROFIT_LOCK_ARM_PNL 후 고점 대비 PROFIT_LOCK_GIVEBACK_PCT 하락 시 진입수량의 "
@@ -1013,7 +1018,7 @@ SELL_CONDITIONS: tuple[SellCondition, ...] = (
                   ("ATR_STOP_MULTIPLIER", "ATR_STOP_CONFIRM_SECONDS", "HARD_STOP_MIN_HOLD_SECONDS"), _012_atr_stop_loss),
     SellCondition(13, "_013_trailing_stop", "EXIT", "트레일링 스탑",
                   "고점 대비 되돌림이 트레일 폭 이상이면 청산. 확장 트레일은 즉시, 일반 트레일은 다음 3분봉 확인 후",
-                  ("TP_EXTENSION_TRAIL_FROM_PEAK", "TRAILING_STOP_FROM_PEAK"), _013_trailing_stop),
+                  ("TP_EXTENSION_TRAIL_FROM_PEAK", "TRAILING_STOP_FROM_PEAK", "ENABLE_TP_EXTENSION_TRAILING"), _013_trailing_stop),
     SellCondition(14, "_014_same_bar_sell_dedup", "GUARD", "같은 봉 재매도 차단",
                   "이 3분봉에서 이미 매도 신호를 낸 종목은 건너뜀 (signal_sell_bar)", (), _014_same_bar_sell_dedup),
     SellCondition(15, "_015_shared_reversal_sell", "EXIT", "반전 신호 매도(r002)",

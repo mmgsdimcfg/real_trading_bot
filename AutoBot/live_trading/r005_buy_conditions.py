@@ -19,6 +19,14 @@ Overview
 - [2026-11-08] Renumbered `_001`..`_025` in evaluation order (numbers had drifted: added gates kept 25~31 and removed
   ones left gaps). Notes and update-log entries above this line use the numbers of their date - see the 2026-11-08 entry
   for the old -> new table.
+- [2026-11-17] type=fix owner=claude
+    summary: 사용자 요청(068270 HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.38%_LT_0.40% 기준을 앱에서 못 바꿈) - 조건이 실제로 읽는데
+      related_defines(AutoBotH 설정 목록/편집 대상)에 없던 키 추가: `_012` ENABLE_RELAXED_ENTRY_ATR / RELAXED_ENTRY_ATR_MIN_PCT
+      (12:00 이후·triple 경로의 3분 ATR 하한 0.40%) / RELAXED_ENTRY_ATR_FROM / STAGED_TP1_PCT, `_013` 거래대금 대체 기준 3개,
+      `_009` ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD / HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY / UPTREND_CONT_SLOPE_MIN_PCT,
+      `_007` DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED, `_001` 스위치 3개(시각 값은 dt_time이라 override 불가). 판정 로직 무변경.
+    impact: 표시/편집 목록만 (r015/r016 conditions)
+    compatibility: compatible
 - [2026-11-17] type=feat owner=claude
     summary: 사용자 결정 - `_008` 3중 트리거: 1분 MA5<=MA20(…_NOT_ABOVE)이어도 r002 evaluate_1min_below_turn(1분 MA5 상승 전환 +
       MACD 상승) 통과면 1분 조건 통과(r001 TRIPLE_1MIN_BELOW_TURN_PASS). 이 경로는 실시간 가드의 1분 BB중심선 위 요구를 생략
@@ -1441,7 +1449,7 @@ _GATES_BY_NAME = {gate.name: gate for gate in DECISION_CONTEXT_GATES}
 # [2026-10-23] Portfolio guards - tuple position (not number) decides evaluation order.
 _COND_007 = BuyCondition(7, "_007_daily_loss_limit", "STATE", "일일 손실 한도",
                          "당일 실현손익(live_state realized_pnl_krw, 비용 차감 추정) <= -DAILY_LOSS_LIMIT_KRW면 신규 매수 중단",
-                         ("ENABLE_DAILY_LOSS_LIMIT_GATE", "DAILY_LOSS_LIMIT_KRW"), _007_daily_loss_limit)
+                         ("ENABLE_DAILY_LOSS_LIMIT_GATE", "DAILY_LOSS_LIMIT_KRW", "DAILY_LOSS_LIMIT_INCLUDE_UNREALIZED"), _007_daily_loss_limit)
 _COND_008 = BuyCondition(8, "_008_max_open_positions", "STATE", "동시 보유 종목 수 상한",
                          "봇이 당일 매수해 보유/미체결 중인 종목 수 >= MAX_OPEN_POSITIONS면 신규 매수 중단",
                          ("ENABLE_MAX_OPEN_POSITIONS_GATE", "MAX_OPEN_POSITIONS"), _008_max_open_positions)
@@ -1471,7 +1479,9 @@ _COND_018 = BuyCondition(18, "_018_quote_status", "PRE_ORDER", "시세 상태(VI
 
 BUY_CONDITIONS: tuple[BuyCondition, ...] = (
     BuyCondition(1, "_001_entry_time_window", "STATE", "신규 진입 허용 시간대",
-                 "정규장/NXT 세션별 신규 진입 마감 시각 이전인가 (마감 후에는 청산만)", (), _001_entry_time_window),
+                 "정규장/NXT 세션별 신규 진입 마감 시각 이전인가 (마감 후에는 청산만). 점심 금지(ENABLE_MIDDAY_NO_ENTRY)/정규장 진입 "
+                 "허용창(ENABLE_REGULAR_ENTRY_WINDOW)/NXT 세션(ENABLE_NXT_SESSION) 스위치 - 시각 값은 r001 직접 수정",
+                 ("ENABLE_MIDDAY_NO_ENTRY", "ENABLE_REGULAR_ENTRY_WINDOW", "ENABLE_NXT_SESSION"), _001_entry_time_window),
     BuyCondition(2, "_002_session_open_warmup", "STATE", "세션 개장 워밍업",
                  "세션(NXT 프리/정규/NXT 애프터) 시작 후 STARTUP_WARMUP_SECONDS 경과", ("STARTUP_WARMUP_SECONDS",), _002_session_open_warmup),
     BuyCondition(3, "_003_trade_cooldown", "STATE", "종목 거래 쿨다운",
@@ -1509,17 +1519,26 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "TICK_MIN_PRINTS_WINDOW_MINUTES",
                   # [2026-11-17] 1-minute MA5 <= MA20 below-turn pass
                   "TRIPLE_1MIN_BELOW_TURN_PASS", "TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS",
-                  "TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID"), _009_hybrid_1min_trigger),
+                  "TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID",
+                  # [2026-11-17] keys the trigger reads that were not listed (not editable from the app)
+                  "ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD", "HYBRID_1MIN_ALLOW_CONTINUATION_ENTRY", "UPTREND_CONT_SLOPE_MIN_PCT"),
+                 _009_hybrid_1min_trigger),
     _COND_010,
     BuyCondition(11, "_011_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _011_context_frame_ready),
     BuyCondition(12, "_012_min_entry_atr_volatility", "CONTEXT", "최소 변동성(ATR%)",
                  "1분봉 ATR% >= GC_VOLATILITY_MIN_ATR_1MIN_PCT (골든크로스 후 +2~5% 변동이 나오는 종목만) "
-                 "+ 3분봉 ATR% >= STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO",
-                 ("ENABLE_GC_VOLATILITY_GATE", "GC_VOLATILITY_MIN_ATR_1MIN_PCT", "ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO"),
+                 "+ 3분봉 ATR% >= STAGED_TP1_PCT x MIN_ENTRY_ATR_TO_TP1_RATIO. ENABLE_RELAXED_ENTRY_ATR이면 triple 경로 또는 "
+                 "RELAXED_ENTRY_ATR_FROM(HH:MM) 이후 하한을 RELAXED_ENTRY_ATR_MIN_PCT로 낮춤(기본보다 높이지 않음)",
+                 ("ENABLE_GC_VOLATILITY_GATE", "GC_VOLATILITY_MIN_ATR_1MIN_PCT", "ENABLE_MIN_ENTRY_ATR_FILTER", "MIN_ENTRY_ATR_TO_TP1_RATIO",
+                  # [2026-11-17] the 3-minute floor actually used (HYBRID_3MIN_CTX_LOW_ENTRY_ATR_..._LT_0.40% = RELAXED_ENTRY_ATR_MIN_PCT)
+                  "ENABLE_RELAXED_ENTRY_ATR", "RELAXED_ENTRY_ATR_MIN_PCT", "RELAXED_ENTRY_ATR_FROM", "STAGED_TP1_PCT"),
                  _012_min_entry_atr_volatility),
     BuyCondition(13, "_013_min_liquidity_safety", "CONTEXT", "최소 유동성",
-                 "거래량/거래량MA/비율/거래대금 최소치", ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW"), _013_min_liquidity_safety),
+                 "거래량/거래량MA/비율/거래대금 최소치. ENABLE_MIN_ENTRY_TURNOVER_ALT면 주수가 모자라도 거래대금(주수 x 현재가)이 "
+                 "MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW / MIN_ENTRY_TURNOVER_ALT_KRW 이상이면 통과",
+                 ("MIN_ENTRY_VOL_MA", "MIN_ENTRY_VOLUME", "MIN_ENTRY_TURNOVER_KRW", "ENABLE_MIN_ENTRY_TURNOVER_ALT",
+                  "MIN_ENTRY_VOL_MA_TURNOVER_ALT_KRW", "MIN_ENTRY_TURNOVER_ALT_KRW"), _013_min_liquidity_safety),
     BuyCondition(14, "_014_context_score_record", "CONTEXT", "가점 합계 기록",
                  "가점 12항목 합계를 매수 사유(HYBRID_3MIN_CTX_SCORE_n)에 기록만 한다 - 임계값 없음(2026-11-04 삭제)",
                  (), _014_context_score_record),
