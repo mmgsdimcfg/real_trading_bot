@@ -472,3 +472,27 @@ describe('server key remap (app / server numbering gap)', () => {
     expect(snap.sellStats._022.hold).toBe(1);
   });
 });
+
+describe('timeline cap (2026-11-17)', () => {
+  it('keeps the whole day by thinning repeats instead of cutting the oldest events', () => {
+    const e = new DayEngine('20261104', conditions, { timelineCap: 200 });
+    const lines: string[] = [];
+    // a reject every 2 s from 09:00 to 11:00 (3600 events), one EVAL OK at 09:30
+    for (let sec = 9 * 3600; sec < 11 * 3600; sec += 2) {
+      const hh = String(Math.floor(sec / 3600)).padStart(2, '0');
+      const mm = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
+      const ss = String(sec % 60).padStart(2, '0');
+      lines.push(L(`${hh}:${mm}:${ss}`, 'REJECT', '159010_아스플로   | TICK_LOW_DENSITY_12_LT_30'));
+      if (sec === 9 * 3600 + 1800) lines.push(L('09:30:00', 'BUY EVAL', '159010_아스플로   | OK TRIPLE_CROSS_1MIN_MA5_ABOVE_MA20 | 09:30:00 | LIVE 29,050 | x'));
+    }
+    e.feedMainLines(lines);
+    const ev = e.timeline('159010').events;
+    expect(ev.length).toBeLessThanOrEqual(200);
+    const kst = (t: number) => new Date(t + 9 * 3600e3).toISOString().slice(11, 19);
+    expect(kst(ev[0].ts)).toBe('09:00:00');
+    expect(kst(ev[ev.length - 1].ts)).toBe('10:59:58');
+    expect(ev.some((x) => x.condKey === 'ORDER')).toBe(true);
+    // the stats still count every reject
+    expect(e.snapshot().buyStats._009.block).toBe(3600);
+  });
+});

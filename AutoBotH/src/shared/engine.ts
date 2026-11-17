@@ -22,6 +22,8 @@
  *   2026-11-13: deleted in the watchlist editor at 07:56, r003 restarted with 8 symbols, the board kept showing it).
  *   (2) SymbolSummary.held: holdings not bought today - 'carried' from "[HOLD SKIP] ... NOT_TODAY_BUY_POSITION", 'unmanaged' from
  *   "[WARN] account holdings not in watchlist: ..." - so the board can say 보유 instead of 졸업 / -
+ * - [2026-11-17] type=fix - per-symbol timeline cap: repeats are thinned over the whole day (compact) instead of cutting the oldest
+ *   events, so a busy symbol keeps its morning on the 매수 평가 chart (068270 showed nothing before 11:00)
  */
 
 import type {
@@ -46,6 +48,9 @@ const UNMANAGED_FRESH_MS = 12 * 60000;
 import { hhmmToSeconds, kstDateTimeToEpoch, kstSecondOfDay } from './time';
 
 export const TIMELINE_CAP = 2000;
+/** compaction widens its bucket step by step until the timeline fits the cap; the newest COMPACT_KEEP_RECENT events stay as read */
+const COMPACT_BUCKETS_MS = [30000, 60000, 120000, 300000, 600000, 1800000];
+const COMPACT_KEEP_RECENT = 400;
 
 interface SymState {
   summary: SymbolSummary;
@@ -205,10 +210,37 @@ export class DayEngine {
     this.push(s, p.ts, p.code, p.tag, { ...ev, condKey: remapKey(this.remap[ev.side], ev.condKey) }, raw);
   }
 
+  /** [2026-11-17] Keep the whole day inside the cap. Cutting the oldest events left only the last ~2 hours of a busy symbol
+   *  (068270: ~10k evaluations by 12:45, nothing before 11:00 on the chart). Repeats of the same (side, condition, step, result) are
+   *  thinned to one per bucket; passes, orders and the newest COMPACT_KEEP_RECENT events are never dropped. Only if the widest
+   *  bucket is still too many, the oldest events go. */
+  private compact(s: SymState): void {
+    const tl = s.timeline;
+    const head = tl.slice(0, Math.max(0, tl.length - Math.min(COMPACT_KEEP_RECENT, Math.floor(this.cap / 5))));
+    const tail = tl.slice(head.length);
+    // compact well below the cap so the next ~cap/4 events fit before the next pass (and the oldest are never cut on read)
+    const target = Math.floor(this.cap * 0.75);
+    let kept = head;
+    for (const bucket of COMPACT_BUCKETS_MS) {
+      const lastTs = new Map<string, number>();
+      kept = head.filter((ev) => {
+        if (ev.result === 'pass' || ev.condKey === 'ORDER') return true;
+        const sig = `${ev.side}|${ev.condKey}|${ev.sub || ''}|${ev.result}`;
+        const prev = lastTs.get(sig);
+        if (prev !== undefined && ev.ts - prev < bucket) return false;
+        lastTs.set(sig, ev.ts);
+        return true;
+      });
+      if (kept.length + tail.length <= target) break;
+    }
+    const out = kept.concat(tail);
+    s.timeline = out.length > target ? out.slice(out.length - target) : out;
+  }
+
   private push(s: SymState, ts: number, code: string, tag: string, c: Classified, raw: string): void {
     const ev: EvalEvent = { id: this.nextId++, ts, code, tag, raw, ...c };
     s.timeline.push(ev);
-    if (s.timeline.length > this.cap + 200) s.timeline.splice(0, s.timeline.length - this.cap);
+    if (s.timeline.length > this.cap) this.compact(s);
     const sum = s.summary;
     const inSession = kstSecondOfDay(ts) >= this.sessionOpenSec;
 
@@ -369,7 +401,7 @@ export class DayEngine {
 
   timeline(code: string): { events: EvalEvent[]; trades: Trade[] } {
     const s = this.syms.get(code);
-    const events = s ? s.timeline.slice(-this.cap) : [];
+    const events = s ? s.timeline.slice() : [];
     return { events, trades: this.trades.filter((t) => t.code === code) };
   }
 
