@@ -154,6 +154,11 @@ const SPECIFIC: [RegExp, Builder][] = [
       keys: [...(isRelaxed ? rel : base), ...(isRelaxed ? base : rel), 'ENABLE_MIN_ENTRY_ATR_FILTER'],
     };
   }],
+  // [2026-11-17] r005 _010 daily market trend gate
+  [/^MARKET_REGIME_DOWN_DAILY_MA(\d+)$/, (m) => ({
+    label: `지수 ETF 일봉 ${m[1]}일 추세 하락 (종가 < MA${m[1]} 또는 MA${m[1]} 하락)`, limit: `종가 > MA${m[1]}, MA${m[1]} 상승`,
+    keys: ['ENABLE_MARKET_DAILY_TREND_GATE', 'MARKET_DAILY_TREND_MA', 'MARKET_DAILY_TREND_SLOPE_DAYS', 'MARKET_DAILY_TREND_SCOPE'],
+  })],
   // r002 aux reversal sell: the minimum pnl of that score
   [/^AUX_BLOCKED_SCORE_(\d+)_PNL_(-?[\d.]+)%_LT_(-?[\d.]+)%$/, (m) => ({
     label: `반전 점수 ${m[1]} 매도 최소 수익 미달`, actual: `${fmtNum(m[2])}%`, limit: `≥ ${fmtNum(m[3])}%`,

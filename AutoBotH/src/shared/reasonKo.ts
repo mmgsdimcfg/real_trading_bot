@@ -54,6 +54,8 @@ const RULES: Rule[] = [
   [/^HYBRID_(\d+)MIN_FRAME_UNAVAILABLE$/, (m) => `${m[1]}분봉 데이터 없음`],
   [/^HYBRID_(\d+)MIN_FRAME_STALE_last=(\S+?)_expected=(\S+)$/, (m) => `${m[1]}분봉 데이터 오래됨 (마지막 ${m[2]}, 기대 ${m[3]})`],
   // --- market / session / account ---
+  // [2026-11-17] daily trend gate (r005 _010, r001 ENABLE_MARKET_DAILY_TREND_GATE) - the ETF details follow after " | "
+  [/^MARKET_REGIME_DOWN_DAILY_MA(\d+)$/, (m) => `시장 하락 추세: 지수 ETF 일봉이 ${m[1]}일선 아래이거나 ${m[1]}일선 하락 중`],
   [/^MARKET_REGIME_DOWN_(KOSPI|KOSDAQ)_(\d{6})_1MIN_MA(\d+)_MA(\d+)_NOT_ABOVE$/, (m) => `시장 하락 국면: ${m[1]}(${m[2]}) 1분봉 MA${m[3]}가 MA${m[4]} 아래`],
   [/^SESSION_OPEN_WARMUP$/, () => '장 시작 워밍업 (지표 준비 중)'],
   [/^INSUFFICIENT_BUYING_POWER_OR_BUDGET$/, () => '매수 가능 금액 또는 예산 부족'],

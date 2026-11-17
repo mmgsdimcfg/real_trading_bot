@@ -226,3 +226,11 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   체결강도, 누적 매도/매수 체결량, 가중평균가, VI 기준가). 체결 레코드에 이미 있는 값이라 구독 수는 그대로다.
 - 새 파일부터 v3. 이미 있는 파일은 그 헤더 폭대로 계속 쓴다(같은 날 장중 재시작에도 한 파일에 폭이 섞이지 않음).
   앱(`price.ts`)과 r009/r013/r017 판독기는 헤더 이름으로 열을 찾으므로 변경 없음.
+
+## 10. 일봉 시장 추세 게이트 / 과거 일봉 백필 (2026-11-17)
+- r005 `_010` 앞단 일봉 게이트(r001 `ENABLE_MARKET_DAILY_TREND_GATE`, 기본 꺼짐): 지수 ETF(069500, 229200) daily_history 일봉이
+  어제 종가 > MA60 이고 MA60 이 10거래일 전보다 높을 때만 신규 매수. 반려 로그
+  `[REJECT] <종목> | MARKET_REGIME_DOWN_DAILY_MA60 | 069500_CLOSE_BELOW close=.. ma60=.. ma60_10d_ago=.. asof=..` -
+  기존 접두어 `MARKET_REGIME_DOWN` 그대로라 앱 매핑은 `_010`. 설정 키는 `r016 conditions` 의 `_010` defines 에 포함.
+- g040(과거 일봉 백필): `<runtime>/data/daily_backfill/<code>.csv` (+ `_progress.json`) - daily_history 와 별도 폴더, 앱은 읽지 않는다.
+  파이에서 장 외 시간(평일 20:10~07:40, 주말 종일)에 2회/초로 받고, 노트북은 `g041_pull_daily_backfill.ps1 -PiHost ..` 로 가져온다.

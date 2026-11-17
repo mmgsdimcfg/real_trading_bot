@@ -19,6 +19,13 @@ Overview
 - [2026-11-08] Renumbered `_001`..`_025` in evaluation order (numbers had drifted: added gates kept 25~31 and removed
   ones left gaps). Notes and update-log entries above this line use the numbers of their date - see the 2026-11-08 entry
   for the old -> new table.
+- [2026-11-17] type=feat owner=claude
+    summary: 사용자 결정 - `_010` 앞단에 일봉 시장 추세 게이트(r001 ENABLE_MARKET_DAILY_TREND_GATE, 기본 꺼짐): 지수 ETF
+      (MARKET_REGIME_ETF) daily_history 일봉에서 어제까지 종가 > MA60 이고 MA60 이 10거래일 전보다 높을 때만 통과(SCOPE both).
+      반려 사유 MARKET_REGIME_DOWN_DAILY_MA60 | <etf>_CLOSE_BELOW|MA_FALLING close=.. ma60=.. (AutoBotH 매핑 접두어 그대로 _010).
+      파일 없음/행 부족/오래됨은 MARKET_DAILY_TREND_FAIL_OPEN. 결과는 날짜별 캐시(30분마다 재읽기). g003 재생에는 아직 없음.
+    impact: live (켠 경우만, r003 재시작 후)
+    compatibility: backward-compatible (기본 꺼짐)
 - [2026-11-17] type=fix owner=claude
     summary: 사용자 요청(068270 HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.38%_LT_0.40% 기준을 앱에서 못 바꿈) - 조건이 실제로 읽는데
       related_defines(AutoBotH 설정 목록/편집 대상)에 없던 키 추가: `_012` ENABLE_RELAXED_ENTRY_ATR / RELAXED_ENTRY_ATR_MIN_PCT
@@ -266,6 +273,14 @@ from r001_define_config import (
     ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     ENABLE_MARKET_REGIME_GATE,
     MARKET_REGIME_FAIL_OPEN,
+    ENABLE_MARKET_DAILY_TREND_GATE,
+    MARKET_DAILY_TREND_MA,
+    MARKET_DAILY_TREND_SLOPE_DAYS,
+    MARKET_DAILY_TREND_SCOPE,
+    MARKET_DAILY_TREND_MAX_STALE_DAYS,
+    MARKET_DAILY_TREND_FAIL_OPEN,
+    MARKET_REGIME_ETF,
+    RUNTIME_DATA_DIR,
     MARKET_REGIME_RS_BYPASS_PCT,
     MARKET_REGIME_RS_LOOKBACK_MINUTES,
     ACCOUNT_SYNC_MAX_STALE_SECONDS,
@@ -629,8 +644,67 @@ def _021_entry_spread(ctx: BuyContext) -> bool:
     return True
 
 
+_DAILY_TREND_CACHE: dict[str, tuple[datetime, bool | None, str]] = {}
+_DAILY_TREND_REFRESH = timedelta(minutes=30)   # the post-close pipeline may write the file while the bot runs
+
+
+def _etf_daily_trend(code: str, today: datetime) -> tuple[bool | None, str]:
+    """(up, detail) of one index ETF from its daily history: last confirmed close (before today) > MA and MA rising."""
+    path = RUNTIME_DATA_DIR / "daily_history" / f"{code}.csv"
+    try:
+        df = pd.read_csv(path, dtype={"date": str}, usecols=["date", "close"])
+    except Exception as exc:
+        return None, f"{code}_NO_FILE_{type(exc).__name__}"
+    day = today.strftime("%Y%m%d")
+    df = df[df["date"].str.fullmatch(r"\d{8}") & (df["date"] < day)]
+    df = df.assign(close=pd.to_numeric(df["close"], errors="coerce")).dropna()
+    df = df[df["close"] > 0].drop_duplicates("date", keep="last").sort_values("date")
+    ma, slope = int(MARKET_DAILY_TREND_MA), int(MARKET_DAILY_TREND_SLOPE_DAYS)
+    if len(df) < ma + slope:
+        return None, f"{code}_FEW_ROWS_{len(df)}"
+    last = df["date"].iloc[-1]
+    if (today.date() - datetime.strptime(last, "%Y%m%d").date()).days > int(MARKET_DAILY_TREND_MAX_STALE_DAYS):
+        return None, f"{code}_STALE_{last}"
+    c = df["close"].to_numpy(float)
+    ma_now, ma_prev, close = float(c[-ma:].mean()), float(c[-ma - slope:-slope].mean()), float(c[-1])
+    state = "UP" if close > ma_now and ma_now > ma_prev else ("CLOSE_BELOW" if close <= ma_now else "MA_FALLING")
+    return state == "UP", f"{code}_{state} close={close:,.0f} ma{ma}={ma_now:,.0f} ma{ma}_{slope}d_ago={ma_prev:,.0f} asof={last}"
+
+
+def market_daily_trend(today: datetime) -> tuple[bool | None, str]:
+    """[2026-11-17] 일봉 시장 추세 (r001 ENABLE_MARKET_DAILY_TREND_GATE): 지수 ETF 일봉 종가 > MA(60) 이고 MA 가 SLOPE_DAYS(10) 전보다
+    높은가. SCOPE "both" = ETF 전부 UP 이어야 True / "any" = 하나라도. 판정 불가 ETF 가 섞이면 None (확정 DOWN 이 있으면 False).
+    ETF 별 결과는 날짜마다 캐시하고 30분마다 다시 읽는다."""
+    key = today.strftime("%Y%m%d")
+    hit = _DAILY_TREND_CACHE.get(key)
+    if hit is not None and today - hit[0] < _DAILY_TREND_REFRESH:
+        return hit[1], hit[2]
+    results = [_etf_daily_trend(str(code), today) for code in dict(MARKET_REGIME_ETF).values()]
+    oks = [ok for ok, _ in results]
+    if str(MARKET_DAILY_TREND_SCOPE).lower() == "any":
+        verdict = True if any(o is True for o in oks) else (None if any(o is None for o in oks) else False)
+        shown = [d for o, d in results if o is not True]
+    else:
+        verdict = False if any(o is False for o in oks) else (None if any(o is None for o in oks) else True)
+        shown = [d for o, d in results if o is False] or [d for o, d in results if o is None]
+    detail = " / ".join(shown) if shown else " / ".join(d for _, d in results)
+    _DAILY_TREND_CACHE.clear()
+    _DAILY_TREND_CACHE[key] = (today, verdict, detail)
+    return verdict, detail
+
+
 def _010_market_regime(ctx: BuyContext) -> bool:
-    """[2026-11-04] 시장 추세 게이트: 종목 시장의 지수 ETF 1분봉 MA5>MA20이 아니면 차단 (r002 market_regime_ok, r003 주입)."""
+    """[2026-11-04] 시장 추세 게이트: 종목 시장의 지수 ETF 1분봉 MA5>MA20이 아니면 차단 (r002 market_regime_ok, r003 주입).
+    [2026-11-17] 그 앞에 일봉 시장 추세(market_daily_trend, ENABLE_MARKET_DAILY_TREND_GATE) - 상대강도 예외 없음."""
+    if ENABLE_MARKET_DAILY_TREND_GATE:
+        try:
+            ok_d, det_d = market_daily_trend(ctx.current_dt)
+        except Exception as exc:  # 파일 오류가 매수 루프를 막으면 안 된다
+            ok_d, det_d = None, f"ERROR_{type(exc).__name__}"
+        if ok_d is False or (ok_d is None and not MARKET_DAILY_TREND_FAIL_OPEN):
+            ctx.state.buy_confirm_state.pop(ctx.code, None)
+            ctx.log(f"  [REJECT      ] {ctx.symbol_label} | MARKET_REGIME_DOWN_DAILY_MA{int(MARKET_DAILY_TREND_MA)} | {det_d}")
+            return False
     fn = ctx.services.market_regime
     if not ENABLE_MARKET_REGIME_GATE or fn is None:
         return True
@@ -1463,11 +1537,16 @@ _COND_021 = BuyCondition(21, "_021_entry_spread", "PRE_ORDER", "호가 비용(�
                          ("ENABLE_TICK_COST_GATE", "TICK_COST_MAX_PCT", "ENABLE_SPREAD_GATE", "MAX_ENTRY_SPREAD_TICKS"),
                          _021_entry_spread)
 _COND_010 = BuyCondition(10, "_010_market_regime", "CONTEXT", "시장 추세(지수 ETF)",
+                         "[일봉, ENABLE_MARKET_DAILY_TREND_GATE] 지수 ETF 일봉 종가 > MA(MARKET_DAILY_TREND_MA) 이고 MA 가 "
+                         "MARKET_DAILY_TREND_SLOPE_DAYS 전보다 높아야 함(SCOPE both/any, 어제까지 확정 일봉) - 먼저 판정, 상대강도 예외 없음. "
                          "종목 시장(KOSPI/KOSDAQ)의 지수 ETF 1분봉 MA5 > MA20이 아니면 차단. ETF 데이터 없으면 MARKET_REGIME_FAIL_OPEN. "
                          "상대강도 예외: 종목 1분봉의 최근 MARKET_REGIME_RS_LOOKBACK_MINUTES분 수익률이 0보다 크고 지수 ETF보다 "
                          "MARKET_REGIME_RS_BYPASS_PCT(%p) 이상 높으면 통과 (0 = 예외 없음)",
                          ("ENABLE_MARKET_REGIME_GATE", "MARKET_REGIME_ETF", "MARKET_REGIME_MA_FAST", "MARKET_REGIME_MA_SLOW",
-                          "MARKET_REGIME_FAIL_OPEN", "MARKET_REGIME_RS_BYPASS_PCT", "MARKET_REGIME_RS_LOOKBACK_MINUTES"),
+                          "MARKET_REGIME_FAIL_OPEN", "MARKET_REGIME_RS_BYPASS_PCT", "MARKET_REGIME_RS_LOOKBACK_MINUTES",
+                          # [2026-11-17] daily trend gate (checked first)
+                          "ENABLE_MARKET_DAILY_TREND_GATE", "MARKET_DAILY_TREND_MA", "MARKET_DAILY_TREND_SLOPE_DAYS",
+                          "MARKET_DAILY_TREND_SCOPE", "MARKET_DAILY_TREND_MAX_STALE_DAYS", "MARKET_DAILY_TREND_FAIL_OPEN"),
                          _010_market_regime)
 _COND_019 = BuyCondition(19, "_019_account_sync_fresh", "PRE_ORDER", "계좌 동기화 신선도",
                          "마지막 성공 잔고 조회가 ACCOUNT_SYNC_MAX_STALE_SECONDS보다 오래됐거나 없으면 신규 매수 차단(fail-closed)",

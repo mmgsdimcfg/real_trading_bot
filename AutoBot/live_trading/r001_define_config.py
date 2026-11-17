@@ -2,6 +2,12 @@
 
 # Update log
 # - [2026-11-17] type=feat owner=claude
+#     summary: 사용자 결정 - 일봉 시장 추세 게이트 ENABLE_MARKET_DAILY_TREND_GATE(False) / MARKET_DAILY_TREND_MA(60) / _SLOPE_DAYS(10) /
+#       _SCOPE("both") / _MAX_STALE_DAYS(6) / _FAIL_OPEN(True). 지수 ETF 일봉이 MA60 위 + MA60 상승일 때만 신규 매수(r005 _010).
+#       근거·한계: 정의부 주석, runtime/research/08_daily_swing/market_filters.py.
+#     impact: live (켠 경우만, r003 재시작 후)
+#     compatibility: backward-compatible (기본 꺼짐. 켜면 매수 감소 방향)
+# - [2026-11-17] type=feat owner=claude
 #     summary: 사용자 결정 - TRIPLE_1MIN_BELOW_TURN_PASS(True) / TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS(3) / TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID
 #       (False) 신설. 3중 트리거에서 1분 MA5<=MA20 이어도 1분 MA5 상승 전환 + MACD 상승이면 1분 조건 통과, 이 경로는 실시간 가드의
 #       1분 BB중심선 위 요구를 하지 않는다(하락폭 가드는 유지). 근거·한계: 아래 정의부 주석, data_simulation/g039_ma5_turn_study.py.
@@ -2083,6 +2089,20 @@ MARKET_REGIME_FAIL_OPEN = True
 #     음수(강할수록 더 나쁨) - 010060 11/13 은 예외적 사례였다. 켜려면 r016 set MARKET_REGIME_RS_BYPASS_PCT=0.5 (%p, 0 이하 = 예외 없음).
 MARKET_REGIME_RS_BYPASS_PCT = 0.0
 MARKET_REGIME_RS_LOOKBACK_MINUTES = 10
+# [2026-11-17] 일봉 시장 추세 게이트(사용자 결정, r005 _010 앞단): 지수 ETF(MARKET_REGIME_ETF) 일봉 종가가 MA(MARKET_DAILY_TREND_MA)
+#     위이고 그 MA 가 MARKET_DAILY_TREND_SLOPE_DAYS 거래일 전보다 높을 때만 신규 매수. SCOPE "both" = ETF 전부 / "any" = 하나라도.
+#     어제까지의 확정 일봉(runtime/data/daily_history/<etf>.csv, 장 마감 파이프라인 g001 -> g025 가 갱신)만 쓴다 - 오늘 행은 무시.
+#     최신 행이 MARKET_DAILY_TREND_MAX_STALE_DAYS(달력일)보다 오래됐거나 파일/행 부족이면 판정 불가 -> MARKET_DAILY_TREND_FAIL_OPEN.
+#     근거: runtime/research/08_daily_swing/market_filters.py (2025-12 ~ 2026-11 일봉 3,013종목, 다음날 시가 매수 10일 보유):
+#     필터 없음 상승기 건당 -0.10% / 하락기 -2.71%, 이 필터(both, MA60, 10일) 상승기 +1.48% / 하락기 진입 0일.
+#     한계: 상승장 1번·하락장 1번뿐(느린 추세 필터가 유리한 표본), 생존 편향, 당일 청산 봇이 아닌 10일 보유 기준.
+#     상대강도 예외(MARKET_REGIME_RS_BYPASS_PCT)는 이 게이트에 적용하지 않는다. 기본 꺼짐: 켜면 하락 추세 동안 신규 매수 전면 중단.
+ENABLE_MARKET_DAILY_TREND_GATE = False
+MARKET_DAILY_TREND_MA = 60
+MARKET_DAILY_TREND_SLOPE_DAYS = 10
+MARKET_DAILY_TREND_SCOPE = "both"            # "both" | "any"
+MARKET_DAILY_TREND_MAX_STALE_DAYS = 6
+MARKET_DAILY_TREND_FAIL_OPEN = True
 
 
 def _apply_risk_profile_overrides() -> None:

@@ -96,3 +96,19 @@ describe('explainBlock - keys of reasons without a fallback guess (2026-11-17)',
     expect(explainBlock('AUX_BLOCKED_SCORE_3_PNL_-0.62%_LT_0.80%', val)[0].keys[0]).toBe('AUX_SELL_MIN_PNL_SCORE3');
   });
 });
+
+describe('daily market trend gate (2026-11-17)', () => {
+  it('maps to _010 and names its keys', async () => {
+    const { classify } = await import('../src/shared/mapping');
+    const { reasonKo } = await import('../src/shared/reasonKo');
+    const out = classify('REJECT', 'MARKET_REGIME_DOWN_DAILY_MA60 | 069500_CLOSE_BELOW close=79,900 ma60=99,498');
+    expect(out.kind).toBe('event');
+    if (out.kind === 'event') {
+      expect(out.ev.condKey).toBe('_010');
+      expect(out.ev.reason).toBe('MARKET_REGIME_DOWN_DAILY_MA60');
+      expect(reasonKo(out.ev.reason)).toContain('60일선');
+    }
+    const [b] = explainBlock('MARKET_REGIME_DOWN_DAILY_MA60', () => undefined);
+    expect(b.keys[0]).toBe('ENABLE_MARKET_DAILY_TREND_GATE');
+  });
+});
