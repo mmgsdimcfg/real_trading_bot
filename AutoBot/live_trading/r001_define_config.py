@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-18] type=docs owner=claude
+#     summary: ENABLE_MARKET_DAILY_TREND_GATE 근거 주석을 장기 재검증(2018~2026, g040 백필) 결과로 갱신 - 10일 보유에서는 큰 하락장
+#       회피 효과만 있고, 당일 청산 기준으로는 허용일·차단일 차이가 없다. 값 변경 없음(기본 꺼짐 유지).
+#     impact: none (주석만)
+#     compatibility: backward-compatible
 # - [2026-11-17] type=feat owner=claude
 #     summary: 사용자 결정 - 일봉 시장 추세 게이트 ENABLE_MARKET_DAILY_TREND_GATE(False) / MARKET_DAILY_TREND_MA(60) / _SLOPE_DAYS(10) /
 #       _SCOPE("both") / _MAX_STALE_DAYS(6) / _FAIL_OPEN(True). 지수 ETF 일봉이 MA60 위 + MA60 상승일 때만 신규 매수(r005 _010).
@@ -2093,9 +2098,16 @@ MARKET_REGIME_RS_LOOKBACK_MINUTES = 10
 #     위이고 그 MA 가 MARKET_DAILY_TREND_SLOPE_DAYS 거래일 전보다 높을 때만 신규 매수. SCOPE "both" = ETF 전부 / "any" = 하나라도.
 #     어제까지의 확정 일봉(runtime/data/daily_history/<etf>.csv, 장 마감 파이프라인 g001 -> g025 가 갱신)만 쓴다 - 오늘 행은 무시.
 #     최신 행이 MARKET_DAILY_TREND_MAX_STALE_DAYS(달력일)보다 오래됐거나 파일/행 부족이면 판정 불가 -> MARKET_DAILY_TREND_FAIL_OPEN.
-#     근거: runtime/research/08_daily_swing/market_filters.py (2025-12 ~ 2026-11 일봉 3,013종목, 다음날 시가 매수 10일 보유):
-#     필터 없음 상승기 건당 -0.10% / 하락기 -2.71%, 이 필터(both, MA60, 10일) 상승기 +1.48% / 하락기 진입 0일.
-#     한계: 상승장 1번·하락장 1번뿐(느린 추세 필터가 유리한 표본), 생존 편향, 당일 청산 봇이 아닌 10일 보유 기준.
+#     첫 근거(2026-11-17): runtime/research/08_daily_swing/market_filters.py (2025-12 ~ 2026-11 일봉 3,013종목, 다음날 시가 매수
+#     10일 보유): 필터 없음 상승기 건당 -0.10% / 하락기 -2.71%, 이 필터 상승기 +1.48% / 하락기 진입 0일. 상승장 1번·하락장 1번뿐이었다.
+#     장기 재검증(2026-11-18, g040 백필 2018-06 ~ 2026-11, 3,579종목, 연도별):
+#       - 10일 보유(market_filters_long.py): 전체 평균 필터 없음 -0.69% -> 이 필터 -0.28%. 개선은 거의 2018·2022 하락장 회피
+#         (허용 0일·1일) 덕분이고, 2019·2020·2021·2023·2024·2025 는 필터를 켠 쪽이 필터 없음보다 낮았다 -> 좋은 날을 고르지는 못함.
+#       - 당일 청산(intraday_gate_long.py, 거래대금 상위 300, 시가 매수 -> 종가 매도): 허용일 평균 -0.187% vs 차단일 -0.201%(비용 전)
+#         로 차이가 없고, 비교 가능한 7개 연도(2019~2026, 2022 제외) 중 5개는 허용일이 더 나빴다. 시가 -> 고가 여유폭도 같고(2.84 vs
+#         2.81%), 갭상승(+1%) 종목만 소폭 나아졌지만(-0.63 -> -0.51%, 비용 전) 여전히 손실.
+#       -> 당일 청산 봇(r003)에는 효과 근거 없음. 기본 꺼짐 유지. 며칠 보유하는 전략에서 큰 하락장 회피용으로만 의미가 있다.
+#     한계: 일봉 근사(실제 봇은 장중 1분/틱 진입), 상장폐지 종목 일부 누락(생존 편향).
 #     상대강도 예외(MARKET_REGIME_RS_BYPASS_PCT)는 이 게이트에 적용하지 않는다. 기본 꺼짐: 켜면 하락 추세 동안 신규 매수 전면 중단.
 ENABLE_MARKET_DAILY_TREND_GATE = False
 MARKET_DAILY_TREND_MA = 60
