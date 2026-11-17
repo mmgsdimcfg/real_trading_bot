@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-18] type=fix - 'update-progress' also carries full (the installer size from latest.yml files[0].size): a differential
+ *   download (blockmap) only fetches the changed blocks, so total (e.g. 12.6 MB) was read as a wrong installer size (112 MB)
  * - [2026-10-15] type=feat - New module (shared by the make_utils Electron programs, same file in each): update check/download against the
  *   self-hosted feed https://update.iccid.dev/<productName>/ (electron-updater generic provider - static files behind the Cloudflare Tunnel).
  *   initUpdater({ productName, getMainWindow, getVersionLabel }) registers the IPC used by update-ui.js:
@@ -123,8 +125,10 @@ function initUpdater({ productName, getMainWindow, getVersionLabel } = {}) {
     }
     if (downloaded) return { ok: true };
     const sender = event.sender;
+    const fileInfo = Array.isArray(latestInfo.files) ? latestInfo.files[0] : null;
+    const full = (fileInfo && Number(fileInfo.size)) || 0;   // whole installer; total < full = differential download (changed blocks only)
     const onProgress = (p) => {
-      if (!sender.isDestroyed()) sender.send('update-progress', { percent: p.percent || 0, transferred: p.transferred, total: p.total });
+      if (!sender.isDestroyed()) sender.send('update-progress', { percent: p.percent || 0, transferred: p.transferred, total: p.total, full });
     };
     const u = getUpdater();
     u.on('download-progress', onProgress);

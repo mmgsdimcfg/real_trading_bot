@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-18] type=fix - Progress text of a differential download says so: "(9.8 / 12.6 MB) - changed parts only, full 112.2 MB"
+ *   (p.full from updater.js = installer size; shown when total is clearly smaller than full)
  * - [2026-10-26] type=fix - 'Skip this version' remembers the release label (v1.0.3_003 - info.label, falls back to info.version) instead of
  *   X.Y.Z only, since updater.js now also offers a higher build of the same X.Y.Z: skipping _003 no longer hides _004
  * - [2026-10-15] type=feat - New self-contained update dialog (shared by the make_utils Electron programs, same file in each - pairs with
@@ -39,6 +41,7 @@
     openDownload: '다운로드 페이지 열기',
     portableHint: 'Portable 버전은 자동 설치가 되지 않습니다. 새 파일을 받아 기존 파일과 교체하세요.',
     downloading: '다운로드 중...',
+    diffOnly: '변경된 부분만 받음, 전체 {full} MB',
     restart: '지금 재시작',
     later: '나중에',
     laterOnQuit: '종료할 때 설치',
@@ -61,6 +64,7 @@
     openDownload: 'Open download page',
     portableHint: 'The portable version cannot update itself. Download the new file and replace the old one.',
     downloading: 'Downloading...',
+    diffOnly: 'changed parts only, full {full} MB',
     restart: 'Restart now',
     later: 'Later',
     laterOnQuit: 'Install when I quit',
@@ -236,8 +240,9 @@
     const pct = Math.max(0, Math.min(100, p.percent || 0));
     els.bar.style.width = pct.toFixed(1) + '%';
     const mb = (n) => (n / 1048576).toFixed(1);
+    const diff = p.total && p.full && p.total < p.full * 0.95 ? ' - ' + t('diffOnly', { full: mb(p.full) }) : '';
     els.status.textContent = p.total
-      ? `${t('downloading')} ${pct.toFixed(0)}% (${mb(p.transferred || 0)} / ${mb(p.total)} MB)`
+      ? `${t('downloading')} ${pct.toFixed(0)}% (${mb(p.transferred || 0)} / ${mb(p.total)} MB)${diff}`
       : t('downloading');
   });
 
