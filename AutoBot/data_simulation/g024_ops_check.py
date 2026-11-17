@@ -12,6 +12,11 @@ Run:
   python g024_ops_check.py --edge-ai --rc-dataset 0 --rc-train 0 --log <daily log>
 
 Update log:
+- [2026-11-17] type=fix owner=claude
+    summary: --ticks 를 예비 호스트(host_role.json role=standby)에서는 건너뜀. 노트북이 메인이 된 뒤(2026-11-10) 라즈베리파이는
+      g022 가 g011 을 띄우지 않아 틱 파일이 없는데, 장 마감 후 점검이 매일 "틱 파일 없음 (g011이 오늘 실행되지 않음)" PROBLEM 메일을 보냈다.
+    impact: ops (메일만)
+    compatibility: backward-compatible (메인 호스트 동작 불변)
 - [2026-11-02] type=feat owner=claude
     summary: 신규 - Codex cron 검토(알림 부재) 반영. 틱 수집 장 마감 후 점검 + AI 일일 학습 실패 알림(g016 메일).
     impact: ops (주문/매매 무관, 읽기 전용 + 메일)
@@ -28,7 +33,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "live_trading"))
 
-from r001_define_config import RUNTIME_DATA_DIR, EDGE_AI_DIR  # noqa: E402
+from r001_define_config import RUNTIME_DATA_DIR, RUNTIME_ROOT, EDGE_AI_DIR  # noqa: E402
+import r019_platform as r019  # noqa: E402
 from r014_market_calendar import session_hours  # noqa: E402
 
 MAX_DISCONNECTS = 10            # more reconnects than this in a day -> warn
@@ -123,6 +129,13 @@ def main() -> None:
     day = datetime.strptime(args.date, "%Y%m%d") if args.date else datetime.now()
     if args.ticks:
         title = f"틱 수집 {day:%Y%m%d}"
+        # [2026-11-17] standby host (host_role.json): g022 deliberately starts no g011 here (the other host collects with the same
+        # appkey) - no tick files is expected, not a problem
+        role = r019.read_host_role(RUNTIME_ROOT)
+        if role.get("role") == "standby":
+            print(f"{datetime.now():%Y-%m-%d %H:%M:%S} g024 {title}: SKIP | standby host (host_role.json) - ticks are collected "
+                  f"on the primary host", flush=True)
+            return
         problems, info = check_ticks(day)
     else:
         title = f"AI 일일 학습 {day:%Y%m%d}"

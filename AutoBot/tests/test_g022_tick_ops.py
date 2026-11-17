@@ -294,6 +294,23 @@ class G024Test(unittest.TestCase):
                 self.assertEqual(problems, [])
                 self.assertIn("closed", info[0])
 
+    def test_ticks_skipped_on_standby_host(self):
+        """[2026-11-17] the standby host collects no ticks (g022) - g024 --ticks must not mail a problem there."""
+        import io
+        import g024_ops_check as g024
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config").mkdir()
+            (Path(d) / "config" / "host_role.json").write_text('{"role": "standby"}', encoding="utf-8")
+            out = io.StringIO()
+            with mock.patch.object(g024, "RUNTIME_ROOT", Path(d)), mock.patch.object(g024, "RUNTIME_DATA_DIR", Path(d) / "data"),                     mock.patch.object(g024, "check_ticks", side_effect=AssertionError("must not run")),                     mock.patch.object(sys, "argv", ["g024", "--ticks", "--date", "20261117"]), mock.patch("sys.stdout", out):
+                g024.main()
+            self.assertIn("SKIP | standby host", out.getvalue())
+            # primary (or no role file) -> the check runs as before
+            (Path(d) / "config" / "host_role.json").write_text('{"role": "primary"}', encoding="utf-8")
+            with mock.patch.object(g024, "RUNTIME_ROOT", Path(d)),                     mock.patch.object(g024, "check_ticks", return_value=([], ["ok"])) as ck,                     mock.patch.object(sys, "argv", ["g024", "--ticks", "--date", "20261117", "--no-mail"]),                     mock.patch("sys.stdout", io.StringIO()):
+                g024.main()
+            ck.assert_called_once()
+
     def test_edge_ai_checks(self):
         import g024_ops_check as g024
         with tempfile.TemporaryDirectory() as d:
