@@ -16,6 +16,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-17] type=feat owner=claude
+    summary: r005 _008 parity - 1분 MA5<=MA20 이어도 r002 evaluate_1min_below_turn 통과면 1분 조건 통과, 이 경로는 실시간 가드의
+      1분 BB중심선 요구 생략(r001 TRIPLE_1MIN_BELOW_TURN_PASS / TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID).
+    impact: sim
+    compatibility: breaking (r001 기본 True - 매수 증가 방향, 롤백은 r001 스위치)
 - [2026-11-13] type=feat owner=claude
     summary: r005 _010 시장 추세 게이트 상대강도 예외 parity(_market_rs_at -> r002 market_relative_strength_ok) - 지수 DOWN 판정
       때 종목/ETF 확정 1분봉(_avail_cut 까지)의 최근 N분 수익률 차가 기준 이상이면 통과([RS BYPASS] 로그).
@@ -373,6 +378,9 @@ from r001_define_config import (
     TRIPLE_1MIN_MA_FAST,
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    TRIPLE_1MIN_BELOW_TURN_PASS,
+    TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS,
+    TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID,
     ENABLE_MARKET_REGIME_GATE,
     ENABLE_DAILY_LOSS_LIMIT_GATE,
     DAILY_LOSS_LIMIT_KRW,
@@ -568,6 +576,7 @@ from r002_strategy_core_shared import (
     check_buy_condition_1min_hybrid_trigger,
     check_1min_trigger_live_guard,
     find_1min_ma_golden_cross,
+    evaluate_1min_below_turn,
     evaluate_triple_trigger,
     check_chase_from_cross,
     load_symbol_market_map,
@@ -2342,11 +2351,16 @@ def _triple_entry_decision(
               if ma["ok"] and cbt is not None and not pd.isna(cbt) else float("nan"))
     tick_result = tick_replay.evaluate(code, ts.to_pydatetime())
     crosses = tick_result.crosses or {}
+    below = None  # [2026-11-17] r005 parity - 1-minute MA5 <= MA20 below-turn pass
+    if (TRIPLE_1MIN_BELOW_TURN_PASS and str(TRIPLE_1MIN_CONDITION).lower() == "above" and not ma["ok"]
+            and str(ma.get("reason", "")).endswith("_NOT_ABOVE")):
+        below = evaluate_1min_below_turn(frame_1min, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS)
     trig = evaluate_triple_trigger(
         ma, ma_age, crosses, TICK_TRIGGER_BAR_SIZES, TRIPLE_1MIN_CONDITION, TRIPLE_TICK_CONDITION,
         TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW,
-        above_max_age_s=TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
+        above_max_age_s=TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS, below_turn=below,
     )
+    below_pass = bool(trig.get("below_turn"))
     missing = list(trig["missing"])
     if not crosses:
         missing = [m for m in missing if not m.startswith("TICK")]
@@ -2359,7 +2373,8 @@ def _triple_entry_decision(
     if not guard_ok:
         return False, f"TRIPLE_CROSS_{guard_reason}"
     live_ok, live_reason = check_1min_trigger_live_guard(
-        frame_1min, price, require_above_mid=TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+        frame_1min, price,
+        require_above_mid=TRIPLE_REQUIRE_1MIN_ABOVE_MID and (not below_pass or TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID),
     )
     if not live_ok:
         return False, f"TRIPLE_CROSS_{live_reason}"

@@ -1,6 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-17] type=feat owner=claude
+#     summary: 사용자 결정 - TRIPLE_1MIN_BELOW_TURN_PASS(True) / TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS(3) / TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID
+#       (False) 신설. 3중 트리거에서 1분 MA5<=MA20 이어도 1분 MA5 상승 전환 + MACD 상승이면 1분 조건 통과, 이 경로는 실시간 가드의
+#       1분 BB중심선 위 요구를 하지 않는다(하락폭 가드는 유지). 근거·한계: 아래 정의부 주석, data_simulation/g039_ma5_turn_study.py.
+#     impact: live (r003 재시작 후 r005 _008 / g003 parity)
+#     compatibility: breaking (매수 증가 방향. 롤백: r016 set TRIPLE_1MIN_BELOW_TURN_PASS=false)
 # - [2026-11-16] type=feat owner=claude
 #     summary: 사용자 결정 - 학습용 틱 확대. TICK_COLLECTOR_FILL_FROM_SCAN=True(r003 기동 g011 도 빈자리를 스캔 상위로 40까지),
 #       TICK_COLLECT_NXT_REGULAR="held"(정규장에는 KRX 우선, NXT 는 보유 종목만; 장전·장후 NXT 는 감시 종목 전부 그대로).
@@ -1355,6 +1361,16 @@ TRIPLE_1MIN_CONDITION = "above"         # "above" | "cross"
 TRIPLE_TICK_CONDITION = "any"           # "any" | "all"
 # 3중 크로스 경로의 실시간 가드: 하락폭(HYBRID_1MIN_TRIGGER_LIVE_DROP_MAX_PCT)은 항상, 1분 BB중심선 위 요구는 이 값.
 TRIPLE_REQUIRE_1MIN_ABOVE_MID = True
+# [2026-11-17] 사용자 결정 - 1분 MA5 <= MA20 이어도 "1분 MA5 상승 전환 + 1분 MACD 상승"이면 3중 트리거의 1분 조건 통과
+# (TRIPLE_1MIN_CONDITION="above" 에서만). 상승 전환 = 마지막 확정봉 MA5 > 직전봉 MA5 이고, 그 전 LOOKBACK 봉의 MA5 변화 중
+# 하나 이상이 0 이하(하락/보합). MACD = r002 지표(MACD 5/12/4) 마지막 값 > 직전 값.
+# 근거(g039, 틱 12일): 막혀 있던 1분 MA5<=MA20 틱 크로스가 현재 통과분보다 덜 나빴다(TP1.5/SL1 -0.39% vs -0.50%, 30분 -0.04% vs -0.48%).
+# 다만 "전환 + MACD" 자체는 그 안에서 결과를 가르지 못했고(-0.39% vs -0.39%) 모두 손실이다. 매수 증가 방향.
+# TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID: 이 경로에서 실시간 가드의 "현재가 > 1분 BB중심선" 요구 여부(사용자 결정 False = 풀기).
+# 롤백: TRIPLE_1MIN_BELOW_TURN_PASS=False.
+TRIPLE_1MIN_BELOW_TURN_PASS = True
+TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS = 3
+TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID = False
 # [2026-11-04] (1) 틱 크로스 가격 대비 추격폭 가드 - 통과한 틱 크로스 중 가장 최근 크로스 봉의 종가(r013 TickCross.cross_close)
 # 대비 현재가 상승폭이 TRIPLE_CHASE_FROM_CROSS_MAX_PCT(%)를 넘으면 반려(r005 _008 triple / g003 parity). 근거(11/04 실매매):
 # 손절 5건의 크로스 MA5 대비 추격 +0.04~+1.18%, 승 5건 +0.08~+0.78% - 0.5%면 손실 4건 차단/승 4건 통과(1일 표본, g003 A/B로 검증).

@@ -19,6 +19,15 @@ Overview
 - [2026-11-08] Renumbered `_001`..`_025` in evaluation order (numbers had drifted: added gates kept 25~31 and removed
   ones left gaps). Notes and update-log entries above this line use the numbers of their date - see the 2026-11-08 entry
   for the old -> new table.
+- [2026-11-17] type=feat owner=claude
+    summary: 사용자 결정 - `_008` 3중 트리거: 1분 MA5<=MA20(…_NOT_ABOVE)이어도 r002 evaluate_1min_below_turn(1분 MA5 상승 전환 +
+      MACD 상승) 통과면 1분 조건 통과(r001 TRIPLE_1MIN_BELOW_TURN_PASS). 이 경로는 실시간 가드의 1분 BB중심선 위 요구를 생략
+      (TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID=False; 하락폭 가드·캔들/BB갭 가드·추격폭 가드는 유지). 통과 사유 라벨
+      TRIPLE_CROSS_1MIN_MA5_BELOW_TURN_MA20+TICKn, trigger_info["one_min"]="below_turn". 실패면 반려 사유에
+      1MIN_BELOW_TURN_MA5_* 가 NOT_ABOVE 뒤에 붙는다(기존 TRIPLE_CROSS_MISSING_ 접두어 그대로 - AutoBotH 매핑 호환).
+      `_009` 설정 키 목록에 새 키 3개 추가.
+    impact: live (r003 재시작 후)
+    compatibility: breaking (매수 증가 방향. 롤백: r016 set TRIPLE_1MIN_BELOW_TURN_PASS=false)
 - [2026-11-16] type=feat owner=claude
     summary: 3중 트리거 리젝 로그 끝에 MA 값 구간 추가 - `| MAVAL 1m(5=..,20=..) t60(5=..,20=..,bars=n) t120(...)` (1분 / 각 틱봉의
       마지막 MA_fast, MA_slow 값과 틱봉 개수). AutoBotH 파이프라인이 "60틱 MA5가 MA20 아래" 같은 항목을 숫자로 비교해 보여 준다.
@@ -243,6 +252,9 @@ from r001_define_config import (
     TRIPLE_1MIN_CONDITION,
     TRIPLE_TICK_CONDITION,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+    TRIPLE_1MIN_BELOW_TURN_PASS,
+    TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS,
+    TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID,
     ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     ENABLE_MARKET_REGIME_GATE,
     MARKET_REGIME_FAIL_OPEN,
@@ -275,6 +287,7 @@ from r002_strategy_core_shared import (
     check_buy_condition_1min_hybrid_trigger,
     check_1min_trigger_live_guard,
     find_1min_ma_golden_cross,
+    evaluate_1min_below_turn,
     evaluate_triple_trigger,
     check_chase_from_cross,
     market_relative_strength_ok,
@@ -811,12 +824,18 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     ma_age = _cross_age_seconds(ctx, ma["cross_bar_time"]) if ma["ok"] else float("nan")
     tick_result = _evaluate_tick_trigger(ctx, required=True)
     crosses = (getattr(tick_result, "crosses", None) or {}) if tick_result is not None else {}
+    # [2026-11-17] r001 TRIPLE_1MIN_BELOW_TURN_PASS: 1-minute MA5 <= MA20 may still pass when MA5 turned up and MACD rises
+    below = None
+    if (TRIPLE_1MIN_BELOW_TURN_PASS and str(TRIPLE_1MIN_CONDITION).lower() == "above" and not ma["ok"]
+            and str(ma.get("reason", "")).endswith("_NOT_ABOVE")):
+        below = evaluate_1min_below_turn(frame_1min, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS)
     # [2026-11-02] 1분/틱 조건 판정은 r002 evaluate_triple_trigger(g003 공용) - TRIPLE_1MIN_CONDITION / TRIPLE_TICK_CONDITION
     trig = evaluate_triple_trigger(
         ma, ma_age, crosses, TICK_TRIGGER_BAR_SIZES, TRIPLE_1MIN_CONDITION, TRIPLE_TICK_CONDITION,
         TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW,
-        above_max_age_s=TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
+        above_max_age_s=TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS, below_turn=below,
     )
+    below_pass = bool(trig.get("below_turn"))
     missing = list(trig["missing"])
     if not crosses:  # 피드 없음/ABSTAIN: 봉 크기별 사유 대신 피드 사유 하나
         missing = [m for m in missing if not m.startswith("TICK")]
@@ -848,8 +867,10 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     if not guard_ok:
         _reject_hybrid(ctx, f"TRIPLE_CROSS_{guard_reason}")
         return False
+    # [2026-11-17] the below-turn path skips "live price > 1-minute BB mid" unless TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID (drop guard stays)
+    require_mid = TRIPLE_REQUIRE_1MIN_ABOVE_MID and (not below_pass or TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID)
     live_ok, live_reason = check_1min_trigger_live_guard(
-        frame_1min, ctx.price, require_above_mid=TRIPLE_REQUIRE_1MIN_ABOVE_MID,
+        frame_1min, ctx.price, require_above_mid=require_mid,
     )
     if not live_ok:
         _reject_hybrid(ctx, f"TRIPLE_CROSS_{live_reason}")
@@ -864,9 +885,10 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
         "path": "triple", "cross_bar_time": ma["cross_bar_time"], "bars_since_cross": trig["bars_since_cross"],
         "run_start_time": guard_info.get("run_start_time"),
         "tick_cross_times": {n: _ts_text(t) for n, t in tick_cross_times.items()},
+        "one_min": "below_turn" if below_pass else "above",  # [2026-11-17]
     }
     _record_trigger_age(
-        ctx, "TRIPLE_CROSS_PASS", ma["cross_bar_time"], path="triple", trigger=guard_reason,
+        ctx, "TRIPLE_CROSS_PASS", ma["cross_bar_time"], path="triple", trigger=guard_reason, one_min=trigger_info["one_min"],
         cross_bar_time=ma["cross_bar_time"], cross_age_s=None if pd.isna(ma_age) else round(ma_age, 1),
         bars_since_cross=trig["bars_since_cross"], tick_cross_times=trigger_info["tick_cross_times"],
         last_1min_label=frame_1min.index[-1], last_3min_label=ctx.bar_time,
@@ -1484,7 +1506,10 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "TRIPLE_1MIN_CONDITION", "TRIPLE_TICK_CONDITION", "TRIPLE_1MIN_MA_FAST", "TRIPLE_1MIN_MA_SLOW",
                   "TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS", "TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS", "TRIPLE_REQUIRE_1MIN_ABOVE_MID",
                   "TRIPLE_CHASE_FROM_CROSS_MAX_PCT", "TRIPLE_CHASE_FROM_CROSS_REF", "TICK_MIN_PRINTS_PER_MIN",
-                  "TICK_MIN_PRINTS_WINDOW_MINUTES"), _009_hybrid_1min_trigger),
+                  "TICK_MIN_PRINTS_WINDOW_MINUTES",
+                  # [2026-11-17] 1-minute MA5 <= MA20 below-turn pass
+                  "TRIPLE_1MIN_BELOW_TURN_PASS", "TRIPLE_1MIN_BELOW_TURN_LOOKBACK_BARS",
+                  "TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID"), _009_hybrid_1min_trigger),
     _COND_010,
     BuyCondition(11, "_011_context_frame_ready", "CONTEXT", "3분봉 컨텍스트 준비",
                  "3분봉 2개 이상 + BB 지표 산출 완료", (), _011_context_frame_ready),

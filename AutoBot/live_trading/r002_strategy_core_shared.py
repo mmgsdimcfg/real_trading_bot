@@ -18,6 +18,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-17] type=feat owner=claude
+    summary: evaluate_1min_below_turn() 신설(1분 MA5 상승 전환 + MACD 상승) + evaluate_triple_trigger(below_turn=...) - "above" 모드에서
+      1분 MA5<=MA20 이어도 below_turn ok 면 1분 조건 통과(반환 below_turn=True, 라벨 1MIN_MA5_BELOW_TURN_MA20). r001 TRIPLE_1MIN_BELOW_TURN_PASS.
+    impact: common (r005 _008 / g003)
+    compatibility: backward-compatible (below_turn 기본 None = 종전과 동일. 호출측 r001 스위치로 켬)
 - [2026-11-13] type=feat owner=claude
     summary: market_relative_strength_ok(+ _return_over_minutes) - 시장 추세 게이트 상대강도 예외. 종목 확정 1분봉의 최근 N분
       수익률이 0 보다 크고 지수 ETF 대비 기준(%p) 이상 높으면 True (r001 MARKET_REGIME_RS_BYPASS_PCT / _RS_LOOKBACK_MINUTES).
@@ -2118,12 +2123,62 @@ def find_1min_ma_golden_cross(frame_1min: pd.DataFrame, fast: int = 5, slow: int
     return out
 
 
+def evaluate_1min_below_turn(frame_1min: pd.DataFrame, fast: int = 5, lookback: int = 3) -> dict:
+    """[2026-11-17] 1-minute "MA5 turned up + MACD rising" check for the triple trigger when 1-minute MA_fast <= MA_slow
+    (r001 TRIPLE_1MIN_BELOW_TURN_PASS, r005 _008 / g003 parity).
+
+    ok when, on the last closed bar:
+      - MA_fast[last] > MA_fast[last-1] (rising), and
+      - at least one of the previous `lookback` MA_fast changes (MA_fast[i] - MA_fast[i-1], i = last-lookback .. last-1) is <= 0
+        (it was falling or flat just before, i.e. the slope turned up), and
+      - MACD[last] > MACD[last-1] (frame MACD column = calculate_indicators MACD_FAST/MACD_SLOW).
+    MA_fast uses the frame's MA_<fast> column when present (same source as find_1min_ma_golden_cross).
+    Returns ok, reason, ma_fast, ma_fast_prev, macd, macd_prev. Missing columns / NaN / short frame -> not ok.
+    """
+    nan = float("nan")
+    out = {"ok": False, "reason": "", "ma_fast": nan, "ma_fast_prev": nan, "macd": nan, "macd_prev": nan}
+    tag = f"1MIN_BELOW_TURN_MA{fast}"
+    lookback = max(1, int(lookback))
+    if frame_1min is None or len(frame_1min) < lookback + 2 or "close" not in frame_1min.columns:
+        out["reason"] = f"{tag}_INSUFFICIENT_BARS"
+        return out
+    if "MACD" not in frame_1min.columns:
+        out["reason"] = f"{tag}_MACD_MISSING"
+        return out
+    close = pd.to_numeric(frame_1min["close"], errors="coerce")
+    fast_col = f"MA_{fast}"
+    ma_fast = (pd.to_numeric(frame_1min[fast_col], errors="coerce") if fast_col in frame_1min.columns
+               else close.rolling(fast, min_periods=fast).mean())
+    f = ma_fast.to_numpy(dtype=float)
+    m = pd.to_numeric(frame_1min["MACD"], errors="coerce").to_numpy(dtype=float)
+    last = len(f) - 1
+    out.update({"ma_fast": float(f[last]), "ma_fast_prev": float(f[last - 1]), "macd": float(m[last]), "macd_prev": float(m[last - 1])})
+    window = f[last - lookback - 1:last + 1]
+    if any(math.isnan(v) for v in window) or math.isnan(m[last]) or math.isnan(m[last - 1]):
+        out["reason"] = f"{tag}_MISSING"
+        return out
+    if not f[last] > f[last - 1]:
+        out["reason"] = f"{tag}_NOT_RISING"
+        return out
+    if not any(f[i] - f[i - 1] <= 0 for i in range(last - lookback, last)):
+        out["reason"] = f"{tag}_NOT_TURNED"
+        return out
+    if not m[last] > m[last - 1]:
+        out["reason"] = f"{tag}_MACD_NOT_RISING"
+        return out
+    out.update({"ok": True, "reason": f"{tag}_TURN_UP_MACD_UP"})
+    return out
+
+
 def evaluate_triple_trigger(
     ma: dict, ma_age_s: float, crosses: dict, sizes: tuple[int, ...], one_min_condition: str = "cross",
     tick_condition: str = "all", max_age_s: float = 240.0, fast: int = 5, slow: int = 20,
-    above_max_age_s: float = 0.0,
+    above_max_age_s: float = 0.0, below_turn: dict | None = None,
 ) -> dict:
     """[2026-11-02] r005 _008 3중 트리거 / g003 공용 판정 - 1분 조건 + 틱 조건 -> missing(반려 사유 목록)과 가드용 값.
+    [2026-11-17] below_turn(evaluate_1min_below_turn 결과, 호출측이 r001 TRIPLE_1MIN_BELOW_TURN_PASS 일 때만 전달): "above" 모드에서
+    1분 MA_fast <= MA_slow(…_NOT_ABOVE)여도 below_turn["ok"] 이면 1분 조건 통과(bars_since_cross 0, 반환 below_turn=True).
+    below_turn 이 전달됐는데 실패면 기존 NOT_ABOVE 사유 뒤에 below_turn 사유를 하나 더 붙인다.
     [2026-11-11] above_max_age_s(r001 TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS): "above" 모드에서도 1분 크로스 봉이 이보다 오래됐으면
     반려(...ABOVE_TOO_OLD...) - 추세 한참 뒤의 늦은 진입(015760 20261111 09:52, 크로스 후 32분) 차단. 0 = 제한 없음.
 
@@ -2136,15 +2191,22 @@ def evaluate_triple_trigger(
     tag = f"1MIN_MA{fast}_MA{slow}"
     missing: list[str] = []
     bars_since_cross = int(ma.get("bars_since_cross") or 0)
+    below_turn_pass = False
     if str(one_min_condition).lower() == "above":
         if ma.get("ok"):
             if above_max_age_s and above_max_age_s > 0 and not pd.isna(ma_age_s) and ma_age_s > above_max_age_s:
                 missing.append(f"{tag}_ABOVE_TOO_OLD_{ma_age_s:.0f}s_GT_{above_max_age_s:.0f}s")
         elif str(ma.get("reason", "")).endswith("_NO_CROSS_IN_FRAME"):
             bars_since_cross = HYBRID_1MIN_TRIGGER_LOOKBACK_BARS
+        elif (below_turn is not None and below_turn.get("ok")
+              and str(ma.get("reason", "")).endswith("_NOT_ABOVE")):
+            below_turn_pass = True          # [2026-11-17] 1-minute MA5 <= MA20 but MA5 turned up and MACD rising
+            bars_since_cross = 0
         else:
             missing.append(ma.get("reason") or f"{tag}_NOT_ABOVE")
-        one_min_label = f"1MIN_MA{fast}_ABOVE_MA{slow}"
+            if below_turn is not None and not below_turn.get("ok") and below_turn.get("reason"):
+                missing.append(str(below_turn["reason"]))
+        one_min_label = (f"1MIN_MA{fast}_BELOW_TURN_MA{slow}" if below_turn_pass else f"1MIN_MA{fast}_ABOVE_MA{slow}")
     else:
         if not ma.get("ok"):
             missing.append(ma.get("reason") or f"{tag}_NO_CROSS")
@@ -2185,7 +2247,8 @@ def evaluate_triple_trigger(
         f"TICK{n}" for n in (tick_cross_times if str(tick_condition).lower() == "any" else sizes)
     )
     return {"ok": not missing, "missing": missing, "bars_since_cross": bars_since_cross,
-            "tick_cross_times": tick_cross_times, "label": label, "cross_ref_price": cross_ref_price}
+            "tick_cross_times": tick_cross_times, "label": label, "cross_ref_price": cross_ref_price,
+            "below_turn": below_turn_pass}
 
 
 def load_symbol_market_map(path) -> dict[str, str]:
