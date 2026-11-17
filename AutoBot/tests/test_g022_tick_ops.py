@@ -99,14 +99,16 @@ class G011Test(unittest.TestCase):
         self.assertEqual(cs("160500", (dt_time(10, 0), dt_time(16, 30))), "regular")   # CSAT day
         self.assertEqual(cs("163005", (dt_time(10, 0), dt_time(16, 30))), "close_auction")
         self.assertEqual(cs("bad"), "")
-        self.assertEqual(TICK_FILE_COLUMNS[-2:], ["venue", "session"])
+        from r009_tick_bars import TICK_FILE_COLUMNS_V2
+        self.assertEqual(TICK_FILE_COLUMNS_V2[-2:], ["venue", "session"])
+        self.assertEqual(TICK_FILE_COLUMNS[:len(TICK_FILE_COLUMNS_V2)], TICK_FILE_COLUMNS_V2)
         with tempfile.TemporaryDirectory() as d:
             w = g011.TickWriter(Path(d))
             w.write("2026-11-06T09:00:01.000", {**_rec(acml="5"), "venue": "KRX", "session": "regular"})
             w.close()
             lines = (Path(d) / "005930.csv").read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[0].split(","), TICK_FILE_COLUMNS)
-            self.assertTrue(lines[1].endswith(",KRX,regular"))
+            self.assertIn(",KRX,regular", lines[1])   # [2026-11-17] v3 depth columns follow (empty here)
             b = build_tick_bars(iter_tick_file(Path(d) / "005930.csv"), "005930", 1)
             self.assertEqual(b.stats.accepted, 1)
 
@@ -349,6 +351,36 @@ class G022WindowTest(unittest.TestCase):
         self.assertFalse(self._run("20261102", "09:30", 1, cal_text, role="standby"))
         self.assertTrue(self._run("20261102", "09:30", 1, cal_text, role="primary"))
         self.assertFalse(self._run("20261107", "10:00", 6, cal_text))   # Saturday
+
+
+class G011DepthColumnsTest(unittest.TestCase):
+    """[2026-11-17] order-book / flow fields of the execution record are written (TICK_FILE_COLUMNS v3)."""
+
+    def test_parse_frame_and_write_depth_fields(self):
+        from r009_tick_bars import TICK_DEPTH_COLUMNS
+        vals = {"MKSC_SHRN_ISCD": "005930", "STCK_CNTG_HOUR": "100000", "STCK_PRPR": "100", "CNTG_VOL": "3", "ACML_VOL": "9",
+                "BSOP_DATE": "20261117", "ASKP1": "101", "BIDP1": "100", "ASKP_RSQN1": "1200", "BIDP_RSQN1": "800",
+                "TOTAL_ASKP_RSQN": "52000", "TOTAL_BIDP_RSQN": "61000", "CTTR": "112.35", "SELN_CNTG_SMTN": "4000",
+                "SHNU_CNTG_SMTN": "4500", "WGHN_AVRG_STCK_PRC": "99.80", "VI_STND_PRC": "98"}
+        for tr in ("H0STCNT0", "H0NXCNT0"):
+            f = [""] * (g011.NCOL + (1 if tr == "H0NXCNT0" else 0))
+            for k, v in vals.items():
+                f[g011._IDX[k]] = v
+            rec = g011.parse_frame(f"0|{tr}|001|" + "^".join(f))[0]
+            self.assertEqual((rec["askp_rsqn1"], rec["bidp_rsqn1"], rec["total_askp_rsqn"], rec["total_bidp_rsqn"]),
+                             ("1200", "800", "52000", "61000"))
+            self.assertEqual((rec["cttr"], rec["seln_cntg_smtn"], rec["shnu_cntg_smtn"]), ("112.35", "4000", "4500"))
+            self.assertEqual((rec["wghn_avrg_stck_prc"], rec["vi_stnd_prc"]), ("99.80", "98"))
+        with tempfile.TemporaryDirectory() as d:
+            w = g011.TickWriter(Path(d))
+            w.write("2026-11-17T10:00:00.100", rec)
+            w.close()
+            lines = (Path(d) / "005930.csv").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[0].split(","), TICK_FILE_COLUMNS)
+            self.assertTrue(lines[1].endswith(",".join(vals[c.upper()] for c in TICK_DEPTH_COLUMNS)))
+            # readers still parse the row (header-based)
+            b = build_tick_bars(iter_tick_file(Path(d) / "005930.csv"), "005930", 1)
+            self.assertEqual(len(b.bars), 1)
 
 
 if __name__ == "__main__":

@@ -219,3 +219,10 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - 앱 스케줄러의 수집기 확인 시간대: 평일 07:55~19:55 (기존 08:40~15:35).
 - g011 로그 추가 줄: `NXT codes=N window=08:00~20:00 ...`, `SUBSCRIBED krx=A nxt=B (+x -y)`, `NXT SUBSCRIBE ERROR <code> ...`,
   `STOPPED rows=... nxt_rows=...`. `START` / `CODES` 줄은 그대로(KRX 구독 목록).
+
+### 9-1. 틱 CSV v3 - 호가/수급 열 (2026-11-17)
+- KRX/NXT 틱 CSV 끝에 9열 추가(r009 `TICK_DEPTH_COLUMNS`, 기존 열 순서 불변): `askp_rsqn1,bidp_rsqn1,total_askp_rsqn,
+  total_bidp_rsqn,cttr,seln_cntg_smtn,shnu_cntg_smtn,wghn_avrg_stck_prc,vi_stnd_prc` (1호가 잔량, 총 매도/매수 호가 잔량,
+  체결강도, 누적 매도/매수 체결량, 가중평균가, VI 기준가). 체결 레코드에 이미 있는 값이라 구독 수는 그대로다.
+- 새 파일부터 v3. 이미 있는 파일은 그 헤더 폭대로 계속 쓴다(같은 날 장중 재시작에도 한 파일에 폭이 섞이지 않음).
+  앱(`price.ts`)과 r009/r013/r017 판독기는 헤더 이름으로 열을 찾으므로 변경 없음.

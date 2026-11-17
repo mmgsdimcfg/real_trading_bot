@@ -16,6 +16,11 @@ Tick count vs volume: a "tick" is one execution print (count), CNTG_VOL is share
 aligned with the exchange tape; such bars carry gap_ticks > 0 and the momentum filter abstains on them.
 
 Update log:
+- [2026-11-17] type=feat owner=claude
+    summary: 사용자 요청(호가 잔량 수집) - TICK_FILE_COLUMNS v3: 끝에 TICK_DEPTH_COLUMNS 9열(1호가 잔량, 총 매도/매수 호가 잔량,
+      체결강도, 누적 매도/매수 체결량, 가중평균가, VI 기준가). v2 는 TICK_FILE_COLUMNS_V2. 판독기는 헤더 기반이라 영향 없음.
+    impact: collector (g011 이 새 파일부터 v3 로 씀)
+    compatibility: backward-compatible
 - [2026-11-02] type=fix owner=claude
     summary: iter_tick_file가 열 수가 다른 줄(수집기 강제 종료로 잘린 반쪽 줄)을 건너뜀 - 기존에는 빈 필드를 0으로
       읽어 거래량 0/누적거래량 0 틱으로 수락했음(Codex 재현). r013 실시간 리더는 이미 열 수 검사.
@@ -41,7 +46,15 @@ TICK_FILE_COLUMNS_V1 = [
 # [2026-11-06] v2 appends venue (KRX - H0STCNT0 is the KRX feed) and session (pre|regular|close_auction|post, from the
 # print time vs the r014 session hours). Readers are header-based, so v1 files stay readable; g011 keeps writing a file
 # in the layout of its existing header (a mid-day restart never mixes widths in one file).
-TICK_FILE_COLUMNS = TICK_FILE_COLUMNS_V1 + ["venue", "session"]
+TICK_FILE_COLUMNS_V2 = TICK_FILE_COLUMNS_V1 + ["venue", "session"]
+# [2026-11-17] v3 appends the order-book / flow fields H0STCNT0 / H0NXCNT0 already carry with every print (Edge AI research):
+# best ask/bid remaining qty, total ask/bid remaining qty (the whole 10-level book), execution strength (CTTR), cumulative
+# sell/buy-initiated volume, VWAP and the VI reference price. A snapshot at each print - no extra websocket subscription.
+TICK_DEPTH_COLUMNS = [
+    "askp_rsqn1", "bidp_rsqn1", "total_askp_rsqn", "total_bidp_rsqn", "cttr", "seln_cntg_smtn", "shnu_cntg_smtn",
+    "wghn_avrg_stck_prc", "vi_stnd_prc",
+]
+TICK_FILE_COLUMNS = TICK_FILE_COLUMNS_V2 + TICK_DEPTH_COLUMNS
 
 
 @dataclass

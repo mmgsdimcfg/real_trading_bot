@@ -33,6 +33,13 @@ Run:
   --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-17] type=feat owner=claude
+    summary: 사용자 요청(Edge AI 학습용 호가 잔량) - 체결 레코드(H0STCNT0/H0NXCNT0)에 이미 들어 있는 호가/수급 9개 필드를 틱 CSV 끝에
+      추가 기록(r009 TICK_FILE_COLUMNS v3): askp_rsqn1, bidp_rsqn1, total_askp_rsqn, total_bidp_rsqn, cttr, seln_cntg_smtn,
+      shnu_cntg_smtn, wghn_avrg_stck_prc, vi_stnd_prc. 구독 추가 없음(40 한도 그대로). 이미 있는 파일은 그 헤더 폭대로 계속 써서
+      장중 재시작 때 한 파일에 폭이 섞이지 않는다 - 새 열은 다음 날(또는 새 종목 파일)부터. 파일 크기 약 +45%.
+    impact: collector (g011 재시작 후)
+    compatibility: backward-compatible (판독기는 헤더 기반)
 - [2026-11-16] type=fix owner=claude
     summary: 구독 해제 tr_type "0" -> "2" (KIS 웹소켓 규격: 1=등록, 2=해제). "0" 은 서버가 "invalid tr_type" 으로 거절해 해제가
       한 번도 되지 않았음(20261116 15:31 KRX 26종목 해제 실패 로그). 정규장 전환(08:55) 때 감시 종목 NXT 구독을 풀고 그 자리에
@@ -310,6 +317,16 @@ def parse_frame(raw: str, hours: tuple | None = None) -> list[dict] | None:
             "askp1": rec[_IDX["ASKP1"]],
             "bidp1": rec[_IDX["BIDP1"]],
             "hour_cls_code": rec[_IDX["HOUR_CLS_CODE"]],
+            # [2026-11-17] order-book / flow snapshot at the print (r009 TICK_DEPTH_COLUMNS, v3 files)
+            "askp_rsqn1": rec[_IDX["ASKP_RSQN1"]],
+            "bidp_rsqn1": rec[_IDX["BIDP_RSQN1"]],
+            "total_askp_rsqn": rec[_IDX["TOTAL_ASKP_RSQN"]],
+            "total_bidp_rsqn": rec[_IDX["TOTAL_BIDP_RSQN"]],
+            "cttr": rec[_IDX["CTTR"]],
+            "seln_cntg_smtn": rec[_IDX["SELN_CNTG_SMTN"]],
+            "shnu_cntg_smtn": rec[_IDX["SHNU_CNTG_SMTN"]],
+            "wghn_avrg_stck_prc": rec[_IDX["WGHN_AVRG_STCK_PRC"]],
+            "vi_stnd_prc": rec[_IDX["VI_STND_PRC"]],
             "venue": venue,
             "session": (classify_session if venue == VENUE else classify_nxt_session)(rec[_IDX["STCK_CNTG_HOUR"]], hours),
         })

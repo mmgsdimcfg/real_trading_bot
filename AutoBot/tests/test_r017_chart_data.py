@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "live_trading"))
 with contextlib.redirect_stdout(io.StringIO()):
     import r001_define_config as r001  # noqa: E402
     import r017_chart_data as r017  # noqa: E402
-    from r009_tick_bars import TICK_FILE_COLUMNS  # noqa: E402
+    from r009_tick_bars import TICK_FILE_COLUMNS_V1, TICK_FILE_COLUMNS_V2  # noqa: E402
 
 CODE, NAME, DAY, PREV = "005930", "삼성전자", "20261105", "20261104"
 
@@ -39,10 +39,10 @@ def _tick_lines(day: str, n: int, start=(9, 0, 0), base=70000, with_session=True
         row = {"recv_ts": t.strftime("%Y-%m-%dT%H:%M:%S.000"), "code": CODE, "bsop_date": day, "trade_time": hhmmss, "price": px,
                "cntg_vol": qty, "acml_vol": acml, "ccld_dvsn": 1, "seln_cntg_csnu": 0, "shnu_cntg_csnu": i + 1, "askp1": px + 100,
                "bidp1": px, "hour_cls_code": 0, "venue": "KRX", "session": sess}
-        cols = TICK_FILE_COLUMNS if with_session else TICK_FILE_COLUMNS[:-2]
+        cols = TICK_FILE_COLUMNS_V2 if with_session else TICK_FILE_COLUMNS_V1
         rows.append(",".join(str(row[c]) for c in cols))
         t += timedelta(seconds=7)
-    header = ",".join(TICK_FILE_COLUMNS if with_session else TICK_FILE_COLUMNS[:-2])
+    header = ",".join(TICK_FILE_COLUMNS_V2 if with_session else TICK_FILE_COLUMNS_V1)
     return [header + "\n"] + [r + "\n" for r in rows]
 
 

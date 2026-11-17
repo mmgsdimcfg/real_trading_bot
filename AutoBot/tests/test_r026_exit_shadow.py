@@ -43,7 +43,7 @@ class TickWriter:
                "price": price, "cntg_vol": qty, "acml_vol": self.acml, "ccld_dvsn": side, "seln_cntg_csnu": "",
                "shnu_cntg_csnu": "", "askp1": price + 10, "bidp1": price, "hour_cls_code": "0", "venue": "KRX",
                "session": "regular"}
-        line = ",".join(str(row[c]) for c in TICK_FILE_COLUMNS)
+        line = ",".join(str(row.get(c, "")) for c in TICK_FILE_COLUMNS)
         with open(self.path, "a", encoding="utf-8", newline="") as f:
             f.write(line if partial else line + "\n")
 
