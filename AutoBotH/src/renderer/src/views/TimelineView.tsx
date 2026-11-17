@@ -50,12 +50,16 @@
  * - [2026-11-16] type=feat - The time axis spans the whole trading session of the day from the start (NXT symbol 08:00 - 20:00,
  *   KRX 09:00 - 15:30): at the open the buy evaluation and price charts no longer stretch the first minutes over the full width,
  *   they fill in from the left at the scale of the finished day. Events / bars outside the session still widen the axis
+ * - [2026-11-17] type=fix - Hover / click on the buy and sell evaluation charts picks the dot nearest the cursor (pixel distance
+ *   with the drawn axis scales, within 18 px) - recharts' activePayload named another row's dot at the same time (cursor on _022,
+ *   dock showed _020). The hovered dot gets a ring, a pinned dot an accent ring, and a pinned dot stays in the dock while the
+ *   mouse moves over other dots (click another dot to re-pin, empty space or ✕ to release)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PriceTag } from '../components/PriceTag';
 import { NxtMark } from '../components/NxtTag';
-import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
+import { CartesianGrid, Customized, ReferenceDot, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
 import { reasonKo } from '../../../shared/reasonKo';
 import { useStore } from '../store';
 import { SymbolPicker } from '../components/SymbolPicker';
@@ -91,6 +95,44 @@ interface Pt {
   x: number;
   y: number;
   ev: EvalEvent;
+}
+
+/** [2026-11-17] pixel scales of an evaluation chart (captured from recharts while it draws) */
+type Scales = { x: (v: number) => number; y: (v: number) => number };
+/** a dot is picked only when the cursor is within this many pixels of it */
+const PICK_R = 18;
+
+/** recharts <Customized> renderer that only records the axis scales of the chart into `ref` (draws nothing) */
+function scaleGrabber(ref: { current: Scales | null }) {
+  return (props: unknown) => {
+    const p = props as { xAxisMap?: Record<string, { scale?: (v: number) => number }>; yAxisMap?: Record<string, { scale?: (v: number) => number }> };
+    const xa = Object.values(p.xAxisMap || {})[0];
+    const ya = Object.values(p.yAxisMap || {})[0];
+    if (xa?.scale && ya?.scale) ref.current = { x: xa.scale, y: ya.scale };
+    return null;
+  };
+}
+
+/**
+ * [2026-11-17] The dot under the cursor. recharts' activePayload of a multi-series ScatterChart is not the dot under the mouse
+ * (it could name a dot of another row at the same time - e.g. _020 while the cursor was on _022), so the nearest shown dot in
+ * pixel space is chosen here; none within PICK_R -> null.
+ */
+function nearestPt(e: unknown, pts: Pt[], scales: Scales | null): Pt | null {
+  const m = e as { chartX?: number; chartY?: number } | null;
+  if (!m || m.chartX == null || m.chartY == null || !scales) return null;
+  let best: Pt | null = null;
+  let bestD = PICK_R * PICK_R;
+  for (const p of pts) {
+    const dx = scales.x(p.x) - m.chartX;
+    const dy = scales.y(p.y) - m.chartY;
+    const d = dx * dx + dy * dy;
+    if (d <= bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
 }
 
 const SERIES: { key: EvalEvent['result']; label: string; color: string; shape: 'circle' | 'cross' | 'diamond' | 'square' }[] = [
@@ -228,11 +270,11 @@ export function TimelineView() {
   const [pinSell, setPinSell] = useState<Pt | null>(null);
   /** [2026-11-12] time of the bar hovered on the price chart (tick / minute bars) - a vertical line on the evaluation charts */
   const [priceHovT, setPriceHovT] = useState<number | null>(null);
-  // recharts gives the active payload with every mouse move; the Tooltip itself stays invisible (content null) and only drives the cursor
-  const pickPt = (e: unknown): Pt | null => {
-    const ap = (e as { activePayload?: { payload?: Pt }[] } | null)?.activePayload;
-    return ap && ap.length ? ap[0].payload || null : null;
-  };
+  // [2026-11-17] axis scales of the buy / sell evaluation charts (nearestPt picks the dot under the cursor with them)
+  const buyScales = useRef<Scales | null>(null);
+  const sellScales = useRef<Scales | null>(null);
+  const grabBuyScales = useMemo(() => scaleGrabber(buyScales), []);
+  const grabSellScales = useMemo(() => scaleGrabber(sellScales), []);
 
   const buyConds = useMemo(() => sortedConds(conditions, 'buy'), [conditions]);
   const sellConds = useMemo(() => sortedConds(conditions, 'sell'), [conditions]);
@@ -287,6 +329,8 @@ export function TimelineView() {
     () => ({ pass: sellPts.filter((p) => p.ev.result === 'pass'), hold: sellPts.filter((p) => p.ev.result === 'hold'), info: sellPts.filter((p) => p.ev.result === 'info') }),
     [sellPts],
   );
+  /** [2026-11-17] the sell dots actually drawn (the three series above) - what the cursor can pick */
+  const sellShownPts = useMemo(() => [...sellSeries.pass, ...sellSeries.hold, ...sellSeries.info], [sellSeries]);
   // a pinned dot belongs to one symbol's events: another symbol (or a reloaded day) releases it
   useEffect(() => {
     setPinBuy(null);
@@ -418,7 +462,12 @@ export function TimelineView() {
           </div>
           <div className="chart-buy" style={{ height: buyH }}>
             <ResponsiveContainer>
-              <ScatterChart margin={{ top: 16, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovBuy(pickPt(e))} onMouseLeave={() => setHovBuy(null)} onClick={(e) => setPinBuy(pickPt(e))}>
+              <ScatterChart
+                margin={{ top: 16, right: 24, bottom: 8, left: 8 }}
+                onMouseMove={(e) => setHovBuy(nearestPt(e, buyPts, buyScales.current))}
+                onMouseLeave={() => setHovBuy(null)}
+                onClick={(e) => setPinBuy(nearestPt(e, buyPts, buyScales.current))}
+              >
                 <CartesianGrid stroke="var(--grid)" />
                 <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                 <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownRows.length - 1)]} ticks={[...Array(shownRows.length).keys()]} tickFormatter={buyLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
@@ -429,10 +478,15 @@ export function TimelineView() {
                 {buySeries.map((s) => (
                   <Scatter key={s.key} name={s.label} data={s.data} fill={s.color} shape={s.shape} isAnimationActive={false} />
                 ))}
+                {/* [2026-11-17] focus rings: pinned dot (accent) and the dot under the cursor */}
+                {pinBuy && <ReferenceDot x={pinBuy.x} y={pinBuy.y} r={9} fill="none" stroke="var(--accent)" strokeWidth={2.5} ifOverflow="hidden" />}
+                {hovBuy && hovBuy !== pinBuy && <ReferenceDot x={hovBuy.x} y={hovBuy.y} r={9} fill="none" stroke="var(--text)" strokeWidth={2} ifOverflow="hidden" />}
+                <Customized component={grabBuyScales} />
               </ScatterChart>
             </ResponsiveContainer>
           </div>
-          <TipDock pt={hovBuy || pinBuy} side="매수" pinned={!hovBuy && !!pinBuy} onUnpin={() => setPinBuy(null)} />
+          {/* [2026-11-17] a pinned dot stays in the dock while the mouse moves over other dots (click another dot to re-pin) */}
+          <TipDock pt={pinBuy || hovBuy} side="매수" pinned={!!pinBuy} onUnpin={() => setPinBuy(null)} />
           <HeightGrip height={buyH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ buyH: h })} onReset={() => setLayout({ buyH: undefined })} />
           {fullLen > 30 * 60000 && (
             <div className="time-window">
@@ -559,7 +613,12 @@ export function TimelineView() {
               <div className="empty small">오늘 이 종목의 매도 평가 로그가 없습니다.</div>
             ) : (
               <ResponsiveContainer>
-                <ScatterChart margin={{ top: 8, right: 24, bottom: 8, left: 8 }} onMouseMove={(e) => setHovSell(pickPt(e))} onMouseLeave={() => setHovSell(null)} onClick={(e) => setPinSell(pickPt(e))}>
+                <ScatterChart
+                  margin={{ top: 8, right: 24, bottom: 8, left: 8 }}
+                  onMouseMove={(e) => setHovSell(nearestPt(e, sellShownPts, sellScales.current))}
+                  onMouseLeave={() => setHovSell(null)}
+                  onClick={(e) => setPinSell(nearestPt(e, sellShownPts, sellScales.current))}
+                >
                   <CartesianGrid stroke="var(--grid)" />
                   <XAxis type="number" dataKey="x" domain={domain} allowDataOverflow ticks={xTicks} tickFormatter={(v) => fmtKstTime(v).slice(0, 5)} stroke="var(--text-3)" fontSize={11} scale="time" />
                   <YAxis type="number" dataKey="y" domain={[0, Math.max(1, shownSellRows.length - 1)]} ticks={[...Array(shownSellRows.length).keys()]} tickFormatter={sellLabel} width={150} stroke="var(--text-3)" fontSize={10} interval={0} />
@@ -570,11 +629,14 @@ export function TimelineView() {
                   <Scatter name="발동" data={sellSeries.pass} fill="var(--st-fail)" shape="cross" isAnimationActive={false} />
                   <Scatter name="보류" data={sellSeries.hold} fill="var(--st-hold)" shape="diamond" isAnimationActive={false} />
                   <Scatter name="정보" data={sellSeries.info} fill="var(--st-idle)" shape="square" isAnimationActive={false} />
+                  {pinSell && <ReferenceDot x={pinSell.x} y={pinSell.y} r={9} fill="none" stroke="var(--accent)" strokeWidth={2.5} ifOverflow="hidden" />}
+                  {hovSell && hovSell !== pinSell && <ReferenceDot x={hovSell.x} y={hovSell.y} r={9} fill="none" stroke="var(--text)" strokeWidth={2} ifOverflow="hidden" />}
+                  <Customized component={grabSellScales} />
                 </ScatterChart>
               </ResponsiveContainer>
             )}
           </div>
-          <TipDock pt={hovSell || pinSell} side="매도" pinned={!hovSell && !!pinSell} onUnpin={() => setPinSell(null)} />
+          <TipDock pt={pinSell || hovSell} side="매도" pinned={!!pinSell} onUnpin={() => setPinSell(null)} />
           <HeightGrip height={sellH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ sellH: h })} onReset={() => setLayout({ sellH: undefined })} />
           {trades.length > 0 && (
             <table className="grid compact">
