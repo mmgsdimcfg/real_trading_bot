@@ -34,6 +34,7 @@ import type { ControlState } from '../../shared/control';
 import type { ChartKind } from '../../shared/price';
 import type { IndicatorKey } from '../../shared/indicators';
 import { fromMarketQuote, type LiveQuote } from '../../shared/liveQuote';
+import { clearAll as clearDataCache, peek, put } from './dataCache';
 
 type ChartPrefs = { kind: ChartKind; tickN: number; minN: number; ind: IndicatorKey[] };
 const IND_KEYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'vwap', 'vol', 'rsi', 'macd', 'adx', 'stoch', 'williams', 'mfi', 'obv'];
@@ -299,13 +300,18 @@ export const useStore = create<State>()((set, get) => ({
   setTab: (tab) => set({ tab }),
   setSide: (side) => set({ side }),
   select: (code) => {
-    set({ selected: code, timeline: code && get().timeline?.code === code ? get().timeline : null });
+    // [2026-11-18] the symbol's events from the last visit are shown at once (dataCache), then refreshed
+    const day = get().status.date;
+    const kept = code ? peek<{ code: string; events: EvalEvent[]; trades: Trade[] }>(`timeline:${day}/${code}`) : undefined;
+    set({ selected: code, timeline: code && get().timeline?.code === code ? get().timeline : kept || null });
     void get().refreshTimeline();
   },
   refreshTimeline: async () => {
     const code = get().selected;
     if (!code) return set({ timeline: null });
+    const day = get().status.date;
     const r = await window.api.getTimeline(code);
+    put(`timeline:${day}/${code}`, { code, ...r });
     if (get().selected === code) set({ timeline: { code, ...r } });
   },
 }));
@@ -318,6 +324,9 @@ export function initStore(): void {
   void api.getSettings().then((settings: Settings) => useStore.setState({ settings }));
   api.onStatus((status) => {
     const prev = useStore.getState().status.date;
+    // [2026-11-18] another run mode (Raspberry Pi <-> this PC): data fetched from the old host must not be shown again
+    const prevMode = useStore.getState().status.mode;
+    if (prevMode && status.mode && prevMode !== status.mode) clearDataCache();
     // another day: nothing of the old day may stay on screen (the new day's snapshot follows)
     if (prev && status.date && prev !== status.date) useStore.setState({ status, snapshot: null, quotes: {}, selected: null, timeline: null });
     else useStore.setState({ status });

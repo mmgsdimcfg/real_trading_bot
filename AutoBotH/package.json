@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-18] type=perf - v2.3.25_001: 받아온 데이터 재사용 - (1) 화면: 탭/종목을 다시 열면 직전 데이터(차트·일봉·KIS 시세·타임라인 이벤트·가상매매·작업/수집기/제어 패널·전체 설정값)를 즉시 보여 주고 뒤에서 갱신 (renderer dataCache, 실행 위치 전환 시 비움) (2) 가격 서비스: 캐시 한도를 종류별로(틱/1분/일봉 40, 파일 목록 160, 서버 응답 80, 최근 사용 순) - 종목 10여 개를 오가면 오늘 틱 파일을 처음부터 다시 읽던 문제 해결 (3) KIS 분봉(틱 공백 채움, NXT 장전/장후) 재요청 최소화 - 지난 날은 계속, 공백 채움은 빈 분을 모두 덮는 동안, NXT 통합분봉은 09:00 이후 받은 것을 15:30까지 재사용",
     "[2026-11-18] type=tune - v2.3.24_008: 손절 기준 -3.5% 반영(서버 r001/risk_profiles) - 프로파일 안내의 하드스탑 -1.7% -> -3.5%, ATR 손절 최소 -3.5%, 매수 직후 급락 가드 -0.5/-1.0% -> -3.5% 표시. 1분 MA 상태가 너무 오래됨 반려의 관련 설정에 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN(장전 크로스 나이 09:00부터) 추가",
     "[2026-11-18] type=feat - v2.3.24_007: 데이터 작업 - 장 마감 파이프라인에 HI52 신호 기록 단계 표시(서버 r021 hi52 단계: g042 가 일봉 이력 갱신 뒤 52주 신고가 스윙 신호를 기록하고 평가 리포트를 씀, 주문 없음). ① 수집 체크에 함께 포함",
     "[2026-11-18] type=fix - v2.3.24_006: update download progress showed a much smaller size than the installer - the updater downloads only the changed parts (differential download); the text now says so and shows the full installer size: \"(9.8 / 12.6 MB) - changed parts only, full 112.2 MB\"",
@@ -82,7 +83,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.24",
+  "version": "2.3.25",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -130,7 +131,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "008",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

@@ -5,10 +5,12 @@
  *   symbol (role 감시 / 추가 / 스캔 채움, KRX / NXT prints, first / last print, idle time - stale rows marked), the extra codes the
  *   user adds (next start), the daily history with disk use and a prune of old days (preview, then confirm; at least 30 days kept),
  *   the collector's own log events, and what to know about the collector. Past days are read-only views of their folder.
+ * - [2026-11-18] type=perf - The date's last answer (dataCache) is shown at once when the tab or date is opened again, then refreshed
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
+import { peek, put } from '../dataCache';
 import { DatePicker } from '../components/DatePicker';
 import { fmtBytes, localYmd, parseTickCodes, type CollectorDetail, type CollectorPrune, type CollectorRole, type CollectorSymbol } from '../../../shared/control';
 
@@ -36,7 +38,7 @@ export function CollectorView() {
   const local = useStore((s) => s.status.mode === 'local');
   const busyCtl = useStore((s) => s.control.busy);
   const [date, setDate] = useState(localYmd());
-  const [d, setD] = useState<CollectorDetail | null>(null);
+  const [d, setD] = useState<CollectorDetail | null>(() => peek<CollectorDetail>(`collector:${localYmd()}`) || null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -49,9 +51,11 @@ export function CollectorView() {
   const host = local ? '이 PC' : '라즈베리파이';
 
   const load = async () => {
+    const kept = peek<CollectorDetail>(`collector:${date}`);
+    if (kept) setD(kept);
     const r = await window.api.ctlCollectorDetail(date);
     if (r.ok && r.data) {
-      setD(r.data);
+      setD(put(`collector:${date}`, r.data));
       setErr('');
       if (!extraDirty) setExtraText(r.data.extra.codes.join(', '));
     } else setErr(r.error || '불러오지 못했습니다');

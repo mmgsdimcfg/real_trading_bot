@@ -20,6 +20,8 @@
  * - [2026-11-11] type=feat - Side panel refresh: price / best ask-bid / strength / recent trades from the tick quote (every log poll,
  *   1-2 s in local mode) whenever it is at least as new as the KIS quote; KIS (now cached 4 s in market hours) keeps the 10-level book,
  *   day volume, limits and VI flags. The source line says "체결 기준 (틱) · 호가 HH:MM:SS KIS"
+ * - [2026-11-18] type=perf - Chart, daily bars and KIS quote of a symbol seen before are shown at once from the renderer's memory
+ *   (dataCache) and refreshed in the background (symbol / chart switch and tab revisit no longer start empty)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -31,6 +33,7 @@ import { MIN_SIZES, TICK_SIZES, monthBars, weekBars, ymdEpoch, type Bar, type Ch
 import { computeIndicators, OSCILLATORS, type IndicatorKey, type IndicatorSet } from '../../../shared/indicators';
 import { condTitle, fmtInt } from '../lib';
 import { barsUpTo } from '../../../shared/replay';
+import { peek, put } from '../dataCache';
 import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
 
 const KINDS: [ChartKind, string][] = [
@@ -205,25 +208,38 @@ export function ChartView() {
     if (!changed && document.hidden) return;
     const my = ++seq.current;
     lastKey.current = key;
+    // [2026-11-18] kept answers of this symbol / chart (dataCache): drawn at once on a switch, refreshed below
+    const kMain = `price:ch/${key}/${intraday ? 'w' : ''}`;
+    const kDay = `price:ch/${day}/${code}/day`;
+    const kQuote = `quote:${code}`;
     if (changed) {
-      setLoading(true);
+      const keptMain = peek<PriceResponse>(kMain);
+      const keptDay = prefs.kind === 'day' ? keptMain : peek<PriceResponse>(kDay);
+      setLoading(!keptMain);
       setHover(null);
       setChartKey((k) => k + 1);
+      setData(keptMain || null);
+      setDaily(keptDay || null);
+      const keptQ = peek<MarketQuote>(kQuote);
+      setQuoteRes(keptQ ? { q: keptQ } : null);
     }
-    if (changed) setQuoteRes(null);
     void Promise.all([
       window.api.getPrice({ date: day, code, kind: prefs.kind, n, warmup: intraday, withName: true, nxt: nxtRef.current }),
       prefs.kind === 'day' ? null : window.api.getPrice({ date: day, code, kind: 'day', n: 1 }),
       window.api.getQuote(code),
     ]).then(([r, d, q]) => {
+      if (r.ok) put(kMain, r);
+      if (d?.ok) put(kDay, d);
+      if (q.ok && q.data) put(kQuote, q.data);
       if (my !== seq.current) return;
       if (q.ok && q.data) setQuoteRes({ q: q.data });
       else if (q.unsupported) setQuoteRes({ q: null, unsupported: true });
-      else if (changed || !quoteRes?.q) setQuoteRes({ q: null, error: q.error });
+      else if ((changed && !peek(kQuote)) || !quoteRes?.q) setQuoteRes({ q: null, error: q.error });
       setLoading(false);
-      if (r.ok || changed) setData(r);
-      if (prefs.kind === 'day') setDaily(r);
-      else if (d && (d.ok || changed)) setDaily(d);
+      if (r.ok || (changed && !peek(kMain))) setData(r);
+      if (prefs.kind === 'day') {
+        if (r.ok || (changed && !peek(kMain))) setDaily(r);
+      } else if (d && (d.ok || (changed && !peek(kDay)))) setDaily(d);
     });
   }, [key, live, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
 

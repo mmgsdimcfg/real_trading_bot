@@ -32,10 +32,13 @@
  *   accent dot = picks too, muted dot = files without the collected marker. Loaded with the tab, again when the pipeline run ends
  * - [2026-11-18] type=feat - New pipeline step hi52 (r021: g042 HI52 swing signal log + report after the daily history, no orders):
  *   step label "HI52 기록", ① 수집 now reads 수집 → 이력 → HI52 기록 (it follows the collect checkbox)
+ * - [2026-11-18] type=perf - Job list, job log, calendar marks and date info: the last answers (dataCache) are shown at once when
+ *   the tab is opened again, then refreshed; a failed date-info read keeps the last good answer
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
+import { peek, put } from '../dataCache';
 import { DatePicker, type DayMark } from '../components/DatePicker';
 import { JOB_STATE_LABEL, localYmd, type JobDataInfo, type JobList, type JobLog, type JobRun } from '../../../shared/control';
 
@@ -100,21 +103,22 @@ export function JobsView() {
   const settings = useStore((s) => s.settings);
   const setTab = useStore((s) => s.setTab);
   const r003Running = useStore((s) => !!s.control.status?.running);
-  const [list, setList] = useState<JobList | null>(null);
+  // [2026-11-18] last answers (dataCache) are shown at once when the tab is opened again, then refreshed
+  const [list, setList] = useState<JobList | null>(() => peek<JobList>('jobs:list') || null);
   const [err, setErr] = useState('');
   const [sel, setSel] = useState('postclose');
   const [date, setDate] = useState(localYmd());
   const [workers, setWorkers] = useState('');
   const [edgeAi, setEdgeAi] = useState(false);
   const [email, setEmail] = useState(false);
-  const [log, setLog] = useState<JobLog | null>(null);
+  const [log, setLog] = useState<JobLog | null>(() => peek<JobLog>('jobs:log/postclose') || null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const isToday = date === localYmd();
   const pipeline = sel === 'postclose';
 
   /** what the date folder holds (r016 job data) - drives the step defaults and the refusals */
-  const [info, setInfo] = useState<JobDataInfo | null>(null);
+  const [info, setInfo] = useState<JobDataInfo | null>(() => peek<JobDataInfo>(`jobs:data/${localYmd()}`) || null);
   const infoOk = info && info.date === date ? info : null;
   /** the user's step choices; a step not chosen follows its default (reset when the date changes) */
   const [choice, setChoice] = useState<Partial<Record<StepKey, boolean>>>({});
@@ -126,7 +130,7 @@ export function JobsView() {
   };
   const choose = (k: StepKey, v: boolean) => setChoice((c) => ({ ...c, [k]: v }));
   /** [2026-11-17] dates that already hold data (r016 job dates) -> calendar marks */
-  const [dateMarks, setDateMarks] = useState<Record<string, DayMark> | undefined>(undefined);
+  const [dateMarks, setDateMarks] = useState<Record<string, DayMark> | undefined>(() => peek<Record<string, DayMark>>('jobs:dates'));
 
   const running = list?.running?.name || null;
   const selRow = useMemo(() => list?.jobs.find((j) => j.name === sel), [list, sel]);
@@ -135,13 +139,15 @@ export function JobsView() {
   const load = async () => {
     const r = await window.api.ctlJobs();
     if (r.ok && r.data) {
-      setList(r.data);
+      setList(put('jobs:list', r.data));
       setErr('');
     } else setErr(r.error || '작업 목록을 읽지 못했습니다');
   };
   const loadLog = async (name = sel) => {
+    const kept = peek<JobLog>(`jobs:log/${name}`);
+    if (kept) setLog(kept);
     const r = await window.api.ctlJobLog(name, 300);
-    if (r.ok && r.data) setLog(r.data);
+    if (r.ok && r.data) setLog(put(`jobs:log/${name}`, r.data));
   };
   const loadDates = async () => {
     const r = await window.api.ctlJobDates();
@@ -151,12 +157,15 @@ export function JobsView() {
       if (row.collected) m[row.date] = row.picks ? 'picks' : 'data';
       else if (row.scannable || row.picks) m[row.date] = 'partial';
     }
-    setDateMarks(m);
+    setDateMarks(put('jobs:dates', m));
   };
   const loadInfo = async (d = date) => {
     if (!/^\d{8}$/.test(d)) return;
+    const kept = peek<JobDataInfo>(`jobs:data/${d}`);
+    if (kept) setInfo(kept);
     const r = await window.api.ctlJobData(d);
-    if (r.ok && r.data) setInfo(r.data);
+    if (r.ok && r.data) setInfo(put(`jobs:data/${d}`, r.data));
+    else if (kept) return; // keep the last good answer
     else setInfo({ ok: false, date: d, dir: '', exists: false, scannable: false, collected: false, collected_count: 0, files_10s: 0, files_daily: 0, data_mtime: null, picks: null, picks_file: '', picks_mtime: null, scan_log_mtime: null, generated_at: '', error: r.error || '확인 실패' });
   };
 

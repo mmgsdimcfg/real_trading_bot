@@ -54,6 +54,9 @@
  *   with the drawn axis scales, within 18 px) - recharts' activePayload named another row's dot at the same time (cursor on _022,
  *   dock showed _020). The hovered dot gets a ring, a pinned dot an accent ring, and a pinned dot stays in the dock while the
  *   mouse moves over other dots (click another dot to re-pin, empty space or ✕ to release)
+ * - [2026-11-18] type=perf - The price chart of a symbol / chart size seen before is drawn at once from the renderer's memory
+ *   (dataCache, key = day/code/kind/size/warm-up/NXT) and refreshed in the background - a symbol switch no longer waits for the
+ *   main process / server before drawing
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -81,6 +84,7 @@ const GRIP_MIN = 120;
 const GRIP_MAX = 1600;
 import { IndicatorToggles } from '../components/IndicatorToggles';
 import { barsUpTo } from '../../../shared/replay';
+import { peek, put } from '../dataCache';
 
 const KIND_LABEL: [ChartKind, string][] = [
   ['tick', '틱봉'],
@@ -389,15 +393,19 @@ export function TimelineView() {
     const seq = ++reqSeq.current;
     const changed = lastKey.current !== reqKey;
     lastKey.current = reqKey;
+    const ck = `price:tl/${reqKey}`;
     if (changed) {
-      setPrice(null);
-      setPriceLoading(true);
+      // [2026-11-18] seen before: draw the kept bars now, refresh below
+      const kept = peek<PriceResponse>(ck);
+      setPrice(kept || null);
+      setPriceLoading(!kept);
     }
     void window.api.getPrice({ date: day, code: selected, kind: chart.kind, n: chartN, warmup, nxt: !!sym?.nxt }).then((r) => {
+      if (r.ok) put(ck, r);
       if (seq !== reqSeq.current) return;
       setPriceLoading(false);
-      // a failed live refresh keeps the bars already shown
-      if (r.ok || changed) setPrice(r);
+      // a failed live refresh keeps the bars already shown (also the kept bars of a switch)
+      if (r.ok || (changed && !peek(ck))) setPrice(r);
     });
   }, [reqKey, liveTick, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
 

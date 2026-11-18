@@ -3,6 +3,7 @@
  * - [2026-11-12] type=feat - 가상 매매 tab: the Edge-AI-only paper trades of the viewed day (server r022, no orders) - whether the
  *   running bot has the mode on, the day summary (closed / open, wins, sum and mean net %), the open virtual positions with the
  *   current price and the unrealized %, and the closed trades (newest first). Re-read with every snapshot while the day is live
+ * - [2026-11-18] type=perf - The day's last answer is shown at once when the tab is opened again (dataCache), then refreshed
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -11,6 +12,9 @@ import { NxtTag } from '../components/NxtTag';
 import { fmtInt, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
 import { PAPER_EXIT_KO, paperOpenPct, paperSummary, type PaperTrade } from '../../../shared/paper';
+import { peek, put } from '../dataCache';
+
+type PaperRes = { day: string; ok: boolean; trades: PaperTrade[]; error?: string };
 
 export function PaperView() {
   const snap = useStore((s) => s.snapshot);
@@ -21,13 +25,16 @@ export function PaperView() {
   const setTab = useStore((s) => s.setTab);
   const day = snap?.date || status.date;
   const tick = status.live ? snap?.generatedAt : 0;
-  const [res, setRes] = useState<{ day: string; ok: boolean; trades: PaperTrade[]; error?: string } | null>(null);
+  const [res, setRes] = useState<PaperRes | null>(() => (day ? peek<PaperRes>(`paper:${day}`) || null : null));
 
   useEffect(() => {
     if (!day) return;
     let alive = true;
+    const kept = peek<PaperRes>(`paper:${day}`);
+    if (kept) setRes(kept);
     void window.api.getPaper(day).then((r) => {
-      if (alive) setRes({ day, ...r });
+      if (r.ok) put(`paper:${day}`, { day, ...r });
+      if (alive && (r.ok || !kept)) setRes({ day, ...r });
     });
     return () => {
       alive = false;

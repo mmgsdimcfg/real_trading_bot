@@ -10,11 +10,14 @@
  *   price. Filter 전체 / 봇 매수 / 직접 매수 (a mixed holding shows in both with that side's quantity). Symbols the bot bought
  *   today keep their buy time and last sell evaluation from the log. Falls back to the log-only view (bot buys of today) when the
  *   server has no holdings snapshot yet (older server code, or r003 not started since the update)
+ * - [2026-11-18] type=perf - Holdings and the KIS prices of held symbols: the last answers (dataCache, quotes shared with the chart
+ *   tab) are shown at once when the tab is opened again, then refreshed
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
+import { peek, put, storedAt } from '../dataCache';
 import { condTitle, fmtInt, fmtKrw, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
 import { feeLabel, pnlKrw, pnlPct } from '../../../shared/fees';
@@ -70,8 +73,9 @@ export function PositionsView() {
   const net = useStore((s) => s.feesIncluded);
   const setNet = useStore((s) => s.setFeesIncluded);
   const [quotes, setQuotes] = useState<Record<string, { q?: MarketQuote; error?: string; at: number }>>({});
+  const [doc, setDocState] = useState<HoldingsDoc | null>(() => peek<HoldingsDoc>('positions:holdings') || null);
+  const setDoc = (v: HoldingsDoc) => setDocState(put('positions:holdings', v));
   const [now, setNow] = useState(Date.now());
-  const [doc, setDoc] = useState<HoldingsDoc | null>(null);
   const [docErr, setDocErr] = useState<string | undefined>();
   const [filter, setFilter] = useState<OriginFilter>('all');
   const connected = status.conn === 'connected';
@@ -144,9 +148,17 @@ export function PositionsView() {
   useEffect(() => {
     if (!codesKey || !connected) return;
     let alive = true;
+    // kept prices (dataCache, also filled by the chart tab) first, refreshed one by one below
+    const kept: Record<string, { q?: MarketQuote; at: number }> = {};
+    for (const code of codesKey.split(',')) {
+      const q = peek<MarketQuote>(`quote:${code}`);
+      if (q) kept[code] = { q, at: storedAt(`quote:${code}`) };
+    }
+    if (Object.keys(kept).length) setQuotes((m) => ({ ...kept, ...m }));
     const load = async () => {
       for (const code of codesKey.split(',')) {
         const r = await window.api.getQuote(code);
+        if (r.ok && r.data) put(`quote:${code}`, r.data);
         if (!alive) return;
         setQuotes((m) => ({ ...m, [code]: { q: r.ok ? r.data : undefined, error: r.ok ? undefined : r.error, at: Date.now() } }));
       }

@@ -15,10 +15,12 @@
  *   hosts side by side (version mismatches marked), KIS config import from the Pi and the one-time setup steps
  * - [2026-11-05] type=feat - "고급: 전체 설정값" (collapsed): `schema --all` (~380 r001 constants) with a search box and the same value
  *   editor as the pipeline panel (only changed keys are sent in one `set`); the read-only note now lists the r016 control calls
+ * - [2026-11-18] type=perf - "고급: 전체 설정값": the last key list (dataCache) is shown while the fresh one loads
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
+import { peek, put } from '../dataCache';
 import type { Settings } from '../../../shared/types';
 import { fmtInt } from '../lib';
 import { ymdDash } from '../../../shared/time';
@@ -552,11 +554,14 @@ function AdvancedValues() {
   useEffect(() => {
     if (!open || !connected) return;
     let alive = true;
-    setErr('불러오는 중…');
+    // [2026-11-18] the last list (dataCache) is shown while the fresh one loads (each read starts Python on the server)
+    const kept = peek<SchemaDoc>('settings:schema');
+    if (kept) setDoc(kept);
+    setErr(kept ? '최근 목록 표시 중 - 새로 불러오는 중…' : '불러오는 중…');
     void window.api.ctlSchema(true).then((r) => {
       if (!alive) return;
       if (r.ok && r.data) {
-        setDoc(r.data);
+        setDoc(put('settings:schema', r.data));
         setErr('');
       } else setErr(`불러오기 실패: ${r.error}`);
     });

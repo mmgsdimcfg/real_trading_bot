@@ -22,11 +22,14 @@
  *   external-r003 / restart note on the right; 미적용 변경 and 최근 변경 이력 as cards. [정지] is red while r003 runs
  * - [2026-11-11] type=feat - "!" next to the profile select (ProfileInfo): one-line summary of conservative / neutral / aggressive
  *   and a table of the keys each profile changes (server risk_profiles/*.json), plus what stays the same in all of them
+ * - [2026-11-18] type=perf - Peer status, change history, override list and Edge AI model: the last answers (dataCache) are shown
+ *   at once when the tab is opened again, then refreshed
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, type AutoSellMode, type EdgeModelInfo, type TradeMode } from '../../../shared/paper';
 import { useStore } from '../store';
+import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
 import {
   botSummary,
@@ -166,7 +169,8 @@ function HostPanel() {
   const mode: RunMode = (connected && status.mode) || settings?.runMode || 'remote';
   const peerKind: RunMode = mode === 'local' ? 'remote' : 'local';
   const self = connected ? control.status : null;
-  const [peer, setPeer] = useState<R016Status | null>(null);
+  // [2026-11-18] last answers (dataCache) shown at once when the tab is opened again, then refreshed
+  const [peer, setPeer] = useState<R016Status | null>(() => peek<R016Status>('control:peer') || null);
   const [peerErr, setPeerErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -178,7 +182,7 @@ function HostPanel() {
     setPeerErr('');
     const r = await window.api.peerStatus();
     setBusy(false);
-    if (r.ok && r.data) setPeer(r.data);
+    if (r.ok && r.data) setPeer(put('control:peer', r.data));
     else {
       setPeer(null);
       setPeerErr(r.notConfigured ? `설정되지 않음 (${r.error})` : `상태 확인 실패: ${r.error}`);
@@ -374,9 +378,9 @@ export function ControlView() {
   const bumpHistory = useStore((s) => s.bumpHistory);
   const st = control.status;
   const [mode, setMode] = useState<{ dryRun: boolean; profile: RiskProfile } | null>(null);
-  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [history, setHistory] = useState<HistoryRow[]>(() => peek<HistoryRow[]>('control:history') || []);
   const [histErr, setHistErr] = useState('');
-  const [overrides, setOverrides] = useState<SchemaKey[]>([]);
+  const [overrides, setOverrides] = useState<SchemaKey[]>(() => peek<SchemaKey[]>('control:overrides') || []);
   const [msg, setMsg] = useState('');
 
   // form follows the server until the user changes it
@@ -409,11 +413,15 @@ export function ControlView() {
     }
   };
   // [2026-11-12] the Edge AI model in use (current_meta.json of the connected host), re-read every minute like the bot does
-  const [edgeModel, setEdgeModel] = useState<EdgeModelInfo | null | undefined>(undefined);
+  const [edgeModel, setEdgeModel] = useState<EdgeModelInfo | null | undefined>(() => peek<EdgeModelInfo | null>('control:edge'));
   useEffect(() => {
     if (!connected) return setEdgeModel(undefined);
     let alive = true;
-    const load = () => void window.api.getEdgeModel().then((r) => alive && setEdgeModel(r.ok ? r.model : undefined));
+    const load = () =>
+      void window.api.getEdgeModel().then((r) => {
+        if (r.ok) put('control:edge', r.model);
+        if (alive) setEdgeModel(r.ok ? r.model : peek<EdgeModelInfo | null>('control:edge'));
+      });
     load();
     const id = window.setInterval(load, 60000);
     return () => {
@@ -482,11 +490,12 @@ export function ControlView() {
     void window.api.ctlHistory(20).then((r) => {
       if (!alive) return;
       if (r.ok && r.data) {
-        setHistory([...r.data.rows].reverse());
+        setHistory(put('control:history', [...r.data.rows].reverse()));
         setHistErr('');
       } else setHistErr(r.error || '이력 조회 실패');
     });
     void window.api.ctlSchema(false).then((r) => {
+      if (r.ok && r.data) put('control:overrides', r.data.keys.filter((k) => k.has_override));
       if (alive && r.ok && r.data) setOverrides(r.data.keys.filter((k) => k.has_override));
     });
     return () => {

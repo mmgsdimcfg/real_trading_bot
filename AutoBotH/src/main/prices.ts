@@ -37,6 +37,13 @@
  *   (3) Tick chart without a tick file: the day's 1-minute bars are shown instead of an error, with a note
  * - [2026-11-12] type=feat - liveQuotes(date, upTo): current price per watched symbol from r003's quote log
  *   (runtime/data/live_runtime/quote_ticks_<date>.csv), read incrementally by byte offset like the tick files
+ * - [2026-11-18] type=perf - Symbol switches re-read whole files / re-asked the server: one 12-entry limit was shared by every
+ *   cache and each symbol takes two tick entries (the day + the warm-up day), so cycling through ~10 watched symbols evicted them
+ *   and today's tick file (several MB over SFTP) was read from byte 0 again. Limits are now per cache (ticks / 1-minute / daily 40,
+ *   file lists 160, server answers 80) and a read marks the entry recently used. KIS minute bars (tick-gap fill, NXT pre/after
+ *   market) are kept while they still answer the request: a past day's for good, gap fills while they cover every missing minute,
+ *   the NXT combined minutes fetched after 09:00 until the KRX close (the pre-market minutes no longer change) - instead of a new
+ *   r016 call (Python on the Pi + KIS) every minute
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
@@ -83,7 +90,8 @@ export interface PrefetchProgress {
 }
 
 const MAX_READ = 4 * 1024 * 1024;
-const MAX_ENTRIES = 12;
+/** [2026-11-18] entries kept per cache (was one limit of 12 for all) */
+const LIMIT = { ticks: 40, files: 160, min1: 40, daily: 40, server: 80, fill: 80 } as const;
 
 interface TickCache {
   off: number;
@@ -92,7 +100,6 @@ interface TickCache {
   ticks: Tick[];
 }
 
-/** keep at most MAX_ENTRIES (oldest inserted dropped) */
 /** KIS minute bars for gap filling are re-asked at most this often per day/code (the server caches them too) */
 const KIS_FILL_TTL_MS = 60000;
 /** r016 `bars` answers reused this long in NXT-only hours (each call starts Python; the chart refreshes with every log poll) */
@@ -110,11 +117,30 @@ export function mergeOutsideKrx(base: Bar[], outside: Bar[]): Bar[] {
   return [...outside, ...base.filter((b) => !taken.has(Math.floor(b.t / 60000)))].sort((a, b) => a.t - b.t);
 }
 
-function remember<K, V>(m: Map<K, V>, k: K, v: V): V {
+/** keep at most `limit` entries (least recently used dropped) */
+function remember<K, V>(m: Map<K, V>, k: K, v: V, limit: number): V {
   m.delete(k);
   m.set(k, v);
-  while (m.size > MAX_ENTRIES) m.delete(m.keys().next().value as K);
+  while (m.size > limit) m.delete(m.keys().next().value as K);
   return v;
+}
+
+/** the entry of `k`, marked recently used (moved to the end, so it is dropped last) */
+function touch<K, V>(m: Map<K, V>, k: K): V | undefined {
+  const v = m.get(k);
+  if (v !== undefined) {
+    m.delete(k);
+    m.set(k, v);
+  }
+  return v;
+}
+
+/** [2026-11-18] every minute of the gap ranges ([start, end) ms) has a bar in `bars` */
+export function coversGaps(bars: Bar[], gaps: [number, number][]): boolean {
+  if (!gaps.length) return true;
+  const have = new Set(bars.map((b) => Math.floor(b.t / 60000)));
+  for (const [a, b] of gaps) for (let m = Math.floor(a / 60000); m < Math.floor(b / 60000); m++) if (!have.has(m)) return false;
+  return true;
 }
 
 /** r016 `bars` result: null = unavailable (old server / no client) */
@@ -234,7 +260,7 @@ export class PriceService {
       const isDaily = args.includes('day');
       const now = kstNowIso();
       const ttl = !res.ok ? CHART_CACHE_MS.failed : isDaily ? CHART_CACHE_MS.daily : isMarketHours(now) ? 0 : isNxtOnlyHours(now) ? NXT_HOURS_TTL_MS : CHART_CACHE_MS.intradayIdle;
-      if (ttl > 0) remember(this.serverCache, key, { at: Date.now(), ttl, res });
+      if (ttl > 0) remember(this.serverCache, key, { at: Date.now(), ttl, res }, LIMIT.server);
     }
     return res;
   }
@@ -243,10 +269,12 @@ export class PriceService {
    * [2026-11-11] The day's KIS 1-minute bars (r016 `bars --kind min --source kis`) for filling minutes the tick collector missed.
    * One server call per KIS_FILL_TTL_MS per day/code - the chart refreshes with every snapshot, the fill does not have to.
    */
-  private async kisMinuteFill(date: string, code: string, unified = false): Promise<{ bars?: Bar[]; error?: string }> {
+  private async kisMinuteFill(date: string, code: string, unified = false, gaps: [number, number][] = []): Promise<{ bars?: Bar[]; error?: string }> {
     const key = `${date}/${code}${unified ? '/un' : ''}`;
-    const hit = this.fillCache.get(key);
-    if (hit && Date.now() - hit.at < KIS_FILL_TTL_MS) return hit.res;
+    const hit = touch(this.fillCache, key);
+    if (hit && (Date.now() - hit.at < KIS_FILL_TTL_MS || (!!hit.res.bars?.length && this.fillStillGood(date, unified, hit.at, hit.res.bars, gaps)))) {
+      return hit.res;
+    }
     let res: { bars?: Bar[]; error?: string };
     const c = this.r016();
     if (!c || this.noServerBars) res = { error: '서버에 bars 명령이 없습니다 (이전 버전 r016)' };
@@ -260,8 +288,20 @@ export class PriceService {
         res = { error: String((e as Error)?.message || e).split('\n')[0] };
       }
     }
-    remember(this.fillCache, key, { at: Date.now(), res });
+    remember(this.fillCache, key, { at: Date.now(), res }, LIMIT.fill);
     return res;
+  }
+
+  /**
+   * [2026-11-18] a kept KIS minute answer still serves the request (no new r016 call): a past day's never changes; gap fill = it
+   * has a bar for every missing minute; NXT combined minutes = fetched after 09:00 of that day while the KRX session is still open
+   * (the pre-market minutes are final, the after-market ones start at 15:30)
+   */
+  private fillStillGood(date: string, unified: boolean, at: number, bars: Bar[], gaps: [number, number][]): boolean {
+    if (this.isPast(date)) return true;
+    if (!unified) return coversGaps(bars, gaps);
+    const day0 = ymdEpoch(date); // 00:00 KST of the day (epoch ms)
+    return at >= day0 + 9 * 3600000 && Date.now() < day0 + (15 * 60 + 30) * 60000;
   }
 
   /** r016 `bars` (read-only). null = unavailable (old server / no client) */
@@ -293,7 +333,7 @@ export class PriceService {
     const key = `${date}/${code}`;
     const fc = this.cached(date);
     if (fc) {
-      const have = this.ticks.get(key);
+      const have = touch(this.ticks, key);
       if (have) return have.ticks;
       const buf = await fc.file(date, `ticks/${code}.csv`, path);
       if (!buf) return null;
@@ -304,15 +344,15 @@ export class PriceService {
         c.cols = tickHeader(lines[0]);
         for (const t of parseTickLines(lines.slice(1).filter(Boolean), c.cols)) c.ticks.push(t);
       }
-      return remember(this.ticks, key, c).ticks;
+      return remember(this.ticks, key, c, LIMIT.ticks).ticks;
     }
     const st = await this.host.stat(path);
     if (!st) {
       this.ticks.delete(key);
       return null;
     }
-    let c = this.ticks.get(key);
-    if (!c || st.size < c.off) c = remember(this.ticks, key, { off: 0, lb: new LineBuffer(), ticks: [] });
+    let c = touch(this.ticks, key);
+    if (!c || st.size < c.off) c = remember(this.ticks, key, { off: 0, lb: new LineBuffer(), ticks: [] }, LIMIT.ticks);
     while (c.off < st.size) {
       const end = Math.min(st.size, c.off + MAX_READ);
       const buf = await this.host.readRange(path, c.off, end);
@@ -331,12 +371,12 @@ export class PriceService {
   /** file names in runtime/data/<date> that start with "<code>_" */
   private async filesFor(date: string, code: string, live: boolean): Promise<string[]> {
     const key = `${date}/${code}`;
-    const hit = this.files.get(key);
+    const hit = touch(this.files, key);
     if (hit && (!live || Date.now() - hit.at < 60000)) return hit.names;
     const ls = () => this.host.listPrefix(this.dataDir(date), `${code}_`);
     const fc = this.cached(date);
     const names = fc ? await fc.list(date, code, ls) : await ls();
-    return remember(this.files, key, { at: Date.now(), names }).names;
+    return remember(this.files, key, { at: Date.now(), names }, LIMIT.files).names;
   }
 
   /** real 1-minute bars from the 10-second file (null = no file) */
@@ -346,17 +386,17 @@ export class PriceService {
     const path = `${this.dataDir(date)}/${name}`;
     const fc = this.cached(date);
     if (fc) {
-      const hit = this.min1.get(path);
+      const hit = touch(this.min1, path);
       if (hit) return hit.bars;
       const buf = await fc.file(date, `data/${name}`, path);
-      return buf ? remember(this.min1, path, { size: buf.length, bars: parse10sMinuteBars(buf.toString('utf8')) }).bars : null;
+      return buf ? remember(this.min1, path, { size: buf.length, bars: parse10sMinuteBars(buf.toString('utf8')) }, LIMIT.min1).bars : null;
     }
     const st = await this.host.stat(path);
     if (!st) return null;
-    const hit = this.min1.get(path);
+    const hit = touch(this.min1, path);
     if (hit && hit.size === st.size) return hit.bars;
     const text = (await this.host.readRange(path, 0, st.size)).toString('utf8');
-    return remember(this.min1, path, { size: st.size, bars: parse10sMinuteBars(text) }).bars;
+    return remember(this.min1, path, { size: st.size, bars: parse10sMinuteBars(text) }, LIMIT.min1).bars;
   }
 
   /** YYYYMMDD folders under runtime/data (cached 10 min) */
@@ -385,18 +425,18 @@ export class PriceService {
       const path = `${this.dataDir(folder)}/${name}`;
       const fc = this.cached(folder);
       if (fc) {
-        const hit = this.daily.get(path);
+        const hit = touch(this.daily, path);
         if (hit) return { bars: hit.bars, folder };
         const buf = await fc.file(folder, `data/${name}`, path);
         if (!buf) continue;
-        return { bars: remember(this.daily, path, { size: buf.length, bars: parseDailyCsv(buf.toString('utf8')) }).bars, folder };
+        return { bars: remember(this.daily, path, { size: buf.length, bars: parseDailyCsv(buf.toString('utf8')) }, LIMIT.daily).bars, folder };
       }
       const st = await this.host.stat(path);
       if (!st) continue;
-      const hit = this.daily.get(path);
+      const hit = touch(this.daily, path);
       if (hit && hit.size === st.size) return { bars: hit.bars, folder };
       const text = (await this.host.readRange(path, 0, st.size)).toString('utf8');
-      return { bars: remember(this.daily, path, { size: st.size, bars: parseDailyCsv(text) }).bars, folder };
+      return { bars: remember(this.daily, path, { size: st.size, bars: parseDailyCsv(text) }, LIMIT.daily).bars, folder };
     }
     return null;
   }
@@ -530,7 +570,7 @@ export class PriceService {
         let filled = 0;
         let base = m1;
         if (gaps.length) {
-          const fill = await this.kisMinuteFill(date, code);
+          const fill = await this.kisMinuteFill(date, code, false, gaps);
           if (fill.bars?.length) {
             const merged = mergeMinuteBars(fill.bars, m1);
             filled = Math.max(0, merged.length - m1.length);
