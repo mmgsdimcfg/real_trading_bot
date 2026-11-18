@@ -41,13 +41,24 @@ class TestStepsAndArgv(unittest.TestCase):
 
     def test_step_combinations(self):
         names = lambda **kw: [s.name for s in r021.job_steps("postclose", r021.JobArgs(date="20261110", **kw))]  # noqa: E731
-        self.assertEqual(names(), ["collect", "history", "scan", "apply"])
+        self.assertEqual(names(), ["collect", "history", "hi52", "scan", "apply"])
         self.assertEqual(names(collect=False), ["scan", "apply"])
         self.assertEqual(names(collect=False, scan=False), ["apply"])
-        self.assertEqual(names(apply=False), ["collect", "history", "scan"])
-        self.assertEqual(names(edge_ai=True, apply=False), ["collect", "history", "scan", "edge_dataset", "edge_train", "edge_check"])
+        self.assertEqual(names(apply=False), ["collect", "history", "hi52", "scan"])
+        self.assertEqual(names(edge_ai=True, apply=False),
+                         ["collect", "history", "hi52", "scan", "edge_dataset", "edge_train", "edge_check"])
         self.assertEqual([s.name for s in r021.job_steps("scan", r021.JobArgs(date="20261110", apply=False))], ["scan"])
         self.assertEqual([s.name for s in r021.job_steps("collect", r021.JobArgs(date="20261110", scan=False, apply=False))], ["collect"])
+
+    def test_hi52_step_logs_the_job_date_and_is_optional(self):
+        """[2026-11-18] hi52 = g042 --date D --evaluate, not required, only in postclose (follows the collect switch)."""
+        st = r021.STEPS["hi52"]
+        argv = st.build(r021.JobArgs(date="20261118"), {})
+        self.assertTrue(argv[0].endswith("g042_hi52_signal_log.py"))
+        self.assertEqual(argv[1:], ["--date", "20261118", "--evaluate"])
+        self.assertFalse(st.required)
+        for job in ("collect", "history", "scan"):
+            self.assertNotIn("hi52", [s.name for s in r021.job_steps(job, r021.JobArgs(date="20261118"))])
 
     def test_keep_watchlist_is_no_apply(self):
         import argparse

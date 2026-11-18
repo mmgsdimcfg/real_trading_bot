@@ -15,12 +15,14 @@ CPU 를 많이 쓰는 일이다.
 작업 (단계는 순서대로, 각 단계 = data_simulation 스크립트 한 번 실행):
   collect    g001 --date D                                   분봉/일봉 수집 (KIS, 오래 걸림)
   history    g025 --append D                                 종목별 일봉 이력 갱신 (AutoBotH 일/주/월봉)
+  hi52       g042 --date D --evaluate                        HI52 스윙 신호 전진 기록 + 평가 리포트 (주문 없음, postclose 에서만)
   scan       g002 --date D --no-export-watchlist             그 날짜의 선별 파일(_D_picks.txt, 리포트)만 만든다 (r004 는 안 건드림)
              -> apply                                         r016 watchlist apply --date D: 선별 파일을 r004 에 반영(백업/이력)
   edge_ai    g013 --live, g014, g024 --edge-ai                Edge AI 데이터셋/학습/점검 (g015_edge_ai_daily.sh 와 같음)
   universe   g010                                             수집 대상 종목 목록(g004) 갱신
-  postclose  collect -> history -> scan -> apply [-> edge_ai] 장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지 않는다
-             (오래된 데이터로 감시목록을 만들지 않게). history 실패는 건너뛰고 계속.
+  postclose  collect -> history -> hi52 -> scan -> apply [-> edge_ai] 장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지
+             않는다 (오래된 데이터로 감시목록을 만들지 않게). history / hi52 실패는 건너뛰고 계속. hi52 는 collect 와 함께 켜지고
+             꺼진다 (--no-collect 면 생략 - 이력이 갱신되지 않은 날짜를 live 로 기록하지 않게).
 
   [2026-11-11] 단계 선택 (postclose / scan): --no-collect (수집+이력 생략), --no-scan (선별 생략), --no-apply (r004 반영 생략).
     1+2+3 = 기본, 2+3 = --no-collect (그 날짜 폴더에 수집 데이터가 있어야 함), 3 = --no-collect --no-scan (선별 파일이 있어야 함).
@@ -38,6 +40,11 @@ CPU 를 많이 쓰는 일이다.
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-18] type=feat owner=claude
+    summary: postclose 에 hi52 단계(g042_hi52_signal_log.py --date D --evaluate, required=False) 추가 - history 다음, scan 앞.
+      collect 스위치를 따른다(--no-collect 면 생략). HI52 스윙 신호를 <runtime>/data/hi52_signals 에 기록하고 리포트를 다시 쓴다.
+    impact: tooling (주문/감시목록 불변. 실패해도 작업은 계속)
+    compatibility: backward-compatible (새 단계 이름 "hi52" - AutoBotH 단계 라벨과 계약 문서 autoboth_local_mode_20261110.md 갱신)
 - [2026-11-17] type=feat owner=claude
     summary: `job dates` - <runtime>/data 의 날짜 폴더 목록과 폴더마다 collected(g001 완료 표시 파일) / scannable(10초 파일 있음) /
       picks(g002 선별 파일 있음). AutoBotH 장 마감 파이프라인 날짜 달력이 저장된 날짜를 표시한다.
@@ -145,6 +152,8 @@ STEPS: dict[str, Step] = {
     "collect": Step("collect", lambda a, rc: _py("g001_data_collect_symbols_daily.py", "--date", a.date,
                                                  "--workers", _workers(a, 4))),
     "history": Step("history", lambda a, rc: _py("g025_daily_history.py", "--append", a.date), required=False),
+    # [2026-11-18] HI52 swing signal forward log + report (no orders); a failure never stops the pipeline
+    "hi52": Step("hi52", lambda a, rc: _py("g042_hi52_signal_log.py", "--date", a.date, "--evaluate"), required=False),
     "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--no-export-watchlist",
                                            *(["--notify-email"] if a.email else []))),
     # r004 <- <runtime>/data/D/_D_picks.txt through r016 (write lock, backup, history, for_trading_day header, collector note)
@@ -166,10 +175,11 @@ JOBS: dict[str, dict] = {
     "scan": {"title": "감시 종목 선별 (g002 -> r004)", "steps": ["scan", "apply"]},
     "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check"]},
     "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
-    "postclose": {"title": "장 마감 파이프라인 (수집 -> 이력 -> 선별 -> r004)", "steps": ["collect", "history", "scan", "apply"]},
+    "postclose": {"title": "장 마감 파이프라인 (수집 -> 이력 -> HI52 기록 -> 선별 -> r004)",
+                  "steps": ["collect", "history", "hi52", "scan", "apply"]},
 }
 
-STEP_SWITCH = {"collect": "collect", "history": "collect", "scan": "scan", "apply": "apply"}  # step -> JobArgs flag
+STEP_SWITCH = {"collect": "collect", "history": "collect", "hi52": "collect", "scan": "scan", "apply": "apply"}  # step -> JobArgs flag
 
 
 def job_steps(name: str, args: JobArgs) -> list[Step]:

@@ -30,6 +30,8 @@
  *   "Edge AI 포함" box looked like a bug
  * - [2026-11-17] type=feat - The 기준일 calendar marks the dates that already hold data (r016 `job dates`): bold + dot = collected,
  *   accent dot = picks too, muted dot = files without the collected marker. Loaded with the tab, again when the pipeline run ends
+ * - [2026-11-18] type=feat - New pipeline step hi52 (r021: g042 HI52 swing signal log + report after the daily history, no orders):
+ *   step label "HI52 기록", ① 수집 now reads 수집 → 이력 → HI52 기록 (it follows the collect checkbox)
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -71,7 +73,7 @@ const shortCmd = (argv: string[]) => {
 const VISIBLE_JOBS = ['postclose', 'edge_ai', 'universe'];
 
 const DESC: Record<string, string> = {
-  postclose: '기준일을 고르고 실행할 단계를 체크 · ① 수집(g001 분봉·일봉 + g025 일봉 이력) → ② 선별(g002) → ③ r004 감시목록 반영 · 앞 단계를 끄면 그 산출물이 이미 있어야 합니다',
+  postclose: '기준일을 고르고 실행할 단계를 체크 · ① 수집(g001 분봉·일봉 + g025 일봉 이력 + g042 HI52 신호 기록) → ② 선별(g002) → ③ r004 감시목록 반영 · 앞 단계를 끄면 그 산출물이 이미 있어야 합니다',
   edge_ai: 'Edge AI 데이터셋 생성 → 학습 → 점검 · CPU 많이 씀',
   universe: '수집 대상 종목 목록(g004) 갱신 · 신규상장/상장폐지/위험종목',
   collect: '분봉·일봉 데이터 수집 · KIS API 전 종목 (오래 걸림)',
@@ -79,7 +81,7 @@ const DESC: Record<string, string> = {
   scan: '수집된 데이터로 감시 종목 선별 후 r004 반영',
 };
 
-const STEP_LABEL: Record<string, string> = { collect: '수집', history: '이력', scan: '선별', apply: 'r004 반영', edge_dataset: 'Edge AI 데이터셋', edge_train: 'Edge AI 학습', edge_check: 'Edge AI 점검', universe: '유니버스' };
+const STEP_LABEL: Record<string, string> = { collect: '수집', history: '이력', hi52: 'HI52 기록', scan: '선별', apply: 'r004 반영', edge_dataset: 'Edge AI 데이터셋', edge_train: 'Edge AI 학습', edge_check: 'Edge AI 점검', universe: '유니버스' };
 
 /** state as a dot + text (.st), colored by kind */
 function stateClass(st: string | undefined) {
@@ -192,7 +194,7 @@ export function JobsView() {
     else if (step.apply && !step.scan && infoOk && !infoOk.picks) problem = `${date} 선별 결과가 없습니다 - ② 선별을 켜세요`;
   }
   const planText = chosen.length
-    ? chosen.map((k) => ({ collect: '수집 → 이력', scan: step.scan && email ? '선별(메일 전송)' : '선별', apply: 'r004 반영' })[k]).join(' → ') + (edgeAi ? ' → Edge AI' : '')
+    ? chosen.map((k) => ({ collect: '수집 → 이력 → HI52 기록', scan: step.scan && email ? '선별(메일 전송)' : '선별', apply: 'r004 반영' })[k]).join(' → ') + (edgeAi ? ' → Edge AI' : '')
     : '';
 
   const start = async () => {

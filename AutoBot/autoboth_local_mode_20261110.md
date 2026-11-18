@@ -69,12 +69,12 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 
 - 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --no-export-watchlist ->
   `apply`), `apply`(r016 watchlist apply --date D: 그 날짜의 `_D_picks.txt` 를 r004 로 - 백업/이력/다음 거래일 헤더), `edge_ai`(g013 --live,
-  g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> scan -> apply [-> edge_ai]). [2026-11-11] 단계 선택:
+  g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> hi52 -> scan -> apply [-> edge_ai]). [2026-11-11] 단계 선택:
   `--no-collect`(수집+이력 생략, 그 날짜에 10초봉 파일이 있어야 함), `--no-scan`(선별 생략, 선별 파일이 있어야 함), `--no-apply`(r004 반영
   생략; `--keep-watchlist` 는 옛 이름). 앞 단계 산출물이 없으면 start 가 `{ok:false, error}` 로 거부. 앱의 장 마감 파이프라인 카드는
   ① 수집 ② 선별 ③ r004 반영 체크로 이 스위치를 만든다(1+2+3 / 2+3 / 3). apply 는 선별 파일이 없거나 이 실행의 scan 보다 오래되면
-  건너뛴다(step state=skipped + note, 작업은 done; 상태 JSON `note`). collect/scan/apply 실패 시 뒤 단계 생략, history 실패는
-  계속. [2026-11-11] `--email`(postclose/scan): scan 단계를 `g002 --notify-email` 로 실행해 선별 종목(본문)과 리포트 파일(첨부)을
+  건너뛴다(step state=skipped + note, 작업은 done; 상태 JSON `note`). collect/scan/apply 실패 시 뒤 단계 생략, history / hi52 실패는
+  계속. [2026-11-18] `hi52` 단계(g042 --date D --evaluate, postclose 에만, collect 스위치를 따름): HI52 스윙 신호 전진 기록 - §11. [2026-11-11] `--email`(postclose/scan): scan 단계를 `g002 --notify-email` 로 실행해 선별 종목(본문)과 리포트 파일(첨부)을
   메일로 보낸다(g016, 실행 호스트의 `~/.mail/mail_config.json`; scan 단계가 없으면 보내지 않음, 전송 실패는 작업 실패가 아님 -
   로그의 `[EMAIL]` 줄). 앱은 파이프라인 카드의 "선별 결과 메일" 체크와 설정 `postcloseEmail`(자동 실행)로 붙인다.
   `--scheduled`: 앱 스케줄러가 시작한 실행 표시(상태 JSON `args.scheduled`, 실행 내용은 같음 - 앱이 "자동 실행 / 수동 실행" 표시).
@@ -234,3 +234,18 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   기존 접두어 `MARKET_REGIME_DOWN` 그대로라 앱 매핑은 `_010`. 설정 키는 `r016 conditions` 의 `_010` defines 에 포함.
 - g040(과거 일봉 백필): `<runtime>/data/daily_backfill/<code>.csv` (+ `_progress.json`) - daily_history 와 별도 폴더, 앱은 읽지 않는다.
   파이에서 장 외 시간(평일 20:10~07:40, 주말 종일)에 2회/초로 받고, 노트북은 `g041_pull_daily_backfill.ps1 -PiHost ..` 로 가져온다.
+
+## 11. HI52 스윙 신호 기록 (2026-11-18)
+- r021 `postclose` 의 새 단계 `hi52` = `data_simulation/g042_hi52_signal_log.py --date D --evaluate` (history 다음, scan 앞, 실패해도
+  작업은 계속, `--no-collect` 면 생략). 주문 없음, r003/r004 불변. 작업 목록 JSON 의 steps 에 `"hi52"` 가 추가된다 - 앱 단계 라벨 "HI52 기록".
+  종료 코드: 0 정상(주말 포함) / 2 입력 없음(일봉 파일·지수 ETF 파일 없음) / 3 다른 g042 실행 중(`.g042.lock`) / 4 평일인데 D 의 지수 ETF
+  일봉이 없음(휴장일 또는 g025 미반영) - 단계 rc 로 앱에 그대로 보인다.
+- 산출물 `<runtime>/data/hi52_signals/`: `days.csv` = 기록 원본(날짜별 지수 게이트 UP/DOWN/NA, 신호 수, provisional, recorded, 그날
+  신호 목록 JSON - 파일 하나의 원자적 교체가 커밋), `signals.csv`(days.csv 에서 다시 만드는 보기용 평면 표), `evaluation.csv`(다음날
+  시가 매수 -> 20/40거래일 종가 매도 순수익률과 상태, 같은 날 유니버스 평균 대비 초과 - 매 실행 전체 재계산), `report.md`.
+  앱은 아직 읽지 않는다. `g042 --status` 는 한 줄 JSON(last_date, last_live, last_gate, signals, report_at).
+- recorded: `live` = 데이터의 최신 거래일을 다음 평일 09:00 전에 기록(전진 검증은 이것만), `late` = 지난 날짜 재실행 또는 개장 후 기록,
+  `backfill` = `--backfill-from`. live 날짜는 late/backfill 실행이 덮어쓰지 않는다.
+- 규칙(연구 runtime/research/08_daily_swing 와 같음): 종가 >= 2,000, 20일 평균 거래대금 >= 50억, 최근 60행에 절댓값 30.5% 초과 이동이나
+  시가 갭 없음, 지수 ETF 제외, 종가가 직전 250(500)행 최고 종가 이상이고 상승일; 게이트 = 069500/229200 모두 종가 > MA60 이고 MA60 이
+  10행 전보다 높음. 평가: 보유 구간에 30.5% 초과 이동이 있으면 제외, 청산일 종가가 없으면(정지/폐지) 구간 안 마지막 종가로 청산.
