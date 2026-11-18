@@ -27,6 +27,11 @@
  *   answer is kept (dataCache + the main process's disk cache for past days), so panning back again does not ask the server
  * - [2026-11-18] type=feat - 년봉 (yearly bars from the daily history, which the server now extends back to 2018 with daily_backfill);
  *   the side panel's high / low uses the last 250 trading days (the history is no longer ~200 days)
+ * - [2026-11-18] type=feat - Side panel: 시가 / 고가 / 저가 / 매도·매수 1호가 show their change vs the previous close next to the price
+ *   (like 52주 최고 / 최저)
+ * - [2026-11-18] type=feat - Korean price colours everywhere in the panel: every price is red above / blue below the previous close
+ *   (시가 / 고가 / 저가 / 1호가 / 52주 / N일 최고·최저, data window 시고저종) and every % is red / blue by its own sign. The best
+ *   ask / bid were coloured by side (ask blue, bid red) before
  * - [2026-11-18] type=feat - Data window: date + time (seconds) of the hovered bar and its change vs the previous day's close
  *   (intraday: the daily bar before that day; D/W/M: the previous bar), the price pane shows the same line at its top left
  */
@@ -75,6 +80,18 @@ const ok = (v: number | undefined): v is number => v !== undefined && v === v &&
 const sign = (v: number) => (v > 0 ? '▲' : v < 0 ? '▼' : '');
 const cls = (v: number | undefined) => (!ok(v) || v === 0 ? '' : v > 0 ? 'gain' : 'loss');
 const pct = (a: number, b: number) => ((a - b) / b) * 100;
+/** [2026-11-18] colour of a price vs the reference close (red above, blue below) */
+const vsCls = (v: number | undefined, base: number | undefined) => (ok(v) && ok(base) ? cls(v - base) : '');
+const signed = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`;
+/** [2026-11-18] " (+1.23%)" after a price: change vs the reference close (nothing when either is unknown) */
+const VsPrev = ({ v, base }: { v: number | undefined; base: number | undefined }) =>
+  ok(v) && ok(base) && base > 0 ? (
+    <small className={cls(v - base)}>
+      {' '}
+      ({v >= base ? '+' : ''}
+      {pct(v, base).toFixed(2)}%)
+    </small>
+  ) : null;
 
 interface Signal {
   name: string;
@@ -540,11 +557,20 @@ export function ChartView() {
               <span>전일 종가</span>
               <b>{fmtInt(prevC)}</b>
               <span>시가</span>
-              <b className={cls(ok(dOpen) && ok(prevC) ? dOpen - prevC : undefined)}>{fmtInt(dOpen)}</b>
+              <b className={cls(ok(dOpen) && ok(prevC) ? dOpen - prevC : undefined)}>
+                {fmtInt(dOpen)}
+                <VsPrev v={dOpen} base={prevC} />
+              </b>
               <span>고가</span>
-              <b className={cls(ok(dHigh) && ok(prevC) ? dHigh - prevC : undefined)}>{fmtInt(dHigh)}</b>
+              <b className={cls(ok(dHigh) && ok(prevC) ? dHigh - prevC : undefined)}>
+                {fmtInt(dHigh)}
+                <VsPrev v={dHigh} base={prevC} />
+              </b>
               <span>저가</span>
-              <b className={cls(ok(dLow) && ok(prevC) ? dLow - prevC : undefined)}>{fmtInt(dLow)}</b>
+              <b className={cls(ok(dLow) && ok(prevC) ? dLow - prevC : undefined)}>
+                {fmtInt(dLow)}
+                <VsPrev v={dLow} base={prevC} />
+              </b>
               <span>거래량</span>
               <b>{fmtInt(dVol)}</b>
               {useQ?.amount ? (
@@ -556,9 +582,15 @@ export function ChartView() {
               {(ask1 || bid1) && (
                 <>
                   <span>매도 1호가</span>
-                  <b className="loss">{fmtInt(ask1)}</b>
+                  <b className={cls(ok(ask1) && ok(prevC) ? ask1 - prevC : undefined)}>
+                    {fmtInt(ask1)}
+                    <VsPrev v={ask1} base={prevC} />
+                  </b>
                   <span>매수 1호가</span>
-                  <b className="gain">{fmtInt(bid1)}</b>
+                  <b className={cls(ok(bid1) && ok(prevC) ? bid1 - prevC : undefined)}>
+                    {fmtInt(bid1)}
+                    <VsPrev v={bid1} base={prevC} />
+                  </b>
                 </>
               )}
               {ok(strength) && (
@@ -578,27 +610,27 @@ export function ChartView() {
               {q?.w52_high ? (
                 <>
                   <span title={q.w52_high_date || ''}>52주 최고</span>
-                  <b>
+                  <b className={vsCls(q.w52_high, prevC)}>
                     {fmtInt(q.w52_high)}
-                    {ok(price) ? <small className="muted"> ({pct(price, q.w52_high).toFixed(1)}%)</small> : null}
+                    {ok(price) ? <small className={cls(pct(price, q.w52_high))}> ({pct(price, q.w52_high).toFixed(1)}%)</small> : null}
                   </b>
                   <span title={q.w52_low_date || ''}>52주 최저</span>
-                  <b>
+                  <b className={vsCls(q.w52_low, prevC)}>
                     {fmtInt(q.w52_low)}
-                    {ok(price) && q.w52_low ? <small className="muted"> (+{pct(price, q.w52_low).toFixed(1)}%)</small> : null}
+                    {ok(price) && q.w52_low ? <small className={cls(pct(price, q.w52_low))}> ({signed(pct(price, q.w52_low))}%)</small> : null}
                   </b>
                 </>
               ) : (
                 <>
                   <span title="서버 일봉 데이터 기준 (최근 250거래일)">{hlBars.length}일 최고</span>
-                  <b>
+                  <b className={vsCls(hi200, prevC)}>
                     {fmtInt(hi200)}
-                    {ok(hi200) && ok(price) ? <small className="muted"> ({pct(price, hi200).toFixed(1)}%)</small> : null}
+                    {ok(hi200) && ok(price) ? <small className={cls(pct(price, hi200))}> ({pct(price, hi200).toFixed(1)}%)</small> : null}
                   </b>
                   <span>{hlBars.length}일 최저</span>
-                  <b>
+                  <b className={vsCls(lo200, prevC)}>
                     {fmtInt(lo200)}
-                    {ok(lo200) && ok(price) ? <small className="muted"> (+{pct(price, lo200).toFixed(1)}%)</small> : null}
+                    {ok(lo200) && ok(price) ? <small className={cls(pct(price, lo200))}> ({signed(pct(price, lo200))}%)</small> : null}
                   </b>
                 </>
               )}
@@ -646,10 +678,10 @@ export function ChartView() {
               <>
                 <div className="mono small">{barWhen(hb, prefs.kind)}</div>
                 <div className="pc-ohlc">
-                  <span>시 {fmtInt(hb.o)}</span>
-                  <span>고 {fmtInt(hb.h)}</span>
-                  <span>저 {fmtInt(hb.l)}</span>
-                  <span>종 {fmtInt(hb.c)}</span>
+                  <span>시 <b className={vsCls(hb.o, hbRef)}>{fmtInt(hb.o)}</b></span>
+                  <span>고 <b className={vsCls(hb.h, hbRef)}>{fmtInt(hb.h)}</b></span>
+                  <span>저 <b className={vsCls(hb.l, hbRef)}>{fmtInt(hb.l)}</b></span>
+                  <span>종 <b className={vsCls(hb.c, hbRef)}>{fmtInt(hb.c)}</b></span>
                   <span>량 {fmtInt(hb.v)}</span>
                   {ok(hbRef) && (
                     <span className={cls(hb.c - hbRef)} title={`${intraday || prefs.kind === 'day' ? '전일' : '직전 봉'} 종가 ${fmtInt(hbRef)} 대비`}>

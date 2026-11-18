@@ -47,6 +47,7 @@
  * - [2026-11-18] type=feat - Hovered bar info at the top left of the price pane (right-axis layout): date + time (tick: from ~ to),
  *   OHLC and the change vs the previous day's close (intraday: prevCloseOf / the last bar of the day before; D/W/M: the previous
  *   bar). The tooltip shows the same day change for intraday bars (was vs the previous bar)
+ * - [2026-11-18] type=feat - Hover line and tooltip: open / high / low / close red above, blue below the reference close
  * - [2026-11-18] type=feat - History while panning (index mode): onNeedOlder is called when the view gets near the first bar;
  *   bars the parent then puts in front keep the view where it was (the viewport end moves by the number of prepended bars)
  */
@@ -960,10 +961,10 @@ export function PriceChart(props: Props) {
           {showLegend && infoSlot && (
             <text x={legendX} y={TOP + 12} className="pc-legend pc-legend-halo" pointerEvents="none">
               <tspan className="pc-legend-name">{barWhen(infoSlot.b, kind)}</tspan>
-              <tspan dx={9}>시 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.o)}</tspan></tspan>
-              <tspan dx={6}>고 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.h)}</tspan></tspan>
-              <tspan dx={6}>저 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.l)}</tspan></tspan>
-              <tspan dx={6}>종 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.c)}</tspan></tspan>
+              <tspan dx={9}>시 <tspan className={`pc-legend-val ${legendTone(infoSlot.b.o, infoRef)}`}>{fmtInt(infoSlot.b.o)}</tspan></tspan>
+              <tspan dx={6}>고 <tspan className={`pc-legend-val ${legendTone(infoSlot.b.h, infoRef)}`}>{fmtInt(infoSlot.b.h)}</tspan></tspan>
+              <tspan dx={6}>저 <tspan className={`pc-legend-val ${legendTone(infoSlot.b.l, infoRef)}`}>{fmtInt(infoSlot.b.l)}</tspan></tspan>
+              <tspan dx={6}>종 <tspan className={`pc-legend-val ${legendTone(infoSlot.b.c, infoRef)}`}>{fmtInt(infoSlot.b.c)}</tspan></tspan>
               {infoRef ? (
                 <tspan dx={9} className={infoSlot.b.c > infoRef ? 'pc-legend-up' : infoSlot.b.c < infoRef ? 'pc-legend-dn' : ''}>
                   {intraday || kind === 'day' ? '전일 대비 ' : '직전 봉 대비 '}
@@ -1128,10 +1129,18 @@ export function PriceChart(props: Props) {
         <div ref={tipRef} className="tip pc-tip" style={{ left: Math.max(h.x + 12, 0), top: 8 }}>
           <b>{barWhen(h.b, kind)}</b>
           <div className="pc-ohlc">
-            <span>시 {fmtInt(h.b.o)}</span>
-            <span>고 {fmtInt(h.b.h)}</span>
-            <span>저 {fmtInt(h.b.l)}</span>
-            <span>종 {fmtInt(h.b.c)}</span>
+            {(() => {
+              const rc = refCloseAt(bars, h.i, intraday, warm, props.prevCloseOf) ?? h.prevClose;
+              const tone = (v: number) => (rc ? (v > rc ? 'gain' : v < rc ? 'loss' : '') : '');
+              return (
+                <>
+                  <span>시 <b className={tone(h.b.o)}>{fmtInt(h.b.o)}</b></span>
+                  <span>고 <b className={tone(h.b.h)}>{fmtInt(h.b.h)}</b></span>
+                  <span>저 <b className={tone(h.b.l)}>{fmtInt(h.b.l)}</b></span>
+                  <span>종 <b className={tone(h.b.c)}>{fmtInt(h.b.c)}</b></span>
+                </>
+              );
+            })()}
             <span>량 {fmtInt(h.b.v)}</span>
             {(() => {
               const rc = refCloseAt(bars, h.i, intraday, warm, props.prevCloseOf) ?? h.prevClose;
@@ -1162,6 +1171,9 @@ function barAtTime(bars: Bar[], t: number): Bar | undefined {
   }
   return found;
 }
+
+/** legend tspan class of a price vs the reference close */
+const legendTone = (v: number, ref: number | undefined) => (!ref ? '' : v > ref ? 'pc-legend-up' : v < ref ? 'pc-legend-dn' : '');
 
 const signedPct = (a: number, b: number) => {
   const v = ((a - b) / b) * 100;

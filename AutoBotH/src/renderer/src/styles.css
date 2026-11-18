@@ -576,6 +576,7 @@ details.adv .actions { margin: 8px 0; }
 .pc-draw-label { fill: var(--st-hold); font-size: 11px; pointer-events: none; }
 .pc-tip { position: absolute; pointer-events: none; z-index: 3; min-width: 200px; }
 .pc-ohlc { display: flex; flex-wrap: wrap; gap: 2px 10px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.pc-ohlc b { font-weight: inherit; }
 
 /* ---- chart indicators (2026-11-06) ---- */
 .ind-toggles { display: inline-flex; gap: 10px; font-size: 12px; }
