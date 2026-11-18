@@ -44,6 +44,11 @@
  *   selected bars, shift + drag = pan (was plain drag)
  * - [2026-11-12] type=fix - both modes: plain drag = pan (time mode: moves the zoomed span inside zoomLimit), ctrl + drag =
  *   select a span to zoom into
+ * - [2026-11-18] type=feat - Hovered bar info at the top left of the price pane (right-axis layout): date + time (tick: from ~ to),
+ *   OHLC and the change vs the previous day's close (intraday: prevCloseOf / the last bar of the day before; D/W/M: the previous
+ *   bar). The tooltip shows the same day change for intraday bars (was vs the previous bar)
+ * - [2026-11-18] type=feat - History while panning (index mode): onNeedOlder is called when the view gets near the first bar;
+ *   bars the parent then puts in front keep the view where it was (the viewport end moves by the number of prepended bars)
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -133,6 +138,39 @@ interface Props {
   onZoom?: (domain: [number, number] | null) => void;
   /** time mode: the widest span onZoom may ask for (the whole day) */
   zoomLimit?: [number, number];
+  /** [2026-11-18] intraday: the previous trading day's close for a bar starting at t (day change of the hovered bar) */
+  prevCloseOf?: (t: number) => number | undefined;
+  /** [2026-11-18] index mode: the user moved / zoomed the view near the first bar - the parent may put older bars in front */
+  onNeedOlder?: () => void;
+}
+
+/** 00:00 KST of the day holding t (epoch ms) */
+export const kstDayStart = (t: number) => Math.floor((t + KST) / 86400000) * 86400000 - KST;
+
+/**
+ * [2026-11-18] reference close for the change of bar i: intraday = the previous trading day's close (prevCloseOf, else the last
+ * bar before the day in bars / warm), otherwise the previous bar's close
+ */
+export function refCloseAt(bars: Bar[], i: number, intraday: boolean, warm: Bar[] = [], prevCloseOf?: (t: number) => number | undefined): number | undefined {
+  const b = bars[i];
+  if (!b) return undefined;
+  if (!intraday) return i > 0 ? bars[i - 1].c : undefined;
+  const v = prevCloseOf?.(b.t);
+  if (v !== undefined && v > 0) return v;
+  const d0 = kstDayStart(b.t);
+  for (let k = i - 1; k >= 0; k--) if (bars[k].t < d0) return bars[k].c;
+  for (let k = warm.length - 1; k >= 0; k--) if (warm[k].t < d0) return warm[k].c;
+  return undefined;
+}
+
+/** [2026-11-18] label of a bar: intraday "YYYY-MM-DD HH:MM:SS" (tick: start ~ end time), D/W/M the date */
+export function barWhen(b: Bar, kind: ChartKind): string {
+  if (kind === 'tick' || kind === 'min') {
+    const head = fmtKstDateTime(b.t).slice(0, 19);
+    return kind === 'tick' && b.t2 && b.t2 !== b.t ? `${head} ~ ${fmtKstTime(b.t2)}` : head;
+  }
+  if (kind === 'year') return `${fmtKstDateTime(b.t).slice(0, 4)}년`;
+  return fmtKstDateTime(b.t).slice(0, 10) + (kind === 'week' ? ' 주' : kind === 'month' ? ' 월' : '');
 }
 
 function niceTicks(lo: number, hi: number, count = 5): number[] {
@@ -148,6 +186,7 @@ function niceTicks(lo: number, hi: number, count = 5): number[] {
 const iso = (t: number) => new Date(t + KST).toISOString();
 function fmtDay(t: number, kind: ChartKind, withYear: boolean): string {
   const s = iso(t);
+  if (kind === 'year') return s.slice(0, 4);
   if (kind === 'month') return s.slice(0, 7);
   return withYear ? s.slice(2, 10) : s.slice(5, 10);
 }
@@ -755,12 +794,30 @@ export function PriceChart(props: Props) {
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [interactive, mode, vp, bars.length, L, W, view]);
-  // live: a viewport that ends at the newest bar keeps following it
-  const prevLen = useRef(bars.length);
+  // live: a viewport that ends at the newest bar keeps following it.
+  // [2026-11-18] older bars put in front (history while panning): the view keeps showing the same bars
+  const prevBars = useRef<{ len: number; first?: number }>({ len: bars.length, first: bars[0]?.t });
+  useLayoutEffect(() => {
+    const p = prevBars.current;
+    let added = 0;
+    if (p.first !== undefined && bars.length && bars[0].t < p.first) {
+      const k = bars.findIndex((b) => b.t >= p.first!);
+      added = k > 0 ? k : 0;
+    }
+    if (view) {
+      if (view.end === p.len && bars.length > p.len + added) setView({ ...view, end: bars.length });
+      else if (added) setView({ ...view, end: view.end + added });
+    }
+    if (added && drag.current) drag.current.end += added;
+    prevBars.current = { len: bars.length, first: bars[0]?.t };
+  }, [bars]); // eslint-disable-line react-hooks/exhaustive-deps
+  // [2026-11-18] near the first bar after the user moved / zoomed: ask the parent for older bars
+  const needOlder = useRef(props.onNeedOlder);
+  needOlder.current = props.onNeedOlder;
   useEffect(() => {
-    if (view && view.end === prevLen.current && bars.length > prevLen.current) setView({ ...view, end: bars.length });
-    prevLen.current = bars.length;
-  }, [bars.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!view || mode !== 'index' || !interactive) return;
+    if (vp.start <= Math.max(5, Math.floor(vp.count / 3))) needOlder.current?.();
+  }, [vp.start, vp.count, view, mode, interactive]);
 
   const h = model && !model.empty && hover !== null ? model.slots[hover] : null;
   const last = model && !model.empty ? model.slots[model.slots.length - 1] : null;
@@ -770,6 +827,10 @@ export function PriceChart(props: Props) {
   const li = h ? h.i : last ? last.i : -1;
   const showLegend = axis === 'right';
   const hasOverlayLegend = !!(S.ma || S.bb || S.vwap || S.ichimoku);
+  // [2026-11-18] the hovered (else the last) bar: when + OHLC + change vs the previous day's close
+  const infoSlot = h || last;
+  const infoRef = infoSlot ? refCloseAt(bars, infoSlot.i, intraday, warm, props.prevCloseOf) : undefined;
+  const infoY = showLegend ? 14 : 0;
 
   // floating tooltip: right of the cursor when it fits, otherwise left of it (measured after render - its width depends on
   // the indicators shown)
@@ -893,7 +954,23 @@ export function PriceChart(props: Props) {
             </g>
           ))}
           {(showLegend || hasOverlayLegend) && (
-            <Legends S={S} i={li} x={legendX} y={TOP + 12} volY={volTop + 11} vol={showLegend && showVol && li >= 0 ? bars[li]?.v : undefined} />
+            <Legends S={S} i={li} x={legendX} y={TOP + 12 + infoY} volY={volTop + 11} vol={showLegend && showVol && li >= 0 ? bars[li]?.v : undefined} />
+          )}
+
+          {showLegend && infoSlot && (
+            <text x={legendX} y={TOP + 12} className="pc-legend pc-legend-halo" pointerEvents="none">
+              <tspan className="pc-legend-name">{barWhen(infoSlot.b, kind)}</tspan>
+              <tspan dx={9}>시 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.o)}</tspan></tspan>
+              <tspan dx={6}>고 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.h)}</tspan></tspan>
+              <tspan dx={6}>저 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.l)}</tspan></tspan>
+              <tspan dx={6}>종 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.c)}</tspan></tspan>
+              {infoRef ? (
+                <tspan dx={9} className={infoSlot.b.c > infoRef ? 'pc-legend-up' : infoSlot.b.c < infoRef ? 'pc-legend-dn' : ''}>
+                  {intraday || kind === 'day' ? '전일 대비 ' : '직전 봉 대비 '}
+                  {signedPct(infoSlot.b.c, infoRef)}
+                </tspan>
+              ) : null}
+            </text>
           )}
 
           {/* position + fills */}
@@ -1049,25 +1126,21 @@ export function PriceChart(props: Props) {
       )}
       {tooltip && h && (
         <div ref={tipRef} className="tip pc-tip" style={{ left: Math.max(h.x + 12, 0), top: 8 }}>
-          <b>
-            {intraday
-              ? kind === 'tick' && h.b.t2 && h.b.t2 !== h.b.t
-                ? `${fmtKstTime(h.b.t)} ~ ${fmtKstTime(h.b.t2)}`
-                : fmtKstTime(h.b.t)
-              : fmtKstDateTime(h.b.t).slice(0, 10) + (kind === 'week' ? ' 주' : kind === 'month' ? ' 월' : '')}
-          </b>
+          <b>{barWhen(h.b, kind)}</b>
           <div className="pc-ohlc">
             <span>시 {fmtInt(h.b.o)}</span>
             <span>고 {fmtInt(h.b.h)}</span>
             <span>저 {fmtInt(h.b.l)}</span>
             <span>종 {fmtInt(h.b.c)}</span>
             <span>량 {fmtInt(h.b.v)}</span>
-            {h.prevClose ? (
-              <span className={h.b.c > h.prevClose ? 'gain' : h.b.c < h.prevClose ? 'loss' : ''}>
-                {h.b.c >= h.prevClose ? '+' : ''}
-                {(((h.b.c - h.prevClose) / h.prevClose) * 100).toFixed(2)}%
-              </span>
-            ) : null}
+            {(() => {
+              const rc = refCloseAt(bars, h.i, intraday, warm, props.prevCloseOf) ?? h.prevClose;
+              return rc ? (
+                <span className={h.b.c > rc ? 'gain' : h.b.c < rc ? 'loss' : ''} title={intraday ? '전일 종가 대비' : '직전 봉 종가 대비'}>
+                  {signedPct(h.b.c, rc)}
+                </span>
+              ) : null;
+            })()}
           </div>
           <IndicatorLines S={S} i={h.i} />
         </div>

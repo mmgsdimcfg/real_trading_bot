@@ -172,6 +172,32 @@ class BarsTests(Base):
         rc, out = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "day")
         self.assertEqual(out["count"], 500)
         self.assertIn("daily_history", out["source"])
+        # [2026-11-18] g040 daily_backfill: older rows in front of daily_history (history wins on shared dates)
+        back = self.data / "daily_backfill"
+        back.mkdir()
+        _write_daily(back / f"{CODE}.csv", "20261030", n=900)
+        rc, out = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "day")
+        self.assertEqual(rc, 0, out)
+        self.assertGreater(out["count"], 500)
+        self.assertIn("daily_backfill", out["source"])
+        self.assertEqual(out["bars"][-1][0], "2026-11-05T00:00:00")
+        ts = [b[0] for b in out["bars"]]
+        self.assertEqual(ts, sorted(set(ts)))
+
+    def test_join_backfill_scales_older_rows_on_basis_change(self):
+        idx = pd.to_datetime(["20260101", "20260102", "20260105", "20260106"])
+        back = pd.DataFrame({"open": [100, 110, 120, 130], "high": [100, 110, 120, 130], "low": [100, 110, 120, 130],
+                             "close": [100, 110, 120, 130], "volume": [10, 10, 10, 10]}, index=idx)
+        base = pd.DataFrame({"open": [60, 65], "high": [60, 65], "low": [60, 65], "close": [60, 65], "volume": [20, 20]},
+                            index=idx[2:])
+        out = r017.join_backfill(base, back)
+        self.assertEqual(list(out.index), list(idx))
+        self.assertAlmostEqual(out["close"].iloc[0], 50.0)     # 100 x (60 / 120): 2:1 split after the backfill
+        self.assertEqual(out["volume"].iloc[0], 20)
+        self.assertEqual(out["close"].iloc[-1], 65)              # base rows unchanged
+        same = r017.join_backfill(back.iloc[2:], back)
+        self.assertEqual(same["close"].iloc[0], 100)             # same basis: no scaling
+        self.assertIs(r017.join_backfill(base, back.iloc[:0]), base)
 
     def test_errors(self):
         rc, out = self.cli("bars", "--date", DAY, "--code", "000000", "--kind", "tick")

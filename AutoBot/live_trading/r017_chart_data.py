@@ -13,12 +13,20 @@
        [--since-ts ISO] [--all-sessions]
       tick: g011 틱 CSV 에서 T틱(기본 60) 봉. min: 틱 CSV 가 있으면 틱으로 M분봉(기본 1), 없으면 _10s 원본 분봉.
       day/week/month: runtime/data/daily_history/<code>.csv (g025) 가 있으면 그것, 없으면 날짜 폴더 _daily.csv.
+      그 앞에 runtime/data/daily_backfill/<code>.csv (g040, 2018~ 장기 일봉) 의 더 오래된 행을 이어 붙인다(겹치는 날은 앞의 것이 이김).
       --since-ts 는 그 시각 이후 봉만(마지막 봉 포함 - 갱신될 수 있음). 정규장+동시호가 체결만 쓰고 --all-sessions 면 전부.
       지난 날짜의 tick/min 집계는 runtime/cache/bars/ 에 캐시(당일은 캐시 안 함).
 
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-18] type=feat owner=claude
+    summary: bars day/week/month - daily_history(2025-09~) 앞에 g040 daily_backfill(2018~)의 더 오래된 행을 이어 붙여 일/주/월봉
+      이력을 늘림(사용자 요청: AutoBotH 차트 일봉 이력 확대, 년봉 추가). 겹치는 날은 daily_history/폴더 파일이 이기고, 마지막 겹치는
+      날의 종가 비율이 0.5% 넘게 다르면(백필 이후 액면분할 등으로 수정주가 기준이 달라짐) 백필 가격을 그 비율로 맞춘다.
+      source 뒤에 " + daily_backfill" 표시.
+    impact: tooling (AutoBotH 차트). 출력 형식 동일, 행 수만 늘어남
+    compatibility: backward-compatible (daily_backfill 폴더가 없으면 기존과 동일)
 - [2026-11-12] type=feat owner=claude
     summary: bars --kind min: 파일이 없고 KRX 분봉도 없으면 KRX+NXT 통합 분봉(r018 minutes market=UN)으로 폴백, --source kis-un
       으로 통합 분봉을 직접 요청. 09:00 이전(NXT 프리마켓)에 AutoBotH 차트가 비던 문제.
@@ -397,17 +405,64 @@ def minute_bars_from_10s(date_str: str, code: str, interval: int) -> tuple[pd.Da
     return out.reset_index(drop=True), str(path)
 
 
+def daily_backfill_path(code: str) -> Path | None:
+    """g040 long daily history (2018~, research backfill), oldest first"""
+    p = _data_root() / "daily_backfill" / f"{code}.csv"
+    return p if p.is_file() else None
+
+
+BACKFILL_SCALE_TOL = 0.005
+
+
+def join_backfill(base: pd.DataFrame, back: pd.DataFrame) -> pd.DataFrame:
+    """[2026-11-18] rows of `back` older than the first row of `base` in front of `base` (base wins on shared dates).
+    When the close of the last shared date differs by more than BACKFILL_SCALE_TOL (adjusted-price basis changed after the
+    backfill, e.g. a split), the older prices are scaled by base/back (volume by the inverse) so the series stays continuous."""
+    if back is None or back.empty:
+        return base
+    if base is None or base.empty:
+        return back
+    older = back[back.index < base.index[0]].copy()
+    if older.empty:
+        return base
+    common = back.index.intersection(base.index)
+    if len(common):
+        d = common.max()
+        b, h = float(back.at[d, "close"]), float(base.at[d, "close"])
+        if b > 0 and h > 0 and abs(h / b - 1) > BACKFILL_SCALE_TOL:
+            r = h / b
+            for c in ("open", "high", "low", "close"):
+                if c in older.columns:
+                    older[c] = (older[c] * r).round(2)
+            if "volume" in older.columns:
+                older["volume"] = (older["volume"] / r).round(0)
+    cols = [c for c in base.columns if c in older.columns]
+    return pd.concat([older[cols], base[cols]]).sort_index()
+
+
 def day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str] | None:
     hist = daily_history_path(code)
+    back_path = daily_backfill_path(code)
     if hist is not None:
         df = read_daily(hist)
         src = str(hist)
     else:
         path, _ = latest_daily_csv(date_str, code)
-        if path is None:
+        if path is None and back_path is None:
             return None
-        df = read_daily(path)
-        src = str(path)
+        df = read_daily(path) if path is not None else pd.DataFrame(columns=OHLCV)
+        src = str(path) if path is not None else ""
+    if back_path is not None:
+        try:
+            back = read_daily(back_path)
+        except Exception:
+            back = None
+        joined = join_backfill(df, back)
+        if len(joined) > len(df):
+            df = joined
+            src = f"{src} + daily_backfill" if src else str(back_path)
+    if df.empty:
+        return None
     return _shape_daily(df, date_str, kind), src
 
 

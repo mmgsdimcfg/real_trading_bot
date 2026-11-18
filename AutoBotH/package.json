@@ -1,5 +1,7 @@
 {
   "_updateLog": [
+    "[2026-11-18] type=feat - v2.3.27_001: 차트 탭 년봉 추가(일봉 이력으로 묶음). 서버 일봉 이력 확대 - r017 bars 가 daily_history 앞에 g040 장기 일봉(daily_backfill, 2018~)을 이어 붙여 일/주/월/년봉을 2018년부터 표시(서버 git pull 필요). 지난 날짜 일봉 저장 파일 이름 변경(server_day/<code>.v2.json)으로 예전 짧은 이력은 한 번 다시 받음. 옆 패널 최고/최저는 최근 250거래일 기준",
+    "[2026-11-18] type=feat - v2.3.26_001: 차트 탭 - (1) 마우스를 올린 봉의 날짜·시간(초까지, 틱봉은 시작~끝)과 전일 종가 대비 등락률을 가격 칸 왼쪽 위와 데이터 창에 표시(일봉=전일 대비, 주/월봉=직전 봉 대비) (2) 분봉·틱봉도 왼쪽으로 끌거나 축소해 처음 봉 근처에 가면 이전 거래일을 하루씩 이어 붙여 계속 과거로 이동 (3) 받은 데이터 저장 - 이어 받은 날짜는 화면 캐시에 보관, 지난 날짜의 서버 분봉 응답과 KIS 분봉은 디스크(pricecache)에 저장해 다시 서버에 묻지 않음",
     "[2026-11-18] type=feat - v2.3.25_002: 타임라인 x축을 모든 종목 08:00~20:00 으로 통일(종목을 바꿔도 시간 위치가 같음). KRX 전용 종목은 KRX 정규장(09:00~15:30)의 매수/매도 평가와 가격 봉만 표시(장전 SKIP 행, KRX 장전 체결 제외)",
     "[2026-11-18] type=perf - v2.3.25_001: 받아온 데이터 재사용 - (1) 화면: 탭/종목을 다시 열면 직전 데이터(차트·일봉·KIS 시세·타임라인 이벤트·가상매매·작업/수집기/제어 패널·전체 설정값)를 즉시 보여 주고 뒤에서 갱신 (renderer dataCache, 실행 위치 전환 시 비움) (2) 가격 서비스: 캐시 한도를 종류별로(틱/1분/일봉 40, 파일 목록 160, 서버 응답 80, 최근 사용 순) - 종목 10여 개를 오가면 오늘 틱 파일을 처음부터 다시 읽던 문제 해결 (3) KIS 분봉(틱 공백 채움, NXT 장전/장후) 재요청 최소화 - 지난 날은 계속, 공백 채움은 빈 분을 모두 덮는 동안, NXT 통합분봉은 09:00 이후 받은 것을 15:30까지 재사용",
     "[2026-11-18] type=tune - v2.3.24_008: 손절 기준 -3.5% 반영(서버 r001/risk_profiles) - 프로파일 안내의 하드스탑 -1.7% -> -3.5%, ATR 손절 최소 -3.5%, 매수 직후 급락 가드 -0.5/-1.0% -> -3.5% 표시. 1분 MA 상태가 너무 오래됨 반려의 관련 설정에 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN(장전 크로스 나이 09:00부터) 추가",
@@ -84,7 +86,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.25",
+  "version": "2.3.27",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -132,7 +134,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

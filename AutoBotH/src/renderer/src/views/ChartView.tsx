@@ -22,14 +22,21 @@
  *   day volume, limits and VI flags. The source line says "체결 기준 (틱) · 호가 HH:MM:SS KIS"
  * - [2026-11-18] type=perf - Chart, daily bars and KIS quote of a symbol seen before are shown at once from the renderer's memory
  *   (dataCache) and refreshed in the background (symbol / chart switch and tab revisit no longer start empty)
+ * - [2026-11-18] type=feat - Tick / minute history: dragging (or zooming out) to the first bars loads the trading day before the
+ *   oldest one shown (its warmDate) and puts it in front - one day per request, as far back as the server has data. Each day's
+ *   answer is kept (dataCache + the main process's disk cache for past days), so panning back again does not ask the server
+ * - [2026-11-18] type=feat - 년봉 (yearly bars from the daily history, which the server now extends back to 2018 with daily_backfill);
+ *   the side panel's high / low uses the last 250 trading days (the history is no longer ~200 days)
+ * - [2026-11-18] type=feat - Data window: date + time (seconds) of the hovered bar and its change vs the previous day's close
+ *   (intraday: the daily bar before that day; D/W/M: the previous bar), the price pane shows the same line at its top left
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
-import { PriceChart, IndicatorLines } from '../components/PriceChart';
+import { PriceChart, IndicatorLines, barWhen, kstDayStart, refCloseAt } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
-import { MIN_SIZES, TICK_SIZES, monthBars, weekBars, ymdEpoch, type Bar, type ChartKind, type MarketQuote, type PriceResponse } from '../../../shared/price';
+import { MIN_SIZES, TICK_SIZES, groupDaily, ymdEpoch, type Bar, type ChartKind, type MarketQuote, type PriceResponse } from '../../../shared/price';
 import { computeIndicators, OSCILLATORS, type IndicatorKey, type IndicatorSet } from '../../../shared/indicators';
 import { condTitle, fmtInt } from '../lib';
 import { barsUpTo } from '../../../shared/replay';
@@ -42,6 +49,7 @@ const KINDS: [ChartKind, string][] = [
   ['day', '일'],
   ['week', '주'],
   ['month', '월'],
+  ['year', '년'],
 ];
 const SUMMARY_KEYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'rsi', 'macd', 'adx', 'stoch', 'mfi'];
 const RECENT_KEY = 'autoboth.chartRecent';
@@ -155,6 +163,12 @@ export function ChartView() {
   const [quoteRes, setQuoteRes] = useState<{ q: MarketQuote | null; unsupported?: boolean; error?: string } | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [chartKey, setChartKey] = useState(0);
+  /** [2026-11-18] tick / minute bars of earlier days loaded while panning left (newest first) */
+  const [older, setOlder] = useState<PriceResponse[]>([]);
+  /** why no older day can be loaded (no more data / error); null = more may come */
+  const [olderEnd, setOlderEnd] = useState<string | null>(null);
+  const [olderBusy, setOlderBusy] = useState(false);
+  const olderBusyRef = useRef(false);
   const seq = useRef(0);
   const areaRef = useRef<HTMLDivElement>(null);
   const [areaH, setAreaH] = useState(600);
@@ -213,6 +227,8 @@ export function ChartView() {
     const kDay = `price:ch/${day}/${code}/day`;
     const kQuote = `quote:${code}`;
     if (changed) {
+      setOlder([]);
+      setOlderEnd(null);
       const keptMain = peek<PriceResponse>(kMain);
       const keptDay = prefs.kind === 'day' ? keptMain : peek<PriceResponse>(kDay);
       setLoading(!keptMain);
@@ -243,8 +259,11 @@ export function ChartView() {
     });
   }, [key, live, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // shown bars: intraday = previous day + the day (HTS style), else as returned
-  const prevDay = intraday && prefs.prevDay && data?.ok ? data.warm || NONE : NONE;
+  // shown bars: intraday = [earlier days loaded while panning] + previous day + the day (HTS style), else as returned.
+  // A loaded earlier day replaces the (maybe partial) warm-up bars of the day after it; the oldest one's warm-up stays in front
+  const oldest = older.length ? older[older.length - 1] : data?.ok ? data : null;
+  const olderBars = useMemo(() => older.slice().reverse().flatMap((r) => r.bars), [older]);
+  const prevDay = intraday && prefs.prevDay && oldest?.ok ? oldest.warm || NONE : NONE;
   const isToday = !!day && day === status.serverDate;
   const q = quoteRes?.q && quoteRes.q.code === code ? quoteRes.q : null;
   const dayT0 = day ? ymdEpoch(day) : 0;
@@ -259,13 +278,45 @@ export function ChartView() {
       const src = prefs.kind === 'day' ? data.bars : daily?.ok ? daily.bars : null;
       if (src && !src.some((b) => b.t === dayT0)) {
         const plus = [...src.filter((b) => b.t < dayT0), quoteBar];
-        return prefs.kind === 'day' ? plus : prefs.kind === 'week' ? weekBars(plus) : monthBars(plus);
+        return groupDaily(plus, prefs.kind);
       }
     }
-    return [...prevDay, ...barsUpTo(data.bars, replayCursor, intraday)];
-  }, [data, daily, prefs.prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor]); // eslint-disable-line react-hooks/exhaustive-deps
-  const warm = prevDay.length ? NONE : data?.warm;
-  const warmBot = prevDay.length ? NONE : data?.warmBot;
+    return [...prevDay, ...(intraday ? olderBars : NONE), ...barsUpTo(data.bars, replayCursor, intraday)];
+  }, [data, daily, olderBars, prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor]); // eslint-disable-line react-hooks/exhaustive-deps
+  const warm = prevDay.length ? NONE : oldest?.warm;
+  const warmBot = prevDay.length ? NONE : oldest?.warmBot;
+
+  /** [2026-11-18] load the trading day before the oldest shown one (tick / minute); kept answers come from dataCache */
+  const loadOlder = () => {
+    if (!intraday || olderBusyRef.current || olderEnd || !oldest?.ok || !code) return;
+    const d = oldest.warmDate;
+    if (!d) {
+      setOlderEnd('더 이전 데이터 없음');
+      return;
+    }
+    const kOld = `price:ch/${d}/${code}/${prefs.kind}/${n}/${isNxt ? 'x' : ''}/w`;
+    const add = (r: PriceResponse) => {
+      if (r.ok && r.bars.length) setOlder((o) => [...o, r]);
+      else if (r.ok) setOlder((o) => [...o, { ...r, bars: [] }]); // an empty day: keep going from its warmDate
+      else setOlderEnd(`${d.slice(4, 6)}-${d.slice(6)} 이전 불러오기 실패: ${r.error || ''}`);
+    };
+    const kept = peek<PriceResponse>(kOld);
+    if (kept) return add(kept);
+    const my = seq.current;
+    olderBusyRef.current = true;
+    setOlderBusy(true);
+    void window.api
+      .getPrice({ date: d, code, kind: prefs.kind, n, warmup: true, nxt: isNxt })
+      .then((r) => {
+        if (r.ok) put(kOld, r);
+        if (my === seq.current) add(r);
+      })
+      .catch((e) => my === seq.current && setOlderEnd(String(e?.message || e)))
+      .finally(() => {
+        olderBusyRef.current = false;
+        setOlderBusy(false);
+      });
+  };
 
   // indicators for the side panel (summary keys + the chart's)
   const allKeys = useMemo(() => [...new Set([...SUMMARY_KEYS, ...prefs.ind])].filter((k) => k !== 'vwap' || intraday), [prefs.ind, intraday]);
@@ -294,8 +345,24 @@ export function ChartView() {
   const dHigh = useQ?.high ?? dayBar?.h;
   const dLow = useQ?.low ?? dayBar?.l;
   const dVol = useQ?.volume ?? quote?.volume ?? dayBar?.v;
-  const hi200 = dBars.length ? Math.max(...dBars.map((b) => b.h)) : undefined;
-  const lo200 = dBars.length ? Math.min(...dBars.map((b) => b.l)) : undefined;
+  /** [2026-11-18] previous trading day's close for an intraday bar at t (daily bars; undefined = unknown) */
+  const prevCloseOf = useCallback(
+    (t: number): number | undefined => {
+      const d0 = kstDayStart(t);
+      let c: number | undefined;
+      for (const b of dBars) {
+        if (b.t >= d0) break;
+        c = b.c;
+      }
+      // the viewed day itself: the quote's previous close (KIS) when the daily data has no earlier row
+      return c ?? (d0 === dayT ? prevClose : undefined);
+    },
+    [dBars, dayT, prevClose],
+  );
+  // [2026-11-18] the daily history now reaches back to 2018 (server daily_backfill): high / low of the last 250 trading days
+  const hlBars = dBars.slice(-250);
+  const hi200 = hlBars.length ? Math.max(...hlBars.map((b) => b.h)) : undefined;
+  const lo200 = hlBars.length ? Math.min(...hlBars.map((b) => b.l)) : undefined;
   const tickStrength = quote && quote.sellVol > 0 ? (quote.buyVol / quote.sellVol) * 100 : undefined;
   const strength = tickFirst ? (tickStrength ?? q?.strength) : (q?.strength ?? tickStrength);
   const ask1 = (tickFirst ? quote!.ask : undefined) ?? q?.orderbook?.asks?.[0]?.[0] ?? quote?.ask;
@@ -306,6 +373,7 @@ export function ChartView() {
   const trades = timeline && timeline.code === code ? timeline.trades : [];
   const hi = hover ?? bars.length - 1;
   const hb = bars[hi];
+  const hbRef = hb ? refCloseAt(bars, hi, intraday, warm || NONE, prevCloseOf) : undefined;
   const sigs = useMemo(() => signals(S, bars, bars.length - 1), [S, bars]);
 
   const nOsc = OSCILLATORS.filter((k) => prefs.ind.includes(k)).length;
@@ -399,7 +467,11 @@ export function ChartView() {
           화면 초기화
         </button>
         <span className="muted small">
-          {loading ? '불러오는 중…' : data?.ok ? `${bars.length.toLocaleString()}봉${data.note ? ` · ${data.note}` : ''} · 휠 확대/축소 · 끌어서 이동 · Ctrl+끌기 구간 확대` : ''}
+          {loading
+            ? '불러오는 중…'
+            : data?.ok
+              ? `${bars.length.toLocaleString()}봉${older.length ? ` (이전 ${older.length}일 포함)` : ''}${olderBusy ? ' · 이전 날짜 불러오는 중…' : olderEnd && intraday ? ` · ${olderEnd}` : ''}${data.note ? ` · ${data.note}` : ''} · 휠 확대/축소 · 끌어서 이동${intraday ? '(왼쪽 끝 = 이전 날짜)' : ''} · Ctrl+끌기 구간 확대`
+              : ''}
         </span>
       </div>
       <div className="toolbar ind-bar">
@@ -431,6 +503,8 @@ export function ChartView() {
               interactive
               tooltip={false}
               onHover={setHover}
+              prevCloseOf={prevCloseOf}
+              onNeedOlder={intraday ? loadOlder : undefined}
             />
           )}
         </div>
@@ -516,12 +590,12 @@ export function ChartView() {
                 </>
               ) : (
                 <>
-                  <span title="서버 일봉 데이터 기간 기준">{dBars.length}일 최고</span>
+                  <span title="서버 일봉 데이터 기준 (최근 250거래일)">{hlBars.length}일 최고</span>
                   <b>
                     {fmtInt(hi200)}
                     {ok(hi200) && ok(price) ? <small className="muted"> ({pct(price, hi200).toFixed(1)}%)</small> : null}
                   </b>
-                  <span>{dBars.length}일 최저</span>
+                  <span>{hlBars.length}일 최저</span>
                   <b>
                     {fmtInt(lo200)}
                     {ok(lo200) && ok(price) ? <small className="muted"> (+{pct(price, lo200).toFixed(1)}%)</small> : null}
@@ -570,15 +644,19 @@ export function ChartView() {
             <h4>데이터 창 {hover !== null ? '' : '(마지막 봉)'}</h4>
             {hb ? (
               <>
-                <div className="mono small">
-                  {intraday ? `${fmtKstDateTime(hb.t).slice(5, 16)}${hb.t2 && hb.t2 !== hb.t ? ` ~ ${fmtKstTime(hb.t2)}` : ''}` : fmtKstDateTime(hb.t).slice(0, 10)}
-                </div>
+                <div className="mono small">{barWhen(hb, prefs.kind)}</div>
                 <div className="pc-ohlc">
                   <span>시 {fmtInt(hb.o)}</span>
                   <span>고 {fmtInt(hb.h)}</span>
                   <span>저 {fmtInt(hb.l)}</span>
                   <span>종 {fmtInt(hb.c)}</span>
                   <span>량 {fmtInt(hb.v)}</span>
+                  {ok(hbRef) && (
+                    <span className={cls(hb.c - hbRef)} title={`${intraday || prefs.kind === 'day' ? '전일' : '직전 봉'} 종가 ${fmtInt(hbRef)} 대비`}>
+                      {intraday || prefs.kind === 'day' ? '전일비' : '전봉비'} {hb.c >= hbRef ? '+' : ''}
+                      {pct(hb.c, hbRef).toFixed(2)}%
+                    </span>
+                  )}
                 </div>
                 <IndicatorLines S={shownS} i={hi} />
               </>

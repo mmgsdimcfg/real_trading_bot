@@ -9,11 +9,12 @@
  * - [2026-11-06] type=feat - PriceResponse.warm / warmDate: previous trading day's bars for indicator warm-up (WARMUP_BARS = 120)
  * - [2026-11-06] type=feat - ServerBars / serverRowsToBars for r016 `bars` (server-side aggregation, daily_history, KIS fallback once added)
  *   and MarketQuote for the requested r016 `quote` (current price, 10-level order book, latest trades)
+ * - [2026-11-18] type=feat - ChartKind 'year' (yearly bars grouped from the daily bars, like week / month)
  */
 
 import { kstToEpoch } from './time';
 
-export type ChartKind = 'tick' | 'min' | 'day' | 'week' | 'month';
+export type ChartKind = 'tick' | 'min' | 'day' | 'week' | 'month' | 'year';
 
 export interface Tick {
   /** epoch ms (KST trade time) */
@@ -371,6 +372,11 @@ function monthKey(t: number): number {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - KST_MS;
 }
 
+function yearKey(t: number): number {
+  const d = new Date(t + KST_MS);
+  return Date.UTC(d.getUTCFullYear(), 0, 1) - KST_MS;
+}
+
 function groupBars(daily: Bar[], key: (t: number) => number): Bar[] {
   const out: Bar[] = [];
   let cur: Bar | null = null;
@@ -394,12 +400,18 @@ function groupBars(daily: Bar[], key: (t: number) => number): Bar[] {
 export const weekBars = (daily: Bar[]) => groupBars(daily, weekKey);
 /** monthly bars (t = first trading day of the month) */
 export const monthBars = (daily: Bar[]) => groupBars(daily, monthKey);
+/** [2026-11-18] yearly bars (t = first trading day of the year) */
+export const yearBars = (daily: Bar[]) => groupBars(daily, yearKey);
+/** daily bars regrouped for a daily chart kind (day = as is) */
+export const groupDaily = (daily: Bar[], kind: ChartKind): Bar[] =>
+  kind === 'week' ? weekBars(daily) : kind === 'month' ? monthBars(daily) : kind === 'year' ? yearBars(daily) : daily;
 
 /** True when the bar of `t` belongs to the same week / month / day as `ymd`. */
 export function samePeriod(kind: ChartKind, t: number, ymd: string): boolean {
   const d = ymdEpoch(ymd);
   if (kind === 'week') return weekKey(t) === weekKey(d);
   if (kind === 'month') return monthKey(t) === monthKey(d);
+  if (kind === 'year') return yearKey(t) === yearKey(d);
   return t === d;
 }
 

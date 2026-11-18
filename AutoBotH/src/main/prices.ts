@@ -44,6 +44,14 @@
  *   market) are kept while they still answer the request: a past day's for good, gap fills while they cover every missing minute,
  *   the NXT combined minutes fetched after 09:00 until the KRX close (the pre-market minutes no longer change) - instead of a new
  *   r016 call (Python on the Pi + KIS) every minute
+ * - [2026-11-18] type=perf - Past days' server answers are kept on disk (pricecache/<date>/): r016 `bars --kind min` answers
+ *   (codes without a tick / 10-second file) as server_min/<code>_<n>[_w].json and the KIS minute bars (gap fill / NXT combined)
+ *   as kis_min/<code>[_un].json - a past day is asked from the server once, also across app restarts
+ * - [2026-11-18] type=feat - Chart history (the chart tab loads earlier days while panning left): tick / minute answers name the
+ *   previous trading day (warmDate) even when that day has no file to warm up from, so the next older day can still be asked
+ * - [2026-11-18] type=feat - Yearly bars (kind 'year', grouped here like week / month). The server's daily answer now reaches back
+ *   to 2018 (r017 + g040 daily_backfill): a past day's saved daily answer is server_day/<code>.v2.json, so answers saved before
+ *   (daily_history only, ~14 months) are asked again once
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
@@ -55,14 +63,13 @@ import {
   mergeMinuteBars,
   minuteBarsFromTicks,
   minuteGaps,
-  monthBars,
+  groupDaily,
   parse10sMinuteBars,
   parseDailyCsv,
   parseTickLines,
   resampleMinuteBars,
   tickBars,
   tickHeader,
-  weekBars,
   ymdEpoch,
   serverRowsToBars,
   type ServerBars,
@@ -271,6 +278,13 @@ export class PriceService {
    */
   private async kisMinuteFill(date: string, code: string, unified = false, gaps: [number, number][] = []): Promise<{ bars?: Bar[]; error?: string }> {
     const key = `${date}/${code}${unified ? '/un' : ''}`;
+    // [2026-11-18] a past day's KIS minutes never change: kept on disk with the day
+    const fc = this.cached(date);
+    const rel = `kis_min/${code}${unified ? '_un' : ''}.json`;
+    if (fc && !this.fillCache.has(key)) {
+      const saved = fc.json<Bar[]>(date, rel);
+      if (Array.isArray(saved) && saved.length) remember(this.fillCache, key, { at: Date.now(), res: { bars: saved } }, LIMIT.fill);
+    }
     const hit = touch(this.fillCache, key);
     if (hit && (Date.now() - hit.at < KIS_FILL_TTL_MS || (!!hit.res.bars?.length && this.fillStillGood(date, unified, hit.at, hit.res.bars, gaps)))) {
       return hit.res;
@@ -289,6 +303,7 @@ export class PriceService {
       }
     }
     remember(this.fillCache, key, { at: Date.now(), res }, LIMIT.fill);
+    if (fc && res.bars?.length) fc.saveJson(date, rel, res.bars);
     return res;
   }
 
@@ -319,6 +334,7 @@ export class PriceService {
 
   private static sourceNote(src: string): string {
     if (src.startsWith('kis')) return `KIS 시세 조회 (${src.replace(/^kis:?/, '') || 'REST'})`;
+    if (src.includes('daily_backfill')) return '서버 일봉 이력 (daily_history + 장기 일봉 daily_backfill)';
     if (src.includes('daily_history')) return '서버 일봉 이력 (daily_history)';
     if (src.includes('/ticks/')) return '서버 집계 (틱 파일)';
     if (src.endsWith('_10s.txt') || src.includes('_10s')) return '서버 집계 (1분봉, 10초 파일)';
@@ -497,7 +513,7 @@ export class PriceService {
     if (!prev) return null;
     if (kind === 'tick') {
       const ticks = await this.loadTicks(prev, code);
-      if (!ticks?.length) return null;
+      if (!ticks?.length) return { warm: [], warmBot: [], warmDate: prev }; // [2026-11-18] no warm-up, but the chart can still ask that day
       const all = tickBars(ticks, n);
       return { warm: all.slice(-WARMUP_BARS_MAX), warmBot: all.slice(-WARMUP_BARS), warmDate: prev };
     }
@@ -508,7 +524,7 @@ export class PriceService {
       const ticks = await this.loadTicks(prev, code);
       if (ticks?.length) m1 = minuteBarsFromTicks(ticks, 1);
     }
-    if (!m1.length) return null;
+    if (!m1.length) return { warm: [], warmBot: [], warmDate: prev };
     return {
       warm: resampleMinuteBars(m1, n).slice(-WARMUP_BARS_MAX),
       warmBot: resampleMinuteBars(m1.slice(-BOT_PARAMS.warmupMinutes), n),
@@ -599,7 +615,15 @@ export class PriceService {
       // the day's 1-minute bars are drawn instead of an error
       const tickAsMin = kind === 'tick';
       const sizeArg = tickAsMin ? ['--interval', '1'] : ['--interval', String(n)];
-      const sb = await this.serverBars(['--date', date, '--code', code, '--kind', 'min', ...sizeArg, ...(req.warmup ? ['--warmup', String(WARMUP_BARS_MAX)] : [])]);
+      // [2026-11-18] a past day's answer is kept on disk (asked once)
+      const fcMin = this.cached(date);
+      const relMin = `server_min/${code}_${tickAsMin ? 1 : n}${req.warmup ? '_w' : ''}.json`;
+      const savedMin = fcMin?.json<ServerBars>(date, relMin);
+      let sb: ServerBarsResult = savedMin ? { ok: true, data: savedMin } : null;
+      if (!sb) {
+        sb = await this.serverBars(['--date', date, '--code', code, '--kind', 'min', ...sizeArg, ...(req.warmup ? ['--warmup', String(WARMUP_BARS_MAX)] : [])]);
+        if (fcMin && sb?.ok && sb.data.bars?.length) fcMin.saveJson(date, relMin, sb.data);
+      }
       if (sb?.ok) {
         const d = sb.data;
         const warm = serverRowsToBars(d.columns, d.warm || undefined);
@@ -631,11 +655,11 @@ export class PriceService {
     let sourceDetail: string | undefined;
     const fcDay = this.cached(date);
     let sb: ServerBarsResult = null;
-    const savedDay = fcDay?.json<ServerBars>(date, `server_day/${code}.json`);
+    const savedDay = fcDay?.json<ServerBars>(date, `server_day/${code}.v2.json`);
     if (savedDay) sb = { ok: true, data: savedDay };
     else {
       sb = await this.serverBars(['--date', date, '--code', code, '--kind', 'day']);
-      if (fcDay && sb?.ok) fcDay.saveJson(date, `server_day/${code}.json`, sb.data);
+      if (fcDay && sb?.ok) fcDay.saveJson(date, `server_day/${code}.v2.json`, sb.data);
     }
     if (sb?.ok) {
       daily = serverRowsToBars(sb.data.columns, sb.data.bars);
@@ -671,7 +695,7 @@ export class PriceService {
       daily = dailyWithToday(daily, date, intraday);
       if (daily.some((b) => b.t === dayT)) note = [note, '당일 봉은 장중 데이터로 만들었습니다.'].filter(Boolean).join(' · ');
     }
-    const bars = kind === 'day' ? daily : kind === 'week' ? weekBars(daily) : monthBars(daily);
+    const bars = groupDaily(daily, kind); // [2026-11-18] + year
     return { ok: true, source: extra.sourceDetail ? 'server' : 'daily', bars, ...extra, note };
   }
 }

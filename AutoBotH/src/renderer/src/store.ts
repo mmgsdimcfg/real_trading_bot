@@ -49,7 +49,7 @@ function loadChartTab(): ChartTabPrefs {
   const d: ChartTabPrefs = { kind: 'day', tickN: 30, minN: 3, ind: ['ma', 'bb', 'vol', 'rsi', 'macd'], prevDay: true };
   try {
     const v = JSON.parse(localStorage.getItem(CHART_TAB_KEY) || 'null');
-    if (v && ['tick', 'min', 'day', 'week', 'month'].includes(v.kind)) {
+    if (v && ['tick', 'min', 'day', 'week', 'month', 'year'].includes(v.kind)) {
       const ind = Array.isArray(v.ind) ? withVol(v, (v.ind as IndicatorKey[]).filter((k) => IND_KEYS.includes(k))) : d.ind;
       return { kind: v.kind, tickN: Number(v.tickN) || d.tickN, minN: Number(v.minN) || d.minN, ind, prevDay: v.prevDay !== false };
     }
