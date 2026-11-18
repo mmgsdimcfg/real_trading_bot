@@ -19,12 +19,17 @@ Overview
 - [2026-11-08] Renumbered `_001`..`_025` in evaluation order (numbers had drifted: added gates kept 25~31 and removed
   ones left gaps). Notes and update-log entries above this line use the numbers of their date - see the 2026-11-08 entry
   for the old -> new table.
+- [2026-11-18] type=feat owner=claude
+    summary: `_008` triple - r001 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN 이면 같은 날 정규장 전(NXT 장전) 1분 MA 크로스의 나이를 09:00 부터
+      센다(r002 clamp_cross_age_to_regular_open). related_defines 에 키 추가.
+    impact: live (r003 재시작 후)
+    compatibility: breaking (r001 기본 True - 매수 증가 방향. 롤백: r016 set TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN=false)
 - [2026-11-17] type=feat owner=claude
     summary: 사용자 결정 - `_010` 앞단에 일봉 시장 추세 게이트(r001 ENABLE_MARKET_DAILY_TREND_GATE, 기본 꺼짐): 지수 ETF
       (MARKET_REGIME_ETF) daily_history 일봉에서 어제까지 종가 > MA60 이고 MA60 이 10거래일 전보다 높을 때만 통과(SCOPE both).
       반려 사유 MARKET_REGIME_DOWN_DAILY_MA60 | <etf>_CLOSE_BELOW|MA_FALLING close=.. ma60=.. (AutoBotH 매핑 접두어 그대로 _010).
       파일 없음/행 부족/오래됨은 MARKET_DAILY_TREND_FAIL_OPEN. 결과는 날짜별 캐시(30분마다 재읽기). g003 재생에는 아직 없음.
-    impact: live (켠 경우만, r003 재시작 후)
+    impact: live (r003 재시작 후)
     compatibility: backward-compatible (기본 꺼짐)
 - [2026-11-17] type=fix owner=claude
     summary: 사용자 요청(068270 HYBRID_3MIN_CTX_LOW_ENTRY_ATR_0.38%_LT_0.40% 기준을 앱에서 못 바꿈) - 조건이 실제로 읽는데
@@ -264,6 +269,7 @@ from r001_define_config import (
     TRIPLE_1MIN_MA_SLOW,
     TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
     TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
+    TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN,
     TRIPLE_1MIN_CONDITION,
     TRIPLE_TICK_CONDITION,
     TRIPLE_REQUIRE_1MIN_ABOVE_MID,
@@ -311,6 +317,7 @@ from r002_strategy_core_shared import (
     check_1min_trigger_live_guard,
     find_1min_ma_golden_cross,
     evaluate_1min_below_turn,
+    clamp_cross_age_to_regular_open,
     evaluate_triple_trigger,
     check_chase_from_cross,
     market_relative_strength_ok,
@@ -904,6 +911,8 @@ def _008_triple_cross_trigger(ctx: BuyContext, frame_1min: pd.DataFrame) -> bool
     """
     ma = find_1min_ma_golden_cross(frame_1min, TRIPLE_1MIN_MA_FAST, TRIPLE_1MIN_MA_SLOW)
     ma_age = _cross_age_seconds(ctx, ma["cross_bar_time"]) if ma["ok"] else float("nan")
+    if TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN and ma["ok"]:  # [2026-11-18] same-day pre-open (NXT) cross aged from 09:00
+        ma_age = clamp_cross_age_to_regular_open(ma_age, ctx.current_dt, ma["cross_bar_time"], REGULAR_START)
     tick_result = _evaluate_tick_trigger(ctx, required=True)
     crosses = (getattr(tick_result, "crosses", None) or {}) if tick_result is not None else {}
     # [2026-11-17] r001 TRIPLE_1MIN_BELOW_TURN_PASS: 1-minute MA5 <= MA20 may still pass when MA5 turned up and MACD rises
@@ -1593,7 +1602,8 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "TICK_TRIGGER_FEED_STALE_SECONDS", "TICK_TRIGGER_REQUIRE_1MIN_ABOVE_MID",
                   # [2026-11-16] triple trigger thresholds (the keys its reject reasons name)
                   "TRIPLE_1MIN_CONDITION", "TRIPLE_TICK_CONDITION", "TRIPLE_1MIN_MA_FAST", "TRIPLE_1MIN_MA_SLOW",
-                  "TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS", "TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS", "TRIPLE_REQUIRE_1MIN_ABOVE_MID",
+                  "TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS", "TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS", "TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN",
+                  "TRIPLE_REQUIRE_1MIN_ABOVE_MID",
                   "TRIPLE_CHASE_FROM_CROSS_MAX_PCT", "TRIPLE_CHASE_FROM_CROSS_REF", "TICK_MIN_PRINTS_PER_MIN",
                   "TICK_MIN_PRINTS_WINDOW_MINUTES",
                   # [2026-11-17] 1-minute MA5 <= MA20 below-turn pass

@@ -81,7 +81,7 @@ const roleLabel = (r: string | undefined) => (r === 'standby' ? 'standby (매매
 /**
  * [2026-11-11] What the three risk profiles change (server live_trading/risk_profiles/<name>.json, applied over r001 when r003
  * starts - only keys the live code reads are listed; TAKE_PROFIT_PERCENT / STOP_LOSS_* in those files are legacy and unused).
- * Hard stop (-1.7% after 4 min), ATR stop (1.5 x ATR), TP1 (+3.0%, 40%) and profit lock are the same in every profile.
+ * Hard stop (-3.5% after 4 min), ATR stop (1.5 x ATR, never closer than -3.5%), TP1 (+3.0%, 40%) and profit lock are the same in every profile.
  */
 const PROFILE_SUMMARY: Record<RiskProfile, string> = {
   conservative: '보수 - 종목당 30만원, 작은 반납에도 빨리 정리',
@@ -92,7 +92,7 @@ const PROFILE_ROWS: { k: string; v: Record<RiskProfile, string>; hint?: string }
   { k: '종목당 주문 금액 상한', v: { conservative: '30만원', neutral: '50만원', aggressive: '70만원' } },
   { k: '익절 후 트레일 (1차 익절 뒤 잔량, 고점 대비)', v: { conservative: '사용 안 함', neutral: '-1.0%', aggressive: '-0.7%' }, hint: 'ENABLE_TP_EXTENSION_TRAILING / TP_EXTENSION_TRAIL_FROM_PEAK' },
   { k: '트레일링 스탑 (고점 대비 반납)', v: { conservative: '-1.2%', neutral: '-1.5%', aggressive: '-2.8%' }, hint: 'TRAILING_STOP_FROM_PEAK' },
-  { k: '매수 직후 급락 가드 (0~4분)', v: { conservative: '-0.5% · 25초', neutral: '-1.0% · 60초', aggressive: '-1.0% · 60초' }, hint: 'POST_BUY_BB_DROP_PCT / POST_BUY_DROP_CONFIRM_SECONDS' },
+  { k: '매수 직후 급락 가드 (0~4분)', v: { conservative: '-3.5% · 25초', neutral: '-3.5% · 60초', aggressive: '-3.5% · 60초' }, hint: 'POST_BUY_BB_DROP_PCT / POST_BUY_DROP_CONFIRM_SECONDS' },
   { k: '본전 실패 가드 (무장 손익 · 반납 · 확인)', v: { conservative: '+0.6% · 0.45% · 20초', neutral: '+1.0% · 0.8% · 60초', aggressive: '+1.2% · 1.0% · 45초' }, hint: 'BREAKEVEN_FAIL_ARM_PNL / GIVEBACK_PCT / CONFIRM_SECONDS' },
   { k: '무추세 청산 (보유 · 고점 미만 · 손익 이하 · 확인)', v: { conservative: '15분 · +0.2% · -0.35% · 60초', neutral: '20분 · +0.3% · -0.45% · 90초', aggressive: '25분 · +0.5% · -0.8% · 120초' }, hint: 'NO_TREND_EXIT_*' },
 ];
@@ -140,7 +140,7 @@ function ProfileInfo({ current }: { current: RiskProfile }) {
             </tbody>
           </table>
           <p className="muted small">
-            모든 프로파일에서 같은 것: 하드스탑 -1.7% (매수 4분 뒤 활성, 10초 확인), ATR 손절 1.5×ATR (4분 뒤, 20초 확인), 1차 익절 +3.0%에 40% (ATR 연동), 이익 잠금 +1.0% 뒤
+            모든 프로파일에서 같은 것: 하드스탑 -3.5% (매수 4분 뒤 활성, 10초 확인), ATR 손절 1.5×ATR·최소 -3.5% (4분 뒤, 20초 확인), 1차 익절 +3.0%에 40% (ATR 연동), 이익 잠금 +1.0% 뒤
             -0.4% 반납 시 전량, 15:20 정규장 청산 (NXT 가능 종목은 19:59:58). 값은 서버 live_trading/risk_profiles/*.json 기준이며 바꾼 프로파일은 다음 실행/재시작부터
             적용됩니다.
           </p>

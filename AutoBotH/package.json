@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-18] type=tune - v2.3.24_008: 손절 기준 -3.5% 반영(서버 r001/risk_profiles) - 프로파일 안내의 하드스탑 -1.7% -> -3.5%, ATR 손절 최소 -3.5%, 매수 직후 급락 가드 -0.5/-1.0% -> -3.5% 표시. 1분 MA 상태가 너무 오래됨 반려의 관련 설정에 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN(장전 크로스 나이 09:00부터) 추가",
     "[2026-11-18] type=feat - v2.3.24_007: 데이터 작업 - 장 마감 파이프라인에 HI52 신호 기록 단계 표시(서버 r021 hi52 단계: g042 가 일봉 이력 갱신 뒤 52주 신고가 스윙 신호를 기록하고 평가 리포트를 씀, 주문 없음). ① 수집 체크에 함께 포함",
     "[2026-11-18] type=fix - v2.3.24_006: update download progress showed a much smaller size than the installer - the updater downloads only the changed parts (differential download); the text now says so and shows the full installer size: \"(9.8 / 12.6 MB) - changed parts only, full 112.2 MB\"",
     "[2026-11-17] type=fix - v2.3.24_005: (1) 스크롤바를 TermH 와 같은 얇은 반투명 막대로(스크롤 영역에 마우스를 올렸을 때만 표시) (2) 파이프라인 설명 패널 기본 폭 700px(기존 360px), 왼쪽 경계를 끌어 폭 조절(두 번 누르면 기본, 폭 기억), 다이어그램은 항상 확대 1배로 시작 (3) 타임라인 점 설명을 위/아래로 - 요약 한 줄 + 아래에 로그 원문",
@@ -129,7 +130,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "007",
+    "buildNumber": "008",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

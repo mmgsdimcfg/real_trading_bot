@@ -16,6 +16,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-18] type=feat owner=claude
+    summary: r006/r005 parity - ATR 손절선 하한(r001 ATR_STOP_MIN_LOSS_PCT), triple 1분 크로스 나이를 정규장 전 크로스면 09:00 부터
+      (r001 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN, r002 clamp_cross_age_to_regular_open).
+    impact: sim
+    compatibility: breaking (r001 값 따라감)
 - [2026-11-17] type=feat owner=claude
     summary: r005 _008 parity - 1분 MA5<=MA20 이어도 r002 evaluate_1min_below_turn 통과면 1분 조건 통과, 이 경로는 실시간 가드의
       1분 BB중심선 요구 생략(r001 TRIPLE_1MIN_BELOW_TURN_PASS / TRIPLE_BELOW_TURN_REQUIRE_ABOVE_MID).
@@ -371,6 +376,7 @@ from r001_define_config import (
     TICK_TRIGGER_MA_SLOW,
     TRIPLE_1MIN_CROSS_MAX_AGE_SECONDS,
     TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS,
+    TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN,
     TICK_CROSS_WARMUP_EXTRA_BARS,
     TRIPLE_1MIN_CONDITION,
     TRIPLE_TICK_CONDITION,
@@ -414,6 +420,7 @@ ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     AFTERNOON_NXT_FORCE_EXIT,
     AFTERNOON_NXT_NEW_ENTRY_CUTOFF,
     AFTERNOON_NXT_START,
+    ATR_STOP_MIN_LOSS_PCT,
     ATR_STOP_MULTIPLIER,
     ATR_STOP_CONFIRM_SECONDS,
     ATR_TAKE_PROFIT_MULTIPLIER,
@@ -577,6 +584,7 @@ from r002_strategy_core_shared import (
     check_1min_trigger_live_guard,
     find_1min_ma_golden_cross,
     evaluate_1min_below_turn,
+    clamp_cross_age_to_regular_open,
     evaluate_triple_trigger,
     check_chase_from_cross,
     load_symbol_market_map,
@@ -2349,6 +2357,8 @@ def _triple_entry_decision(
     cbt = ma["cross_bar_time"]
     ma_age = ((ts - pd.Timestamp(cbt)).total_seconds()
               if ma["ok"] and cbt is not None and not pd.isna(cbt) else float("nan"))
+    if TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN and ma["ok"]:  # [2026-11-18] r005 parity - same-day pre-open cross aged from 09:00
+        ma_age = clamp_cross_age_to_regular_open(ma_age, ts, cbt, REGULAR_START)
     tick_result = tick_replay.evaluate(code, ts.to_pydatetime())
     crosses = tick_result.crosses or {}
     below = None  # [2026-11-17] r005 parity - 1-minute MA5 <= MA20 below-turn pass
@@ -2870,7 +2880,7 @@ def simulate_date(
                 if not pd.isna(atr_val) and atr_val > 0 and price > 0 and pos.buy_price > 0:
                     atr_pct = float(atr_val) / price
                     atr_tp_pct = atr_pct * ATR_TAKE_PROFIT_MULTIPLIER
-                    atr_sl_pct = -atr_pct * ATR_STOP_MULTIPLIER
+                    atr_sl_pct = -max(atr_pct * ATR_STOP_MULTIPLIER, ATR_STOP_MIN_LOSS_PCT)  # r006 parity (2026-11-18)
                     atr_tp_price = pos.buy_price * (1.0 + atr_tp_pct)
                     atr_sl_price = pos.buy_price * (1.0 + atr_sl_pct)
 

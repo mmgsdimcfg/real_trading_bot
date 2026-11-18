@@ -1,6 +1,23 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-18] type=tune owner=claude
+#     summary: 사용자 결정(추격 가드 완화 A+B, g003 A/B 후 적용) - (A) HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT 1.8 -> 2.5,
+#       (B) TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN(True) 신설 - 같은 날 정규장 전(NXT 장전) 1분 크로스 나이를 09:00 부터 센다.
+#       근거: 20261118 100790 미래에셋벤처투자 09:04(1분봉 +1.87%)/214450 파마리서치 09:01(+1.94%) 차단 뒤 09:18/09:48 고점 신호
+#       (차단 시점 진입이면 5~9분 내 +3%, 실제 신호 뒤 최고 +2.55%/+0.91%). 파마리서치는 08:47 NXT 장전 크로스로 09:02 부터
+#       ABOVE_TOO_OLD 36분 반려. g003 13일(10/30~11/17, 실매매 감시 종목 194종목일): base 264건 -609,342원 / A 동일(차이 0건) /
+#       A+B 262건 -604,169원(11/02 108490 09:12 조기 진입 1건으로 교체). 11/18 은 장후 수집 전이라 미포함.
+#       runtime/research/09_chase_ab/report.md.
+#     impact: live (r003 재시작 후 r002 1분 트리거 가드 / r005 _008, g003 parity)
+#     compatibility: breaking (매수 증가 방향. 롤백: r016 set HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT=1.8 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN=false)
+# - [2026-11-18] type=tune owner=claude
+#     summary: 사용자 결정 - 손실 매도 기준을 -3.5% 로 통일. HARD_STOP_LOSS_PCT 0.017 -> 0.035, POST_BUY_BB_DROP_PCT 0.014 -> 0.035
+#       (risk_profiles 3종도 0.035), ATR_STOP_MIN_LOSS_PCT(0.035) 신설 - ATR 손절선은 진입가 대비 -3.5% 보다 가깝게 잡지 않는다.
+#       근거: 20261118 100790 미래에셋벤처투자 09:18 매수 신호(예산 부족으로 미체결) - 14,910 가정 시 09:20 급락 가드(-1.0%)/하드스탑
+#       (-1.7%)에 걸렸을 것이나 당일 최저는 -3.35%(09:23), 이후 10:14 +4.6%. 한 건당 최대 손실은 약 2배로 커진다.
+#     impact: live (r003 재시작 후 r006 _004/_009/_012, g003 parity)
+#     compatibility: breaking (손절 완화. 롤백: r016 set HARD_STOP_LOSS_PCT=0.017 POST_BUY_BB_DROP_PCT=0.01 ATR_STOP_MIN_LOSS_PCT=0)
 # - [2026-11-18] type=docs owner=claude
 #     summary: ENABLE_MARKET_DAILY_TREND_GATE 근거 주석을 장기 재검증(2018~2026, g040 백필) 결과로 갱신 - 10일 보유에서는 큰 하락장
 #       회피 효과만 있고, 당일 청산 기준으로는 허용일·차단일 차이가 없다. 값 변경 없음(기본 꺼짐 유지).
@@ -821,13 +838,16 @@ TAKE_PROFIT_PERCENT = 0.025  # 고정 익절 비율(+2.5%) - 섹션 2와 함께 
 STOP_LOSS_PERCENT = -0.021  # 기본 손절 기준(-2.1%)
 STOP_LOSS_EARLY_PERCENT = -0.020  # 보유 초기 구간에서 사용하는 완화 손절 기준
 STOP_LOSS_MIN_HOLD_SECONDS = 600  # 손절 로직이 본격 적용되기 전 최소 보유 시간(초)
-HARD_STOP_LOSS_PCT = 0.017  # 하드스탑 손절 기준 (0.8%->1.2%->1.7%: 백테스트 결과 하드스탑 58건 중 63.8%가 손절 후 본전 이상 회복, 34.5%는 +2%까지 회복 - 급락 후 반등을 놓치지 않도록 완화)
+HARD_STOP_LOSS_PCT = 0.035  # 하드스탑 손절 기준 (2026-11-18 사용자 결정 1.7%->3.5%, 위 Update log. 이전: 0.8%->1.2%->1.7%: 백테스트 결과 하드스탑 58건 중 63.8%가 손절 후 본전 이상 회복, 34.5%는 +2%까지 회복 - 급락 후 반등을 놓치지 않도록 완화)
 HARD_STOP_MIN_HOLD_SECONDS = 240.0  # 하드스탑 활성화 최소 보유 시간(초) (180->240: 초기 변동성 노이즈에 덜 민감하도록 연장)
 # [2026-09-23] 단일 폴링 틱 노이즈로 즉시 손절되는 걸 막기 위한 확인창(ATR_STOP_LOSS와 동일 헬퍼/취지,
 # 119850 2026-09-23 09:02 사례+Codex 검토). 0 이하면 기존과 동일(즉시 발동, 디바운스 없음)으로 되돌아간다 -
 # 지속 하락 시 확인 시간만큼 체결가가 더 나빠질 수 있는 트레이드오프이므로 손실 상한이 아니라 트리거 지연임에 유의.
 HARD_STOP_CONFIRM_SECONDS = 10.0
 ATR_STOP_MULTIPLIER = 1.5  # ATR 기반 손절 배수
+# [2026-11-18] 사용자 결정: ATR 손절선 하한. 손절선 = 진입가 x (1 - max(ATR% x ATR_STOP_MULTIPLIER, 이 값)) - ATR이 작아도
+# -3.5% 보다 가깝게 손절하지 않는다(하드스탑/급락 가드와 같은 기준). 0 이면 이전과 같다(ATR 값 그대로).
+ATR_STOP_MIN_LOSS_PCT = 0.035
 
 # [2026-09-07] 진입 최소 변동성(ATR%) 필터. 손절/익절(TP1/ATR_STOP_MULTIPLIER)은 ATR을 쓰면서
 # 정작 진입 시점에는 ATR을 전혀 확인하지 않아, ATR이 TP1(STAGED_TP1_PCT=3.0%)에 한참
@@ -909,7 +929,7 @@ SURGE_TP2_RATIO = 0.30          # 2단계 청산 수량 = 진입수량 x 30% (TP
 # 매수 직후 급락 방지: 매수 후 일정 시간 동안 현재가가 매수가 대비
 # POST_BUY_BB_DROP_PCT 이상 낮은 상태가 POST_BUY_DROP_CONFIRM_SECONDS 동안
 # 유지되면 손절 이전에 조기 매도한다.
-POST_BUY_BB_DROP_PCT = 0.014  # 매수가 대비 이탈 임계치 (-1.0%->-1.4%: 백테스트 결과 12건 중 83.3%가 본전 이상 회복, 58.3%는 +2%까지 회복(평균 최대회복 +4.17%) - 매수직후 정상 노이즈 조기청산 완화)
+POST_BUY_BB_DROP_PCT = 0.035  # 매수가 대비 이탈 임계치 (2026-11-18 사용자 결정 -1.4%->-3.5%, risk_profiles 도 동일. 이전: -1.0%->-1.4%: 백테스트 결과 12건 중 83.3%가 본전 이상 회복, 58.3%는 +2%까지 회복(평균 최대회복 +4.17%) - 매수직후 정상 노이즈 조기청산 완화)
 # [2026-11-04] 180 -> 240: 하드/ATR 손절은 보유 HARD_STOP_MIN_HOLD_SECONDS(240s) 이후에만 발동하는데 이 가드는 180s까지만 활성이라
 # 180~240s 구간에 가격 손절이 전혀 없었다(Codex 검토 #8, 159010 20261104 -2.1%까지 하락). 가드 창을 손절 활성 시점까지 잇는다.
 POST_BUY_BB_DROP_ARMED_SECONDS = 240.0  # 매수 후 가드 활성 구간 (= HARD_STOP_MIN_HOLD_SECONDS, 하드스탑 활성 전까지)
@@ -1264,7 +1284,7 @@ EMA_20_PERIOD = 20   # calculate_indicators의 EMA_20(3분봉 ema_trend_align �
 # 추격 상한은 그대로(HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT가 경과봉 수와 무관하게 상한).
 HYBRID_1MIN_TRIGGER_LOOKBACK_BARS = 12       # 크로스 인정 룩백(1분봉 12봉 = 12분 = 3분봉 4봉)
 HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MIN_PCT = -0.4  # 1분봉 자체 틱노이즈가 더 커서 3분봉(-0.1%)보다 완화
-HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 1.8   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화
+HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT = 2.5   # 1분봉 급등 캔들은 3분봉 환산 시 정상 범위일 수 있어 완화 (2026-11-18 1.8 -> 2.5, 위 Update log)
 # [2026-10-28] 0.5 -> 0.8 (사용자 요청, 대책 b): 반등 초입의 첫 크로스 1분봉은 후행 BB중심선(SMA20) 대비 갭이 자연히
 # 크다(091580 상신이디피 09:19 크로스봉 26,750->27,100, 갭 0.60~0.75%로 반려 -> 09:21엔 1.14%로 벌어져 영영 놓침).
 # 경과봉 완화(0.15%/봉)와 신선한 크로스 상한 CEILING_PCT(1.1%)는 그대로라 0.80 -> 0.95 -> 1.10%로 단조 증가.
@@ -1399,6 +1419,11 @@ TRIPLE_CHASE_FROM_CROSS_REF = "earliest"
 # (1) 1분 MA5>MA20 "above" 상태의 최대 나이(초) - 크로스가 이보다 오래됐으면 반려. 015760 09:52 매수는 09:20 크로스 후 32분
 #     (-0.85%), 1분 크로스 직후 진입이면 +1.1%. 0 = 제한 없음(종전). 롤백: 0.
 TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS = 900.0
+# [2026-11-18] 같은 날 정규장 시작 전(NXT 장전 08:00~08:50)에 생긴 1분 크로스는 위 나이를 09:00(REGULAR_START)부터 센다.
+# 214450 파마리서치 20261118: 08:47 NXT 장전 크로스 -> 정규장 09:02 에 이미 900초 초과(ABOVE_TOO_OLD)로 09:38 까지 반려,
+# 그 사이 +5% 상승을 놓치고 09:48 고점(274,500)에서 신호. 전일 크로스(warmup 봉)는 그대로 오래된 것으로 본다.
+# r002 clamp_cross_age_to_regular_open (r005 _008 / g003 parity). 롤백: False.
+TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN = True
 # (2) 시장 국면 게이트 확인 봉 수 - 지수 ETF 1분 MA5<=MA20 이 이 수만큼 연속 확정봉에서 유지돼야 차단(1 = 종전, 봉 1개 깜빡임에도
 #     차단). 018260 10:13 세 크로스 완성 직후 KOSPI 게이트가 10:13/10:17 에 켜졌다 꺼지며 진입을 막았고(그 시점 진입이면 +0.65%)
 #     결국 10:18 고점 매수(-1.06%). 롤백: 1.

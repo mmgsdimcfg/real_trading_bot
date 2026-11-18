@@ -18,6 +18,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-18] type=feat owner=claude
+    summary: clamp_cross_age_to_regular_open() 신설 - 같은 날 정규장 전(NXT 장전) 1분 크로스의 나이를 09:00 부터 센다
+      (r001 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN, 214450 20261118 08:47 크로스 -> 09:02 ABOVE_TOO_OLD 사례).
+    impact: common (r005 _008 / g003)
+    compatibility: backward-compatible (호출측 r001 스위치로 켬)
 - [2026-11-17] type=feat owner=claude
     summary: evaluate_1min_below_turn() 신설(1분 MA5 상승 전환 + MACD 상승) + evaluate_triple_trigger(below_turn=...) - "above" 모드에서
       1분 MA5<=MA20 이어도 below_turn ok 면 1분 조건 통과(반환 below_turn=True, 라벨 1MIN_MA5_BELOW_TURN_MA20). r001 TRIPLE_1MIN_BELOW_TURN_PASS.
@@ -2168,6 +2173,22 @@ def evaluate_1min_below_turn(frame_1min: pd.DataFrame, fast: int = 5, lookback: 
         return out
     out.update({"ok": True, "reason": f"{tag}_TURN_UP_MACD_UP"})
     return out
+
+
+def clamp_cross_age_to_regular_open(age_s: float, now, cross_bar_time, regular_start) -> float:
+    """[2026-11-18] r001 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN: a 1-minute cross formed earlier the SAME day before the regular open
+    (NXT pre-market) is aged from the regular open (regular_start, datetime.time) once the regular session has started. Crosses
+    from an earlier day (prior-day warmup bars) and crosses at/after the open keep their real age. NaN / bad input -> age_s."""
+    try:
+        if age_s is None or pd.isna(age_s) or cross_bar_time is None or pd.isna(cross_bar_time):
+            return age_s
+        now_ts, cross_ts = pd.Timestamp(now), pd.Timestamp(cross_bar_time)
+        open_ts = pd.Timestamp.combine(now_ts.date(), regular_start)
+        if cross_ts.date() == now_ts.date() and cross_ts < open_ts <= now_ts:
+            return min(float(age_s), (now_ts - open_ts).total_seconds())
+    except Exception:
+        pass
+    return age_s
 
 
 def evaluate_triple_trigger(

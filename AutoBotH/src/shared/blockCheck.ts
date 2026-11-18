@@ -97,7 +97,7 @@ const SPECIFIC: [RegExp, Builder][] = [
   [/^1MIN_MA(\d+)_MA(\d+)_ABOVE_TOO_OLD_(\d+)s_GT_(\d+)s$/, (m) => ({
     label: `1분봉 MA${m[1]} > MA${m[2]} 상태가 너무 오래됨 (마지막 골든크로스 이후 경과 시간)`,
     actual: seconds(m[3]), limit: `≤ ${seconds(m[4])}`,
-    keys: ['TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS', 'TRIPLE_1MIN_CONDITION'],
+    keys: ['TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS', 'TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN', 'TRIPLE_1MIN_CONDITION'],
   })],
   [/^1MIN_MA(\d+)_MA(\d+)_CROSS_EXPIRED_(\d+)s/, (m, v) => ({
     label: `1분봉 MA${m[1]}/MA${m[2]} 골든크로스 유효시간 지남`,

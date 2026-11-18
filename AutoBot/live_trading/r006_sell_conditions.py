@@ -34,6 +34,11 @@ Order [numbers = evaluation order since 2026-11-08, old number in brackets]
     번호는 재사용하지 않는다(로그/문서 호환).
 
 Update log (append only):
+- [2026-11-18] type=tune owner=claude
+    summary: 사용자 결정 - `_002` ATR 손절선에 하한 r001 ATR_STOP_MIN_LOSS_PCT(0.035): 손절선 = -max(ATR% x 배수, 하한). 하드스탑/
+      급락 가드 값(-3.5%)은 r001/risk_profiles 에서 변경.
+    impact: live (r003 재시작 후)
+    compatibility: breaking (손절 완화. 롤백: ATR_STOP_MIN_LOSS_PCT=0)
 - [2026-11-17] type=fix owner=claude
     summary: 사용자 요청(조건이 읽는데 앱 설정 목록에 없어 바꿀 수 없던 키) - related_defines 추가: `_006` ENABLE_STAGED_TAKE_PROFIT /
       ENABLE_SURGE_LADDER_TP, `_013` ENABLE_TP_EXTENSION_TRAILING. 판정 로직 무변경.
@@ -148,6 +153,7 @@ from r001_define_config import (
     BASIC_PEAK_PROTECT_CONFIRM_SECONDS,
     BASIC_EXIT_3MIN_DEADCROSS_LOOKBACK_BARS,
     ATR_STOP_CONFIRM_SECONDS,
+    ATR_STOP_MIN_LOSS_PCT,
     ATR_STOP_MULTIPLIER,
     ATR_TAKE_PROFIT_MULTIPLIER,
     AUX_SELL_MIN_REALIZED_TARGET_PCT,
@@ -404,7 +410,7 @@ def _002_update_position_tracking(ctx: SellContext) -> bool:
     if not pd.isna(atr_val) and atr_val > 0 and price > 0 and entry_price > 0:
         atr_pct = float(atr_val) / price
         atr_tp_pct = atr_pct * ATR_TAKE_PROFIT_MULTIPLIER
-        atr_sl_pct = -atr_pct * ATR_STOP_MULTIPLIER
+        atr_sl_pct = -max(atr_pct * ATR_STOP_MULTIPLIER, ATR_STOP_MIN_LOSS_PCT)  # 2026-11-18: -3.5% 보다 가깝지 않게
         atr_tp_price = entry_price * (1.0 + atr_tp_pct)
         atr_sl_price = entry_price * (1.0 + atr_sl_pct)
     ctx.atr_val, ctx.atr_pct = atr_val, atr_pct
