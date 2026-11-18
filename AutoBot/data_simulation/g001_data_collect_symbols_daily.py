@@ -45,6 +45,14 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-18] type=fix owner=claude
+    summary: KIS OPSQ0008("호출 후처리(MCI전송) 오류", HTTP 200 + rt_cd=1)를 재시도 없이 실패 처리해 2026-11-18 장 마감 수집에서
+      3260종목 중 1479종목이 실패(같은 날 16:43부터 r003 에서도 발생 - KIS 측 일시 장애, 11-17 이전 로그에는 0건).
+      조회(GET)의 OPSQ0008 은 1, 2, 3, 4초 대기하며 최대 4회 재시도(모든 스레드 공용 대기). 재시도를 다 써도 실패한 요청이
+      성공 없이 연속 20회면 KIS 장애로 보고 수집을 멈춘다(종료코드 1, 진행기록이 남은 종목은 다음 실행에서 건너뛰고 나머지만
+      이어 받음) - 장애 중 3260종목을 모두 실패로 훑지 않도록. 환경변수 G001_TRANSIENT_BACKOFF / G001_TRANSIENT_ABORT_STREAK.
+    impact: collector
+    compatibility: backward-compatible
 - [2026-11-08] type=feat owner=claude
     summary: 사용자 요청 "NXT 매매 종목이면 NXT 시간 데이터도 수집". --nxt 기본 켜짐(--no-nxt로 끔, --nxt는 호환용 유지).
       NXT 가능 종목만 NX 분봉(08:00~08:50, 15:30~20:00)을 추가하고, 정규장(09:00~15:30)은 J 봉만 쓴다 - 기존 --nxt의
@@ -366,6 +374,26 @@ KIS_NETWORK_BACKOFF = 1.0
 KIS_MIN_REQUEST_INTERVAL = _env_seconds("G001_MIN_REQUEST_INTERVAL", 0.05, upper=1.0)
 # Ctrl+C 등으로 수집을 멈출 때 설정 - 다음 API 요청 시점에 작업 스레드가 즉시 빠져나간다.
 STOP_EVENT = threading.Event()
+# [2026-11-18] KIS 측 일시 오류(HTTP 200, rt_cd=1): 조회(GET)만 재시도. OPSQ0008 = "호출 후처리(MCI전송) 오류"
+KIS_TRANSIENT_CODES = (b"OPSQ0008",)
+KIS_TRANSIENT_RETRIES = 4
+KIS_TRANSIENT_BACKOFF = _env_seconds("G001_TRANSIENT_BACKOFF", 1.0)  # seconds x attempt
+# 재시도를 다 쓰고도 실패한 요청이 성공 없이 이만큼 이어지면 KIS 장애로 보고 수집을 멈춘다
+KIS_TRANSIENT_ABORT_STREAK = max(1, int(_env_seconds("G001_TRANSIENT_ABORT_STREAK", 20, upper=1000)))
+KIS_UNAVAILABLE = threading.Event()
+
+
+def _transient_kis_error(res) -> bytes | None:
+    """msg_cd of a KIS transient error answer (small HTTP 200 body with rt_cd=1), else None"""
+    if getattr(res, "status_code", None) != 200:
+        return None
+    body = getattr(res, "content", b"") or b""
+    if len(body) > 4096:  # normal chart pages are larger; error bodies are a few hundred bytes
+        return None
+    for code in KIS_TRANSIENT_CODES:
+        if code in body:
+            return code
+    return None
 
 
 class CollectionStopped(RuntimeError):
@@ -380,6 +408,7 @@ class _KisRequestsProxy:
         self._session = real_requests.Session()
         self._next_slot = 0.0
         self._slot_lock = threading.Lock()
+        self._transient_streak = 0
 
     def _throttle(self) -> None:
         """Wait until this thread may send (thread-safe). The spacing is enforced when a thread leaves this method
@@ -416,6 +445,7 @@ class _KisRequestsProxy:
         kwargs.setdefault("timeout", KIS_HTTP_TIMEOUT)
         rate_attempt = 0
         net_attempt = 0
+        transient_attempt = 0
         while True:
             self._throttle()
             try:
@@ -436,6 +466,24 @@ class _KisRequestsProxy:
                 logger.info("KIS rate limit (EGW00201), retry %d/%d", rate_attempt, KIS_RATE_LIMIT_RETRIES)
                 self._cooldown(KIS_RATE_LIMIT_BACKOFF * rate_attempt)  # 모든 스레드가 함께 쉰다
                 continue
+            # [2026-11-18] KIS 측 일시 오류(OPSQ0008): 조회만 재시도 - 주문(POST)은 처리됐을 수 있어 그대로 돌려준다
+            transient = _transient_kis_error(res) if method == "GET" else None
+            if transient is not None:
+                if transient_attempt < KIS_TRANSIENT_RETRIES:
+                    transient_attempt += 1
+                    logger.info("KIS transient error (%s), retry %d/%d", transient.decode(), transient_attempt, KIS_TRANSIENT_RETRIES)
+                    self._cooldown(KIS_TRANSIENT_BACKOFF * transient_attempt)
+                    continue
+                with self._slot_lock:
+                    self._transient_streak += 1
+                    streak = self._transient_streak
+                if streak >= KIS_TRANSIENT_ABORT_STREAK and not KIS_UNAVAILABLE.is_set():
+                    KIS_UNAVAILABLE.set()
+                    STOP_EVENT.set()
+                    logger.error("KIS %s 오류가 재시도 후에도 %d회 연속 - KIS 장애로 보고 수집을 멈춥니다 (나중에 다시 실행하면 이어서 수집)",
+                                 transient.decode(), streak)
+            elif res.status_code == 200:
+                self._transient_streak = 0
             return res
 
 
@@ -2271,6 +2319,11 @@ def main() -> None:
             STOP_EVENT.set()
             logger.warning("interrupted - stopped (in-flight symbols are not recorded and will be refetched)")
             raise
+        if KIS_UNAVAILABLE.is_set():
+            # [2026-11-18] KIS 장애로 멈춤: Ctrl+C 와 같이 요약 파일은 쓰지 않는다(저장된 종목은 진행기록으로 다음 실행에서 건너뜀)
+            logger.error("stopped: KIS errors (%s) kept failing - date=%s saved=%d, failed=%d so far; run again later to resume",
+                         "/".join(c.decode() for c in KIS_TRANSIENT_CODES), target_date, counters["saved"], counters["failed"])
+            sys.exit(1)
 
         saved_count, empty_count = counters["saved"], counters["empty"]
         resumed_count, adopted_count = counters["resumed"], counters["adopted"]
