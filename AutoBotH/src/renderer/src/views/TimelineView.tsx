@@ -54,6 +54,9 @@
  *   with the drawn axis scales, within 18 px) - recharts' activePayload named another row's dot at the same time (cursor on _022,
  *   dock showed _020). The hovered dot gets a ring, a pinned dot an accent ring, and a pinned dot stays in the dock while the
  *   mouse moves over other dots (click another dot to re-pin, empty space or ✕ to release)
+ * - [2026-11-18] type=feat - One time axis for every symbol: the frame is always 08:00 - 20:00 (the NXT day), so switching symbols
+ *   keeps the same x positions. A KRX-only symbol shows its evaluations and price bars of the KRX session (09:00 - 15:30) only -
+ *   r003's pre-open SKIP rows (can_trade_code_now=False) and KRX pre-open prints are left out
  * - [2026-11-18] type=perf - The price chart of a symbol / chart size seen before is drawn at once from the renderer's memory
  *   (dataCache, key = day/code/kind/size/warm-up/NXT) and refreshed in the background - a symbol switch no longer waits for the
  *   main process / server before drawing
@@ -258,6 +261,9 @@ function TipDock({ pt, side, pinned, onUnpin }: { pt: Pt | null; side: '매수' 
   );
 }
 
+/** stable empty list (memo inputs) */
+const NO_EVENTS: EvalEvent[] = [];
+
 export function TimelineView() {
   const snap = useStore((s) => s.snapshot);
   const conditions = useStore((s) => s.conditions);
@@ -315,7 +321,12 @@ export function TimelineView() {
     [sellConds],
   );
 
-  const events = timeline && timeline.code === selected ? timeline.events : [];
+  // [2026-11-18] a KRX-only symbol: only what falls in the KRX session (09:00 - 15:30) is drawn
+  const selNxt = !!snap?.symbols.find((s) => s.code === selected)?.nxt;
+  const krxRange = selNxt ? null : tradingSessionRange(snap?.date || status.date, false);
+  const inShown = (t: number) => !krxRange || (t >= krxRange[0] && t <= krxRange[1]);
+  const allEvents = timeline && timeline.code === selected ? timeline.events : NO_EVENTS;
+  const events = useMemo(() => (krxRange ? allEvents.filter((e) => inShown(e.ts)) : allEvents), [allEvents, krxRange?.[0]]); // eslint-disable-line react-hooks/exhaustive-deps
   const trades = timeline && timeline.code === selected ? timeline.trades : [];
   const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
   // sell rows with evaluations of this symbol: sell events + the condition of each sell fill
@@ -347,12 +358,13 @@ export function TimelineView() {
   const replayAt = snap?.replay?.cursor ?? null;
   // tick / minute bars of the day widen the axis too (evaluations may stop before the close, e.g. r003 stopped at 13:40)
   const intradayKind = chart.kind === 'tick' || chart.kind === 'min';
-  const barTs = intradayKind && price?.ok && price.bars.length ? [price.bars[0].t, price.bars[price.bars.length - 1].t2 ?? price.bars[price.bars.length - 1].t] : [];
+  const keptBars = useMemo(() => (price?.ok ? (krxRange && intradayKind ? price.bars.filter((b) => inShown(b.t)) : price.bars) : []), [price, krxRange?.[0], intradayKind]); // eslint-disable-line react-hooks/exhaustive-deps
+  const barTs = intradayKind && keptBars.length ? [keptBars[0].t, keptBars[keptBars.length - 1].t2 ?? keptBars[keptBars.length - 1].t] : [];
   const xs = [...events.map((e) => e.ts), ...trades.map((t) => t.ts), ...barTs].filter(Number.isFinite);
-  // [2026-11-16] the axis spans the day's whole trading session from the start (NXT symbol 08:00 - 20:00, KRX 09:00 - 15:30), so
-  // the charts fill in from the left at the final scale instead of stretching the first minutes over the whole width; events or
-  // bars outside the session widen it
-  const session = tradingSessionRange(snap?.date || status.date, !!snap?.symbols.find((s) => s.code === selected)?.nxt);
+  // [2026-11-16] the axis spans the day's whole trading session from the start, so the charts fill in from the left at the final
+  // scale instead of stretching the first minutes over the whole width; events or bars outside it widen it.
+  // [2026-11-18] the same 08:00 - 20:00 frame for every symbol (KRX-only too) - the x axis does not move between symbols
+  const session = tradingSessionRange(snap?.date || status.date, true);
   const full: [number, number] = session
     ? [Math.min(session[0], ...xs), Math.max(session[1], ...xs)]
     : xs.length
@@ -411,8 +423,8 @@ export function TimelineView() {
 
   // past-day replay: intraday bars after the replay time are not shown yet
   const shownBars = useMemo(
-    () => (price?.ok ? barsUpTo(price.bars, replayAt, chart.kind === 'tick' || chart.kind === 'min') : []),
-    [price, replayAt, chart.kind],
+    () => (price?.ok ? barsUpTo(keptBars, replayAt, chart.kind === 'tick' || chart.kind === 'min') : []),
+    [price, keptBars, replayAt, chart.kind],
   );
   // memoized so hovering the price chart does not rebuild its paths
   const intradayDomain = useMemo<[number, number] | null>(() => (xs.length || session ? [domain[0], domain[1]] : null), [xs.length > 0 || !!session, domain[0], domain[1]]); // eslint-disable-line react-hooks/exhaustive-deps
