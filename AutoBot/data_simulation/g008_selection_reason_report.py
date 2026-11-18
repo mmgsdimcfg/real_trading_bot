@@ -17,6 +17,11 @@ g002를 import하지 않는다(g002가 __main__으로 실행되므로 재import 
 일봉 로더와 반전 신호 판정 함수는 g002가 인자로 넘겨준다.
 
 Update log:
+- [2026-11-19] type=docs owner=claude
+    summary: g002 상승 초입 패턴의 당일 마감 조건 변경(양봉 필수 -> 장대음봉/종가=저가만 탈락)에 맞춰
+      pattern_no_bullish_close 문구, A/B 등급 설명, 읽는 법 갱신.
+    impact: scanner report
+    compatibility: backward-compatible
 - [2026-10-11] type=feat owner=claude
     summary: 국문/영문 두 언어로 렌더링(render_selection_reason_report(lang="ko"|"en")). 리포트 끝에 g002
       _scanner_report.md의 Filter Counts/Soft Flags를 사유별 뜻풀이와 함께 추가(사용자 요청). "읽는 법" 표를
@@ -78,7 +83,8 @@ FAIL_REASON_DESC = {
         "상승 초입 패턴: 20일선 대비 +15% 초과, RSI 70 초과, 60일선 20일 변화율 +6% 초과 또는 20일 수익률 +30% 초과(과열·이미 많이 오름)",
         "Base-breakout pattern: more than +15% above MA20, RSI above 70, MA60 20-day change above +6% or 20-day return above +30% (overheated/extended)"),
     "pattern_few_buy_signals": ("상승 초입 패턴: 매수 신호 2개 미만", "Base-breakout pattern: fewer than 2 buy signals"),
-    "pattern_no_bullish_close": ("상승 초입 패턴: 당일 음봉/보합 마감", "Base-breakout pattern: day closed bearish or flat"),
+    "pattern_no_bullish_close": ("상승 초입 패턴: 당일 장대음봉(-2% 이상, 아래꼬리 < 몸통) 또는 종가=저가 마감",
+                                 "Base-breakout pattern: day closed with a long bearish candle (-2%+, lower tail < body) or at its low"),
     "pattern_bearish_candles": ("상승 초입 패턴 B등급: 최근 5일 음봉 3개 이상", "Base-breakout tier B: 3 or more bearish candles in the last 5 days"),
     "pattern_b_extended": ("상승 초입 패턴 B등급: 돌파 없이 20일선 +10% 초과", "Base-breakout tier B: more than +10% above MA20 without a breakout"),
     "pattern_unknown": ("상승 초입 패턴: 일봉 이력 부족/대상일 일봉 없음으로 판정 불가", "Base-breakout pattern: cannot evaluate (short daily history or no target-day bar)"),
@@ -317,10 +323,11 @@ def _render_stock(rank: int, row: dict, feat: dict, config, lang: str = "ko") ->
     good = []
     if row.get("pattern_tier"):
         tier_txt = (
-            _pick(lang, ("A: 당일 양봉으로 직전 5일 종가 고점 돌파", "A: bullish candle breaking the prior 5-day closing high"))
+            _pick(lang, ("A: 당일 종가가 직전 5일 종가 고점 돌파(장대음봉/종가=저가 마감 아님)",
+                         "A: close breaking the prior 5-day closing high (no long bearish / at-low close)"))
             if row["pattern_tier"] == "A" else
-            _pick(lang, ("B: 당일 양봉, 최근 5일 음봉 2개 이하, 20일선 +10% 이내",
-                         "B: bullish candle, at most 2 bearish candles in 5 days, within +10% of MA20"))
+            _pick(lang, ("B: 장대음봉/종가=저가 마감 아님, 최근 5일 음봉 2개 이하, 20일선 +10% 이내",
+                         "B: no long bearish / at-low close, at most 2 bearish candles in 5 days, within +10% of MA20"))
         )
         sigs = row.get("buy_signals") or []
         sig_txt = ", ".join(_pick(lang, BUY_SIGNAL_LABELS[s]) if s in BUY_SIGNAL_LABELS else s for s in sigs)
@@ -601,7 +608,8 @@ def render_selection_reason_report(
             "- 20일선이 5일 동안 1% 넘게 떨어지지 않음, 직전 10일 중 종가가 20일선 +8% 이내였던 날이 있음(눌림/바닥 출발)",
             "- 20일선 대비 +15% 이하, RSI 70 이하, 60일선 20일 변화율 +6% 이하, 20일 수익률 +30% 이하(과열·이미 많이 오른 종목 아님), "
             "매수신호 2개 이상(MACD 상승전환, 스토캐스틱 골든크로스, DI+ 우위, RSI 50~68, 거래량 1.3배+, OBV 상승)",
-            "- **A등급**: 당일 양봉이 직전 5일 종가 고점 돌파 / **B등급**: 당일 양봉, 최근 5일 음봉 2개 이하, 20일선 +10% 이내",
+            "- 당일 장대음봉(시가 대비 -2% 이상, 아래꼬리 < 몸통) 또는 종가=저가(아래꼬리 없음) 마감이 아님",
+            "- **A등급**: 당일 종가가 직전 5일 종가 고점 돌파 / **B등급**: 최근 5일 음봉 2개 이하, 20일선 +10% 이내",
             "- 거래대금이 시장 기준에 못 미쳐도 패턴 종목은 20일 평균 거래대금 50억 이상이면 통과",
             "",
             "**2) 점수** (같은 등급 안에서 순위를 가름)",
@@ -645,7 +653,8 @@ def render_selection_reason_report(
             "- MA20 has not fallen more than 1% over 5 days; in the prior 10 days the close was within +8% of MA20 at least once (started from a pullback/base)",
             "- At most +15% above MA20, RSI at most 70, MA60 20-day change at most +6%, 20-day return at most +30% (not overheated/extended); 2+ buy signals "
             "(MACD turning up, stochastic golden cross, DI+ above DI-, RSI 50-68, volume 1.3x+, OBV rising)",
-            "- **Tier A**: bullish candle breaking the prior 5-day closing high / **Tier B**: bullish candle, at most 2 bearish candles in 5 days, within +10% of MA20",
+            "- The day did not close with a long bearish candle (-2%+ from the open, lower tail < body) or at its low (no lower tail)",
+            "- **Tier A**: close breaking the prior 5-day closing high / **Tier B**: at most 2 bearish candles in 5 days, within +10% of MA20",
             "- Pattern stocks below the market liquidity benchmark still pass with a 20-day average traded value of at least 5bn KRW",
             "",
             "**2) Score** (ranks stocks within the same tier)",

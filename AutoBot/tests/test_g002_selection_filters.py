@@ -241,5 +241,49 @@ class TestSelectionFix20261113(unittest.TestCase):
         self.assertNotIn("derivative_etf_excluded", plain["fail_reasons"])
 
 
+class TestWeakClose20261119(unittest.TestCase):
+    """2026-11-19: the pattern's day-close condition - only a long bearish candle (lower tail < body) or close == low fails."""
+
+    def test_weak_close_rules(self):
+        wc = g002._weak_close
+        self.assertTrue(wc(100.0, 97.5, 97.5))     # close == low (no lower tail)
+        self.assertTrue(wc(100.0, 99.0, 99.0))     # small bearish but close == low
+        self.assertTrue(wc(100.0, 97.0, 97.8))     # long bearish (-2.2%), tail 0.8 < body 2.2
+        self.assertFalse(wc(100.0, 95.0, 97.8))    # long bearish but tail 2.8 >= body 2.2 (hammer-like)
+        self.assertFalse(wc(100.0, 98.5, 99.0))    # small bearish (-1%) with a lower tail
+        self.assertFalse(wc(100.0, 99.0, 100.0))   # flat with a lower tail
+        self.assertFalse(wc(100.0, 99.0, 103.0))   # bullish
+        self.assertTrue(wc(100.0, None, 97.0))     # no low -> tail 0
+        self.assertIsNone(wc(None, 99.0, 100.0))
+
+    def test_pattern_uses_weak_close(self):
+        # small bearish close with a lower tail now passes (tier B), previously pattern_no_bullish_close
+        f = _feat(bull=False, open=105.0, low=103.0, close=104.0, weak_close=None)
+        self.assertEqual(g002._pattern_assessment(104.0, f)[:2], ([], "B"))
+        f = _feat(bull=False, open=106.5, low=104.0, close=104.0, weak_close=None)
+        self.assertEqual(g002._pattern_assessment(104.0, f)[:2], (["pattern_no_bullish_close"], None))
+        self.assertEqual(g002._pattern_assessment(104.0, _feat(bull=False, weak_close=False, brk5=True))[1], "A")
+        self.assertEqual(g002._pattern_assessment(104.0, _feat(bull=True, weak_close=True))[0], ["pattern_no_bullish_close"])
+        old = g002.PATTERN_WEAK_CLOSE_LEGACY_BULL
+        try:
+            g002.PATTERN_WEAK_CLOSE_LEGACY_BULL = True
+            self.assertEqual(g002._pattern_assessment(104.0, _feat(bull=False, weak_close=False))[0], ["pattern_no_bullish_close"])
+        finally:
+            g002.PATTERN_WEAK_CLOSE_LEGACY_BULL = old
+
+    def test_feature_from_frame(self):
+        import numpy as np
+        import pandas as pd
+        n = 30
+        close = pd.Series(np.linspace(100, 130, n))
+        df = pd.DataFrame({"open": close + 0.1, "high": close + 1, "low": close - 0.5, "close": close, "volume": 1000.0})
+        f = g002._base_breakout_features(g002._compute_daily_indicators(df))
+        self.assertFalse(f["bull"])
+        self.assertFalse(f["weak_close"])
+        df.loc[n - 1, "low"] = df.loc[n - 1, "close"]
+        f = g002._base_breakout_features(g002._compute_daily_indicators(df))
+        self.assertTrue(f["weak_close"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,16 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-19] type=tune owner=claude
+    summary: 사용자 결정 - 상승 초입 패턴의 '당일 마감' 조건 변경. 이전: 당일 양봉(종가 > 시가)이 아니면(음봉/보합)
+      pattern_no_bullish_close 탈락, A/B 등급도 당일 양봉 필수. 변경: 아래 둘 중 하나일 때만 탈락(_weak_close)
+      (1) 장대음봉 마감: 종가 < 시가, 몸통 (시가-종가)/시가 >= 2%(PATTERN_WEAK_CLOSE_BEAR_BODY, big_bearish_candle과 같은 기준),
+          아래꼬리(종가-저가)가 몸통보다 작음 (2) 종가 = 저가(아래꼬리 없음). 그 밖의 음봉/보합(작은 음봉, 아래꼬리가 몸통
+      이상인 음봉)은 통과하고 A/B 등급 판정도 '당일 양봉' 대신 '위 두 경우가 아님'을 쓴다. 사유 코드
+      pattern_no_bullish_close는 호환을 위해 그대로 두고 g008 문구만 바꿈. 성과 재현 검증은 하지 않음(사용자 판단으로 적용).
+      롤백: PATTERN_WEAK_CLOSE_LEGACY_BULL=True(이전 '당일 양봉 필수' 판정).
+    impact: scanner (패턴 통과/선정 종목 증가 가능)
+    compatibility: breaking (선정 기준 완화; 출력 컬럼 불변, fail_reason 코드 불변)
 - [2026-11-13] type=fix owner=claude
     summary: 사용자 지적(20261112 KODEX 코스닥150선물인버스 251340이 고점에서 3일간 -10.8% 꺾였는데 보충 1순위로 선정).
       원인: 최근 5일 음봉 3개로 패턴 탈락(pattern_bearish_candles)했지만 near-miss 보충 예외로 구제, MA5 > MA20(후행)이라
@@ -1485,6 +1495,21 @@ def _cross_age(above: "pd.Series", max_age: int = 10) -> int | None:
     return None
 
 
+def _weak_close(open_p, low_p, close_p) -> bool | None:
+    """[2026-11-19] 상승 초입 패턴의 당일 마감 탈락 조건(사용자 지정). True = 탈락:
+    (1) 장대음봉 마감: 종가 < 시가, 몸통 >= PATTERN_WEAK_CLOSE_BEAR_BODY(시가 대비), 아래꼬리(종가-저가) < 몸통
+    (2) 종가 = 저가(아래꼬리 없음). 시가/종가가 없으면 None(판정 불가), 저가가 없으면 아래꼬리 0으로 본다."""
+    if open_p is None or close_p is None or open_p <= 0:
+        return None
+    if low_p is not None and low_p > 0 and close_p <= low_p:
+        return True
+    body = open_p - close_p
+    if body <= 0 or body / open_p < PATTERN_WEAK_CLOSE_BEAR_BODY:
+        return False
+    tail = (close_p - low_p) if (low_p is not None and low_p > 0) else 0.0
+    return tail < body
+
+
 def _base_breakout_features(df) -> dict:
     """[2026-10-10] 상승 초입(사용자 빨간 박스) 패턴 판정용 일봉 특징 - _pattern_assessment 참조."""
     c, o = df["close"].astype(float), df["open"].astype(float)
@@ -1506,6 +1531,10 @@ def _base_breakout_features(df) -> dict:
     feat["ret_20d"] = safe_float(c.iloc[-1] / c.iloc[-21] - 1.0) if len(c) >= 21 and c.iloc[-21] > 0 else None
     feat["brk5"] = bool(len(c) >= 6 and c.iloc[-1] > c.iloc[-6:-1].max())
     feat["bull"] = bool(c.iloc[-1] > o.iloc[-1])
+    # [2026-11-19] 당일 약한 마감(장대음봉 / 종가=저가) - _pattern_assessment의 마감 조건
+    lo = safe_float(df["low"].iloc[-1]) if "low" in df.columns else None
+    feat["low"] = lo
+    feat["weak_close"] = _weak_close(feat["open"], lo, feat["close"])
     feat["bear5"] = int((c.tail(5) < o.tail(5)).sum())
     vol = df["volume"].astype(float)
     vol_ma = vol.tail(20).mean() if len(vol) >= 5 else None
@@ -1533,6 +1562,10 @@ PATTERN_MAX_MA60_SLOPE20 = 0.06  # MA60의 20일 변화율 상한(이미 많이 
 PATTERN_MAX_RET_20D = 0.30       # 20일 수익률 상한
 PATTERN_MAX_BEAR5 = 2            # B등급: 최근 5거래일 음봉 최대 개수 (1 -> 2, 2026-11-11: 음봉 2개 구간 D+1 초과수익
                                  # +0.19%p vs 1개 +0.08%p, 'pattern_bearish_candles 단독 탈락' 313건 D+1 +0.40%p로 적격과 동급)
+# [2026-11-19] 당일 마감 조건(_weak_close): 장대음봉 몸통 기준(시가 대비 2%, big_bearish_candle과 같은 값).
+# True면 이전 판정(당일 양봉 필수)으로 되돌린다(롤백용).
+PATTERN_WEAK_CLOSE_BEAR_BODY = 0.02
+PATTERN_WEAK_CLOSE_LEGACY_BULL = False
 PATTERN_B_MAX_VS_MA20 = 0.10     # B등급: 돌파 캔들이 없으므로 MA20 대비 +10% 이내만(이미 오른 뒤 쉬는 종목 제외)
 # [2026-10-20] MA120 20일 변화율 하한 (기존 > 0). 52거래일 재현(장중 ATR 적용): > 0 하루 7.6종목 -> > -1% 10.0종목,
 # 패턴 D+1 시가->종가 +0.40% -> +0.41%로 품질 유지(-2%는 11.5종목이지만 5일 수익률 약화).
@@ -1571,7 +1604,8 @@ def _buy_signals(f: dict) -> list[str]:
 
 
 def _pattern_assessment(price, f) -> tuple[list[str], str | None, list[str]]:
-    """(fail_reasons, tier, signals). tier A = 장기 우상향 + 눌림/바닥 출발 + 당일 양봉으로 직전 5일 종가 고점 돌파
+    """(fail_reasons, tier, signals). [2026-11-19] 아래의 '당일 양봉'은 '당일 장대음봉/종가=저가 마감 아님'(_weak_close)으로 바뀜.
+    tier A = 장기 우상향 + 눌림/바닥 출발 + 당일 양봉으로 직전 5일 종가 고점 돌파
     + 매수신호 3개 이상, tier B = A에서 돌파 대신 '당일 양봉 + 최근 5일 음봉 1개 이하 + MA20 대비 +10% 이내'.
     둘 다 아니면 탈락. (B를 음봉 2개 이하로 두면 B 단독 D+1 -0.28%였음, 1개 이하+이격 10% 이내 +0.34%/소표본)
     검증(2026-08-28~10-07, 25거래일): A 하루 1~17종목(평균 7) D+1 시가->종가 +0.36%(유니버스 -0.08%),
@@ -1602,11 +1636,19 @@ def _pattern_assessment(price, f) -> tuple[list[str], str | None, list[str]]:
         return fails, None, signals
     if len(signals) < PATTERN_MIN_SIGNALS:
         return ["pattern_few_buy_signals"], None, signals
-    if f["bull"] and f["brk5"]:
+    # [2026-11-19] 당일 마감: 장대음봉(아래꼬리 < 몸통) 또는 종가=저가만 탈락 (이전: 양봉 아니면 탈락)
+    if PATTERN_WEAK_CLOSE_LEGACY_BULL:
+        close_ok = bool(f.get("bull"))
+    else:
+        weak = f.get("weak_close")
+        if weak is None:
+            weak = _weak_close(f.get("open"), f.get("low"), f.get("close"))
+        close_ok = not weak if weak is not None else bool(f.get("bull"))
+    if close_ok and f["brk5"]:
         return [], "A", signals
-    if f["bull"] and f["bear5"] <= PATTERN_MAX_BEAR5 and price / f["MA_20"] - 1.0 <= PATTERN_B_MAX_VS_MA20:
+    if close_ok and f["bear5"] <= PATTERN_MAX_BEAR5 and price / f["MA_20"] - 1.0 <= PATTERN_B_MAX_VS_MA20:
         return [], "B", signals
-    if not f["bull"]:
+    if not close_ok:
         return ["pattern_no_bullish_close"], None, signals
     return (["pattern_bearish_candles"] if f["bear5"] > PATTERN_MAX_BEAR5 else ["pattern_b_extended"]), None, signals
 
