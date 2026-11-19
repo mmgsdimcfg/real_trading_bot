@@ -203,6 +203,40 @@ class BarsTests(Base):
         self.assertEqual(list(out2["close"]), [1.0, 2.0, 3.0])  # history wins on the shared date
         self.assertIs(r017.join_recent(base, recent.iloc[:1]), base)
 
+    def test_missing_days_after_history_come_from_kis(self):
+        # [2026-11-19] history and every folder end at PREV (the DAY collect failed for this code) -> DAY from KIS daily_since
+        hist = self.data / "daily_history"
+        hist.mkdir()
+        _write_daily(hist / f"{CODE}.csv", PREV, n=300)
+        for p in (self.data / DAY).glob(f"{CODE}_*_daily.csv"):
+            p.unlink()
+        fake = mock.Mock()
+        fake.daily_since.return_value = {"rows": [[PREV, 1, 1, 1, 1, 1], [DAY, 10, 12, 9, 11, 500]]}
+        with mock.patch.object(r017, "_kis", return_value=fake):
+            rc, out = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "day")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["bars"][-1][:6], [f"{DAY[:4]}-{DAY[4:6]}-{DAY[6:]}T00:00:00", 10, 12, 9, 11, 500])
+        self.assertNotEqual(out["bars"][-2][4], 1)  # PREV stays from the history (not the KIS row)
+        self.assertIn("+ kis", out["source"])
+        fake.daily_since.assert_called_once_with(CODE, DAY)
+        # KIS failure: the history as before
+        fake.daily_since.side_effect = RuntimeError("no token")
+        with mock.patch.object(r017, "_kis", return_value=fake):
+            rc, out = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "day")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["bars"][-1][0][:10].replace("-", ""), PREV)
+
+    def test_missing_trading_days_rules(self):
+        last = pd.Timestamp("2026-11-17")
+        noon = datetime(2026, 11, 19, 12, 0)
+        self.assertEqual(r017.missing_trading_days("20261119", last, CODE, now=noon), ["20261118", "20261119"])
+        self.assertEqual(r017.missing_trading_days("20261119", last, CODE, now=datetime(2026, 11, 19, 8, 0)), ["20261118"])
+        self.assertEqual(r017.missing_trading_days("20261118", last, CODE, now=noon), ["20261118"])
+        self.assertEqual(r017.missing_trading_days("20261121", pd.Timestamp("2026-11-20"), CODE, now=datetime(2026, 11, 21, 12)), [])  # Saturday
+        (self.data / "ticks" / "20261119").mkdir(parents=True)
+        (self.data / "ticks" / "20261119" / f"{CODE}.csv").write_text("x", encoding="utf-8")
+        self.assertEqual(r017.missing_trading_days("20261119", last, CODE, now=noon), ["20261118"])  # live bar from the ticks
+
     def test_join_backfill_scales_older_rows_on_basis_change(self):
         idx = pd.to_datetime(["20260101", "20260102", "20260105", "20260106"])
         back = pd.DataFrame({"open": [100, 110, 120, 130], "high": [100, 110, 120, 130], "low": [100, 110, 120, 130],

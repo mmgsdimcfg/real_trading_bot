@@ -60,6 +60,10 @@
  *   before the KRX open (no pre-market). Responses carry hours / nxt. An older server without kis-ext falls back to kis-un for
  *   symbols flagged NXT. Saved past-day answers use new names (server_min/*.v2.json, kis_min/<code>_ext.json): the old ones end
  *   at the KRX close
+ * - [2026-11-19] type=fix - Daily chart ended at 11/17 (403870 HPSP; many symbols had no 11/18): the 11/18 collect failed (KIS
+ *   outage) and HPSP has no tick file to build the day's bar from. The server (r017) now fills the trading days missing after
+ *   daily_history / the folder daily.csv from KIS (source "+ kis", noted on the chart). Saved past-day daily answers are
+ *   server_day/<code>.v3.json (v2 answers could lack those days)
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
@@ -417,7 +421,10 @@ export class PriceService {
 
   private static sourceNote(src: string): string {
     if (src.startsWith('kis')) return `KIS 시세 조회 (${src.replace(/^kis:?/, '') || 'REST'})`;
-    if (src.includes('daily_backfill')) return '서버 일봉 이력 (daily_history + 장기 일봉 daily_backfill)';
+    // [2026-11-19] "+ kis": trading days missing from daily_history / the folder daily.csv (collect failed) came from KIS
+    const kis = / \+ kis\b/.test(src) ? ' · 최근 누락 일봉은 KIS 보충' : '';
+    if (src.includes('daily_backfill')) return `서버 일봉 이력 (daily_history + 장기 일봉 daily_backfill)${kis}`;
+    if (src.includes('daily_history') && kis) return `서버 일봉 이력 (daily_history)${kis}`;
     if (src.includes('daily_history')) return '서버 일봉 이력 (daily_history)';
     if (src.includes('/ticks/')) return '서버 집계 (틱 파일)';
     if (src.endsWith('_10s.txt') || src.includes('_10s')) return '서버 집계 (1분봉, 10초 파일)';
@@ -741,11 +748,11 @@ export class PriceService {
     let sourceDetail: string | undefined;
     const fcDay = this.cached(date);
     let sb: ServerBarsResult = null;
-    const savedDay = fcDay?.json<ServerBars>(date, `server_day/${code}.v2.json`);
+    const savedDay = fcDay?.json<ServerBars>(date, `server_day/${code}.v3.json`);
     if (savedDay) sb = { ok: true, data: savedDay };
     else {
       sb = await this.serverBars(['--date', date, '--code', code, '--kind', 'day']);
-      if (fcDay && sb?.ok) fcDay.saveJson(date, `server_day/${code}.v2.json`, sb.data);
+      if (fcDay && sb?.ok) fcDay.saveJson(date, `server_day/${code}.v3.json`, sb.data);
     }
     if (sb?.ok) {
       daily = serverRowsToBars(sb.data.columns, sb.data.bars);

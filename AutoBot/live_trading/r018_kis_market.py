@@ -25,6 +25,11 @@ AutoBotH 차트 탭용 KIS 시세 조회(읽기 전용) - r016 `quote` 명령과
 
 Update log:
 - [2026-11-19] type=feat owner=claude
+    summary: daily_since(code, start) - start~오늘 일봉 호출 1회(캐시 daily_since/<code>.json, 오늘 받은 daily() 캐시가 있으면 재사용).
+      r017 이 일봉 이력 뒤에 빠진 최근 거래일을 채울 때 쓴다.
+    impact: tooling (AutoBotH 일봉 차트)
+    compatibility: backward-compatible
+- [2026-11-19] type=feat owner=claude
     summary: 사용자 요청(HPSP 처럼 NXT 비대상 종목도 KRX 장후 16:00~20:00 에 연속 체결 - 차트가 정규장 마감에서 멈춤)
       (1) minutes(after=True): KRX(J) 분봉을 r014 krx_after 끝(20:00)까지 받는다(캐시 min_ax). 마감 뒤 거래량 0 행(체결 없는 분을
       KIS 가 채운 행)은 버린다. 기본 minutes() 는 정규장 그대로. (2) nxt_flag(code): search_stock_info 의 cptt_trad_tr_psbl_yn
@@ -530,6 +535,39 @@ def daily(code: str, client: Client | None = None) -> dict:
     remember_name(code, name)
     return {"rows": out_rows, "name": name, "source": "kis:inquire_daily_itemchartprice", "calls": client.calls,
             "complete": exhausted}
+
+
+def daily_since(code: str, start: str, client: Client | None = None) -> dict:
+    """[2026-11-19] start(YYYYMMDD) ~ 오늘 일봉, 호출 1회(최대 100행) - r017 이 daily_history 뒤에 빠진 최근 거래일을 채울 때 쓴다
+    (3년 daily() 는 페이지 최대 12회). daily()/<code>.json 이 오늘 받은 것이면 그것을 쓴다. 캐시 daily_since/<code>.json(같은 start).
+    {"rows": [[YYYYMMDD, o, h, l, c, v], ...] 오름차순, "name", "source", "calls"}."""
+    code = _check_code(code)
+    if not re.fullmatch(r"\d{8}", start or ""):
+        raise ValueError(f"bad start date {start!r}")
+    now = _now()
+    full = _read_json(_cache_dir() / "daily" / f"{code}.json")
+    if full and _daily_fresh(float(full.get("fetched_at", 0)), now):
+        rows = [r for r in full.get("rows") or [] if str(r[0]) >= start]
+        return {"rows": rows, "name": full.get("name"), "source": "kis:inquire_daily_itemchartprice", "calls": 0}
+    cpath = _cache_dir() / "daily_since" / f"{code}.json"
+    cached = _read_json(cpath)
+    if cached and cached.get("start") == start and _daily_fresh(float(cached.get("fetched_at", 0)), now):
+        return {"rows": cached["rows"], "name": cached.get("name"), "source": "kis:inquire_daily_itemchartprice", "calls": 0}
+    client = client or shared_client()
+    body, _ = client.get("inquire_daily_itemchartprice", {
+        "FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": start,
+        "FID_INPUT_DATE_2": now.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
+    name = ((body.get("output1") or {}).get("hts_kor_isnm") or "").strip() or None
+    rows: dict[str, list] = {}
+    for r in body.get("output2") or []:
+        d = str(r.get("stck_bsop_date") or "").strip()
+        o, h, l, c = (_f(r.get(k)) for k in ("stck_oprc", "stck_hgpr", "stck_lwpr", "stck_clpr"))
+        if d >= start and c:
+            rows[d] = [d, o, h, l, c, _f(r.get("acml_vol"))]
+    out_rows = [rows[k] for k in sorted(rows)]
+    _write_json(cpath, {"fetched_at": time.time(), "start": start, "rows": out_rows, "name": name})
+    remember_name(code, name)
+    return {"rows": out_rows, "name": name, "source": "kis:inquire_daily_itemchartprice", "calls": client.calls}
 
 
 # ---------------------------------------------------------------------------

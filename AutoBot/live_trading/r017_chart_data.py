@@ -20,6 +20,12 @@
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-19] type=fix owner=claude
+    summary: bars day/week/month - join_recent 뒤에도 마지막 행 이후 거래일(r014 달력, 오늘은 정규장 시작 후 + 틱 파일이 없을 때만)이
+      비면 KIS 일봉(r018.daily_since, 호출 1회)으로 채움(kis_missing_days). 11/18 g001 수집이 ~1400/3000 종목만 받아 403870 HPSP 등은
+      11/17 에서 끝났다. source 에 " + kis". KIS 실패 시 기존과 동일.
+    impact: chart data (AutoBotH 일/주/월/년봉). 봇 판단 무관
+    compatibility: backward-compatible (응답 형식 불변)
 - [2026-11-19] type=feat owner=claude
     summary: 사용자 요청(HPSP 처럼 NXT 비대상이지만 KRX 장후 16:00~20:00 에 거래되는 종목 - 차트가 정규장 마감에서 멈춤)
       (1) bars --source kis-ext (min 전용): 정규장 밖(장전/장후) KIS 1분봉만 - NXT 종목(r018 nxt_flag)은 통합(UN) 분봉(NXT + KRX 장후),
@@ -467,6 +473,41 @@ def join_recent(base: pd.DataFrame, recent: pd.DataFrame | None) -> pd.DataFrame
     return pd.concat([base, newer[cols]]).sort_index()
 
 
+def missing_trading_days(date_str: str, last: pd.Timestamp, code: str, now: datetime | None = None) -> list[str]:
+    """[2026-11-19] trading days (r014 calendar) after `last` up to date_str that should already have a daily bar: past days, and
+    today once the regular session has opened - except when today's tick file exists (AutoBotH builds the live bar from it)."""
+    import r014_market_calendar as r014  # noqa: E402
+    now = now or datetime.now()
+    today = now.strftime("%Y%m%d")
+    end = min(date_str, today)
+    d = (pd.Timestamp(last) + pd.Timedelta(days=1)).to_pydatetime()
+    out: list[str] = []
+    while d.strftime("%Y%m%d") <= end and len(out) < 30:
+        key = d.strftime("%Y%m%d")
+        h = r014.session_hours(key)
+        if h is not None and (key < today or (now.time() >= h[0] and tick_file(key, code) is None)):
+            out.append(key)
+        d += timedelta(days=1)
+    return out
+
+
+def kis_missing_days(date_str: str, code: str, last: pd.Timestamp) -> pd.DataFrame | None:
+    """[2026-11-19] KIS daily rows of the trading days missing after `last` (one r018.daily_since call); None = nothing missing.
+    20261118: KIS outage -> g001 collected ~1400 of ~3000 daily.csv and the history step was skipped; 403870 HPSP (not collected,
+    no tick file) ended at 11/17 on the 11/19 chart."""
+    if not _KIS_CODE_RE.fullmatch(code):
+        return None
+    days = missing_trading_days(date_str, last, code)
+    if not days:
+        return None
+    rows = [r for r in _kis().daily_since(code, days[0])["rows"] if str(r[0]) in days]
+    if not rows:
+        return None
+    df = pd.DataFrame([r[1:] for r in rows], columns=OHLCV, index=pd.to_datetime([r[0] for r in rows], format="%Y%m%d"))
+    df.index.name = "date"
+    return df
+
+
 def day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str] | None:
     hist = daily_history_path(code)
     back_path = daily_backfill_path(code)
@@ -489,6 +530,15 @@ def day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str] | 
             return None
         df = read_daily(path) if path is not None else pd.DataFrame(columns=OHLCV)
         src = str(path) if path is not None else ""
+    # [2026-11-19] still behind (the day's collect failed for this code / not run yet) -> the missing days from KIS
+    if not df.empty:
+        try:
+            filled = join_recent(df, kis_missing_days(date_str, code, df.index[-1]))
+        except Exception:
+            filled = df  # KIS is optional here (no token, rate limit, ...)
+        if len(filled) > len(df):
+            df = filled
+            src = f"{src} + kis"
     if back_path is not None:
         try:
             back = read_daily(back_path)

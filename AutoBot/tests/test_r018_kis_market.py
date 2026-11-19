@@ -232,6 +232,24 @@ class DailyTest(Base):
         self.assertEqual(r018.daily("005930", client=c2)["calls"], 0)
         self.assertEqual(s2.calls, [])
 
+    def test_daily_since_one_call_and_cache(self):
+        # [2026-11-19] recent days only: one call from `start`, cached per start; a fresh full daily() cache is reused
+        def handler(params):
+            self.assertEqual(params["FID_INPUT_DATE_1"], "20261118")
+            return {"output1": {"hts_kor_isnm": "HPSP"},
+                    "output2": [{"stck_bsop_date": d, "stck_oprc": "1", "stck_hgpr": "2", "stck_lwpr": "1", "stck_clpr": c,
+                                 "acml_vol": "10"} for d, c in (("20261119", "3"), ("20261118", "2"), ("20261117", "1"))]}
+
+        c, s = self.client({"FHKST03010100": handler})
+        d = r018.daily_since("403870", "20261118", client=c)
+        self.assertEqual([r[0] for r in d["rows"]], ["20261118", "20261119"])
+        self.assertEqual(len(s.calls), 1)
+        c2, s2 = self.client({"FHKST03010100": handler})
+        self.assertEqual(r018.daily_since("403870", "20261118", client=c2)["calls"], 0)
+        self.assertEqual(s2.calls, [])
+        with self.assertRaises(ValueError):
+            r018.daily_since("403870", "2026-11-18", client=c2)
+
     def test_fresh_rules(self):
         now = datetime(2026, 11, 9, 11, 0)
         self.assertTrue(r018._daily_fresh((now - timedelta(minutes=5)).timestamp(), now))
