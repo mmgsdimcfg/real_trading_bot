@@ -251,6 +251,19 @@ export class PriceService {
     return job;
   }
 
+  /** [2026-11-19] text of the day's paper status file (server r022 write_status; null = none: paper mode off / bot not run) */
+  paperStatus(date: string): Promise<string | null> {
+    const job = this.tail.then(async () => {
+      if (!/^\d{8}$/.test(date)) return null;
+      const path = `${this.root()}/runtime/data/live_runtime/edge_only_status_${date}.json`;
+      const st = await this.host.stat(path);
+      if (!st || !st.size || st.size > 4_000_000) return null;
+      return (await this.host.readRange(path, 0, st.size)).toString('utf8');
+    });
+    this.tail = job.catch(() => undefined);
+    return job;
+  }
+
   /** [2026-11-12] text of the Edge AI model meta the bot loads (runtime/edge_ai/current_meta.json); null = no model published */
   edgeMeta(): Promise<string | null> {
     const job = this.tail.then(async () => {

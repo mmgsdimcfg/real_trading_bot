@@ -3,11 +3,12 @@
  * - [2026-11-12] type=test - paper trading file parsing (ENTRY / EXIT pairing, open trades, broken lines), day summary, the
  *   trade mode choice (server values -> one of three choices and back), the edge mode's log reasons mapped to its
  *   conditions, and the [EDGE ONLY] paper lines not counted as unknown
+ * - [2026-11-19] type=test - paper status file (parsePaperStatus / sortStatusRows) on the exact text r022 writes
  * - [2026-11-19] type=test - group of a trade: "collector" (tick collector symbols), anything else / missing = "watch"
  */
 
 import { describe, expect, it } from 'vitest';
-import { PAPER_KEY, STRATEGY_KEY, paperOpenPct, paperSummary, parseModes, parsePaperLines, parsePaperMode, tradeModeChanges, tradeModeOf } from '../src/shared/paper';
+import { PAPER_KEY, PAPER_STAGE_KO, STRATEGY_KEY, paperOpenPct, paperSummary, parseModes, parsePaperLines, parsePaperMode, parsePaperStatus, sortStatusRows, tradeModeChanges, tradeModeOf } from '../src/shared/paper';
 import { classify, IGNORED_TAGS } from '../src/shared/mapping';
 
 const kst = (hms: string) => Date.parse(`2026-11-12T${hms}+09:00`);
@@ -179,5 +180,34 @@ describe('Edge AI model meta (current_meta.json)', () => {
     expect(edgeLabelKo(m)).toBe('+2% / -1.7% / 60분 순손익 > 0');
     expect(parseEdgeMeta('{broken')).toBeNull();
     expect(parseEdgeMeta('{"threshold":0.5}')).toBeNull();
+  });
+});
+
+describe('paper status file (server r022 edge_only_status_<date>.json)', () => {
+  // the exact text r022 write_status produced in a test run
+  const text =
+    '{"asof": "2026-11-12T09:30:06", "date": "20261112", "model_id": "test", "threshold": 0.45, "label": {"tp": 2.0, "sl": 1.7, "horizon": 60.0}, "entry_window": ["09:05", "14:50"], "force_exit": "15:15", "groups": {"watch": {"open": 1, "max_positions": 3, "entries": 1, "max_entries": 10, "enabled": true}, "collector": {"open": 0, "max_positions": 5, "entries": 0, "max_entries": 20, "enabled": true}}, "symbols": [{"code": "000001", "name": "가", "group": "watch", "price": 10300.0, "bar": "09:30", "bars": 30, "stage": "bought", "prob": 0.6, "at": "2026-11-12T09:30:05", "position": {"entry": 10310.0, "tp": 10516.2, "sl": 10134.73, "ts": "2026-11-12T09:30:05", "prob": 0.6}}, {"code": "000002", "name": "나", "group": "collector", "price": 9000.0, "bar": "09:30", "bars": 30, "stage": "below_mid", "prob": null, "at": "2026-11-12T09:30:05"}]}';
+
+  it('parses groups, symbols, stages and the open position', () => {
+    const s = parsePaperStatus(text)!;
+    expect(s.asof).toBe(kst('09:30:06'));
+    expect(s.threshold).toBe(0.45);
+    expect(s.entryWindow).toEqual(['09:05', '14:50']);
+    expect(s.groups.watch).toEqual({ open: 1, maxPositions: 3, entries: 1, maxEntries: 10, enabled: true });
+    expect(s.groups.collector.maxEntries).toBe(20);
+    expect(s.symbols.map((x) => [x.code, x.group, x.stage, x.prob])).toEqual([
+      ['000001', 'watch', 'bought', 0.6],
+      ['000002', 'collector', 'below_mid', undefined],
+    ]);
+    expect(s.symbols[0].position).toMatchObject({ entry: 10310, tp: 10516.2, ts: kst('09:30:05') });
+    expect(PAPER_STAGE_KO.below_mid).toContain('BB');
+  });
+
+  it('held first, then by probability; broken text is null', () => {
+    const s = parsePaperStatus(text)!;
+    const rows = sortStatusRows([{ ...s.symbols[1], prob: 0.9 }, s.symbols[0], { ...s.symbols[1], code: '000003', prob: 0.2 }]);
+    expect(rows.map((x) => x.code)).toEqual(['000001', '000002', '000003']);
+    expect(parsePaperStatus('{bad')).toBeNull();
+    expect(parsePaperStatus('{"symbols": 1}')).toBeNull();
   });
 });

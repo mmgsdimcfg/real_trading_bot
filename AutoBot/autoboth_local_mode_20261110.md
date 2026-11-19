@@ -161,6 +161,13 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
     상한은 따로(`EDGE_ONLY_COLLECTOR_MAX_POSITIONS` 5 / `_MAX_ENTRIES_PER_DAY` 20). ENTRY/EXIT 에 `"group": "watch" | "collector"`
     (없으면 watch). 로그 줄에 ` [수집기]`. 앱 가상 매매 탭은 전체/감시 종목/수집기 종목으로 나눠 본다(2.3.31).
   - [2026-11-19] 수정: 2026-11-12(EDGE_ONLY_MIN_PROB=0) 이후 모델 기준값을 모델 로드 전에 읽어 가상 매수가 한 건도 없었다.
+  - [2026-11-19] 상태 파일 `runtime/data/live_runtime/edge_only_status_<YYYYMMDD>.json` (r022 write_status, r003 이 정규장에 5초마다
+    원자적 교체): `{"asof","date","model_id","threshold","label":{tp,sl,horizon},"entry_window":[s,e],"force_exit",
+    "groups":{"watch"|"collector":{"open","max_positions","entries","max_entries","enabled"}},
+    "symbols":[{"code","name","group","price","bar"(HH:MM 마지막 확정 1분봉),"bars","stage","prob","at",
+    "position"?:{"entry","tp","sl","ts","prob"}}]}`. stage = wait_bars / outside_window / limit / held / below_mid / no_trigger /
+    no_history / no_model / below_threshold / bought / sold (마지막 판단 결과). 10분 넘게 안 본 종목(보유 제외)은 빠진다.
+    앱 가상 매매 탭 "가상 매매 대상" 표(2.3.32)가 읽는다.
 - 두 호스트 공통: 설정은 각 호스트의 `runtime/config/live_overrides.json` 에 따로 저장되고, 모델도 각 호스트의
   `runtime/edge_ai` 것을 쓴다.
 

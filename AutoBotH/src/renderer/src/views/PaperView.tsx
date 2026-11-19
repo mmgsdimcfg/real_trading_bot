@@ -7,6 +7,10 @@
  * - [2026-11-19] type=feat - Tick collector symbols are paper-traded too (server r022 group "collector", separate limits): a
  *   전체 / 감시 종목 / 수집기 종목 switch filters the summary and both tables, collector trades carry a "수집기" tag. Their current
  *   price is not in the bot's quote log (the bot does not poll them) - shown as "-"
+ * - [2026-11-19] type=feat - 가상 매매 대상 (user 2026-11-19): every symbol the paper runner looks at, from the server's
+ *   edge_only_status_<date>.json (r022, every 5 s) - group, current price, last 1-minute bar, the outcome of its last evaluation
+ *   and the probability against the threshold; per group the open / entry counts against their limits. Follows the group switch.
+ *   The status price also fills the current price of open collector positions (was "-")
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -14,10 +18,23 @@ import { useStore } from '../store';
 import { NxtTag } from '../components/NxtTag';
 import { fmtInt, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
-import { PAPER_EXIT_KO, PAPER_GROUP_KO, paperOpenPct, paperSummary, type PaperGroup, type PaperTrade } from '../../../shared/paper';
+import {
+  PAPER_EXIT_KO,
+  PAPER_GROUP_KO,
+  PAPER_STAGE_KO,
+  paperOpenPct,
+  paperSummary,
+  sortStatusRows,
+  type PaperGroup,
+  type PaperStatus,
+  type PaperTrade,
+} from '../../../shared/paper';
 import { peek, put } from '../dataCache';
 
 type PaperRes = { day: string; ok: boolean; trades: PaperTrade[]; error?: string };
+type StatusRes = { day: string; ok: boolean; status: PaperStatus | null; error?: string };
+/** a status file older than this (while the day is live) is called stale */
+const STATUS_STALE_MS = 60000;
 
 export function PaperView() {
   const snap = useStore((s) => s.snapshot);
@@ -44,10 +61,30 @@ export function PaperView() {
     };
   }, [day, tick, status.conn]);
 
+  // [2026-11-19] status of the paper-traded symbols (server r022 edge_only_status_<date>.json)
+  const [stRes, setStRes] = useState<StatusRes | null>(() => (day ? peek<StatusRes>(`paperStatus:${day}`) || null : null));
+  useEffect(() => {
+    if (!day) return;
+    let alive = true;
+    const kept = peek<StatusRes>(`paperStatus:${day}`);
+    if (kept) setStRes(kept);
+    void window.api.getPaperStatus(day).then((r) => {
+      if (r.ok) put(`paperStatus:${day}`, { day, ...r });
+      if (alive && (r.ok || !kept)) setStRes({ day, ...r });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [day, tick, status.conn]);
+  const pst = stRes && stRes.day === day ? stRes.status : null;
+  const statusPrice = useMemo(() => new Map((pst?.symbols || []).map((x) => [x.code, x.price])), [pst]);
+
   const [grp, setGrp] = useState<'all' | PaperGroup>('all');
   const allTrades = res && res.day === day ? res.trades : [];
   const trades = useMemo(() => (grp === 'all' ? allTrades : allTrades.filter((t) => t.group === grp)), [allTrades, grp]);
   const groupCount = (g: PaperGroup) => allTrades.filter((t) => t.group === g).length;
+  const stRows = useMemo(() => sortStatusRows((pst?.symbols || []).filter((x) => grp === 'all' || x.group === grp)), [pst, grp]);
+  const stale = !!pst && !!status.live && Date.now() - pst.asof > STATUS_STALE_MS;
   const sum = useMemo(() => paperSummary(trades), [trades]);
   const open = trades.filter((t) => t.exitTs === undefined);
   const closed = trades.filter((t) => t.exitTs !== undefined).sort((a, b) => (b.exitTs || 0) - (a.exitTs || 0));
@@ -121,6 +158,77 @@ export function PaperView() {
       </div>
       {res && !res.ok && <p className="err">{res.error}</p>}
 
+      <h4>
+        가상 매매 대상 ({stRows.length})
+        {pst && <span className="muted small"> · {fmtKstTime(pst.asof)} 기준{stale ? ' (오래됨 - 봇이 멈췄거나 정규장 밖)' : ''}</span>}
+      </h4>
+      {pst ? (
+        <div className="toolbar small">
+          {(['watch', 'collector'] as const)
+            .filter((g) => grp === 'all' || grp === g)
+            .map((g) => {
+              const gs = pst.groups[g];
+              return (
+                <span key={g} className="muted">
+                  {PAPER_GROUP_KO[g]}:{' '}
+                  {gs.enabled ? `보유 ${gs.open}/${gs.maxPositions} · 오늘 매수 ${gs.entries}/${gs.maxEntries}` : '꺼짐'}
+                </span>
+              );
+            })}
+          <span className="muted">
+            확률 기준 {pst.threshold !== undefined ? pst.threshold.toFixed(3) : '-'}
+            {pst.label?.tp !== undefined ? ` · 목표 +${pst.label.tp}% / 손절 -${pst.label.sl}% / ${pst.label.horizon}분` : ''}
+            {pst.entryWindow ? ` · 매수 ${pst.entryWindow[0]}~${pst.entryWindow[1]}` : ''}
+            {pst.modelId ? ` · 모델 ${pst.modelId}` : ''}
+          </span>
+        </div>
+      ) : null}
+      <div className="table-wrap">
+        <table className="grid">
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th>구분</th>
+              <th className="num">현재가</th>
+              <th className="num">마지막 봉</th>
+              <th className="num">봉 수</th>
+              <th>마지막 판단</th>
+              <th className="num">확률</th>
+              <th className="num">확인 시각</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stRows.map((x) => (
+              <tr key={x.code} onClick={() => go(x.code)} className={x.position ? 'row-held' : undefined}>
+                <td>
+                  {x.code} {x.name} <NxtTag code={x.code} />
+                </td>
+                <td>{PAPER_GROUP_KO[x.group]}</td>
+                <td className="num">{fmtInt(x.price)}</td>
+                <td className="num mono">{x.bar || '-'}</td>
+                <td className="num">{x.bars || '-'}</td>
+                <td>{x.position ? `가상 보유 중 (매수 ${fmtInt(x.position.entry)})` : PAPER_STAGE_KO[x.stage || ''] || x.stage || '-'}</td>
+                <td className={`num ${x.prob !== undefined && pst?.threshold !== undefined && x.prob >= pst.threshold ? 'prob-ok' : ''}`}>
+                  {x.prob !== undefined ? x.prob.toFixed(3) : '-'}
+                </td>
+                <td className="num mono">{x.at ? fmtKstTime(x.at) : '-'}</td>
+              </tr>
+            ))}
+            {!stRows.length && (
+              <tr>
+                <td colSpan={8} className="muted center">
+                  {stRes && !stRes.ok
+                    ? stRes.error
+                    : pst
+                      ? '이 구분의 가상 매매 대상이 없습니다.'
+                      : '가상 매매 상태 파일이 없습니다 (가상 매매가 꺼져 있거나, 봇이 정규장에 돌지 않았거나, 서버 코드 갱신 전).'}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
       <h4>가상 보유 ({open.length})</h4>
       <div className="table-wrap">
         <table className="grid">
@@ -139,7 +247,7 @@ export function PaperView() {
           </thead>
           <tbody>
             {open.map((t) => {
-              const price = quotes[t.code]?.price;
+              const price = quotes[t.code]?.price ?? statusPrice.get(t.code);
               const pct = paperOpenPct(t, price);
               return (
                 <tr key={`${t.code}-${t.entryTs}`} onClick={() => go(t.code)}>

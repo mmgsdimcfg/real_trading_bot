@@ -10,6 +10,9 @@
  *   tradeModeChanges() is the `set` a choice sends
  * - [2026-11-19] type=feat - PaperTrade.group: 'watch' (the bot's watchlist) | 'collector' (tick collector symbols outside it,
  *   r001 EDGE_ONLY_COLLECTOR - separate limits on the server). A record without group is 'watch'
+ * - [2026-11-19] type=feat - PaperStatus: the server's edge_only_status_<date>.json (r022 write_status, every 5 s while the bot
+ *   runs in the regular session) - every symbol the paper runner looks at with its group, price, last bar, the outcome of its
+ *   last evaluation (stage) and probability, plus the group limits, threshold and model
  */
 
 export type PaperGroup = 'watch' | 'collector';
@@ -94,6 +97,117 @@ export function parsePaperLines(text: string): PaperTrade[] {
     }
   }
   return out;
+}
+
+/** [2026-11-19] outcome of a symbol's last evaluation (server r022 STAGES) */
+export const PAPER_STAGE_KO: Record<string, string> = {
+  wait_bars: '봉 대기 (5개 미만)',
+  outside_window: '매수 시간 밖 (09:05~14:50)',
+  limit: '상한 도달',
+  held: '가상 보유 중',
+  below_mid: '1분 BB 중심선 아래',
+  no_trigger: '트리거 없음',
+  no_history: '이력 부족 (늦게 시작)',
+  no_model: '모델 없음',
+  below_threshold: '확률 미달',
+  bought: '가상 매수',
+  sold: '가상 매도',
+};
+
+export interface PaperStatusSymbol {
+  code: string;
+  name: string;
+  group: PaperGroup;
+  price?: number;
+  /** "HH:MM" end label of the last completed 1-minute bar */
+  bar?: string;
+  bars: number;
+  stage?: string;
+  prob?: number;
+  /** epoch ms the runner last looked at the symbol */
+  at?: number;
+  position?: { entry: number; tp: number; sl: number; ts: number; prob?: number };
+}
+
+export interface PaperGroupStatus {
+  open: number;
+  maxPositions: number;
+  entries: number;
+  maxEntries: number;
+  enabled: boolean;
+}
+
+export interface PaperStatus {
+  /** epoch ms of the file (server time) */
+  asof: number;
+  date: string;
+  modelId?: string;
+  threshold?: number;
+  label?: { tp?: number; sl?: number; horizon?: number };
+  entryWindow?: [string, string];
+  groups: Record<PaperGroup, PaperGroupStatus>;
+  symbols: PaperStatusSymbol[];
+}
+
+/** edge_only_status_<date>.json text -> status; null when it is not a status file */
+export function parsePaperStatus(text: string): PaperStatus | null {
+  let j: Record<string, unknown>;
+  try {
+    j = JSON.parse(String(text || ''));
+  } catch {
+    return null;
+  }
+  if (!j || typeof j !== 'object' || !Array.isArray(j.symbols)) return null;
+  const grp = (v: unknown): PaperGroupStatus => {
+    const g = (v || {}) as Record<string, unknown>;
+    return {
+      open: num(g.open) ?? 0,
+      maxPositions: num(g.max_positions) ?? 0,
+      entries: num(g.entries) ?? 0,
+      maxEntries: num(g.max_entries) ?? 0,
+      enabled: g.enabled !== false,
+    };
+  };
+  const groups = (j.groups || {}) as Record<string, unknown>;
+  const symbols: PaperStatusSymbol[] = [];
+  for (const raw of j.symbols as Record<string, unknown>[]) {
+    const code = String(raw?.code || '');
+    if (!/^[0-9A-Z]{6}$/.test(code)) continue;
+    const p = raw.position as Record<string, unknown> | undefined;
+    const entry = num(p?.entry);
+    const at = tsToEpoch(raw.at);
+    const pts = tsToEpoch(p?.ts);
+    symbols.push({
+      code,
+      name: String(raw.name || ''),
+      group: raw.group === 'collector' ? 'collector' : 'watch',
+      price: num(raw.price),
+      bar: typeof raw.bar === 'string' ? raw.bar : undefined,
+      bars: num(raw.bars) ?? 0,
+      stage: typeof raw.stage === 'string' ? raw.stage : undefined,
+      prob: num(raw.prob),
+      at: Number.isFinite(at) ? at : undefined,
+      position: entry ? { entry, tp: num(p?.tp) ?? NaN, sl: num(p?.sl) ?? NaN, ts: Number.isFinite(pts) ? pts : NaN, prob: num(p?.prob) } : undefined,
+    });
+  }
+  const win = Array.isArray(j.entry_window) && j.entry_window.length === 2 ? ([String(j.entry_window[0]), String(j.entry_window[1])] as [string, string]) : undefined;
+  return {
+    asof: tsToEpoch(j.asof),
+    date: String(j.date || ''),
+    modelId: typeof j.model_id === 'string' ? j.model_id : undefined,
+    threshold: num(j.threshold),
+    label: (j.label as PaperStatus['label']) || undefined,
+    entryWindow: win,
+    groups: { watch: grp(groups.watch), collector: grp(groups.collector) },
+    symbols,
+  };
+}
+
+/** status rows in display order: held first, then the highest probability, then by code */
+export function sortStatusRows(rows: PaperStatusSymbol[]): PaperStatusSymbol[] {
+  return [...rows].sort(
+    (a, b) => Number(!!b.position) - Number(!!a.position) || (b.prob ?? -1) - (a.prob ?? -1) || a.code.localeCompare(b.code),
+  );
 }
 
 export interface PaperSummary {

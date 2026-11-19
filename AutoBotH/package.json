@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-19] type=feat - v2.3.32_001: 가상 매매 탭에 가상 매매 대상 표 - 봇이 가상 매매로 보고 있는 종목 전부(감시/수집기)의 현재가, 마지막 1분봉, 봉 수, 마지막 판단(봉 대기·매수 시간 밖·상한·BB 중심선 아래·트리거 없음·확률 미달·가상 매수/보유 등), 확률(기준 이상이면 강조), 확인 시각. 구분별 보유/매수 횟수 대 상한, 확률 기준·목표/손절·매수 시간·모델 표시, 구분 선택을 따름. 상태가 1분 넘게 안 바뀌면 오래됨 표시. 수집기 종목 가상 보유의 현재가도 상태 파일 값으로 표시. 서버 r022 상태 파일(edge_only_status_<날짜>.json) 사용 - 서버 git pull + r003 재시작 필요",
     "[2026-11-19] type=feat - v2.3.31_001: 가상 매매 탭 - 틱 수집기 종목(감시목록 밖 선별 채움 종목)도 서버가 같은 Edge AI 규칙으로 가상 매매(서버 r022, 틱 파일 1분봉, 상한 별도 5종목/20회). 전체/감시 종목/수집기 종목 선택으로 요약과 표를 나눠 보고, 수집기 종목은 [수집기] 표시(현재가는 봇 시세 기록에 없어 -). 서버 쪽 수정: 11/12 이후 모델 기준값을 모델 로드 전에 읽어 가상 매수가 한 건도 없던 문제. 서버 git pull + r003 재시작 필요",
     "[2026-11-19] type=feat - v2.3.30_001: KRX 장후 거래(평일 16:00~20:00, 수능일 17:00~20:00) 차트 표시 - HPSP(403870)처럼 NXT 비대상이지만 KRX 장후에 거래되는 종목의 분봉이 정규장 마감에서 멈추던 문제. 모든 종목의 분봉에 정규장 밖 KIS 분봉(서버 r016 bars --source kis-ext: NXT 종목=통합 분봉, 그 외=KRX 장후 분봉)을 합침. 정규장 시각은 서버 r014 달력(수능일 10:00~16:30), 서버가 알려준 NXT 여부를 기억해 KRX 전용 종목은 개장 전에 묻지 않음. 타임라인 KRX 전용 종목 표시 범위 09:00~15:30 -> 09:00~20:00, 감시목록 밖 보유 종목도 서버 NXT 여부로 [NXT] 표시. 서버 git pull 필요(이전 서버면 NXT 종목만 종전 방식)",
     "[2026-11-19] type=feat - v2.3.29_002: 장 마감 파이프라인 새 단계 선정 성과 기록(g047) 라벨 - 종목 선별(g002) 다음에 선정 종목·시장 필터 상태를 기록하고 1/5/10/20일 성과 리포트 갱신(주문 없음, 서버 git pull 필요). 카드 설명과 ② 툴팁에 표시",
@@ -93,7 +94,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.31",
+  "version": "2.3.32",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",

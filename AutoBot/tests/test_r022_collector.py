@@ -108,6 +108,50 @@ class GroupTest(Base):
         self.assertEqual((r3.positions["000009"]["group"], r3.entries_today), ("watch", 1))
 
 
+class StatusTest(Base):
+    """[2026-11-19] edge_only_status_<date>.json for the app's 가상 매매 tab."""
+
+    def status(self):
+        return json.loads((self.out / f"edge_only_status_{DAY}.json").read_text(encoding="utf-8"))
+
+    def test_stages_groups_and_positions(self):
+        r = self.runner(prob=0.6, collector_max_positions=2, collector_max_entries=2)
+        r.on_symbol("000001", "a", self.at("09:30"), frame(30), 10300.0)                          # bought
+        r.on_symbol("000002", "b", self.at("09:30"), frame(30, last_close=9000.0), 9000.0)         # below the BB mid
+        r.on_symbol("000003", "c", self.at("09:29"), frame(2, start="09:28"), 10000.0, group="collector")   # too few bars
+        self.assertTrue(r.write_status(self.at("09:30"), force=True))
+        st = self.status()
+        by = {x["code"]: x for x in st["symbols"]}
+        self.assertEqual((by["000001"]["stage"], by["000002"]["stage"], by["000003"]["stage"]), ("bought", "below_mid", "wait_bars"))
+        self.assertEqual(by["000001"]["prob"], 0.6)
+        self.assertEqual(by["000001"]["position"]["entry"], 10310.0)
+        self.assertEqual(by["000003"]["group"], "collector")
+        self.assertEqual(by["000001"]["bar"], "09:30")
+        self.assertEqual(st["groups"]["watch"], {"open": 1, "max_positions": 3, "entries": 1, "max_entries": 10, "enabled": True})
+        self.assertEqual(st["groups"]["collector"]["max_entries"], 2)
+        self.assertEqual(st["threshold"], 0.45)
+
+    def test_below_threshold_and_held(self):
+        r = self.runner(prob=0.40)
+        r.on_symbol("000001", "a", self.at("09:30"), frame(30), 10300.0)
+        r.write_status(self.at("09:30"), force=True)
+        self.assertEqual((self.status()["symbols"][0]["stage"], self.status()["symbols"][0]["prob"]), ("below_threshold", 0.4))
+        r2 = self.runner(prob=0.6)
+        r2.on_symbol("000005", "e", self.at("09:30"), frame(30), 10300.0)
+        r2.on_symbol("000005", "e", self.at("09:31"), frame(31), 10310.0)
+        r2.write_status(self.at("09:31"), force=True)
+        self.assertEqual({x["code"]: x["stage"] for x in self.status()["symbols"]}["000005"], "held")
+
+    def test_throttle_and_stale_symbols_leave(self):
+        r = self.runner(prob=0.1)
+        r.on_symbol("000001", "a", self.at("09:30"), frame(30), 10300.0)
+        self.assertTrue(r.write_status(self.at("09:30")))
+        self.assertFalse(r.write_status(self.at("09:30", 8)))                 # within 5 s
+        r.on_symbol("000002", "b", self.at("09:45"), frame(30, start="09:16"), 10300.0)
+        self.assertTrue(r.write_status(self.at("09:45")))
+        self.assertEqual([x["code"] for x in self.status()["symbols"]], ["000002"])   # 000001 not seen for 15 min
+
+
 class LazyModelTest(Base):
     def test_threshold_loads_the_model_first(self):
         """[2026-11-19] fix: with min_prob 0 the threshold comes from the model meta, which is loaded lazily - reading it before

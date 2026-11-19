@@ -787,6 +787,10 @@ button.pick-chip:disabled { cursor: default; opacity: .6; }
 .paper-view .kpi b.small { font-size: 13px; font-weight: 500; }
 .badge-mode { padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
 .badge-mode.on { border-color: var(--st-pass); color: var(--st-pass); }
+/* [2026-11-19] paper tab: status of the paper-traded symbols */
+.paper-view tr.row-held td { background: var(--hover, rgba(127, 127, 127, 0.08)); }
+.paper-view td.prob-ok { color: var(--st-pass); font-weight: 600; }
+.paper-view .toolbar.small { gap: 14px; font-size: 12px; }
 /* [2026-11-12] timeline: a pinned evaluation dot in the dock */
 .tip-dock.pinned { border-color: var(--accent); }
 .pin-chip { margin-right: 6px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font-size: 11px; cursor: pointer; }

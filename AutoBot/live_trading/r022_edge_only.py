@@ -26,10 +26,18 @@ Their limits are separate (EDGE_ONLY_COLLECTOR_MAX_POSITIONS / _MAX_ENTRIES_PER_
 (the watchlist's "watch"; a record without group is "watch").
 
 Output: runtime/data/live_runtime/edge_only_YYYYMMDD.jsonl (ENTRY / EXIT records) + "[EDGE ONLY   ]" log lines.
+Status (2026-11-19, AutoBotH 가상 매매 tab): runtime/data/live_runtime/edge_only_status_YYYYMMDD.json, replaced atomically at most
+every STATUS_EVERY_S by write_status() - every symbol the runner looks at (group, price, last bar, the outcome of its last
+evaluation = stage, probability) + the group limits and the model threshold.
 Runs the same on Linux (Raspberry Pi) and Windows. Each host uses its own model (runtime/edge_ai, trained by the
 post-close job from that host's data folder).
 
 Update log:
+- [2026-11-19] type=feat owner=claude
+    summary: 사용자 요청(가상 매매 탭에 대상 종목 상태 표시) - 종목별 상태(구분, 현재가, 마지막 봉, 마지막 판단 결과 stage, 확률,
+      보유 중이면 매수가/목표/손절) 를 edge_only_status_<날짜>.json 으로 STATUS_EVERY_S 마다 원자적 교체(write_status). r003 이 호출.
+    impact: live (파일 하나 추가 - 매매 판단 무변경)
+    compatibility: backward-compatible
 - [2026-11-19] type=feat owner=claude
     summary: 사용자 요청(틱 수집기 종목을 가상 매매에 포함) - CollectorTickFeed(틱 파일 -> 확정 1분봉 + 현재가, 증분 읽기,
       acml_vol 로 재접속 중복 제거, 정규장 체결만) + EdgeOnlyRunner.poll_collector(). 그룹별 상한(watch / collector),
@@ -69,6 +77,11 @@ SELL_TAX_RATE = 0.0020
 DEFAULT_LABEL = {"tp": 2.0, "sl": 1.7, "horizon": 60}
 TAG = "  [EDGE ONLY   ]"
 GROUPS = ("watch", "collector")
+STATUS_EVERY_S = 5.0          # edge_only_status_<date>.json at most this often
+STATUS_STALE_S = 600.0        # a symbol not looked at for this long (left the watchlist / collector) leaves the status
+# outcome of the last evaluation of a symbol (AutoBotH shows these)
+STAGES = ("wait_bars", "outside_window", "limit", "held", "below_mid", "no_trigger", "no_history", "no_model", "below_threshold",
+          "bought", "sold")
 GROUP_KO = {"watch": "", "collector": " [수집기]"}
 _CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
 
@@ -102,6 +115,10 @@ class EdgeOnlyRunner:
         self.closed: list[float] = []
         self._names: dict[str, str] = {}
         self._collector_next: datetime | None = None
+        # [2026-11-19] per-symbol status for the app (write_status)
+        self.sym_state: dict[str, dict] = {}
+        self.status_path = Path(out_dir) / f"edge_only_status_{date_str}.json"
+        self._status_next: datetime | None = None
         self._daily: dict[str, dict] = {}
         self._prev_close: dict[str, float] = {}
         self._restore()
@@ -237,12 +254,26 @@ class EdgeOnlyRunner:
             self.on_symbol(code, self.name_of(code), now, frame, price, group="collector")
         return n
 
+    def write_status(self, now: datetime, force: bool = False) -> bool:
+        """[2026-11-19] edge_only_status_<date>.json for the app, at most every STATUS_EVERY_S (force: now). Never raises."""
+        return _write_status(self, now, force)
+
+    def _stage(self, code: str, stage: str, prob: float | None = None) -> None:
+        st = self.sym_state.get(code)
+        if st is not None:
+            st["stage"] = stage
+            st["prob"] = None if prob is None else round(float(prob), 4)
+
     def _on_symbol(self, code: str, name: str, now: datetime, frame_1m, price: float, group: str = "watch") -> None:
         if not (price > 0):
             return
+        st = self.sym_state.setdefault(code, {"stage": "wait_bars", "prob": None, "bar": None, "bars": 0})
+        st.update(name=name, group=group, price=price, at=now.isoformat(timespec="seconds"))
         was_open = code in self.positions
         if was_open:
             self._check_exit(code, now, price)
+            if code not in self.positions:
+                self._stage(code, "sold")
         if frame_1m is None or len(frame_1m) == 0:
             return
         raw = r011.session_raw_1min(frame_1m, now.date())
@@ -253,15 +284,23 @@ class EdgeOnlyRunner:
         if self.last_bar.get(code) == key:
             return  # no new completed bar
         self.last_bar[code] = key
+        st.update(bar=pd.Timestamp(key).strftime("%H:%M"), bars=int(len(store)))
         # a symbol that was held at the start of this poll is not bought on this bar (also right after its sale: the
         # next entry needs a new bar, like the simulator where a position blocks the symbol until it is closed)
-        if was_open or len(store) < r011.MIN_SESSION_BARS:
+        if was_open:
+            if code in self.positions:
+                self._stage(code, "held", self.positions[code].get("prob"))
+            return
+        if len(store) < r011.MIN_SESSION_BARS:
+            self._stage(code, "wait_bars")
             return
         t = pd.Timestamp(key).time()
         if t < ENTRY_START or t > ENTRY_END or now.time() > ENTRY_END:
+            self._stage(code, "outside_window")
             return
         max_pos, max_ent = self.limits[group]
         if self._open_count(group) >= max_pos or self.entries[group] >= max_ent:
+            self._stage(code, "limit")
             return
         self._check_entry(code, name, now, price, store, group)
 
@@ -269,17 +308,21 @@ class EdgeOnlyRunner:
         m1_all = r011.fast_indicators(store)
         last = m1_all.iloc[-1]
         if not float(last["close"]) > float(last["BB_MIDDLE"]):   # every trigger path needs the close above the 1m BB mid
+            self._stage(code, "below_mid")
             return
         m3_all = r011.completed_3min(m1_all)
         info: dict = {}
         ok, reason = r011.hybrid_trigger_with_context(m1_all.iloc[-TRIGGER_CACHE_BARS:], m3_all, float(last["close"]), info)
         if not ok:
+            self._stage(code, "no_trigger")
             return
         frames = r011.feature_frames(store)
         if frames is None:
+            self._stage(code, "no_history")
             return   # history window incomplete (late start): no prediction, no entry
         threshold = self._threshold()
         if threshold is None:
+            self._stage(code, "no_model")
             return
         if code not in self._daily:
             self._daily[code] = r011.load_daily_features(self.data_root, code, self.date_str)
@@ -293,7 +336,9 @@ class EdgeOnlyRunner:
                                       trigger_info=info)
         prob, meta = self.model.predict_with_meta(feats)
         if prob is None or not r011.valid_prob(prob) or prob < threshold:
+            self._stage(code, "no_model" if prob is None else "below_threshold", prob if r011.valid_prob(prob) else None)
             return
+        self._stage(code, "bought", prob)
         label = self._label()
         entry = price + krx_tick_size(price)
         pos = {"name": name, "entry": entry, "ts": pd.Timestamp(now), "tp": entry * (1 + label["tp"] / 100.0),
@@ -437,3 +482,66 @@ class CollectorTickFeed:
         frame = pd.DataFrame([st["buckets"][k] for k in done], columns=["open", "high", "low", "close", "volume"],
                              index=pd.DatetimeIndex([ends[k] for k in done]))
         return frame, st["price"]
+
+
+def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
+    """edge_only_status_<date>.json: atomic replace (tmp file + os.replace) so the app never reads half a file."""
+    import os
+    import tempfile
+    cutoff = now - timedelta(seconds=STATUS_STALE_S)
+    symbols = []
+    for code, st in list(runner.sym_state.items()):
+        pos = runner.positions.get(code)
+        seen = datetime.fromisoformat(st["at"]) if st.get("at") else now
+        if pos is None and seen < cutoff:
+            runner.sym_state.pop(code, None)      # left the watchlist / the collector
+            continue
+        row = {"code": code, "name": st.get("name") or "", "group": st.get("group", "watch"), "price": st.get("price"),
+               "bar": st.get("bar"), "bars": st.get("bars", 0), "stage": st.get("stage"), "prob": st.get("prob"),
+               "at": st.get("at")}
+        if pos is not None:
+            row["position"] = {"entry": pos["entry"], "tp": pos["tp"], "sl": pos["sl"], "ts": pd.Timestamp(pos["ts"]).isoformat(),
+                               "prob": pos.get("prob")}
+        symbols.append(row)
+    meta = {}
+    try:
+        meta = dict(runner.model.meta or {})
+    except Exception:
+        meta = {}
+    payload = {
+        "asof": now.isoformat(timespec="seconds"), "date": runner.date_str,
+        "model_id": meta.get("model_id"), "threshold": runner._threshold(), "label": runner._label(),
+        "entry_window": [ENTRY_START.strftime("%H:%M"), ENTRY_END.strftime("%H:%M")], "force_exit": FORCE_EXIT.strftime("%H:%M"),
+        "groups": {g: {"open": runner._open_count(g), "max_positions": runner.limits[g][0], "entries": runner.entries[g],
+                       "max_entries": runner.limits[g][1], "enabled": runner.limits[g][1] > 0} for g in GROUPS},
+        "symbols": symbols,
+    }
+    runner.status_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".edge_only_status.", suffix=".tmp", dir=str(runner.status_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, default=str)
+        os.replace(tmp, runner.status_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _write_status(runner: "EdgeOnlyRunner", now: datetime, force: bool = False) -> bool:
+    """[2026-11-19] the status file at most every STATUS_EVERY_S (force: now). Never raises. True when written."""
+    try:
+        if not force and runner._status_next is not None and now < runner._status_next:
+            return False
+        runner._status_next = now + timedelta(seconds=STATUS_EVERY_S)
+        _write_status_file(runner, now)
+        return True
+    except Exception as exc:
+        try:
+            runner.log(f"{TAG} status write error: {type(exc).__name__}: {exc}")
+        except Exception:
+            pass
+        return False
+

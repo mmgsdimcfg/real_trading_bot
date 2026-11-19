@@ -23,7 +23,7 @@ Update log:
 - [2026-11-19] type=feat owner=claude
     summary: 사용자 요청(틱 수집기 종목을 가상 매매에 포함) - EDGE_ONLY_MODE=paper 이고 r001 EDGE_ONLY_COLLECTOR 면 종목 순회 뒤
       감시목록/보유 밖의 수집 종목을 r022 poll_collector 로 평가(틱 파일 1분봉, EDGE_ONLY_COLLECTOR_POLL_SECONDS 마다, 정규장만,
-      상한 별도). 주문·KIS 호출 없음, 예외는 로그만.
+      상한 별도). 주문·KIS 호출 없음, 예외는 로그만. 이어서 r022 write_status - 가상 매매 대상 상태 파일(앱 표시용, 5초마다).
     impact: live (가상 매매 기록만 - 실매매 판단 무변경)
     compatibility: backward-compatible (롤백: EDGE_ONLY_COLLECTOR=False)
 - [2026-11-16] type=feat owner=claude
@@ -6464,16 +6464,17 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
             # [2026-11-19] Edge-AI-only paper trading of the tick collector's symbols outside the watchlist (r022, no orders,
             # bars / price from the tick files - no KIS call); the watched / held symbols were evaluated in the loop above
-            if (
-                edge_only is not None
-                and getattr(edge_only, "collector_feed", None) is not None
-                and is_regular_session(current_dt)
-            ):
-                try:
-                    edge_only.poll_collector(edge_only.collector_feed, datetime.now(), set(watch_map) | set(iter_codes),
-                                             getattr(edge_only, "collector_poll_s", 5.0))
-                except Exception as exc:
-                    log(f"  [EDGE ONLY   ] collector poll error: {exc}")
+            if edge_only is not None and is_regular_session(current_dt):
+                if getattr(edge_only, "collector_feed", None) is not None:
+                    try:
+                        edge_only.poll_collector(edge_only.collector_feed, datetime.now(), set(watch_map) | set(iter_codes),
+                                                 getattr(edge_only, "collector_poll_s", 5.0))
+                    except Exception as exc:
+                        log(f"  [EDGE ONLY   ] collector poll error: {exc}")
+                # [2026-11-19] status of every paper-traded symbol for the app (edge_only_status_<date>.json, every 5 s)
+                write_status = getattr(edge_only, "write_status", None)
+                if callable(write_status):
+                    write_status(datetime.now())
 
             # [2026-09-02] 정규장 시작(REGULAR_START) 도달 시 active_set의 TIME_LIMIT
             # 카운트다운을 리셋 - 리셋 전에는 first_active_at이 장전 NXT 세션(08:00~08:50)

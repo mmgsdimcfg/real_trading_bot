@@ -18,7 +18,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import type { EdgeModelInfo, PaperTrade } from '../shared/paper';
+import type { EdgeModelInfo, PaperStatus, PaperTrade } from '../shared/paper';
 import type { LiveQuote } from '../shared/liveQuote';
 import type { AppStatus, ConditionsDoc, ConfirmRequest, Settings, Snapshot } from '../shared/types';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
@@ -82,6 +82,8 @@ const api = {
   getPrice: (req: PriceRequest): Promise<PriceResponse> => ipcRenderer.invoke('price:get', req),
   /** Edge-AI-only paper trades of a day (server r022) */
   getPaper: (date: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date),
+  /** [2026-11-19] status of every paper-traded symbol of a day (server r022; null = no status file) */
+  getPaperStatus: (date: string): Promise<{ ok: boolean; status: PaperStatus | null; error?: string }> => ipcRenderer.invoke('paper:status', date),
   /** the Edge AI model the bot uses now (null = none published) */
   getEdgeModel: (): Promise<{ ok: boolean; model: EdgeModelInfo | null; error?: string }> => ipcRenderer.invoke('edge:model'),
   /** current price per watched symbol (r003 quote log); upTo = replay cursor of a past day */
