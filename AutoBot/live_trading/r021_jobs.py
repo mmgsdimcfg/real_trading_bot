@@ -40,6 +40,10 @@ CPU 를 많이 쓰는 일이다.
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-19] type=docs owner=claude
+    summary: postclose 작업 제목을 AutoBotH 단계 체크박스 이름과 같게 - "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))".
+      데이터 수집 = collect(g001) + history(g025) + hi52(g042). 단계 이름(steps)은 그대로.
+    impact: 표시 문구만 (작업 목록 JSON 의 title 값). 구조 변경 없음
 - [2026-11-19] type=fix owner=claude
     summary: collect(필수) 실패 뒤에도 history(g025 --append) 는 실행 - Step.after_failure. 20261118 KIS 장애로 collect 가 실패하자
       history 가 생략돼 수집된 1,260종목까지 daily_history 가 11/17 에 멈췄고, AutoBotH 일봉 차트에 11/18 봉이 빠졌다.
@@ -186,7 +190,7 @@ JOBS: dict[str, dict] = {
     "scan": {"title": "감시 종목 선별 (g002 -> r004)", "steps": ["scan", "apply"]},
     "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check"]},
     "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
-    "postclose": {"title": "장 마감 파이프라인 (수집 -> 이력 -> HI52 기록 -> 선별 -> r004)",
+    "postclose": {"title": "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))",
                   "steps": ["collect", "history", "hi52", "scan", "apply"]},
 }
 

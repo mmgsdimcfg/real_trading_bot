@@ -34,6 +34,7 @@
  *   ask / bid were coloured by side (ask blue, bid red) before
  * - [2026-11-18] type=feat - Data window: date + time (seconds) of the hovered bar and its change vs the previous day's close
  *   (intraday: the daily bar before that day; D/W/M: the previous bar), the price pane shows the same line at its top left
+ * - [2026-11-19] type=feat - Opens on the symbol another tab asked for (store chartRequest, e.g. a 선별 결과 chip of the 작업 tab)
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -171,8 +172,11 @@ export function ChartView() {
   const prefs = useStore((s) => s.chartTab);
   const setPrefs = useStore((s) => s.setChartTab);
 
-  const [code, setCode] = useState<string>(selected || '');
-  const [input, setInput] = useState(selected || '');
+  const chartRequest = useStore((s) => s.chartRequest);
+  const takeChartRequest = useStore((s) => s.takeChartRequest);
+
+  const [code, setCode] = useState<string>(chartRequest || selected || '');
+  const [input, setInput] = useState(chartRequest || selected || '');
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const [data, setData] = useState<PriceResponse | null>(null);
   const [daily, setDaily] = useState<PriceResponse | null>(null);
@@ -408,6 +412,13 @@ export function ChartView() {
     saveRecent(r);
     if (snap?.symbols.some((s) => s.code === c)) select(c); // loads the day's trades for the markers
   };
+
+  // [2026-11-19] a symbol asked for by another tab (openChart): shown once, kept in the recent list
+  useEffect(() => {
+    if (!chartRequest) return;
+    choose(chartRequest);
+    takeChartRequest();
+  }, [chartRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const symbolOptions = useMemo(() => {
     const seen = new Set<string>();

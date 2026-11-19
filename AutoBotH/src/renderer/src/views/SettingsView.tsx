@@ -16,6 +16,7 @@
  * - [2026-11-05] type=feat - "고급: 전체 설정값" (collapsed): `schema --all` (~380 r001 constants) with a search box and the same value
  *   editor as the pipeline panel (only changed keys are sent in one `set`); the read-only note now lists the r016 control calls
  * - [2026-11-18] type=perf - "고급: 전체 설정값": the last key list (dataCache) is shown while the fresh one loads
+ * - [2026-11-19] type=fix - 장 마감 작업 자동 실행 label uses the jobs-tab step names: 데이터 수집(g001) → 종목 선별(g002) → 감시목록 반영(r004)
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -383,7 +384,7 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
               <input type="checkbox" checked={form.autoCollector} onChange={(e) => set('autoCollector', e.target.checked)} /> 평일 틱 수집기(g011) 자동 시작 (07:55~19:55 5분마다 확인 - KRX 정규장 + NXT 08:00~20:00)
             </label>
             <label className="check">
-              <input type="checkbox" checked={form.autoPostclose} onChange={(e) => set('autoPostclose', e.target.checked)} /> 장 마감 작업 자동 실행 (수집 → 이력 → 감시 종목 선별)
+              <input type="checkbox" checked={form.autoPostclose} onChange={(e) => set('autoPostclose', e.target.checked)} /> 장 마감 작업 자동 실행 (데이터 수집(g001) → 종목 선별(g002) → 감시목록 반영(r004))
               <input value={form.postcloseTime} style={{ width: 64, marginLeft: 6 }} onChange={(e) => set('postcloseTime', e.target.value)} placeholder="20:10" /> 이후
             </label>
             <label className="check">

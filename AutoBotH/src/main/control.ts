@@ -37,6 +37,7 @@
  * - [2026-11-11] type=refactor - ctl:jobStart takes the pipeline steps (collect / scan / apply -> r021 --no-*) instead of
  *   keepWatchlist; the r003-running note names ③ r004 반영. ctl:picksApply removed - r004 is written by the job's apply step
  * - [2026-11-17] type=feat - ctl:jobDates (r016 `job dates`): the saved date folders for the pipeline card's calendar marks
+ * - [2026-11-19] type=fix - r003-running confirm notes use the jobs-tab step names (① 데이터 수집(g001), ③ 감시목록 반영(r004))
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
@@ -699,9 +700,9 @@ export function createControl(deps: ControlDeps) {
     if (o.email && stepOn('scan') && (name === 'postclose' || name === 'scan')) args.push('--email');
     if (!o.noConfirm && state.status?.running) {
       const notes: string[] = [];
-      if ((name === 'collect' || name === 'postclose') && stepOn('collect')) notes.push('수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다.');
+      if ((name === 'collect' || name === 'postclose') && stepOn('collect')) notes.push('① 데이터 수집(g001)은 KIS API를 많이 호출해 r003의 시세 조회와 호출 한도를 나눠 씁니다.');
       if ((name === 'scan' || name === 'postclose') && stepOn('apply')) {
-        notes.push('③ r004 반영은 감시목록을 덮어씁니다 - 지금 감시 중인 종목이 다음 실행/재시작부터 바뀝니다. 감시목록을 그대로 두려면 ③을 끄세요.');
+        notes.push('③ 감시목록 반영(r004)은 감시목록을 덮어씁니다 - 지금 감시 중인 종목이 다음 실행/재시작부터 바뀝니다. 감시목록을 그대로 두려면 ③을 끄세요.');
       }
       if (notes.length && !(await confirm('데이터 작업', 'r003이 실행 중입니다.', `${notes.join(' ')} 그래도 시작할까요?`, '시작'))) {
         return { ok: false, cancelled: true };

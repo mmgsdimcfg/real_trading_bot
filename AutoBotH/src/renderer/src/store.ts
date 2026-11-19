@@ -26,6 +26,8 @@
  * - [2026-11-16] type=feat - quotes also hold KIS current prices (r016 quote) of the day's symbols r003 does not quote (holdings outside
  *   the watch list): asked one at a time, each at most every KIS_QUOTE_EVERY_MS, only on the live day (not on a past day / replay),
  *   at most KIS_QUOTE_MAX symbols per round. r003's quote wins when both exist. Every view (symbol pickers, timeline, board) sees them
+ * - [2026-11-19] type=feat - openChart(code): another tab (작업 탭 선별 결과) opens the chart tab on a symbol (chartRequest, taken
+ *   once by ChartView); a watched symbol is also selected
  */
 
 import { create } from 'zustand';
@@ -197,6 +199,10 @@ interface State {
   feesIncluded: boolean;
   setFeesIncluded: (on: boolean) => void;
   setTab: (t: Tab) => void;
+  /** [2026-11-19] symbol the chart tab should show next (set by openChart, cleared by ChartView once taken) */
+  chartRequest: string | null;
+  openChart: (code: string) => void;
+  takeChartRequest: () => void;
   setSide: (s: Side) => void;
   select: (code: string | null) => void;
   refreshTimeline: () => Promise<void>;
@@ -213,6 +219,7 @@ export const useStore = create<State>()((set, get) => ({
   side: 'buy',
   selected: null,
   timeline: null,
+  chartRequest: null,
   control: { status: null, busy: null },
   historyRev: 0,
   bumpHistory: () => set({ historyRev: get().historyRev + 1 }),
@@ -298,6 +305,11 @@ export const useStore = create<State>()((set, get) => ({
     }
   },
   setTab: (tab) => set({ tab }),
+  openChart: (code) => {
+    if (get().snapshot?.symbols.some((s) => s.code === code)) get().select(code);
+    set({ chartRequest: code, tab: 'chart' });
+  },
+  takeChartRequest: () => set({ chartRequest: null }),
   setSide: (side) => set({ side }),
   select: (code) => {
     // [2026-11-18] the symbol's events from the last visit are shown at once (dataCache), then refreshed

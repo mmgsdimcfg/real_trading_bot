@@ -239,6 +239,8 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 ## 11. HI52 스윙 신호 기록 (2026-11-18)
 - r021 `postclose` 의 새 단계 `hi52` = `data_simulation/g042_hi52_signal_log.py --date D --evaluate` (history 다음, scan 앞, 실패해도
   작업은 계속, `--no-collect` 면 생략). 주문 없음, r003/r004 불변. 작업 목록 JSON 의 steps 에 `"hi52"` 가 추가된다 - 앱 단계 라벨 "HI52 기록".
+- (2026-11-19) postclose 작업 title = "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))" - 앱 단계 체크박스 이름과
+  같다(스크립트 코드는 이름 뒤 괄호). ① 데이터 수집(g001) = collect + history(g025) + hi52(g042). steps 이름은 그대로(표시 문구만 변경).
   종료 코드: 0 정상(주말 포함) / 2 입력 없음(일봉 파일·지수 ETF 파일 없음) / 3 다른 g042 실행 중(`.g042.lock`) / 4 평일인데 D 의 지수 ETF
   일봉이 없음(휴장일 또는 g025 미반영) - 단계 rc 로 앱에 그대로 보인다.
 - 산출물 `<runtime>/data/hi52_signals/`: `days.csv` = 기록 원본(날짜별 지수 게이트 UP/DOWN/NA, 신호 수, provisional, recorded, 그날

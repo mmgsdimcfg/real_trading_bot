@@ -15,6 +15,7 @@
  *   (retried every 10 min)
  * - [2026-11-11] type=feat - settings.postcloseEmail adds --email to the scheduled post-close job (g002 --notify-email: picks by mail)
  * - [2026-11-11] type=feat - The scheduled post-close job is started with --scheduled (state args.scheduled -> 자동 실행 in the jobs tab)
+ * - [2026-11-19] type=fix - Start message uses the pipeline checkbox names (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))
  */
 
 import { collectorWindow, localYmd, postcloseDue, type JobList, type R016Status } from '../shared/control';
@@ -108,7 +109,7 @@ export function createScheduler(deps: SchedDeps) {
           const r = await deps.client().run<{ ok: boolean; skipped?: boolean; reason?: string; error?: string }>(args, { timeoutMs: 60000 });
           if (r.ok) {
             deps.setMeta({ lastPostcloseYmd: today });
-            push({ lastPostcloseMsg: `${hm()} ${r.data?.skipped ? `장 마감 작업 건너뜀 - ${r.data.reason}` : '장 마감 작업 시작 (수집 -> 이력 -> 선별 -> r004 반영)'}` });
+            push({ lastPostcloseMsg: `${hm()} ${r.data?.skipped ? `장 마감 작업 건너뜀 - ${r.data.reason}` : '장 마감 작업 시작 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))'}` });
             if (r.data?.skipped) deps.setMeta({ lastPostcloseSyncYmd: today });
           } else push({ lastPostcloseMsg: `${hm()} 장 마감 작업 시작 실패: ${r.error} (다음 분에 다시 시도)` });
         }

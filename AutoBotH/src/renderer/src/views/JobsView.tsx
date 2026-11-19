@@ -34,6 +34,12 @@
  *   step label "HI52 기록", ① 수집 now reads 수집 → 이력 → HI52 기록 (it follows the collect checkbox)
  * - [2026-11-18] type=perf - Job list, job log, calendar marks and date info: the last answers (dataCache) are shown at once when
  *   the tab is opened again, then refreshed; a failed date-info read keeps the last good answer
+ * - [2026-11-19] type=feat - A 선별 결과 chip opens the chart tab on that symbol (store openChart); not while the pipeline runs (the
+ *   list may still change)
+ * - [2026-11-19] type=fix - Pipeline texts use the checkbox names, the script code in brackets after the name: ① 데이터 수집(g001)
+ *   → ② 종목 선별(g002) → ③ 감시목록 반영(r004) (checkboxes, subtitle, plan / refusal line, step labels of the last run, r021 job
+ *   title); the ① tooltip says it also runs 일봉 이력(g025) and HI52 신호 기록(g042). splitTitle splits at the first " (" so a title
+ *   whose bracket holds bracketed steps keeps them
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -55,9 +61,10 @@ const dur = (a: string | null | undefined, b: string | null | undefined) => {
   const ss = String(sec % 60).padStart(2, '0');
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 };
-/** "데이터 수집 (g001)" -> ["데이터 수집", "g001"] - the script codes are shown in a muted monospace after the name */
+/** "데이터 수집 (g001)" -> ["데이터 수집", "g001"] - the script codes are shown in a muted monospace after the name;
+ *  "장 마감 파이프라인 (데이터 수집(g001) -> …)" -> split at the first " (" */
 const splitTitle = (t: string): [string, string] => {
-  const m = /^(.*?)\s*\(([^()]+)\)\s*$/.exec(t);
+  const m = /^(.*?)\s+\((.+)\)\s*$/.exec(t);
   if (!m) return [t, ''];
   // only script codes ("g001", "g013/g014/g024", "g002 -> r004") - a step list like "(수집 -> 이력 -> 선별)" is dropped
   return [m[1], /[a-z]\d{3}/i.test(m[2]) ? m[2] : ''];
@@ -76,15 +83,15 @@ const shortCmd = (argv: string[]) => {
 const VISIBLE_JOBS = ['postclose', 'edge_ai', 'universe'];
 
 const DESC: Record<string, string> = {
-  postclose: '기준일을 고르고 실행할 단계를 체크 · ① 수집(g001 분봉·일봉 + g025 일봉 이력 + g042 HI52 신호 기록) → ② 선별(g002) → ③ r004 감시목록 반영 · 앞 단계를 끄면 그 산출물이 이미 있어야 합니다',
+  postclose: '기준일을 고르고 실행할 단계를 체크 · ① 데이터 수집(g001) - 분봉·일봉 + 일봉 이력(g025) + HI52 신호 기록(g042) → ② 종목 선별(g002) → ③ 감시목록 반영(r004) · 앞 단계를 끄면 그 산출물이 이미 있어야 합니다',
   edge_ai: 'Edge AI 데이터셋 생성 → 학습 → 점검 · CPU 많이 씀',
   universe: '수집 대상 종목 목록(g004) 갱신 · 신규상장/상장폐지/위험종목',
   collect: '분봉·일봉 데이터 수집 · KIS API 전 종목 (오래 걸림)',
   history: '종목별 일봉 이력 갱신 · 차트 일/주/월봉',
-  scan: '수집된 데이터로 감시 종목 선별 후 r004 반영',
+  scan: '수집된 데이터로 종목 선별(g002) 후 감시목록 반영(r004)',
 };
 
-const STEP_LABEL: Record<string, string> = { collect: '수집', history: '이력', hi52: 'HI52 기록', scan: '선별', apply: 'r004 반영', edge_dataset: 'Edge AI 데이터셋', edge_train: 'Edge AI 학습', edge_check: 'Edge AI 점검', universe: '유니버스' };
+const STEP_LABEL: Record<string, string> = { collect: '데이터 수집(g001)', history: '일봉 이력(g025)', hi52: 'HI52 기록(g042)', scan: '종목 선별(g002)', apply: '감시목록 반영(r004)', edge_dataset: 'Edge AI 데이터셋(g013)', edge_train: 'Edge AI 학습(g014)', edge_check: 'Edge AI 점검(g024)', universe: '유니버스(g010)' };
 
 /** state as a dot + text (.st), colored by kind */
 function stateClass(st: string | undefined) {
@@ -102,6 +109,7 @@ export function JobsView() {
   const sched = useStore((s) => s.sched);
   const settings = useStore((s) => s.settings);
   const setTab = useStore((s) => s.setTab);
+  const openChart = useStore((s) => s.openChart);
   const r003Running = useStore((s) => !!s.control.status?.running);
   // [2026-11-18] last answers (dataCache) are shown at once when the tab is opened again, then refreshed
   const [list, setList] = useState<JobList | null>(() => peek<JobList>('jobs:list') || null);
@@ -199,11 +207,11 @@ export function JobsView() {
   let problem = '';
   if (pipeline) {
     if (!chosen.length) problem = '실행할 단계를 하나 이상 체크하세요';
-    else if (step.scan && !step.collect && infoOk && !infoOk.scannable) problem = `${date} 수집 데이터가 없습니다 - ① 수집을 켜세요`;
-    else if (step.apply && !step.scan && infoOk && !infoOk.picks) problem = `${date} 선별 결과가 없습니다 - ② 선별을 켜세요`;
+    else if (step.scan && !step.collect && infoOk && !infoOk.scannable) problem = `${date} 수집 데이터가 없습니다 - ① 데이터 수집(g001)을 켜세요`;
+    else if (step.apply && !step.scan && infoOk && !infoOk.picks) problem = `${date} 선별 결과가 없습니다 - ② 종목 선별(g002)을 켜세요`;
   }
   const planText = chosen.length
-    ? chosen.map((k) => ({ collect: '수집 → 이력 → HI52 기록', scan: step.scan && email ? '선별(메일 전송)' : '선별', apply: 'r004 반영' })[k]).join(' → ') + (edgeAi ? ' → Edge AI' : '')
+    ? chosen.map((k) => ({ collect: '데이터 수집(g001)', scan: step.scan && email ? '종목 선별(g002) + 메일 전송' : '종목 선별(g002)', apply: '감시목록 반영(r004)' })[k]).join(' → ') + (edgeAi ? ' → Edge AI 재학습' : '')
     : '';
 
   const start = async () => {
@@ -320,22 +328,22 @@ export function JobsView() {
           )}
           {pipeline && (
             <div className="steps">
-              <label className="check step" title="g001 분봉·일봉 수집 + g025 일봉 이력 · KIS API 전 종목, 오래 걸림 · 이미 수집된 날짜는 기본으로 꺼짐 (켜면 끝난 종목은 건너뛰고 이어받음)">
+              <label className="check step" title="분봉·일봉 수집(g001) + 일봉 이력 갱신(g025) + HI52 신호 기록(g042, 52주 신고가 스윙 신호, 주문 없음) · KIS API 전 종목, 오래 걸림 · 이미 수집된 날짜는 기본으로 꺼짐 (켜면 끝난 종목은 건너뛰고 이어받음)">
                 <input type="checkbox" checked={step.collect} onChange={(e) => choose('collect', e.target.checked)} />
-                <span className="step-num">1</span> 데이터 수집 <span className="code-tag">g001</span>
+                <span className="step-num">1</span> 데이터 수집<span className="code-tag step-code">(g001)</span>
               </label>
-              <label className="check step" title="g002 감시 종목 선별 · 기준일 폴더에 선별 파일(_D_picks.txt, 리포트)을 만듭니다 · r004는 ③이 씁니다">
+              <label className="check step" title="감시 종목 선별(g002) · 기준일 폴더에 선별 파일(_D_picks.txt, 리포트)을 만듭니다 · 감시목록 파일(r004)은 ③이 씁니다">
                 <input type="checkbox" checked={step.scan} onChange={(e) => choose('scan', e.target.checked)} />
-                <span className="step-num">2</span> 종목 선별 <span className="code-tag">g002</span>
+                <span className="step-num">2</span> 종목 선별<span className="code-tag step-code">(g002)</span>
               </label>
-              <label className="check step" title="기준일의 선별 결과를 r004 감시목록으로 저장 · 기존 파일은 watchlist_backup/에 백업 · r003 재시작 후 반영 · 과거 날짜는 기본으로 꺼짐">
+              <label className="check step" title="기준일의 선별 결과를 감시목록 파일(r004)로 저장 · 기존 파일은 watchlist_backup/에 백업 · r003 재시작 후 반영 · 과거 날짜는 기본으로 꺼짐">
                 <input type="checkbox" checked={step.apply} onChange={(e) => choose('apply', e.target.checked)} />
-                <span className="step-num">3</span> r004 감시목록 반영
+                <span className="step-num">3</span> 감시목록 반영<span className="code-tag step-code">(r004)</span>
               </label>
-              <label className="check" title="③ 뒤에 Edge AI 재학습(g013/g014/g024)을 이어서 실행">
+              <label className="check" title="③ 감시목록 반영(r004) 뒤에 Edge AI 재학습(g013/g014/g024)을 이어서 실행">
                 <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 포함
               </label>
-              <label className="check" title={`② 선별이 끝나면 선별 종목(본문)과 리포트 파일(첨부)을 이메일로 전송 (g002 --notify-email) · ${local ? '이 PC' : '라즈베리파이'}의 ~/.mail/mail_config.json 설정 필요 · ②를 켜야 보냅니다 · 전송 결과는 아래 로그의 [EMAIL] 줄 (실패해도 작업은 계속)`}>
+              <label className="check" title={`② 종목 선별(g002)이 끝나면 선별 종목(본문)과 리포트 파일(첨부)을 이메일로 전송 (g002 --notify-email) · ${local ? '이 PC' : '라즈베리파이'}의 ~/.mail/mail_config.json 설정 필요 · ②를 켜야 보냅니다 · 전송 결과는 아래 로그의 [EMAIL] 줄 (실패해도 작업은 계속)`}>
                 <input type="checkbox" checked={step.scan && email} disabled={!step.scan} onChange={(e) => setEmail(e.target.checked)} /> 선별 결과 메일
               </label>
             </div>
@@ -383,9 +391,16 @@ export function JobsView() {
             </div>
             <div className="pick-chips">
               {infoOk.picks.map((p) => (
-                <span className="pick-chip" key={p.code}>
+                <button
+                  type="button"
+                  className="pick-chip"
+                  key={p.code}
+                  disabled={running === 'postclose'}
+                  title={running === 'postclose' ? '파이프라인 실행 중 - 끝나면 차트로 볼 수 있습니다' : `${p.name} 차트 보기`}
+                  onClick={() => openChart(p.code)}
+                >
                   {p.name} <span className="mono">{p.code}</span>
-                </span>
+                </button>
               ))}
             </div>
           </div>
