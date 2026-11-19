@@ -12,9 +12,10 @@
 // - [2026-11-20] type=feat (Watchlist rows: one click shows the symbol in every open symbol window (was a double click; a click only
 //   selected the row / sent it to the same link colour) - user 2026-11-20)
 
+// - [2026-11-20] type=fix (☆ group menu closes on a click outside it or Esc)
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LINK_COLORS, newGroupId, useStore, WATCH_MAX, type Win } from '../store';
-import { useCall } from '../hooks';
+import { useCall, useOutsideClose } from '../hooks';
 import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
 import { PriceChart } from '../components/PriceChart';
@@ -211,9 +212,10 @@ export function WatchStar({ code }: { code: string }) {
   const groups = useStore((s) => s.watch);
   const toggle = useStore((s) => s.toggleWatch);
   const [open, setOpen] = useState(false);
+  const ref = useOutsideClose<HTMLSpanElement>(open, () => setOpen(false));
   const inAny = groups.some((g) => g.codes.includes(code));
   return (
-    <span className="dropdown" onMouseLeave={() => setOpen(false)}>
+    <span className="dropdown" ref={ref} onMouseLeave={() => setOpen(false)}>
       <button className={`mini star ${inAny ? 'in' : ''}`} onClick={() => setOpen(!open)} title="관심종목 그룹에 추가 / 빼기">
         {inAny ? '★' : '☆'}
       </button>

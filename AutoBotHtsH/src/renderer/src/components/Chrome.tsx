@@ -5,11 +5,12 @@
 // - [2026-11-06] type=feat (Theme button left of ☰ (system -> light -> dark, saved) and ☰ > 테마 전환)
 // - [2026-11-20] type=feat (AutoBotHtsH: brand / About text of the combined app, ☰ > 봇 설정·연결, toolbar menu '봇 ▾' (the AutoBotH tabs
 //   in its 운영 / 분석 / 시스템 groups) that opens or focuses each bot window)
+// - [2026-11-20] type=fix (봇 ▾ / 창 정렬 ▾ close on a click outside them or Esc)
 
 import { useEffect, useRef, useState } from 'react';
 import { BOT_GROUPS, BOT_TITLE, botWinOf, useStore, WIN_TITLE, type WinType, type ArrangeMode, type Theme } from '../store';
 import { SymbolSearch } from './SymbolSearch';
-import { useCall } from '../hooks';
+import { useCall, useOutsideClose } from '../hooks';
 import type { IndexQuote } from '../../../shared/market';
 import { fmtNum, fmtPct, signOf, upDown } from '../lib';
 
@@ -138,6 +139,8 @@ export function Toolbar() {
   const { open, openBot, setCode, arrange, minimizeAll, restoreAll, closeAll } = useStore.getState();
   const [arrOpen, setArrOpen] = useState(false);
   const [botOpen, setBotOpen] = useState(false);
+  const botRef = useOutsideClose<HTMLSpanElement>(botOpen, () => setBotOpen(false));
+  const arrRef = useOutsideClose<HTMLSpanElement>(arrOpen, () => setArrOpen(false));
   const openWins = useStore((s) => s.wins);
   return (
     <div className="toolbar main-tb">
@@ -155,7 +158,7 @@ export function Toolbar() {
         </button>
       ))}
       <span className="tb-sep" />
-      <span className="dropdown">
+      <span className="dropdown" ref={botRef}>
         <button onClick={() => setBotOpen(!botOpen)} title="AutoBotH 창 (봇 제어 · 파이프라인 · 타임라인 · 매매 결과 ...)">
           봇 ▾
         </button>
@@ -181,7 +184,7 @@ export function Toolbar() {
           </span>
         )}
       </span>
-      <span className="dropdown">
+      <span className="dropdown" ref={arrRef}>
         <button onClick={() => setArrOpen(!arrOpen)}>창 정렬 ▾</button>
         {arrOpen && (
           <span className="dd-menu" onMouseLeave={() => setArrOpen(false)}>

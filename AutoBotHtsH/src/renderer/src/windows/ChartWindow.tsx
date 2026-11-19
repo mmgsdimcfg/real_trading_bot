@@ -33,13 +33,14 @@
 // - [2026-11-20] type=feat (Pane heights by drag (user 2026-11-20): the price / volume split and the indicator pane height are saved with
 //   the window (volR, oscH; a double click on the handle = automatic again). The 투자자 누적 pane says when it is loading or KIS refused)
 
+// - [2026-11-20] type=fix (지표 menu / 기간 설정 close on a click outside them or Esc - before, only a click on the chart closed them)
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { kstDay, useStore, type Win } from '../store';
 import { PriceChart } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
 import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
-import { useRealtime } from '../hooks';
+import { useOutsideClose, useRealtime } from '../hooks';
 import { MIN_SIZES, TICK_SIZES, type Bar, type ChartKind } from '../../../shared/price';
 import { FRACTION_PARAMS, HTS_PARAMS, INV_MONTHS, INV_MONTHS_LABEL, normalizeParams, OSCILLATORS, type CalcMethod, type IndicatorKey, type IndicatorParams, type InvMonths } from '../../../shared/indicators';
 import { WatchStar } from './ListWindows';
@@ -175,6 +176,7 @@ export function ChartWindow({ win }: { win: Win }) {
   const [chartKey, setChartKey] = useState(0);
   const [panel, setPanel] = useState<'' | 'ind' | 'params'>('');
   const [tool, setTool] = useState<'none' | 'hline' | 'tline'>('none');
+  const panelRef = useOutsideClose<HTMLSpanElement>(panel !== '', () => setPanel(''));
   const sig = o.sig ?? true;
   const bodyRef = useRef<HTMLDivElement>(null);
   const [h, setH] = useState(300);
@@ -393,7 +395,7 @@ export function ChartWindow({ win }: { win: Win }) {
           <option value="ohlc">OHLC 바</option>
           <option value="line">라인</option>
         </select>
-        <span className="dropdown">
+        <span className="dropdown" ref={panelRef}>
           <button className={panel === 'ind' ? 'on' : ''} onClick={() => setPanel(panel === 'ind' ? '' : 'ind')}>
             지표 ({ind.length}) ▾
           </button>

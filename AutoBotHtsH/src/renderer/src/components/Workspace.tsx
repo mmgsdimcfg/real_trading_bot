@@ -3,6 +3,7 @@
 //   colour picker, minimize / maximize / close), drag to move, 8-direction resize, double-click title to maximize, click to focus (z-order).
 //   Minimized windows sit in the tray at the bottom. The workspace size is reported to the store so arrange / maximize use the real area)
 // - [2026-11-20] type=feat (AutoBotHtsH: bot-<tab> windows show the AutoBotH view (BotWindow); they have no link colour picker)
+// - [2026-11-20] type=fix (link colour picker closes on a click outside it or Esc)
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { isBotWin, LINK_COLORS, WIN_TITLE, SYMBOL_WINS, useStore, type Win } from '../store';
@@ -14,7 +15,7 @@ import { RankWindow } from '../windows/RankWindow';
 import { IndexWindow } from '../windows/IndexWindow';
 import { NewsWindow } from '../windows/NewsWindow';
 import { BotWindow } from '../windows/BotWindow';
-import { useSymbol } from '../hooks';
+import { useOutsideClose, useSymbol } from '../hooks';
 import { NxtMark } from './NxtTag';
 
 const BODY: Record<string, (p: { win: Win }) => ReactNode> = {
@@ -34,8 +35,9 @@ type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 function LinkPicker({ win }: { win: Win }) {
   const setLink = useStore((s) => s.setLink);
   const [open, setOpen] = useState(false);
+  const ref = useOutsideClose<HTMLSpanElement>(open, () => setOpen(false));
   return (
-    <span className="link-pick" onMouseDown={(e) => e.stopPropagation()}>
+    <span className="link-pick" ref={ref} onMouseDown={(e) => e.stopPropagation()}>
       <button className="link-dot" style={{ background: LINK_COLORS[win.link] || 'transparent' }} title={win.link ? `연결 그룹 ${win.link} - 같은 색 창은 종목이 함께 바뀝니다` : '연결 안 함'} onClick={() => setOpen(!open)} />
       {open && (
         <span className="link-menu">

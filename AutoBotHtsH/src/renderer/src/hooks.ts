@@ -8,6 +8,8 @@
 // - [2026-11-12] type=fix (useSymbol cache is keyed by the stock master's date: entries read before today's master (with the NXT
 //   flags) arrived are asked again instead of staying for the whole session)
 
+// - [2026-11-20] type=feat (useOutsideClose: an open dropdown / popover closes on a click anywhere outside it or on Esc (user 2026-11-20:
+//   menus stayed open until the pointer left them); installDetailsAutoClose: the same for <details> popovers (bot y축 항목))
 import { useEffect, useRef, useState } from 'react';
 import type { MasterItem } from '../../shared/kis';
 import { useStore } from './store';
@@ -92,4 +94,43 @@ export function useSymbol(code: string): MasterItem | null {
     };
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
   return s;
+}
+
+/** [2026-11-20] ref for a dropdown: while `open`, a mouse down outside the element (or Esc) calls `close` */
+export function useOutsideClose<T extends HTMLElement>(open: boolean, close: () => void) {
+  const ref = useRef<T>(null);
+  const cb = useRef(close);
+  cb.current = close;
+  useEffect(() => {
+    if (!open) return;
+    // capture phase: windows / pickers that stop mousedown propagation still close the menu
+    const down = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) cb.current();
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') cb.current();
+    };
+    document.addEventListener('mousedown', down, true);
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('mousedown', down, true);
+      document.removeEventListener('keydown', key);
+    };
+  }, [open]);
+  return ref;
+}
+
+/** [2026-11-20] open <details> popovers close on a click outside them (or Esc); returns the remover */
+export function installDetailsAutoClose(): () => void {
+  const closeAll = (keep?: Node) => {
+    for (const d of document.querySelectorAll('details[open]')) if (!keep || !d.contains(keep)) d.removeAttribute('open');
+  };
+  const down = (e: MouseEvent) => closeAll(e.target as Node);
+  const key = (e: KeyboardEvent) => e.key === 'Escape' && closeAll();
+  document.addEventListener('mousedown', down, true);
+  document.addEventListener('keydown', key);
+  return () => {
+    document.removeEventListener('mousedown', down, true);
+    document.removeEventListener('keydown', key);
+  };
 }
