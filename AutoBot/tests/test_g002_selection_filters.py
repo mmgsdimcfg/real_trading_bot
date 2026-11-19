@@ -350,5 +350,105 @@ class TestScanSpeed20261119(unittest.TestCase):
             g002._evaluate_symbol = orig
 
 
+class TestFilterProfileV1(unittest.TestCase):
+    """2026-11-19 U3: G002_FILTER_PROFILE=v1 - legacy trend hard filters -> warnings, big_bearish_candle -> weak_close."""
+
+    def _evaluate(self, profile, last_low):
+        import os
+        import numpy as np
+        import pandas as pd
+        n = 40
+        dates = pd.bdate_range("2026-09-01", periods=n)
+        close = pd.Series(np.linspace(130.0, 100.0, n))  # steady decline: down_trend / linreg / pattern fails
+        hist = pd.DataFrame({"date": dates, "open": close + 0.5, "high": close + 1.0, "low": close - 1.0, "close": close,
+                             "volume": 1e6})
+        hist.loc[n - 1, ["open", "close", "low"]] = [103.0, 100.0, last_low]  # -2.9% bearish day
+        hist["amount"] = hist["close"] * hist["volume"]
+        hist = g002._compute_daily_indicators(hist)
+        daily = hist.set_index("date")[["open", "high", "low", "close", "volume", "amount"]].tail(1)
+        cfg = g002.BALANCED_CONFIG.__class__(**{**g002.BALANCED_CONFIG.__dict__, "min_listing_days": 1})
+        old = os.environ.get("G002_FILTER_PROFILE")
+        try:
+            os.environ["G002_FILTER_PROFILE"] = profile
+            return g002.evaluate_candidate("000001", "테스트", daily, cfg, daily_hist=hist)
+        finally:
+            if old is None:
+                os.environ.pop("G002_FILTER_PROFILE", None)
+            else:
+                os.environ["G002_FILTER_PROFILE"] = old
+
+    def test_v0_unchanged(self):
+        cand = self._evaluate("v0", 99.0)
+        self.assertIn("big_bearish_candle", cand["fail_reasons"])
+        self.assertNotIn("weak_close", cand["fail_reasons"])
+        legacy = set(g002.PATTERN_OVERRIDABLE_TREND_FAILS) & set(cand["fail_reasons"])
+        self.assertTrue(legacy)
+        self.assertFalse(any(f.endswith("_soft") for f in cand["soft_flags"]))
+
+    def test_v1_legacy_to_warnings_and_weak_close(self):
+        v0 = self._evaluate("v0", 99.0)
+        v1 = self._evaluate("v1", 99.0)
+        legacy = set(g002.PATTERN_OVERRIDABLE_TREND_FAILS) & set(v0["fail_reasons"])
+        self.assertFalse(set(g002.PATTERN_OVERRIDABLE_TREND_FAILS) & set(v1["fail_reasons"]))
+        self.assertTrue({f"{r}_soft" for r in legacy} <= set(v1["soft_flags"]))
+        self.assertNotIn("big_bearish_candle", v1["fail_reasons"])
+        self.assertIn("weak_close", v1["fail_reasons"])          # -2.9% body, lower tail 1.0 < body 3.0
+        self.assertNotIn("weak_close", self._evaluate("v1", 96.0)["fail_reasons"])  # lower tail 4.0 >= body (hammer)
+
+    def test_bad_profile(self):
+        import os
+        old = os.environ.get("G002_FILTER_PROFILE")
+        try:
+            os.environ["G002_FILTER_PROFILE"] = "v9"
+            with self.assertRaises(ValueError):
+                g002._filter_profile()
+        finally:
+            if old is None:
+                os.environ.pop("G002_FILTER_PROFILE", None)
+            else:
+                os.environ["G002_FILTER_PROFILE"] = old
+
+    def test_report_labels(self):
+        self.assertIn("weak_close", g008.FAIL_REASON_DESC)
+        self.assertNotEqual(g008._flag_desc("down_trend_soft", "ko"), "-")
+
+
+class TestFilterProfileV2(unittest.TestCase):
+    """2026-11-19 U4: v2 grouped soft-flag penalty + score floor 17."""
+
+    def test_grouped_penalty(self):
+        pen, groups = g002._grouped_soft_penalty([
+            "bb_lower_not_uptrend", "2d_close_downtrend", "bearish_2in3d_2", "down_trend_soft",   # trend x4 -> 0.7
+            "rsi_overbought", "above_bb_upper",                                                    # momentum -> 0.7
+            "down_trend_reversal_override", "flat_trend_reversal_override",                        # reversal -> 1.5
+            "recent_pick_repeat_2d", "near_52w_high", "prev_day_gap_risk",                         # separately penalised -> 0
+            "liquidity_below_market_dual_pattern_exempt", "fallback_selected",                     # metadata -> 0
+        ])
+        self.assertAlmostEqual(pen, 0.7 + 0.7 + 1.5)
+        self.assertEqual(set(groups), {"trend", "momentum", "reversal"})
+        self.assertEqual(g002._grouped_soft_penalty([])[0], 0.0)
+        self.assertAlmostEqual(g002._grouped_soft_penalty(["some_new_flag", "other_new_flag"])[0], 1.4)  # unknown: each its own
+
+    def test_score_and_cutoff_by_profile(self):
+        import os
+        cand = {"price": 10000.0, "atr_ratio": 0.03, "vol_ma20": 1e6, "amount_ma20": 3e10, "vol_rel_strength": 1.2, "rsi": 50.0,
+                "soft_flags": ["bb_lower_not_uptrend", "2d_close_downtrend", "volume_declining", "recent_pick_repeat_1d"]}
+        old = os.environ.get("G002_FILTER_PROFILE")
+        try:
+            os.environ["G002_FILTER_PROFILE"] = "v0"
+            s0 = g002.calculate_candidate_score(dict(cand), g002.BALANCED_CONFIG)
+            self.assertEqual(g002._score_cutoff(), g002.SCORE_CUTOFF)
+            os.environ["G002_FILTER_PROFILE"] = "v2"
+            s2 = g002.calculate_candidate_score(dict(cand), g002.BALANCED_CONFIG)
+            self.assertEqual(g002._score_cutoff(), g002.SCORE_CUTOFF_V2)
+        finally:
+            if old is None:
+                os.environ.pop("G002_FILTER_PROFILE", None)
+            else:
+                os.environ["G002_FILTER_PROFILE"] = old
+        # v0: 4 flags x 0.7 = 2.8 ; v2: trend 0.7 + volume 0.7 (repeat flag is metadata) = 1.4
+        self.assertAlmostEqual(s2 - s0, 1.4, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

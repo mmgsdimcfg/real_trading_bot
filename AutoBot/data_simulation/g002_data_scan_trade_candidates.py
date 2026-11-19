@@ -24,6 +24,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-19] type=feat owner=claude
+    summary: 선정 필터 구조 개선 U3/U4 - 필터 프로파일(G002_FILTER_PROFILE, 기본 v0 = 이전과 동일). v1 = 레거시 추세 하드필터
+      5개를 모든 종목에서 경고(<reason>_soft, -0.7)로, big_bearish_candle을 weak_close(_weak_close)로 통합. v2 = v1 + 소프트
+      플래그 그룹 감점(그룹마다 1회, 메타데이터와 따로 감점하는 항목은 0) + 점수 바닥선 17.0(SCORE_CUTOFF_V2).
+      근거/실험: AutoBot/selection_filter_redesign_20261119.md, g043_selection_replay.py --variant v1.
+    impact: scanner (환경변수를 설정할 때만 동작 변경)
+    compatibility: backward-compatible (기본 v0)
 - [2026-11-19] type=perf owner=claude
     summary: 사용자 지적(노트북에서 종목선정만 실행해도 종목당 2~3초). 원인: (1) 대상일 daily.csv가 없는 종목은 날짜폴더
       전체(최대 260개)의 10s 파일을 읽어 일봉을 만들었는데, 그 종목은 일봉 지표가 없어 어차피 pattern_unknown 탈락(보충 구제
@@ -1590,6 +1597,77 @@ PATTERN_OVERRIDABLE_TREND_FAILS = (
     "down_trend", "flat_trend", "box_range_no_progress", "bearish_candle_dominant", "linreg_long_term_downtrend",
 )
 
+# [2026-11-19] 선정 필터 프로파일 (AutoBot/selection_filter_redesign_20261119.md). 환경변수 G002_FILTER_PROFILE, 기본 v0 = 현행.
+#   v1: (1) 레거시 추세 하드필터 5개(PATTERN_OVERRIDABLE_TREND_FAILS)를 패턴 등급이 없는 종목에서도 소프트 플래그
+#       (<reason>_soft, -0.7)로 - 25거래일 측정에서 단독 탈락 0건, 실제 역할은 보충(fallback) 차단뿐이었다.
+#       (2) 장대음봉 big_bearish_candle(몸통 2%)을 약한 마감 weak_close(_weak_close: 장대음봉 + 아래꼬리 < 몸통, 또는 종가 = 저가)로
+#       통합 - 패턴의 당일 마감 조건과 같은 정의(이전에는 꼬리 예외가 big_bearish_candle 때문에 도달 불가).
+#   v2: v1 + 소프트 플래그 그룹 감점(_grouped_soft_penalty: 그룹마다 1회, 메타데이터/따로 감점하는 항목은 0) +
+#       점수 바닥선 SCORE_CUTOFF_V2(감점이 줄어 점수가 평균 +1.0 오르므로, V0 96거래일 재현에서 15점 이상 종목 수
+#       213,755건과 같아지는 값 17.0으로 한 번만 재보정 - 17점 이상 213,100건).
+FILTER_PROFILES = ("v0", "v1", "v2")
+
+
+def _filter_profile() -> str:
+    p = (os.environ.get("G002_FILTER_PROFILE") or "v0").strip().lower()
+    if p not in FILTER_PROFILES:
+        raise ValueError(f"G002_FILTER_PROFILE={p!r}: one of {FILTER_PROFILES}")
+    return p
+
+
+def _profile_at_least(p: str) -> bool:
+    return FILTER_PROFILES.index(_filter_profile()) >= FILTER_PROFILES.index(p)
+
+
+SCORE_CUTOFF_V2 = 17.0
+
+
+def _score_cutoff() -> float:
+    return SCORE_CUTOFF_V2 if _profile_at_least("v2") else SCORE_CUTOFF
+
+
+# [2026-11-19] v2 그룹 감점: 소프트 플래그를 그룹으로 묶어 그룹마다 한 번만(그룹 안 가장 무거운 플래그) 감점한다.
+# None = 감점 없음(메타데이터: 반복 선정/보충/업종 교체/데이터 표시/유동성 면제 표시, 또는 같은 사실을 따로 감점하는 항목:
+# 52주 고가 근접 -> near_52w_high 감점, 전일 급등락 -> prev_day_change_gap 감점, 반복 선정 -> recent_pick_repeat 감점).
+SOFT_FLAG_GROUPS = {
+    "bb_lower_not_uptrend": "trend", "2d_close_downtrend": "trend", "3d_close_downtrend": "trend", "daily_5d_downtrend": "trend",
+    "low_up_days_warning": "trend", "weak_signal_long_term_downtrend": "trend",
+    "rsi_overbought": "momentum", "above_bb_upper": "momentum", "stoch_overbought": "momentum",
+    "volume_declining": "volume", "volume_below_market_price_adjusted_avg": "volume", "amount_below_market_avg": "volume",
+    "low_volatility_atr": "volatility",
+    "near_52w_low_unconfirmed": "position", "far_from_52w_high": "position",
+    "near_52w_high": None, "near_52w_high_override": None, "prev_day_gap_risk": None,
+    "fallback_selected": None, "fallback_blocked_peak_rollover": None, "sector_cap_swapped_in": None,
+    "intraday_atr_filter_disabled_no_data": None, "liquidity_below_market_dual_pattern_exempt": None,
+    "liquidity_below_market_dual_but_absolute_safe": None,
+}
+SOFT_GROUP_PENALTY = 0.7
+SOFT_GROUP_PENALTY_REVERSAL = 1.5
+
+
+def _soft_flag_group(flag: str) -> str | None:
+    if flag in SOFT_FLAG_GROUPS:
+        return SOFT_FLAG_GROUPS[flag]
+    if flag.startswith("recent_pick_repeat_"):
+        return None
+    if flag.endswith("_reversal_override"):
+        return "reversal"
+    if flag.startswith("bearish_2in3d_") or flag.endswith("_pattern_override") or flag.endswith("_soft"):
+        return "trend"
+    return "other:" + flag  # unknown flag: its own group (counted once, like before)
+
+
+def _grouped_soft_penalty(flags) -> tuple[float, dict]:
+    """(penalty, {group: penalty}) - one penalty per group."""
+    groups: dict[str, float] = {}
+    for flag in flags:
+        g = _soft_flag_group(flag)
+        if g is None:
+            continue
+        w = SOFT_GROUP_PENALTY_REVERSAL if g == "reversal" else SOFT_GROUP_PENALTY
+        groups[g] = max(groups.get(g, 0.0), w)
+    return sum(groups.values()), groups
+
 
 def _buy_signals(f: dict) -> list[str]:
     s = []
@@ -2208,7 +2286,11 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
         _last = _bar_df.iloc[-1]
         _open_p = float(_last.get("open") or 0)
         _close_p = float(_last.get("close") or 0)
-        if _open_p > 0 and _close_p < _open_p and (_open_p - _close_p) / _open_p >= 0.020:
+        if _profile_at_least("v1"):
+            # [2026-11-19] v1: 패턴의 당일 마감 조건과 같은 정의(_weak_close)로 통합
+            if _weak_close(_open_p or None, safe_float(_last.get("low")), _close_p or None):
+                candidate["fail_reasons"].append("weak_close")
+        elif _open_p > 0 and _close_p < _open_p and (_open_p - _close_p) / _open_p >= 0.020:
             candidate["fail_reasons"].append("big_bearish_candle")
 
     # [2026-11-01] 대상일 포함 2거래일 연속 종가 하락 하드 제외(EXCLUDE_2D_CLOSE_DOWNTREND). 서버 일봉에 대상일 행이
@@ -2301,12 +2383,18 @@ def evaluate_candidate(code, name, daily_df, config, recent_pick_count=0, daily_
             if reason in candidate["fail_reasons"]:
                 candidate["fail_reasons"].remove(reason)
                 candidate["soft_flags"].append(f"{reason}_pattern_override")
+    elif _profile_at_least("v1"):
+        # [2026-11-19] v1: 패턴 등급이 없는 종목도 레거시 추세 필터는 경고(-0.7)로만
+        for reason in PATTERN_OVERRIDABLE_TREND_FAILS:
+            if reason in candidate["fail_reasons"]:
+                candidate["fail_reasons"].remove(reason)
+                candidate["soft_flags"].append(f"{reason}_soft")
     # 시장상대 유동성 필터(apply_market_relative_liquidity_filters)는 
     # 함수 외부(scan)에서 실행되며 'liquidity_below_market_dual'을 fail_reasons에 추가하므로 그대로 유지됩니다.
 
     # 1차 스코어 계산 후 cutoff 검증
     candidate["score"] = calculate_candidate_score(candidate, config)
-    if candidate["score"] < SCORE_CUTOFF:
+    if candidate["score"] < _score_cutoff():
         candidate["fail_reasons"].append("low_score")
         
     candidate["eligible"] = not candidate["fail_reasons"]
@@ -2473,9 +2561,15 @@ def calculate_candidate_score_breakdown(candidate, config):
     # 소프트 전환된 것)는 rsi_overbought/far_from_52w_high 같은 순수 정보성 소프트플래그보다
     # 리스크가 커 동일한 -0.7점 취급은 과소평가임 - 더 무거운 페널티를 적용해 구분.
     soft_flags = candidate.get("soft_flags", [])
-    reversal_override_count = sum(1 for flag in soft_flags if flag.endswith("_reversal_override"))
-    plain_soft_count = len(soft_flags) - reversal_override_count
-    _penalty("soft_flags", 0.7 * plain_soft_count + 1.5 * reversal_override_count)
+    if _profile_at_least("v2"):
+        # [2026-11-19] v2: 그룹마다 1회 감점 (_grouped_soft_penalty)
+        _grouped, _groups = _grouped_soft_penalty(soft_flags)
+        _penalty("soft_flags", _grouped)
+        penalties[-1]["groups"] = _groups
+    else:
+        reversal_override_count = sum(1 for flag in soft_flags if flag.endswith("_reversal_override"))
+        plain_soft_count = len(soft_flags) - reversal_override_count
+        _penalty("soft_flags", 0.7 * plain_soft_count + 1.5 * reversal_override_count)
     penalties[-1]["flags"] = list(soft_flags)
 
     # [2026-10-15] 당일 강세 섹터 가산점(사용자 요청): 위 가점-감점 합계의 HOT_SECTOR_BONUS_RATIO(10%)를 더한다.
@@ -3511,7 +3605,7 @@ def scan(
 
     if verbose:
         label = target_date_str or "latest"
-        print(f"\n[INFO] 총 {total} 종목 스캔 시작 (기준일: {label}, config: {config.name})\n")
+        print(f"\n[INFO] 총 {total} 종목 스캔 시작 (기준일: {label}, config: {config.name}, 필터 프로파일: {_filter_profile()})\n")
 
     if total == 0:
         print("[ERROR] stock_list is empty! check load_symbols() or filter_stock_list_by_existing_data()")
@@ -3644,7 +3738,7 @@ def scan(
         row["score"] = score
         row["score_breakdown"] = breakdown
         row["fail_reasons"] = [reason for reason in row.get("fail_reasons", []) if reason != "low_score"]
-        if score < SCORE_CUTOFF:
+        if score < _score_cutoff():
             row["fail_reasons"].append("low_score")
         # [2026-10-20] skip 종목(데이터 부족 등 조기 반환)은 fail_reasons가 비어 있어도 적격이 아니다(방어 가드).
         row["eligible"] = not row["fail_reasons"] and row.get("skip_reason") is None
@@ -3697,7 +3791,7 @@ def scan(
             and (FALLBACK_ALLOW_LAST_BEARISH or not bool(row.get("is_last_bearish")))
             # 장중 지표를 아직 안 읽은 보충 후보는 VWAP 마감 가점(최대 2점, 강세섹터 +10% 포함 2.2점)을 받기 전이라
             # 그만큼 낮춰 1차로 거르고, 아래에서 지표 반영 후 재채점해 SCORE_CUTOFF를 다시 확인한다(Codex 5차 검토).
-            and row.get("score", 0.0) >= SCORE_CUTOFF - (
+            and row.get("score", 0.0) >= _score_cutoff() - (
                 0.0 if row.get("intraday_atr3_status") is not None else 2.0 * (1.0 + HOT_SECTOR_BONUS_RATIO)
             )
             and _fallback_relaxable(row)
@@ -3733,9 +3827,9 @@ def scan(
                 row["score"] = breakdown["score"]
                 row["score_breakdown"] = breakdown
                 row["fail_reasons"] = [reason for reason in row["fail_reasons"] if reason != "low_score"]
-                if row["score"] < SCORE_CUTOFF:
+                if row["score"] < _score_cutoff():
                     row["fail_reasons"].append("low_score")
-            if row["score"] < SCORE_CUTOFF:
+            if row["score"] < _score_cutoff():
                 continue
             if {"low_intraday_atr", "intraday_atr_unknown"} & set(row["fail_reasons"]):
                 continue

@@ -92,6 +92,8 @@ FAIL_REASON_DESC = {
     "bearish_candle_dominant": ("최근 10일 중 음봉 60% 이상", "60% or more bearish candles in the last 10 days"),
     "box_range_no_progress": ("최근 10일 변동폭 8% 이상인데 순변동 1% 미만(박스권 정체)", "Last 10 days: range >= 8% but net change < 1% (box-range stall)"),
     "big_bearish_candle": ("당일 장대음봉(몸통 2% 이상)", "Large bearish candle on the day (body >= 2%)"),
+    "weak_close": ("당일 약한 마감: 장대음봉(-2% 이상, 아래꼬리 < 몸통) 또는 종가=저가 (필터 프로파일 v1)",
+                   "Weak close: long bearish candle (-2%+, lower tail < body) or close at the low (filter profile v1)"),
     "2d_close_downtrend": ("당일 포함 2거래일 연속 종가 하락", "Close fell 2 trading days in a row (including the day)"),
     "down_trend": ("하락 추세(5일선 < 20일선, 5일선 하락)", "Downtrend (MA5 < MA20 and MA5 falling)"),
     "flat_trend": ("추세 미확정(상승도 하락도 아님)", "No confirmed trend (neither up nor down)"),
@@ -159,6 +161,9 @@ def _flag_desc(flag: str, lang: str) -> str:
     if flag in PATTERN_OVERRIDE_FLAGS:
         return _pick(lang, PATTERN_OVERRIDE_FLAGS[flag]) + (
             " (상승 초입 패턴 종목은 하드필터 대신 경고, -0.7점)" if lang == "ko" else " (pattern stock: hard filter downgraded to a warning, -0.7)")
+    if flag.endswith("_soft") and flag[:-5] in FAIL_REASON_DESC:  # [2026-11-19] g002 프로파일 v1: 레거시 추세 필터 -> 경고
+        return _pick(lang, FAIL_REASON_DESC[flag[:-5]]) + (
+            " (필터 프로파일 v1: 하드필터 대신 경고, -0.7점)" if lang == "ko" else " (filter profile v1: warning instead of a hard filter, -0.7)")
     m = re.fullmatch(r"bearish_2in3d_(\d+)", flag)
     if m:
         return (f"최근 3일 중 음봉 {m.group(1)}개" if lang == "ko" else f"{m.group(1)} bearish candles in the last 3 days")
@@ -181,6 +186,8 @@ def _soft_flag_label(flag: str, row: dict, lang: str = "ko") -> str:
         return _pick(lang, REVERSAL_OVERRIDE_FLAGS[flag])
     if flag in PATTERN_OVERRIDE_FLAGS:
         return _pick(lang, PATTERN_OVERRIDE_FLAGS[flag])
+    if flag.endswith("_soft") and flag[:-5] in FAIL_REASON_DESC:
+        return _pick(lang, FAIL_REASON_DESC[flag[:-5]]) + (" - 경고만 (v1)" if ko else " - warning only (v1)")
     if flag.startswith("recent_pick_repeat_"):
         return "반복 선정 플래그" if ko else "repeat-pick flag"
     if flag.startswith("bearish_2in3d_"):
