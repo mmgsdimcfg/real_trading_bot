@@ -24,6 +24,14 @@ AutoBotH 차트 탭용 KIS 시세 조회(읽기 전용) - r016 `quote` 명령과
 - names.json: 종목명/시장(search_stock_info, 종목당 1회).
 
 Update log:
+- [2026-11-19] type=feat owner=claude
+    summary: 사용자 요청(HPSP 처럼 NXT 비대상 종목도 KRX 장후 16:00~20:00 에 연속 체결 - 차트가 정규장 마감에서 멈춤)
+      (1) minutes(after=True): KRX(J) 분봉을 r014 krx_after 끝(20:00)까지 받는다(캐시 min_ax). 마감 뒤 거래량 0 행(체결 없는 분을
+      KIS 가 채운 행)은 버린다. 기본 minutes() 는 정규장 그대로. (2) nxt_flag(code): search_stock_info 의 cptt_trad_tr_psbl_yn
+      (NXT 거래종목여부)=Y 이고 nxt_tr_stop_yn(NXT 거래정지)!=Y 면 True. names.json 에 nxt / nxt_at 으로 NXT_FLAG_MAX_AGE_DAYS 동안 캐시.
+      확인: 403870 HPSP = N(NXT 체결 0, KRX 장후 체결 있음), 214450/005930/033780 = Y.
+    impact: tooling (r017 bars 의 KIS 분봉 - AutoBotH 차트). 봇 판단·틱 수집기 기준은 바꾸지 않음
+    compatibility: backward-compatible (기존 호출 결과 동일, names.json 항목에 키 추가)
 - [2026-11-12] type=feat owner=claude
     summary: minutes(market="UN") - KRX+NXT 통합 분봉(08:00~20:00, 캐시 min_un). KRX 개장 전(NXT 프리마켓)과 마감 후에는 J 분봉이
       없어 AutoBotH 타임라인/차트 탭의 분봉이 비었다. 거래량 0 행(체결 없는 분)은 버린다. 기본값 J 는 그대로.
@@ -71,6 +79,7 @@ MARKET = "J"  # KRX (틱 수집기·r003과 같은 기준). 시세/일봉/기본
 # AutoBotH 차트가 비었다. 표시 전용이며 봇 판단(r003/r013)과 틱 수집기 기준(J)은 바꾸지 않는다.
 MARKET_UNIFIED = "UN"
 UNIFIED_HOURS = ("080000", "200000")  # NXT 프리마켓 시작 ~ 애프터마켓 종료
+NXT_FLAG_MAX_AGE_DAYS = 7  # [2026-11-19] NXT 거래종목 여부 캐시 기간 (NXT 대상 종목은 수시로 바뀐다)
 
 # name -> (path, tr_id). 이 목록 밖의 TR은 _get이 거부한다 (주문/잔고/계좌 TR 없음).
 _TRS = {
@@ -343,13 +352,47 @@ def name_info(code: str, client: Client | None = None) -> dict:
     return info
 
 
+def nxt_flag(code: str, client: Client | None = None) -> bool | None:
+    """[2026-11-19] NXT 에서 거래되는 종목인지 - search_stock_info 의 cptt_trad_tr_psbl_yn=Y 이고 nxt_tr_stop_yn!=Y.
+    names.json 캐시(NXT_FLAG_MAX_AGE_DAYS), 없거나 오래되면 client 로 1회 조회. client 가 없거나 실패하면 캐시 값(없으면 None)."""
+    code = _check_code(code)
+    path = _cache_dir() / "names.json"
+    entry = (_read_json(path) or {}).get(code) or {}
+    today = _now().strftime("%Y%m%d")
+    cached = entry.get("nxt") if isinstance(entry.get("nxt"), bool) else None
+    try:
+        fresh = cached is not None and (datetime.strptime(today, "%Y%m%d") - datetime.strptime(str(entry.get("nxt_at")), "%Y%m%d")).days < NXT_FLAG_MAX_AGE_DAYS
+    except ValueError:
+        fresh = False
+    if fresh or client is None:
+        return cached
+    try:
+        body, _ = client.get("search_stock_info", {"PRDT_TYPE_CD": "300", "PDNO": code})
+    except KisError:
+        return cached
+    out = body.get("output") or {}
+    psbl = str(out.get("cptt_trad_tr_psbl_yn") or "").strip().upper()
+    if psbl not in ("Y", "N"):
+        return cached
+    flag = psbl == "Y" and str(out.get("nxt_tr_stop_yn") or "").strip().upper() != "Y"
+    names = _read_json(path) or {}
+    cur = dict(names.get(code) or {})
+    if not cur.get("name"):
+        cur["name"] = (out.get("prdt_abrv_name") or out.get("prdt_name") or "").strip() or None
+        cur["market"] = _MARKETS.get(str(out.get("mket_id_cd") or ""), out.get("mket_id_cd") or None)
+    cur.update(nxt=flag, nxt_at=today)
+    names[code] = cur
+    _write_json(path, names)
+    return flag
+
+
 def remember_name(code: str, name: str | None) -> None:
     if not name:
         return
     path = _cache_dir() / "names.json"
     names = _read_json(path) or {}
     if names.get(code, {}).get("name") != name:
-        names[code] = {"name": name, "market": names.get(code, {}).get("market")}
+        names[code] = {**names.get(code, {}), "name": name, "market": names.get(code, {}).get("market")}
         _write_json(path, names)
 
 
@@ -527,12 +570,25 @@ def _session_hours(date_str: str) -> tuple[str, str] | None:
     return h[0].strftime("%H%M%S"), h[1].strftime("%H%M%S")
 
 
-def minutes(code: str, date_str: str, client: Client | None = None, market: str = MARKET) -> dict | None:
+def _krx_after_end(date_str: str) -> str | None:
+    """[2026-11-19] KRX 장후 끝 HHMMSS (r014 trading_hours krx_after), 없으면 None."""
+    import r014_market_calendar as r014  # noqa: E402
+    try:
+        h = r014.trading_hours(date_str)
+    except Exception:
+        return None
+    ka = (h or {}).get("krx_after")
+    return ka[1].strftime("%H%M%S") if ka else None
+
+
+def minutes(code: str, date_str: str, client: Client | None = None, market: str = MARKET, after: bool = False) -> dict | None:
     """{"rows": [[HHMMSS, o, h, l, c, v], ...] 오름차순, "name", "source", "complete", "calls"} 또는 None(KIS에 없음).
-    market: "J"(기본, KRX 정규장) 또는 "UN"(KRX+NXT 통합, 08:00~20:00 - 캐시는 min_un 폴더에 따로 둔다)."""
+    market: "J"(기본, KRX 정규장) 또는 "UN"(KRX+NXT 통합, 08:00~20:00 - 캐시는 min_un 폴더에 따로 둔다).
+    after (J 만): [2026-11-19] KRX 장후(r014 krx_after, 보통 16:00~20:00)까지 - 캐시 min_ax, 마감 뒤 거래량 0 행은 버린다."""
     if market not in (MARKET, MARKET_UNIFIED):
         raise ValueError(f"market must be {MARKET} or {MARKET_UNIFIED}")
     unified = market == MARKET_UNIFIED
+    after = bool(after) and not unified
     code = _check_code(code)
     now = _now()
     today = now.strftime("%Y%m%d")
@@ -543,15 +599,20 @@ def minutes(code: str, date_str: str, client: Client | None = None, market: str 
     if hours is None:
         return None  # 휴장일(r014 달력)
     open_hms, last_hms = UNIFIED_HOURS if unified else hours
+    close_hms = hours[1]
+    if after:
+        last_hms = max(last_hms, _krx_after_end(date_str) or last_hms)
     if is_today and now.strftime("%H%M%S") < open_hms:
         return None  # 장 시작 전 - 오늘 분봉 없음
-    tag = f":{market}" if unified else ""
+    tag = f":{market}" if unified else (":after" if after else "")
     tr = "inquire_time_itemchartprice" if is_today else "inquire_time_dailychartprice"
-    cpath = _cache_dir() / ("min_un" if unified else "min") / date_str / f"{code}.json"
+    cpath = _cache_dir() / ("min_un" if unified else "min_ax" if after else "min") / date_str / f"{code}.json"
     cached = _read_json(cpath) or {}
     have: dict[str, list] = {r[0]: r for r in cached.get("rows") or []}
     if unified and cached.get("rows"):
         cached = dict(cached, rows=[r for r in cached["rows"] if (r[5] or 0) > 0] or cached["rows"][:0])
+    if after and cached.get("rows"):
+        cached = dict(cached, rows=[r for r in cached["rows"] if r[0] <= close_hms or (r[5] or 0) > 0])
     if cached.get("complete") and not is_today:
         return {"rows": cached["rows"], "name": cached.get("name"), "source": f"kis:{tr}{tag}", "complete": True, "calls": 0}
     if is_today and have and time.time() - float(cached.get("fetched_at", 0)) < MIN_TODAY_CACHE_SEC:
@@ -565,7 +626,7 @@ def minutes(code: str, date_str: str, client: Client | None = None, market: str 
     reached_open = False
     overlapped = False
     fetched_any = False
-    for _page in range(26 if unified else 16):   # 30분봉/호출: 정규장 390분 = 13, 통합 720분 = 24
+    for _page in range(26 if (unified or after) else 16):   # 30분봉/호출: 정규장 390분 = 13, 통합 720분 = 24, KRX 장후까지 660분 = 22
         params = {"FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": code, "FID_INPUT_HOUR_1": hour,
                   "FID_PW_DATA_INCU_YN": "Y"}
         if is_today:
@@ -607,6 +668,9 @@ def minutes(code: str, date_str: str, client: Client | None = None, market: str 
     _write_json(cpath, {"fetched_at": time.time(), "rows": rows, "name": name, "complete": complete,
                         "complete_from_open": from_open})
     remember_name(code, name)
+    if after:
+        # KRX 장후: 체결이 없는 분(마감 ~ 장후 시작 사이 포함)도 KIS 가 직전가로 채운 행(거래량 0)을 준다 - 마감 뒤에는 버린다
+        rows = [r for r in rows if r[0] <= close_hms or (r[5] or 0) > 0]
     if unified:
         # 통합 분봉은 체결이 없는 분도 전일 종가로 채운 행(거래량 0)을 준다 - NXT 비대상 종목은 장전 내내 그 행뿐이다
         rows = [r for r in rows if (r[5] or 0) > 0]

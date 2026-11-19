@@ -325,7 +325,9 @@ export function TimelineView() {
   );
 
   // [2026-11-18] a KRX-only symbol: only what falls in the KRX session (09:00 - 15:30) is drawn
-  const selNxt = !!snap?.symbols.find((s) => s.code === selected)?.nxt;
+  // [2026-11-19] ... 09:00 - 20:00 (KRX after-hours market); NXT = the day's WATCH line or the server's flag on the price answer
+  // (holdings outside the watchlist have no WATCH line)
+  const selNxt = !!snap?.symbols.find((s) => s.code === selected)?.nxt || (price?.ok === true && price.nxt === true);
   const krxRange = selNxt ? null : tradingSessionRange(snap?.date || status.date, false);
   const inShown = (t: number) => !krxRange || (t >= krxRange[0] && t <= krxRange[1]);
   const allEvents = timeline && timeline.code === selected ? timeline.events : NO_EVENTS;

@@ -471,7 +471,7 @@ export function ChartView() {
         </datalist>
 
         <span className="sym-name">
-          {name} {sym?.nxt && <NxtMark />}
+          {name} {(sym?.nxt || data?.nxt === true) && <NxtMark />}
         </span>
         <div className="seg">
           {KINDS.map(([k, label]) => (

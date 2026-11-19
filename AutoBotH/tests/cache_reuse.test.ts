@@ -92,7 +92,7 @@ function r016() {
 const tickPath = (code: string) => `/root/runtime/data/ticks/${DATE}/${code}.csv`;
 
 describe('price service reuse', () => {
-  it('NXT combined minutes: one r016 call from 09:00 to the KRX close, again after 15:30', async () => {
+  it('minutes outside the regular session (kis-ext): one r016 call from 09:00 to the KRX close, again after 15:30', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(at('10:00'));
     const s = r016();
@@ -101,10 +101,10 @@ describe('price service reuse', () => {
     await svc.get(req, true);
     vi.setSystemTime(at('11:30')); // 90 minutes later - the old 60 s reuse would have asked again
     await svc.get(req, true);
-    expect(s.calls.filter((a) => a.includes('kis-un'))).toHaveLength(1);
+    expect(s.calls.filter((a) => a.includes('kis-ext'))).toHaveLength(1);
     vi.setSystemTime(at('15:35')); // after-market minutes start: ask again
     await svc.get(req, true);
-    expect(s.calls.filter((a) => a.includes('kis-un'))).toHaveLength(2);
+    expect(s.calls.filter((a) => a.includes('kis-ext'))).toHaveLength(2);
   });
 
   it('a symbol opened again after 12 others is not read from byte 0 (tick cache holds 40 entries)', async () => {

@@ -20,6 +20,14 @@
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-19] type=feat owner=claude
+    summary: 사용자 요청(HPSP 처럼 NXT 비대상이지만 KRX 장후 16:00~20:00 에 거래되는 종목 - 차트가 정규장 마감에서 멈춤)
+      (1) bars --source kis-ext (min 전용): 정규장 밖(장전/장후) KIS 1분봉만 - NXT 종목(r018 nxt_flag)은 통합(UN) 분봉(NXT + KRX 장후),
+      NXT 비대상은 KRX 장후 분봉(r018 minutes after=True). AutoBotH 가 틱 봉 밖 시간을 채우는 데 쓴다.
+      (2) auto 에서 파일이 없을 때: NXT 비대상 = KRX 분봉을 장후까지(J after), NXT 종목 = KRX 분봉 + 정규장 밖 통합 분봉.
+      (3) tick/min 응답에 hours(r014 trading_hours - 정규장/NXT 장전·장후/KRX 장후 "HH:MM") 와 nxt(true/false/null) 추가.
+    impact: tooling (AutoBotH 차트). 봇/틱 수집기 무관
+    compatibility: backward-compatible (선택지·JSON 필드 추가, 파일이 있는 auto 응답의 봉은 동일)
 - [2026-11-19] type=fix owner=claude
     summary: bars day/week/month - daily_history 의 마지막 행 이후 날짜는 그 날짜 기준 최신 폴더 daily.csv(latest_daily_csv)의 행으로 채움
       (join_recent, 겹치는 날은 daily_history 우선). 20261118 KIS 장애로 장 마감 history 단계가 생략돼 전 종목 차트에 11/18 일봉이
@@ -532,14 +540,69 @@ def kis_minute_bars(date_str: str, code: str, interval: int, market: str = "J") 
     m = _kis().minutes(code, date_str) if market == "J" else _kis().minutes(code, date_str, market=market)
     if not m or not m["rows"]:
         return None
-    idx = pd.to_datetime([date_str + r[0] for r in m["rows"]], format="%Y%m%d%H%M%S")
-    m1 = pd.DataFrame([r[1:] for r in m["rows"]], columns=["open", "high", "low", "close", "volume"], index=idx)
+    return _minute_rows_frame(date_str, m["rows"], interval), m["source"], m.get("name")
+
+
+def _regular_hms(date_str: str) -> tuple[str, str]:
+    import r014_market_calendar as r014  # noqa: E402
+    h = r014.session_hours(date_str) or (r014.DEFAULT_OPEN, r014.DEFAULT_CLOSE)
+    return h[0].strftime("%H%M%S"), h[1].strftime("%H%M%S")
+
+
+def _hours_json(date_str: str) -> dict | None:
+    try:
+        import r014_market_calendar as r014  # noqa: E402
+        return r014.trading_hours_json(date_str)
+    except Exception:
+        return None
+
+
+def kis_session_minutes(date_str: str, code: str, outside_only: bool) -> dict | None:
+    """[2026-11-19] KIS 1-minute rows including the hours outside the KRX regular session:
+    NXT symbol (r018 nxt_flag) = KRX minutes inside [open, close] + combined (UN: NXT + KRX after-hours) minutes outside it;
+    otherwise KRX minutes through the KRX after-hours market (minutes after=True; KRX has no pre-market).
+    outside_only: only the rows before the open / after the close. {"rows", "source", "name", "nxt"} or None."""
+    r018 = _kis()
+    client = r018.shared_client()
+    nxt = r018.nxt_flag(code, client)
+    open_hms, close_hms = _regular_hms(date_str)
+
+    def outside(hms: str) -> bool:
+        return hms < open_hms or hms > close_hms  # the close minute (closing auction) is KRX's
+
+    if nxt:
+        un = r018.minutes(code, date_str, client=client, market="UN")
+        out_rows = [r for r in (un or {}).get("rows") or [] if outside(r[0])]
+        src = [un["source"]] if un else []
+        name = (un or {}).get("name")
+        if outside_only:
+            rows = out_rows
+        else:
+            j = r018.minutes(code, date_str, client=client)
+            rows = sorted([r for r in (j or {}).get("rows") or [] if not outside(r[0])] + out_rows, key=lambda r: r[0])
+            src = ([j["source"]] if j else []) + src
+            name = name or (j or {}).get("name")
+    else:
+        ja = r018.minutes(code, date_str, client=client, after=True)
+        rows = [r for r in (ja or {}).get("rows") or [] if outside(r[0]) or not outside_only]
+        src = [ja["source"]] if ja else []
+        name = (ja or {}).get("name")
+    return {"rows": rows, "source": " + ".join(src), "name": name, "nxt": nxt}
+
+
+def _minute_rows_frame(date_str: str, rows: list, interval: int) -> pd.DataFrame:
+    idx = pd.to_datetime([date_str + r[0] for r in rows], format="%Y%m%d%H%M%S")
+    m1 = pd.DataFrame([r[1:] for r in rows], columns=["open", "high", "low", "close", "volume"], index=idx)
     if interval > 1:
         m1 = m1.resample(f"{interval}min", label="left", closed="left").agg(
             {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open"])
     out = pd.DataFrame({"t": m1.index, "o": m1["open"].to_numpy(), "h": m1["high"].to_numpy(), "l": m1["low"].to_numpy(),
                         "c": m1["close"].to_numpy(), "v": m1["volume"].to_numpy(), "n": None, "t_last": m1.index})
-    return out.reset_index(drop=True), m["source"], m.get("name")
+    return out.reset_index(drop=True)
+
+
+def _empty_bars() -> pd.DataFrame:
+    return pd.DataFrame(columns=["t", "o", "h", "l", "c", "v", "n", "t_last"])
 
 
 def _kis_error(exc) -> dict:
@@ -675,6 +738,7 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
     t0 = time.time()
     code = str(code).zfill(6)
     name = None
+    nxt_known = None
     if kind in ("day", "week", "month"):
         res = day_bars(date_str, code, kind)
         if res is None:
@@ -697,7 +761,9 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
         # tick collector missed - a g011 outage leaves holes in the tick file that the bot could not see either)
         # [2026-11-12] --source kis-un: KRX+NXT combined minute bars (08:00~20:00). With source auto and no file, KRX minutes
         # are asked first and the combined ones when KRX has none (before 09:00 the chart of an NXT symbol was empty).
-        from_kis = source in ("kis", "kis-un") and kind == "min"
+        # [2026-11-19] --source kis-ext: only the minutes outside the KRX regular session (kis_session_minutes); auto without a
+        # file: the same venues for the whole day (a KRX-only symbol gets the KRX after-hours market too)
+        from_kis = source in ("kis", "kis-un", "kis-ext") and kind == "min"
         res = None if from_kis else _intraday_bars(date_str, code, kind, ticks, interval, all_sessions)
         if res is not None and kind == "min" and res[0].empty:
             res = None   # a tick file with pre-open prints only (08:30~09:00): no bar yet -> KIS minutes
@@ -707,7 +773,17 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
                 return {"ok": False, "error": "tick bars need the tick collector (not subscribed): use min"}
             r018 = _kis()
             try:
-                kres = kis_minute_bars(date_str, code, interval, "UN" if source == "kis-un" else "J")
+                if source in ("auto", "kis-ext"):
+                    sm = kis_session_minutes(date_str, code, outside_only=source == "kis-ext")
+                    nxt_known = sm["nxt"] if sm else None
+                    if source == "kis-ext":
+                        # empty is an answer here (before the after-hours market, a KRX-only symbol before 09:00)
+                        kres = (_minute_rows_frame(date_str, sm["rows"], interval) if sm and sm["rows"] else _empty_bars(),
+                                (sm or {}).get("source") or "kis-ext", (sm or {}).get("name"))
+                    else:
+                        kres = (_minute_rows_frame(date_str, sm["rows"], interval), sm["source"], sm["name"]) if sm and sm["rows"] else None
+                else:
+                    kres = kis_minute_bars(date_str, code, interval, "UN" if source == "kis-un" else "J")
                 if kres is None and source == "auto":
                     kres = kis_minute_bars(date_str, code, interval, "UN")
             except ValueError as exc:
@@ -749,6 +825,12 @@ def bars(date_str: str, code: str, kind: str, n: int | None = None, interval: in
         df = df.tail(int(n))
     next_since = _ts(df["t"].iloc[-1]) if not df.empty else (since_ts or None)
     out_name = {"name": name} if name else {}
+    if kind in ("tick", "min"):
+        # [2026-11-19] the day's sessions + whether the symbol trades on NXT (the cached flag when this answer did not ask KIS)
+        if nxt_known is None and _KIS_CODE_RE.fullmatch(code):
+            with contextlib.suppress(Exception):
+                nxt_known = _kis().nxt_flag(code)
+        out_name.update(hours=_hours_json(date_str), nxt=nxt_known)
     return {"ok": True, "kind": kind, "code": code, "date": date_str, "source": src, **out_name,
             "ticks": ticks if kind == "tick" else None, "interval": interval if kind == "min" else None,
             "sessions": "all" if all_sessions else "+".join(TRADING_SESSIONS),
@@ -776,9 +858,10 @@ def add_subparsers(sub) -> None:
     p.add_argument("--warmup", type=int, default=0, help="also return the last K bars of the previous day")
     p.add_argument("--since-ts", dest="since_ts", default=None)
     p.add_argument("--all-sessions", dest="all_sessions", action="store_true")
-    p.add_argument("--source", choices=["auto", "kis", "kis-un"], default="auto",
+    p.add_argument("--source", choices=["auto", "kis", "kis-un", "kis-ext"], default="auto",
                    help="min: 'kis' = KIS minute bars even when the tick / _10s file exists (fill tick-collector gaps); "
-                        "'kis-un' = KRX+NXT combined minute bars (08:00~20:00)")
+                        "'kis-un' = KRX+NXT combined minute bars (08:00~20:00); 'kis-ext' = only the minutes outside the KRX "
+                        "regular session (NXT symbol: combined, otherwise KRX after-hours)")
 
 
 def run_command(args) -> dict:

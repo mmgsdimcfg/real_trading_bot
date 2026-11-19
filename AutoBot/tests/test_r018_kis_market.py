@@ -358,13 +358,17 @@ class UnifiedMinutesTest(Base):
         import r017_chart_data as r017
         seen = []
 
-        def fake_minutes(code, date_str, client=None, market="J"):
+        def fake_minutes(code, date_str, client=None, market="J", after=False):
             seen.append(market)
             if market == "J":
                 return None
             return {"rows": [["080000", 10, 11, 9, 10, 5]], "name": "OCI홀딩스", "source": "kis:inquire_time_itemchartprice:UN",
                     "complete": False, "calls": 1}
 
+        # [2026-11-19] auto asks the NXT flag first (unknown here -> KRX minutes through the after-hours market, then UN)
+        nxt = mock.patch.object(r018, "nxt_flag", lambda code, client=None: None)
+        nxt.start()
+        self.addCleanup(nxt.stop)
         with mock.patch.object(r017, "_intraday_bars", return_value=None), mock.patch.object(r018, "minutes", fake_minutes):
             out = r017.bars("20261112", "010060", "min")
             self.assertEqual((out["ok"], out["count"], out["source"]), (True, 1, "kis:inquire_time_itemchartprice:UN"))

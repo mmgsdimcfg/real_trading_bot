@@ -263,3 +263,23 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   `evaluation.csv` = 종목별 1/5/10/20일 순익·시장 대비 초과, `report.md` = 기록 종류 x 필터 x 1틱 구간 요약. 앱은 읽지 않는다.
   배경: `selection_filter_redesign_20261119.md` 10~11장.
 
+
+## 13. 장전/장후 거래 시간과 KRX 장후 분봉 (2026-11-19)
+- 배경: 403870 HPSP 는 NXT 비대상(KIS `cptt_trad_tr_psbl_yn`=N, NXT 체결 0)인데 KRX 에서 장후(평일 16:00~20:00, 수능일 17:00~20:00)에
+  1분 단위로 연속 체결된다. 차트가 KRX 정규장 마감에서 멈췄다. KRX 는 장전 거래가 없다(08:00~09:00 분봉 없음).
+- r014 `trading_hours(day)` / `trading_hours_json(day)`: 정규장 + `nxt_pre` / `nxt_after` / `krx_after` (없는 세션은 null).
+  평일 = 09:00~15:30 / 08:00~08:50 / 15:40~20:00 / 16:00~20:00. 특수일은 마감에서 파생(NXT 장후 = 마감+10분, KRX 장후 = 마감+30분,
+  개장이 09:00 이 아니면 NXT 장전 없음), 달력 줄 뒤 `nxt_pre=HH:MM-HH:MM|none` 등으로 덮어쓴다. 20261119(수능일)는 KIS 분봉으로
+  확인한 값(NXT 장전 없음, NXT 장후 16:40, KRX 장후 17:00)을 적었다. g022 awk 는 `$2 $3` 만 읽어 영향 없음.
+- r018 `nxt_flag(code)`: `cptt_trad_tr_psbl_yn`=Y 이고 `nxt_tr_stop_yn`!=Y 면 true. names.json 에 `nxt`/`nxt_at` 으로 7일 캐시.
+  `minutes(after=True)`: KRX(J) 분봉을 KRX 장후 끝까지(캐시 `min_ax/`), 마감 뒤 거래량 0 행은 버린다. 기본 minutes() 는 정규장 그대로.
+- r017 `bars --kind min --source kis-ext`(신규): **정규장 밖 분봉만** - NXT 종목 = 통합(UN, NXT + KRX 장후), 그 외 = KRX 장후(J after).
+  비어 있어도 ok 응답(count 0). `--source auto` 에서 파일이 없으면 하루 전체를 같은 기준으로(NXT 비대상 = J 를 장후까지,
+  NXT 종목 = 정규장 J + 정규장 밖 UN). 
+- tick/min 응답 필드 추가: `hours`(위 trading_hours_json), `nxt`(true/false/null - kis-ext/auto 는 KIS 조회, 그 외는 캐시 값).
+- 앱(AutoBotH 2.3.30): 분봉 차트는 **모든 종목**에 kis-ext 를 합친다(정규장 밖에서는 KIS 봉이 이긴다, 정규장 구분은 응답 `hours`).
+  서버가 KRX 전용이라고 알려준 종목은 개장 전에 묻지 않는다. 지난 날짜 저장 파일은 `kis_min/<code>_ext.json`,
+  `server_min/<code>_<n>[_w].v2.json`(예전 파일은 장후가 없어 새 이름). 이전 서버(kis-ext 없음)면 NXT 표시 종목만 종전 kis-un.
+  타임라인의 KRX 전용 종목 표시 범위 09:00~15:30 -> 09:00~20:00. 감시목록 밖 보유 종목도 응답 `nxt` 로 NXT 표시.
+- 바뀌지 않는 것: r003 매매 시각(r001 고정값 - 수능일 미반영, KRX 장후 매매 없음), 틱 수집기(g011, KRX 체결은 정규장 마감+1분까지).
+  둘 다 별도 승인 사항.

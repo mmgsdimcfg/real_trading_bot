@@ -52,6 +52,14 @@
  * - [2026-11-18] type=feat - Yearly bars (kind 'year', grouped here like week / month). The server's daily answer now reaches back
  *   to 2018 (r017 + g040 daily_backfill): a past day's saved daily answer is server_day/<code>.v2.json, so answers saved before
  *   (daily_history only, ~14 months) are asked again once
+ * - [2026-11-19] type=feat - KRX after-hours market (user 2026-11-19: 403870 HPSP does not trade on NXT but trades on KRX 16:00 -
+ *   20:00, its chart stopped at the KRX close): minute charts of EVERY symbol now get the minutes outside the KRX regular session
+ *   from r016 `bars --source kis-ext` (server picks the venue: NXT symbol = KRX+NXT combined minutes, otherwise the KRX after-hours
+ *   minutes) - was the NXT symbols only (kis-un). Also for the 10-second-file minutes. The regular session comes from the server's
+ *   r014 hours (CSAT day 10:00 - 16:30) and the server's NXT flag is remembered per code: a known KRX-only symbol is not asked
+ *   before the KRX open (no pre-market). Responses carry hours / nxt. An older server without kis-ext falls back to kis-un for
+ *   symbols flagged NXT. Saved past-day answers use new names (server_min/*.v2.json, kis_min/<code>_ext.json): the old ones end
+ *   at the KRX close
  */
 
 import { LineBuffer } from '../shared/lineBuffer';
@@ -80,6 +88,7 @@ import {
   type PriceRequest,
   type PriceResponse,
   type Tick,
+  type TradingHours,
 } from '../shared/price';
 import type { FileHost } from './host';
 import { parseQuoteRows, quoteHeader, QuoteBook, type LiveQuote } from '../shared/liveQuote';
@@ -113,8 +122,21 @@ const KIS_FILL_TTL_MS = 60000;
 const NXT_HOURS_TTL_MS = 10000;
 /** KST minute of the day of a bar */
 const kstMinuteOfDay = (t: number) => Math.floor(((t + 9 * 3600000) % 86400000) / 60000);
-/** bars of the hours KRX is closed (before 09:00, from 15:30) */
-export const outsideKrxHours = (bars: Bar[]): Bar[] => bars.filter((b) => kstMinuteOfDay(b.t) < 9 * 60 || kstMinuteOfDay(b.t) >= 15 * 60 + 30);
+/** [2026-11-19] "HH:MM" -> minute of the day */
+const hmMinute = (s: string | undefined, dflt: number) => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(s || '');
+  return m ? +m[1] * 60 + +m[2] : dflt;
+};
+/** [2026-11-19] KRX regular session [open, close) in minutes of the day (server r014 hours; 09:00 - 15:30 without them) */
+export const regularMinutes = (hours?: TradingHours | null): [number, number] => [hmMinute(hours?.regular?.[0], 9 * 60), hmMinute(hours?.regular?.[1], 15 * 60 + 30)];
+/** bars of the hours KRX's regular session is closed (before the open, from the close; 09:00 / 15:30 without hours) */
+export const outsideKrxHours = (bars: Bar[], hours?: TradingHours | null): Bar[] => {
+  const [open, close] = regularMinutes(hours);
+  return bars.filter((b) => kstMinuteOfDay(b.t) < open || kstMinuteOfDay(b.t) >= close);
+};
+/** [2026-11-19] kind of KIS minute fill: tick-collector gaps (kis), combined market (kis-un, older servers), outside the regular session (kis-ext) */
+type FillMode = 'gap' | 'un' | 'ext';
+type FillRes = { bars?: Bar[]; error?: string; hours?: TradingHours; nxt?: boolean | null; unsupported?: boolean };
 /**
  * 1-minute bars of the day + the combined-market bars of the hours KRX is closed. In those minutes the combined bar wins: the tick
  * file only has KRX pre-open / after-hours prints there, the combined bar has the NXT trades.
@@ -122,6 +144,11 @@ export const outsideKrxHours = (bars: Bar[]): Bar[] => bars.filter((b) => kstMin
 export function mergeOutsideKrx(base: Bar[], outside: Bar[]): Bar[] {
   const taken = new Set(outside.map((b) => Math.floor(b.t / 60000)));
   return [...outside, ...base.filter((b) => !taken.has(Math.floor(b.t / 60000)))].sort((a, b) => a.t - b.t);
+}
+
+/** [2026-11-19] hours / nxt fields of a response (left out when unknown) */
+function sessionInfo(x: { hours?: TradingHours | null; nxt?: boolean | null }): Pick<PriceResponse, 'hours' | 'nxt'> {
+  return { ...(x.hours ? { hours: x.hours } : {}), ...(typeof x.nxt === 'boolean' ? { nxt: x.nxt } : {}) };
 }
 
 /** keep at most `limit` entries (least recently used dropped) */
@@ -162,7 +189,10 @@ export class PriceService {
   /** r016 `bars` answers reused for a while (each call = Python on the server, maybe KIS): key = args joined */
   private serverCache = new Map<string, { at: number; ttl: number; res: ServerBarsResult }>();
   /** [2026-11-11] KIS minute bars used to fill tick-collector gaps, per day/code (re-asked at most every KIS_FILL_TTL_MS) */
-  private fillCache = new Map<string, { at: number; res: { bars?: Bar[]; error?: string } }>();
+  private fillCache = new Map<string, { at: number; res: FillRes }>();
+  /** [2026-11-19] the server's NXT flag per code and r014 hours per day (from tick / minute answers) */
+  private nxtOf = new Map<string, boolean>();
+  private hoursOf = new Map<string, TradingHours>();
   /** r003 quote log of one day (the newest day asked): byte offset + parsed rows */
   private quoteLog: { key: string; off: number; lb: LineBuffer; cols?: Map<string, number>; book: QuoteBook } | null = null;
   /** requests run one at a time: two concurrent readers of the same incremental tick cache would read the same byte range twice */
@@ -276,47 +306,87 @@ export class PriceService {
    * [2026-11-11] The day's KIS 1-minute bars (r016 `bars --kind min --source kis`) for filling minutes the tick collector missed.
    * One server call per KIS_FILL_TTL_MS per day/code - the chart refreshes with every snapshot, the fill does not have to.
    */
-  private async kisMinuteFill(date: string, code: string, unified = false, gaps: [number, number][] = []): Promise<{ bars?: Bar[]; error?: string }> {
-    const key = `${date}/${code}${unified ? '/un' : ''}`;
+  private async kisMinuteFill(date: string, code: string, mode: FillMode = 'gap', gaps: [number, number][] = []): Promise<FillRes> {
+    const suffix = mode === 'gap' ? '' : `_${mode}`;
+    const key = `${date}/${code}${suffix}`;
     // [2026-11-18] a past day's KIS minutes never change: kept on disk with the day
     const fc = this.cached(date);
-    const rel = `kis_min/${code}${unified ? '_un' : ''}.json`;
+    const rel = `kis_min/${code}${suffix}.json`;
     if (fc && !this.fillCache.has(key)) {
-      const saved = fc.json<Bar[]>(date, rel);
-      if (Array.isArray(saved) && saved.length) remember(this.fillCache, key, { at: Date.now(), res: { bars: saved } }, LIMIT.fill);
+      const saved = fc.json<Bar[] | FillRes>(date, rel);
+      // [2026-11-19] kis-ext answers are saved with hours / nxt ({bars, hours, nxt}), the older ones as a bar list
+      const res: FillRes | null = Array.isArray(saved) ? (saved.length ? { bars: saved } : null) : saved && Array.isArray(saved.bars) ? saved : null;
+      if (res) remember(this.fillCache, key, { at: Date.now(), res }, LIMIT.fill);
     }
     const hit = touch(this.fillCache, key);
-    if (hit && (Date.now() - hit.at < KIS_FILL_TTL_MS || (!!hit.res.bars?.length && this.fillStillGood(date, unified, hit.at, hit.res.bars, gaps)))) {
+    // an empty kis-ext answer is an answer too (a KRX-only symbol before its after-hours market)
+    const usable = (r: FillRes) => (mode === 'ext' ? !r.error && !!r.bars : !!r.bars?.length);
+    if (hit && (Date.now() - hit.at < KIS_FILL_TTL_MS || (usable(hit.res) && this.fillStillGood(date, mode, hit.at, hit.res.bars || [], gaps, hit.res.hours)))) {
       return hit.res;
     }
-    let res: { bars?: Bar[]; error?: string };
+    let res: FillRes;
+    const source = mode === 'gap' ? 'kis' : mode === 'un' ? 'kis-un' : 'kis-ext';
     const c = this.r016();
     if (!c || this.noServerBars) res = { error: '서버에 bars 명령이 없습니다 (이전 버전 r016)' };
     else {
       try {
-        const r = await c.run<ServerBars>(['bars', '--date', date, '--code', code, '--kind', 'min', '--interval', '1', '--source', unified ? 'kis-un' : 'kis'], { timeoutMs: 60000 });
-        if (r.ok && r.data?.ok) res = { bars: serverRowsToBars(r.data.columns, r.data.bars) };
-        else if (/unrecognized arguments|invalid choice/.test(`${r.error || ''} ${r.stderr || ''}`)) res = { error: `서버 r017이 이전 버전이라 --source ${unified ? 'kis-un' : 'kis'} 가 없습니다 (git pull 필요)` };
+        const r = await c.run<ServerBars>(['bars', '--date', date, '--code', code, '--kind', 'min', '--interval', '1', '--source', source], { timeoutMs: 60000 });
+        if (r.ok && r.data?.ok) {
+          res = { bars: serverRowsToBars(r.data.columns, r.data.bars) };
+          if (r.data.hours) res.hours = r.data.hours;
+          if (typeof r.data.nxt === 'boolean') res.nxt = r.data.nxt;
+        } else if (/unrecognized arguments|invalid choice/.test(`${r.error || ''} ${r.stderr || ''}`)) res = { error: `서버 r017이 이전 버전이라 --source ${source} 가 없습니다 (git pull 필요)`, unsupported: true };
         else res = { error: r.data?.error || r.error || 'bars 실패' };
       } catch (e) {
         res = { error: String((e as Error)?.message || e).split('\n')[0] };
       }
     }
     remember(this.fillCache, key, { at: Date.now(), res }, LIMIT.fill);
-    if (fc && res.bars?.length) fc.saveJson(date, rel, res.bars);
+    if (fc && res.bars && (res.bars.length || mode === 'ext') && !res.error) fc.saveJson(date, rel, mode === 'ext' ? res : res.bars);
     return res;
   }
 
   /**
    * [2026-11-18] a kept KIS minute answer still serves the request (no new r016 call): a past day's never changes; gap fill = it
-   * has a bar for every missing minute; NXT combined minutes = fetched after 09:00 of that day while the KRX session is still open
-   * (the pre-market minutes are final, the after-market ones start at 15:30)
+   * has a bar for every missing minute; minutes outside the regular session = fetched after the KRX open of that day while the
+   * regular session is still open (the pre-market minutes are final, the after-market ones start at the close)
+   * [2026-11-19] the open / close of the day from the server's r014 hours (CSAT day 10:00 - 16:30)
    */
-  private fillStillGood(date: string, unified: boolean, at: number, bars: Bar[], gaps: [number, number][]): boolean {
+  private fillStillGood(date: string, mode: FillMode, at: number, bars: Bar[], gaps: [number, number][], hours?: TradingHours | null): boolean {
     if (this.isPast(date)) return true;
-    if (!unified) return coversGaps(bars, gaps);
+    if (mode === 'gap') return coversGaps(bars, gaps);
     const day0 = ymdEpoch(date); // 00:00 KST of the day (epoch ms)
-    return at >= day0 + 9 * 3600000 && Date.now() < day0 + (15 * 60 + 30) * 60000;
+    const [open, close] = regularMinutes(hours || this.hoursOf.get(date));
+    return at >= day0 + open * 60000 && Date.now() < day0 + close * 60000;
+  }
+
+  /**
+   * [2026-11-19] 1-minute bars of the day + the KIS minutes outside the KRX regular session (r016 `bars --source kis-ext`: NXT
+   * pre / after market of an NXT symbol, the KRX after-hours market of every symbol). Outside the session the KIS bar wins (the
+   * tick file has KRX regular prints only). A code the server flagged KRX-only is not asked before the KRX open.
+   */
+  private async withOutside(date: string, code: string, req: PriceRequest, live: boolean, base: Bar[]): Promise<{ bars: Bar[]; added: number; note?: string; hours?: TradingHours; nxt?: boolean | null }> {
+    const known = this.nxtOf.get(code);
+    const hoursKnown = this.hoursOf.get(date);
+    if (live && known === false && Date.now() < ymdEpoch(date) + regularMinutes(hoursKnown)[0] * 60000) {
+      return { bars: base, added: 0, hours: hoursKnown, nxt: known };
+    }
+    let fill = await this.kisMinuteFill(date, code, 'ext');
+    let viaUn = false;
+    if (fill.unsupported && (req.nxt || known)) {
+      fill = await this.kisMinuteFill(date, code, 'un'); // older server: the combined minutes, NXT symbols only (as before)
+      viaUn = true;
+    }
+    if (typeof fill.nxt === 'boolean') remember(this.nxtOf, code, fill.nxt, LIMIT.files);
+    if (fill.hours) remember(this.hoursOf, date, fill.hours, LIMIT.daily);
+    const hours = fill.hours || hoursKnown;
+    const nxt = typeof fill.nxt === 'boolean' ? fill.nxt : known ?? (viaUn ? true : null);
+    const outside = fill.bars ? outsideKrxHours(fill.bars, hours) : [];
+    if (!outside.length) return { bars: base, added: 0, hours, nxt };
+    const note = nxt
+      ? `NXT 장전/장후·KRX 장후 ${outside.length}분은 KIS 통합 분봉입니다 (틱 수집기는 KRX 정규장 체결만 수집)`
+      : `KRX 장후 ${outside.length}분은 KIS 분봉입니다 (NXT 비대상 종목 - 장전 없음, 틱 수집기는 KRX 정규장 체결만 수집)`;
+    return { bars: mergeOutsideKrx(base, outside), added: outside.length, note, hours, nxt };
   }
 
   /** r016 `bars` (read-only). null = unavailable (old server / no client) */
@@ -586,7 +656,7 @@ export class PriceService {
         let filled = 0;
         let base = m1;
         if (gaps.length) {
-          const fill = await this.kisMinuteFill(date, code, false, gaps);
+          const fill = await this.kisMinuteFill(date, code, 'gap', gaps);
           if (fill.bars?.length) {
             const merged = mergeMinuteBars(fill.bars, m1);
             filled = Math.max(0, merged.length - m1.length);
@@ -595,20 +665,19 @@ export class PriceService {
             note = `틱 수집이 끊긴 ${gapText(gaps)} (${gapMinutes(gaps)}분)을 KIS 분봉으로 채웠습니다 - 봇은 이 구간의 틱을 보지 못했습니다`;
           } else note = `틱 수집이 끊긴 ${gapText(gaps)} (${gapMinutes(gaps)}분) - KIS 분봉으로 채우지 못함: ${fill.error || '분봉 없음'}`;
         }
-        if (req.nxt) {
-          // NXT symbol: the tick file has KRX trades only - add the combined minutes of the hours KRX is closed (pre / after market)
-          const un = await this.kisMinuteFill(date, code, true);
-          const outside = un.bars ? outsideKrxHours(un.bars) : [];
-          if (outside.length) {
-            bars = resampleMinuteBars(mergeOutsideKrx(base, outside), n);
-            note = [note, `NXT 장전/장후 ${outside.length}분은 KIS 통합 분봉입니다 (틱 수집기는 KRX 체결만 수집)`].filter(Boolean).join(' · ');
-          }
+        // [2026-11-19] every symbol: the minutes outside the KRX regular session (NXT pre / after market, KRX after-hours market)
+        const ext = await this.withOutside(date, code, req, live, base);
+        if (ext.added) {
+          bars = resampleMinuteBars(ext.bars, n);
+          note = [note, ext.note].filter(Boolean).join(' · ');
         }
-        return this.withWarmup({ ok: true, source: 'ticks', bars, quote, gaps, filled, note }, req, kind, n);
+        return this.withWarmup({ ok: true, source: 'ticks', bars, quote, gaps, filled, note, ...sessionInfo(ext) }, req, kind, n);
       }
       const m1 = kind === 'min' ? await this.loadMin1(date, code, live) : null;
       if (m1 && m1.length) {
-        return this.withWarmup({ ok: true, source: 'min1', bars: resampleMinuteBars(m1, n), note: '틱 파일이 없어 서버의 1분봉(10초 파일)으로 그렸습니다.' }, req, kind, n);
+        const ext = await this.withOutside(date, code, req, live, m1);
+        const note = ['틱 파일이 없어 서버의 1분봉(10초 파일)으로 그렸습니다.', ext.added ? ext.note : undefined].filter(Boolean).join(' · ');
+        return this.withWarmup({ ok: true, source: 'min1', bars: resampleMinuteBars(ext.bars, n), note, ...sessionInfo(ext) }, req, kind, n);
       }
       // no file for this code/day (not collected, or today's minutes before g001 runs) -> server `bars` (KIS once the server adds it)
       // [2026-11-12] tick chart without a tick file (before the KRX open the collector has nothing; a code that is not collected):
@@ -617,7 +686,8 @@ export class PriceService {
       const sizeArg = tickAsMin ? ['--interval', '1'] : ['--interval', String(n)];
       // [2026-11-18] a past day's answer is kept on disk (asked once)
       const fcMin = this.cached(date);
-      const relMin = `server_min/${code}_${tickAsMin ? 1 : n}${req.warmup ? '_w' : ''}.json`;
+      // [2026-11-19] .v2: answers saved before end at the KRX close (no after-hours market)
+      const relMin = `server_min/${code}_${tickAsMin ? 1 : n}${req.warmup ? '_w' : ''}.v2.json`;
       const savedMin = fcMin?.json<ServerBars>(date, relMin);
       let sb: ServerBarsResult = savedMin ? { ok: true, data: savedMin } : null;
       if (!sb) {
@@ -628,7 +698,10 @@ export class PriceService {
         const d = sb.data;
         const warm = serverRowsToBars(d.columns, d.warm || undefined);
         const botN = tickAsMin ? BOT_PARAMS.warmupMinutes : Math.ceil(BOT_PARAMS.warmupMinutes / n);
+        if (typeof d.nxt === 'boolean') remember(this.nxtOf, code, d.nxt, LIMIT.files);
+        if (d.hours) remember(this.hoursOf, date, d.hours, LIMIT.daily);
         return {
+          ...sessionInfo({ hours: d.hours || undefined, nxt: d.nxt }),
           ok: true,
           source: 'server',
           bars: serverRowsToBars(d.columns, d.bars),

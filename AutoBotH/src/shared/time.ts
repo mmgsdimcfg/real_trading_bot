@@ -2,6 +2,8 @@
  * Update log
  * - [2026-11-04] type=feat - KST time helpers (server logs are KST local time; the app may run in any time zone)
  * - [2026-11-16] type=feat - tradingSessionRange: the day's whole trading session (KRX 09:00-15:30, NXT 08:00-20:00) for chart axes
+ * - [2026-11-19] type=feat - KRX-only symbols trade on the KRX after-hours market too (16:00 - 20:00, e.g. 403870 HPSP): their
+ *   range is 09:00 - 20:00 (no pre-market)
  */
 
 const KST_OFFSET_MS = 9 * 3600 * 1000;
@@ -49,12 +51,13 @@ export function hhmmToSeconds(hhmm: string): number {
   return m ? +m[1] * 3600 + +m[2] * 60 : 9 * 3600;
 }
 
-/** [2026-11-16] The day's whole trading session as epoch ms: NXT symbols 08:00 - 20:00, KRX only 09:00 - 15:30 (KST).
+/** [2026-11-16] The day's whole trading session as epoch ms: NXT symbols 08:00 - 20:00, KRX only 09:00 - 20:00 (KST; [2026-11-19]
+ *  KRX after-hours market until 20:00, no pre-market).
  *  `date` is "20261116" or "2026-11-16"; null when it is neither. */
 export function tradingSessionRange(date: string | undefined, nxt: boolean): [number, number] | null {
   const d = /^\d{8}$/.test(date || '') ? ymdDash(date as string) : date || '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
-  return nxt ? [kstToEpoch(d, '08:00:00'), kstToEpoch(d, '20:00:00')] : [kstToEpoch(d, '09:00:00'), kstToEpoch(d, '15:30:00')];
+  return nxt ? [kstToEpoch(d, '08:00:00'), kstToEpoch(d, '20:00:00')] : [kstToEpoch(d, '09:00:00'), kstToEpoch(d, '20:00:00')];
 }
 
 /** "20261104" -> "2026-11-04" */

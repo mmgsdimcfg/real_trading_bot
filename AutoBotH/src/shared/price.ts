@@ -73,6 +73,18 @@ export interface ServerBars {
   next_since?: string | null;
   name?: string;
   error?: string;
+  /** [2026-11-19] tick/min: the day's sessions (r014 trading_hours, "HH:MM" pairs, null = not held that day) */
+  hours?: TradingHours | null;
+  /** [2026-11-19] tick/min: the symbol trades on NXT (KIS search_stock_info), null = unknown */
+  nxt?: boolean | null;
+}
+
+/** [2026-11-19] r014 trading_hours: KRX regular session + NXT pre / after market + KRX after-hours market (16:00 - 20:00 normally) */
+export interface TradingHours {
+  regular: [string, string];
+  nxt_pre: [string, string] | null;
+  nxt_after: [string, string] | null;
+  krx_after: [string, string] | null;
 }
 
 /** r016_control.py `quote` (requested 2026-11-06: KIS current price + 10-level order book + latest trades) */
@@ -169,6 +181,10 @@ export interface PriceResponse {
   gaps?: [number, number][];
   /** min: how many 1-minute bars the KIS minute chart added for those gaps */
   filled?: number;
+  /** [2026-11-19] tick/min: the day's sessions from the server (absent: older server) */
+  hours?: TradingHours;
+  /** [2026-11-19] tick/min: the symbol trades on NXT (server's KIS flag); absent / null = unknown */
+  nxt?: boolean | null;
 }
 
 export const WARMUP_BARS = 120;
