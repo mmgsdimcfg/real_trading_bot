@@ -156,6 +156,11 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   - `{"event":"ENTRY","ts","code","name","entry","price","prob","threshold","trigger","tp_px","sl_px","horizon","model_id"}`
   - `{"event":"EXIT","ts","code","name","reason"(tp|sl|time|eod),"entry","exit","net_pct","held_min","prob"}`
   - 로그 태그 `[EDGE ONLY   ]` (PAPER BUY / PAPER SELL). edge 방식일 때는 가상 매매를 돌리지 않는다.
+  - [2026-11-19] 틱 수집기 종목: r001 `EDGE_ONLY_COLLECTOR`(기본 True)면 감시목록/보유 밖의 수집 종목(g011 선별 채움)도 같은 규칙으로
+    가상 매매한다. 1분봉·현재가는 그날 KRX 틱 파일(`runtime/data/ticks/<날짜>/<종목>.csv`)로 만든다(KIS 호출 없음, 5초마다).
+    상한은 따로(`EDGE_ONLY_COLLECTOR_MAX_POSITIONS` 5 / `_MAX_ENTRIES_PER_DAY` 20). ENTRY/EXIT 에 `"group": "watch" | "collector"`
+    (없으면 watch). 로그 줄에 ` [수집기]`. 앱 가상 매매 탭은 전체/감시 종목/수집기 종목으로 나눠 본다(2.3.31).
+  - [2026-11-19] 수정: 2026-11-12(EDGE_ONLY_MIN_PROB=0) 이후 모델 기준값을 모델 로드 전에 읽어 가상 매수가 한 건도 없었다.
 - 두 호스트 공통: 설정은 각 호스트의 `runtime/config/live_overrides.json` 에 따로 저장되고, 모델도 각 호스트의
   `runtime/edge_ai` 것을 쓴다.
 

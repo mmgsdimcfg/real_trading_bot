@@ -4,6 +4,9 @@
  *   running bot has the mode on, the day summary (closed / open, wins, sum and mean net %), the open virtual positions with the
  *   current price and the unrealized %, and the closed trades (newest first). Re-read with every snapshot while the day is live
  * - [2026-11-18] type=perf - The day's last answer is shown at once when the tab is opened again (dataCache), then refreshed
+ * - [2026-11-19] type=feat - Tick collector symbols are paper-traded too (server r022 group "collector", separate limits): a
+ *   전체 / 감시 종목 / 수집기 종목 switch filters the summary and both tables, collector trades carry a "수집기" tag. Their current
+ *   price is not in the bot's quote log (the bot does not poll them) - shown as "-"
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -11,7 +14,7 @@ import { useStore } from '../store';
 import { NxtTag } from '../components/NxtTag';
 import { fmtInt, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
-import { PAPER_EXIT_KO, paperOpenPct, paperSummary, type PaperTrade } from '../../../shared/paper';
+import { PAPER_EXIT_KO, PAPER_GROUP_KO, paperOpenPct, paperSummary, type PaperGroup, type PaperTrade } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
 
 type PaperRes = { day: string; ok: boolean; trades: PaperTrade[]; error?: string };
@@ -41,7 +44,10 @@ export function PaperView() {
     };
   }, [day, tick, status.conn]);
 
-  const trades = res && res.day === day ? res.trades : [];
+  const [grp, setGrp] = useState<'all' | PaperGroup>('all');
+  const allTrades = res && res.day === day ? res.trades : [];
+  const trades = useMemo(() => (grp === 'all' ? allTrades : allTrades.filter((t) => t.group === grp)), [allTrades, grp]);
+  const groupCount = (g: PaperGroup) => allTrades.filter((t) => t.group === g).length;
   const sum = useMemo(() => paperSummary(trades), [trades]);
   const open = trades.filter((t) => t.exitTs === undefined);
   const closed = trades.filter((t) => t.exitTs !== undefined).sort((a, b) => (b.exitTs || 0) - (a.exitTs || 0));
@@ -70,6 +76,20 @@ export function PaperView() {
         {mode?.pending && <span className="badge-warn">⚠ 설정이 바뀌었습니다 → r003 재시작 후 적용</span>}
         {realEdge && <span className="badge-warn">매매 방식이 Edge AI(실제 주문)입니다 - 가상 매매는 돌지 않고, 실제 내역은 매매 결과 탭에 있습니다</span>}
         <span className="muted">Edge AI 확률만으로 판단한 가상 매수/매도 기록입니다. 실제 주문·계좌와 무관합니다. 켜고 끄기는 제어 탭.</span>
+      </div>
+      <div className="toolbar">
+        <div className="seg">
+          {(['all', 'watch', 'collector'] as const).map((g) => (
+            <button
+              key={g}
+              className={grp === g ? 'on' : ''}
+              onClick={() => setGrp(g)}
+              title={g === 'collector' ? '틱 수집기가 모으는 감시목록 밖 종목 - 틱 파일 1분봉으로 판단, 상한은 감시 종목과 별도' : undefined}
+            >
+              {g === 'all' ? `전체 (${allTrades.length})` : `${PAPER_GROUP_KO[g]} (${groupCount(g)})`}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="kpis">
         <div className="kpi">
@@ -126,6 +146,7 @@ export function PaperView() {
                   <td className="mono">{fmtKstTime(t.entryTs)}</td>
                   <td>
                     {t.code} {t.name} <NxtTag code={t.code} />
+                    {t.group === 'collector' && <span className="code-tag">수집기</span>}
                   </td>
                   <td className="num">{fmtInt(t.entry)}</td>
                   <td className="num">{t.prob !== undefined ? t.prob.toFixed(3) : '-'}</td>
@@ -171,6 +192,7 @@ export function PaperView() {
                 <td className="mono">{fmtKstTime(t.exitTs)}</td>
                 <td>
                   {t.code} {t.name} <NxtTag code={t.code} />
+                  {t.group === 'collector' && <span className="code-tag">수집기</span>}
                 </td>
                 <td className="num">{fmtInt(t.entry)}</td>
                 <td className="num">{fmtInt(t.exit)}</td>

@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-19] type=feat owner=claude
+    summary: 사용자 요청(틱 수집기 종목을 가상 매매에 포함) - EDGE_ONLY_MODE=paper 이고 r001 EDGE_ONLY_COLLECTOR 면 종목 순회 뒤
+      감시목록/보유 밖의 수집 종목을 r022 poll_collector 로 평가(틱 파일 1분봉, EDGE_ONLY_COLLECTOR_POLL_SECONDS 마다, 정규장만,
+      상한 별도). 주문·KIS 호출 없음, 예외는 로그만.
+    impact: live (가상 매매 기록만 - 실매매 판단 무변경)
+    compatibility: backward-compatible (롤백: EDGE_ONLY_COLLECTOR=False)
 - [2026-11-16] type=feat owner=claude
     summary: 틱 수집기 기동 인자 - r001 TICK_COLLECTOR_FILL_FROM_SCAN 이면 --fill-from-scan(감시 종목 뒤 빈자리를 g002 스캔 상위로
       40까지), 보유 종목은 --nxt-keep 으로 넘겨 정규장에도 NXT 체결을 받는다(g011 TICK_COLLECT_NXT_REGULAR="held").
@@ -2429,12 +2435,23 @@ def _make_edge_only_runner(date_str: str):
         log("  [EDGE ONLY   ] paper mode skipped - TRADING_STRATEGY_MODE=edge trades the same policy with real orders")
         return None
     try:
-        from r022_edge_only import EdgeOnlyRunner
+        import r001_define_config as _cfg_mod
+        from r022_edge_only import CollectorTickFeed, EdgeOnlyRunner
+        # [2026-11-19] tick collector symbols outside the watchlist too (r001 EDGE_ONLY_COLLECTOR, separate limits, tick-file bars)
+        collector = bool(getattr(_cfg_mod, "EDGE_ONLY_COLLECTOR", False))
+        c_pos = int(getattr(_cfg_mod, "EDGE_ONLY_COLLECTOR_MAX_POSITIONS", 0) or 0) if collector else 0
+        c_ent = int(getattr(_cfg_mod, "EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY", 0) or 0) if collector else 0
         runner = EdgeOnlyRunner(EDGE_AI_DIR, DATA_DIR, LIVE_RUNTIME_DIR, date_str, log, SHARED_STRATEGY_CONFIG,
                                 min_prob=EDGE_ONLY_MIN_PROB, max_positions=EDGE_ONLY_MAX_POSITIONS,
-                                max_entries=EDGE_ONLY_MAX_ENTRIES_PER_DAY)
+                                max_entries=EDGE_ONLY_MAX_ENTRIES_PER_DAY,
+                                collector_max_positions=c_pos, collector_max_entries=c_ent)
+        runner.collector_feed = (CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
+                                 if collector else None)
+        runner.collector_poll_s = float(getattr(_cfg_mod, "EDGE_ONLY_COLLECTOR_POLL_SECONDS", 5) or 0)
         log(f"  [EDGE ONLY   ] paper mode enabled (no orders) | min_prob={EDGE_ONLY_MIN_PROB} "
-            f"max_positions={EDGE_ONLY_MAX_POSITIONS} max_entries={EDGE_ONLY_MAX_ENTRIES_PER_DAY} | out={runner.out_path}")
+            f"max_positions={EDGE_ONLY_MAX_POSITIONS} max_entries={EDGE_ONLY_MAX_ENTRIES_PER_DAY} | "
+            f"collector={'on' if collector else 'off'}"
+            f"{f' max_positions={c_pos} max_entries={c_ent}' if collector else ''} | out={runner.out_path}")
         return runner
     except Exception as exc:
         log(f"  [EDGE ONLY   ] init failed, paper mode disabled: {exc}")
@@ -6444,6 +6461,19 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             traded_today.discard(norm_code)
                             api.live_state["traded_today"] = traded_today
                             signal_buy_bar.pop(code, None)
+
+            # [2026-11-19] Edge-AI-only paper trading of the tick collector's symbols outside the watchlist (r022, no orders,
+            # bars / price from the tick files - no KIS call); the watched / held symbols were evaluated in the loop above
+            if (
+                edge_only is not None
+                and getattr(edge_only, "collector_feed", None) is not None
+                and is_regular_session(current_dt)
+            ):
+                try:
+                    edge_only.poll_collector(edge_only.collector_feed, datetime.now(), set(watch_map) | set(iter_codes),
+                                             getattr(edge_only, "collector_poll_s", 5.0))
+                except Exception as exc:
+                    log(f"  [EDGE ONLY   ] collector poll error: {exc}")
 
             # [2026-09-02] 정규장 시작(REGULAR_START) 도달 시 active_set의 TIME_LIMIT
             # 카운트다운을 리셋 - 리셋 전에는 first_active_at이 장전 NXT 세션(08:00~08:50)

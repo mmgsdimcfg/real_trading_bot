@@ -3,6 +3,7 @@
  * - [2026-11-12] type=test - paper trading file parsing (ENTRY / EXIT pairing, open trades, broken lines), day summary, the
  *   trade mode choice (server values -> one of three choices and back), the edge mode's log reasons mapped to its
  *   conditions, and the [EDGE ONLY] paper lines not counted as unknown
+ * - [2026-11-19] type=test - group of a trade: "collector" (tick collector symbols), anything else / missing = "watch"
  */
 
 import { describe, expect, it } from 'vitest';
@@ -26,6 +27,11 @@ describe('paper trade file', () => {
       ['000001', kst('10:10:00'), 'open'],
     ]);
     expect(t[0]).toMatchObject({ name: 'n000001', entry: 10310, prob: 0.6, threshold: 0.45, tpPx: 10516.2, slPx: 10134.73, horizon: 60, exit: 10516.2, netPct: 1.77, heldMin: 12.4, exitTs: kst('09:42:30') });
+  });
+
+  it('group: collector records are tagged, the others (and old records) are watch', () => {
+    const t = parsePaperLines([entry('09:30:05', '000001'), entry('09:31:00', '000003', { group: 'collector' }), entry('09:32:00', '000004', { group: 'x' })].join('\n'));
+    expect(t.map((x) => x.group)).toEqual(['watch', 'collector', 'watch']);
   });
 
   it('summary counts closed trades only', () => {

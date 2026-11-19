@@ -8,10 +8,17 @@
  * - [2026-11-12] type=feat - Trade mode choice of the control tab: TRADING_STRATEGY_MODE (normal / edge = Edge-AI-only with real
  *   orders) + EDGE_ONLY_MODE (paper) read together (parseModes) and reduced to one of three choices (tradeModeOf);
  *   tradeModeChanges() is the `set` a choice sends
+ * - [2026-11-19] type=feat - PaperTrade.group: 'watch' (the bot's watchlist) | 'collector' (tick collector symbols outside it,
+ *   r001 EDGE_ONLY_COLLECTOR - separate limits on the server). A record without group is 'watch'
  */
+
+export type PaperGroup = 'watch' | 'collector';
+export const PAPER_GROUP_KO: Record<PaperGroup, string> = { watch: '감시 종목', collector: '수집기 종목' };
 
 export interface PaperTrade {
   code: string;
+  /** [2026-11-19] which symbols the trade came from */
+  group: PaperGroup;
   name: string;
   /** epoch ms of the virtual buy */
   entryTs: number;
@@ -62,6 +69,7 @@ export function parsePaperLines(text: string): PaperTrade[] {
       if (!entry) continue;
       const t: PaperTrade = {
         code,
+        group: r.group === 'collector' ? 'collector' : 'watch',
         name: String(r.name || ''),
         entryTs: ts,
         entry,

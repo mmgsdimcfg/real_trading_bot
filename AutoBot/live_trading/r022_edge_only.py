@@ -19,11 +19,28 @@ Data handling
   day's open / VWAP after ~12:20).
 - Open paper positions are restored from the day's file after an r003 restart.
 
+Collector symbols (2026-11-19, r001 EDGE_ONLY_COLLECTOR): the tick collector's symbols outside the watchlist (g011 scan fill /
+extra codes) get the same policy. r003 fetches no KIS minutes for them, so CollectorTickFeed builds their regular-session 1m bars
+and the live price from the day's KRX tick file (runtime/data/ticks/YYYYMMDD/<code>.csv, read incrementally) - no extra KIS call.
+Their limits are separate (EDGE_ONLY_COLLECTOR_MAX_POSITIONS / _MAX_ENTRIES_PER_DAY); records carry "group": "collector"
+(the watchlist's "watch"; a record without group is "watch").
+
 Output: runtime/data/live_runtime/edge_only_YYYYMMDD.jsonl (ENTRY / EXIT records) + "[EDGE ONLY   ]" log lines.
 Runs the same on Linux (Raspberry Pi) and Windows. Each host uses its own model (runtime/edge_ai, trained by the
 post-close job from that host's data folder).
 
 Update log:
+- [2026-11-19] type=feat owner=claude
+    summary: 사용자 요청(틱 수집기 종목을 가상 매매에 포함) - CollectorTickFeed(틱 파일 -> 확정 1분봉 + 현재가, 증분 읽기,
+      acml_vol 로 재접속 중복 제거, 정규장 체결만) + EdgeOnlyRunner.poll_collector(). 그룹별 상한(watch / collector),
+      ENTRY/EXIT 에 "group" 기록, 재시작 복원도 그룹별.
+    impact: live (가상 매매 기록만 - 실제 매수/매도 판정 무변경, KIS 호출 추가 없음)
+    compatibility: backward-compatible (group 없는 예전 기록 = watch, 감시 종목 상한·동작 동일)
+- [2026-11-19] type=fix owner=claude
+    summary: _threshold() 가 모델을 읽기 전(meta = {})에 기준값을 찾아 None -> 예측 자체를 하지 않아, EDGE_ONLY_MIN_PROB=0(2026-11-12~)
+      이후 가상 매수가 한 건도 없었다(edge_only_*.jsonl 파일 없음). 기준값을 읽기 전에 model.maybe_reload().
+    impact: live (가상 매매가 실제로 기록되기 시작함 - 실매매 무관)
+    compatibility: backward-compatible
 - [2026-11-12] type=feat owner=claude
     summary: 신규 - Edge AI 메타 모델만으로 매매하는 방식의 가상 매매(paper) 러너. r003에서 EDGE_ONLY_MODE="paper"일 때만
       호출, 주문 없음. 과거 데이터 검증은 g029_edge_only_sim.py.
@@ -33,7 +50,8 @@ Update log:
 from __future__ import annotations
 
 import json
-from datetime import datetime, time as dt_time
+import re
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -50,6 +68,9 @@ FEE_RATE = 0.00015
 SELL_TAX_RATE = 0.0020
 DEFAULT_LABEL = {"tp": 2.0, "sl": 1.7, "horizon": 60}
 TAG = "  [EDGE ONLY   ]"
+GROUPS = ("watch", "collector")
+GROUP_KO = {"watch": "", "collector": " [수집기]"}
+_CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
 
 
 def net_pct(entry: float, exit_px: float) -> float:
@@ -60,7 +81,8 @@ def net_pct(entry: float, exit_px: float) -> float:
 
 class EdgeOnlyRunner:
     def __init__(self, model_dir: Path, data_root: Path, out_dir: Path, date_str: str, log: Callable[[str], None], config,
-                 min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None):
+                 min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
+                 collector_max_positions: int = 0, collector_max_entries: int = 0):
         self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir))
         self.data_root = Path(data_root)
         self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
@@ -70,14 +92,24 @@ class EdgeOnlyRunner:
         self.min_prob = float(min_prob or 0.0)
         self.max_positions = int(max_positions)
         self.max_entries = int(max_entries)
+        # [2026-11-19] per-group limits: the watchlist (r003's symbols) and the collector-only symbols count separately
+        self.limits = {"watch": (self.max_positions, self.max_entries),
+                       "collector": (int(collector_max_positions), int(collector_max_entries))}
         self.bars: dict[str, pd.DataFrame] = {}
         self.last_bar: dict[str, pd.Timestamp] = {}
         self.positions: dict[str, dict] = {}
-        self.entries_today = 0
+        self.entries = {g: 0 for g in GROUPS}
         self.closed: list[float] = []
+        self._names: dict[str, str] = {}
+        self._collector_next: datetime | None = None
         self._daily: dict[str, dict] = {}
         self._prev_close: dict[str, float] = {}
         self._restore()
+
+    @property
+    def entries_today(self) -> int:
+        """the watchlist's entries of the day (the original counter)"""
+        return self.entries["watch"]
 
     # ---- persistence ------------------------------------------------------------------------
     def _emit(self, rec: dict) -> None:
@@ -97,16 +129,17 @@ class EdgeOnlyRunner:
                 rec = json.loads(line)
                 code = str(rec.get("code") or "")
                 if rec.get("event") == "ENTRY":
-                    self.entries_today += 1
+                    group = rec.get("group") if rec.get("group") in GROUPS else "watch"
+                    self.entries[group] += 1
                     self.positions[code] = {"name": rec.get("name"), "entry": float(rec["entry"]), "ts": pd.Timestamp(rec["ts"]),
                                             "tp": float(rec["tp_px"]), "sl": float(rec["sl_px"]), "horizon": float(rec["horizon"]),
-                                            "prob": rec.get("prob")}
+                                            "prob": rec.get("prob"), "group": group}
                 elif rec.get("event") == "EXIT":
                     self.positions.pop(code, None)
                     self.closed.append(float(rec.get("net_pct") or 0.0))
         except Exception as exc:
             self.log(f"{TAG} restore failed ({type(exc).__name__}: {exc}) - starting the day empty")
-            self.positions, self.entries_today, self.closed = {}, 0, []
+            self.positions, self.entries, self.closed = {}, {g: 0 for g in GROUPS}, []
 
     # ---- helpers ----------------------------------------------------------------------------
     def _label(self) -> dict:
@@ -121,6 +154,11 @@ class EdgeOnlyRunner:
         if self.min_prob > 0:
             return self.min_prob
         try:
+            # [2026-11-19] fix: the model (and its meta) is loaded lazily on the first prediction - read before it, the meta was
+            # {} -> no threshold -> no prediction ever: with EDGE_ONLY_MIN_PROB = 0 (since 2026-11-12) nothing was paper-bought
+            reload = getattr(self.model, "maybe_reload", None)
+            if callable(reload):
+                reload()
             t = (self.model.meta or {}).get("threshold")
         except Exception:
             t = None
@@ -150,13 +188,56 @@ class EdgeOnlyRunner:
         return self._prev_close[code]
 
     # ---- main entry point -------------------------------------------------------------------
-    def on_symbol(self, code: str, name: str, now: datetime, frame_1m: pd.DataFrame | None, live_price: float) -> None:
+    def on_symbol(self, code: str, name: str, now: datetime, frame_1m: pd.DataFrame | None, live_price: float,
+                  group: str = "watch") -> None:
         try:
-            self._on_symbol(str(code).zfill(6), name, now, frame_1m, float(live_price))
+            self._on_symbol(str(code).zfill(6), name, now, frame_1m, float(live_price), group if group in GROUPS else "watch")
         except Exception as exc:  # never break the live loop
             self.log(f"{TAG} {code} error: {type(exc).__name__}: {exc}")
 
-    def _on_symbol(self, code: str, name: str, now: datetime, frame_1m, price: float) -> None:
+    def _open_count(self, group: str) -> int:
+        return sum(1 for p in self.positions.values() if p.get("group", "watch") == group)
+
+    def name_of(self, code: str) -> str:
+        """symbol name from the previous data folder's <code>_<name>_daily.csv (collector symbols have no WATCH line)"""
+        if code not in self._names:
+            name = ""
+            try:
+                prev_dir = r011.find_prev_data_dir(self.data_root, self.date_str)
+                files = sorted(prev_dir.glob(f"{code}_*_daily.csv")) if prev_dir is not None else []
+                if files:
+                    name = files[0].name[len(code) + 1:-len("_daily.csv")]
+            except Exception:
+                name = ""
+            self._names[code] = name
+        return self._names[code]
+
+    def poll_collector(self, feed: "CollectorTickFeed", now: datetime, exclude: set[str], every_s: float = 5.0) -> int:
+        """[2026-11-19] the collector-only symbols (tick files of the day minus `exclude` = r003's watched / held symbols) through
+        the same policy as group "collector". At most once per every_s. Returns how many symbols were looked at."""
+        if self._collector_next is not None and now < self._collector_next:
+            return 0
+        self._collector_next = now + timedelta(seconds=max(0.0, float(every_s)))
+        n = 0
+        try:
+            codes = [c for c in feed.codes() if c not in exclude]
+        except Exception as exc:
+            self.log(f"{TAG} collector list error: {type(exc).__name__}: {exc}")
+            return 0
+        held = [c for c, p in self.positions.items() if p.get("group") == "collector" and c not in exclude]
+        for code in dict.fromkeys(codes + held):
+            try:
+                frame, price = feed.poll(code, now)
+            except Exception as exc:
+                self.log(f"{TAG} {code} collector feed error: {type(exc).__name__}: {exc}")
+                continue
+            if price is None or not price > 0:
+                continue
+            n += 1
+            self.on_symbol(code, self.name_of(code), now, frame, price, group="collector")
+        return n
+
+    def _on_symbol(self, code: str, name: str, now: datetime, frame_1m, price: float, group: str = "watch") -> None:
         if not (price > 0):
             return
         was_open = code in self.positions
@@ -179,11 +260,12 @@ class EdgeOnlyRunner:
         t = pd.Timestamp(key).time()
         if t < ENTRY_START or t > ENTRY_END or now.time() > ENTRY_END:
             return
-        if len(self.positions) >= self.max_positions or self.entries_today >= self.max_entries:
+        max_pos, max_ent = self.limits[group]
+        if self._open_count(group) >= max_pos or self.entries[group] >= max_ent:
             return
-        self._check_entry(code, name, now, price, store)
+        self._check_entry(code, name, now, price, store, group)
 
-    def _check_entry(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame) -> None:
+    def _check_entry(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame, group: str = "watch") -> None:
         m1_all = r011.fast_indicators(store)
         last = m1_all.iloc[-1]
         if not float(last["close"]) > float(last["BB_MIDDLE"]):   # every trigger path needs the close above the 1m BB mid
@@ -215,15 +297,15 @@ class EdgeOnlyRunner:
         label = self._label()
         entry = price + krx_tick_size(price)
         pos = {"name": name, "entry": entry, "ts": pd.Timestamp(now), "tp": entry * (1 + label["tp"] / 100.0),
-               "sl": entry * (1 - label["sl"] / 100.0), "horizon": label["horizon"], "prob": float(prob)}
+               "sl": entry * (1 - label["sl"] / 100.0), "horizon": label["horizon"], "prob": float(prob), "group": group}
         self.positions[code] = pos
-        self.entries_today += 1
+        self.entries[group] += 1
         self._emit({"event": "ENTRY", "ts": now.isoformat(timespec="seconds"), "code": code, "name": name, "entry": entry,
                     "price": price, "prob": float(prob), "threshold": threshold, "trigger": reason, "tp_px": pos["tp"],
-                    "sl_px": pos["sl"], "horizon": label["horizon"], "model_id": (meta or {}).get("model_id")})
-        self.log(f"{TAG} {code}_{name} | PAPER BUY {entry:,.0f} p={prob:.3f} thr={threshold:.3f} {reason} "
-                 f"| tp {pos['tp']:,.0f} sl {pos['sl']:,.0f} {label['horizon']:.0f}min | open={len(self.positions)} "
-                 f"entries={self.entries_today}/{self.max_entries}")
+                    "sl_px": pos["sl"], "horizon": label["horizon"], "model_id": (meta or {}).get("model_id"), "group": group})
+        self.log(f"{TAG} {code}_{name}{GROUP_KO[group]} | PAPER BUY {entry:,.0f} p={prob:.3f} thr={threshold:.3f} {reason} "
+                 f"| tp {pos['tp']:,.0f} sl {pos['sl']:,.0f} {label['horizon']:.0f}min | open={self._open_count(group)} "
+                 f"entries={self.entries[group]}/{self.limits[group][1]}")
 
     def _check_exit(self, code: str, now: datetime, price: float) -> None:
         pos = self.positions[code]
@@ -243,8 +325,115 @@ class EdgeOnlyRunner:
         self.positions.pop(code, None)
         self.closed.append(net)
         wins = sum(1 for x in self.closed if x > 0)
+        group = pos.get("group", "watch")
         self._emit({"event": "EXIT", "ts": now.isoformat(timespec="seconds"), "code": code, "name": pos.get("name"),
                     "reason": reason, "entry": pos["entry"], "exit": exit_px, "net_pct": net, "held_min": round(held_min, 1),
-                    "prob": pos.get("prob")})
-        self.log(f"{TAG} {code}_{pos.get('name')} | PAPER SELL {exit_px:,.0f} {reason} net={net:+.2f}% held={held_min:.0f}min "
+                    "prob": pos.get("prob"), "group": group})
+        self.log(f"{TAG} {code}_{pos.get('name')}{GROUP_KO.get(group, '')} | PAPER SELL {exit_px:,.0f} {reason} net={net:+.2f}% held={held_min:.0f}min "
                  f"| day: {len(self.closed)} trades {wins} wins sum={sum(self.closed):+.2f}%")
+
+
+class CollectorTickFeed:
+    """[2026-11-19] Confirmed 1m bars + the last price of a symbol from the day's KRX tick file of the collector (g011).
+
+    - incremental: each poll reads only the bytes appended since the last one (a torn last line waits for the next poll)
+    - regular-session prints only (session column "regular"; files without it: 09:00 <= time < 15:20)
+    - reconnect replays are dropped by acml_vol (it only grows)
+    - bars are end-labeled like r003's 1m frame (09:00:xx prints -> the 09:01 bar) and handed out only once complete
+      (end <= now - confirm_delay_s, floored to the minute), and only when a new one completed since the last poll
+      (None otherwise - the runner then checks exits with the price)
+    """
+
+    def __init__(self, ticks_dir: Path, date_str: str, confirm_delay_s: float = 2.0):
+        self.dir = Path(ticks_dir)
+        self.date_str = date_str
+        self.confirm_delay_s = float(confirm_delay_s)
+        self.state: dict[str, dict] = {}
+
+    def codes(self) -> list[str]:
+        if not self.dir.is_dir():
+            return []
+        return sorted(p.stem for p in self.dir.glob("*.csv") if _CODE_RE.fullmatch(p.stem))
+
+    @staticmethod
+    def _new() -> dict:
+        return {"off": 0, "rest": b"", "cols": None, "acml": -1.0, "buckets": {}, "price": None, "done": None}
+
+    def _read(self, code: str, st: dict) -> None:
+        path = self.dir / f"{code}.csv"
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        if size < st["off"]:          # replaced / truncated file: start over
+            st.clear()
+            st.update(self._new())
+        if size == st["off"]:
+            return
+        with path.open("rb") as fh:
+            fh.seek(st["off"])
+            chunk = fh.read(size - st["off"])
+        st["off"] += len(chunk)
+        data = st["rest"] + chunk
+        cut = data.rfind(b"\n")
+        if cut < 0:
+            st["rest"] = data
+            return
+        st["rest"] = data[cut + 1:]
+        for raw in data[:cut].split(b"\n"):
+            line = raw.decode("utf-8", "replace").rstrip("\r")
+            if not line:
+                continue
+            fields = line.split(",")
+            if st["cols"] is None:
+                st["cols"] = {c: i for i, c in enumerate(fields)}
+                st["width"] = len(fields)
+                continue
+            self._add(st, fields)
+
+    def _add(self, st: dict, fields: list[str]) -> None:
+        cols = st["cols"]
+        if len(fields) != st["width"]:
+            return            # torn / foreign row (r009 rule)
+        try:
+            t = fields[cols["trade_time"]].strip().zfill(6)
+            price = float(fields[cols["price"]])
+            qty = float(fields[cols["cntg_vol"]] or 0)
+            acml = float(fields[cols["acml_vol"]])
+            day = fields[cols["bsop_date"]].strip() if "bsop_date" in cols else self.date_str
+        except (KeyError, ValueError):
+            return
+        if day != self.date_str or not price > 0 or not t.isdigit():
+            return
+        sess = fields[cols["session"]].strip() if "session" in cols else ("regular" if "090000" <= t < "152000" else "")
+        if sess != "regular":
+            return
+        if acml <= st["acml"]:
+            return            # replayed print after a reconnect
+        st["acml"] = acml
+        st["price"] = price
+        start = t[:4]         # HHMM of the minute the print falls in
+        b = st["buckets"].get(start)
+        if b is None:
+            st["buckets"][start] = [price, price, price, price, qty]
+        else:
+            b[1] = max(b[1], price)
+            b[2] = min(b[2], price)
+            b[3] = price
+            b[4] += qty
+
+    def poll(self, code: str, now: datetime) -> tuple[pd.DataFrame | None, float | None]:
+        st = self.state.setdefault(code, self._new())
+        self._read(code, st)
+        if not st["buckets"]:
+            return None, st["price"]
+        cutoff = pd.Timestamp(now - timedelta(seconds=self.confirm_delay_s)).floor("1min")
+        base = datetime.strptime(self.date_str, "%Y%m%d")
+        ends = {k: pd.Timestamp(base + timedelta(hours=int(k[:2]), minutes=int(k[2:]) + 1)) for k in st["buckets"]}
+        done = [k for k in sorted(st["buckets"]) if ends[k] <= cutoff]
+        if not done or done[-1] == st["done"]:
+            return None, st["price"]
+        st["done"] = done[-1]
+        frame = pd.DataFrame([st["buckets"][k] for k in done], columns=["open", "high", "low", "close", "volume"],
+                             index=pd.DatetimeIndex([ends[k] for k in done]))
+        return frame, st["price"]
