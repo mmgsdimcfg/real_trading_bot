@@ -50,6 +50,10 @@
  * - [2026-11-18] type=feat - Hover line and tooltip: open / high / low / close red above, blue below the reference close
  * - [2026-11-18] type=feat - History while panning (index mode): onNeedOlder is called when the view gets near the first bar;
  *   bars the parent then puts in front keep the view where it was (the viewport end moves by the number of prepended bars)
+ * - [2026-11-20] type=fix - Time mode (timeline): a plain wheel no longer zooms - it scrolls the view like everywhere else (the
+ *   wheel used to move the time span while the user only scrolled the page, e.g. to 08:09 ~ 15:50 at 08:06 when only 08:00 - 08:06
+ *   had bars, and every chart of the timeline went empty). Ctrl + wheel zooms around the cursor, Shift + wheel pans. A zoomed or
+ *   panned span is kept on the bars: it may not end before the first bar or start after the last one
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -744,16 +748,27 @@ export function PriceChart(props: Props) {
     window.addEventListener('mouseup', up);
     return () => window.removeEventListener('mouseup', up);
   }, []);
-  // [2026-11-12] time mode: wheel = zoom the time axis around the cursor, shift + wheel (or a sideways wheel) = pan
-  const zoomRef = useRef<{ d0: number; d1: number; lim?: [number, number]; onZoom?: Props['onZoom'] }>({ d0: 0, d1: 0 });
-  zoomRef.current = { d0: model && !model.empty ? model.d0 : 0, d1: model && !model.empty ? model.d1 : 0, lim: props.zoomLimit, onZoom: props.onZoom };
+  // [2026-11-12] time mode: ctrl + wheel = zoom the time axis around the cursor, shift + wheel (or a sideways wheel) = pan
+  // ([2026-11-20] a plain wheel scrolls the view)
+  const zoomRef = useRef<{ d0: number; d1: number; lim?: [number, number]; onZoom?: Props['onZoom']; first?: number; last?: number }>({ d0: 0, d1: 0 });
+  zoomRef.current = {
+    d0: model && !model.empty ? model.d0 : 0,
+    d1: model && !model.empty ? model.d1 : 0,
+    lim: props.zoomLimit,
+    onZoom: props.onZoom,
+    first: bars.length ? bars[0].t : undefined,
+    last: bars.length ? bars[bars.length - 1].t : undefined,
+  };
   const hasZoom = mode === 'time' && !!props.onZoom;
   useEffect(() => {
     const el = ref.current;
     if (!el || !hasZoom) return;
     const onWheel = (e: WheelEvent) => {
-      const { d0, d1, lim, onZoom } = zoomRef.current;
+      const { d0, d1, lim, onZoom, first, last } = zoomRef.current;
       if (!onZoom || !(d1 > d0)) return;
+      // [2026-11-20] plain wheel = scroll the view; Ctrl = zoom, Shift (or a sideways wheel) = pan
+      const pan = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY);
+      if (!e.ctrlKey && !pan) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
       const frac = Math.min(1, Math.max(0, (e.clientX - r.left - L) / W));
@@ -772,6 +787,12 @@ export function PriceChart(props: Props) {
         if (n1 - n0 >= lim[1] - lim[0]) return onZoom(null); // zoomed out to the whole range
         if (n0 < lim[0]) [n0, n1] = [lim[0], lim[0] + (n1 - n0)];
         if (n1 > lim[1]) [n0, n1] = [lim[1] - (n1 - n0), lim[1]];
+      }
+      // [2026-11-20] keep the span on the bars (a span with none of them left every chart empty)
+      if (first !== undefined && last !== undefined) {
+        const w = n1 - n0;
+        if (n0 > last) [n0, n1] = [last - w * 0.9, last + w * 0.1];
+        if (n1 < first) [n0, n1] = [first - w * 0.1, first + w * 0.9];
       }
       onZoom([n0, n1]);
     };

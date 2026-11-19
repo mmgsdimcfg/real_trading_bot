@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-20] type=fix - v1.0.0_002: 타임라인 주가 차트에서 마우스 휠로 화면을 내리면 시간축이 확대되어(예: 08:06에 08:09 ~ 15:50, 데이터는 08:00 ~ 08:06) 주가·매수/매도 평가 차트가 모두 비던 문제 - 그냥 휠은 화면 스크롤, Ctrl+휠 = 확대/축소, Shift+휠 = 좌우 이동. 확대·이동한 구간이 봉이 있는 범위를 벗어나지 않게 함",
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
@@ -56,7 +57,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "001",
+    "buildNumber": "002",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

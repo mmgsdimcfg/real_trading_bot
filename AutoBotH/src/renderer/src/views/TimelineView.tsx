@@ -62,6 +62,7 @@
  *   main process / server before drawing
  * - [2026-11-19] type=perf - Price request / dataCache key from prefetch.ts (timelinePriceFetch): the background fetch keeps every
  *   watched symbol's bars and events fresh, so opening the tab or switching symbols draws current data at once
+ * - [2026-11-20] type=fix - Price chart hints: Ctrl + wheel zooms the time axis (a plain wheel scrolls the view)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -535,7 +536,7 @@ export function TimelineView() {
               </select>
               {zoomOk && (
                 <>
-                  <span className="badge-warn" title="주가 차트에서 휠 또는 Ctrl+끌기로 확대한 구간 (그냥 끌면 좌우 이동)">
+                  <span className="badge-warn" title="주가 차트에서 Ctrl+휠 또는 Ctrl+끌기로 확대한 구간 (그냥 끌면 좌우 이동, Shift+휠 좌우 이동)">
                     확대 {fmtKstTime(domain[0]).slice(0, 5)} ~ {fmtKstTime(domain[1]).slice(0, 5)}
                   </span>
                   <button className="small" onClick={() => setZoom(null)} title="확대를 풀고 위에서 고른 범위로 돌아갑니다 (주가 차트 더블클릭도 같음)">
@@ -584,7 +585,7 @@ export function TimelineView() {
               </select>
             )}
             <IndicatorToggles value={chart.ind} onChange={(ind) => setChart({ ind })} kind={chart.kind} />
-            <span className="muted small" title="주가 차트: 휠 = 시간축 확대/축소, 끌기 = 좌우 이동, Ctrl+끌기 = 구간 확대, 더블클릭 = 전체">
+            <span className="muted small" title="주가 차트: Ctrl+휠 = 시간축 확대/축소, Shift+휠·끌기 = 좌우 이동, Ctrl+끌기 = 구간 확대, 더블클릭 = 전체 (그냥 휠 = 화면 스크롤)">
               {priceLoading
                 ? '불러오는 중…'
                 : price?.ok
