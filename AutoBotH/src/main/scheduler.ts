@@ -16,6 +16,8 @@
  * - [2026-11-11] type=feat - settings.postcloseEmail adds --email to the scheduled post-close job (g002 --notify-email: picks by mail)
  * - [2026-11-11] type=feat - The scheduled post-close job is started with --scheduled (state args.scheduled -> 자동 실행 in the jobs tab)
  * - [2026-11-19] type=fix - Start message uses the pipeline checkbox names (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))
+ * - [2026-11-20] type=feat - deps.blockedBy: another app (AutoBotH / AutoBotHtsH on the same PC) holds the shared scheduler
+ *   (sharedSched.ts) - this one stays off and says so
  */
 
 import { collectorWindow, localYmd, postcloseDue, type JobList, type R016Status } from '../shared/control';
@@ -38,6 +40,8 @@ export interface SchedDeps {
   meta: () => { lastPostcloseYmd?: string; lastPostcloseSyncYmd?: string };
   setMeta: (p: { lastPostcloseYmd?: string; lastPostcloseSyncYmd?: string }) => void;
   syncToPeer: () => Promise<{ ok: boolean; error?: string; count?: number }>;
+  /** [2026-11-20] name of the other app running the scheduler on this PC (null = none) */
+  blockedBy?: () => string | null;
   send: (s: SchedState) => void;
 }
 
@@ -60,7 +64,9 @@ export function createScheduler(deps: SchedDeps) {
   async function tick(): Promise<void> {
     if (busy) return;
     if (!deps.active()) {
-      if (state.enabled) push({ enabled: false });
+      const other = deps.blockedBy?.() || null;
+      const note = other ? `${hm()} 스케줄러 대기 - 이 PC의 ${other} 가 실행 중 (틱 수집기 / 장 마감 작업 / 감시목록 복사는 그 앱이 맡음)` : undefined;
+      if (state.enabled || (note && state.lastCollectorMsg?.slice(6) !== note.slice(6))) push({ enabled: false, ...(note ? { lastCollectorMsg: note } : {}) });
       return;
     }
     busy = true;

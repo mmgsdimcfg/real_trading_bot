@@ -5,6 +5,10 @@
   `AutoBot/CLAUDE.md`, `AutoBot/AGENTS.md`.
 - `AutoBotH/` - Windows Electron app AutoBotH (display + control through `AutoBot/live_trading/r016_control.py`, over SSH exec for the
   Pi or as a local child process on the notebook).
+- `AutoBotHtsH/` - Windows Electron app AutoBotHtsH (2026-11-20): the HtsH screen (MDI windows, KIS inquiry only) with the AutoBotH
+  views as windows. `src/bot/` is a copy of `AutoBotH/src` (same relative layout); a change to AutoBotH that should reach both apps
+  is copied there too (and `npm run scope-css` after an AutoBotH `styles.css` change). The local-mode scheduler is shared with
+  AutoBotH through `%APPDATA%/autoboth-shared/scheduler.json` (`sharedSched.ts`, same file in both apps).
 - `runtime/` and `open-trading-api/` live OUTSIDE the repo, next to the repo folder (`<repo>/../runtime`) on each host.
 
 Rules
@@ -15,6 +19,6 @@ Rules
    (both hosts) - the app writes no bot files itself, except the one-time KIS config import into the notebook's own `%USERPROFILE%\KIS\config`.
 3. AutoBot code must stay runnable on Linux and Windows: file locks / process checks / detached starts go through
    `live_trading/r019_platform.py` (no direct `fcntl`, `/proc`, `systemctl` outside the systemd backend of r016).
-4. A change to an r016/r017/r021 JSON contract must update the app (`AutoBotH/`) and the contract docs
+4. A change to an r016/r017/r021 JSON contract must update the apps (`AutoBotH/`, and `AutoBotHtsH/src/bot/`) and the contract docs
    (`AutoBot/autoboth_*.md`, latest: `AutoBot/autoboth_local_mode_20261110.md`) in the same change set.
-5. Prefix commit messages with `autobot:` or `autoboth:` (or both).
+5. Prefix commit messages with `autobot:` or `autoboth:` (or both); `autobothtsh:` for AutoBotHtsH.

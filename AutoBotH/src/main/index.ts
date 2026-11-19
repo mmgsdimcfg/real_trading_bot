@@ -42,6 +42,9 @@
  * - [2026-11-12] type=fix - Host date check (checkDate) also runs from its own timer and before day:open. Before, the date was only
  *   asked while a live day was polled: after viewing a past day the host date stayed stale, so the new day opened from the date
  *   picker was loaded once as a past day (never polled) and the day that was "today" was not left at midnight
+ * - [2026-11-20] type=feat - The local-mode scheduler runs in one app per PC (AutoBotH / AutoBotHtsH, sharedSched.ts): the other one
+ *   waits and its scheduler line says which app runs it; the last post-close / watchlist-copy days are shared so a takeover does not
+ *   start the same day's post-close job again
  */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell } from 'electron';
@@ -61,6 +64,7 @@ import { DaySession } from './session';
 import { askConfirm, createControl, R016Client } from './control';
 import { createPeer } from './peer';
 import { createScheduler, type SchedState } from './scheduler';
+import { createSharedSched } from './sharedSched';
 import { PriceService } from './prices';
 import { PriceFileCache, prunePriceCache } from './priceCache';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
@@ -139,13 +143,25 @@ const peer = createPeer({
   log: (m) => setStatus({ message: m }),
 });
 
+// [2026-11-20] one scheduler per PC: AutoBotH and AutoBotHtsH share the holder and the post-close days (sharedSched.ts)
+const sharedSched = createSharedSched('AutoBotH', join(app.getPath('appData'), 'autoboth-shared'));
 const scheduler = createScheduler({
-  active: () => mode === 'local' && localHost.connected,
+  active: () => {
+    if (mode !== 'local' || !localHost.connected) {
+      sharedSched.release();
+      return false;
+    }
+    return sharedSched.hold();
+  },
+  blockedBy: () => (mode === 'local' && localHost.connected ? sharedSched.holder() : null),
   settings: () => getSettings(),
   client: () => localClient,
   status: () => control.status(),
-  meta: () => getMeta(),
-  setMeta: (p) => setMeta(p),
+  meta: () => sharedSched.meta(getMeta()),
+  setMeta: (p) => {
+    setMeta(p);
+    sharedSched.setMeta(p);
+  },
   syncToPeer: () => peer.syncWatchlist(),
   send: (s: SchedState) => send('sched', s),
 });
@@ -765,6 +781,7 @@ app.on('will-quit', killAllProxyChildren);
 app.on('window-all-closed', () => {
   control.stopPolling();
   scheduler.stop();
+  sharedSched.release();
   stopSession();
   ssh.close();
   app.quit();
