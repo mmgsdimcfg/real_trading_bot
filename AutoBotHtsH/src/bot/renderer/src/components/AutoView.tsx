@@ -1,9 +1,10 @@
 /*
  * Update log
- * - [2026-11-20] type=feat - AutoBotHtsH: 자동 보기 on the timeline (user 2026-11-20) - while checked, the timeline steps through the
+ * - [2026-11-20] type=feat - 자동 보기 on the timeline (user 2026-11-20; AutoBotHtsH first, then AutoBotH - same file in both apps:
+ *   AutoBotH src/renderer/src/components, AutoBotHtsH src/bot/renderer/src/components). While checked, the timeline steps through the
  *   target symbols (대상: 전체 / 감시 중 / 보유) every N seconds (3 - 600, default 10), in the symbol picker's order, wrapping around.
- *   Each step is an ordinary symbol selection (so the HTS windows follow it too). A symbol picked by hand stays for a full interval
- *   before the loop moves on. Settings kept per PC (localStorage); the loop runs only while the timeline window is open
+ *   Each step is an ordinary symbol selection (in AutoBotHtsH the HTS windows follow it too). A symbol picked by hand stays for a full
+ *   interval before the loop moves on. Settings kept per PC (localStorage); the loop runs only while the timeline is on screen
  */
 
 import { useEffect, useState } from 'react';
@@ -16,7 +17,7 @@ interface AutoCfg {
   sec: number;
   scope: AutoScope;
 }
-const KEY = 'autobothtsh.timelineAuto';
+const KEY = 'autoboth.timelineAuto';
 export const AUTO_MIN_SEC = 3;
 export const AUTO_MAX_SEC = 600;
 const SCOPE_LABEL: Record<AutoScope, string> = { all: '전체 종목', active: '감시 중', held: '보유 종목' };

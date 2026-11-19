@@ -63,7 +63,7 @@
  * - [2026-11-19] type=perf - Price request / dataCache key from prefetch.ts (timelinePriceFetch): the background fetch keeps every
  *   watched symbol's bars and events fresh, so opening the tab or switching symbols draws current data at once
  * - [2026-11-20] type=fix - Price chart hints: Ctrl + wheel zooms the time axis (a plain wheel scrolls the view)
- * - [2026-11-20] type=feat - AutoBotHtsH: 자동 보기 (AutoView) next to the symbol picker - steps through the target symbols every N s
+ * - [2026-11-20] type=feat - 자동 보기 (AutoView) next to the symbol picker - steps through the target symbols every N s
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
