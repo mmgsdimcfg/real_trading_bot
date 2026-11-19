@@ -72,6 +72,7 @@ describe('(b) log -> condition mapping', () => {
     ['REJECT', 'TRIPLE_CROSS_CHASE_FROM_CROSS_2.10%_GT_1.50%', '_009', 'chase'],
     ['REJECT', 'HYBRID_1MIN_TRIGGER_NONE', '_009', 'legacy'],
     ['REJECT', 'HYBRID_1MIN_FRAME_UNAVAILABLE', '_009', 'legacy'],
+    ['REJECT', 'HYBRID_1MIN_FRAME_STALE_last=18:12_expected=18:13 | GATES cross_pass=False', '_009', 'legacy'],
     ['TICK TRIG', 'no tick file before 09:00', '_009', 'trigger'],
     ['REJECT', 'MARKET_REGIME_DOWN_KOSPI', '_010'],
     ['REJECT', 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', '_011'],

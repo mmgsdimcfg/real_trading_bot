@@ -25,6 +25,8 @@
  * - [2026-11-08] type=refactor - Sell condition numbers follow the evaluation order too (server r006 _001.._015): _006->_005,
  *   _007->_006, _023->_007, _015->_008, _016->_009, _017->_010, _018->_011, _019->_012, _020->_013, _021->_014, _022->_015
  * - [2026-11-15] type=feat - [ENTRY ENGINE] / [ENTRY LAT   ] (r028 entry engine shadow, latency records) added to IGNORED_TAGS
+ * - [2026-11-19] type=fix - [REJECT] HYBRID_1MIN_FRAME_STALE_last=HH:MM_expected=HH:MM (r005: the 1-minute frame does not end at the
+ *   last confirmed minute - mostly NXT after-market, thin trading) was listed as unknown: mapped like FRAME_UNAVAILABLE (_009 legacy)
  */
 
 import type { Condition, ConditionsDoc, EvalResult, Side } from './types';
@@ -89,6 +91,7 @@ const BUY_REJECT_RULES = sortRules([
   { p: 'TRIPLE_CROSS_', cond: '_009', sub: 'other' },
   { p: 'HYBRID_1MIN_TRIGGER_', cond: '_009', sub: 'legacy' },
   { p: 'HYBRID_1MIN_FRAME_UNAVAILABLE', cond: '_009', sub: 'legacy' },
+  { p: 'HYBRID_1MIN_FRAME_STALE', cond: '_009', sub: 'legacy' }, // [2026-11-19] 1-minute frame one bar behind (NXT after-market)
   { p: 'MARKET_REGIME_DOWN', cond: '_010' },
   { p: 'HYBRID_3MIN_CTX_INSUFFICIENT_BARS', cond: '_011' },
   { p: 'HYBRID_3MIN_CTX_MISSING_INDICATOR', cond: '_011' },
