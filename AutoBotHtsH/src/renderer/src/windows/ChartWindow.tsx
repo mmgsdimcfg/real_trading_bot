@@ -34,6 +34,9 @@
 //   the window (volR, oscH; a double click on the handle = automatic again). The 투자자 누적 pane says when it is loading or KIS refused)
 
 // - [2026-11-20] type=fix (지표 menu / 기간 설정 close on a click outside them or Esc - before, only a click on the chart closed them)
+// - [2026-11-20] type=fix (Switching 일 -> 분 (any bar kind / size / days / symbol) drew the old bars with the new settings until the new
+//   data came: daily bars as minute bars got a dotted day line between every bar. The loaded data keeps the request it answers (key);
+//   bars of another request are not drawn - "불러오는 중" instead)
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { kstDay, useStore, type Win } from '../store';
 import { PriceChart } from '../components/PriceChart';
@@ -170,7 +173,8 @@ export function ChartWindow({ win }: { win: Win }) {
   const invM: InvMonths = INV_MONTHS.includes(o.invM as InvMonths) ? (o.invM as InvMonths) : 3;
   useRealtime(win.code, { trades: true });
 
-  const [res, setRes] = useState<ChartRes & { at: number }>({ bars: [], at: 0 });
+  const [res, setRes] = useState<ChartRes & { at: number; key?: string }>({ bars: [], at: 0 });
+  const reqKey = `${win.code}|${kind}|${n}|${days}`;
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [chartKey, setChartKey] = useState(0);
@@ -199,7 +203,7 @@ export function ChartWindow({ win }: { win: Win }) {
       const r = await window.hts.call<ChartRes>('chart', { code: win.code, kind, n, days, refresh });
       if (!alive) return;
       setLoading(false);
-      if (r.ok) setRes({ ...r.data, at: Date.now() });
+      if (r.ok) setRes({ ...r.data, at: Date.now(), key: `${win.code}|${kind}|${n}|${days}` });
       else if (!refresh) (setErr(r.error), setRes({ bars: [], at: 0 }));
       // [2026-11-19] a cached chart is drawn at once; when it is old the missing part is fetched right away
       const soon = r.ok && r.data.stale;
@@ -335,9 +339,11 @@ export function ChartWindow({ win }: { win: Win }) {
       const tb = tickBarsFromTrades(trades, n);
       return prevBars.length ? [...prevBars, ...tb] : tb;
     }
+    // [2026-11-20] only the data of the current request (another kind's bars must not be drawn with these settings)
+    if (res.key !== reqKey) return NO_BARS;
     // trades after the REST fetch time roll into the bars (REST data is newest up to about its fetch time)
     return applyTrades(res.bars, trades, kind, n, res.at - 1000);
-  }, [res, trades, kind, n, prevBars]);
+  }, [res, trades, kind, n, prevBars, reqKey]);
 
   // REST and realtime trades must share one accumulated-volume basis, or the same trade is counted twice - shown when it happens
   const mismatch = useMemo(() => (kind === 'tick' ? acmlMismatches(trades) : 0), [kind, trades]);
