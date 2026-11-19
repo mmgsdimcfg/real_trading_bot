@@ -3,6 +3,7 @@
  * - [2026-11-18] type=test - Reuse of fetched data: the renderer's dataCache (keep / limit per kind / drop / clear), coversGaps,
  *   the price service keeps the NXT combined minutes of the day from 09:00 to the KRX close (one r016 call, not one a minute) and
  *   asks again after 15:30, and a symbol's tick file is not read from byte 0 again after a dozen other symbols were opened
+ * - [2026-11-19] type=test - price limit 160 (raised for the background fetch, prefetch.ts)
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -35,7 +36,7 @@ describe('renderer dataCache', () => {
     put('price:a', 2);
     expect(peek('price:a')).toBe(2);
     expect(storedAt('price:a')).toBeGreaterThan(0);
-    for (let i = 0; i < 80; i++) put(`price:x${i}`, i); // limit 80 for price
+    for (let i = 0; i < 160; i++) put(`price:x${i}`, i); // limit 160 for price
     expect(peek('price:a')).toBeUndefined();
     expect(peek('price:x79')).toBe(79);
     put('jobs:list', { n: 1 });

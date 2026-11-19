@@ -60,9 +60,12 @@
  * - [2026-11-18] type=perf - The price chart of a symbol / chart size seen before is drawn at once from the renderer's memory
  *   (dataCache, key = day/code/kind/size/warm-up/NXT) and refreshed in the background - a symbol switch no longer waits for the
  *   main process / server before drawing
+ * - [2026-11-19] type=perf - Price request / dataCache key from prefetch.ts (timelinePriceFetch): the background fetch keeps every
+ *   watched symbol's bars and events fresh, so opening the tab or switching symbols draws current data at once
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { timelinePriceFetch } from '../prefetch';
 import { PriceTag } from '../components/PriceTag';
 import { NxtMark } from '../components/NxtTag';
 import { CartesianGrid, Customized, ReferenceDot, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
@@ -399,20 +402,22 @@ export function TimelineView() {
   const liveTick = status.live ? snap?.generatedAt : 0;
   const warmup = chart.ind.length > 0 && (chart.kind === 'tick' || chart.kind === 'min');
   const reqKey = `${day}/${selected}/${chart.kind}/${chartN}/${warmup ? 'w' : ''}${sym?.nxt ? 'x' : ''}`;
+  // [2026-11-19] request + dataCache key shared with the background fetch (prefetch.ts)
+  const fx = selected && day ? timelinePriceFetch(day, selected, chart, !!sym?.nxt) : null;
   const lastKey = useRef('');
   useEffect(() => {
-    if (!selected || !day) return setPrice(null);
+    if (!selected || !day || !fx) return setPrice(null);
     const seq = ++reqSeq.current;
     const changed = lastKey.current !== reqKey;
     lastKey.current = reqKey;
-    const ck = `price:tl/${reqKey}`;
+    const ck = fx.key;
     if (changed) {
       // [2026-11-18] seen before: draw the kept bars now, refresh below
       const kept = peek<PriceResponse>(ck);
       setPrice(kept || null);
       setPriceLoading(!kept);
     }
-    void window.api.getPrice({ date: day, code: selected, kind: chart.kind, n: chartN, warmup, nxt: !!sym?.nxt }).then((r) => {
+    void window.api.getPrice(fx.req).then((r) => {
       if (r.ok) put(ck, r);
       if (seq !== reqSeq.current) return;
       setPriceLoading(false);

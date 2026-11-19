@@ -26,6 +26,8 @@
  * - [2026-11-16] type=feat - quotes also hold KIS current prices (r016 quote) of the day's symbols r003 does not quote (holdings outside
  *   the watch list): asked one at a time, each at most every KIS_QUOTE_EVERY_MS, only on the live day (not on a past day / replay),
  *   at most KIS_QUOTE_MAX symbols per round. r003's quote wins when both exist. Every view (symbol pickers, timeline, board) sees them
+ * - [2026-11-19] type=perf - chartCode: the chart tab's symbol (with its day) kept here, so the background fetch (prefetch.ts,
+ *   started by initStore) keeps it fresh while another tab is open and the chart tab comes back on it
  * - [2026-11-19] type=feat - openChart(code): another tab (작업 탭 선별 결과) opens the chart tab on a symbol (chartRequest, taken
  *   once by ChartView); a watched symbol is also selected
  */
@@ -37,6 +39,7 @@ import type { ChartKind } from '../../shared/price';
 import type { IndicatorKey } from '../../shared/indicators';
 import { fromMarketQuote, type LiveQuote } from '../../shared/liveQuote';
 import { clearAll as clearDataCache, peek, put } from './dataCache';
+import { startPrefetch, timelineKey } from './prefetch';
 
 type ChartPrefs = { kind: ChartKind; tickN: number; minN: number; ind: IndicatorKey[] };
 const IND_KEYS: IndicatorKey[] = ['ma', 'bb', 'ichimoku', 'vwap', 'vol', 'rsi', 'macd', 'adx', 'stoch', 'williams', 'mfi', 'obv'];
@@ -201,6 +204,9 @@ interface State {
   setTab: (t: Tab) => void;
   /** [2026-11-19] symbol the chart tab should show next (set by openChart, cleared by ChartView once taken) */
   chartRequest: string | null;
+  /** [2026-11-19] symbol shown on the chart tab (day = the day it was chosen on; another day drops it) */
+  chartCode: { day: string; code: string } | null;
+  setChartCode: (day: string, code: string) => void;
   openChart: (code: string) => void;
   takeChartRequest: () => void;
   setSide: (s: Side) => void;
@@ -220,6 +226,7 @@ export const useStore = create<State>()((set, get) => ({
   selected: null,
   timeline: null,
   chartRequest: null,
+  chartCode: null,
   control: { status: null, busy: null },
   historyRev: 0,
   bumpHistory: () => set({ historyRev: get().historyRev + 1 }),
@@ -310,11 +317,15 @@ export const useStore = create<State>()((set, get) => ({
     set({ chartRequest: code, tab: 'chart' });
   },
   takeChartRequest: () => set({ chartRequest: null }),
+  setChartCode: (day, code) => {
+    const cur = get().chartCode;
+    if (cur?.day !== day || cur.code !== code) set({ chartCode: day && code ? { day, code } : null });
+  },
   setSide: (side) => set({ side }),
   select: (code) => {
     // [2026-11-18] the symbol's events from the last visit are shown at once (dataCache), then refreshed
     const day = get().status.date;
-    const kept = code ? peek<{ code: string; events: EvalEvent[]; trades: Trade[] }>(`timeline:${day}/${code}`) : undefined;
+    const kept = code ? peek<{ code: string; events: EvalEvent[]; trades: Trade[] }>(timelineKey(day, code)) : undefined;
     set({ selected: code, timeline: code && get().timeline?.code === code ? get().timeline : kept || null });
     void get().refreshTimeline();
   },
@@ -323,7 +334,7 @@ export const useStore = create<State>()((set, get) => ({
     if (!code) return set({ timeline: null });
     const day = get().status.date;
     const r = await window.api.getTimeline(code);
-    put(`timeline:${day}/${code}`, { code, ...r });
+    put(timelineKey(day, code), { code, ...r });
     if (get().selected === code) set({ timeline: { code, ...r } });
   },
 }));
@@ -410,4 +421,6 @@ export function initStore(): void {
       });
     }
   });
+  // [2026-11-19] keep the timeline / chart data of the focus and watched symbols fresh while the app runs (prefetch.ts)
+  startPrefetch();
 }

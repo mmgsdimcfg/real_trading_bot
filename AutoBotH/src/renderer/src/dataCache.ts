@@ -4,6 +4,8 @@
  *   Views unmount on every tab switch and refetched everything: a symbol switch on the timeline / chart tab waited for the main
  *   process (and r016 on the Raspberry Pi) before drawing anything. A view now shows the last answer for the same key at once and
  *   refreshes it in the background (stale-while-revalidate); only successful answers are kept. Bounded per kind (LRU).
+ * - [2026-11-19] type=perf - Limits raised for the background fetch (prefetch.ts keeps every watched symbol here): price 160,
+ *   timeline 80
  */
 
 interface Entry {
@@ -12,7 +14,7 @@ interface Entry {
 }
 
 /** entries kept per kind (first key segment before ':'); everything else shares the default */
-const LIMITS: Record<string, number> = { price: 80, quote: 80, timeline: 40 };
+const LIMITS: Record<string, number> = { price: 160, quote: 80, timeline: 80 };
 const DEFAULT_LIMIT = 60;
 
 const kinds = new Map<string, Map<string, Entry>>();

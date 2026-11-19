@@ -34,10 +34,13 @@
  *   ask / bid were coloured by side (ask blue, bid red) before
  * - [2026-11-18] type=feat - Data window: date + time (seconds) of the hovered bar and its change vs the previous day's close
  *   (intraday: the daily bar before that day; D/W/M: the previous bar), the price pane shows the same line at its top left
+ * - [2026-11-19] type=perf - The symbol is kept in the store (chartCode): the tab comes back on it and prefetch.ts keeps its bars,
+ *   daily side request and quote fresh meanwhile (same dataCache keys, chartPriceFetch) - a tab switch draws current data at once
  * - [2026-11-19] type=feat - Opens on the symbol another tab asked for (store chartRequest, e.g. a 선별 결과 chip of the 작업 tab)
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { chartPriceFetch, quoteKey } from '../prefetch';
 import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
 import { PriceChart, IndicatorLines, barWhen, kstDayStart, refCloseAt } from '../components/PriceChart';
@@ -174,9 +177,13 @@ export function ChartView() {
 
   const chartRequest = useStore((s) => s.chartRequest);
   const takeChartRequest = useStore((s) => s.takeChartRequest);
+  const keptChart = useStore((s) => s.chartCode);
+  const setChartCode = useStore((s) => s.setChartCode);
+  // [2026-11-19] back on the symbol shown before (same day), unless another tab asked for one
+  const first = chartRequest || (keptChart && keptChart.day === (snap?.date || status.date) ? keptChart.code : '') || selected || '';
 
-  const [code, setCode] = useState<string>(chartRequest || selected || '');
-  const [input, setInput] = useState(chartRequest || selected || '');
+  const [code, setCode] = useState<string>(first);
+  const [input, setInput] = useState(first);
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const [data, setData] = useState<PriceResponse | null>(null);
   const [daily, setDaily] = useState<PriceResponse | null>(null);
@@ -234,6 +241,10 @@ export function ChartView() {
   nxtRef.current = isNxt;
   const key = `${day}/${code}/${prefs.kind}/${n}/${isNxt ? 'x' : ''}`;
   const lastKey = useRef('');
+  // [2026-11-19] the background fetch follows this symbol while other tabs are open
+  useEffect(() => {
+    if (day && /^[0-9A-Z]{6}$/.test(code)) setChartCode(day, code);
+  }, [day, code]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!code || !day || !/^[0-9A-Z]{6}$/.test(code)) return;
@@ -244,9 +255,10 @@ export function ChartView() {
     const my = ++seq.current;
     lastKey.current = key;
     // [2026-11-18] kept answers of this symbol / chart (dataCache): drawn at once on a switch, refreshed below
-    const kMain = `price:ch/${key}/${intraday ? 'w' : ''}`;
-    const kDay = `price:ch/${day}/${code}/day`;
-    const kQuote = `quote:${code}`;
+    const fx = chartPriceFetch(day, code, prefs, nxtRef.current);
+    const kMain = fx.main.key;
+    const kDay = fx.dayKey;
+    const kQuote = quoteKey(code);
     if (changed) {
       setOlder([]);
       setOlderEnd(null);
@@ -261,8 +273,8 @@ export function ChartView() {
       setQuoteRes(keptQ ? { q: keptQ } : null);
     }
     void Promise.all([
-      window.api.getPrice({ date: day, code, kind: prefs.kind, n, warmup: intraday, withName: true, nxt: nxtRef.current }),
-      prefs.kind === 'day' ? null : window.api.getPrice({ date: day, code, kind: 'day', n: 1 }),
+      window.api.getPrice(fx.main.req),
+      fx.day ? window.api.getPrice(fx.day.req) : null,
       window.api.getQuote(code),
     ]).then(([r, d, q]) => {
       if (r.ok) put(kMain, r);
