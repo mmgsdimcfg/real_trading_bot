@@ -41,14 +41,25 @@ class TestStepsAndArgv(unittest.TestCase):
 
     def test_step_combinations(self):
         names = lambda **kw: [s.name for s in r021.job_steps("postclose", r021.JobArgs(date="20261110", **kw))]  # noqa: E731
-        self.assertEqual(names(), ["collect", "history", "hi52", "scan", "apply"])
-        self.assertEqual(names(collect=False), ["scan", "apply"])
+        self.assertEqual(names(), ["collect", "history", "hi52", "scan", "picklog", "apply"])
+        self.assertEqual(names(collect=False), ["scan", "picklog", "apply"])
         self.assertEqual(names(collect=False, scan=False), ["apply"])
-        self.assertEqual(names(apply=False), ["collect", "history", "hi52", "scan"])
+        self.assertEqual(names(apply=False), ["collect", "history", "hi52", "scan", "picklog"])
         self.assertEqual(names(edge_ai=True, apply=False),
-                         ["collect", "history", "hi52", "scan", "edge_dataset", "edge_train", "edge_check"])
+                         ["collect", "history", "hi52", "scan", "picklog", "edge_dataset", "edge_train", "edge_check"])
         self.assertEqual([s.name for s in r021.job_steps("scan", r021.JobArgs(date="20261110", apply=False))], ["scan"])
         self.assertEqual([s.name for s in r021.job_steps("collect", r021.JobArgs(date="20261110", scan=False, apply=False))], ["collect"])
+
+    def test_picklog_step_logs_the_job_date_and_follows_scan(self):
+        """[2026-11-19] picklog = g047 --date D --evaluate, not required, after scan / before apply, on and off with scan."""
+        st = r021.STEPS["picklog"]
+        self.assertFalse(st.required)
+        argv = st.build(r021.JobArgs(date="20261119"), {})
+        self.assertTrue(argv[0].endswith("g047_pick_forward_log.py"))
+        self.assertEqual(argv[1:], ["--date", "20261119", "--evaluate"])
+        no_scan = [s.name for s in r021.job_steps("postclose", r021.JobArgs(date="20261119", scan=False))]
+        self.assertNotIn("picklog", no_scan)
+        self.assertNotIn("picklog", [s.name for s in r021.job_steps("scan", r021.JobArgs(date="20261119"))])
 
     def test_hi52_step_logs_the_job_date_and_is_optional(self):
         """[2026-11-18] hi52 = g042 --date D --evaluate, not required, only in postclose (follows the collect switch)."""
@@ -219,7 +230,7 @@ class TestHistoryAfterFailedCollect(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             steps = {n: r021.Step(n, (lambda a, rc, n=n: ["-c", "raise SystemExit(1)" if n == "collect" else f"print('{n}')"]),
                                   required=r021.STEPS[n].required, after_failure=r021.STEPS[n].after_failure)
-                     for n in ("collect", "history", "hi52", "scan", "apply")}
+                     for n in ("collect", "history", "hi52", "scan", "picklog", "apply")}
             with mock.patch.dict(r021.STEPS, steps):
                 rc = r021.run_detached_entry("postclose", r021.JobArgs(date="20261118"), "t", r021.Paths(Path(tmp)))
             st = r021.read_state(r021.Paths(Path(tmp)), "postclose")
@@ -227,7 +238,7 @@ class TestHistoryAfterFailedCollect(unittest.TestCase):
         self.assertEqual(st["state"], "failed")
         self.assertIn("collect failed", st["error"])
         self.assertEqual([(s["name"], s["state"]) for s in st["steps"]],
-                         [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("scan", "skipped"), ("apply", "skipped")])
+                         [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("scan", "skipped"), ("picklog", "skipped"), ("apply", "skipped")])
         self.assertEqual(st["steps"][2]["note"], "collect failed")
 
 

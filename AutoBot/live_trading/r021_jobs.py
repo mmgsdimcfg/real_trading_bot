@@ -20,9 +20,11 @@ CPU 를 많이 쓰는 일이다.
              -> apply                                         r016 watchlist apply --date D: 선별 파일을 r004 에 반영(백업/이력)
   edge_ai    g013 --live, g014, g024 --edge-ai                Edge AI 데이터셋/학습/점검 (g015_edge_ai_daily.sh 와 같음)
   universe   g010                                             수집 대상 종목 목록(g004) 갱신
-  postclose  collect -> history -> hi52 -> scan -> apply [-> edge_ai] 장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지
+  postclose  collect -> history -> hi52 -> scan -> picklog -> apply [-> edge_ai] 장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지
              않는다 (오래된 데이터로 감시목록을 만들지 않게). history / hi52 실패는 건너뛰고 계속. hi52 는 collect 와 함께 켜지고
              꺼진다 (--no-collect 면 생략 - 이력이 갱신되지 않은 날짜를 live 로 기록하지 않게).
+             [2026-11-19] picklog = g047 --date D --evaluate (선정 종목 전진 기록, 주문 없음): scan 과 함께 켜지고 꺼지며
+             실패해도 계속.
 
   [2026-11-11] 단계 선택 (postclose / scan): --no-collect (수집+이력 생략), --no-scan (선별 생략), --no-apply (r004 반영 생략).
     1+2+3 = 기본, 2+3 = --no-collect (그 날짜 폴더에 수집 데이터가 있어야 함), 3 = --no-collect --no-scan (선별 파일이 있어야 함).
@@ -40,6 +42,10 @@ CPU 를 많이 쓰는 일이다.
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-19] type=feat owner=claude
+    summary: postclose 에 picklog 단계 추가 (scan 다음, apply 앞) - g047_pick_forward_log.py --date D --evaluate: g002 선정 종목과
+      시장 필터 상태를 기록하고 1/5/10/20일 성과 리포트 갱신 (selection_filter_redesign_20261119.md 11장). 필수 아님, scan 스위치를 따름.
+    impact: 작업 목록/상태 JSON 의 steps 에 "picklog" 추가 (앱 단계 라벨 "선정 성과 기록(g047)"). 주문/r004 영향 없음
 - [2026-11-19] type=docs owner=claude
     summary: postclose 작업 제목을 AutoBotH 단계 체크박스 이름과 같게 - "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))".
       데이터 수집 = collect(g001) + history(g025) + hi52(g042). 단계 이름(steps)은 그대로.
@@ -173,6 +179,8 @@ STEPS: dict[str, Step] = {
                                            *(["--notify-email"] if a.email else []))),
     # r004 <- <runtime>/data/D/_D_picks.txt through r016 (write lock, backup, history, for_trading_day header, collector note)
     # --restart-collector: a running g011 that misses new codes is restarted (it subscribes r004 only at its start)
+    # [2026-11-19] g002 pick forward log (gate, tick %, 1/5/10/20-day results vs the universe; no orders); a failure never stops
+    "picklog": Step("picklog", lambda a, rc: _py("g047_pick_forward_log.py", "--date", a.date, "--evaluate"), required=False),
     "apply": Step("apply", lambda a, rc: [str(HERE / "r016_control.py"), "--by", a.by, "watchlist", "apply", "--date", a.date,
                                           "--restart-collector"]),
     "edge_dataset": Step("edge_dataset", lambda a, rc: _py("g013_edge_ai_dataset.py", "--workers", _workers(a, 2), "--live"),
@@ -191,10 +199,10 @@ JOBS: dict[str, dict] = {
     "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check"]},
     "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
     "postclose": {"title": "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))",
-                  "steps": ["collect", "history", "hi52", "scan", "apply"]},
+                  "steps": ["collect", "history", "hi52", "scan", "picklog", "apply"]},
 }
 
-STEP_SWITCH = {"collect": "collect", "history": "collect", "hi52": "collect", "scan": "scan", "apply": "apply"}  # step -> JobArgs flag
+STEP_SWITCH = {"collect": "collect", "history": "collect", "hi52": "collect", "scan": "scan", "picklog": "scan", "apply": "apply"}  # step -> JobArgs flag
 
 
 def job_steps(name: str, args: JobArgs) -> list[Step]:
