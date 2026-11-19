@@ -24,6 +24,17 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-19] type=perf owner=claude
+    summary: 사용자 지적(노트북에서 종목선정만 실행해도 종목당 2~3초). 원인: (1) 대상일 daily.csv가 없는 종목은 날짜폴더
+      전체(최대 260개)의 10s 파일을 읽어 일봉을 만들었는데, 그 종목은 일봉 지표가 없어 어차피 pattern_unknown 탈락(보충 구제
+      없음) - 20261118(KIS 장애로 daily.csv 1,400/3,290)은 100종목 221초. (2) 파일마다 첫 열기 ~15ms(NVMe인데 Windows 실시간
+      검사), 종목 평가가 한 프로세스에서 순차. 수정: (1) 날짜 지정 스캔은 daily.csv 유무와 관계없이 대상일 폴더만 읽음 -
+      대상일 10s 파일도 없는 종목은 이전 날짜 데이터로 평가하지 않고 스킵 (2) 종목 읽기+평가를 프로세스 풀로 병렬화
+      (_evaluate_symbol/_iter_symbol_results, 기본 min(8, CPU), G002_WORKERS=1이면 순차, 200종목 미만은 순차, 결과/로그 순서는
+      종목 순서 그대로). 측정(노트북 16코어, 2,969종목, 캐시된 파일): 20261117 순차 83초 -> 8프로세스 17.6초, 선정 결과 동일.
+      20261118 8프로세스 11.2초(이전 추정 약 1시간 50분).
+    impact: scanner (속도; 대상일 데이터 없는 종목은 skipped로 집계 - 탈락 사유 집계/시장 평균 거래대금 표본에서 빠짐)
+    compatibility: backward-compatible (출력 형식 불변, 대상일 daily.csv가 모두 있는 날은 선정 결과 동일)
 - [2026-11-19] type=tune owner=claude
     summary: 사용자 결정 - 상승 초입 패턴의 '당일 마감' 조건 변경. 이전: 당일 양봉(종가 > 시가)이 아니면(음봉/보합)
       pattern_no_bullish_close 탈락, A/B 등급도 당일 양봉 필수. 변경: 아래 둘 중 하나일 때만 탈락(_weak_close)
@@ -3395,6 +3406,90 @@ def apply_market_relative_liquidity_filters(candidates: list[dict], market_map: 
 # Scan orchestration
 # ---------------------------------------------------------------------------
 
+# [2026-11-19] 종목 평가 병렬 처리. 종목 하나 평가 = 대상일 daily.csv + 10s 파일 읽기(파일마다 첫 열기 ~15ms, Windows
+# 실시간 검사 포함) + 지표 계산이라 종목끼리 독립 - 프로세스 풀로 나눈다. 0/1 = 순차(이전과 같음).
+# 종목 수가 SCAN_PARALLEL_MIN_SYMBOLS 미만이면(테스트/소량) 프로세스 시작 비용이 더 커서 순차로 한다.
+SCAN_WORKERS_ENV = "G002_WORKERS"
+SCAN_MAX_WORKERS_DEFAULT = 8
+SCAN_PARALLEL_MIN_SYMBOLS = 200
+SCAN_CHUNKSIZE = 16
+
+_SCAN_CTX: dict | None = None
+
+
+def _scan_workers(n_symbols: int) -> int:
+    raw = os.environ.get(SCAN_WORKERS_ENV, "").strip()
+    try:
+        n = int(raw) if raw else min(SCAN_MAX_WORKERS_DEFAULT, os.cpu_count() or 1)
+    except ValueError:
+        n = 1
+    return n if n > 1 and n_symbols >= SCAN_PARALLEL_MIN_SYMBOLS else 1
+
+
+def _evaluate_symbol(code, name, ctx) -> dict | None:
+    """종목 1개 읽기 + 평가(scan 루프 본문). 대상일 데이터가 없으면 None."""
+    data_root, target_date_str = ctx["data_root"], ctx["target_date_str"]
+    # [2026-10-10] 서버 일봉(daily.csv)이 있으면 이력 지표는 전부 그쪽(_check_df)에서 계산하고 10s 집계 일봉은
+    # 대상일 1행만 쓰므로(가격 폴백/장대음봉/대상일 확인) 대상일 폴더만 읽는다. 기존에는 종목마다 날짜폴더
+    # 전체(27개)의 10s 파일을 읽어 Raspberry Pi에서 종목당 ~7.5초(대상일만 ~0.2초)가 걸렸다.
+    # [2026-11-19] 대상일 daily.csv가 없을 때도 대상일 폴더만 읽는다. 그 종목은 일봉 지표가 없어 pattern_unknown으로
+    # 탈락(보충 구제도 없음)하는데, 이전에는 날짜폴더 전체(최대 260개)의 10s 파일을 읽어 종목당 2~3초가 걸렸다
+    # (20261118: KIS 장애로 daily.csv 1,400/3,290 - 100종목 221초). 대상일 10s 파일도 없는 종목은 이전 날짜
+    # 데이터로 평가하지 않고 스킵한다(대상일 데이터 없음).
+    daily_hist = _load_daily_csv(code, data_root, target_date_str)
+    daily_df = build_daily_bars(
+        data_root, code, target_date_str,
+        single_date_only=ctx["single_date_only"] or target_date_str is not None,
+    )
+    if daily_df is None or len(daily_df) < MIN_REQUIRED_BARS:
+        return None
+
+    recent_repeat_days = int(ctx["recent_pick_counts"].get(code, 0))
+    candidate = evaluate_candidate(
+        code, name, daily_df, ctx["config"],
+        recent_pick_count=recent_repeat_days, daily_hist=daily_hist,
+        w52_info=ctx["w52_map"].get(code),
+        market_map=ctx["market_map"], market_index_series=ctx["market_index_series"],
+        basic_info=ctx["basic_info_map"].get(code),
+    )
+    # 당일 종가/VWAP(마감 강도 가점)는 10s 파일을 다시 읽어야 해서 우상향 필수조건을 통과한 종목만 읽는다
+    # (전 종목을 읽으면 Raspberry Pi에서 스캔이 약 9분 늘어남). 점수는 scan()의 시장상대 유동성 필터 뒤
+    # 전 종목 재채점 때 이 값까지 반영된다.
+    # [2026-10-15] 같은 읽기에서 장중 3분봉 ATR% 중앙값도 계산해 선정 단계 변동성 하한(INTRADAY_ATR3_MIN_PCT)을
+    # 적용한다. fallback/업종교체 후보도 모두 이 집합(우상향 통과)에서 나오므로 최종 선정 전체에 적용된다.
+    # [2026-10-20] 비패턴 보충 후보는 fallback 단계에서 같은 함수(_apply_intraday_metrics)로 지연 판정한다.
+    if candidate.get("uptrend_gate") and candidate.get("skip_reason") is None:
+        _apply_intraday_metrics(candidate, _load_intraday_metrics(data_root, target_date_str, code))
+        if INTRADAY_ATR3_MIN_PCT > 0:
+            candidate["eligible"] = not candidate["fail_reasons"]  # 진행 로그 표시용(최종 판정은 재채점 루프)
+    if recent_repeat_days > 0:
+        candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
+    return candidate
+
+
+def _scan_worker_init(ctx: dict) -> None:
+    global _SCAN_CTX
+    _SCAN_CTX = ctx
+
+
+def _scan_worker(item):
+    return _evaluate_symbol(item[0], item[1], _SCAN_CTX)
+
+
+def _iter_symbol_results(stock_list, ctx: dict, workers: int):
+    """(idx, (code, name), candidate | None) in stock_list order. workers > 1 = process pool (order kept by map)."""
+    if workers <= 1:
+        for idx, (code, name) in enumerate(stock_list, start=1):
+            yield idx, (code, name), _evaluate_symbol(code, name, ctx)
+        return
+    from concurrent.futures import ProcessPoolExecutor
+
+    items = [(code, name) for code, name in stock_list]
+    with ProcessPoolExecutor(max_workers=workers, initializer=_scan_worker_init, initargs=(ctx,)) as pool:
+        for idx, (item, candidate) in enumerate(zip(items, pool.map(_scan_worker, items, chunksize=SCAN_CHUNKSIZE)), start=1):
+            yield idx, item, candidate
+
+
 def scan(
     data_root,
     target_date=None,
@@ -3453,46 +3548,26 @@ def scan(
     skipped = 0
     insufficient_bars_count = 0
 
-    for idx, (code, name) in enumerate(stock_list, start=1):
+    scan_ctx = {
+        "data_root": data_root, "target_date_str": target_date_str, "single_date_only": single_date_only,
+        "config": config, "recent_pick_counts": recent_pick_counts, "w52_map": w52_map, "market_map": market_map,
+        "market_index_series": market_index_series, "basic_info_map": basic_info_map,
+    }
+    workers = _scan_workers(total)
+    if verbose and workers > 1:
+        print(f"[INFO] 종목 평가 병렬 처리: 프로세스 {workers}개 (G002_WORKERS로 조정, 1 = 순차)")
+
+    for idx, (code, name), candidate in _iter_symbol_results(stock_list, scan_ctx, workers):
         if verbose:
             print(f"[{idx}/{total}] {code} 검증중...", end="\r", flush=True)
 
-        # [2026-10-10] 서버 일봉(daily.csv)이 있으면 이력 지표는 전부 그쪽(_check_df)에서 계산하고 10s 집계 일봉은
-        # 대상일 1행만 쓰므로(가격 폴백/장대음봉/대상일 확인) 대상일 폴더만 읽는다. 기존에는 종목마다 날짜폴더
-        # 전체(27개)의 10s 파일을 읽어 Raspberry Pi에서 종목당 ~7.5초(대상일만 ~0.2초)가 걸렸다.
-        daily_hist = _load_daily_csv(code, data_root, target_date_str)
-        daily_df = build_daily_bars(
-            data_root, code, target_date_str,
-            single_date_only=single_date_only or (daily_hist is not None and target_date_str is not None),
-        )
-        if daily_df is None or len(daily_df) < MIN_REQUIRED_BARS:
+        if candidate is None:
+            # 대상일 데이터 없음(build_daily_bars 결과 없음)
             skipped += 1
-            if daily_df is None or len(daily_df) == 0:
-                insufficient_bars_count += 1
+            insufficient_bars_count += 1
             if verbose and idx % 50 == 0:
                 print(f"[{idx}/{total}] 진행중 - 현재 스킵 {skipped}종목")
             continue
-
-        recent_repeat_days = int(recent_pick_counts.get(code, 0))
-        candidate = evaluate_candidate(
-            code, name, daily_df, config,
-            recent_pick_count=recent_repeat_days, daily_hist=daily_hist,
-            w52_info=w52_map.get(code),
-            market_map=market_map, market_index_series=market_index_series,
-            basic_info=basic_info_map.get(code),
-        )
-        # 당일 종가/VWAP(마감 강도 가점)는 10s 파일을 다시 읽어야 해서 우상향 필수조건을 통과한 종목만 읽는다
-        # (전 종목을 읽으면 Raspberry Pi에서 스캔이 약 9분 늘어남). 점수는 아래 시장상대 유동성 필터 뒤
-        # 전 종목 재채점 때 이 값까지 반영된다.
-        # [2026-10-15] 같은 읽기에서 장중 3분봉 ATR% 중앙값도 계산해 선정 단계 변동성 하한(INTRADAY_ATR3_MIN_PCT)을
-        # 적용한다. fallback/업종교체 후보도 모두 이 집합(우상향 통과)에서 나오므로 최종 선정 전체에 적용된다.
-        # [2026-10-20] 비패턴 보충 후보는 fallback 단계에서 같은 함수(_apply_intraday_metrics)로 지연 판정한다.
-        if candidate.get("uptrend_gate") and candidate.get("skip_reason") is None:
-            _apply_intraday_metrics(candidate, _load_intraday_metrics(data_root, target_date_str, code))
-            if INTRADAY_ATR3_MIN_PCT > 0:
-                candidate["eligible"] = not candidate["fail_reasons"]  # 아래 진행 로그 표시용(최종 판정은 재채점 루프)
-        if recent_repeat_days > 0:
-            candidate["soft_flags"].append(f"recent_pick_repeat_{recent_repeat_days}d")
         candidates.append(candidate)
 
         if verbose:

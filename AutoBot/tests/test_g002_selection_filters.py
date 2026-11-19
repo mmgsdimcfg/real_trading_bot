@@ -285,5 +285,70 @@ class TestWeakClose20261119(unittest.TestCase):
         self.assertTrue(f["weak_close"])
 
 
+class TestScanSpeed20261119(unittest.TestCase):
+    """2026-11-19: target-date-only reads + process-pool symbol evaluation."""
+
+    def test_workers_env(self):
+        import os
+        old = os.environ.get(g002.SCAN_WORKERS_ENV)
+        try:
+            os.environ[g002.SCAN_WORKERS_ENV] = "4"
+            self.assertEqual(g002._scan_workers(3000), 4)
+            self.assertEqual(g002._scan_workers(g002.SCAN_PARALLEL_MIN_SYMBOLS - 1), 1)  # small lists stay sequential
+            os.environ[g002.SCAN_WORKERS_ENV] = "1"
+            self.assertEqual(g002._scan_workers(3000), 1)
+            os.environ[g002.SCAN_WORKERS_ENV] = "x"
+            self.assertEqual(g002._scan_workers(3000), 1)
+        finally:
+            if old is None:
+                os.environ.pop(g002.SCAN_WORKERS_ENV, None)
+            else:
+                os.environ[g002.SCAN_WORKERS_ENV] = old
+
+    def _root(self, tmp):
+        import pandas as pd
+        root = Path(tmp)
+        for d in ("20261117", "20261118"):
+            (root / d).mkdir()
+        rows = pd.DataFrame({"timestamp": ["2026-11-17 09:00:00", "2026-11-17 15:30:00"], "open": [100.0, 101.0],
+                             "high": [102.0, 103.0], "low": [99.0, 100.0], "close": [101.0, 102.0], "volume": [10.0, 20.0],
+                             "raw_bar": [1, 1]})
+        rows.to_csv(root / "20261117" / "000001_A.txt", index=False)   # only the previous day
+        rows.to_csv(root / "20261117" / "000002_B.txt", index=False)
+        rows.assign(timestamp=["2026-11-18 09:00:00", "2026-11-18 15:30:00"]).to_csv(root / "20261118" / "000002_B.txt", index=False)
+        return root
+
+    def test_dated_scan_reads_target_date_only(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            calls = []
+            orig = g002.load_data
+            try:
+                g002.load_data = lambda code, d, warn=True: calls.append(Path(d).name) or orig(code, d, warn)
+                ctx = {"data_root": root, "target_date_str": "20261118", "single_date_only": False,
+                       "config": g002.BALANCED_CONFIG, "recent_pick_counts": {}, "w52_map": {}, "market_map": {},
+                       "market_index_series": {}, "basic_info_map": {}}
+                # no daily.csv: no history read; no target-date file -> skipped (not evaluated on 11/17 data)
+                self.assertIsNone(g002._evaluate_symbol("000001", "A", ctx))
+                self.assertEqual(calls, ["20261118"])
+                cand = g002._evaluate_symbol("000002", "B", ctx)
+                self.assertIsNotNone(cand)
+                # 1 bar, no daily.csv -> skipped inside evaluate_candidate (never eligible)
+                self.assertTrue(cand.get("skip_reason") or "pattern_unknown" in cand["fail_reasons"])
+                self.assertEqual(calls, ["20261118", "20261118"])
+            finally:
+                g002.load_data = orig
+
+    def test_iter_order_sequential(self):
+        orig = g002._evaluate_symbol
+        try:
+            g002._evaluate_symbol = lambda code, name, ctx: {"code": code} if code != "b" else None
+            out = list(g002._iter_symbol_results([("a", "A"), ("b", "B"), ("c", "C")], {}, 1))
+            self.assertEqual([(i, it[0], c and c["code"]) for i, it, c in out], [(1, "a", "a"), (2, "b", None), (3, "c", "c")])
+        finally:
+            g002._evaluate_symbol = orig
+
+
 if __name__ == "__main__":
     unittest.main()
