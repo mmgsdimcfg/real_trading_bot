@@ -360,7 +360,8 @@ class JobTests(unittest.TestCase):
         steps = {}
         for name in ("collect", "history", "hi52", "scan", "apply"):  # [2026-11-11] apply = the r004 step; [2026-11-18] hi52
             code = f"import time; time.sleep({sleep}); print('{name} out'); raise SystemExit({rcs.get(name, 0)})"
-            steps[name] = r021.Step(name, (lambda c: lambda a, rc: ["-c", c])(code), required=(name not in ("history", "hi52")))
+            steps[name] = r021.Step(name, (lambda c: lambda a, rc: ["-c", c])(code), required=(name not in ("history", "hi52")),
+                                    after_failure=(name == "history"))  # [2026-11-19] history runs after a failed collect
         return mock.patch.dict(r021.STEPS, steps)
 
     def run_job(self, name="postclose"):
@@ -379,7 +380,10 @@ class JobTests(unittest.TestCase):
         with self.fake_steps({"collect": 2}):
             self.assertEqual(self.run_job(), 1)
         st = r021.read_state(self.paths, "postclose")
-        self.assertEqual((st["state"], [s["name"] for s in st["steps"]]), ("failed", ["collect"]))
+        # [2026-11-19] history still runs after the failed collect, the other steps are recorded as skipped
+        self.assertEqual((st["state"], [(s["name"], s["state"]) for s in st["steps"]]),
+                         ("failed", [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("scan", "skipped"),
+                                     ("apply", "skipped")]))
         with self.fake_steps({"history": 1}):
             self.run_job()
         st = r021.read_state(self.paths, "postclose")

@@ -207,6 +207,30 @@ class TestListDataDates(unittest.TestCase):
 
 
 
+class TestHistoryAfterFailedCollect(unittest.TestCase):
+    """[2026-11-19] a failed collect still runs history (after_failure); the other later steps are skipped."""
+
+    def test_history_runs_after_collect_failure(self):
+        import tempfile
+        from unittest import mock
+
+        self.assertTrue(r021.STEPS["history"].after_failure)
+        self.assertFalse(any(r021.STEPS[n].after_failure for n in ("collect", "hi52", "scan", "apply")))
+        with tempfile.TemporaryDirectory() as tmp:
+            steps = {n: r021.Step(n, (lambda a, rc, n=n: ["-c", "raise SystemExit(1)" if n == "collect" else f"print('{n}')"]),
+                                  required=r021.STEPS[n].required, after_failure=r021.STEPS[n].after_failure)
+                     for n in ("collect", "history", "hi52", "scan", "apply")}
+            with mock.patch.dict(r021.STEPS, steps):
+                rc = r021.run_detached_entry("postclose", r021.JobArgs(date="20261118"), "t", r021.Paths(Path(tmp)))
+            st = r021.read_state(r021.Paths(Path(tmp)), "postclose")
+        self.assertEqual(rc, 1)
+        self.assertEqual(st["state"], "failed")
+        self.assertIn("collect failed", st["error"])
+        self.assertEqual([(s["name"], s["state"]) for s in st["steps"]],
+                         [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("scan", "skipped"), ("apply", "skipped")])
+        self.assertEqual(st["steps"][2]["note"], "collect failed")
+
+
 class TestApplyGuard(unittest.TestCase):
     """[2026-11-11] the apply step runs only on picks written by this run's scan (or an existing file when the scan was skipped)."""
 

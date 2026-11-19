@@ -20,6 +20,12 @@
 종료 코드: 0 성공, 2 입력/파일 없음.
 
 Update log:
+- [2026-11-19] type=fix owner=claude
+    summary: bars day/week/month - daily_history 의 마지막 행 이후 날짜는 그 날짜 기준 최신 폴더 daily.csv(latest_daily_csv)의 행으로 채움
+      (join_recent, 겹치는 날은 daily_history 우선). 20261118 KIS 장애로 장 마감 history 단계가 생략돼 전 종목 차트에 11/18 일봉이
+      빠지고 11/17 다음이 11/19(당일 시세)였다. source 에 "+ <폴더 daily.csv 이름>" 이 붙는다.
+    impact: chart data (AutoBotH 일/주/월/년봉)
+    compatibility: backward-compatible (응답 형식 불변)
 - [2026-11-18] type=feat owner=claude
     summary: bars day/week/month - daily_history(2025-09~) 앞에 g040 daily_backfill(2018~)의 더 오래된 행을 이어 붙여 일/주/월봉
       이력을 늘림(사용자 요청: AutoBotH 차트 일봉 이력 확대, 년봉 추가). 겹치는 날은 daily_history/폴더 파일이 이기고, 마지막 겹치는
@@ -440,12 +446,35 @@ def join_backfill(base: pd.DataFrame, back: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([older[cols], base[cols]]).sort_index()
 
 
+def join_recent(base: pd.DataFrame, recent: pd.DataFrame | None) -> pd.DataFrame:
+    """[2026-11-19] rows of `recent` (a date folder's g001 daily.csv) newer than the last row of `base` (daily_history) appended -
+    base wins on shared dates. daily_history is updated only by the postclose history step (g025); when that step did not run
+    (20261118: KIS outage, collect failed, history skipped) the chart had no bar for that day."""
+    if recent is None or recent.empty or base is None or base.empty:
+        return base
+    newer = recent[recent.index > base.index[-1]]
+    if newer.empty:
+        return base
+    cols = [c for c in base.columns if c in newer.columns]
+    return pd.concat([base, newer[cols]]).sort_index()
+
+
 def day_bars(date_str: str, code: str, kind: str) -> tuple[pd.DataFrame, str] | None:
     hist = daily_history_path(code)
     back_path = daily_backfill_path(code)
     if hist is not None:
         df = read_daily(hist)
         src = str(hist)
+        # [2026-11-19] daily_history behind the date folders (history step skipped) -> newer rows from the latest daily.csv
+        recent_path, _ = latest_daily_csv(date_str, code)
+        if recent_path is not None and not df.empty:
+            try:
+                joined = join_recent(df, read_daily(recent_path))
+            except Exception:
+                joined = df
+            if len(joined) > len(df):
+                df = joined
+                src = f"{src} + {recent_path.name}"
     else:
         path, _ = latest_daily_csv(date_str, code)
         if path is None and back_path is None:

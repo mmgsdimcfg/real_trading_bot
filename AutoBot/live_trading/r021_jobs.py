@@ -40,6 +40,12 @@ CPU 를 많이 쓰는 일이다.
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-19] type=fix owner=claude
+    summary: collect(필수) 실패 뒤에도 history(g025 --append) 는 실행 - Step.after_failure. 20261118 KIS 장애로 collect 가 실패하자
+      history 가 생략돼 수집된 1,260종목까지 daily_history 가 11/17 에 멈췄고, AutoBotH 일봉 차트에 11/18 봉이 빠졌다.
+      생략되는 나머지 뒤 단계는 이제 steps 에 skipped(note="<단계> failed") 로 남는다. 작업 state 는 failed 그대로.
+    impact: tooling (주문/감시목록 불변 - scan/apply 는 여전히 생략)
+    compatibility: backward-compatible (상태 JSON 값은 기존 것만 사용, 계약 문서 autoboth_local_mode_20261110.md 갱신)
 - [2026-11-18] type=feat owner=claude
     summary: postclose 에 hi52 단계(g042_hi52_signal_log.py --date D --evaluate, required=False) 추가 - history 다음, scan 앞.
       collect 스위치를 따른다(--no-collect 면 생략). HI52 스윙 신호를 <runtime>/data/hi52_signals 에 기록하고 리포트를 다시 쓴다.
@@ -138,6 +144,8 @@ class Step:
     name: str
     build: Callable[[JobArgs, dict], list[str]]  # (args, rcs of earlier steps) -> argv after python
     required: bool = True  # False: a failure is recorded and the job goes on
+    # [2026-11-19] True: still runs after an earlier required step failed (the other later steps are skipped)
+    after_failure: bool = False
 
 
 def _py(script: str, *a: str) -> list[str]:
@@ -151,7 +159,10 @@ def _workers(a: JobArgs, default: int) -> str:
 STEPS: dict[str, Step] = {
     "collect": Step("collect", lambda a, rc: _py("g001_data_collect_symbols_daily.py", "--date", a.date,
                                                  "--workers", _workers(a, 4))),
-    "history": Step("history", lambda a, rc: _py("g025_daily_history.py", "--append", a.date), required=False),
+    # [2026-11-19] after_failure: a partial collection (KIS outage 20261118) still updates the daily history of the codes it got -
+    # the chart reads daily_history, which otherwise stays on the day before for every code
+    "history": Step("history", lambda a, rc: _py("g025_daily_history.py", "--append", a.date), required=False,
+                    after_failure=True),
     # [2026-11-18] HI52 swing signal forward log + report (no orders); a failure never stops the pipeline
     "hi52": Step("hi52", lambda a, rc: _py("g042_hi52_signal_log.py", "--date", a.date, "--evaluate"), required=False),
     "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--no-export-watchlist",
@@ -557,12 +568,16 @@ class Runner:
         self._save()
         rcs: dict = {}
         final_rc = 0
+        failed_step = None  # [2026-11-19] a required step that failed: only after_failure steps still run
         with open(self.log_path, "ab") as fh:
             self._log(fh, f"job {self.name} start date={self.args.date} by={self.by}")
             for step in job_steps(self.name, self.args):
                 if self._stop_requested():
                     self.state.update(state="stopped")
                     break
+                if failed_step and not step.after_failure:
+                    self._skip_step(step, f"{failed_step} failed", fh)
+                    continue
                 if step.name == "apply":
                     reason = self._apply_skip_reason()
                     if reason:
@@ -578,8 +593,10 @@ class Runner:
                     final_rc = rc or 1
                     if step.required:
                         self.state.update(state="failed", error=f"{step.name} failed (rc={rc}) - later steps skipped")
-                        break
-                    self.state["error"] = f"{step.name} failed (rc={rc}) - continued"
+                        failed_step = failed_step or step.name
+                        continue
+                    if not failed_step:
+                        self.state["error"] = f"{step.name} failed (rc={rc}) - continued"
             if self.state["state"] == "running":
                 self.state["state"] = "done_with_errors" if self.state.get("error") else "done"
             self.state.update(rc=final_rc, finished_at=_now())

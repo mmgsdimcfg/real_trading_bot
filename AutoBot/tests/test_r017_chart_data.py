@@ -184,6 +184,25 @@ class BarsTests(Base):
         ts = [b[0] for b in out["bars"]]
         self.assertEqual(ts, sorted(set(ts)))
 
+    def test_stale_history_gets_newer_rows_from_the_folder_daily_csv(self):
+        # [2026-11-19] daily_history stops 3 days before DAY (history step skipped); the DAY folder daily.csv fills the gap
+        hist = self.data / "daily_history"
+        hist.mkdir()
+        _write_daily(hist / f"{CODE}.csv", "20261102", n=300)
+        rc, out = self.cli("bars", "--date", DAY, "--code", CODE, "--kind", "day")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["bars"][-1][0], "2026-11-05T00:00:00")
+        self.assertIn("daily_history", out["source"])
+        self.assertIn("_daily.csv", out["source"])
+        ts = [b[0] for b in out["bars"]]
+        self.assertEqual(ts, sorted(set(ts)))
+        idx = pd.to_datetime(["20261102", "20261103"])
+        base = pd.DataFrame({"close": [1.0, 2.0]}, index=idx)
+        recent = pd.DataFrame({"close": [9.0, 3.0]}, index=pd.to_datetime(["20261103", "20261104"]))
+        out2 = r017.join_recent(base, recent)
+        self.assertEqual(list(out2["close"]), [1.0, 2.0, 3.0])  # history wins on the shared date
+        self.assertIs(r017.join_recent(base, recent.iloc[:1]), base)
+
     def test_join_backfill_scales_older_rows_on_basis_change(self):
         idx = pd.to_datetime(["20260101", "20260102", "20260105", "20260106"])
         back = pd.DataFrame({"open": [100, 110, 120, 130], "high": [100, 110, 120, 130], "low": [100, 110, 120, 130],
