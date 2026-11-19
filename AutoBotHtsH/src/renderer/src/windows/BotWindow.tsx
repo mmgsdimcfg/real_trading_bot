@@ -4,6 +4,9 @@
 //   window that gets the focus becomes the bot store's current tab. The replay bar is shown where AutoBotH showed it (not on 제어 /
 //   데이터 작업 / 수집기 / 보유 현황 / 가상 매매 / 설정). BotStatusStrip: the AutoBotH status line under the toolbar; BotConfirm: its
 //   app-styled confirmation dialog)
+// - [2026-11-20] type=feat (A symbol picked in a bot window (timeline, board, positions, trades, paper, bot chart, timeline 자동 보기)
+//   is shown in every open HTS symbol window too - chart, current price, stock info, news (followCode; nothing is opened). One way
+//   only: a symbol picked in an HTS window does not change the bot's selection - user 2026-11-20)
 
 import { useEffect, type ReactNode } from 'react';
 import { BOT_TABS, isBotWin, useStore, type BotTab, type Win } from '../store';
@@ -49,6 +52,9 @@ export function linkBotTabs(): void {
   setTabHandlers({
     open: (t) => void useStore.getState().openBot(t),
     shown: (t) => useStore.getState().wins.some((w) => botTabOf(w) === t && !w.min),
+  });
+  useBot.subscribe((s, prev) => {
+    if (s.selected && s.selected !== prev.selected && /^[0-9A-Z]{6}$/.test(s.selected)) useStore.getState().followCode(s.selected);
   });
 }
 

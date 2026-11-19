@@ -63,6 +63,7 @@
  * - [2026-11-19] type=perf - Price request / dataCache key from prefetch.ts (timelinePriceFetch): the background fetch keeps every
  *   watched symbol's bars and events fresh, so opening the tab or switching symbols draws current data at once
  * - [2026-11-20] type=fix - Price chart hints: Ctrl + wheel zooms the time axis (a plain wheel scrolls the view)
+ * - [2026-11-20] type=feat - AutoBotHtsH: 자동 보기 (AutoView) next to the symbol picker - steps through the target symbols every N s
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -73,6 +74,7 @@ import { CartesianGrid, Customized, ReferenceDot, ReferenceLine, ResponsiveConta
 import { reasonKo } from '../../../shared/reasonKo';
 import { useStore } from '../store';
 import { SymbolPicker } from '../components/SymbolPicker';
+import { AutoView } from '../components/AutoView';
 import { condTitle, fmtInt, fmtKrw, sortedConds } from '../lib';
 import { condKeyOf } from '../../../shared/mapping';
 import { fmtKstTime, tradingSessionRange } from '../../../shared/time';
@@ -457,6 +459,7 @@ export function TimelineView() {
     <div className="timeline">
       <div className="toolbar">
         <SymbolPicker allowAll={false} />
+        <AutoView />
         {sym?.nxt && <NxtMark />}
         {selected && <PriceTag code={selected} detail />}
         {sym && (

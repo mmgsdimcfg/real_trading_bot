@@ -2,10 +2,30 @@
 // - [2026-11-06] type=feat (Login: KIS app key + app secret, real / paper server, remember (encrypted with the Windows account), saved-key
 //   login, demo mode. "조회 전용" is fixed - there is no account number field and no way to enable trading. The secret is sent to the
 //   main process once and the field is cleared)
+// - [2026-11-20] type=feat (AutoBotHtsH: title "KIS 로그인 · 설정"; 화면 section with 글자 크기 (80 - 150 %, also Ctrl + = / - / 0) and a
+//   link to the bot connection settings)
 
 import { useState } from 'react';
 import type { KisEnv } from '../../../shared/kis';
-import { useStore } from '../store';
+import { FONT_SCALES, useStore } from '../store';
+
+/** [2026-11-20] 글자 크기 - the whole window is zoomed (text, charts and window frames together) */
+export function FontScaleRow() {
+  const f = useStore((s) => s.fontScale);
+  const setF = useStore((s) => s.setFontScale);
+  return (
+    <div className="font-row" title="앱 전체 글자 크기 (창 틀·차트 포함 배율). 단축키 Ctrl + = 크게, Ctrl + - 작게, Ctrl + 0 기본">
+      <span>글자 크기</span>
+      <span className="seg">
+        {FONT_SCALES.map((v) => (
+          <button key={v} className={Math.abs(v - f) < 0.001 ? 'on' : ''} onClick={() => setF(v)}>
+            {Math.round(v * 100)}%
+          </button>
+        ))}
+      </span>
+    </div>
+  );
+}
 
 export function Login({ onClose }: { onClose?: () => void }) {
   const auth = useStore((s) => s.auth);
@@ -34,7 +54,7 @@ export function Login({ onClose }: { onClose?: () => void }) {
     <div className="login-back">
       <div className="login">
         <h2>
-          <img src="./icon.png" alt="" /> HtsH 로그인
+          <img src="./icon.png" alt="" /> KIS 로그인 · 설정
         </h2>
         <p className="muted small">한국투자증권 KIS Developers에서 발급받은 앱키·앱시크릿으로 시세를 조회합니다.</p>
         <div className="seg">
@@ -74,6 +94,13 @@ export function Login({ onClose }: { onClose?: () => void }) {
         <p className="muted small">
           실전/모의 서버는 앱키를 발급받은 계좌 종류와 같아야 합니다. 같은 앱키를 다른 프로그램(자동매매 등)과 함께 쓰면 초당 호출 한도를 나눠 쓰게 되므로, 가능하면 HtsH용 앱키를 따로 쓰세요.
         </p>
+        <h3 className="login-sub">화면</h3>
+        <FontScaleRow />
+        {auth?.status === 'in' && (
+          <button className="wide" onClick={() => (useStore.getState().openBot('settings'), onClose?.())}>
+            봇 설정·연결 열기 (SSH / 이 PC 실행 위치)
+          </button>
+        )}
         {onClose && auth?.status === 'in' && (
           <div className="actions">
             <button onClick={() => void window.hts.logout(false).then(setAuth)}>로그아웃</button>

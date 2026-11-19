@@ -15,6 +15,8 @@
 //   folder become tabs named MMDD (shared/watchPicks) - checked at start and every 30 s (user 2026-11-19))
 // - [2026-11-20] type=feat (AutoBotHtsH: the AutoBotH tabs are window types 'bot-<tab>' (one window each - openBot() focuses an open
 //   one); names that clash with HtsH get the 봇 prefix (봇 차트, 봇 설정·연결))
+// - [2026-11-20] type=feat (fontScale: 글자 크기 (page zoom 80 - 150 %, kept per PC, applied at start); followCode: every open symbol
+//   window shows the code without opening one - used for the symbol picked in a bot window)
 
 import { create } from 'zustand';
 import type { AuthState } from '../../preload/index';
@@ -168,6 +170,11 @@ interface State {
   toggleWatch: (groupId: string, code: string) => void;
   theme: Theme;
   setTheme: (t: Theme) => void;
+  /** [2026-11-20] 글자 크기 (zoom factor, 1 = 100 %) */
+  fontScale: number;
+  setFontScale: (f: number) => void;
+  /** [2026-11-20] the open symbol windows (chart / current price / info / news) show `code`; nothing is opened */
+  followCode: (code: string) => void;
 }
 
 const LAYOUT_KEY = 'htsh.layout.v1';
@@ -206,6 +213,17 @@ const initial = loadLayout();
 
 const WATCH_KEY = 'htsh.watch.v1';
 const THEME_KEY = 'htsh.theme';
+const FONT_KEY = 'autobothtsh.fontScale';
+export const FONT_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
+export function loadFontScale(): number {
+  try {
+    const v = Number(localStorage.getItem(FONT_KEY));
+    if (v >= 0.7 && v <= 1.6) return v;
+  } catch {
+    /* storage unavailable */
+  }
+  return 1;
+}
 export const DEFAULT_WATCH = ['005930', '000660', '035420', '035720', '005380', '051910', '068270', '105560'];
 export const newGroupId = () => `g${Date.now().toString(36)}${seq++}`;
 
@@ -400,6 +418,11 @@ export const useStore = create<State>()((set, get) => {
       commit({ wins: [], active: null });
     },
 
+    followCode: (code) => {
+      const s = get();
+      if (!s.wins.some((w) => SYMBOL_WINS.includes(w.type) && w.code !== code)) return;
+      commit({ wins: s.wins.map((w) => (SYMBOL_WINS.includes(w.type) ? { ...w, code } : w)), lastCode: code });
+    },
     setCodeAll: (code) => {
       const s = get();
       if (!s.wins.some((w) => SYMBOL_WINS.includes(w.type))) {
@@ -446,6 +469,17 @@ export const useStore = create<State>()((set, get) => {
       });
       get().setWatch(groups);
     },
+    fontScale: loadFontScale(),
+    setFontScale: (f) => {
+      const v = Math.min(1.6, Math.max(0.7, Math.round(f * 100) / 100));
+      set({ fontScale: v });
+      window.hts.setZoom(v);
+      try {
+        localStorage.setItem(FONT_KEY, String(v));
+      } catch {
+        /* storage unavailable */
+      }
+    },
     theme: loadTheme(),
     setTheme: (theme) => {
       set({ theme });
@@ -462,6 +496,18 @@ export const useStore = create<State>()((set, get) => {
 
 export function initStore(): void {
   applyTheme(useStore.getState().theme);
+  // [2026-11-20] 글자 크기: saved zoom, Ctrl + = / Ctrl + - / Ctrl + 0 (the app has no menu, so Electron's own zoom keys are off)
+  window.hts.setZoom(useStore.getState().fontScale);
+  window.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || e.altKey || e.metaKey) return;
+    const s = useStore.getState();
+    const i = FONT_SCALES.findIndex((f) => f >= s.fontScale - 0.001);
+    if (e.key === '=' || e.key === '+') s.setFontScale(FONT_SCALES[Math.min(FONT_SCALES.length - 1, (i < 0 ? FONT_SCALES.length - 1 : i) + 1)]);
+    else if (e.key === '-') s.setFontScale(FONT_SCALES[Math.max(0, (i < 0 ? 0 : i) - 1)]);
+    else if (e.key === '0') s.setFontScale(1);
+    else return;
+    e.preventDefault();
+  });
   void window.hts.authState().then((a) => useStore.getState().setAuth(a));
   window.hts.onAuth((a) => useStore.getState().setAuth(a));
   window.hts.onRtStatus((rt) => {

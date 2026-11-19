@@ -397,3 +397,8 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .dd-group + .dd-group { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 3px; }
 .dd-caption { font-size: 11px; color: var(--text-3); padding: 2px 10px; }
 .dd-menu button.on { font-weight: 600; }
+
+/* [2026-11-20] 글자 크기 setting (KIS 로그인 · 설정) */
+.login-sub { margin: 10px 0 0; font-size: 13px; color: var(--text-2); font-weight: 600; }
+.font-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.font-row .seg button { padding: 2px 7px; }

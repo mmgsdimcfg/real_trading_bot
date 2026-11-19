@@ -4,9 +4,10 @@
 //   goes to main once at login and never comes back)
 // - [2026-11-19] type=feat (watchLoad / watchSave / watchPicks / watchDir / watchOpenDir - watchlist file and picks files)
 // - [2026-11-20] type=feat (AutoBotHtsH: window.api = the AutoBotH bridge (src/bot/preload) for the bot windows)
+// - [2026-11-20] type=feat (hts.setZoom: page zoom factor for the 글자 크기 setting (webFrame, this window only))
 
 import { api as botApi } from '../bot/preload/index';
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webFrame } from 'electron';
 import type { MasterItem, KisEnv } from '../shared/kis';
 import type { Res } from '../shared/market';
 import type { PickGroup, PicksEntry } from '../shared/watchPicks';
@@ -33,6 +34,8 @@ export interface AuthState {
 }
 
 const hts = {
+  /** [2026-11-20] 글자 크기: zoom factor 0.7 - 1.6 */
+  setZoom: (f: number) => webFrame.setZoomFactor(Math.min(1.6, Math.max(0.7, Number(f) || 1))),
   version: ipcRenderer.sendSync('get-app-version') as string,
   authState: (): Promise<AuthState> => ipcRenderer.invoke('auth:state'),
   login: (req: { env: KisEnv; appKey?: string; appSecret?: string; remember: boolean; useSaved?: boolean }): Promise<Res<AuthState>> => ipcRenderer.invoke('auth:login', req),
