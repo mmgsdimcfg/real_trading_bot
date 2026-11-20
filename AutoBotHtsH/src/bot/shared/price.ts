@@ -10,9 +10,10 @@
  * - [2026-11-06] type=feat - ServerBars / serverRowsToBars for r016 `bars` (server-side aggregation, daily_history, KIS fallback once added)
  *   and MarketQuote for the requested r016 `quote` (current price, 10-level order book, latest trades)
  * - [2026-11-18] type=feat - ChartKind 'year' (yearly bars grouped from the daily bars, like week / month)
+ * - [2026-11-20] type=feat - regularOnly(): tick / minute bars inside the regular session 09:00 - 15:30 KST (운용 시간 = 정규장만)
  */
 
-import { kstToEpoch } from './time';
+import { kstSecondOfDay, kstToEpoch } from './time';
 
 export type ChartKind = 'tick' | 'min' | 'day' | 'week' | 'month' | 'year';
 
@@ -499,4 +500,13 @@ export function mergeMinuteBars(kis: Bar[], ticks: Bar[]): Bar[] {
     if (!by.has(m) || m >= lastKis) by.set(m, b);
   }
   return [...by.entries()].sort((x, y) => x[0] - y[0]).map(([, b]) => b);
+}
+
+/** [2026-11-20] tick / minute bars inside the regular session (09:00 - 15:30 KST, the 15:30 closing print included) - the charts
+ *  when the bot runs the regular session only (운용 시간 = 정규장만, r001 ENABLE_NXT_SESSION off) */
+export function regularOnly<T extends { t: number }>(bars: T[]): T[] {
+  return bars.filter((b) => {
+    const s = kstSecondOfDay(b.t);
+    return s >= 9 * 3600 && s <= 15.5 * 3600;
+  });
 }

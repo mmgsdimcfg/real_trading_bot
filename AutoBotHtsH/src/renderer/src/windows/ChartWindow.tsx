@@ -34,6 +34,7 @@
 //   the window (volR, oscH; a double click on the handle = automatic again). The 투자자 누적 pane says when it is loading or KIS refused)
 // - [2026-11-20] type=fix (drop-downs inside the window (지표 / 기간 설정 / 관심종목 ☆) float over the app (FloatPop) and open toward the
 //   side with room instead of being cut off at the window edge)
+// - [2026-11-20] type=feat (운용 시간 = 정규장만 (bot setting r001 ENABLE_NXT_SESSION off): tick / minute charts show 09:00 - 15:30 only)
 
 // - [2026-11-20] type=fix (지표 menu / 기간 설정 close on a click outside them or Esc - before, only a click on the chart closed them)
 // - [2026-11-20] type=fix (Switching 일 -> 분 (any bar kind / size / days / symbol) drew the old bars with the new settings until the new
@@ -51,6 +52,9 @@ import { FRACTION_PARAMS, HTS_PARAMS, INV_MONTHS, INV_MONTHS_LABEL, normalizePar
 import { WatchStar } from './ListWindows';
 import { FloatPop } from '../components/FloatPop';
 import { acmlMismatches, applyTrades, tickBarsFromTrades, TRADE_CAP } from '../../../shared/live';
+import { regularOnly } from '../../../bot/shared/price';
+import { nxtSessionOn } from '../../../bot/shared/control';
+import { useStore as useBot } from '../../../bot/renderer/src/store';
 import type { ChartRes, InvestorDay, TicksCursor, TicksRes } from '../../../shared/market';
 import type { TradeTick } from '../../../shared/kis';
 
@@ -337,7 +341,9 @@ export function ChartWindow({ win }: { win: Win }) {
   }, [kind, prevKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const prevBars = kind === 'tick' && prevMin.key === prevKey ? prevMin.bars : NO_BARS;
 
-  const bars: Bar[] = useMemo(() => {
+  // [2026-11-20] 운용 시간 = 정규장만 (bot r001 ENABLE_NXT_SESSION off): tick / minute bars of 09:00 - 15:30 only
+  const nxtOn = useBot((s) => nxtSessionOn(s.control.nxt));
+  const allBars: Bar[] = useMemo(() => {
     if (kind === 'tick') {
       const tb = tickBarsFromTrades(trades, n);
       return prevBars.length ? [...prevBars, ...tb] : tb;
@@ -347,6 +353,7 @@ export function ChartWindow({ win }: { win: Win }) {
     // trades after the REST fetch time roll into the bars (REST data is newest up to about its fetch time)
     return applyTrades(res.bars, trades, kind, n, res.at - 1000);
   }, [res, trades, kind, n, prevBars, reqKey]);
+  const bars = useMemo(() => (intraday && !nxtOn ? regularOnly(allBars) : allBars), [allBars, intraday, nxtOn]);
 
   // REST and realtime trades must share one accumulated-volume basis, or the same trade is counted twice - shown when it happens
   const mismatch = useMemo(() => (kind === 'tick' ? acmlMismatches(trades) : 0), [kind, trades]);

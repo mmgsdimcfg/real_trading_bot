@@ -49,6 +49,7 @@
  * - [2026-11-20] type=feat - The local-mode scheduler runs in one app per PC (AutoBotH / AutoBotHtsH, sharedSched.ts): the other one
  *   waits and its scheduler line says which app runs it; the last post-close / watchlist-copy days are shared so a takeover does not
  *   start the same day's post-close job again
+ * - [2026-11-20] type=feat - scheduler deps.nxtOn = nxtSessionOn(control.nxt()) - collector window and post-close time follow 운용 시간
  */
 
 import { app, BrowserWindow, dialog, ipcMain, powerSaveBlocker, shell } from 'electron';
@@ -72,7 +73,7 @@ import { createSharedSched } from './sharedSched';
 import { PriceService } from './prices';
 import { PriceFileCache, prunePriceCache } from './priceCache';
 import type { MarketQuote, PriceRequest, PriceResponse } from '../shared/price';
-import { CHART_CACHE_MS, dayRollTarget, localYmd, quoteCacheMs, resolveSessionOpen, statusPollMs, writerName, type R016Status } from '../shared/control';
+import { CHART_CACHE_MS, dayRollTarget, localYmd, quoteCacheMs, nxtSessionOn, resolveSessionOpen, statusPollMs, writerName, type R016Status } from '../shared/control';
 import { LocalDirSource, RemoteDaySource, cacheDirFor, cachedDates, pruneCache } from './sources';
 
 let win: BrowserWindow | null = null;
@@ -157,6 +158,7 @@ const scheduler = createScheduler({
     sharedSched.setMeta(p);
   },
   syncToPeer: () => peer.syncWatchlist(),
+  nxtOn: () => nxtSessionOn(control.nxt()),
   send: (s: SchedState) => send('sched', s),
 });
 

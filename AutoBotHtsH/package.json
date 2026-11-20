@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-20] type=feat - v1.0.4_001: 운용 시간 설정 (설정 탭: 정규장만 / 프리·애프터 포함 = 서버 r001 ENABLE_NXT_SESSION). 정규장만이면 매매 15:30 종료, 틱 수집기 KRX만 (서버 g011/r016), 이 PC 수집기 확인 08:45~15:35, 장 마감 작업(수집 -> 선별 -> AI 학습 -> r004 -> 메일) 15:40 (프리/애프터 포함 20:10, 각각 설정 가능), 타임라인·봇 차트 · HTS 차트 창의 분봉/틱도 09:00~15:30. 가상 매매는 항상 정규장만",
     "[2026-11-20] type=fix - v1.0.3_009: 설정 탭 알 수 없는 태그 목록에 [REENTRY PNL] (봇이 종목을 다 판 뒤 재진입 한도 기록, 조건 아님) 이 나오던 문제 - 무시 태그로 분류",
     "[2026-11-20] type=fix - v1.0.3_008: 창 안의 드롭다운(차트 지표 / 기간 설정 / 관심종목 ☆)이 창 가장자리에서 잘리던 문제 - 창 밖으로 띄우고, 공간이 모자라면 반대쪽(위 / 왼쪽)으로 펼침",
     "[2026-11-20] type=feat - v1.0.3_007: 가상 매매 순손익 합계 = 평균 % · 금액 합계 (평균 % = 순손익 금액 / 총매수액, 이전엔 거래별 % 의 단순 합). 거래당 평균 칸 삭제, 매수·매도 줄은 한 줄로",
@@ -19,7 +20,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -72,7 +73,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "009",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

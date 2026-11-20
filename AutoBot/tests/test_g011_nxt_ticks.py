@@ -209,8 +209,11 @@ class WindowTest(unittest.TestCase):
         import r001_define_config as cfg
         with mock.patch.object(cfg, "TICK_COLLECT_NXT", False):
             self.assertIsNone(r016.collector_nxt_hours())
-        with mock.patch.object(cfg, "TICK_COLLECT_NXT", True):
+        with mock.patch.object(cfg, "TICK_COLLECT_NXT", True), mock.patch.object(cfg, "ENABLE_NXT_SESSION", True):
             self.assertEqual(r016.collector_nxt_hours(), (cfg.MORNING_NXT_START, cfg.AFTERNOON_NXT_END))
+        # [2026-11-20] 운용 시간 = 정규장만: no NXT window even with TICK_COLLECT_NXT on
+        with mock.patch.object(cfg, "TICK_COLLECT_NXT", True), mock.patch.object(cfg, "ENABLE_NXT_SESSION", False):
+            self.assertIsNone(r016.collector_nxt_hours())
 
 
 if __name__ == "__main__":

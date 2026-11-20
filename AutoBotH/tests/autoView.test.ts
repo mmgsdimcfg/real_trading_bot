@@ -3,6 +3,7 @@
  * - [2026-11-20] type=test - timeline 자동 보기: next symbol (wraps, starts from the first when the current one is not a
  *   target), seconds clamped to 3 - 600, target scopes (전체 / 감시 중 / 보유)
  * - [2026-11-20] type=test - only symbols trading at the viewed time (NXT 08:00, KRX 09:00; replay cursor; whole past day = all)
+ * - [2026-11-20] type=test - 운용 시간 = 정규장만: every symbol from 09:00
  */
 
 import { describe, expect, it } from 'vitest';
@@ -45,9 +46,13 @@ describe('timeline auto view', () => {
     expect(tradingAt(unknown, '20261120', at('08:30'))).toBe(false);
     expect(tradingAt(krx, '20261120', at('09:00'))).toBe(true);
     expect(tradingAt(nxt, '20261120', at('07:59'))).toBe(false);
+    // [2026-11-20] 운용 시간 = 정규장만: NXT symbols wait for 09:00 too
+    expect(tradingAt(nxt, '20261120', at('08:30'), false)).toBe(false);
+    expect(tradingAt(nxt, '20261120', at('09:00'), false)).toBe(true);
     const snap = { date: '20261120', symbols: [nxt, krx, unknown] } as unknown as Snapshot;
     expect(autoTargets(snap, 'all', at('08:30'))).toEqual({ codes: ['N'], waiting: 2 });
     expect(autoTargets(snap, 'all', at('10:00'))).toEqual({ codes: ['N', 'K', 'U'], waiting: 0 });
+    expect(autoTargets(snap, 'all', at('08:30'), false)).toEqual({ codes: [], waiting: 3 });
     // live day = now, replayed past day = the cursor, whole past day = everything
     expect(viewTime(true, null, 5)).toBe(5);
     expect(viewTime(false, 7, 5)).toBe(7);

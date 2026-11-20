@@ -233,6 +233,14 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - g011 로그 추가 줄: `NXT codes=N window=08:00~20:00 ...`, `SUBSCRIBED krx=A nxt=B (+x -y)`, `NXT SUBSCRIBE ERROR <code> ...`,
   `STOPPED rows=... nxt_rows=...`. `START` / `CODES` 줄은 그대로(KRX 구독 목록).
 
+### 9-0. 운용 시간 설정 (2026-11-20)
+- r001 `ENABLE_NXT_SESSION` 하나가 "운용 시간"이다 (앱 설정 탭: 정규장만 / 프리·애프터 포함, r016 `set` / `unset`). 응답 형식 변경 없음.
+- 끄면(정규장만): r003 15:30 종료(종전 그대로), g011 NXT 구독 안 함(`TICK_COLLECT_NXT` 가 True 라도), r016 `collector_nxt_hours()` = None
+  -> `collector start` 허용 시간이 KRX (장 시작 15분 전 ~ 마감) 만. r022 가상 매매는 설정과 무관하게 정규장만.
+- 앱: 스케줄러 수집기 확인 08:45~15:35, 장 마감 작업 `settings.postcloseTimeRegular` (기본 15:40) / 켜면 07:55~19:55, `postcloseTime` (20:10).
+  차트·타임라인 x축 09:00~15:30 (켜면 08:00~20:00). 판단 기준: 실행 중 r003 값, 없으면 저장값, 모르면 켬.
+- 라즈베리파이 cron 은 저장소 밖이다: g022 는 g011 이 직접 r001 을 보므로 따라가지만, 고정 시각 cron 이 있으면 손으로 맞춘다.
+
 ### 9-1. 틱 CSV v3 - 호가/수급 열 (2026-11-17)
 - KRX/NXT 틱 CSV 끝에 9열 추가(r009 `TICK_DEPTH_COLUMNS`, 기존 열 순서 불변): `askp_rsqn1,bidp_rsqn1,total_askp_rsqn,
   total_bidp_rsqn,cttr,seln_cntg_smtn,shnu_cntg_smtn,wghn_avrg_stck_prc,vi_stnd_prc` (1호가 잔량, 총 매도/매수 호가 잔량,

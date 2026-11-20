@@ -11,12 +11,14 @@
  * - [2026-11-20] type=feat - One auto view at a time (AutoBotHtsH: timeline and watchlist): turning one on sends AUTO_VIEW_EVENT with
  *   its name; any other auto view that is on unchecks itself and stops. autoViewStarted() / onAutoViewStarted() are the two ends.
  *   The last one started is kept (localStorage autoview.owner): one saved as on whose window opens later stays off if another started since
+ * - [2026-11-20] type=feat - 운용 시간 = 정규장만 (r001 ENABLE_NXT_SESSION off): every symbol from 09:00 (no NXT pre-market)
  */
 
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { Snapshot, SymbolSummary } from '../../../shared/types';
 import { tradingSessionRange } from '../../../shared/time';
+import { nxtSessionOn } from '../../../shared/control';
 
 export type AutoScope = 'all' | 'active' | 'held';
 
@@ -79,16 +81,16 @@ export function viewTime(live: boolean, cursor: number | null | undefined, now: 
 }
 
 /** the symbol trades at `t` already (NXT from 08:00, KRX-only from 09:00); `t` null = always */
-export function tradingAt(s: SymbolSummary, date: string | undefined, t: number | null): boolean {
+export function tradingAt(s: SymbolSummary, date: string | undefined, t: number | null, nxtOn = true): boolean {
   if (t === null) return true;
-  const r = tradingSessionRange(date, s.nxt === true);
+  const r = tradingSessionRange(date, s.nxt === true, nxtOn);
   return !r || t >= r[0];
 }
 
 /** codes the loop goes through: in scope and already trading at `t`; `waiting` = in scope but not trading yet */
-export function autoTargets(snap: Snapshot | null, scope: AutoScope, t: number | null): { codes: string[]; waiting: number } {
+export function autoTargets(snap: Snapshot | null, scope: AutoScope, t: number | null, nxtOn = true): { codes: string[]; waiting: number } {
   const inS = (snap?.symbols || []).filter((s) => inScope(s, scope));
-  const codes = inS.filter((s) => tradingAt(s, snap?.date, t)).map((s) => s.code);
+  const codes = inS.filter((s) => tradingAt(s, snap?.date, t, nxtOn)).map((s) => s.code);
   return { codes, waiting: inS.length - codes.length };
 }
 
@@ -105,7 +107,8 @@ export function AutoView() {
   const selected = useStore((s) => s.selected);
   const snap = useStore((s) => s.snapshot);
   const live = useStore((s) => s.status.live);
-  const { codes, waiting } = autoTargets(snap, cfg.scope, viewTime(live, snap?.replay?.cursor, Date.now()));
+  const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
+  const { codes, waiting } = autoTargets(snap, cfg.scope, viewTime(live, snap?.replay?.cursor, Date.now()), nxtOn);
   const save = (p: Partial<AutoCfg>) => {
     setCfg((cur) => {
       const next = { ...cur, ...p };
@@ -129,12 +132,12 @@ export function AutoView() {
     if (!cfg.on) return;
     const t = setTimeout(() => {
       const st = useStore.getState();
-      const list = autoTargets(st.snapshot, cfg.scope, viewTime(st.status.live, st.snapshot?.replay?.cursor, Date.now())).codes;
+      const list = autoTargets(st.snapshot, cfg.scope, viewTime(st.status.live, st.snapshot?.replay?.cursor, Date.now()), nxtSessionOn(st.control.nxt)).codes;
       const n = nextCode(list, st.selected);
       if (n && n !== st.selected) st.select(n);
     }, cfg.sec * 1000);
     return () => clearTimeout(t);
-  }, [cfg.on, cfg.sec, cfg.scope, selected, key]);
+  }, [cfg.on, cfg.sec, cfg.scope, selected, key]); // nxtOn changes the list (key)
 
   const pos = selected ? codes.indexOf(selected) : -1;
   return (
@@ -161,7 +164,7 @@ export function AutoView() {
         ))}
       </select>
       {cfg.on && (
-        <span className="muted" title={waiting ? `거래 시작 전 ${waiting}종목은 빠짐 (NXT 종목 08:00, KRX 종목 09:00부터)` : undefined}>
+        <span className="muted" title={waiting ? `거래 시작 전 ${waiting}종목은 빠짐 (${nxtOn ? 'NXT 종목 08:00, KRX 종목 09:00부터' : '정규장만 운용 - 09:00부터'})` : undefined}>
           {codes.length ? `${pos >= 0 ? pos + 1 : '-'}/${codes.length}` : '대상 없음'}
           {waiting ? ` (거래 전 ${waiting} 제외)` : ''}
         </span>

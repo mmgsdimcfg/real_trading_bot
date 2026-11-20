@@ -49,6 +49,11 @@ AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-20] type=feat owner=claude
+    summary: 사용자 요청(운용 시간 설정) - collector_nxt_hours(): r001 ENABLE_NXT_SESSION 이 꺼져 있으면(정규장만) NXT 수집 창 없음 ->
+      collector start 시간창이 KRX 정규장(시작 15분 전 ~ 마감)으로 줄어든다. g011 도 같은 조건으로 NXT 를 구독하지 않는다.
+    impact: control CLI (collector start / 수집기 상태의 시간창)
+    compatibility: backward-compatible (ENABLE_NXT_SESSION=True 면 종전과 동일)
 - [2026-11-16] type=feat owner=claude
     summary: AutoBotH 수집기 탭 - collector detail(상태·설정·그날 구독 계획/역할·종목별 KRX/NXT 파일(체결 수 추정, 첫/마지막 체결,
       끊김)·로그 이벤트·일별 이력·디스크, 읽기 전용) / stop / extra(추가 수집 종목, config/tick_collect_extra.json) /
@@ -718,10 +723,13 @@ COLLECTOR_NXT_PRE_MINUTES = 5    # NXT collection (r001 TICK_COLLECT_NXT): start
 
 
 def collector_nxt_hours():
-    """(start, end) times of the NXT collection window, or None when g011 collects KRX only (r001 TICK_COLLECT_NXT)."""
+    """(start, end) times of the NXT collection window, or None when g011 collects KRX only (r001 TICK_COLLECT_NXT off, or
+    [2026-11-20] ENABLE_NXT_SESSION off = the bot runs the regular session only)."""
     try:
         import r001_define_config as cfg
         if not bool(getattr(cfg, "TICK_COLLECT_NXT", False)):
+            return None
+        if not bool(getattr(cfg, "ENABLE_NXT_SESSION", True)):   # [2026-11-20] 운용 시간 = 정규장만
             return None
         return cfg.MORNING_NXT_START, cfg.AFTERNOON_NXT_END
     except Exception:

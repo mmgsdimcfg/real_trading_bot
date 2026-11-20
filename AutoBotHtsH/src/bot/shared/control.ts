@@ -1,5 +1,8 @@
 /*
  * Update log
+ * - [2026-11-20] type=feat - 운용 시간 (user 2026-11-20): nxtSessionOn() reads r001 ENABLE_NXT_SESSION (off = regular session only);
+ *   collectorWindow() and postcloseAt() follow it (regular only: collector check 08:45 - 15:35, post-close job at
+ *   settings.postcloseTimeRegular 15:40; NXT: 07:55 - 19:55, settings.postcloseTime 20:10)
  * - [2026-11-17] type=feat - JobDatesInfo (r016 `job dates`: date folders with collected / scannable / picks)
  * - [2026-11-16] type=feat - 수집기 tab: CollectorDetail (r016 collector detail), CollectorPrune, TickExtra, validTickCode
  * - [2026-11-16] type=fix - pctHint: r001 *_PCT keys in percent units (GC_VOLATILITY_MIN_ATR_1MIN_PCT 0.5 = 0.5 %, HYBRID_1MIN_TRIGGER_*, TRIPLE_*,
@@ -760,13 +763,27 @@ export function postcloseDue(now: Date, at: string, lastYmd: string | undefined)
 
 /** Tick collector window on this PC (Mon-Fri 07:55-19:55): r016 `collector start` checks the exact calendar itself.
  *  [2026-11-12] was 08:40-15:35 - g011 now also records NXT executions (08:00-20:00, r001 TICK_COLLECT_NXT); a server that
- *  collects KRX only refuses the start outside its own window, which costs nothing. */
-export function collectorWindow(now: Date): boolean {
+ *  collects KRX only refuses the start outside its own window, which costs nothing.
+ *  [2026-11-20] `nxt` false (운용 시간 = 정규장만): 08:45-15:35 - g011 records KRX only then */
+export function collectorWindow(now: Date, nxt = true): boolean {
   const dow = now.getDay();
   if (dow === 0 || dow === 6) return false;
   const m = now.getHours() * 60 + now.getMinutes();
-  return m >= 7 * 60 + 55 && m < 19 * 60 + 55;
+  return nxt ? m >= 7 * 60 + 55 && m < 19 * 60 + 55 : m >= 8 * 60 + 45 && m < 15 * 60 + 35;
 }
+
+/** [2026-11-20] 운용 시간: true = the NXT sessions too (08:00 - 20:00), false = the regular session only (09:00 - 15:30).
+ *  The running r003's value first, else the saved one; unknown (not read yet) = true, the r001 default */
+export function nxtSessionOn(nxt: NxtState | null | undefined): boolean {
+  return nxt ? (nxt.running ?? nxt.effective) : true;
+}
+
+/** [2026-11-20] post-close job time for the 운용 시간 setting */
+export function postcloseAt(s: { postcloseTime: string; postcloseTimeRegular?: string }, nxt: boolean): string {
+  return nxt ? s.postcloseTime : s.postcloseTimeRegular || POSTCLOSE_REGULAR_DEFAULT;
+}
+export const POSTCLOSE_REGULAR_DEFAULT = '15:40';
+export const POSTCLOSE_NXT_DEFAULT = '20:10';
 
 /**
  * Cross-host guard before starting r003 on `self` (decision only; the main process does the calls).

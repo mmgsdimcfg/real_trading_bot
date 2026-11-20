@@ -309,7 +309,7 @@ class CollectorStartTests(unittest.TestCase):
         self.td.cleanup()
 
     def test_window_and_spawn(self):
-        from datetime import datetime
+        from datetime import datetime, time as dt_time
         calls = []
 
         def spawn(argv, **kw):
@@ -323,7 +323,9 @@ class CollectorStartTests(unittest.TestCase):
                 out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 8, 40), spawn=spawn)
                 self.assertFalse(out["ok"])
             # [2026-11-12] NXT collection (r001 TICK_COLLECT_NXT): the window opens 5 min before the 08:00 pre-market
-            out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 7, 50), spawn=spawn)
+            # ([2026-11-20] fixed to the NXT window - the host's own ENABLE_NXT_SESSION may be off)
+            with mock.patch.object(r016, "collector_nxt_hours", return_value=(dt_time(8, 0), dt_time(20, 0))):
+                out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 7, 50), spawn=spawn)
             self.assertFalse(out["ok"])
             self.assertIn("NXT", out["window"])
             out = r016.collector_start(self.paths, "t", now=datetime(2026, 11, 10, 8, 46), spawn=spawn)

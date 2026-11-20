@@ -18,9 +18,11 @@
  * - [2026-11-19] type=fix - Start message uses the pipeline checkbox names (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))
  * - [2026-11-20] type=feat - deps.blockedBy: another app (AutoBotH / AutoBotHtsH on the same PC) holds the shared scheduler
  *   (sharedSched.ts) - this one stays off and says so
+ * - [2026-11-20] type=feat - 운용 시간 (deps.nxtOn = r001 ENABLE_NXT_SESSION): regular session only -> collector check 08:45-15:35 and
+ *   the post-close job at settings.postcloseTimeRegular (15:40); NXT -> 07:55-19:55 and settings.postcloseTime (20:10)
  */
 
-import { collectorWindow, localYmd, postcloseDue, type JobList, type R016Status } from '../shared/control';
+import { collectorWindow, localYmd, postcloseAt, postcloseDue, type JobList, type R016Status } from '../shared/control';
 import type { Settings } from '../shared/types';
 import type { R016Client } from './control';
 
@@ -42,6 +44,8 @@ export interface SchedDeps {
   syncToPeer: () => Promise<{ ok: boolean; error?: string; count?: number }>;
   /** [2026-11-20] name of the other app running the scheduler on this PC (null = none) */
   blockedBy?: () => string | null;
+  /** [2026-11-20] 운용 시간: the bot runs the NXT sessions too (unknown = true) */
+  nxtOn?: () => boolean;
   send: (s: SchedState) => void;
 }
 
@@ -75,7 +79,8 @@ export function createScheduler(deps: SchedDeps) {
       const s = deps.settings();
       const now = new Date();
       const role = deps.status()?.host?.role;
-      if (s.autoCollector && collectorWindow(now) && (!state.lastCollectorAt || Date.now() - state.lastCollectorAt >= COLLECTOR_EVERY_MS)) {
+      const nxtOn = deps.nxtOn ? deps.nxtOn() : true;
+      if (s.autoCollector && collectorWindow(now, nxtOn) && (!state.lastCollectorAt || Date.now() - state.lastCollectorAt >= COLLECTOR_EVERY_MS)) {
         state.lastCollectorAt = Date.now();
         // only on a host that is explicitly primary (set by an r003 start through the cross-host guard): a PC without a role
         // file counts as primary for r016, and a g011 here while the Pi still collects would fight over the KIS websocket
@@ -107,7 +112,7 @@ export function createScheduler(deps: SchedDeps) {
       }
       const meta = deps.meta();
       const today = localYmd(now);
-      if (s.autoPostclose && deps.active() && postcloseDue(now, s.postcloseTime, meta.lastPostcloseYmd)) {
+      if (s.autoPostclose && deps.active() && postcloseDue(now, postcloseAt(s, nxtOn), meta.lastPostcloseYmd)) {
         if (deps.status()?.running) {
           push({ lastPostcloseMsg: `${hm()} 장 마감 작업 대기 - r003 실행 중 (종료 후 시작)` });
         } else {

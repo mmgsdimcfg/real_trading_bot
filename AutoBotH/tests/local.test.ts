@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { R016Client } from '../src/main/control';
 import { LocalHost, HostSwitch } from '../src/main/host';
-import { collectorWindow, localYmd, peerDecision, postcloseDue, serviceButtons, type R016Status } from '../src/shared/control';
+import { collectorWindow, localYmd, nxtSessionOn, peerDecision, postcloseAt, postcloseDue, serviceButtons, type R016Status } from '../src/shared/control';
 
 const j = (o: unknown) => JSON.stringify(o);
 
@@ -86,6 +86,22 @@ describe('scheduler rules', () => {
     expect(postcloseDue(at(2026, 11, 10, 23, 0), '20:10', '20261110')).toBe(false);
     expect(postcloseDue(at(2026, 11, 8, 21, 0), '20:10', undefined)).toBe(false); // Sunday
     expect(postcloseDue(at(2026, 11, 10, 21, 0), 'bad', undefined)).toBe(false);
+  });
+  it('[2026-11-20] 운용 시간: regular session only -> collector 08:45-15:35, post-close at the regular time', () => {
+    expect(collectorWindow(at(2026, 11, 10, 8, 0), false)).toBe(false);
+    expect(collectorWindow(at(2026, 11, 10, 8, 45), false)).toBe(true);
+    expect(collectorWindow(at(2026, 11, 10, 15, 34), false)).toBe(true);
+    expect(collectorWindow(at(2026, 11, 10, 15, 35), false)).toBe(false);
+    expect(collectorWindow(at(2026, 11, 10, 18, 0), true)).toBe(true);
+    const s = { postcloseTime: '20:10', postcloseTimeRegular: '15:40' };
+    expect(postcloseAt(s, false)).toBe('15:40');
+    expect(postcloseAt(s, true)).toBe('20:10');
+    expect(postcloseAt({ postcloseTime: '20:10' }, false)).toBe('15:40');
+    expect(postcloseDue(at(2026, 11, 10, 15, 40), postcloseAt(s, false), undefined)).toBe(true);
+    const nxt = { effective: false, running: null, base: true, has_override: true, pending: false };
+    expect(nxtSessionOn(undefined)).toBe(true);
+    expect(nxtSessionOn(nxt)).toBe(false);
+    expect(nxtSessionOn({ ...nxt, running: true, pending: true })).toBe(true); // the running r003 still runs NXT
   });
   it('tick collector window Mon-Fri 08:40-15:35', () => {
     expect(collectorWindow(at(2026, 11, 10, 7, 54))).toBe(false);

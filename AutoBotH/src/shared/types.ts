@@ -6,6 +6,7 @@
  * - [2026-11-04] type=feat - Shared data model of the r003 condition pipeline viewer (main process, worker, renderer)
  * - [2026-11-10] type=feat - Local mode: RunMode, AppStatus.mode, Settings.runMode / localRoot / localPython / local poll intervals,
  *   scheduler switches (autoCollector, autoPostclose + postcloseTime / postcloseEdgeAi, syncWatchlistToPeer) and keepAwake
+ * - [2026-11-20] type=feat - Settings.postcloseTimeRegular (post-close time for 운용 시간 = 정규장만)
  */
 
 export type Stage = 'STATE' | 'TRIGGER' | 'CONTEXT' | 'PRE_ORDER' | 'GUARD' | 'EXIT' | 'ORDER' | string;
@@ -269,7 +270,10 @@ export interface Settings {
   autoCollector: boolean;
   /** run the post-close job (collect -> history -> scan) on trading days at postcloseTime */
   autoPostclose: boolean;
+  /** post-close time while the bot runs the NXT sessions too (ENABLE_NXT_SESSION on) */
   postcloseTime: string;
+  /** [2026-11-20] post-close time while it runs the regular session only (15:40) */
+  postcloseTimeRegular: string;
   /** add the Edge AI steps to the post-close job */
   postcloseEdgeAi: boolean;
   /** [2026-11-11] the scheduled post-close job mails the picks (r021 --email -> g002 --notify-email) */

@@ -64,6 +64,8 @@
  *   watched symbol's bars and events fresh, so opening the tab or switching symbols draws current data at once
  * - [2026-11-20] type=fix - Price chart hints: Ctrl + wheel zooms the time axis (a plain wheel scrolls the view)
  * - [2026-11-20] type=feat - 자동 보기 (AutoView) next to the symbol picker - steps through the target symbols every N s
+ * - [2026-11-20] type=feat - 운용 시간 (user 2026-11-20): regular session only (r001 ENABLE_NXT_SESSION off) -> the x axis is 09:00 - 15:30
+ *   and every symbol shows only what falls in it (NXT minutes / events left out); NXT on -> 08:00 - 20:00 as before
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -78,6 +80,7 @@ import { AutoView } from '../components/AutoView';
 import { condTitle, fmtInt, fmtKrw, sortedConds } from '../lib';
 import { condKeyOf } from '../../../shared/mapping';
 import { fmtKstTime, tradingSessionRange } from '../../../shared/time';
+import { nxtSessionOn } from '../../../shared/control';
 import type { EvalEvent, Trade } from '../../../shared/types';
 import { MIN_SIZES, TICK_SIZES, type ChartKind, type PriceResponse } from '../../../shared/price';
 import { OSC_PANE_H, PRICE_PANE_H, PriceChart, chartHeight } from '../components/PriceChart';
@@ -276,6 +279,7 @@ export function TimelineView() {
   const selected = useStore((s) => s.selected);
   const timeline = useStore((s) => s.timeline);
   const status = useStore((s) => s.status);
+  const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
   const chart = useStore((s) => s.chart);
   const setChart = useStore((s) => s.setChart);
   const [price, setPrice] = useState<PriceResponse | null>(null);
@@ -330,11 +334,12 @@ export function TimelineView() {
   // [2026-11-18] a KRX-only symbol: only what falls in the KRX session (09:00 - 15:30) is drawn
   // [2026-11-19] ... 09:00 - 20:00 (KRX after-hours market); NXT = the day's WATCH line or the server's flag on the price answer
   // (holdings outside the watchlist have no WATCH line)
+  // [2026-11-20] 운용 시간 = 정규장만: every symbol 09:00 - 15:30
   const selNxt = !!snap?.symbols.find((s) => s.code === selected)?.nxt || (price?.ok === true && price.nxt === true);
-  const krxRange = selNxt ? null : tradingSessionRange(snap?.date || status.date, false);
+  const krxRange = selNxt && nxtOn ? null : tradingSessionRange(snap?.date || status.date, false, nxtOn);
   const inShown = (t: number) => !krxRange || (t >= krxRange[0] && t <= krxRange[1]);
   const allEvents = timeline && timeline.code === selected ? timeline.events : NO_EVENTS;
-  const events = useMemo(() => (krxRange ? allEvents.filter((e) => inShown(e.ts)) : allEvents), [allEvents, krxRange?.[0]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const events = useMemo(() => (krxRange ? allEvents.filter((e) => inShown(e.ts)) : allEvents), [allEvents, krxRange?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const trades = timeline && timeline.code === selected ? timeline.trades : [];
   const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
   // sell rows with evaluations of this symbol: sell events + the condition of each sell fill
@@ -366,13 +371,13 @@ export function TimelineView() {
   const replayAt = snap?.replay?.cursor ?? null;
   // tick / minute bars of the day widen the axis too (evaluations may stop before the close, e.g. r003 stopped at 13:40)
   const intradayKind = chart.kind === 'tick' || chart.kind === 'min';
-  const keptBars = useMemo(() => (price?.ok ? (krxRange && intradayKind ? price.bars.filter((b) => inShown(b.t)) : price.bars) : []), [price, krxRange?.[0], intradayKind]); // eslint-disable-line react-hooks/exhaustive-deps
+  const keptBars = useMemo(() => (price?.ok ? (krxRange && intradayKind ? price.bars.filter((b) => inShown(b.t)) : price.bars) : []), [price, krxRange?.[1], intradayKind]); // eslint-disable-line react-hooks/exhaustive-deps
   const barTs = intradayKind && keptBars.length ? [keptBars[0].t, keptBars[keptBars.length - 1].t2 ?? keptBars[keptBars.length - 1].t] : [];
   const xs = [...events.map((e) => e.ts), ...trades.map((t) => t.ts), ...barTs].filter(Number.isFinite);
   // [2026-11-16] the axis spans the day's whole trading session from the start, so the charts fill in from the left at the final
   // scale instead of stretching the first minutes over the whole width; events or bars outside it widen it.
   // [2026-11-18] the same 08:00 - 20:00 frame for every symbol (KRX-only too) - the x axis does not move between symbols
-  const session = tradingSessionRange(snap?.date || status.date, true);
+  const session = tradingSessionRange(snap?.date || status.date, true, nxtOn);
   const full: [number, number] = session
     ? [Math.min(session[0], ...xs), Math.max(session[1], ...xs)]
     : xs.length

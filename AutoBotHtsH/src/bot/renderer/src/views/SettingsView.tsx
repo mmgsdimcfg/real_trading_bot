@@ -17,6 +17,9 @@
  *   editor as the pipeline panel (only changed keys are sent in one `set`); the read-only note now lists the r016 control calls
  * - [2026-11-18] type=perf - "고급: 전체 설정값": the last key list (dataCache) is shown while the fresh one loads
  * - [2026-11-19] type=fix - 장 마감 작업 자동 실행 label uses the jobs-tab step names: 데이터 수집(g001) → 종목 선별(g002) → 감시목록 반영(r004)
+ * - [2026-11-20] type=feat - 운용 시간 (user 2026-11-20): the 매매 시간 checkbox became a 정규장만 / 프리·애프터 포함 switch (same r001
+ *   ENABLE_NXT_SESSION) that lists what follows it (trading, tick collector, post-close job time, chart axes; paper trading stays regular).
+ *   Post-close job: one start time per mode (postcloseTimeRegular 15:40 / postcloseTime 20:10); the collector line shows its window
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -25,7 +28,7 @@ import { peek, put } from '../dataCache';
 import type { Settings } from '../../../shared/types';
 import { fmtInt } from '../lib';
 import { ymdDash } from '../../../shared/time';
-import { NXT_KEY, resolveSessionOpen, type DoctorReport, type SchemaDoc } from '../../../shared/control';
+import { NXT_KEY, nxtSessionOn, resolveSessionOpen, type DoctorReport, type SchemaDoc } from '../../../shared/control';
 import { EditorActions, useValueEditing, ValuesEditor, type EditItem } from '../components/ValuesEditor';
 
 export function SettingsView() {
@@ -300,6 +303,7 @@ type SetFn = <K extends keyof Settings>(k: K, v: Settings[K]) => void;
 
 /** [2026-11-10] where r003 runs + local mode paths + automation + environment check */
 function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings; set: SetFn; onConnect: () => void; onSave: () => Promise<boolean>; msg: string }) {
+  const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
   const status = useStore((s) => s.status);
   const [check, setCheck] = useState<{ problem: string; paths: { python: string; r016: string; runtime: string } } | null>(null);
   const [doc, setDoc] = useState<{ self?: DoctorReport | null; peer?: DoctorReport | null; selfErr?: string; peerErr?: string; peerLabel?: string } | null>(null);
@@ -381,12 +385,17 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
           <h3>자동 실행 (앱이 켜져 있을 때)</h3>
           <div className="checks">
             <label className="check">
-              <input type="checkbox" checked={form.autoCollector} onChange={(e) => set('autoCollector', e.target.checked)} /> 평일 틱 수집기(g011) 자동 시작 (07:55~19:55 5분마다 확인 - KRX 정규장 + NXT 08:00~20:00)
+              <input type="checkbox" checked={form.autoCollector} onChange={(e) => set('autoCollector', e.target.checked)} /> 평일 틱 수집기(g011) 자동 시작 ({nxtOn ? '07:55~19:55 5분마다 확인 - KRX 정규장 + NXT 08:00~20:00' : '08:45~15:35 5분마다 확인 - KRX 정규장만'})
             </label>
             <label className="check">
               <input type="checkbox" checked={form.autoPostclose} onChange={(e) => set('autoPostclose', e.target.checked)} /> 장 마감 작업 자동 실행 (데이터 수집(g001) → 종목 선별(g002) → 감시목록 반영(r004))
-              <input value={form.postcloseTime} style={{ width: 64, marginLeft: 6 }} onChange={(e) => set('postcloseTime', e.target.value)} placeholder="20:10" /> 이후
             </label>
+            <span className="small" style={{ marginLeft: 24 }} title="운용 시간(매매 시간 설정)에 따라 둘 중 하나로 시작합니다">
+              시작 시각: 정규장만{' '}
+              <input value={form.postcloseTimeRegular} style={{ width: 64 }} onChange={(e) => set('postcloseTimeRegular', e.target.value)} placeholder="15:40" /> · 프리/애프터 포함{' '}
+              <input value={form.postcloseTime} style={{ width: 64 }} onChange={(e) => set('postcloseTime', e.target.value)} placeholder="20:10" /> 이후{' '}
+              <span className="muted">(지금: {nxtOn ? '프리/애프터 포함' : '정규장만'})</span>
+            </span>
             <label className="check">
               <input type="checkbox" checked={form.postcloseEdgeAi} disabled={!form.autoPostclose} onChange={(e) => set('postcloseEdgeAi', e.target.checked)} /> 장 마감 작업에 Edge AI 재학습 포함
             </label>
@@ -517,13 +526,17 @@ function NxtSection() {
 
   return (
     <section>
-      <h3>매매 시간 (서버 r003)</h3>
+      <h3>운용 시간 (서버 r001 ENABLE_NXT_SESSION)</h3>
       {!connected && <p className="muted">서버에 연결되어 있을 때만 바꿀 수 있습니다.{nxt ? ` (마지막으로 읽은 값: ${onOff(nxt.effective)})` : ''}</p>}
       <div className="actions">
-        <label className="check" title="r001 ENABLE_NXT_SESSION">
-          <input type="checkbox" checked={!!nxt?.effective} disabled={!connected || !nxt || busy} onChange={(e) => void change(e.target.checked)} /> NXT 세션 운용
-          (오전 08:00~08:50, 오후 15:30~20:00)
-        </label>
+        <span className="seg" title="r001 ENABLE_NXT_SESSION">
+          <button className={nxt && !nxt.effective ? 'on' : ''} disabled={!connected || !nxt || busy} onClick={() => nxt?.effective && void change(false)}>
+            정규장만 (09:00~15:30)
+          </button>
+          <button className={nxt?.effective ? 'on' : ''} disabled={!connected || !nxt || busy} onClick={() => nxt && !nxt.effective && void change(true)}>
+            프리/애프터 포함 (08:00~20:00)
+          </button>
+        </span>
         {nxt && (
           <span className="muted small">
             저장값 {onOff(nxt.effective)}
@@ -533,11 +546,21 @@ function NxtSection() {
         )}
         <span className="muted small">{msg}</span>
       </div>
-      <p className="muted small">
-        끄면 정규장(09:00~15:30)만 매매합니다: 15:20 신규 진입 마감·당일 매수분 청산, 15:30 종료. 켜면 당일 매수분 중 NXT 거래 가능 종목은 15:20 청산 대신
-        19:59:58에 청산하고(NXT 불가 종목은 15:20) 20:00에 종료합니다. 서버{' '}
-        <code>live_overrides.json</code>에 저장되며 r003을 다시 시작해야 반영됩니다.
-      </p>
+      <ul className="muted small">
+        <li>
+          <b>정규장만</b>: 매매 15:20 신규 진입 마감·당일 매수분 청산, 15:30 종료 · 틱 수집기 KRX만 · 장 마감 작업(데이터 수집 → 선별 → AI 학습 → r004 반영 →
+          메일) 15:40 · 차트·타임라인 09:00~15:30
+        </li>
+        <li>
+          <b>프리/애프터 포함</b>: NXT 오전 08:00~08:50, 오후 15:30~20:00 도 매매 - 당일 매수분 중 NXT 거래 가능 종목은 19:59:58 청산(NXT 불가 종목은 15:20),
+          20:00 종료 · 틱 수집기 KRX + NXT · 장 마감 작업 20:10 · 차트·타임라인 08:00~20:00
+        </li>
+        <li>가상 매매(Edge AI)는 어느 쪽이든 정규장(09:05~14:50 매수)만 합니다 - 모델이 정규장 데이터로 학습됨.</li>
+        <li>
+          서버 <code>live_overrides.json</code>에 저장됩니다. r003·틱 수집기는 다시 시작해야 반영되고, 앱 화면과 이 PC의 자동 실행 시각은 바로 따라갑니다. 장 마감 작업
+          시각은 "실행 위치 / 자동 실행"에서 바꿉니다.
+        </li>
+      </ul>
     </section>
   );
 }

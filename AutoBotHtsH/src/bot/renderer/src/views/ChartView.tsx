@@ -37,6 +37,7 @@
  * - [2026-11-19] type=perf - The symbol is kept in the store (chartCode): the tab comes back on it and prefetch.ts keeps its bars,
  *   daily side request and quote fresh meanwhile (same dataCache keys, chartPriceFetch) - a tab switch draws current data at once
  * - [2026-11-19] type=feat - Opens on the symbol another tab asked for (store chartRequest, e.g. a 선별 결과 chip of the 작업 tab)
+ * - [2026-11-20] type=feat - 운용 시간 = 정규장만 (r001 ENABLE_NXT_SESSION off): tick / minute charts show 09:00 - 15:30 only (no NXT minutes)
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -45,7 +46,8 @@ import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
 import { PriceChart, IndicatorLines, barWhen, kstDayStart, refCloseAt } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
-import { MIN_SIZES, TICK_SIZES, groupDaily, ymdEpoch, type Bar, type ChartKind, type MarketQuote, type PriceResponse } from '../../../shared/price';
+import { MIN_SIZES, TICK_SIZES, groupDaily, regularOnly, ymdEpoch, type Bar, type ChartKind, type MarketQuote, type PriceResponse } from '../../../shared/price';
+import { nxtSessionOn } from '../../../shared/control';
 import { computeIndicators, OSCILLATORS, type IndicatorKey, type IndicatorSet } from '../../../shared/indicators';
 import { condTitle, fmtInt } from '../lib';
 import { barsUpTo } from '../../../shared/replay';
@@ -304,6 +306,7 @@ export function ChartView() {
   const quoteBar: Bar | null =
     isToday && q && q.open && q.high && q.low && q.price ? { t: dayT0, o: q.open, h: q.high, l: q.low, c: q.price, v: q.volume || 0 } : null;
   const replayCursor = snap?.replay?.cursor ?? null;
+  const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
   const bars = useMemo<Bar[]>(() => {
     if (!data?.ok) return [];
     if (!intraday && quoteBar) {
@@ -314,8 +317,10 @@ export function ChartView() {
         return groupDaily(plus, prefs.kind);
       }
     }
-    return [...prevDay, ...(intraday ? olderBars : NONE), ...barsUpTo(data.bars, replayCursor, intraday)];
-  }, [data, daily, olderBars, prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor]); // eslint-disable-line react-hooks/exhaustive-deps
+    const all = [...prevDay, ...(intraday ? olderBars : NONE), ...barsUpTo(data.bars, replayCursor, intraday)];
+    // [2026-11-20] 운용 시간 = 정규장만: tick / minute bars of 09:00 - 15:30 only
+    return intraday && !nxtOn ? regularOnly(all) : all;
+  }, [data, daily, olderBars, prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor, nxtOn]); // eslint-disable-line react-hooks/exhaustive-deps
   const warm = prevDay.length ? NONE : oldest?.warm;
   const warmBot = prevDay.length ? NONE : oldest?.warmBot;
 

@@ -12,6 +12,7 @@
  *   the key get the default
  * - [2026-11-10] type=feat - Local mode settings (runMode, localRoot - auto-detected from the app/repo location, localPython,
  *   local poll intervals, scheduler switches, keepAwake) + localPaths() helper and a small meta store (last post-close run day)
+ * - [2026-11-20] type=feat - postcloseTimeRegular (15:40): post-close time while the bot runs the regular session only (운용 시간)
  */
 
 import Store from 'electron-store';
@@ -56,6 +57,7 @@ const DEFAULTS: Stored = {
   autoCollector: true,
   autoPostclose: false,
   postcloseTime: '20:10',
+  postcloseTimeRegular: '15:40',
   postcloseEdgeAi: false,
   postcloseEmail: false,
   syncWatchlistToPeer: true,
@@ -163,6 +165,7 @@ export function getSettings(): Settings {
     autoCollector: s.autoCollector !== false,
     autoPostclose: s.autoPostclose === true,
     postcloseTime: /^\d{1,2}:\d{2}$/.test(String(s.postcloseTime || '')) ? s.postcloseTime : DEFAULTS.postcloseTime,
+    postcloseTimeRegular: /^\d{1,2}:\d{2}$/.test(String(s.postcloseTimeRegular || '')) ? s.postcloseTimeRegular : DEFAULTS.postcloseTimeRegular,
     postcloseEdgeAi: s.postcloseEdgeAi === true,
     postcloseEmail: s.postcloseEmail === true,
     syncWatchlistToPeer: s.syncWatchlistToPeer !== false,
@@ -197,6 +200,7 @@ export function saveSettings(next: Settings): Settings {
     autoCollector: rest.autoCollector !== false,
     autoPostclose: rest.autoPostclose === true,
     postcloseTime: /^\d{1,2}:\d{2}$/.test(String(rest.postcloseTime || '').trim()) ? String(rest.postcloseTime).trim() : DEFAULTS.postcloseTime,
+    postcloseTimeRegular: /^\d{1,2}:\d{2}$/.test(String(rest.postcloseTimeRegular || '').trim()) ? String(rest.postcloseTimeRegular).trim() : DEFAULTS.postcloseTimeRegular,
     postcloseEdgeAi: rest.postcloseEdgeAi === true,
     postcloseEmail: rest.postcloseEmail === true,
     syncWatchlistToPeer: rest.syncWatchlistToPeer !== false,

@@ -33,6 +33,11 @@ Run:
   --until defaults to the r014 calendar close + 1 min (15:31 normally, 16:31 on CSAT day); exits on a holiday.
 
 Update log:
+- [2026-11-20] type=feat owner=claude
+    summary: 사용자 요청(운용 시간 설정 - 정규장만 / 프리·애프터 포함) - NXT 체결 수집은 r001 ENABLE_NXT_SESSION 도 켜져 있을 때만
+      (TICK_COLLECT_NXT 와 함께). 정규장만이면 KRX 체결만 기록한다.
+    impact: collector (다음 g011 기동부터)
+    compatibility: backward-compatible (ENABLE_NXT_SESSION=True 면 종전과 동일)
 - [2026-11-17] type=feat owner=claude
     summary: 사용자 요청(Edge AI 학습용 호가 잔량) - 체결 레코드(H0STCNT0/H0NXCNT0)에 이미 들어 있는 호가/수급 9개 필드를 틱 CSV 끝에
       추가 기록(r009 TICK_FILE_COLUMNS v3): askp_rsqn1, bidp_rsqn1, total_askp_rsqn, total_bidp_rsqn, cttr, seln_cntg_smtn,
@@ -660,7 +665,9 @@ def main() -> None:
         pass
     codes = (codes + extra_codes)[:MAX_SUBSCRIPTIONS]
     extra_codes = [c for c in extra_codes if c in codes]
-    nxt_on = not args.no_nxt and bool(getattr(_cfg, "TICK_COLLECT_NXT", False))
+    # [2026-11-20] NXT executions only while the bot runs the NXT sessions too (r001 ENABLE_NXT_SESSION, 운용 시간 setting)
+    nxt_on = (not args.no_nxt and bool(getattr(_cfg, "TICK_COLLECT_NXT", False))
+              and bool(getattr(_cfg, "ENABLE_NXT_SESSION", True)))
     nxt_regular = str(getattr(_cfg, "TICK_COLLECT_NXT_REGULAR", "all")).lower()
     nxt_keep = [c.zfill(6) for c in (args.nxt_keep or [])]
     fill_note = ""

@@ -42,13 +42,14 @@
  *   whose bracket holds bracketed steps keeps them
  * - [2026-11-19] type=feat - New pipeline step picklog (r021: g047 pick forward log after the scan, no orders): step label
  *   "선정 성과 기록(g047)", mentioned in the subtitle and the ② tooltip (it follows the scan checkbox)
+ * - [2026-11-20] type=feat - 자동 실행 lines follow 운용 시간 (collector window, post-close time of the mode)
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import { DatePicker, type DayMark } from '../components/DatePicker';
-import { JOB_STATE_LABEL, localYmd, type JobDataInfo, type JobList, type JobLog, type JobRun } from '../../../shared/control';
+import { JOB_STATE_LABEL, localYmd, nxtSessionOn, postcloseAt, type JobDataInfo, type JobList, type JobLog, type JobRun } from '../../../shared/control';
 
 const isoShow = (s: string | null | undefined) => (s ? s.replace('T', ' ').slice(5, 16) : '-');
 const num = (n: number) => n.toLocaleString('ko-KR');
@@ -106,6 +107,7 @@ function stateClass(st: string | undefined) {
 type StepKey = 'collect' | 'scan' | 'apply';
 
 export function JobsView() {
+  const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
   const connected = useStore((s) => s.status.conn === 'connected');
   const local = useStore((s) => s.status.mode === 'local');
   const sched = useStore((s) => s.sched);
@@ -482,10 +484,10 @@ export function JobsView() {
           <h3>자동 실행 (이 PC, 앱이 켜져 있을 때)</h3>
           <ul className="small">
             <li>
-              틱 수집기: {settings?.autoCollector ? '평일 07:55~19:55 5분마다 확인해 없으면 시작 (KRX 정규장 + NXT 08:00~20:00)' : '꺼짐'} {sched?.lastCollectorMsg && <span className="muted">- {sched.lastCollectorMsg}</span>}
+              틱 수집기: {settings?.autoCollector ? (nxtOn ? '평일 07:55~19:55 5분마다 확인해 없으면 시작 (KRX 정규장 + NXT 08:00~20:00)' : '평일 08:45~15:35 5분마다 확인해 없으면 시작 (정규장만 - KRX)') : '꺼짐'} {sched?.lastCollectorMsg && <span className="muted">- {sched.lastCollectorMsg}</span>}
             </li>
             <li>
-              장 마감 작업: {settings?.autoPostclose ? `거래일 ${settings.postcloseTime} 이후 1회 (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}${settings.postcloseEmail ? ' + 선별 결과 메일' : ''}` : '꺼짐'}{' '}
+              장 마감 작업: {settings?.autoPostclose ? `거래일 ${postcloseAt(settings, nxtOn)} 이후 1회 (${nxtOn ? '프리/애프터 포함' : '정규장만'} 운용) (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}${settings.postcloseEmail ? ' + 선별 결과 메일' : ''}` : '꺼짐'}{' '}
               {sched?.lastPostcloseMsg && <span className="muted">- {sched.lastPostcloseMsg}</span>}
             </li>
             <li>
