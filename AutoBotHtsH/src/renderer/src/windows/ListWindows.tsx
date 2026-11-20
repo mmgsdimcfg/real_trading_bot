@@ -11,6 +11,8 @@
 //   picks file name it in their hover title)
 // - [2026-11-20] type=feat (Watchlist rows: one click shows the symbol in every open symbol window (was a double click; a click only
 //   selected the row / sent it to the same link colour) - user 2026-11-20)
+// - [2026-11-20] type=fix (drop-downs inside the window (지표 / 기간 설정 / 관심종목 ☆) float over the app (FloatPop) and open toward the
+//   side with room instead of being cut off at the window edge)
 
 // - [2026-11-20] type=fix (☆ group menu closes on a click outside it or Esc)
 // - [2026-11-20] type=feat (Watchlist (user 2026-11-20): group tabs can be dragged to a new order; 자동 보기 - the group's symbols are shown
@@ -36,6 +38,7 @@ function loadWatchAuto(): WatchAutoCfg {
 }
 import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
+import { FloatPop } from '../components/FloatPop';
 import { PriceChart } from '../components/PriceChart';
 import type { RankRow, WatchRow } from '../../../shared/kis';
 import type { ChartRes, IndexQuote, NewsRow, RankReq, RankType } from '../../../shared/market';
@@ -312,13 +315,13 @@ export function WatchStar({ code }: { code: string }) {
         {inAny ? '★' : '☆'}
       </button>
       {open && (
-        <span className="dd-menu" onMouseDown={(e) => e.stopPropagation()}>
+        <FloatPop className="dd-menu" onMouseDown={(e) => e.stopPropagation()}>
           {groups.map((g) => (
             <label key={g.id} className="check dd-check">
               <input type="checkbox" checked={g.codes.includes(code)} disabled={!g.codes.includes(code) && g.codes.length >= WATCH_MAX} onChange={() => toggle(g.id, code)} /> {g.name}
             </label>
           ))}
-        </span>
+        </FloatPop>
       )}
     </span>
   );

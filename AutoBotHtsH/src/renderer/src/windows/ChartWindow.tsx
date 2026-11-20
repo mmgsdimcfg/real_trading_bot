@@ -32,6 +32,8 @@
 //   month / year charts only)
 // - [2026-11-20] type=feat (Pane heights by drag (user 2026-11-20): the price / volume split and the indicator pane height are saved with
 //   the window (volR, oscH; a double click on the handle = automatic again). The 투자자 누적 pane says when it is loading or KIS refused)
+// - [2026-11-20] type=fix (drop-downs inside the window (지표 / 기간 설정 / 관심종목 ☆) float over the app (FloatPop) and open toward the
+//   side with room instead of being cut off at the window edge)
 
 // - [2026-11-20] type=fix (지표 menu / 기간 설정 close on a click outside them or Esc - before, only a click on the chart closed them)
 // - [2026-11-20] type=fix (Switching 일 -> 분 (any bar kind / size / days / symbol) drew the old bars with the new settings until the new
@@ -47,6 +49,7 @@ import { useOutsideClose, useRealtime } from '../hooks';
 import { MIN_SIZES, TICK_SIZES, type Bar, type ChartKind } from '../../../shared/price';
 import { FRACTION_PARAMS, HTS_PARAMS, INV_MONTHS, INV_MONTHS_LABEL, normalizeParams, OSCILLATORS, type CalcMethod, type IndicatorKey, type IndicatorParams, type InvMonths } from '../../../shared/indicators';
 import { WatchStar } from './ListWindows';
+import { FloatPop } from '../components/FloatPop';
 import { acmlMismatches, applyTrades, tickBarsFromTrades, TRADE_CAP } from '../../../shared/live';
 import type { ChartRes, InvestorDay, TicksCursor, TicksRes } from '../../../shared/market';
 import type { TradeTick } from '../../../shared/kis';
@@ -110,7 +113,7 @@ const METHOD_FIELDS: ['rsiMethod' | 'adxMethod', string][] = [
 function ParamsDialog({ value, onSave, onClose }: { value: IndicatorParams; onSave: (p: IndicatorParams) => void; onClose: () => void }) {
   const [p, setP] = useState<IndicatorParams>(value);
   return (
-    <div className="popover params" onMouseDown={(e) => e.stopPropagation()}>
+    <FloatPop tag="div" className="popover params" onMouseDown={(e) => e.stopPropagation()}>
       <h4>지표 기간 설정</h4>
       <div className="params-grid">
         {PARAM_FIELDS.map(([k, label]) => (
@@ -136,7 +139,7 @@ function ParamsDialog({ value, onSave, onClose }: { value: IndicatorParams; onSa
         <button onClick={() => setP(HTS_PARAMS)}>기본값</button>
         <button onClick={onClose}>닫기</button>
       </div>
-    </div>
+    </FloatPop>
   );
 }
 
@@ -406,7 +409,7 @@ export function ChartWindow({ win }: { win: Win }) {
             지표 ({ind.length}) ▾
           </button>
           {panel === 'ind' && (
-            <span className="popover ind-pop" onMouseDown={(e) => e.stopPropagation()}>
+            <FloatPop className="popover ind-pop" onMouseDown={(e) => e.stopPropagation()}>
               <IndicatorToggles value={ind} onChange={(v) => setOpts(win.id, { ind: v })} kind={kind} params={params} />
               <span className="ind-pop-foot">
                 <label className="check" title="보조지표 창에 매수(빨강 ▲) / 매도(파랑 ▼) 신호 표시">
@@ -416,7 +419,7 @@ export function ChartWindow({ win }: { win: Win }) {
                   기간 설정…
                 </button>
               </span>
-            </span>
+            </FloatPop>
           )}
           {panel === 'params' && <ParamsDialog value={params} onSave={(p) => setOpts(win.id, { params: p })} onClose={() => setPanel('')} />}
         </span>
