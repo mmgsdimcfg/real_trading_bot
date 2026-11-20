@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-20] type=feat owner=claude
+#     summary: 사용자 결정(가상 매매 개선 2/3번) - EDGE_ONLY_EXCLUDE_FUNDS(True, ETF·ETN 가상 매수 제외) /
+#       EDGE_ONLY_NO_REENTRY_AFTER_SL(True, 당일 손절 종목 재매수 금지) 신설. r022 가상 매매만.
+#     impact: live paper only (r003 재시작 후 - 주문 없음)
+#     compatibility: backward-compatible (롤백: 두 값 False)
 # - [2026-11-20] type=tune owner=claude
 #     summary: 사용자 결정 - 가상 매매 하루 매수 횟수 상한 EDGE_ONLY_MAX_ENTRIES_PER_DAY 10 -> 100,
 #       EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY 20 -> 100. 20261120 감시 10 / 수집기 20 상한에 일찍 걸려 그 뒤 매수 신호를 볼 수 없었음.
@@ -2067,6 +2072,11 @@ EDGE_ONLY_COLLECTOR = True
 EDGE_ONLY_COLLECTOR_MAX_POSITIONS = 5         # 수집기 종목 동시 가상 보유 수
 EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY = 100  # 수집기 종목 하루 가상 매수 횟수 상한 ([2026-11-20] 20 -> 100)
 EDGE_ONLY_COLLECTOR_POLL_SECONDS = 5          # 수집기 종목 평가 간격(r003 루프 한 바퀴보다 길면 그 바퀴는 건너뜀)
+# [2026-11-20] 가상 매매 분석(20261120 청산 28건 중 손절 24, Codex 검토) 후 사용자 결정. 가상 매매에만 적용(주문 없음).
+# ETF·ETN(이름으로 판별, r011.is_fund_product) 가상 매수 제외 - 모델은 보통주 대상(g014 학습에서도 제외). 롤백: False.
+EDGE_ONLY_EXCLUDE_FUNDS = True
+# 당일 손절(sl)된 종목은 그날 다시 가상 매수하지 않는다(11/20 손절 뒤 재매수 5건 전부 손절, 평균 -2.27%). 롤백: False.
+EDGE_ONLY_NO_REENTRY_AFTER_SL = True
 
 # =============================================================================
 # [2026-11-15] 적응형 익절·손절 엔진 (r024 엔진 / r025 틱 특징 / r026 shadow 러너) - 사용자 결정(설계 Q1: shadow 먼저)

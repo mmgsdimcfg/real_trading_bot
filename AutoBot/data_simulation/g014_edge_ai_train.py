@@ -24,6 +24,12 @@ current_meta.json whose "model_file" points at it. The meta file alone selects t
 publish interrupted at any point) never pairs a new booster with an old threshold/promoted flag.
 
 Update log:
+- [2026-11-20] type=feat owner=claude
+    summary: 사용자 결정(가상 매매 개선 2번) - ETF·ETN 이벤트를 학습에서 제외(기본, --keep-funds 로 유지). 최근 데이터 폴더 5개의
+      <code>_<name>_daily.csv 이름으로 판별(r011.is_fund_product). meta.excluded_funds {codes, events} 기록. 데이터셋(g013)은 그대로라
+      재생성 없음.
+    impact: 다음 학습부터 (장 마감 작업 Edge AI 단계)
+    compatibility: 모델 입력/메타 형식 불변 (필드 1개 추가)
 - [2026-11-12] type=feat owner=claude
     summary: (1) --target: 학습 대상 열 선택. 기본값을 y_tp(g013: 손절 전에 +tp% 도달)로 변경 - 사용자 요청 "매수 후 +2~5%
       상승이 실제로 나온 진입을 학습". "y" 는 옛 정의(순손익 > 0). (2) 승격 조건에 절대 기대값 추가(Codex/Gemini 검토):
@@ -62,7 +68,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "live_trading"))
 
 import r001_define_config as cfg  # noqa: E402
-from r011_edge_ai import FEATURE_NAMES, FEATURE_VERSION  # noqa: E402
+from r011_edge_ai import FEATURE_NAMES, FEATURE_VERSION, fund_codes_in  # noqa: E402
 
 EDGE_AI_DIR = Path(getattr(cfg, "EDGE_AI_DIR", Path(cfg.RUNTIME_ROOT) / "edge_ai"))
 
@@ -278,6 +284,16 @@ def publish(booster, meta: dict, model_dir: Path) -> Path:
     return model_file
 
 
+def fund_product_codes(n_dirs: int = 5) -> set[str]:
+    """[2026-11-20] ETF / ETN codes by name from the newest data folders (<code>_<name>_daily.csv, r011.is_fund_product)"""
+    root = Path(getattr(cfg, "DATA_DIR", Path(cfg.RUNTIME_ROOT) / "data"))
+    dirs = sorted((d for d in root.iterdir() if d.is_dir() and d.name.isdigit() and len(d.name) == 8), key=lambda d: d.name)         if root.is_dir() else []
+    out: set[str] = set()
+    for d in dirs[-n_dirs:]:
+        out |= fund_codes_in(d)
+    return out
+
+
 def live_feedback(tag: str) -> dict | None:
     """Summary of g013 --live output: real buy signals scored live (shadow) and their labeled outcomes,
     plus live-vs-offline feature differences (train/serve skew)."""
@@ -368,6 +384,8 @@ def main() -> None:
     p.add_argument("--min-fold-ratio", type=float, default=0.6)
     p.add_argument("--threads", type=int, default=3)
     p.add_argument("--no-publish", action="store_true", help="evaluate only, keep current model")
+    p.add_argument("--keep-funds", action="store_true",
+                   help="[2026-11-20] keep ETF / ETN events (default: left out - the model is for common shares, r011.is_fund_product)")
     p.add_argument("--target", default="y_tp",
                    help="label column: y_tp = +tp%% reached before the stop (g013 run_up), y = net return > 0 (old)")
     p.add_argument("--no-require-positive", dest="require_positive", action="store_false",
@@ -390,6 +408,13 @@ def main() -> None:
         raise SystemExit(f"dataset {ds_dir.name} has no '{target}' column - rebuild it with the current g013 "
                          f"(or train the old definition with --target y)")
     df = df.dropna(subset=[target, "net_ret"]).sort_values(["date", "ts"]).reset_index(drop=True)
+    excluded = {"codes": 0, "events": 0}
+    if not args.keep_funds:
+        funds = fund_product_codes()
+        drop = df["code"].astype(str).str.zfill(6).isin(funds)
+        excluded = {"codes": int(df.loc[drop, "code"].nunique()), "events": int(drop.sum())}
+        df = df[~drop].reset_index(drop=True)
+        print(f"ETF/ETN left out: {excluded['events']:,} events of {excluded['codes']} codes ({len(funds)} fund codes known)", flush=True)
     df[list(FEATURE_NAMES)] = df[list(FEATURE_NAMES)].astype(np.float32)
     n_days = df["date"].nunique()
     print(f"dataset {ds_dir.name}: {len(df):,} events / {n_days} days, target={target} base rate={df[target].mean():.3f} "
@@ -427,6 +452,7 @@ def main() -> None:
         "label": {**{k: label.get(k) for k in ("tp", "sl", "horizon", "slip_ticks")}, "target": target},
         "lgb_params": LGB_PARAMS, "args": vars(args), "feature_importance": importance,
         "live_feedback": live_feedback(ds_dir.name),
+        "excluded_funds": excluded,
     }
     reports = EDGE_AI_DIR / "reports"
     reports.mkdir(parents=True, exist_ok=True)

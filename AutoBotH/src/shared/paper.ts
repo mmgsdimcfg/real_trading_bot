@@ -13,6 +13,7 @@
  * - [2026-11-19] type=feat - PaperStatus: the server's edge_only_status_<date>.json (r022 write_status, every 5 s while the bot
  *   runs in the regular session) - every symbol the paper runner looks at with its group, price, last bar, the outcome of its
  *   last evaluation (stage) and probability, plus the group limits, threshold and model
+ * - [2026-11-20] type=feat - stages fund (ETF/ETN not paper-bought) and sl_today (stopped out today, no re-entry) - server r022
  */
 
 export type PaperGroup = 'watch' | 'collector';
@@ -112,6 +113,8 @@ export const PAPER_STAGE_KO: Record<string, string> = {
   below_threshold: '확률 미달',
   bought: '가상 매수',
   sold: '가상 매도',
+  fund: 'ETF·ETN 제외',
+  sl_today: '오늘 손절한 종목 (재매수 안 함)',
 };
 
 export interface PaperStatusSymbol {

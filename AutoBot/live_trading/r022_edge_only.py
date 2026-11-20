@@ -33,6 +33,15 @@ Runs the same on Linux (Raspberry Pi) and Windows. Each host uses its own model 
 post-close job from that host's data folder).
 
 Update log:
+- [2026-11-20] type=fix+feat owner=claude
+    summary: 가상 매매 분석(20261120, Codex 검토) 후 사용자 결정 0/2/3번.
+      (0) 버그: r003 이 on_symbol 을 부르지 않은 가상 보유 종목(감시 이탈, 직접 매수로 [HOLD SKIP], 재시작 후 목록 밖)이 청산되지
+          않던 문제 - poll_orphans(): 그 턴에 평가 안 된 가상 보유를 틱 파일(없으면 마지막 가격)로 tp/sl/15:15/시간 청산.
+          20261120 443060 은 14:41 직접 매수 뒤 목표가(14:53)와 15:15 를 지나 미청산.
+      (2) ETF·ETN 가상 매수 제외 (r011.is_fund_product, r001 EDGE_ONLY_EXCLUDE_FUNDS, stage "fund").
+      (3) 당일 손절(sl) 종목 재매수 금지 (r001 EDGE_ONLY_NO_REENTRY_AFTER_SL, stage "sl_today", 재시작 시 파일에서 복원).
+    impact: live paper only (주문 없음) - r003 재시작 후
+    compatibility: backward-compatible (기록 형식 불변, 새 stage 2개; 롤백: r001 두 스위치 False)
 - [2026-11-19] type=feat owner=claude
     summary: 사용자 요청(가상 매매 탭에 대상 종목 상태 표시) - 종목별 상태(구분, 현재가, 마지막 봉, 마지막 판단 결과 stage, 확률,
       보유 중이면 매수가/목표/손절) 를 edge_only_status_<날짜>.json 으로 STATUS_EVERY_S 마다 원자적 교체(write_status). r003 이 호출.
@@ -81,7 +90,7 @@ STATUS_EVERY_S = 5.0          # edge_only_status_<date>.json at most this often
 STATUS_STALE_S = 600.0        # a symbol not looked at for this long (left the watchlist / collector) leaves the status
 # outcome of the last evaluation of a symbol (AutoBotH shows these)
 STAGES = ("wait_bars", "outside_window", "limit", "held", "below_mid", "no_trigger", "no_history", "no_model", "below_threshold",
-          "bought", "sold")
+          "bought", "sold", "fund", "sl_today")   # [2026-11-20] fund = ETF/ETN not bought, sl_today = stopped out today
 GROUP_KO = {"watch": "", "collector": " [수집기]"}
 _CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
 
@@ -95,7 +104,8 @@ def net_pct(entry: float, exit_px: float) -> float:
 class EdgeOnlyRunner:
     def __init__(self, model_dir: Path, data_root: Path, out_dir: Path, date_str: str, log: Callable[[str], None], config,
                  min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
-                 collector_max_positions: int = 0, collector_max_entries: int = 0):
+                 collector_max_positions: int = 0, collector_max_entries: int = 0,
+                 exclude_funds: bool = True, no_reentry_after_sl: bool = True):
         self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir))
         self.data_root = Path(data_root)
         self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
@@ -121,6 +131,12 @@ class EdgeOnlyRunner:
         self._status_next: datetime | None = None
         self._daily: dict[str, dict] = {}
         self._prev_close: dict[str, float] = {}
+        # [2026-11-20] user decision (paper review 20261120): no ETF / ETN buys (r011.is_fund_product), and a symbol stopped out (sl)
+        # today is not bought again the same day (5 such re-entries on 11/20, all sl)
+        self.exclude_funds = bool(exclude_funds)
+        self.no_reentry_after_sl = bool(no_reentry_after_sl)
+        self.sl_today: set[str] = set()
+        self._eval_at: dict[str, datetime] = {}   # wall clock of each symbol's last on_symbol (poll_orphans)
         self._restore()
 
     @property
@@ -154,9 +170,12 @@ class EdgeOnlyRunner:
                 elif rec.get("event") == "EXIT":
                     self.positions.pop(code, None)
                     self.closed.append(float(rec.get("net_pct") or 0.0))
+                    if rec.get("reason") == "sl":
+                        self.sl_today.add(code)
         except Exception as exc:
             self.log(f"{TAG} restore failed ({type(exc).__name__}: {exc}) - starting the day empty")
             self.positions, self.entries, self.closed = {}, {g: 0 for g in GROUPS}, []
+            self.sl_today = set()
 
     # ---- helpers ----------------------------------------------------------------------------
     def _label(self) -> dict:
@@ -208,6 +227,7 @@ class EdgeOnlyRunner:
     def on_symbol(self, code: str, name: str, now: datetime, frame_1m: pd.DataFrame | None, live_price: float,
                   group: str = "watch") -> None:
         try:
+            self._eval_at[str(code).zfill(6)] = datetime.now()
             self._on_symbol(str(code).zfill(6), name, now, frame_1m, float(live_price), group if group in GROUPS else "watch")
         except Exception as exc:  # never break the live loop
             self.log(f"{TAG} {code} error: {type(exc).__name__}: {exc}")
@@ -254,6 +274,31 @@ class EdgeOnlyRunner:
             self.on_symbol(code, self.name_of(code), now, frame, price, group="collector")
         return n
 
+    def poll_orphans(self, feed: "CollectorTickFeed | None", now: datetime, since: datetime) -> int:
+        """[2026-11-20] Open paper positions that r003 did not hand to on_symbol this turn (the symbol left the watchlist, was
+        bought by hand -> [HOLD SKIP], or r003 restarted without it): exits (tp / sl / 15:15 / time) from the day's KRX tick file,
+        else from the last price seen. Bug 20261120: 443060 bought by hand at 14:41 kept its paper position past its target and
+        15:15. `since` = start of r003's turn: a position looked at after it (symbol loop or poll_collector) is skipped.
+        Returns how many were checked."""
+        n = 0
+        for code in [c for c in list(self.positions) if not (self._eval_at.get(c) and self._eval_at[c] > since)]:
+            pos = self.positions.get(code)
+            if pos is None:
+                continue
+            frame, price = None, None
+            if feed is not None:
+                try:
+                    frame, price = feed.poll(code, now)
+                except Exception as exc:
+                    self.log(f"{TAG} {code} orphan feed error: {type(exc).__name__}: {exc}")
+            if price is None or not price > 0:
+                price = (self.sym_state.get(code) or {}).get("price")
+            if price is None or not float(price) > 0:
+                continue
+            n += 1
+            self.on_symbol(code, pos.get("name") or self.name_of(code), now, frame, float(price), group=pos.get("group", "watch"))
+        return n
+
     def write_status(self, now: datetime, force: bool = False) -> bool:
         """[2026-11-19] edge_only_status_<date>.json for the app, at most every STATUS_EVERY_S (force: now). Never raises."""
         return _write_status(self, now, force)
@@ -297,6 +342,12 @@ class EdgeOnlyRunner:
         t = pd.Timestamp(key).time()
         if t < ENTRY_START or t > ENTRY_END or now.time() > ENTRY_END:
             self._stage(code, "outside_window")
+            return
+        if self.exclude_funds and r011.is_fund_product(name):
+            self._stage(code, "fund")
+            return
+        if self.no_reentry_after_sl and code in self.sl_today:
+            self._stage(code, "sl_today")
             return
         max_pos, max_ent = self.limits[group]
         if self._open_count(group) >= max_pos or self.entries[group] >= max_ent:
@@ -368,6 +419,8 @@ class EdgeOnlyRunner:
             return
         net = net_pct(pos["entry"], exit_px)
         self.positions.pop(code, None)
+        if reason == "sl":
+            self.sl_today.add(code)
         self.closed.append(net)
         wins = sum(1 for x in self.closed if x > 0)
         group = pos.get("group", "watch")

@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-20] type=fix owner=claude
+    summary: 가상 매매(r022) 미청산 버그 - 종목 루프에서 on_symbol 을 못 받은 가상 보유(직접 매수 -> HOLD SKIP, 감시 이탈 등)를 턴 끝에
+      poll_orphans(틱 파일 가격)로 평가. 20261120 443060 사례. EdgeOnlyRunner 에 EDGE_ONLY_EXCLUDE_FUNDS /
+      EDGE_ONLY_NO_REENTRY_AFTER_SL 전달, tick_feed(KRX 틱 파일) 항상 생성(collector_feed 와 공유).
+    impact: live paper only (주문 없음)
+    compatibility: backward-compatible
 - [2026-11-19] type=feat owner=claude
     summary: 사용자 요청(틱 수집기 종목을 가상 매매에 포함) - EDGE_ONLY_MODE=paper 이고 r001 EDGE_ONLY_COLLECTOR 면 종목 순회 뒤
       감시목록/보유 밖의 수집 종목을 r022 poll_collector 로 평가(틱 파일 1분봉, EDGE_ONLY_COLLECTOR_POLL_SECONDS 마다, 정규장만,
@@ -2444,14 +2450,18 @@ def _make_edge_only_runner(date_str: str):
         runner = EdgeOnlyRunner(EDGE_AI_DIR, DATA_DIR, LIVE_RUNTIME_DIR, date_str, log, SHARED_STRATEGY_CONFIG,
                                 min_prob=EDGE_ONLY_MIN_PROB, max_positions=EDGE_ONLY_MAX_POSITIONS,
                                 max_entries=EDGE_ONLY_MAX_ENTRIES_PER_DAY,
-                                collector_max_positions=c_pos, collector_max_entries=c_ent)
-        runner.collector_feed = (CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
-                                 if collector else None)
+                                collector_max_positions=c_pos, collector_max_entries=c_ent,
+                                exclude_funds=bool(getattr(_cfg_mod, "EDGE_ONLY_EXCLUDE_FUNDS", True)),
+                                no_reentry_after_sl=bool(getattr(_cfg_mod, "EDGE_ONLY_NO_REENTRY_AFTER_SL", True)))
+        # [2026-11-20] the day's KRX tick files also price the paper positions r003 did not evaluate (poll_orphans)
+        runner.tick_feed = CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
+        runner.collector_feed = runner.tick_feed if collector else None
         runner.collector_poll_s = float(getattr(_cfg_mod, "EDGE_ONLY_COLLECTOR_POLL_SECONDS", 5) or 0)
         log(f"  [EDGE ONLY   ] paper mode enabled (no orders) | min_prob={EDGE_ONLY_MIN_PROB} "
             f"max_positions={EDGE_ONLY_MAX_POSITIONS} max_entries={EDGE_ONLY_MAX_ENTRIES_PER_DAY} | "
             f"collector={'on' if collector else 'off'}"
-            f"{f' max_positions={c_pos} max_entries={c_ent}' if collector else ''} | out={runner.out_path}")
+            f"{f' max_positions={c_pos} max_entries={c_ent}' if collector else ''} | exclude_funds={runner.exclude_funds} "
+            f"no_reentry_after_sl={runner.no_reentry_after_sl} | out={runner.out_path}")
         return runner
     except Exception as exc:
         log(f"  [EDGE ONLY   ] init failed, paper mode disabled: {exc}")
@@ -6103,6 +6113,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 if int(p.get("quantity", 0) or 0) > 0
             }
             iter_codes = sorted(active_set | position_codes)
+            eo_turn_at = datetime.now()  # [2026-11-20] paper positions not looked at since then: r022 poll_orphans
             if _ENTRY_SHADOW is not None:  # [2026-11-15] r028 shadow watches the entry candidates; held symbols are blocked
                 try:
                     _ENTRY_SHADOW.set_watch(active_set | position_codes,
@@ -6471,6 +6482,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                                  getattr(edge_only, "collector_poll_s", 5.0))
                     except Exception as exc:
                         log(f"  [EDGE ONLY   ] collector poll error: {exc}")
+                # [2026-11-20] paper positions not evaluated this turn (bought by hand -> HOLD SKIP, left the watchlist, ...)
+                poll_orphans = getattr(edge_only, "poll_orphans", None)
+                if callable(poll_orphans):
+                    try:
+                        poll_orphans(getattr(edge_only, "tick_feed", None), datetime.now(), eo_turn_at)
+                    except Exception as exc:
+                        log(f"  [EDGE ONLY   ] orphan poll error: {exc}")
                 # [2026-11-19] status of every paper-traded symbol for the app (edge_only_status_<date>.json, every 5 s)
                 write_status = getattr(edge_only, "write_status", None)
                 if callable(write_status):

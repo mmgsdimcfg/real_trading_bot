@@ -35,6 +35,11 @@ Modes (r001 EDGE_AI_MODE)
 Any error / missing model / missing lightgbm -> fail-open (entry allowed, reason logged).
 
 Update log:
+- [2026-11-20] type=feat owner=claude
+    summary: 사용자 결정(가상 매매 개선 2번) - is_fund_product(name) / fund_codes_in(data_dir): ETF·ETN(운용사 브랜드 첫 단어,
+      ETN/레버리지/인버스/선물 키워드)을 이름으로 판별. r022 가상 매수 제외, g014 학습 제외에 쓴다.
+    impact: 공용 헬퍼 추가 (기존 피처/모델 무변경)
+    compatibility: backward-compatible
 - [2026-10-26] type=feat owner=claude
     summary: 신규 - 경량 Edge AI(LightGBM 메타 라벨링) 피처/모델/게이트. r005 _028이 호출, g013/g014가 학습.
     impact: live (기본 EDGE_AI_MODE="shadow" - 기록만, 주문 영향 없음)
@@ -376,6 +381,38 @@ def hybrid_trigger_with_context(frame_1min: pd.DataFrame, frame_3min: pd.DataFra
 # ---------------------------------------------------------------------------
 # daily context
 # ---------------------------------------------------------------------------
+
+# [2026-11-20] ETF / ETN (fund products) by name - the Edge AI is for common shares: paper trading (r022) does not buy them and
+# the trainer (g014) leaves them out. There is no product-class file in the data folders (g010 has the KIS master but the
+# universe file keeps no class), so the issuer brand at the start of the name + "ETN" + leveraged / inverse keywords decide.
+FUND_NAME_BRANDS = ("KODEX", "TIGER", "RISE", "KBSTAR", "ACE", "SOL", "PLUS", "ARIRANG", "HANARO", "KOSEF", "KIWOOM", "TIMEFOLIO",
+                    "TIME", "1Q", "WON", "BNK", "ITF", "UNICORN", "VITA", "DAISHIN", "DAISHIN343", "에셋플러스", "마이티", "HK", "KCGI",
+                    "TRUSTON", "FOCUS", "TREX", "파워", "히어로즈", "마이다스", "MIDAS", "KTOP", "KOACT", "SMART", "KINDEX", "IBK", "DS",
+                    "아이엠에셋", "더제이")
+FUND_NAME_KEYWORDS = ("ETN", "레버리지", "인버스", "선물")
+
+
+def is_fund_product(name: str | None) -> bool:
+    """True for an ETF / ETN name ("KODEX 코스닥150레버리지", "TIGER 200", "신한 레버리지 WTI원유 선물 ETN"). A brand counts only as a
+    separate first word, so "HK이노엔" / "파워로직스" / "BNK금융지주" stay shares."""
+    n = str(name or "").strip()
+    if not n:
+        return False
+    first = n.split()[0].upper()
+    return first in {b.upper() for b in FUND_NAME_BRANDS} or any(k in n for k in FUND_NAME_KEYWORDS)
+
+
+def fund_codes_in(data_dir: Path | None) -> set[str]:
+    """codes of a data folder (<code>_<name>_daily.csv) whose name is a fund product"""
+    out: set[str] = set()
+    if data_dir is None or not Path(data_dir).is_dir():
+        return out
+    for f in Path(data_dir).glob("*_daily.csv"):
+        code, _, rest = f.name.partition("_")
+        if is_fund_product(rest[: -len("_daily.csv")]):
+            out.add(code)
+    return out
+
 
 def find_prev_data_dir(data_root: Path, trade_date: str) -> Path | None:
     """Latest data/YYYYMMDD folder strictly before trade_date (that day's daily.csv ends at D-1)."""

@@ -166,7 +166,7 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
     "groups":{"watch"|"collector":{"open","max_positions","entries","max_entries","enabled"}},
     "symbols":[{"code","name","group","price","bar"(HH:MM 마지막 확정 1분봉),"bars","stage","prob","at",
     "position"?:{"entry","tp","sl","ts","prob"}}]}`. stage = wait_bars / outside_window / limit / held / below_mid / no_trigger /
-    no_history / no_model / below_threshold / bought / sold (마지막 판단 결과). 10분 넘게 안 본 종목(보유 제외)은 빠진다.
+    no_history / no_model / below_threshold / bought / sold / fund / sl_today (마지막 판단 결과; [2026-11-20] fund = ETF·ETN 제외, sl_today = 당일 손절 종목 재매수 안 함). 10분 넘게 안 본 종목(보유 제외)은 빠진다.
     앱 가상 매매 탭 "가상 매매 대상" 표(2.3.32)가 읽는다.
 - 두 호스트 공통: 설정은 각 호스트의 `runtime/config/live_overrides.json` 에 따로 저장되고, 모델도 각 호스트의
   `runtime/edge_ai` 것을 쓴다.

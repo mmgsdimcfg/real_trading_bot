@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """r022 Edge-AI-only paper runner: entries (trigger + probability cut, book limits, time window), exits (target / stop /
 time / end of day, fills and net %), restart restore, parity with the real g013 event generator on a real trading day
-when the data folder is available, and the g029 simulator's book rules."""
+when the data folder is available, and the g029 simulator's book rules.
+[2026-11-20] no ETF/ETN buys, no re-entry after a same-day stop (also after a restart), poll_orphans exits a paper position
+r003 no longer evaluates (bought by hand / left the watchlist)."""
 import json
 import sys
 import tempfile
@@ -239,6 +241,77 @@ class SimulatorTest(unittest.TestCase):
         self.assertEqual((s["n"], s["days_pos"], s["days_traded"]), (4, 0, 2))
         self.assertAlmostEqual(s["mean"], -0.375)
         self.assertAlmostEqual(g029.breakeven_win_rate(tr), 1.5 / (0.75 + 1.5))
+
+
+
+class PaperReviewRulesTest(Base):
+    """[2026-11-20] user decisions after the 20261120 paper review"""
+
+    def test_no_fund_products(self):
+        r = self.runner()
+        r.on_symbol("233740", "KODEX 코스닥150레버리지", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual(self.records(), [])
+        self.assertEqual(r.sym_state["233740"]["stage"], "fund")
+        r2 = self.runner(exclude_funds=False)
+        r2.on_symbol("233740", "KODEX 코스닥150레버리지", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual([x["event"] for x in self.records()], ["ENTRY"])
+
+    def test_no_reentry_after_a_stop_also_after_a_restart(self):
+        r = self.runner()
+        r.on_symbol("058610", "에스피지", self.at("09:30"), frame(30), 10300.0)
+        r.on_symbol("058610", "에스피지", self.at("09:31"), frame(31), 10000.0)      # -3% -> sl
+        self.assertEqual(self.records()[-1]["reason"], "sl")
+        r.on_symbol("058610", "에스피지", self.at("09:32"), frame(32), 10300.0)
+        self.assertNotIn("058610", r.positions)
+        self.assertEqual(r.sym_state["058610"]["stage"], "sl_today")
+        r2 = self.runner()                                                           # r003 restart: restored from the file
+        self.assertIn("058610", r2.sl_today)
+        r2.on_symbol("058610", "에스피지", self.at("09:40"), frame(40), 10300.0)
+        self.assertNotIn("058610", r2.positions)
+        # a take-profit does not block
+        r2.on_symbol("010060", "x", self.at("09:41"), frame(41), 10300.0)
+        r2.on_symbol("010060", "x", self.at("09:42"), frame(42), 10600.0)
+        r2.on_symbol("010060", "x", self.at("09:43"), frame(43), 10300.0)
+        self.assertIn("010060", r2.positions)
+
+    def test_orphan_position_is_closed_from_the_tick_feed(self):
+        class Feed:
+            def __init__(self):
+                self.price = 10400.0
+
+            def poll(self, code, now):
+                return None, self.price
+
+        r = self.runner()
+        r.on_symbol("443060", "HD현대마린솔루션", self.at("09:30"), frame(30), 10300.0)
+        self.assertIn("443060", r.positions)
+        turn = datetime.now()
+        feed = Feed()
+        self.assertEqual(r.poll_orphans(feed, self.at("09:50"), turn), 1)             # not evaluated this turn -> checked
+        self.assertIn("443060", r.positions)                                            # below the target: still held
+        feed.price = 10600.0
+        r.poll_orphans(feed, self.at("09:53"), datetime.now())
+        self.assertNotIn("443060", r.positions)
+        self.assertEqual(self.records()[-1]["reason"], "tp")
+
+    def test_orphan_skips_positions_seen_this_turn_and_closes_at_1515(self):
+        r = self.runner()
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        turn = datetime(2000, 1, 1)                                                     # everything was seen after it
+        self.assertEqual(r.poll_orphans(None, self.at("15:15"), turn), 0)
+        self.assertIn("010060", r.positions)
+        # no feed: the last price seen; 15:15 -> eod
+        self.assertEqual(r.poll_orphans(None, self.at("15:15"), datetime.now()), 1)
+        self.assertEqual(self.records()[-1]["reason"], "eod")
+
+
+class FundNameTest(unittest.TestCase):
+    def test_names(self):
+        for n in ("KODEX 코스닥150레버리지", "TIGER 200", "RISE 2차전지TOP10", "신한 레버리지 WTI원유 선물 ETN", "MIDAS 코스닥액티브",
+                  "KoAct 바이오헬스케어액티브"):
+            self.assertTrue(r011.is_fund_product(n), n)
+        for n in ("삼성전자", "HK이노엔", "파워로직스", "BNK금융지주", "IBK기업은행", "DS단석", "SK하이닉스", "", None):
+            self.assertFalse(r011.is_fund_product(n), n)
 
 
 if __name__ == "__main__":
