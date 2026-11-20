@@ -17,6 +17,8 @@
 //   one); names that clash with HtsH get the 봇 prefix (봇 차트, 봇 설정·연결))
 // - [2026-11-20] type=feat (fontScale: 글자 크기 (page zoom 80 - 150 %, kept per PC, applied at start); followCode: every open symbol
 //   window shows the code without opening one - used for the symbol picked in a bot window)
+// - [2026-11-20] type=feat (One window per kind (user 2026-11-20): open() focuses the open window of that kind instead of adding another
+//   (a symbol window then shows the asked code); a saved layout with several windows of one kind keeps the front one)
 
 import { create } from 'zustand';
 import type { AuthState } from '../../preload/index';
@@ -181,10 +183,20 @@ const LAYOUT_KEY = 'htsh.layout.v1';
 let seq = 1;
 const newId = () => `w${Date.now().toString(36)}${seq++}`;
 
+/** [2026-11-20] one window per kind: the front one (highest z) of each kind is kept */
+export function onePerKind(wins: Win[]): Win[] {
+  const best = new Map<string, Win>();
+  for (const w of wins) {
+    const b = best.get(w.type);
+    if (!b || (w.z || 0) > (b.z || 0)) best.set(w.type, w);
+  }
+  return wins.filter((w) => best.get(w.type) === w);
+}
+
 function loadLayout(): { wins: Win[]; lastCode: string } {
   try {
     const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
-    if (v && Array.isArray(v.wins)) return { wins: v.wins.filter((w: Win) => w && WIN_TITLE[w.type]), lastCode: v.lastCode || '005930' };
+    if (v && Array.isArray(v.wins)) return { wins: onePerKind(v.wins.filter((w: Win) => w && WIN_TITLE[w.type])), lastCode: v.lastCode || '005930' };
   } catch {
     /* storage unavailable */
   }
@@ -285,6 +297,13 @@ export const useStore = create<State>()((set, get) => {
 
     open: (type, init) => {
       const s = get();
+      // [2026-11-20] one window per kind: bring the open one to the front
+      const had = s.wins.find((x) => x.type === type);
+      if (had) {
+        s.focus(had.id);
+        if (init?.code && SYMBOL_WINS.includes(type) && had.code !== init.code) get().setCode(had.id, init.code);
+        return had.id;
+      }
       const [w, h] = DEFAULT_SIZE[type];
       const n = s.wins.filter((x) => !x.min).length;
       const x = Math.min(24 + (n % 8) * 28, Math.max(0, s.area.w - w));

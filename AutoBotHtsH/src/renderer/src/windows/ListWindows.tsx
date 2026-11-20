@@ -13,9 +13,27 @@
 //   selected the row / sent it to the same link colour) - user 2026-11-20)
 
 // - [2026-11-20] type=fix (☆ group menu closes on a click outside it or Esc)
+// - [2026-11-20] type=feat (Watchlist (user 2026-11-20): group tabs can be dragged to a new order; 자동 보기 - the group's symbols are shown
+//   in every open symbol window one after another every N s (3 - 600, kept per PC), the current row framed by a thin line; only one
+//   auto view runs - starting it here stops the timeline's and the other way round (AUTO_VIEW_EVENT))
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LINK_COLORS, newGroupId, useStore, WATCH_MAX, type Win } from '../store';
 import { useCall, useOutsideClose } from '../hooks';
+import { AUTO_MAX_SEC, AUTO_MIN_SEC, autoViewMayResume, autoViewStarted, clampSec, nextCode, onAutoViewStarted } from '../../../bot/renderer/src/components/AutoView';
+
+const WATCH_AUTO_KEY = 'autobothtsh.watchAuto';
+interface WatchAutoCfg {
+  on: boolean;
+  sec: number;
+}
+function loadWatchAuto(): WatchAutoCfg {
+  try {
+    const v = JSON.parse(localStorage.getItem(WATCH_AUTO_KEY) || '{}') as Partial<WatchAutoCfg>;
+    return { on: v.on === true, sec: clampSec(v.sec) };
+  } catch {
+    return { on: false, sec: 10 };
+  }
+}
 import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
 import { PriceChart } from '../components/PriceChart';
@@ -55,6 +73,55 @@ export function WatchWindow({ win }: { win: Win }) {
   const [sel, setSel] = useState<string | null>(null);
   const [rename, setRename] = useState<string | null>(null);
   const [dragFrom, setDragFrom] = useState<string | null>(null);
+  const [dragTab, setDragTab] = useState<string | null>(null);
+  // [2026-11-20] 자동 보기
+  const [auto, setAuto] = useState<WatchAutoCfg>(loadWatchAuto);
+  const [secText, setSecText] = useState(String(auto.sec));
+  const saveAuto = (p: Partial<WatchAutoCfg>) => {
+    setAuto((cur) => {
+      const next = { ...cur, ...p };
+      try {
+        localStorage.setItem(WATCH_AUTO_KEY, JSON.stringify(next));
+      } catch {
+        /* storage unavailable */
+      }
+      return next;
+    });
+    if (p.on) autoViewStarted('watch');
+  };
+  useEffect(() => onAutoViewStarted('watch', () => saveAuto({ on: false })), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (auto.on && !autoViewMayResume('watch')) saveAuto({ on: false });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const codesKey = codes.join(',');
+  useEffect(() => {
+    if (!auto.on || !codes.length) return;
+    // the first step at once when nothing of this group is selected, then one step per interval (a click restarts the interval)
+    const step = () => {
+      const n = nextCode(codes, sel);
+      if (n) (setSel(n), setCodeAll(n));
+    };
+    if (!sel || !codes.includes(sel)) {
+      step();
+      return;
+    }
+    const t = setTimeout(step, auto.sec * 1000);
+    return () => clearTimeout(t);
+  }, [auto.on, auto.sec, sel, codesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // keep the shown row in view
+  const curRow = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (auto.on) curRow.current?.scrollIntoView({ block: 'nearest' });
+  }, [auto.on, sel]);
+  const moveGroup = (from: string, toId: string) => {
+    const a = groups.findIndex((g) => g.id === from);
+    const b = groups.findIndex((g) => g.id === toId);
+    if (a < 0 || b < 0 || a === b) return;
+    const next = groups.slice();
+    const [g] = next.splice(a, 1);
+    next.splice(b, 0, g);
+    setWatch(next);
+  };
   const byCode = useMemo(() => new Map((r.data || []).map((x) => [x.code, x])), [r.data]);
 
   const saveCodes = (c: string[]) => group && setWatch(groups.map((g) => (g.id === group.id ? { ...g, codes: c } : g)));
@@ -110,7 +177,15 @@ export function WatchWindow({ win }: { win: Win }) {
           rename !== null && g.id === group?.id ? (
             <input key={g.id} autoFocus className="watch-rename" value={rename} maxLength={20} onChange={(e) => setRename(e.target.value)} onBlur={doRename} onKeyDown={(e) => (e.stopPropagation(), e.key === 'Enter' ? doRename() : e.key === 'Escape' && setRename(null))} />
           ) : (
-            <button key={g.id} className={`watch-tab ${g.id === group?.id ? 'on' : ''}`} onClick={() => pickGroup(g.id)} onDoubleClick={() => (pickGroup(g.id), setRename(g.name))} title={g.src ? `${g.src} 에서 자동 등록 (파일이 바뀌면 다시 반영) · 더블클릭: 이름 바꾸기` : '더블클릭: 이름 바꾸기'}>
+            <button
+              key={g.id}
+              className={`watch-tab ${g.id === group?.id ? 'on' : ''} ${dragTab && dragTab !== g.id ? 'drop-ok' : ''}`}
+              draggable
+              onDragStart={(e) => (setDragTab(g.id), (e.dataTransfer.effectAllowed = 'move'))}
+              onDragOver={(e) => dragTab && e.preventDefault()}
+              onDrop={(e) => (e.preventDefault(), dragTab && moveGroup(dragTab, g.id), setDragTab(null))}
+              onDragEnd={() => setDragTab(null)}
+              onClick={() => pickGroup(g.id)} onDoubleClick={() => (pickGroup(g.id), setRename(g.name))} title={g.src ? `${g.src} 에서 자동 등록 (파일이 바뀌면 다시 반영) · 더블클릭: 이름 바꾸기 · 끌어서 순서 변경` : '더블클릭: 이름 바꾸기 · 끌어서 순서 변경'}>
               {g.name} <small>{g.codes.length}</small>
             </button>
           ),
@@ -148,6 +223,22 @@ export function WatchWindow({ win }: { win: Win }) {
         <span className="muted small" title="NXT 표시 종목은 KRX 장이 닫힌 시간(09:00 이전, 15:40 이후)에 NXT 시세로 표시합니다">
           {codes.length}/{WATCH_MAX}종목 · 3초마다 · 장외 시간은 NXT 시세
         </span>
+        <span className="watch-auto" title={`이 그룹 종목을 ${auto.sec}초마다 차례로 열린 종목 창에 표시 (종목을 누르면 그 종목부터 이어감). 타임라인 자동 보기와 동시에 실행되지 않습니다`}>
+          <label className="check">
+            <input type="checkbox" checked={auto.on} onChange={(e) => saveAuto({ on: e.target.checked })} /> 자동 보기
+          </label>
+          <input
+            className="auto-sec"
+            type="number"
+            min={AUTO_MIN_SEC}
+            max={AUTO_MAX_SEC}
+            value={secText}
+            onChange={(e) => setSecText(e.target.value)}
+            onBlur={() => (saveAuto({ sec: clampSec(secText) }), setSecText(String(clampSec(secText))))}
+            onKeyDown={(e) => (e.stopPropagation(), e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur())}
+          />
+          초{auto.on && codes.length ? ` · ${sel && codes.includes(sel) ? codes.indexOf(sel) + 1 : '-'}/${codes.length}` : ''}
+        </span>
         <span className="muted small watch-hint">클릭·Enter → 열린 창 모두 · 끌어서 순서 변경</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
@@ -172,7 +263,8 @@ export function WatchWindow({ win }: { win: Win }) {
               return (
                 <tr
                   key={c}
-                  className={`${sel === c ? 'sel' : ''} ${dragFrom && dragFrom !== c ? 'drop-ok' : ''}`}
+                  ref={auto.on && sel === c ? curRow : undefined}
+                  className={`${sel === c ? 'sel' : ''} ${auto.on && sel === c ? 'auto-cur' : ''} ${dragFrom && dragFrom !== c ? 'drop-ok' : ''}`}
                   draggable
                   onDragStart={(e) => (setDragFrom(c), (e.dataTransfer.effectAllowed = 'move'))}
                   onDragOver={(e) => dragFrom && e.preventDefault()}

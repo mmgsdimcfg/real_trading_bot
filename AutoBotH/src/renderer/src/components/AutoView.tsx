@@ -8,6 +8,9 @@
  * - [2026-11-20] type=feat - Only symbols that already trade at the viewed time (user 2026-11-20): today live = now, a replayed past
  *   day = the replay cursor, a whole past day = all. NXT symbols from 08:00, KRX-only symbols (and symbols whose NXT flag is not known)
  *   from 09:00 (shared/time tradingSessionRange) - before 09:00 the loop shows the NXT symbols only. The count says how many wait
+ * - [2026-11-20] type=feat - One auto view at a time (AutoBotHtsH: timeline and watchlist): turning one on sends AUTO_VIEW_EVENT with
+ *   its name; any other auto view that is on unchecks itself and stops. autoViewStarted() / onAutoViewStarted() are the two ends.
+ *   The last one started is kept (localStorage autoview.owner): one saved as on whose window opens later stays off if another started since
  */
 
 import { useEffect, useState } from 'react';
@@ -16,6 +19,33 @@ import type { Snapshot, SymbolSummary } from '../../../shared/types';
 import { tradingSessionRange } from '../../../shared/time';
 
 export type AutoScope = 'all' | 'active' | 'held';
+
+/** [2026-11-20] window event "an auto view started" (detail = its name: 'timeline' | 'watch') */
+export const AUTO_VIEW_EVENT = 'autoview:start';
+const OWNER_KEY = 'autoview.owner';
+export const autoViewStarted = (who: string) => {
+  try {
+    localStorage.setItem(OWNER_KEY, who);
+  } catch {
+    /* storage unavailable */
+  }
+  window.dispatchEvent(new CustomEvent(AUTO_VIEW_EVENT, { detail: who }));
+};
+/** an auto view saved as on when its window opens keeps running only if it was the last one started */
+export function autoViewMayResume(who: string): boolean {
+  try {
+    const o = localStorage.getItem(OWNER_KEY);
+    return !o || o === who;
+  } catch {
+    return true;
+  }
+}
+/** calls `stop` when another auto view starts; returns the remover */
+export function onAutoViewStarted(me: string, stop: () => void): () => void {
+  const h = (e: Event) => (e as CustomEvent<string>).detail !== me && stop();
+  window.addEventListener(AUTO_VIEW_EVENT, h);
+  return () => window.removeEventListener(AUTO_VIEW_EVENT, h);
+}
 interface AutoCfg {
   on: boolean;
   sec: number;
@@ -77,14 +107,22 @@ export function AutoView() {
   const live = useStore((s) => s.status.live);
   const { codes, waiting } = autoTargets(snap, cfg.scope, viewTime(live, snap?.replay?.cursor, Date.now()));
   const save = (p: Partial<AutoCfg>) => {
-    const next = { ...cfg, ...p };
-    setCfg(next);
-    try {
-      localStorage.setItem(KEY, JSON.stringify(next));
-    } catch {
-      /* storage unavailable */
-    }
+    setCfg((cur) => {
+      const next = { ...cur, ...p };
+      try {
+        localStorage.setItem(KEY, JSON.stringify(next));
+      } catch {
+        /* storage unavailable */
+      }
+      return next;
+    });
+    if (p.on) autoViewStarted('timeline');
   };
+  // another auto view (watchlist) started: stop here; saved as on but another one started since: stays off
+  useEffect(() => onAutoViewStarted('timeline', () => save({ on: false })), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (cfg.on && !autoViewMayResume('timeline')) save({ on: false });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // one step per interval; a new selection (by hand or by the loop) starts the next interval
   const key = codes.join(',');
   useEffect(() => {
