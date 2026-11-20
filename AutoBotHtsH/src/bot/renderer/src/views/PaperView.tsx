@@ -21,6 +21,8 @@
  * - [2026-11-20] type=feat - 수량 and 총매수액 next to 매수가 in all three tables (the same sizing: shares x buy price)
  * - [2026-11-20] type=feat - Double click on a row shows the symbol in the other windows (showCode: AutoBotHtsH chart / current price /
  *   stock info / news, AutoBotH the 차트 tab); a single click still opens the timeline
+ * - [2026-11-20] type=feat - 순손익 합계 shows the traded amounts under it (user 2026-11-20): 매수 (shares x buy price) and 매도 (shares x
+ *   sell price, before costs) of the closed trades - 순손익 = 매도 - 매수 - commission and tax
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -54,6 +56,20 @@ export function paperKrw(entry: number | undefined, budget: number, opts: { pric
   if (opts.netPct !== undefined) return (q * entry * opts.netPct) / 100;
   if (opts.price && opts.price > 0) return q * (opts.price - entry);
   return undefined;
+}
+
+/** [2026-11-20] traded amounts of the closed trades: buy = qty x entry, sell = qty x exit (before costs; no exit price = buy + net) */
+export function paperTotals(trades: PaperTrade[], budget: number): { buy: number; sell: number } {
+  let buy = 0;
+  let sell = 0;
+  for (const t of trades) {
+    if (t.exitTs === undefined) continue;
+    const q = paperQty(t.entry, budget);
+    if (!q) continue;
+    buy += q * t.entry;
+    sell += t.exit && t.exit > 0 ? q * t.exit : q * t.entry * (1 + (t.netPct ?? 0) / 100);
+  }
+  return { buy, sell };
 }
 
 /** [2026-11-20] 수량 / 총매수액 cells of a virtual buy (shares the bot's budget buys at `entry`) */
@@ -157,6 +173,7 @@ export function PaperView() {
     () => trades.filter((t) => t.exitTs !== undefined).reduce((a, t) => a + (paperKrw(t.entry, orderKrw, { netPct: t.netPct ?? 0 }) || 0), 0),
     [trades, orderKrw],
   );
+  const totals = useMemo(() => paperTotals(trades, orderKrw), [trades, orderKrw]);
   const krwTip = `수익금 = ${fmtInt(orderKrw)}원(1회 매수 상한 MAX_ORDER_AMOUNT_KRW)으로 살 수 있는 주수 기준`;
   const open = trades.filter((t) => t.exitTs === undefined);
   const closed = trades.filter((t) => t.exitTs !== undefined).sort((a, b) => (b.exitTs || 0) - (a.exitTs || 0));
@@ -216,6 +233,11 @@ export function PaperView() {
           <b className={pnlClass(sum.closed ? sum.sumPct : undefined)} title={krwTip}>
             {sum.closed ? `${fmtPct(sum.sumPct)} · ${fmtKrw(sumKrw)}` : '-'}
           </b>
+          {sum.closed > 0 && (
+            <small title={`청산된 거래의 금액 (${krwTip}) · 매도액은 수수료·세금 전 - 순손익 = 매도 - 매수 - 비용`}>
+              매수 {fmtInt(Math.round(totals.buy))}원 · 매도 {fmtInt(Math.round(totals.sell))}원
+            </small>
+          )}
         </div>
         <div className="kpi">
           <span>거래당 평균</span>
