@@ -154,6 +154,7 @@ describe('automatic sell mode (AUTO_SELL_MODE)', () => {
     expect(IGNORED_TAGS.has('EXIT ENGINE')).toBe(true);
     expect(IGNORED_TAGS.has('ENTRY ENGINE')).toBe(true);
     expect(IGNORED_TAGS.has('ENTRY LAT')).toBe(true);
+    expect(classify('REENTRY PNL', '125490_한라캐스트 | last_exit_profit=False limit=10 used=1').kind).toBe('ignore');
   });
 });
 

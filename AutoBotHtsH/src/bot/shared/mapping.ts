@@ -27,6 +27,8 @@
  * - [2026-11-15] type=feat - [ENTRY ENGINE] / [ENTRY LAT   ] (r028 entry engine shadow, latency records) added to IGNORED_TAGS
  * - [2026-11-19] type=fix - [REJECT] HYBRID_1MIN_FRAME_STALE_last=HH:MM_expected=HH:MM (r005: the 1-minute frame does not end at the
  *   last confirmed minute - mostly NXT after-market, thin trading) was listed as unknown: mapped like FRAME_UNAVAILABLE (_009 legacy)
+ * - [2026-11-20] type=fix - [REENTRY PNL] (r003 after a position is sold out: last_exit_profit / re-entry limit / used) was listed as
+ *   unknown: added to IGNORED_TAGS (bookkeeping, not a condition)
  */
 
 import type { Condition, ConditionsDoc, EvalResult, Side } from './types';
@@ -201,6 +203,7 @@ export const IGNORED_TAGS = new Set([
   'EXIT ENGINE', // [2026-11-15] adaptive exit engine live (r027): engine state lines; the order itself logs [SELL TRIGGER]
   'ENTRY ENGINE', // [2026-11-15] r028 entry engine shadow (no orders): candidate / shadow buy lines
   'ENTRY LAT', // [2026-11-15] r028 latency record T0~T5 of a buy attempt
+  'REENTRY PNL', // [2026-11-20] r003: a position fully sold - its re-entry limit bookkeeping (last_exit_profit / limit / used), not a condition
 ]);
 
 function reasonCandidates(rest: string): string[] {
