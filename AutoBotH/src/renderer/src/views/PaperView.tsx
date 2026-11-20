@@ -25,6 +25,9 @@
  *   sell price, before costs) of the closed trades - 순손익 = 매도 - 매수 - commission and tax
  * - [2026-11-20] type=feat - 오늘 매수 / 상한 card (user 2026-11-20): the day's virtual buys against the daily limit per group (server
  *   status file), marked when the limit is reached (no more buys that day). Follows the group switch
+ * - [2026-11-20] type=feat - 순손익 합계 = average % and the KRW sum (user 2026-11-20): the % was the sum of the trades' % (-35.60% next to
+ *   -170,670원 of 10.8 M bought); now the KRW sum over the bought amount, so % and 원 agree. The 거래당 평균 card is gone (its simple mean
+ *   is in the tooltip). The 매수 / 매도 line stays on one line
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -251,18 +254,17 @@ export function PaperView() {
         </div>
         <div className="kpi">
           <span>순손익 합계</span>
-          <b className={pnlClass(sum.closed ? sum.sumPct : undefined)} title={krwTip}>
-            {sum.closed ? `${fmtPct(sum.sumPct)} · ${fmtKrw(sumKrw)}` : '-'}
+          <b
+            className={pnlClass(sum.closed ? sumKrw : undefined)}
+            title={`평균 % = 순손익 합계 금액 / 총매수액 (거래당 단순 평균 ${sum.closed ? fmtPct(sum.meanPct) : '-'}) · ${krwTip}`}
+          >
+            {sum.closed ? `${totals.buy > 0 ? fmtPct((sumKrw / totals.buy) * 100) : fmtPct(sum.meanPct)} · ${fmtKrw(sumKrw)}` : '-'}
           </b>
           {sum.closed > 0 && (
-            <small title={`청산된 거래의 금액 (${krwTip}) · 매도액은 수수료·세금 전 - 순손익 = 매도 - 매수 - 비용`}>
+            <small className="nowrap" title={`청산된 거래의 금액 (${krwTip}) · 매도액은 수수료·세금 전 - 순손익 = 매도 - 매수 - 비용`}>
               매수 {fmtInt(Math.round(totals.buy))}원 · 매도 {fmtInt(Math.round(totals.sell))}원
             </small>
           )}
-        </div>
-        <div className="kpi">
-          <span>거래당 평균</span>
-          <b className={pnlClass(sum.closed ? sum.meanPct : undefined)}>{sum.closed ? fmtPct(sum.meanPct) : '-'}</b>
         </div>
         <div className="kpi">
           <span>청산 사유</span>

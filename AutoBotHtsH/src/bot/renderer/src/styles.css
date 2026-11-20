@@ -790,6 +790,7 @@ button.pick-chip:disabled { cursor: default; opacity: .6; }
 .paper-view { height: 100%; overflow: auto; padding-bottom: 12px; }
 .paper-view h4 { margin: 14px 16px 6px; font-size: 13px; color: var(--text-2); }
 .paper-view .kpi b.small { font-size: 13px; font-weight: 500; }
+.paper-view .kpi small.nowrap { white-space: nowrap; }
 .badge-mode { padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
 .badge-mode.on { border-color: var(--st-pass); color: var(--st-pass); }
 /* [2026-11-19] paper tab: status of the paper-traded symbols */

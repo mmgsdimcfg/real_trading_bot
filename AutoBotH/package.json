@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-20] type=feat - v2.3.34_007: 가상 매매 순손익 합계 = 평균 % · 금액 합계 (평균 % = 순손익 금액 / 총매수액, 이전엔 거래별 % 의 단순 합). 거래당 평균 칸 삭제, 매수·매도 줄은 한 줄로",
     "[2026-11-20] type=feat - v2.3.34_006: 가상 매매 창에 오늘 매수 / 상한 카드 (감시 종목·수집기 종목별 하루 가상 매수 횟수와 상한, 상한에 닿으면 표시)",
     "[2026-11-20] type=feat - v2.3.34_005: 가상 매매 창 순손익 합계 아래에 청산 거래의 매수액·매도액 합계 표시 (매도액은 수수료·세금 전)",
     "[2026-11-20] type=feat - v2.3.34_004: 가상 매매 창에서 종목 행을 두 번 누르면 차트 탭이 그 종목으로 열림. 한 번 누르면 종전처럼 타임라인",
@@ -156,7 +157,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "006",
+    "buildNumber": "007",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",
