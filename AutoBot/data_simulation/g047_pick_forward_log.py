@@ -11,10 +11,11 @@ Logged per date D (the picks file g002 wrote: <runtime>/data/D/_D_picks.txt, "co
   per pick  close_D, tick_pct = KRX tick(close_D) / close_D (known on D - the tick group "<0.20%" / ">=0.20%"), fallback (replay
             rows only - the picks file does not say)
 Scored (the g042 Scorer - same rules as the HI52 log): buy the open of D+1 + 1 tick (no fill when that open is at +29.5%), sell the
-close of the k-th trading day (k = 1 same-day close, 5, 10, 20); a window with a move / gap beyond 30.5% is excluded; a code without
-a close on the planned day exits at its last close inside the window. Net % after commission 0.015% x 2 + the sell tax of the exit
-date. Benchmark = the g042 universe of D (close >= 2,000, 20-day turnover >= 5 bn) bought and sold by the same rules; excess = net -
-benchmark. The tick slippage of the sale is not charged (same as g042).
+close of the k-th trading day (k = 1 same-day close, 5, 10, 20) - 1 tick. [2026-11-20, g042 scoring v2] A window with a move / gap
+beyond 30.5% is kept (flagged bad); a code without a close on the planned day sells at its first close after it, none yet =
+unresolved (0 recovery, -100%, counted with the closed ones). Net % after commission 0.015% x 2 + the sell tax of the exit date.
+Benchmark = the g042 universe of D (close >= 2,000, 20-day turnover >= 5 bn) bought and sold by the same rules; excess = net -
+benchmark.
 
 Recorded kind (a forward test only counts "live"):
   live     D is the newest trading day in the data and the run happens before the next weekday's 09:00 (g042 classify)
@@ -36,6 +37,11 @@ running / 4 D is a weekday without index ETF bars (holiday, or the daily history
 No KIS calls, no r003 / r004 change; read-only on daily_history / daily_backfill / the picks files.
 
 Update log:
+- [2026-11-20] type=fix owner=claude
+    summary: g042 채점 v2 를 따름(Scorer 공유) - 매도 1틱 차감, 이상 변동 구간 유지(bad 표시), 청산일 종가 없으면 다음 첫 종가,
+      끝까지 없으면 unresolved(0원 회수, 청산 집계에 포함). 리포트의 excluded 는 no_bar / limit_up_open 만.
+    impact: tooling (리포트 수치 재계산)
+    compatibility: evaluation.csv 형식 그대로 (상태 excluded_bad 없어짐, unresolved 추가)
 - [2026-11-19] type=feat owner=claude
     summary: 신규 - g002 선정 종목 전진 기록(시장 필터 상태, 1틱 비율) + 1/5/10/20일 성과 평가 리포트 (사용자 요청, 주문 없음).
       채점은 g042 Scorer 재사용. g043 재현 선정은 --import-replay 로 recorded=replay 기록.
@@ -211,11 +217,11 @@ def write_report(ev: pd.DataFrame, last: str, days: pd.DataFrame, log=print) -> 
                       "|---|---|---|---|---|---|---|---|---|"]
             for (rec, gate, tg), g in ev.groupby(["recorded", "gate", "tick_group"]):
                 st = g[f"status{h}"]
-                c = g[st == "closed"]
+                c = g[st.isin(["closed", "unresolved"])]                 # [2026-11-20] unresolved = 0 recovery
                 net = pd.to_numeric(c[f"net{h}_pct"], errors="coerce")
                 exc = pd.to_numeric(c[f"excess{h}_pct"], errors="coerce")
                 o = pd.to_numeric(g.loc[st == "open", f"net{h}_pct"], errors="coerce")
-                nx = int(st.isin(["excluded_bad", "no_bar", "limit_up_open"]).sum())
+                nx = int(st.isin(["no_bar", "limit_up_open"]).sum())
                 cl = f"{len(c)} | {net.mean():.2f} | {exc.mean():.2f} | {(net > 0).mean() * 100:.0f}" if len(c) else "0 | - | - | -"
                 op = f"{len(o)} ({o.mean():.2f})" if len(o) else "0"
                 lines.append(f"| {rec} | {gate} | {tg} | {cl} | {op} | {nx} |")

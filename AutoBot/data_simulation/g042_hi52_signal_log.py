@@ -34,7 +34,7 @@ Files (<runtime>/data/hi52_signals/, written under the lock .g042.lock):
   signals.csv     a flat view of the signals in days.csv (date, lb, code, name, close, prior_high, amt20_bn, ret60_pct, gate,
                   provisional, recorded), rewritten from days.csv by every logging / evaluation run - never read back
   evaluation.csv  per signal: entry, exit / status per hold (closed | open | waiting_entry | no_bar | limit_up_open |
-                  excluded_bad), net %, universe %, excess %. Recomputed from the current data on every run (a provisional
+                  unresolved), bad (a move beyond 30.5% inside the window - kept since 2026-11-20), net %, universe %, excess %. Recomputed from the current data on every run (a provisional
                   close that g025 corrects later is picked up by the next run).
   report.md       summary per recorded / lb / gate and by month
 Run:
@@ -48,6 +48,14 @@ Exit codes: 0 ok (also: --date on a weekend - nothing is done) / 2 no usable inp
 No KIS calls, no r003 / r004 change; read-only on daily_history / daily_backfill.
 
 Update log:
+- [2026-11-20] type=feat owner=claude
+    summary: 채점 v2 + 사전 등록 합격 판정 (가상 매매 검토 4차, Codex). (1) 보유 구간 이상 변동 종목을 사후 제외하지 않고 bad 로만
+      표시, (2) 매도 1틱 차감, (3) 청산일에 종가가 없으면 그 뒤 첫 종가에 청산, 데이터 끝까지 없으면 unresolved = 0원 회수(-100%)
+      - 벤치마크도 같은 규칙, (4) 리포트는 신호일 단위(날짜 내 동일 비중). (5) acceptance(): REGISTERED(20261120) 이후 live / HI250 /
+      gate UP / 40일만, UP 250일 + 체결 코호트 200개 + 거래일 900일을 채운 첫 날 표본 마감, 마지막 40일 창 이후 한 번 판정 - 평균
+      순수익·초과수익의 단측 95% 하한(90일 원형 블록 10,000회) > 0, 왕복 +0.25% 추가 후에도 > 0 이면 PASS.
+    impact: tooling (리포트/evaluation.csv 형식 변경 - bad 열 추가, 상태 excluded_bad 없어짐 / unresolved 추가). 매매 판정 불변.
+    compatibility: evaluation.csv 열 추가 (매번 재계산되는 파생 파일)
 - [2026-11-18] type=feat owner=claude
     summary: 신규 - HI52(52주 신고가) 스윙 신호 전진 기록과 평가 리포트 (사용자 요청, 주문 없음). Codex 검토 반영: live 판정
       (최신 거래일 + 다음 개장 전만), 잠금과 커밋 순서, 보유 구간 이상 변동 제외·마지막 종가 청산(연구와 동일), 입력 누락 종료 코드,
@@ -89,13 +97,22 @@ HISTORY_ROWS = 800          # rows per code when nothing older is needed
 WARMUP_ROWS = 600           # index ETF trading rows loaded before the oldest date logged / evaluated (lb 500 + 60 + slack)
 OPEN_HOUR = 9               # a date is "live" until this hour of the next weekday
 RANK = {"live": 2, "late": 1, "backfill": 1}
+# [2026-11-20] pre-registered acceptance of the forward test (paper review round 4, Codex) - judged ONCE, not tuned afterwards:
+# live rows of lb 250 / gate UP / hold 40 logged on or after REGISTERED; the sample closes on the first trading day where all three
+# minimums are met (UP days, filled cohorts, trading days since REGISTERED), the verdict waits for the last cohort's 40-day window.
+# Pass = one-sided 95% lower bounds (circular block bootstrap over the trading-day axis) of the mean cohort net AND the mean cohort
+# excess are both > 0, also after an extra round-trip cost of EXTRA_COST_PCT on every trade. Unresolved exits count as 0 recovery.
+REGISTERED = "20261120"
+ACCEPT_LB, ACCEPT_HOLD = "250", 40
+MIN_UP_DAYS, MIN_COHORTS, MIN_TRADING_DAYS = 250, 200, 900
+BOOT_BLOCK, BOOT_N, EXTRA_COST_PCT = 90, 10000, 0.25
 SIG_COLS = ["date", "lb", "code", "name", "close", "prior_high", "amt20_bn", "ret60_pct", "gate", "provisional", "recorded"]
 SIG_FIELDS = ["lb", "code", "name", "close", "prior_high", "amt20_bn", "ret60_pct", "provisional"]     # stored per date in days.csv
 DAY_COLS = ["date", "gate", "etf"] + [f"n_hi{lb}" for lb in LOOKBACKS] + ["universe", "provisional", "recorded", "logged_at",
                                                                            "signals"]
 EVAL_COLS = ["date", "lb", "code", "name", "gate", "recorded", "entry_date", "entry_px"] + [
     f"{k}{h}{s}" for h in HOLDS for k, s in (("exit", "_date"), ("exit", "_px"), ("net", "_pct"), ("univ", "_pct"),
-                                              ("excess", "_pct"), ("status", ""))]
+                                              ("excess", "_pct"), ("status", ""), ("bad", ""))]
 
 
 class InputError(SystemExit):
@@ -323,6 +340,9 @@ class Scorer:
         return e, min(x, len(self.cal) - 1), "closed" if x < len(self.cal) else "open"
 
     def trade(self, i, hold, j):
+        """[2026-11-20 scoring v2] no window exclusion (a big move only sets "bad"), sell at the close - 1 tick, a code without a close
+        on the planned exit day sells at its first close after it; none up to the newest data -> "unresolved" (0 recovery, -100%).
+        A window that is not over yet is marked at the newest close ("open")."""
         n = len(self.cal)
         if i + 1 >= n:
             return {"status": "waiting_entry"}
@@ -333,18 +353,25 @@ class Scorer:
         if np.isfinite(pc) and o >= pc * LIMIT_UP_OPEN:
             return {"status": "limit_up_open", "entry_date": self.cal[e]}
         p = float(o + tick(o))
-        if self.bad[e:x + 1, j].any():
-            return {"status": "excluded_bad", "entry_date": self.cal[e], "entry_px": p}
-        cw = self.C[e:x + 1, j]
-        valid = np.flatnonzero(np.isfinite(cw))
-        if not len(valid):
-            return {"status": "no_bar", "entry_date": self.cal[e]}
-        k = e + valid[-1]                       # planned exit, or the last close inside the window (suspended / delisted)
+        bad = bool(self.bad[e:x + 1, j].any())
+        if st == "closed":
+            after = np.flatnonzero(np.isfinite(self.C[x:, j]))
+            if not len(after):
+                return {"status": "unresolved", "entry_date": self.cal[e], "entry_px": p, "net": -100.0, "bad": bad}
+            k = x + after[0]
+        else:
+            valid = np.flatnonzero(np.isfinite(self.C[e:x + 1, j]))
+            if not len(valid):
+                return {"status": "open", "entry_date": self.cal[e], "entry_px": p, "bad": bad}
+            k = e + valid[-1]
         xp = float(self.C[k, j])
-        net = (xp * (1 - FEE - self.tax[k]) - p * (1 + FEE)) / (p * (1 + FEE)) * 100
-        return {"status": st, "entry_date": self.cal[e], "entry_px": p, "exit_date": self.cal[k], "exit_px": xp, "net": net}
+        xs = xp - float(tick(xp))
+        net = (xs * (1 - FEE - self.tax[k]) - p * (1 + FEE)) / (p * (1 + FEE)) * 100
+        return {"status": st, "entry_date": self.cal[e], "entry_px": p, "exit_date": self.cal[k], "exit_px": xp, "net": net,
+                "bad": bad}
 
     def universe(self, i, hold):
+        """the whole universe of row i by the same rules as trade() (equal weight)"""
         key = (i, hold)
         if key in self.bench:
             return self.bench[key]
@@ -352,17 +379,28 @@ class Scorer:
         if i + 1 >= n:
             self.bench[key] = np.nan
             return np.nan
-        e, x, _ = self._window(i, hold)
+        e, x, st = self._window(i, hold)
         o, pc = self.O[e], self.Cff[i]
-        ok = self.univ[i] & np.isfinite(o) & ~(o >= pc * LIMIT_UP_OPEN) & ~self.bad[e:x + 1].any(axis=0)
-        cw = self.C[e:x + 1][:, ok]
-        valid = np.isfinite(cw)
-        has = valid.any(axis=0)
-        last = cw.shape[0] - 1 - valid[::-1].argmax(axis=0)
-        xp = cw[last, np.arange(cw.shape[1])]
+        ok = self.univ[i] & np.isfinite(o) & ~(o >= pc * LIMIT_UP_OPEN)
         p = o[ok] + tick(o[ok])
-        r = (xp * (1 - FEE - self.tax[e + last]) - p * (1 + FEE)) / (p * (1 + FEE)) * 100
-        r = r[has & np.isfinite(r)]
+        if st == "closed":
+            cw = self.C[x:][:, ok]
+            valid = np.isfinite(cw)
+            has = valid.any(axis=0)
+            k = x + valid.argmax(axis=0)                     # first close on / after the planned exit
+        else:
+            cw = self.C[e:x + 1][:, ok]
+            valid = np.isfinite(cw)
+            has = valid.any(axis=0)
+            k = e + cw.shape[0] - 1 - valid[::-1].argmax(axis=0)
+        xp = self.C[k, np.flatnonzero(ok)]
+        xs = xp - tick(xp)
+        r = (xs * (1 - FEE - self.tax[k]) - p * (1 + FEE)) / (p * (1 + FEE)) * 100
+        if st == "closed":
+            r = np.where(has, r, -100.0)                     # unresolved: 0 recovery
+        else:
+            r = r[has]
+        r = r[np.isfinite(r)]
         self.bench[key] = float(r.mean()) if len(r) else np.nan
         return self.bench[key]
 
@@ -399,62 +437,143 @@ def evaluate(P, ind, log=print) -> None:
                         f"net{h}_pct": f"{net:.3f}" if net is not None else "",
                         f"univ{h}_pct": f"{b:.3f}" if np.isfinite(b) else "",
                         f"excess{h}_pct": f"{net - b:.3f}" if net is not None and np.isfinite(b) else "",
-                        f"status{h}": t["status"]})
+                        f"status{h}": t["status"], f"bad{h}": "1" if t.get("bad") else ""})
         rows.append(row)
     ev = pd.DataFrame(rows, columns=EVAL_COLS).sort_values(["date", "lb", "code"])
     _write_csv(ev, out_dir() / "evaluation.csv")
     if skipped:
         log(f"[g042] evaluate: {skipped} signals outside the loaded data")
-    write_report(ev, sc.cal[-1], days, log)
+    write_report(ev, sc.cal, days, log)
 
 
-def write_report(ev: pd.DataFrame, last: str, days: pd.DataFrame, log=print) -> None:
+FILLED = ("closed", "unresolved")
+
+
+def cohorts(ev: pd.DataFrame, hold: int, extra: float = 0.0) -> pd.DataFrame:
+    """[2026-11-20] one row per signal day (equal weight inside the day): net = mean trade net of the finished trades (closed +
+    unresolved as -100%) minus `extra` (round-trip %), univ = the day's benchmark, excess = net - univ."""
+    st = ev[f"status{hold}"]
+    f = ev[st.isin(FILLED)].copy()
+    if not len(f):
+        return pd.DataFrame(columns=["date", "n", "net", "univ", "excess"])
+    f["net"] = pd.to_numeric(f[f"net{hold}_pct"], errors="coerce") - extra
+    f["univ"] = pd.to_numeric(f[f"univ{hold}_pct"], errors="coerce")
+    g = f.groupby("date").agg(n=("net", "size"), net=("net", "mean"), univ=("univ", "first")).reset_index()
+    g["excess"] = g["net"] - g["univ"]
+    return g
+
+
+def lower_bound(values_by_day: pd.Series, axis: list[str], block: int = BOOT_BLOCK, n_boot: int = BOOT_N, seed: int = 42) -> float:
+    """one-sided 95% lower bound of the mean over the days that have a value, circular block bootstrap on the whole trading-day
+    axis (days without a cohort stay empty, so the cohort count varies between draws as it would in reality)."""
+    x = values_by_day.reindex(axis).to_numpy(float)
+    T = len(x)
+    if T == 0 or np.isfinite(x).sum() == 0:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    nb = int(np.ceil(T / block))
+    means = np.empty(n_boot)
+    for b in range(n_boot):
+        idx = ((rng.integers(0, T, nb)[:, None] + np.arange(block)[None, :]).ravel()[:T]) % T
+        v = x[idx]
+        means[b] = np.nanmean(v) if np.isfinite(v).any() else np.nan
+    return float(np.nanpercentile(means, 5))
+
+
+def acceptance(ev: pd.DataFrame, days: pd.DataFrame, cal: list[str]) -> dict:
+    """[2026-11-20] progress / verdict of the pre-registered forward-test acceptance (see REGISTERED)."""
+    out = {"registered": REGISTERED, "rule": f"live lb{ACCEPT_LB} gate UP hold {ACCEPT_HOLD}; sample closes at UP days >= "
+           f"{MIN_UP_DAYS}, cohorts >= {MIN_COHORTS}, trading days >= {MIN_TRADING_DAYS}; pass = 95% one-sided lower bounds of "
+           f"mean net and mean excess > 0, also with +{EXTRA_COST_PCT}% round trip ({BOOT_BLOCK}-day blocks, {BOOT_N} draws)"}
+    axis = [d for d in cal if d >= REGISTERED]
+    live = days[(days["recorded"] == "live") & (days["date"] >= REGISTERED)] if len(days) else days
+    up_days = sorted(live.loc[live["gate"] == "UP", "date"]) if len(live) else []
+    e = ev[(ev["recorded"] == "live") & (ev["lb"].astype(str) == ACCEPT_LB) & (ev["gate"] == "UP") & (ev["date"] >= REGISTERED)]
+    filled_days = sorted(set(e.loc[~e[f"status{ACCEPT_HOLD}"].isin(["waiting_entry", "no_bar", "limit_up_open"]), "date"]))
+    close_at = None
+    for k, d in enumerate(axis):
+        if (k + 1 >= MIN_TRADING_DAYS and sum(1 for x in up_days if x <= d) >= MIN_UP_DAYS
+                and sum(1 for x in filled_days if x <= d) >= MIN_COHORTS):
+            close_at = d
+            break
+    out.update({"trading_days": len(axis), "up_days": len(up_days), "cohorts": len(filled_days), "sample_closed_at": close_at})
+    if close_at is None:
+        out["verdict"] = "collecting"
+        return out
+    e = e[e["date"] <= close_at]
+    if (~e[f"status{ACCEPT_HOLD}"].isin(FILLED + ("waiting_entry", "no_bar", "limit_up_open"))).any():
+        out["verdict"] = "waiting for the last 40-day windows"
+        return out
+    ax = [d for d in axis if d <= close_at]
+    res = {}
+    for label, extra in (("base", 0.0), ("plus_cost", EXTRA_COST_PCT)):
+        c = cohorts(e, ACCEPT_HOLD, extra).set_index("date")
+        res[label] = {"net_lb": lower_bound(c["net"], ax), "excess_lb": lower_bound(c["excess"], ax),
+                      "net_mean": float(c["net"].mean()), "excess_mean": float(c["excess"].mean())}
+    out["result"] = res
+    out["verdict"] = "PASS" if all(v["net_lb"] > 0 and v["excess_lb"] > 0 for v in res.values()) else "FAIL"
+    return out
+
+
+def write_report(ev: pd.DataFrame, cal: list[str], days: pd.DataFrame, log=print) -> None:
+    last = cal[-1]
     lines = [f"# HI52 signal log - report ({now_text()}, data up to {last})", "",
-             "Planned trade: buy the next open + 1 tick, sell the close of the 20th / 40th holding day; net % after commission and "
-             "the sell tax of the exit date. Benchmark = the whole universe of that day traded by the same rules (random picks); "
-             "excess = net - benchmark. The strategy is gate UP only. Only `live` rows are a forward test (recorded before the "
-             "next open); `late` / `backfill` rows were computed afterwards.", ""]
+             "Planned trade (scoring v2, 2026-11-20): buy the next open + 1 tick, sell the close of the 20th / 40th holding day - 1 "
+             "tick (no close that day: the first close after it; none yet: unresolved = 0 recovery, -100%); a window with a move "
+             "beyond 30.5% is kept (counted as bad), net % after commission and the sell tax of the exit date. Every figure is per "
+             "signal DAY (equal weight inside the day). Benchmark = the whole universe of that day by the same rules; excess = net - "
+             "benchmark. The strategy is gate UP only. Only `live` rows are a forward test (recorded before the next open).", ""]
     if len(days):
         dl = days[days["recorded"] == "live"]
         lines += [f"Logged dates: {len(days)} (live {len(dl)}, first live {dl['date'].min() if len(dl) else '-'}, "
                   f"last {days['date'].max()}). Gate UP on {int((days['gate'] == 'UP').sum())} of them; last gate "
                   f"{days.sort_values('date')['gate'].iloc[-1]}.", ""]
+    acc = acceptance(ev if len(ev) else pd.DataFrame(columns=EVAL_COLS), days, cal)
+    lines += ["## Pre-registered acceptance (judged once)", "", f"- rule: {acc['rule']}",
+              f"- registered {acc['registered']}: trading days {acc['trading_days']} / {MIN_TRADING_DAYS}, gate UP days "
+              f"{acc['up_days']} / {MIN_UP_DAYS}, filled cohorts {acc['cohorts']} / {MIN_COHORTS}",
+              f"- sample closed at: {acc['sample_closed_at'] or '-'}; verdict: **{acc['verdict']}**"]
+    if "result" in acc:
+        for k, v in acc["result"].items():
+            lines.append(f"- {k}: mean net {v['net_mean']:.2f}% (LB {v['net_lb']:.2f}), mean excess {v['excess_mean']:.2f}%p "
+                         f"(LB {v['excess_lb']:.2f})")
+    lines.append("")
     if not len(ev):
         lines += ["No signals yet."]
     else:
         for h in HOLDS:
-            lines += [f"## Hold {h} days", "",
-                      "| recorded | lb | gate | closed | mean net % | mean excess % | win % | open (latest net %) | excluded |",
-                      "|---|---|---|---|---|---|---|---|---|"]
+            lines += [f"## Hold {h} days (per signal day)", "",
+                      "| recorded | lb | gate | finished days | trades | mean net % | mean excess % | win days % | unresolved | "
+                      "bad windows | open trades (latest net %) |", "|---|---|---|---|---|---|---|---|---|---|---|"]
             for (rec, lb, gate), g in ev.groupby(["recorded", "lb", "gate"]):
+                c = cohorts(g, h)
                 st = g[f"status{h}"]
-                c = g[st == "closed"]
-                net = pd.to_numeric(c[f"net{h}_pct"], errors="coerce")
-                exc = pd.to_numeric(c[f"excess{h}_pct"], errors="coerce")
                 o = pd.to_numeric(g.loc[st == "open", f"net{h}_pct"], errors="coerce")
-                nx = int(st.isin(["excluded_bad", "no_bar", "limit_up_open"]).sum())
-                cl = f"{len(c)} | {net.mean():.2f} | {exc.mean():.2f} | {(net > 0).mean() * 100:.0f}" if len(c) else "0 | - | - | -"
+                unres = int((st == "unresolved").sum())
+                badn = int(((g[f"bad{h}"].astype(str) == "1") & st.isin(FILLED)).sum())
+                cl = (f"{len(c)} | {int(c['n'].sum())} | {c['net'].mean():.2f} | {c['excess'].mean():.2f} | "
+                      f"{(c['net'] > 0).mean() * 100:.0f}") if len(c) else "0 | 0 | - | - | -"
                 op = f"{len(o)} ({o.mean():.2f})" if len(o) else "0"
-                lines.append(f"| {rec} | {lb} | {gate} | {cl} | {op} | {nx} |")
+                lines.append(f"| {rec} | {lb} | {gate} | {cl} | {unres} | {badn} | {op} |")
             lines.append("")
-        g = ev[(ev["gate"] == "UP") & (ev["status40"] == "closed")].copy()
-        if len(g):
-            g["month"] = g["date"].str[:6]
-            lines += ["## Strategy (gate UP, hold 40, closed) by signal month", "",
-                      "| month | recorded | lb | n | mean net % | mean excess % |", "|---|---|---|---|---|---|"]
-            for (m, rec, lb), x in g.groupby(["month", "recorded", "lb"]):
-                lines.append(f"| {m} | {rec} | {lb} | {len(x)} | {pd.to_numeric(x['net40_pct']).mean():.2f} | "
-                             f"{pd.to_numeric(x['excess40_pct'], errors='coerce').mean():.2f} |")
+        c = cohorts(ev[ev["gate"] == "UP"], 40)
+        if len(c):
+            c["month"] = c["date"].str[:6]
+            lines += ["## Strategy (gate UP, hold 40, finished) by signal month (per signal day, all lb / recorded)", "",
+                      "| month | days | mean net % | mean excess % |", "|---|---|---|---|"]
+            for m, x in c.groupby("month"):
+                lines.append(f"| {m} | {len(x)} | {x['net'].mean():.2f} | {x['excess'].mean():.2f} |")
             lines.append("")
-        lines += ["Research reference (2018-06..2026-11, gate UP, hold 40, per-signal-day mean): HI250 net about +1.4% (2018-2022) / "
-                  "+6.4% (2023-2026), random picks -0.6% / +3.3%. A forward excess near zero after a few months means the edge "
-                  "did not carry over."]
+        lines += ["Research reference (2018-06..2026-11, gate UP, hold 40, per-signal-day mean, old scoring): HI250 net about +1.4% "
+                  "(2018-2022) / +6.4% (2023-2026), random picks -0.6% / +3.3%. runtime/research/11_swing_validation: after a "
+                  "Romano-Wolf correction over 264 hypotheses HI52 h40 MA60UP passes on 2023.. only (excess +3.7%p) - the forward "
+                  "test above decides."]
     p = out_dir() / "report.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(f".md.{os.getpid()}.tmp")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.replace(tmp, p)
-    log(f"[g042] report -> {p} ({len(ev)} signals scored)")
+    log(f"[g042] report -> {p} ({len(ev)} signals scored, acceptance {acc['verdict']})")
 
 
 def status() -> dict:
@@ -465,7 +584,8 @@ def status() -> dict:
     return {"dir": str(out_dir()), "days": len(days), "last_date": days["date"].max() if len(days) else None,
             "last_live": live["date"].max() if len(live) else None,
             "last_gate": days.sort_values("date")["gate"].iloc[-1] if len(days) else None, "signals": len(sigs),
-            "report_at": datetime.fromtimestamp(rp.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S") if rp.is_file() else None}
+            "report_at": datetime.fromtimestamp(rp.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S") if rp.is_file() else None,
+            "acceptance_registered": REGISTERED}
 
 
 def _etf_dates() -> list[str]:

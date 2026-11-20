@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """g042 HI52 signal log: signal / gate rules on synthetic daily files, live classification and protection, evaluation rules
-(research parity: excluded windows, last close of a delisted code), input errors and the lock."""
+(scoring v2 2026-11-20: sell - 1 tick, a bad window is kept and flagged, a delisted code is unresolved = 0 recovery), the
+pre-registered acceptance (progress, sample close, verdict), input errors and the lock."""
 from __future__ import annotations
 
 import io
@@ -130,16 +131,17 @@ class G042Test(unittest.TestCase):
         r = ev[(ev["date"] == DATES[i]) & (ev["code"] == "555550")].iloc[0]
         c = np.linspace(3000, 9000, N)
         p = c[i + 1] + float(g042.tick(c[i + 1]))
-        x = c[i + 40]
+        x = c[i + 40] - float(g042.tick(c[i + 40]))                       # sell 1 tick below the close
         net = (x * (1 - g042.FEE - g042.sell_tax(DATES[i + 40])) - p * (1 + g042.FEE)) / (p * (1 + g042.FEE)) * 100
         self.assertEqual((r["status40"], r["exit40_date"]), ("closed", DATES[i + 40]))
         self.assertAlmostEqual(float(r["net40_pct"]), net, places=2)
-        self.assertEqual(ev[(ev["date"] == DATES[i]) & (ev["code"] == "666660")].iloc[0]["status40"], "excluded_bad")
+        r6 = ev[(ev["date"] == DATES[i]) & (ev["code"] == "666660")].iloc[0]
+        self.assertEqual((r6["status40"], r6["bad40"]), ("closed", "1"))                  # kept, flagged
         d7 = ev[(ev["date"] == DATES[i]) & (ev["code"] == "777770")].iloc[0]
-        self.assertEqual((d7["status40"], d7["exit40_date"]), ("closed", DATES[N - 41]))   # last close inside the window
+        self.assertEqual((d7["status40"], float(d7["net40_pct"])), ("unresolved", -100.0))   # no close after the exit day
         self.assertEqual(ev[ev["date"] == DATES[-1]].iloc[0]["status40"], "waiting_entry")
         self.assertTrue((self.out / "report.md").is_file())
-        # benchmark = the universe of DATES[i] by the same rules (666660 excluded: bad window)
+        # benchmark = the universe of DATES[i] by the same rules (incl. the bad window and the unresolved code)
         self.assertTrue(r["univ40_pct"] != "" and r["excess40_pct"] != "")
         self.assertAlmostEqual(float(r["excess40_pct"]), float(r["net40_pct"]) - float(r["univ40_pct"]), places=2)
 
@@ -214,6 +216,51 @@ class G042Test(unittest.TestCase):
         self.assertEqual(g042.sell_tax("20190603"), 0.0025)
         self.assertEqual(g042.sell_tax("20251231"), 0.0015)
         self.assertEqual(g042.sell_tax("20260102"), 0.0020)
+
+
+class AcceptanceTest(unittest.TestCase):
+    """[2026-11-20] pre-registered acceptance: progress, sample close, verdict"""
+
+    def cal(self, n):
+        return [d.strftime("%Y%m%d") for d in pd.bdate_range("2026-11-20", periods=n)]
+
+    def frames(self, cal, net, univ, up_every=1, status="closed"):
+        days = pd.DataFrame({"date": cal, "gate": ["UP" if k % up_every == 0 else "DOWN" for k in range(len(cal))],
+                             "recorded": "live"})
+        rows = [{"date": d, "lb": "250", "code": "111110", "gate": g, "recorded": "live", "status40": status,
+                 "net40_pct": str(net), "univ40_pct": str(univ)} for d, g in zip(days["date"], days["gate"]) if g == "UP"]
+        return pd.DataFrame(rows), days
+
+    def test_collecting_until_all_minimums(self):
+        cal = self.cal(400)
+        ev, days = self.frames(cal, 2.0, 0.5)
+        a = g042.acceptance(ev, days, cal)
+        self.assertEqual((a["verdict"], a["trading_days"], a["up_days"], a["cohorts"]), ("collecting", 400, 400, 400))
+
+    def test_verdicts(self):
+        cal = self.cal(905)
+        rng = np.random.default_rng(1)
+        ev, days = self.frames(cal, 2.0, 0.5, up_every=3)
+        ev["net40_pct"] = (2.0 + rng.normal(0, 1.0, len(ev))).astype(str)
+        with mock.patch.object(g042, "BOOT_N", 300):
+            a = g042.acceptance(ev, days, cal)
+        self.assertEqual(a["sample_closed_at"], cal[899])
+        self.assertEqual(a["verdict"], "PASS")
+        ev2 = ev.copy()
+        ev2["net40_pct"] = (0.6 + rng.normal(0, 1.0, len(ev2))).astype(str)        # excess ~ +0.1, minus 0.25 cost -> fails
+        with mock.patch.object(g042, "BOOT_N", 300):
+            self.assertEqual(g042.acceptance(ev2, days, cal)["verdict"], "FAIL")
+        ev3 = ev.copy()
+        ev3.loc[ev3[ev3["date"] <= cal[899]].index[-1], "status40"] = "open"        # a cohort inside the sample still open
+        self.assertEqual(g042.acceptance(ev3, days, cal)["verdict"], "waiting for the last 40-day windows")
+
+    def test_only_live_and_after_registration(self):
+        cal = self.cal(905)
+        ev, days = self.frames(cal, 2.0, 0.5)
+        days["recorded"] = "backfill"
+        ev["recorded"] = "backfill"
+        a = g042.acceptance(ev, days, cal)
+        self.assertEqual((a["up_days"], a["cohorts"], a["verdict"]), (0, 0, "collecting"))
 
 
 if __name__ == "__main__":
