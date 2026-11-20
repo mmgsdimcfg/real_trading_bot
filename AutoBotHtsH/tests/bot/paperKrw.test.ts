@@ -1,0 +1,19 @@
+/*
+ * Update log
+ * - [2026-11-20] type=test - 가상 매매 수익금: shares the bot would buy with its per-order budget, open = (price - buy) x qty, closed = net %
+ *   of the bought amount, a price above the budget = no amount
+ */
+
+import { describe, expect, it } from 'vitest';
+import { paperKrw, paperQty } from '../../src/bot/renderer/src/views/PaperView';
+
+describe('paper trade KRW', () => {
+  it('sizes like the bot and computes the amount', () => {
+    expect(paperQty(9100, 500_000)).toBe(54);
+    expect(paperKrw(9100, 500_000, { price: 9300 })).toBe(54 * 200);
+    expect(paperKrw(10_000, 500_000, { netPct: 1.5 })).toBeCloseTo(7500);
+    expect(paperKrw(10_000, 500_000, { netPct: -2 })).toBeCloseTo(-10_000);
+    expect(paperKrw(600_000, 500_000, { price: 610_000 })).toBeUndefined();
+    expect(paperKrw(9100, 500_000, {})).toBeUndefined();
+  });
+});

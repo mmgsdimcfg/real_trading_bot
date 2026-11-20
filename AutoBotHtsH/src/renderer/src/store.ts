@@ -17,6 +17,8 @@
 //   one); names that clash with HtsH get the 봇 prefix (봇 차트, 봇 설정·연결))
 // - [2026-11-20] type=feat (fontScale: 글자 크기 (page zoom 80 - 150 %, kept per PC, applied at start); followCode: every open symbol
 //   window shows the code without opening one - used for the symbol picked in a bot window)
+// - [2026-11-20] type=feat (글자 크기 in points (user 2026-11-20): fontPt 8 - 14 pt (default 9 - user 2026-11-20; was 10) sets the CSS size variable --fs that every
+//   font size of the app uses; the page zoom of the earlier setting is reset to 100 %)
 // - [2026-11-20] type=feat (One window per kind (user 2026-11-20): open() focuses the open window of that kind instead of adding another
 //   (a symbol window then shows the asked code); a saved layout with several windows of one kind keeps the front one)
 
@@ -172,9 +174,9 @@ interface State {
   toggleWatch: (groupId: string, code: string) => void;
   theme: Theme;
   setTheme: (t: Theme) => void;
-  /** [2026-11-20] 글자 크기 (zoom factor, 1 = 100 %) */
-  fontScale: number;
-  setFontScale: (f: number) => void;
+  /** [2026-11-20] 글자 크기, points (8 - 14, default 10) */
+  fontPt: number;
+  setFontPt: (pt: number) => void;
   /** [2026-11-20] the open symbol windows (chart / current price / info / news) show `code`; nothing is opened */
   followCode: (code: string) => void;
 }
@@ -225,16 +227,21 @@ const initial = loadLayout();
 
 const WATCH_KEY = 'htsh.watch.v1';
 const THEME_KEY = 'htsh.theme';
-const FONT_KEY = 'autobothtsh.fontScale';
-export const FONT_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
-export function loadFontScale(): number {
+const FONT_KEY = 'autobothtsh.fontPt';
+export const FONT_PTS = [8, 9, 10, 11, 12, 13, 14];
+export const FONT_PT_DEFAULT = 9;
+export function loadFontPt(): number {
   try {
     const v = Number(localStorage.getItem(FONT_KEY));
-    if (v >= 0.7 && v <= 1.6) return v;
+    if (FONT_PTS.includes(v)) return v;
   } catch {
     /* storage unavailable */
   }
-  return 1;
+  return FONT_PT_DEFAULT;
+}
+/** the app's text size variable (styles.css --fs) */
+export function applyFontPt(pt: number): void {
+  document.documentElement.style.setProperty('--fs', `${pt}pt`);
 }
 export const DEFAULT_WATCH = ['005930', '000660', '035420', '035720', '005380', '051910', '068270', '105560'];
 export const newGroupId = () => `g${Date.now().toString(36)}${seq++}`;
@@ -488,11 +495,11 @@ export const useStore = create<State>()((set, get) => {
       });
       get().setWatch(groups);
     },
-    fontScale: loadFontScale(),
-    setFontScale: (f) => {
-      const v = Math.min(1.6, Math.max(0.7, Math.round(f * 100) / 100));
-      set({ fontScale: v });
-      window.hts.setZoom(v);
+    fontPt: loadFontPt(),
+    setFontPt: (pt) => {
+      const v = FONT_PTS.includes(pt) ? pt : FONT_PT_DEFAULT;
+      set({ fontPt: v });
+      applyFontPt(v);
       try {
         localStorage.setItem(FONT_KEY, String(v));
       } catch {
@@ -515,15 +522,16 @@ export const useStore = create<State>()((set, get) => {
 
 export function initStore(): void {
   applyTheme(useStore.getState().theme);
-  // [2026-11-20] 글자 크기: saved zoom, Ctrl + = / Ctrl + - / Ctrl + 0 (the app has no menu, so Electron's own zoom keys are off)
-  window.hts.setZoom(useStore.getState().fontScale);
+  // [2026-11-20] 글자 크기 (points): saved size, Ctrl + = / Ctrl + - / Ctrl + 0 (= 9pt); the old zoom setting is reset to 100 %
+  window.hts.setZoom(1);
+  applyFontPt(useStore.getState().fontPt);
   window.addEventListener('keydown', (e) => {
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     const s = useStore.getState();
-    const i = FONT_SCALES.findIndex((f) => f >= s.fontScale - 0.001);
-    if (e.key === '=' || e.key === '+') s.setFontScale(FONT_SCALES[Math.min(FONT_SCALES.length - 1, (i < 0 ? FONT_SCALES.length - 1 : i) + 1)]);
-    else if (e.key === '-') s.setFontScale(FONT_SCALES[Math.max(0, (i < 0 ? 0 : i) - 1)]);
-    else if (e.key === '0') s.setFontScale(1);
+    const i = Math.max(0, FONT_PTS.indexOf(s.fontPt));
+    if (e.key === '=' || e.key === '+') s.setFontPt(FONT_PTS[Math.min(FONT_PTS.length - 1, i + 1)]);
+    else if (e.key === '-') s.setFontPt(FONT_PTS[Math.max(0, i - 1)]);
+    else if (e.key === '0') s.setFontPt(FONT_PT_DEFAULT);
     else return;
     e.preventDefault();
   });

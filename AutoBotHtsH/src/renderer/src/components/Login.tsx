@@ -2,24 +2,25 @@
 // - [2026-11-06] type=feat (Login: KIS app key + app secret, real / paper server, remember (encrypted with the Windows account), saved-key
 //   login, demo mode. "조회 전용" is fixed - there is no account number field and no way to enable trading. The secret is sent to the
 //   main process once and the field is cleared)
+// - [2026-11-20] type=feat (글자 크기 in points 8 - 14 pt (default 9 pt) - the text size of the whole app, not a zoom)
 // - [2026-11-20] type=feat (AutoBotHtsH: title "KIS 로그인 · 설정"; 화면 section with 글자 크기 (80 - 150 %, also Ctrl + = / - / 0) and a
 //   link to the bot connection settings)
 
 import { useState } from 'react';
 import type { KisEnv } from '../../../shared/kis';
-import { FONT_SCALES, useStore } from '../store';
+import { FONT_PT_DEFAULT, FONT_PTS, useStore } from '../store';
 
-/** [2026-11-20] 글자 크기 - the whole window is zoomed (text, charts and window frames together) */
+/** [2026-11-20] 글자 크기 in points - one text size for the whole app (chart text 2px smaller, small marks 3px smaller) */
 export function FontScaleRow() {
-  const f = useStore((s) => s.fontScale);
-  const setF = useStore((s) => s.setFontScale);
+  const pt = useStore((s) => s.fontPt);
+  const setPt = useStore((s) => s.setFontPt);
   return (
-    <div className="font-row" title="앱 전체 글자 크기 (창 틀·차트 포함 배율). 단축키 Ctrl + = 크게, Ctrl + - 작게, Ctrl + 0 기본">
+    <div className="font-row" title={`앱 전체 글자 크기 (포인트, 기본 ${FONT_PT_DEFAULT}pt). 단축키 Ctrl + = 크게, Ctrl + - 작게, Ctrl + 0 기본`}>
       <span>글자 크기</span>
       <span className="seg">
-        {FONT_SCALES.map((v) => (
-          <button key={v} className={Math.abs(v - f) < 0.001 ? 'on' : ''} onClick={() => setF(v)}>
-            {Math.round(v * 100)}%
+        {FONT_PTS.map((v) => (
+          <button key={v} className={v === pt ? 'on' : ''} onClick={() => setPt(v)}>
+            {v}pt
           </button>
         ))}
       </span>
