@@ -19,6 +19,8 @@
  *   순손익 합계 shows the KRW sum too. 마지막 판단 says only "가상 보유 중" (the buy price has its own column). The view scrolls
  *   (it was cut off when the list grew)
  * - [2026-11-20] type=feat - 수량 and 총매수액 next to 매수가 in all three tables (the same sizing: shares x buy price)
+ * - [2026-11-20] type=feat - Double click on a row shows the symbol in the other windows (showCode: AutoBotHtsH chart / current price /
+ *   stock info / news, AutoBotH the 차트 tab); a single click still opens the timeline
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -38,6 +40,7 @@ import {
   type PaperTrade,
 } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
+import { showCode } from '../showCode';
 
 /** [2026-11-20] the bot's per-order budget (r001 MAX_ORDER_AMOUNT_KRW) - virtual trades are sized like real ones for the KRW columns */
 export const ORDER_KRW_DEFAULT = 500_000;
@@ -63,6 +66,8 @@ function BuySize({ entry, budget }: { entry: number | undefined; budget: number 
     </>
   );
 }
+
+const DBL_TIP = '누르면 타임라인 · 두 번 누르면 차트 등 다른 창에 이 종목 표시';
 
 type PaperRes = { day: string; ok: boolean; trades: PaperTrade[]; error?: string };
 type StatusRes = { day: string; ok: boolean; status: PaperStatus | null; error?: string };
@@ -279,7 +284,7 @@ export function PaperView() {
               const held = !!(x.position || tr?.open);
               const pct = held ? (buy && price ? (price / buy - 1) * 100 : undefined) : tr?.last?.netPct;
               return (
-              <tr key={x.code} onClick={() => go(x.code)} className={x.position ? 'row-held' : undefined}>
+              <tr key={x.code} onClick={() => go(x.code)} onDoubleClick={() => showCode(x.code)} title={DBL_TIP} className={x.position ? 'row-held' : undefined}>
                 <td>
                   {x.code} {x.name} <NxtTag code={x.code} />
                 </td>
@@ -342,7 +347,7 @@ export function PaperView() {
               const price = quotes[t.code]?.price ?? statusPrice.get(t.code);
               const pct = paperOpenPct(t, price);
               return (
-                <tr key={`${t.code}-${t.entryTs}`} onClick={() => go(t.code)}>
+                <tr key={`${t.code}-${t.entryTs}`} onClick={() => go(t.code)} onDoubleClick={() => showCode(t.code)} title={DBL_TIP}>
                   <td className="mono">{fmtKstTime(t.entryTs)}</td>
                   <td>
                     {t.code} {t.name} <NxtTag code={t.code} />
@@ -392,7 +397,7 @@ export function PaperView() {
           </thead>
           <tbody>
             {closed.map((t) => (
-              <tr key={`${t.code}-${t.entryTs}`} onClick={() => go(t.code)}>
+              <tr key={`${t.code}-${t.entryTs}`} onClick={() => go(t.code)} onDoubleClick={() => showCode(t.code)} title={DBL_TIP}>
                 <td className="mono">{fmtKstTime(t.entryTs)}</td>
                 <td className="mono">{fmtKstTime(t.exitTs)}</td>
                 <td>

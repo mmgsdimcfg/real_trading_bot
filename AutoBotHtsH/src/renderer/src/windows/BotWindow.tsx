@@ -7,10 +7,13 @@
 // - [2026-11-20] type=feat (A symbol picked in a bot window (timeline, board, positions, trades, paper, bot chart, timeline 자동 보기)
 //   is shown in every open HTS symbol window too - chart, current price, stock info, news (followCode; nothing is opened). One way
 //   only: a symbol picked in an HTS window does not change the bot's selection - user 2026-11-20)
+// - [2026-11-20] type=feat (showCode handler: a double click on a paper-trading row shows the symbol in every symbol window - a chart
+//   opens when none is open; collector symbols (not in the day's list) too)
 
 import { useEffect, type ReactNode } from 'react';
 import { BOT_TABS, isBotWin, useStore, type BotTab, type Win } from '../store';
 import { setTabHandlers, useStore as useBot } from '../../../bot/renderer/src/store';
+import { setShowCodeHandler } from '../../../bot/renderer/src/showCode';
 import { StatusBar } from '../../../bot/renderer/src/components/StatusBar';
 import { ConfirmDialog } from '../../../bot/renderer/src/components/ConfirmDialog';
 import { ReplayBar } from '../../../bot/renderer/src/components/ReplayBar';
@@ -53,6 +56,7 @@ export function linkBotTabs(): void {
     open: (t) => void useStore.getState().openBot(t),
     shown: (t) => useStore.getState().wins.some((w) => botTabOf(w) === t && !w.min),
   });
+  setShowCodeHandler((code) => useStore.getState().setCodeAll(code));
   useBot.subscribe((s, prev) => {
     if (s.selected && s.selected !== prev.selected && /^[0-9A-Z]{6}$/.test(s.selected)) useStore.getState().followCode(s.selected);
   });
