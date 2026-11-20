@@ -23,6 +23,8 @@
  *   stock info / news, AutoBotH the 차트 tab); a single click still opens the timeline
  * - [2026-11-20] type=feat - 순손익 합계 shows the traded amounts under it (user 2026-11-20): 매수 (shares x buy price) and 매도 (shares x
  *   sell price, before costs) of the closed trades - 순손익 = 매도 - 매수 - commission and tax
+ * - [2026-11-20] type=feat - 오늘 매수 / 상한 card (user 2026-11-20): the day's virtual buys against the daily limit per group (server
+ *   status file), marked when the limit is reached (no more buys that day). Follows the group switch
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -222,6 +224,25 @@ export function PaperView() {
           <span>청산 / 보유</span>
           <b>
             {sum.closed} / {sum.open}
+          </b>
+        </div>
+        <div className="kpi" title="하루 가상 매수 횟수 상한 (r001 EDGE_ONLY_MAX_ENTRIES_PER_DAY / EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY) - 상한에 닿으면 그날은 더 사지 않음">
+          <span>오늘 매수 / 상한</span>
+          <b className="small">
+            {pst
+              ? (['watch', 'collector'] as const)
+                  .filter((g) => grp === 'all' || grp === g)
+                  .map((g) => {
+                    const gs = pst.groups[g];
+                    const full = gs.enabled && gs.entries >= gs.maxEntries;
+                    return (
+                      <span key={g} className={full ? 'warn-text' : undefined}>
+                        {g === 'collector' && grp === 'all' ? ' · ' : ''}
+                        {PAPER_GROUP_KO[g]} {gs.enabled ? `${gs.entries}/${gs.maxEntries}회${full ? ' (상한)' : ''}` : '꺼짐'}
+                      </span>
+                    );
+                  })
+              : '-'}
           </b>
         </div>
         <div className="kpi">

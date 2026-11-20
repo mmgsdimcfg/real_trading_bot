@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-20] type=feat - v1.0.3_006: 가상 매매 창에 오늘 매수 / 상한 카드 (감시 종목·수집기 종목별 하루 가상 매수 횟수와 상한, 상한에 닿으면 표시)",
     "[2026-11-20] type=feat - v1.0.3_005: 가상 매매 창 순손익 합계 아래에 청산 거래의 매수액·매도액 합계 표시 (매도액은 수수료·세금 전)",
     "[2026-11-20] type=feat - v1.0.3_004: 가상 매매 창에서 종목 행을 두 번 누르면 열린 차트·현재가·종목정보·뉴스 창에 그 종목 표시(종목 창이 없으면 차트를 엶, 수집기 종목 포함). 한 번 누르면 종전처럼 타임라인",
     "[2026-11-20] type=feat - v1.0.3_003: (1) 앱 기본 글자 크기 9pt (이전 10pt, 설정에서 바꾼 값은 유지) (2) 가상 매매 창 - 매수가 옆에 수량·총매수액 (대상 / 가상 보유 / 청산 내역, 1회 매수 상한 MAX_ORDER_AMOUNT_KRW 로 살 수 있는 주수 기준)",
@@ -68,7 +69,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "005",
+    "buildNumber": "006",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

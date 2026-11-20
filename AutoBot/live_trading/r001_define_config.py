@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-20] type=tune owner=claude
+#     summary: 사용자 결정 - 가상 매매 하루 매수 횟수 상한 EDGE_ONLY_MAX_ENTRIES_PER_DAY 10 -> 100,
+#       EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY 20 -> 100. 20261120 감시 10 / 수집기 20 상한에 일찍 걸려 그 뒤 매수 신호를 볼 수 없었음.
+#     impact: live (r003 재시작 후 r022 가상 매매 기록만 늘어남 - 주문 없음, 실매매 판단 무변경)
+#     compatibility: backward-compatible (롤백: r016 set EDGE_ONLY_MAX_ENTRIES_PER_DAY=10 EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY=20)
 # - [2026-11-18] type=tune owner=claude
 #     summary: 사용자 결정(추격 가드 완화 A+B, g003 A/B 후 적용) - (A) HYBRID_1MIN_TRIGGER_CANDLE_GAIN_MAX_PCT 1.8 -> 2.5,
 #       (B) TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN(True) 신설 - 같은 날 정규장 전(NXT 장전) 1분 크로스 나이를 09:00 부터 센다.
@@ -2053,14 +2058,14 @@ EDGE_ONLY_MODE = "off"              # "off" | "paper"
 # 고정값 대신 모델과 함께 배포되는 기준(메타 threshold = 검증 구간 상위 약 20%)을 쓴다. 0보다 크면 그 값으로 덮어쓴다.
 EDGE_ONLY_MIN_PROB = 0.0            # 매수 확률 기준 (0 = 모델 메타의 threshold)
 EDGE_ONLY_MAX_POSITIONS = 3         # 동시 가상 보유 종목 수
-EDGE_ONLY_MAX_ENTRIES_PER_DAY = 10  # 하루 가상 매수 횟수 상한
+EDGE_ONLY_MAX_ENTRIES_PER_DAY = 100  # 하루 가상 매수 횟수 상한 ([2026-11-20] 10 -> 100, 사용자 결정)
 # [2026-11-19] 틱 수집기 종목도 가상 매매(사용자 요청). 감시목록 밖의 수집 종목(g011 선별 채움 scan / extra)은 r003 이 KIS 분봉을
 # 받지 않으므로 그날 틱 파일(runtime/data/ticks/<날짜>/<종목>.csv, KRX 정규장 체결)로 1분봉과 현재가를 만들어 같은 규칙으로 판단한다
 # (KIS 호출 추가 없음). 상한은 감시 종목과 따로 센다(사용자 결정). 기록에 "group": "collector" (감시 종목은 "watch").
 # EDGE_ONLY_MODE="paper" 일 때만. 롤백: False.
 EDGE_ONLY_COLLECTOR = True
 EDGE_ONLY_COLLECTOR_MAX_POSITIONS = 5         # 수집기 종목 동시 가상 보유 수
-EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY = 20  # 수집기 종목 하루 가상 매수 횟수 상한
+EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY = 100  # 수집기 종목 하루 가상 매수 횟수 상한 ([2026-11-20] 20 -> 100)
 EDGE_ONLY_COLLECTOR_POLL_SECONDS = 5          # 수집기 종목 평가 간격(r003 루프 한 바퀴보다 길면 그 바퀴는 건너뜀)
 
 # =============================================================================
