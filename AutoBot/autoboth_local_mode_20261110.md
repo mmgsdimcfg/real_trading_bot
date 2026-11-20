@@ -166,7 +166,10 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
     "groups":{"watch"|"collector":{"open","max_positions","entries","max_entries","enabled"}},
     "symbols":[{"code","name","group","price","bar"(HH:MM 마지막 확정 1분봉),"bars","stage","prob","at",
     "position"?:{"entry","tp","sl","ts","prob"}}]}`. stage = wait_bars / outside_window / limit / held / below_mid / no_trigger /
-    no_history / no_model / below_threshold / bought / sold / fund / sl_today (마지막 판단 결과; [2026-11-20] fund = ETF·ETN 제외, sl_today = 당일 손절 종목 재매수 안 함). 10분 넘게 안 본 종목(보유 제외)은 빠진다.
+    no_history / no_model / below_threshold / bought / sold / fund / sl_today / candidate (마지막 판단 결과; candidate = log-only 후보 기록; [2026-11-20] fund = ETF·ETN 제외, sl_today = 당일 손절 종목 재매수 안 함). 10분 넘게 안 본 종목(보유 제외)은 빠진다.
+  [2026-11-20] 상태 파일에 `log_only` (r001 `EDGE_ONLY_LOG_ONLY`). 켜져 있으면 신규 가상 매수 없이 트리거 봉마다
+  `live_runtime/edge_only_candidates_<YYYYMMDD>.jsonl` 에 CANDIDATE 한 줄(schema_version 1: id, code, group, bar, features 55개, prob,
+  threshold, model_id, would_buy, block fund|sl_today, reason, price, tick, tick_pct, label) - 앱은 읽지 않는다(연구용).
     앱 가상 매매 탭 "가상 매매 대상" 표(2.3.32)가 읽는다.
 - 두 호스트 공통: 설정은 각 호스트의 `runtime/config/live_overrides.json` 에 따로 저장되고, 모델도 각 호스트의
   `runtime/edge_ai` 것을 쓴다.

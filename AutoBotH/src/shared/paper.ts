@@ -13,6 +13,7 @@
  * - [2026-11-19] type=feat - PaperStatus: the server's edge_only_status_<date>.json (r022 write_status, every 5 s while the bot
  *   runs in the regular session) - every symbol the paper runner looks at with its group, price, last bar, the outcome of its
  *   last evaluation (stage) and probability, plus the group limits, threshold and model
+ * - [2026-11-20] type=feat - status log_only (server EDGE_ONLY_LOG_ONLY) + stage candidate
  * - [2026-11-20] type=feat - stages fund (ETF/ETN not paper-bought) and sl_today (stopped out today, no re-entry) - server r022
  */
 
@@ -115,6 +116,7 @@ export const PAPER_STAGE_KO: Record<string, string> = {
   sold: '가상 매도',
   fund: 'ETF·ETN 제외',
   sl_today: '오늘 손절한 종목 (재매수 안 함)',
+  candidate: '후보 기록 (신규 매수 꺼짐)',
 };
 
 export interface PaperStatusSymbol {
@@ -148,6 +150,8 @@ export interface PaperStatus {
   threshold?: number;
   label?: { tp?: number; sl?: number; horizon?: number };
   entryWindow?: [string, string];
+  /** [2026-11-20] server r001 EDGE_ONLY_LOG_ONLY: no new paper buys, trigger bars are only recorded as candidates */
+  logOnly?: boolean;
   groups: Record<PaperGroup, PaperGroupStatus>;
   symbols: PaperStatusSymbol[];
 }
@@ -201,6 +205,7 @@ export function parsePaperStatus(text: string): PaperStatus | null {
     threshold: num(j.threshold),
     label: (j.label as PaperStatus['label']) || undefined,
     entryWindow: win,
+    logOnly: j.log_only === true,
     groups: { watch: grp(groups.watch), collector: grp(groups.collector) },
     symbols,
   };

@@ -33,6 +33,13 @@ Runs the same on Linux (Raspberry Pi) and Windows. Each host uses its own model 
 post-close job from that host's data folder).
 
 Update log:
+- [2026-11-20] type=feat owner=claude
+    summary: 사용자 결정(가상 매매 검토 3차, Codex 합의) - log-only 모드(r001 EDGE_ONLY_LOG_ONLY): 신규 가상 매수를 하지 않고 트리거가 뜬
+      봉마다 CANDIDATE 한 줄(55개 피처, 점수·컷·모델, 막힌 사유 fund/sl_today, 가격·틱, 라벨 설정)을 edge_only_candidates_<날짜>.jsonl
+      에 남긴다(id 로 재시작 중복 제거). 기존 가상 보유의 청산(tp/sl/15:15/시간, poll_orphans)은 그대로. 상태 파일에 log_only.
+      근거: 65일 OOS 재생·회귀·상대강도/평균회귀 실험 모두 비용(왕복 약 0.5%)을 넘지 못함 - 모델은 방향이 아니라 변동폭을 순위화.
+    impact: live paper only (주문 없음)
+    compatibility: backward-compatible (log_only=False 면 종전과 동일; 롤백: r001 EDGE_ONLY_LOG_ONLY=False)
 - [2026-11-20] type=fix+feat owner=claude
     summary: 가상 매매 분석(20261120, Codex 검토) 후 사용자 결정 0/2/3번.
       (0) 버그: r003 이 on_symbol 을 부르지 않은 가상 보유 종목(감시 이탈, 직접 매수로 [HOLD SKIP], 재시작 후 목록 밖)이 청산되지
@@ -90,7 +97,7 @@ STATUS_EVERY_S = 5.0          # edge_only_status_<date>.json at most this often
 STATUS_STALE_S = 600.0        # a symbol not looked at for this long (left the watchlist / collector) leaves the status
 # outcome of the last evaluation of a symbol (AutoBotH shows these)
 STAGES = ("wait_bars", "outside_window", "limit", "held", "below_mid", "no_trigger", "no_history", "no_model", "below_threshold",
-          "bought", "sold", "fund", "sl_today")   # [2026-11-20] fund = ETF/ETN not bought, sl_today = stopped out today
+          "bought", "sold", "fund", "sl_today", "candidate")   # [2026-11-20] fund = ETF/ETN not bought, sl_today = stopped out today
 GROUP_KO = {"watch": "", "collector": " [수집기]"}
 _CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
 
@@ -105,7 +112,7 @@ class EdgeOnlyRunner:
     def __init__(self, model_dir: Path, data_root: Path, out_dir: Path, date_str: str, log: Callable[[str], None], config,
                  min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
                  collector_max_positions: int = 0, collector_max_entries: int = 0,
-                 exclude_funds: bool = True, no_reentry_after_sl: bool = True):
+                 exclude_funds: bool = True, no_reentry_after_sl: bool = True, log_only: bool = False):
         self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir))
         self.data_root = Path(data_root)
         self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
@@ -137,6 +144,18 @@ class EdgeOnlyRunner:
         self.no_reentry_after_sl = bool(no_reentry_after_sl)
         self.sl_today: set[str] = set()
         self._eval_at: dict[str, datetime] = {}   # wall clock of each symbol's last on_symbol (poll_orphans)
+        # [2026-11-20] log-only (r001 EDGE_ONLY_LOG_ONLY, paper review round 3): no NEW paper buys; every trigger bar is written as a
+        # CANDIDATE row (features, score, cut, block reason, price) to edge_only_candidates_<date>.jsonl for later studies.
+        # Open positions keep their exits (tp / sl / 15:15 / time, poll_orphans).
+        self.log_only = bool(log_only)
+        self.cand_path = Path(out_dir) / f"edge_only_candidates_{date_str}.jsonl"
+        self._cand_ids: set[str] = set()
+        if self.log_only and self.cand_path.is_file():
+            try:
+                for line in self.cand_path.read_text(encoding="utf-8").splitlines():
+                    self._cand_ids.add(str(json.loads(line).get("id") or ""))
+            except Exception as exc:
+                self.log(f"{TAG} candidate log restore failed ({type(exc).__name__}: {exc})")
         self._restore()
 
     @property
@@ -343,11 +362,16 @@ class EdgeOnlyRunner:
         if t < ENTRY_START or t > ENTRY_END or now.time() > ENTRY_END:
             self._stage(code, "outside_window")
             return
+        block = None
         if self.exclude_funds and r011.is_fund_product(name):
-            self._stage(code, "fund")
+            block = "fund"
+        elif self.no_reentry_after_sl and code in self.sl_today:
+            block = "sl_today"
+        if self.log_only:                      # no new positions: limits do not apply, a block is only recorded
+            self._check_entry(code, name, now, price, store, group, block=block)
             return
-        if self.no_reentry_after_sl and code in self.sl_today:
-            self._stage(code, "sl_today")
+        if block:
+            self._stage(code, block)
             return
         max_pos, max_ent = self.limits[group]
         if self._open_count(group) >= max_pos or self.entries[group] >= max_ent:
@@ -355,7 +379,34 @@ class EdgeOnlyRunner:
             return
         self._check_entry(code, name, now, price, store, group)
 
-    def _check_entry(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame, group: str = "watch") -> None:
+    def _candidate(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame, group: str, trigger: str,
+                   info: dict, feats: dict | None, prob, threshold, meta: dict | None, block: str | None, reason: str) -> None:
+        """[2026-11-20] log-only: one CANDIDATE row per trigger bar (id = date:code:bar:model - a restart does not repeat it)"""
+        bar = pd.Timestamp(store.index[-1])
+        model_id = (meta or {}).get("model_id") or (getattr(self.model, "meta", None) or {}).get("model_id")
+        cid = f"{self.date_str}:{code}:{bar.strftime('%H%M')}:{model_id}"
+        if cid in self._cand_ids:
+            return
+        self._cand_ids.add(cid)
+        tick = krx_tick_size(price)
+        p = float(prob) if prob is not None and r011.valid_prob(prob) else None
+        rec = {"schema_version": 1, "event": "CANDIDATE", "id": cid, "date": self.date_str, "code": code, "name": name, "group": group,
+               "bar": bar.isoformat(), "ts": now.isoformat(timespec="seconds"), "trigger": trigger,
+               "trigger_info": {k: v for k, v in (info or {}).items() if isinstance(v, (int, float, str, bool)) or v is None},
+               "feature_version": r011.FEATURE_VERSION, "features": feats, "prob": p, "threshold": threshold, "model_id": model_id,
+               "would_buy": bool(p is not None and threshold is not None and p >= threshold and not block), "block": block,
+               "reason": reason, "price": price, "price_source": "live", "tick": tick, "tick_pct": tick / price * 100 if price else None,
+               "label": self._label()}
+        try:
+            self.cand_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.cand_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        except Exception as exc:
+            self.log(f"{TAG} candidate log write failed ({type(exc).__name__}: {exc})")
+        self._stage(code, "candidate", p)
+
+    def _check_entry(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame, group: str = "watch",
+                     block: str | None = None) -> None:
         m1_all = r011.fast_indicators(store)
         last = m1_all.iloc[-1]
         if not float(last["close"]) > float(last["BB_MIDDLE"]):   # every trigger path needs the close above the 1m BB mid
@@ -369,10 +420,16 @@ class EdgeOnlyRunner:
             return
         frames = r011.feature_frames(store)
         if frames is None:
+            if self.log_only:
+                self._candidate(code, name, now, price, store, group, reason, info, None, None, None, None, block, "no_history")
+                return
             self._stage(code, "no_history")
             return   # history window incomplete (late start): no prediction, no entry
         threshold = self._threshold()
         if threshold is None:
+            if self.log_only:
+                self._candidate(code, name, now, price, store, group, reason, info, None, None, None, None, block, "no_model")
+                return
             self._stage(code, "no_model")
             return
         if code not in self._daily:
@@ -386,6 +443,13 @@ class EdgeOnlyRunner:
                                       self._prev_close_of(code), day_open, vwap, self._daily[code], self.config,
                                       trigger_info=info)
         prob, meta = self.model.predict_with_meta(feats)
+        if self.log_only:
+            ok_p = prob is not None and r011.valid_prob(prob)
+            why = "no_model" if not ok_p else (block or ("below_threshold" if prob < threshold else "would_buy"))
+            self._candidate(code, name, now, price, store, group, reason, info,
+                            {k: (None if v is None or (isinstance(v, float) and v != v) else float(v)) for k, v in feats.items()},
+                            prob, threshold, meta, block, why)
+            return
         if prob is None or not r011.valid_prob(prob) or prob < threshold:
             self._stage(code, "no_model" if prob is None else "below_threshold", prob if r011.valid_prob(prob) else None)
             return
@@ -562,7 +626,7 @@ def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
     except Exception:
         meta = {}
     payload = {
-        "asof": now.isoformat(timespec="seconds"), "date": runner.date_str,
+        "asof": now.isoformat(timespec="seconds"), "date": runner.date_str, "log_only": bool(getattr(runner, "log_only", False)),
         "model_id": meta.get("model_id"), "threshold": runner._threshold(), "label": runner._label(),
         "entry_window": [ENTRY_START.strftime("%H:%M"), ENTRY_END.strftime("%H:%M")], "force_exit": FORCE_EXIT.strftime("%H:%M"),
         "groups": {g: {"open": runner._open_count(g), "max_positions": runner.limits[g][0], "entries": runner.entries[g],

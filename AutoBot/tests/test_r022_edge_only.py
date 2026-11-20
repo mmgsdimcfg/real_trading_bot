@@ -305,6 +305,46 @@ class PaperReviewRulesTest(Base):
         self.assertEqual(self.records()[-1]["reason"], "eod")
 
 
+class LogOnlyTest(Base):
+    """[2026-11-20] EDGE_ONLY_LOG_ONLY: no new paper buys, one CANDIDATE row per trigger bar, open positions still exit"""
+
+    def cands(self):
+        f = self.out / f"edge_only_candidates_{DAY}.jsonl"
+        return [json.loads(x) for x in f.read_text(encoding="utf-8").splitlines()] if f.is_file() else []
+
+    def test_candidates_instead_of_buys(self):
+        r = self.runner(prob=0.6, log_only=True)
+        r.on_symbol("010060", "OCI홀딩스", self.at("09:30"), frame(30), 10300.0)
+        r.on_symbol("010060", "OCI홀딩스", self.at("09:30", 20), frame(30), 10300.0)      # same bar: one row
+        self.assertEqual(self.records(), [])                                              # no ENTRY
+        self.assertEqual(r.entries["watch"], 0)
+        c = self.cands()
+        self.assertEqual(len(c), 1)
+        self.assertEqual((c[0]["reason"], c[0]["would_buy"], c[0]["prob"], c[0]["threshold"]), ("would_buy", True, 0.6, 0.45))
+        self.assertEqual(c[0]["id"], f"{DAY}:010060:0930:test")
+        self.assertEqual(r.sym_state["010060"]["stage"], "candidate")
+        # below the cut is recorded too, and a fund / a stopped-out code is recorded with its block
+        r2 = self.runner(prob=0.2, log_only=True)
+        r2.on_symbol("000001", "x", self.at("09:31"), frame(31), 10300.0)
+        r2.on_symbol("233740", "KODEX 코스닥150레버리지", self.at("09:31"), frame(31), 10300.0)
+        reasons = {x["code"]: (x["reason"], x["block"]) for x in self.cands()}
+        self.assertEqual(reasons["000001"], ("below_threshold", None))
+        self.assertEqual(reasons["233740"], ("fund", "fund"))
+        # restart: the same bar is not written again
+        r3 = self.runner(prob=0.6, log_only=True)
+        r3.on_symbol("010060", "OCI홀딩스", self.at("09:30", 40), frame(30), 10300.0)
+        self.assertEqual(len([x for x in self.cands() if x["code"] == "010060"]), 1)
+
+    def test_open_positions_still_exit(self):
+        r = self.runner(prob=0.6)
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)                  # bought before the switch
+        r2 = self.runner(prob=0.6, log_only=True)                                         # restart in log-only mode
+        self.assertIn("010060", r2.positions)
+        r2.on_symbol("010060", "x", self.at("09:31"), frame(31), 10600.0)
+        self.assertNotIn("010060", r2.positions)
+        self.assertEqual(self.records()[-1]["reason"], "tp")
+
+
 class FundNameTest(unittest.TestCase):
     def test_names(self):
         for n in ("KODEX 코스닥150레버리지", "TIGER 200", "RISE 2차전지TOP10", "신한 레버리지 WTI원유 선물 ETN", "MIDAS 코스닥액티브",

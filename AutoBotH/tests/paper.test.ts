@@ -202,6 +202,10 @@ describe('paper status file (server r022 edge_only_status_<date>.json)', () => {
     ]);
     expect(s.symbols[0].position).toMatchObject({ entry: 10310, tp: 10516.2, ts: kst('09:30:05') });
     expect(PAPER_STAGE_KO.below_mid).toContain('BB');
+    expect(s.logOnly).toBe(false);
+    // [2026-11-20] log-only server (EDGE_ONLY_LOG_ONLY)
+    expect(parsePaperStatus(text.replace('"date": "20261112",', '"date": "20261112", "log_only": true,'))!.logOnly).toBe(true);
+    expect(PAPER_STAGE_KO.candidate).toContain('후보');
   });
 
   it('held first, then by probability; broken text is null', () => {

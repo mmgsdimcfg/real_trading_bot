@@ -23,7 +23,8 @@ Update log:
 - [2026-11-20] type=fix owner=claude
     summary: 가상 매매(r022) 미청산 버그 - 종목 루프에서 on_symbol 을 못 받은 가상 보유(직접 매수 -> HOLD SKIP, 감시 이탈 등)를 턴 끝에
       poll_orphans(틱 파일 가격)로 평가. 20261120 443060 사례. EdgeOnlyRunner 에 EDGE_ONLY_EXCLUDE_FUNDS /
-      EDGE_ONLY_NO_REENTRY_AFTER_SL 전달, tick_feed(KRX 틱 파일) 항상 생성(collector_feed 와 공유).
+      EDGE_ONLY_NO_REENTRY_AFTER_SL / EDGE_ONLY_LOG_ONLY(신규 가상 매수 없이 후보 기록만) 전달, tick_feed(KRX 틱 파일) 항상 생성
+      (collector_feed 와 공유).
     impact: live paper only (주문 없음)
     compatibility: backward-compatible
 - [2026-11-19] type=feat owner=claude
@@ -2452,7 +2453,8 @@ def _make_edge_only_runner(date_str: str):
                                 max_entries=EDGE_ONLY_MAX_ENTRIES_PER_DAY,
                                 collector_max_positions=c_pos, collector_max_entries=c_ent,
                                 exclude_funds=bool(getattr(_cfg_mod, "EDGE_ONLY_EXCLUDE_FUNDS", True)),
-                                no_reentry_after_sl=bool(getattr(_cfg_mod, "EDGE_ONLY_NO_REENTRY_AFTER_SL", True)))
+                                no_reentry_after_sl=bool(getattr(_cfg_mod, "EDGE_ONLY_NO_REENTRY_AFTER_SL", True)),
+                                log_only=bool(getattr(_cfg_mod, "EDGE_ONLY_LOG_ONLY", False)))
         # [2026-11-20] the day's KRX tick files also price the paper positions r003 did not evaluate (poll_orphans)
         runner.tick_feed = CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
         runner.collector_feed = runner.tick_feed if collector else None
@@ -2461,7 +2463,7 @@ def _make_edge_only_runner(date_str: str):
             f"max_positions={EDGE_ONLY_MAX_POSITIONS} max_entries={EDGE_ONLY_MAX_ENTRIES_PER_DAY} | "
             f"collector={'on' if collector else 'off'}"
             f"{f' max_positions={c_pos} max_entries={c_ent}' if collector else ''} | exclude_funds={runner.exclude_funds} "
-            f"no_reentry_after_sl={runner.no_reentry_after_sl} | out={runner.out_path}")
+            f"no_reentry_after_sl={runner.no_reentry_after_sl} log_only={runner.log_only} | out={runner.out_path}")
         return runner
     except Exception as exc:
         log(f"  [EDGE ONLY   ] init failed, paper mode disabled: {exc}")

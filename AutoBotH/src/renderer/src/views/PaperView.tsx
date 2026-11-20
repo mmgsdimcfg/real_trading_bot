@@ -28,6 +28,7 @@
  * - [2026-11-20] type=feat - 순손익 합계 = average % and the KRW sum (user 2026-11-20): the % was the sum of the trades' % (-35.60% next to
  *   -170,670원 of 10.8 M bought); now the KRW sum over the bought amount, so % and 원 agree. The 거래당 평균 card is gone (its simple mean
  *   is in the tooltip). The 매수 / 매도 line stays on one line
+ * - [2026-11-20] type=feat - 'new paper buys off (candidates only)' badge when the server runs log-only (EDGE_ONLY_LOG_ONLY)
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -204,6 +205,11 @@ export function PaperView() {
     <div className="paper-view">
       <div className="toolbar">
         <span className={`badge-mode ${running === 'paper' ? 'on' : ''}`}>{modeText}</span>
+        {pst?.logOnly && (
+          <span className="badge-warn" title="서버 r001 EDGE_ONLY_LOG_ONLY - 트리거가 뜬 봉은 edge_only_candidates_<날짜>.jsonl 에 후보로만 기록, 이미 있는 가상 보유는 그대로 청산">
+            신규 가상 매수 꺼짐 (후보 기록만)
+          </span>
+        )}
         {mode?.pending && <span className="badge-warn">⚠ 설정이 바뀌었습니다 → r003 재시작 후 적용</span>}
         {realEdge && <span className="badge-warn">매매 방식이 Edge AI(실제 주문)입니다 - 가상 매매는 돌지 않고, 실제 내역은 매매 결과 탭에 있습니다</span>}
         <span className="muted">Edge AI 확률만으로 판단한 가상 매수/매도 기록입니다. 실제 주문·계좌와 무관합니다. 켜고 끄기는 제어 탭.</span>

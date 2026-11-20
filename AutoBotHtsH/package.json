@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-20] type=feat - v1.0.4_003: 가상 매매 창 - 서버가 기록 전용(EDGE_ONLY_LOG_ONLY)이면 '신규 가상 매수 꺼짐 (후보 기록만)' 표시, 대상 표의 마지막 판단 '후보 기록'",
     "[2026-11-20] type=feat - v1.0.4_002: 가상 매매 대상 표의 마지막 판단에 'ETF·ETN 제외' / '오늘 손절한 종목 (재매수 안 함)' 표시 (서버 r022 새 규칙)",
     "[2026-11-20] type=feat - v1.0.4_001: 운용 시간 설정 (설정 탭: 정규장만 / 프리·애프터 포함 = 서버 r001 ENABLE_NXT_SESSION). 정규장만이면 매매 15:30 종료, 틱 수집기 KRX만 (서버 g011/r016), 이 PC 수집기 확인 08:45~15:35, 장 마감 작업(수집 -> 선별 -> AI 학습 -> r004 -> 메일) 15:40 (프리/애프터 포함 20:10, 각각 설정 가능), 타임라인·봇 차트 · HTS 차트 창의 분봉/틱도 09:00~15:30. 가상 매매는 항상 정규장만",
     "[2026-11-20] type=fix - v1.0.3_009: 설정 탭 알 수 없는 태그 목록에 [REENTRY PNL] (봇이 종목을 다 판 뒤 재진입 한도 기록, 조건 아님) 이 나오던 문제 - 무시 태그로 분류",
@@ -74,7 +75,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "003",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

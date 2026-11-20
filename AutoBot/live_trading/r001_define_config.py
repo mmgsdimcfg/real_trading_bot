@@ -2,6 +2,10 @@
 
 # Update log
 # - [2026-11-20] type=feat owner=claude
+#     summary: 사용자 결정(가상 매매 개선 1번) - EDGE_ONLY_LOG_ONLY(True) 신설: r022 신규 가상 매수 중단, 후보 기록만.
+#     impact: live paper only (r003 재시작 후 - 주문 없음)
+#     compatibility: backward-compatible (롤백: False)
+# - [2026-11-20] type=feat owner=claude
 #     summary: 사용자 결정(가상 매매 개선 2/3번) - EDGE_ONLY_EXCLUDE_FUNDS(True, ETF·ETN 가상 매수 제외) /
 #       EDGE_ONLY_NO_REENTRY_AFTER_SL(True, 당일 손절 종목 재매수 금지) 신설. r022 가상 매매만.
 #     impact: live paper only (r003 재시작 후 - 주문 없음)
@@ -2077,6 +2081,10 @@ EDGE_ONLY_COLLECTOR_POLL_SECONDS = 5          # 수집기 종목 평가 간격(r
 EDGE_ONLY_EXCLUDE_FUNDS = True
 # 당일 손절(sl)된 종목은 그날 다시 가상 매수하지 않는다(11/20 손절 뒤 재매수 5건 전부 손절, 평균 -2.27%). 롤백: False.
 EDGE_ONLY_NO_REENTRY_AFTER_SL = True
+# [2026-11-20] 가상 매매 검토 3차(Codex 합의) - 기록 전용. 65일 OOS 재생·회귀·상대강도/평균회귀 실험 모두 왕복 비용(약 0.5%)을 넘지
+# 못했다(모델은 방향이 아니라 변동폭을 순위화). True = 신규 가상 매수 없이 트리거 봉마다 후보(피처·점수·막힌 사유·가격)를
+# edge_only_candidates_<날짜>.jsonl 에 기록하고, 이미 있는 가상 보유는 그대로 청산. 롤백(가상 매수 재개): False.
+EDGE_ONLY_LOG_ONLY = True
 
 # =============================================================================
 # [2026-11-15] 적응형 익절·손절 엔진 (r024 엔진 / r025 틱 특징 / r026 shadow 러너) - 사용자 결정(설계 Q1: shadow 먼저)
