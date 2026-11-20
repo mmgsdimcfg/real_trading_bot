@@ -740,10 +740,13 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 /* ---- [2026-11-11] timeline hover dock + board fixed columns ---- */
 .tip-dock .reason-ko { color: var(--text); font-size: 13px; line-height: 1.45; }
 .board-grid { table-layout: fixed; width: 100%; }
-.board-grid th, .board-grid td { white-space: normal; word-break: break-word; overflow-wrap: anywhere; padding: 8px 8px; vertical-align: top; }
-.board-grid td.mono { white-space: nowrap; }
-.board-grid td.reason { max-width: none; overflow: visible; text-overflow: clip; line-height: 1.4; }
-.board-grid th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* [2026-11-20] compact board: one line per symbol (… + hover title), 12.5 px, half the padding */
+.board-grid { font-size: 12.5px; }
+.board-grid th, .board-grid td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 4px; vertical-align: middle; line-height: 1.45; }
+.board-grid th { font-size: 12px; }
+.board-grid td.reason { max-width: none; }
+.board-grid td.today { font-size: 11.5px; color: var(--text-2); }
+.board-grid td.today b { font-weight: 600; color: var(--text); }
 /* [2026-11-11] the dock is a strip under its evaluation chart (between it and the price chart) */
 /* [2026-11-17] summary on one line, the raw log line below (was: summary in 3 lines left, raw right) */
 .tip-dock { margin: 6px 0 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; min-height: 44px; }

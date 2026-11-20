@@ -9,6 +9,9 @@
  *   outside the watchlist) instead of 졸업 / -; 제외 for a symbol taken off the watchlist by a restart; "보유 종목만" includes them
  * - [2026-11-13] type=feat - a row click opens the timeline of that symbol (was the pipeline), like the holdings tab
  * - [2026-11-13] type=feat - held state 'manual' (bought by hand today, "[HOLD SKIP] ... NOT_BOT_POSITION") also shows 보유
+ * - [2026-11-20] type=feat - Compact board (user 2026-11-20): one line per symbol (long text cut with … and shown in full on hover),
+ *   12.5 px text, half the cell padding, "오늘 최대 도달" + "오늘 최다 막힘" merged into one smaller column "오늘 도달 · 최다 막힘"
+ *   (header click sorts by depth)
  */
 
 import { useMemo, useState } from 'react';
@@ -112,18 +115,17 @@ export function BoardView() {
       <div className="table-wrap">
         <table className="grid board-grid">
           <colgroup>
-            <col style={{ width: '6%' }} />
+            <col style={{ width: '5.5%' }} />
             <col style={{ width: '10%' }} />
             <col style={{ width: '13%' }} />
             <col style={{ width: '4%' }} />
-            <col style={{ width: '7%' }} />
             <col style={{ width: '6%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '17%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '9%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '6%' }} />
+            <col style={{ width: '5%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '21.5%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '5%' }} />
+            <col style={{ width: '5%' }} />
           </colgroup>
           <thead>
             <tr>
@@ -135,8 +137,7 @@ export function BoardView() {
               <th>상태</th>
               {th('cond', '멈춘 조건')}
               <th>사유</th>
-              {th('depth', '오늘 최대 도달', 'num')}
-              {th('blocks', '오늘 최다 막힘')}
+              {th('depth', '오늘 도달 · 최다 막힘')}
               <th className="num">보유</th>
               {th('pnl', '실현 손익', 'num')}
             </tr>
@@ -144,6 +145,7 @@ export function BoardView() {
           <tbody>
             {rows.map((s) => {
               const tb = topBlock(s);
+              const depth = s.furthestOrderToday >= total ? '전부' : `${s.furthestOrderToday + 1}/${total}`;
               const ev = s.lastEval;
               return (
                 <tr
@@ -155,7 +157,7 @@ export function BoardView() {
                   }}
                 >
                   <td className="mono">{s.code}</td>
-                  <td>
+                  <td title={s.name}>
                     {s.name} {s.nxt && <NxtMark />}
                   </td>
                   <td className="num">
@@ -166,12 +168,13 @@ export function BoardView() {
                   </td>
                   <td className="mono">{fmtKstTime(ev?.ts)}</td>
                   <td className={`res-${ev?.result || ''}`}>{ev ? RESULT_LABEL[ev.result] || ev.result : '-'}</td>
-                  <td>{ev && ev.condKey !== 'ORDER' ? condTitle(conditions, 'buy', ev.condKey) : ev ? '주문 단계' : '-'}</td>
+                  <td title={ev && ev.condKey !== 'ORDER' ? condTitle(conditions, 'buy', ev.condKey) : undefined}>{ev && ev.condKey !== 'ORDER' ? condTitle(conditions, 'buy', ev.condKey) : ev ? '주문 단계' : '-'}</td>
                   <td className="reason" title={ev ? `${ev.reason}\n${ev.raw}` : ''}>
                     {ev?.reason ? reasonKo(ev.reason) || ev.reason : '-'}
                   </td>
-                  <td className="num">{s.furthestOrderToday >= total ? '전부' : `${s.furthestOrderToday + 1}/${total}`}</td>
-                  <td>{tb ? `${condTitle(conditions, 'buy', tb[0])} (${fmtInt(tb[1])})` : '-'}</td>
+                  <td className="today" title={`오늘 최대 도달 ${depth} · 최다 막힘 ${tb ? `${condTitle(conditions, 'buy', tb[0])} (${fmtInt(tb[1])}회)` : '-'}`}>
+                    <b>{depth}</b> · {tb ? `${fmtInt(tb[1])}회 ${condTitle(conditions, 'buy', tb[0])}` : '-'}
+                  </td>
                   <td className="num">{s.position ? `${s.position.qty}주 @ ${fmtInt(s.position.buyPrice)}` : ''}</td>
                   <td className={`num ${pnlClass(s.realizedKrw)}`}>{s.realizedKrw ? fmtKrw(s.realizedKrw) : ''}</td>
                 </tr>
