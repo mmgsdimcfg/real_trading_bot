@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-21] type=feat - v1.0.5_002: 바닥 반등 감시 조건 2개 추가 - (1) 현재 봉에서도 RSI > 시그널, DI+ > DI- 여야 함(requireCurrentAbove) (2) 각 운영 시간대의 처음·마지막 15분은 감지하지 않고 그 시간의 봉은 급락 봉으로 치지 않음(edge.openMin / edge.closeMin). 기준 사례 448900 은 14:55 감지 유지, 15:00 은 제외",
     "[2026-11-21] type=feat - v1.0.5_001: 바닥 반등 초입 감시 - 관심종목 \"TEST\" 탭 종목의 1분봉을 매분 확인해 급락 뒤 RSI·MACD·DMI·MA5/MA20 상향 돌파 + MA5 각도 + 가점 3점 이상이면 화면 우하단에 항상 위 팝업으로 알림(감지·알림 전용, 주문 없음). 제목 줄 '반등 감시' 표시(클릭: 켜기/끄기), ☰ > 반등 감시 설정·기록 폴더 / 반등 알람 테스트. 설정 %APPDATA%\\autobothtsh\\rebound\\config.json, 감지 기록 detections_YYYYMMDD.csv, 리플레이 npm run replay",
     "[2026-11-21] type=feat - v1.0.4_004: 데이터 작업 - 장 마감 파이프라인에 52주 고점 기록 단계 표시(서버 r021 gh52 단계: g048 이 월말마다 George-Hwang 52주 고점 근접 상위 30% 코호트를 기록하고 6개월 성과·사전 등록 판정 리포트를 씀) + HI52 모의계좌 단계(g049: 10슬롯 40일 보유 모의 계좌와 무작위 비교 계좌, 매일 다음 시가 주문 목록 동결). 둘 다 주문 없음, ① 수집 체크에 함께 포함",
     "[2026-11-20] type=feat - v1.0.4_003: 가상 매매 창 - 서버가 기록 전용(EDGE_ONLY_LOG_ONLY)이면 '신규 가상 매수 꺼짐 (후보 기록만)' 표시, 대상 표의 마지막 판단 '후보 기록'",
@@ -78,7 +79,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "001",
+    "buildNumber": "002",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

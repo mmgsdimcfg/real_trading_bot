@@ -6,6 +6,11 @@
  *   poller (main/reboundPoller.ts), the replay (main/reboundReplay.ts) and the tests call the same function. Indicators come from
  *   shared/indicators.ts, the code the chart draws with, so the values equal the chart's for the same parameters. Detection and
  *   alert only: there is no order code
+ * - [2026-11-21] type=feat - Two more rules after a random replay check (user 2026-11-21): (1) requireCurrentAbove - RSI > signal and
+ *   DI+ > DI- must also hold on the judged bar itself (a bar that had already turned down still passed "3 of the last 5");
+ *   (2) edge - the first edge.openMin and the last edge.closeMin minutes of each session window are left out: a plunge bar there
+ *   does not count and a bar there is not detected (opening / closing volume passes the "3x volume" test by itself -
+ *   161390 09:13 from a 09:02 bar, 236200 15:42 across the close)
  */
 
 import { adx, bollinger, ichimoku, macd, normalizeParams, rsi, sma, vwap, HTS_PARAMS, type CalcMethod, type IndicatorParams, type Series } from './indicators';
@@ -41,6 +46,10 @@ export interface ReboundConfig {
   /** M and the count: of the last M bars at least `recentMin` keep RSI > signal / DI+ > DI- */
   recent: number;
   recentMin: number;
+  /** RSI > signal and DI+ > DI- must hold on the judged bar too */
+  requireCurrentAbove: boolean;
+  /** minutes left out at the start / end of each session window (0 = none): no plunge bar and no detection there */
+  edge: { openMin: number; closeMin: number };
   plunge: {
     /** the plunge bar is within the last `window` bars */
     window: number;
@@ -121,6 +130,8 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
   lookback: 25,
   recent: 5,
   recentMin: 3,
+  requireCurrentAbove: true,
+  edge: { openMin: 15, closeMin: 15 },
   plunge: { window: 40, dropPct: -0.8, wickRatio: 2, wickMinPct: 0.3, volWindow: 60, volMult: 3 },
   rsi: { min: 45, max: 68 },
   macd: { oscRising: 3 },
@@ -216,8 +227,10 @@ export interface ReboundSnapshot {
 }
 
 export interface ReboundResult {
-  /** every required condition holds and the score reaches bonus.minScore */
+  /** every required condition holds, the score reaches bonus.minScore and the bar is not in a session edge */
   hit: boolean;
+  /** the judged bar is in the first / last minutes of a session window (edge.*): never a detection */
+  edge: boolean;
   /** every required condition holds */
   required: boolean;
   score: number;
@@ -250,6 +263,20 @@ export function sessionOf(cfg: ReboundConfig, now: number): 'krx' | 'nxt' | null
   if (within(cfg.sessions.krx)) return 'krx';
   if (within(cfg.sessions.nxtPre) || within(cfg.sessions.nxtAfter)) return 'nxt';
   return null;
+}
+
+/** `t` (epoch ms) is within the first edge.openMin or the last edge.closeMin minutes of a session window */
+export function inEdge(cfg: ReboundConfig, t: number): boolean {
+  const d = new Date(t + KST);
+  const m = d.getUTCHours() * 60 + d.getUTCMinutes();
+  const min = (s: string) => +s.split(':')[0] * 60 + +s.split(':')[1];
+  for (const w of [cfg.sessions.krx, cfg.sessions.nxtPre, cfg.sessions.nxtAfter]) {
+    if (!w) continue;
+    const s = min(w[0]);
+    const e = min(w[1]);
+    if ((m >= s && m < s + cfg.edge.openMin) || (m <= e && m > e - cfg.edge.closeMin)) return true;
+  }
+  return false;
 }
 
 /** the bars whose minute is over at `now`: the bar of the running minute (still changing) is left out */
@@ -317,7 +344,7 @@ export function findPlunge(bars: Bar[], cfg: ReboundConfig): number {
     const body = Math.abs(b.c - b.o);
     const wick = Math.min(b.o, b.c) - b.l;
     const shape = drop <= p.dropPct || (wick > 0 && wick >= p.wickRatio * body && (wick / b.c) * 100 >= p.wickMinPct);
-    if (shape && lowAfter >= b.l) {
+    if (shape && lowAfter >= b.l && !inEdge(cfg, b.t)) {
       let s = 0;
       let n = 0;
       for (let k = Math.max(0, j - p.volWindow); k < j; k++) (s += bars[k].v), n++;
@@ -378,7 +405,9 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
   const no = (note: string): Check => ({ ok: false, note });
   const conds = Object.fromEntries(COND_KEYS.map((k) => [k, no('-')])) as Record<CondKey, Check>;
   const bonus = Object.fromEntries(BONUS_KEYS.map((k) => [k, no('-')])) as Record<BonusKey, Check>;
-  if (bars.length < cfg.minBars) return { hit: false, required: false, score: 0, conds, bonus, snap, skip: `봉 ${bars.length}개 < ${cfg.minBars}개` };
+  const edge = i >= 0 && inEdge(cfg, bars[i].t);
+  if (bars.length < cfg.minBars) return { hit: false, edge, required: false, score: 0, conds, bonus, snap, skip: `봉 ${bars.length}개 < ${cfg.minBars}개` };
+  const cur = cfg.requireCurrentAbove;
 
   const N = cfg.lookback;
   // the crossings come after the plunge: searched from the bar after it (or the last N bars, whichever starts later)
@@ -393,7 +422,8 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
     const k = pj >= 0 ? lastCrossUp(R.rsi, R.signal, from, i) : -1;
     const n = countAbove(R.rsi, R.signal, recFrom, i);
     const inBand = snap.rsi >= cfg.rsi.min && snap.rsi <= cfg.rsi.max;
-    conds.rsi = { ok: k >= 0 && n >= cfg.recentMin && inBand, note: `돌파 ${k >= 0 ? hhmm(bars[k].t) : '없음'}, 최근 ${cfg.recent}봉 중 ${n}봉 위, RSI ${f1(snap.rsi)}/${f1(snap.rsiSignal)}` };
+    const now = !cur || snap.rsi > snap.rsiSignal;
+    conds.rsi = { ok: k >= 0 && n >= cfg.recentMin && inBand && now, note: `돌파 ${k >= 0 ? hhmm(bars[k].t) : '없음'}, 최근 ${cfg.recent}봉 중 ${n}봉 위, RSI ${f1(snap.rsi)}/${f1(snap.rsiSignal)}${now ? '' : ' (현재 봉은 시그널 아래)'}` };
   }
 
   // C. MACD crossed its signal below the zero line and stayed above since; the oscillator keeps growing
@@ -415,7 +445,8 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
   {
     const k = pj >= 0 ? lastCrossUp(D.diPlus, D.diMinus, from, i) : -1;
     const n = countAbove(D.diPlus, D.diMinus, recFrom, i);
-    conds.dmi = { ok: k >= 0 && n >= cfg.recentMin, note: `돌파 ${k >= 0 ? hhmm(bars[k].t) : '없음'}, 최근 ${cfg.recent}봉 중 ${n}봉 위, DI ${f1(snap.diPlus)}/${f1(snap.diMinus)}` };
+    const now = !cur || snap.diPlus > snap.diMinus;
+    conds.dmi = { ok: k >= 0 && n >= cfg.recentMin && now, note: `돌파 ${k >= 0 ? hhmm(bars[k].t) : '없음'}, 최근 ${cfg.recent}봉 중 ${n}봉 위, DI ${f1(snap.diPlus)}/${f1(snap.diMinus)}${now ? '' : ' (현재 봉은 DI- 아래)'}` };
   }
 
   // E. MA5 golden cross over MA20, close > MA5 > MA20
@@ -472,5 +503,5 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
 
   const required = COND_KEYS.every((k) => conds[k].ok);
   const score = BONUS_KEYS.filter((k) => bonus[k].ok).length;
-  return { hit: required && score >= bz.minScore, required, score, conds, bonus, snap };
+  return { hit: required && score >= bz.minScore && !edge, edge, required, score, conds, bonus, snap };
 }

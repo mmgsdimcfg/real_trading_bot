@@ -8,14 +8,14 @@
  */
 
 import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const userData = mkdtempSync(join(tmpdir(), 'rebound-test-'));
 vi.mock('electron', () => ({ app: { getPath: () => userData }, BrowserWindow: class {}, screen: {}, shell: { beep: () => undefined } }));
 
-import { completedBars, detectRebound, findPlunge, lastCrossUp, maAngle, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../src/shared/rebound';
+import { completedBars, detectRebound, findPlunge, inEdge, lastCrossUp, maAngle, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../src/shared/rebound';
 import { applySets, barsToCsv, main, parseBars, replay } from '../src/shared/reboundReplay';
 import { ReboundWatcher, sampleAlert, configPath } from '../src/main/reboundPoller';
 import { alertHtml, csvRow, type AlertInfo } from '../src/main/reboundAlert';
@@ -59,6 +59,25 @@ describe('reference case 448900 2026-11-20', () => {
     expect(r.score).toBe(3);
     expect(r.bonus.adxTurn.ok && r.bonus.bbSqueeze.ok && r.bonus.volDry.ok).toBe(true);
     expect(r.snap.vwapPct).toBeLessThan(0); // still under VWAP: shown, not a condition
+  });
+
+  it('15:00 is no longer detected: RSI is under its signal on that bar (requireCurrentAbove)', () => {
+    expect(hits).toEqual(['14:55', '15:05']);
+    const r = detectRebound(upTo(at('15:00')));
+    expect(r.conds.rsi.ok).toBe(false);
+    expect(r.conds.rsi.note).toContain('현재 봉은 시그널 아래');
+    const loose = applySets(REBOUND_DEFAULTS, ['requireCurrentAbove=false']);
+    expect(detectRebound(upTo(at('15:00')), loose).hit).toBe(true);
+  });
+
+  it('session edges: a bar in the last minutes is not detected, a plunge bar there does not count', () => {
+    // with the window stretched over 14:55 the same bar is "edge": required conditions still hold, no detection
+    const wide = applySets(REBOUND_DEFAULTS, ['edge.closeMin=40']);
+    const r = detectRebound(upTo(at('14:55')), wide);
+    expect(r.required && r.score >= 3 && r.edge && !r.hit).toBe(true);
+    // the KRX window ending right after the 14:33 plunge bar: it is an edge bar, so there is no plunge any more
+    const cut = mergeConfig({ ...REBOUND_DEFAULTS, sessions: { ...REBOUND_DEFAULTS.sessions, krx: ['09:00', '14:40'], nxtAfter: null } });
+    expect(detectRebound(upTo(at('14:55')), cut).conds.plunge.ok).toBe(false);
   });
 
   it('the original thresholds (angle 15, 4 of 5 bars, ADX low within 3 bars) fire only after the window', () => {
@@ -183,6 +202,14 @@ describe('helpers', () => {
     expect(sessionOf(noNxt, at('18:00'))).toBe(null);
   });
 
+  it('inEdge: first / last 15 minutes of each session window', () => {
+    const c = REBOUND_DEFAULTS;
+    expect([inEdge(c, at('09:00')), inEdge(c, at('09:14')), inEdge(c, at('09:15'))]).toEqual([true, true, false]);
+    expect([inEdge(c, at('15:15')), inEdge(c, at('15:16')), inEdge(c, at('15:30'))]).toEqual([false, true, true]);
+    expect([inEdge(c, at('08:05')), inEdge(c, at('08:20')), inEdge(c, at('15:42')), inEdge(c, at('16:00')), inEdge(c, at('19:50'))]).toEqual([true, false, true, false, true]);
+    expect(inEdge(applySets(c, ['edge.openMin=0', 'edge.closeMin=0']), at('09:00'))).toBe(false);
+  });
+
   it('completedBars drops the running minute only', () => {
     const bars = [bar(10, 1, 1, 1, 1, 1), bar(11, 1, 1, 1, 1, 1), bar(12, 1, 1, 1, 1, 1)];
     expect(completedBars(bars, 12 * 60000 + 2000).map((b) => b.t / 60000)).toEqual([10, 11]);
@@ -225,7 +252,7 @@ describe('replay files and CLI', () => {
     const out: string[] = [];
     expect(main([FIXTURE, '--date', '20261120', '--from', '13:00', '--to', '15:20'], (s) => out.push(s))).toBe(0);
     expect(out.some((l) => l.startsWith('14:55 감지(알림)'))).toBe(true);
-    expect(out[out.length - 1]).toBe('감지 3봉, 알림 1회');
+    expect(out[out.length - 1]).toBe('감지 2봉, 알림 1회');
     expect(main([], () => undefined)).toBe(2);
     expect(() => applySets(REBOUND_DEFAULTS, ['no.such=1'])).toThrow();
   });
@@ -280,8 +307,11 @@ describe('watcher pass', () => {
     mkdirSync(join(userData, 'rebound'), { recursive: true });
     const cfg = mergeConfig({ ...REBOUND_DEFAULTS, poll: { ...REBOUND_DEFAULTS.poll, gapMs: 0, backoffMs: 1, tabReloadSec: 0 }, ...over });
     writeFileSync(configPath(), JSON.stringify(cfg));
-    return new Promise((r) => setTimeout(r, 15)); // a new mtime
+    stamp += 10; // a modification time the watcher has not seen (two writes can land in the same file-system tick)
+    utimesSync(configPath(), stamp, stamp);
+    return Promise.resolve();
   };
+  let stamp = Math.floor(Date.now() / 1000) + 100;
   const csv = () => readFileSync(join(userData, 'rebound', 'detections_20261120.csv'), 'utf8').trim().split('\r\n');
 
   beforeAll(async () => {
@@ -318,8 +348,12 @@ describe('watcher pass', () => {
     clock = at('15:01') + 2000;
     await watcher.tick();
     expect(alerts).toHaveLength(1);
+    expect(csv()).toHaveLength(2); // 15:00 is not a detection (RSI under its signal on that bar)
+    clock = at('15:06') + 2000;
+    await watcher.tick();
+    expect(alerts).toHaveLength(1);
     expect(csv()).toHaveLength(3);
-    expect(csv()[2].split(',').slice(1, 5)).toEqual(['15:00', '448900', '한국피아이엠', '0']);
+    expect(csv()[2].split(',').slice(1, 5)).toEqual(['15:05', '448900', '한국피아이엠', '0']);
   });
 
   it('rests outside the sessions, waits for a login, reports a missing tab, can be switched off', async () => {
@@ -327,7 +361,7 @@ describe('watcher pass', () => {
     clock = at('20:30') + 2000;
     await watcher.tick();
     expect(watcher.status.state).toBe('rest');
-    clock = at('15:02') + 2000;
+    clock = at('15:07') + 2000;
     current = null;
     await watcher.tick();
     expect(watcher.status.state).toBe('login');

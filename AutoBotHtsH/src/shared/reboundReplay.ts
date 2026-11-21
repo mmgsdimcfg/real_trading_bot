@@ -142,7 +142,7 @@ export function main(argv: string[], print: (s: string) => void = console.log): 
     if (r.res.hit) hits++;
     if (!show) continue;
     const s = r.res.snap;
-    const tag = r.res.hit ? (r.alert ? '감지(알림)' : '감지(쿨다운)') : r.res.required ? '필수만 충족' : '미충족';
+    const tag = r.res.hit ? (r.alert ? '감지(알림)' : '감지(쿨다운)') : r.res.required ? (r.res.edge && r.res.score >= cfg.bonus.minScore ? '장 경계 제외' : '필수만 충족') : '미충족';
     print(`${hhmm(r.t)} ${tag} 점수 ${r.res.score} 종가 ${s.close} RSI ${s.rsi.toFixed(1)}/${s.rsiSignal.toFixed(1)} MACD ${s.macd.toFixed(1)}/${s.macdSignal.toFixed(1)} DI ${s.diPlus.toFixed(1)}/${s.diMinus.toFixed(1)} ADX ${s.adx.toFixed(1)} 각도 ${s.angle.toFixed(1)}° VWAP ${s.vwapPct.toFixed(2)}%`);
     if (opt.explain || opt.all) for (const l of table(r.res)) print(l);
   }

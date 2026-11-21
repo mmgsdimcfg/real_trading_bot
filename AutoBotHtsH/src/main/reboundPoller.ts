@@ -244,6 +244,7 @@ export function sampleAlert(cfg: ReboundConfig): AlertInfo {
     changePct: -2.41,
     res: {
       hit: true,
+      edge: false,
       required: true,
       score: 3,
       conds: { plunge: ok('14:33 저가 38000 거래량 2147'), rsi: ok('돌파 14:53, RSI 53.3/48.8'), macd: ok('돌파 14:46(MACD -84.5)'), dmi: ok('돌파 14:50, DI 32.2/12.6'), ma: ok('골든크로스 14:55'), angle: ok(`14.6° (기준 ${cfg.angle.min}°)`) },
