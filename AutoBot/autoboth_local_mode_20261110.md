@@ -69,11 +69,11 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 
 - 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --no-export-watchlist ->
   `apply`), `apply`(r016 watchlist apply --date D: 그 날짜의 `_D_picks.txt` 를 r004 로 - 백업/이력/다음 거래일 헤더), `edge_ai`(g013 --live,
-  g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> hi52 -> scan -> apply [-> edge_ai]). [2026-11-11] 단계 선택:
+  g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> hi52 -> gh52 -> hi52acct -> scan -> picklog -> apply [-> edge_ai]). [2026-11-11] 단계 선택:
   `--no-collect`(수집+이력 생략, 그 날짜에 10초봉 파일이 있어야 함), `--no-scan`(선별 생략, 선별 파일이 있어야 함), `--no-apply`(r004 반영
   생략; `--keep-watchlist` 는 옛 이름). 앞 단계 산출물이 없으면 start 가 `{ok:false, error}` 로 거부. 앱의 장 마감 파이프라인 카드는
   ① 수집 ② 선별 ③ r004 반영 체크로 이 스위치를 만든다(1+2+3 / 2+3 / 3). apply 는 선별 파일이 없거나 이 실행의 scan 보다 오래되면
-  건너뛴다(step state=skipped + note, 작업은 done; 상태 JSON `note`). collect/scan/apply 실패 시 뒤 단계 생략, history / hi52 실패는
+  건너뛴다(step state=skipped + note, 작업은 done; 상태 JSON `note`). collect/scan/apply 실패 시 뒤 단계 생략, history / hi52 / gh52 / hi52acct 실패는
   계속. [2026-11-19] collect 실패 뒤에도 history 는 실행한다(수집된 종목의 일봉 이력 갱신 - 20261118 KIS 장애 때 차트 일봉이 전 종목
   하루 비었음). 생략된 뒤 단계는 상태 JSON 의 steps 에 state=skipped + note="<단계> failed" 로 남는다(작업 state 는 failed 그대로). [2026-11-18] `hi52` 단계(g042 --date D --evaluate, postclose 에만, collect 스위치를 따름): HI52 스윙 신호 전진 기록 - §11. [2026-11-11] `--email`(postclose/scan): scan 단계를 `g002 --notify-email` 로 실행해 선별 종목(본문)과 리포트 파일(첨부)을
   메일로 보낸다(g016, 실행 호스트의 `~/.mail/mail_config.json`; scan 단계가 없으면 보내지 않음, 전송 실패는 작업 실패가 아님 -
@@ -306,3 +306,30 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   타임라인의 KRX 전용 종목 표시 범위 09:00~15:30 -> 09:00~20:00. 감시목록 밖 보유 종목도 응답 `nxt` 로 NXT 표시.
 - 바뀌지 않는 것: r003 매매 시각(r001 고정값 - 수능일 미반영, KRX 장후 매매 없음), 틱 수집기(g011, KRX 체결은 정규장 마감+1분까지).
   둘 다 별도 승인 사항.
+
+## 14. 52주 고점 근접(GH52) 전진 기록 (2026-11-21)
+- r021 `postclose` 의 새 단계 `gh52` = `data_simulation/g048_gh52_forward_log.py --date D --evaluate` (hi52 다음, scan 앞, 실패해도
+  작업은 계속, collect 스위치를 따름 - `--no-collect` 면 생략). 주문 없음, r003/r004 불변. 작업 목록/상태 JSON 의 steps 에 `"gh52"` 가
+  추가된다 - 앱 단계 라벨 "52주 고점 기록(g048)". ① 데이터 수집(g001) = collect + history(g025) + hi52(g042) + gh52(g048) + hi52acct(g049).
+- D 가 그달 마지막 거래일(다음 KRX 거래일이 다른 달 - r014 달력)일 때만 코호트를 기록하고, 다른 날은 "not the last trading day" 한 줄 후
+  평가만 다시 한다(rc 0). 종료 코드: 0 정상(주말·월말 아님 포함) / 2 입력 없음 / 3 다른 g048 실행 중(`.g048.lock`) / 4 평일인데 D 의
+  지수 ETF 일봉이 없음(휴장일 또는 g025 미반영).
+- 산출물 `<runtime>/data/gh52_signals/`: `formations.csv` = 기록 원본(월말 날짜, 유니버스 종목 목록, 상위 30% 선택 종목 JSON, recorded),
+  `evaluation.csv` = 코호트별 다음 시가 매수 -> 6번째 월말 다음 시가 매도 순익, 같은 날 유니버스 대비 초과, KODEX200 참고 수익(매 실행
+  전체 재계산), `report.md` = 사전 등록 판정 진행(2026-11-21 등록, live 코호트 36개) + 코호트 표. 앱은 읽지 않는다.
+  `g048 --status` 는 한 줄 JSON(cohorts, last_date, last_live, report_at, acceptance_registered, acceptance_cohorts).
+- 배경: runtime/research/13_public_strategies (공개 파라미터 검증, George-Hwang 2004).
+
+## 15. HI52 스윙 모의계좌 (2026-11-21)
+- r021 `postclose` 의 새 단계 `hi52acct` = `data_simulation/g049_hi52_paper_account.py --date D` (gh52 다음, scan 앞, 실패해도 작업은
+  계속, collect 스위치를 따름). 주문 없음, KIS 호출 없음, r003/r004 불변. steps 에 `"hi52acct"` 추가 - 앱 단계 라벨 "HI52 모의계좌(g049)".
+- 규칙(`RULE_VERSION hi52-t40-v1`, 고정): g042 HI250 신호 + 지수 게이트 UP, 후보는 sha256(계좌|날짜|종목) 순, 다음 시가에 슬롯당 전일 종가
+  순자산의 1/10(10슬롯, 정수 주), 40번째 보유 행 종가에 만기 -> 다음 시가 매도, 손절 없음. RANDOM = 같은 날 같은 수의 유니버스 종목.
+- 마지막 처리일 이후의 모든 행을 차례로 처리(전날 저녁 계획을 시가에 체결 -> 종가 순자산 -> 다음 시가 계획 동결, recorded live/late).
+  같은 행을 다시 실행해도 바뀌지 않는다. 종료 코드: 0 정상 / 2 입력 없음 / 3 다른 g049 실행 중(`.g049.lock`) / 4 D 의 지수 ETF 일봉 없음.
+- 산출물 `<runtime>/data/hi52_paper/`: `state.json`(계좌별 현금·보유·미체결 매도, last_processed), `plans.csv`(저녁에 동결한 다음 시가
+  주문 목록), `ledger.csv`(체결/건너뜀과 사유, 시가, 체결가, 수수료, 세금), `nav.csv`(행별 현금·평가액·순자산·노출·매수액),
+  `acceptance_final.json`(한 번만), `report.md`. 앱은 읽지 않는다. `g049 --status` 는 한 줄 JSON.
+- 사전 등록 판정(2026-11-21, 900행 후 한 번): HI52-RANDOM 일수익 차이 평균의 단측 95% 하한 > 0(60행 블록), 매수액 0.25% 추가 후에도 > 0,
+  HI52 MDD > -45%, 매수 체결률 >= 90%, late 계획 <= 10%. 파일럿 권고는 g042 와 g049 둘 다 PASS 일 때만(자동 매매 없음).
+- 배경: runtime/research/14_swing_rules (매수 게이트 2 x 매도 규칙 7 비교 - 현행 규칙보다 나은 조합 없음).

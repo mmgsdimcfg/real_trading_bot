@@ -360,9 +360,9 @@ class JobTests(unittest.TestCase):
 
     def fake_steps(self, rcs: dict, sleep: float = 0.0):
         steps = {}
-        for name in ("collect", "history", "hi52", "scan", "picklog", "apply"):  # [2026-11-11] apply = the r004 step; [2026-11-18] hi52; [2026-11-19] picklog
+        for name in ("collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog", "apply"):  # [2026-11-11] apply = the r004 step; [2026-11-18] hi52; [2026-11-19] picklog; [2026-11-21] gh52, hi52acct
             code = f"import time; time.sleep({sleep}); print('{name} out'); raise SystemExit({rcs.get(name, 0)})"
-            steps[name] = r021.Step(name, (lambda c: lambda a, rc: ["-c", c])(code), required=(name not in ("history", "hi52", "picklog")),
+            steps[name] = r021.Step(name, (lambda c: lambda a, rc: ["-c", c])(code), required=(name not in ("history", "hi52", "gh52", "hi52acct", "picklog")),
                                     after_failure=(name == "history"))  # [2026-11-19] history runs after a failed collect
         return mock.patch.dict(r021.STEPS, steps)
 
@@ -374,7 +374,7 @@ class JobTests(unittest.TestCase):
             self.assertEqual(self.run_job(), 0)
         st = r021.read_state(self.paths, "postclose")
         self.assertEqual(st["state"], "done")
-        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "hi52", "scan", "picklog", "apply"])
+        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog", "apply"])
         log = r021.tail_log(self.paths, "postclose")
         self.assertTrue(any("scan out" in ln for ln in log["lines"]))
 
@@ -384,13 +384,13 @@ class JobTests(unittest.TestCase):
         st = r021.read_state(self.paths, "postclose")
         # [2026-11-19] history still runs after the failed collect, the other steps are recorded as skipped
         self.assertEqual((st["state"], [(s["name"], s["state"]) for s in st["steps"]]),
-                         ("failed", [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("scan", "skipped"),
+                         ("failed", [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("gh52", "skipped"), ("hi52acct", "skipped"), ("scan", "skipped"),
                                      ("picklog", "skipped"), ("apply", "skipped")]))
         with self.fake_steps({"history": 1}):
             self.run_job()
         st = r021.read_state(self.paths, "postclose")
         self.assertEqual(st["state"], "done_with_errors")
-        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "hi52", "scan", "picklog", "apply"])
+        self.assertEqual([s["name"] for s in st["steps"]], ["collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog", "apply"])
 
     def test_busy_runner_refuses_and_dead_runner_is_failed(self):
         fh = r019.acquire_instance_lock(self.paths.lock)
