@@ -1,6 +1,7 @@
 <!--
 Update log
 - [2026-11-20] type=docs - v1.0.0_001: new AutoBotHtsH (HtsH + AutoBotH in one app)
+- [2026-11-21] type=docs - v1.0.5_001: 바닥 반등 초입 감시 (TEST 탭, 팝업 알림, 설정, 리플레이)
 -->
 # AutoBotHtsH
 
@@ -26,6 +27,47 @@ HtsH(한국투자증권 OpenAPI 조회 전용 개인 HTS)의 화면에 AutoBotH(
 - KIS 앱키는 HtsH와 따로 저장됩니다. 처음에 한 번 로그인하세요.
 - 관심종목 picks 파일(`_YYYYMMDD_picks.txt`)은 `%APPDATA%\autobothtsh\watchlist\` 에 두면 MMDD 탭으로 등록됩니다.
 
+## 바닥 반등 초입 감시
+
+관심종목 창에서 이름이 **TEST** 인 탭의 종목을 1분봉으로 감시하다가, 급락 뒤 반등 초입 조건이 맞으면 화면 우하단에 항상 위 팝업을 띄웁니다. 감지와 알림만 하고 주문은 내지 않습니다.
+
+- **쓰는 법**: KIS 앱키로 로그인하고 관심종목 창에 `TEST` 탭을 만들어 종목을 넣으면 됩니다(탭 더블클릭 = 이름 바꾸기). 탭은 5분마다 다시 읽습니다. 데모 모드에서는 감시하지 않습니다.
+- **상태**: 제목 줄의 `반등 감시 TEST · N종목`. 마우스를 올리면 마지막 순회 시각과 오류가 보이고, 클릭하면 켜고 끕니다.
+- **동작**: 매분 2초에 탭의 종목을 차례로 조회해(첫 조회 뒤에는 종목당 1회 호출) **완성된 봉**만 판정합니다. 같은 종목은 30분 동안 다시 알리지 않습니다. 팝업의 `열기` 는 그 종목을 앱의 창들에 띄웁니다.
+- **운영 시간**: 평일 KRX 09:00~15:30, NXT 프리 08:00~08:50, NXT 애프터 15:40~20:00. NXT 시간에는 NXT 거래 종목만 조회합니다.
+- **파일** (`%APPDATA%\autobothtsh\rebound\`, ☰ > 반등 감시 설정·기록 폴더):
+  - `config.json`: 모든 임계값과 주기. 저장하면 다음 분부터 반영됩니다. 지우면 기본값으로 다시 만들어집니다.
+  - `detections_YYYYMMDD.csv`: 감지 내역 전체(시각, 종목, 지표값, 점수, 알림 여부).
+- **모의투자 접속**은 지난 날짜 분봉을 받을 수 없어, 당일 봉이 200개 쌓인 뒤부터 판정합니다.
+
+### 감지 조건
+
+필수 조건 6개를 모두 충족하고 가점이 `bonus.minScore`(3점) 이상이면 감지입니다. 돌파는 급락 봉 뒤, 최근 `lookback`(25)봉 안에 있어야 합니다.
+
+| | 필수 조건 | 설정 항목 |
+|---|---|---|
+| A | 최근 40봉 안에 급락 봉: 전봉 대비 -0.8% 이하 또는 아랫꼬리가 몸통의 2배 이상, 거래량이 앞 60봉 평균의 3배 이상, 그 뒤 저가가 더 낮아지지 않음 | `plunge.*` |
+| B | RSI가 시그널을 상향 돌파, 최근 5봉 중 3봉 이상 시그널 위, 현재 RSI 45~68 | `recent`, `recentMin`, `rsi.*` |
+| C | MACD가 0선 아래에서 시그널을 상향 돌파한 뒤 계속 위, 오실레이터 3봉 연속 확대 | `macd.oscRising` |
+| D | DI+가 DI-를 상향 돌파, 최근 5봉 중 3봉 이상 위 | `recent`, `recentMin` |
+| E | MA5가 MA20을 골든크로스, 종가 > MA5 > MA20 | |
+| F | MA5 각도 14° 이상. 각도 = atan(1봉당 % 변화 × `k`), 3봉 전 MA5와 비교 | `angle.*` |
+
+가점(각 1점): ADX가 내려왔다가 최근 4봉 안에 바닥을 찍고 반등, 종가가 MA60/MA120을 돌파했거나 0.2% 이내, 볼린저 폭이 급락 때보다 좁고 종가가 중심선 이상, 전환선 > 기준선이고 종가가 구름 안이나 위, MACD가 0선 근처(가격의 0.05% 이내)이거나 최근 3봉 안에 0선 돌파, 반등 구간 평균 거래량이 급락 봉보다 적음. VWAP 위치는 조건이 아니고 팝업에 표시만 합니다.
+
+지표는 차트와 같은 코드(`src/shared/indicators.ts`)로 계산합니다. 기본값은 차트 기본 설정과 같습니다(RSI 14 / 시그널 6, MACD 12·26·9, DMI 14, 볼린저 20·2, 일목 9·26·52, 계산 방식 `mts`). 차트 설정을 바꿨다면 `config.json` 의 `indicator` 도 같이 바꾸세요. `rsiMethod` / `adxMethod` 를 `wilder` 로 두면 Wilder 방식입니다.
+
+### 리플레이
+
+저장된 1분봉(CSV `date,time,open,high,low,close,volume` 또는 앱의 차트 캐시 `chartcache\real_<코드>_min_.json`)을 봉 하나씩 흘려보내 감지 시점을 출력합니다.
+
+```
+npm run replay -- tests/rebound_448900_20261120.csv --from 13:00 --to 15:20
+npm run replay -- <파일> --date 20261120 --explain 14:55      # 그 봉의 조건별 판정
+npm run replay -- <파일> --all                                # 필수 조건만 충족한 봉도 표시
+npm run replay -- <파일> --config <config.json> --set angle.min=15 --set recentMin=4
+```
+
 ## AutoBotH와 함께 쓸 때
 
 - 봇 실행(r003), 감시 프로세스(r020), 데이터 작업(r021), 틱 수집기(g011)는 서버 쪽 잠금 파일을 쓰므로 어느 앱에서 시작해도 한 번만 실행됩니다.
@@ -41,6 +83,9 @@ HtsH(한국투자증권 OpenAPI 조회 전용 개인 HTS)의 화면에 AutoBotH(
 | `src/main`, `src/preload`, `src/renderer`, `src/shared` | HtsH (v0.1.5_002 기준) + 통합 코드 |
 | `src/bot/{main,preload,shared,renderer/src}` | AutoBotH (v2.3.32_003 기준) 사본. 상대 경로 구조를 그대로 둠 |
 | `src/main/importOnce.ts` | 첫 실행 때 설정 가져오기 |
+| `src/shared/rebound.ts` | 바닥 반등 감지(순수 함수)와 설정 기본값 |
+| `src/shared/reboundReplay.ts`, `scripts/rebound-replay.cjs` | 리플레이 |
+| `src/main/reboundPoller.ts`, `src/main/reboundAlert.ts` | 매분 순회, 팝업·알림음·감지 기록 |
 | `src/renderer/src/windows/BotWindow.tsx` | 봇 화면을 창으로 띄우는 부분, 상태 줄, 확인 창 |
 | `src/bot/renderer/src/styles.scoped.css` | AutoBotH 스타일을 `.bot-root` 안으로 한정한 생성 파일 (`npm run scope-css`) |
 | `tests/` (HtsH), `tests/bot/` (AutoBotH) | vitest |
@@ -54,6 +99,7 @@ npm install
 npm run dev        # 개발 실행
 npm start          # 빌드 후 실행
 npm test           # vitest
+npm run replay -- <분봉 파일>   # 바닥 반등 감지 리플레이
 npm run typecheck
 npm run dist       # 설치 파일 (dist/)
 ```

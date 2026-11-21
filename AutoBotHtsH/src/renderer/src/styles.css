@@ -143,6 +143,9 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .rt-on i { background: var(--st-pass); }
 .rt-connecting i { background: var(--st-hold); }
 .rt-error i { background: var(--st-fail); }
+/* [2026-11-21] rebound watcher chip: a button that reads like the status text beside it */
+.rebound-chip { border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; }
+.rebound-chip:hover { color: var(--text); }
 .ticker { display: inline-flex; gap: 14px; }
 .ticker b { font-variant-numeric: tabular-nums; }
 .win-controls { display: flex; align-items: center; gap: 2px; margin-left: 8px; padding-right: 4px; -webkit-app-region: no-drag; }

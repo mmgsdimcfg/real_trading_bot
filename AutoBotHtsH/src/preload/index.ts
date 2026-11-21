@@ -5,6 +5,7 @@
 // - [2026-11-19] type=feat (watchLoad / watchSave / watchPicks / watchDir / watchOpenDir - watchlist file and picks files)
 // - [2026-11-20] type=feat (AutoBotHtsH: window.api = the AutoBotH bridge (src/bot/preload) for the bot windows)
 // - [2026-11-20] type=feat (hts.setZoom: page zoom factor for the 글자 크기 setting (webFrame, this window only))
+// - [2026-11-21] type=feat (rebound*: status / on-off / test popup / folder of the rebound watcher, onReboundOpen (a popup's "열기"))
 
 import { api as botApi } from '../bot/preload/index';
 import { contextBridge, ipcRenderer, webFrame } from 'electron';
@@ -13,6 +14,18 @@ import type { Res } from '../shared/market';
 import type { PickGroup, PicksEntry } from '../shared/watchPicks';
 
 type WatchFile = { groups: PickGroup[]; imported: Record<string, number> };
+
+export interface ReboundStatus {
+  enabled: boolean;
+  tab: string;
+  state: 'off' | 'rest' | 'login' | 'notab' | 'run';
+  codes: number;
+  lastPass?: number;
+  judged?: number;
+  failed?: number;
+  alerts: number;
+  note?: string;
+}
 
 const on = <T>(ch: string, cb: (d: T) => void) => {
   const h = (_e: unknown, d: T) => cb(d);
@@ -57,6 +70,13 @@ const hts = {
   watchPicks: (): Promise<PicksEntry[]> => ipcRenderer.invoke('watch:picks'),
   watchDir: (): Promise<string> => ipcRenderer.invoke('watch:dir'),
   watchOpenDir: (): Promise<string> => ipcRenderer.invoke('watch:openDir'),
+  // [2026-11-21] rebound watcher (watchlist tab "TEST": detection + popup only)
+  reboundStatus: (): Promise<ReboundStatus> => ipcRenderer.invoke('rebound:status'),
+  reboundEnable: (on: boolean): Promise<ReboundStatus> => ipcRenderer.invoke('rebound:enable', on),
+  reboundTest: (): Promise<void> => ipcRenderer.invoke('rebound:test'),
+  reboundOpenDir: (): Promise<string> => ipcRenderer.invoke('rebound:openDir'),
+  onReboundStatus: (cb: (s: ReboundStatus) => void) => on('rebound:status', cb),
+  onReboundOpen: (cb: (code: string) => void) => on('rebound:open', cb),
 };
 
 export type Hts = typeof hts;

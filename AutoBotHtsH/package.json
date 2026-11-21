@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-21] type=feat - v1.0.5_001: 바닥 반등 초입 감시 - 관심종목 \"TEST\" 탭 종목의 1분봉을 매분 확인해 급락 뒤 RSI·MACD·DMI·MA5/MA20 상향 돌파 + MA5 각도 + 가점 3점 이상이면 화면 우하단에 항상 위 팝업으로 알림(감지·알림 전용, 주문 없음). 제목 줄 '반등 감시' 표시(클릭: 켜기/끄기), ☰ > 반등 감시 설정·기록 폴더 / 반등 알람 테스트. 설정 %APPDATA%\\autobothtsh\\rebound\\config.json, 감지 기록 detections_YYYYMMDD.csv, 리플레이 npm run replay",
     "[2026-11-21] type=feat - v1.0.4_004: 데이터 작업 - 장 마감 파이프라인에 52주 고점 기록 단계 표시(서버 r021 gh52 단계: g048 이 월말마다 George-Hwang 52주 고점 근접 상위 30% 코호트를 기록하고 6개월 성과·사전 등록 판정 리포트를 씀) + HI52 모의계좌 단계(g049: 10슬롯 40일 보유 모의 계좌와 무작위 비교 계좌, 매일 다음 시가 주문 목록 동결). 둘 다 주문 없음, ① 수집 체크에 함께 포함",
     "[2026-11-20] type=feat - v1.0.4_003: 가상 매매 창 - 서버가 기록 전용(EDGE_ONLY_LOG_ONLY)이면 '신규 가상 매수 꺼짐 (후보 기록만)' 표시, 대상 표의 마지막 판단 '후보 기록'",
     "[2026-11-20] type=feat - v1.0.4_002: 가상 매매 대상 표의 마지막 판단에 'ETF·ETN 제외' / '오늘 손절한 종목 (재매수 안 함)' 표시 (서버 r022 새 규칙)",
@@ -23,7 +24,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -35,6 +36,7 @@
     "predev": "node scripts/version.cjs",
     "dev": "node scripts/start.cjs dev",
     "test": "vitest run",
+    "replay": "node scripts/rebound-replay.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "sync-spec": "node scripts/sync-kis-spec.cjs",
     "predist": "node scripts/version.cjs",
@@ -76,7 +78,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

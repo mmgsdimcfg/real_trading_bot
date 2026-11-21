@@ -6,6 +6,8 @@
 // - [2026-11-20] type=feat (AutoBotHtsH: brand / About text of the combined app, ☰ > 봇 설정·연결, toolbar menu '봇 ▾' (the AutoBotH tabs
 //   in its 운영 / 분석 / 시스템 groups) that opens or focuses each bot window)
 // - [2026-11-20] type=fix (봇 ▾ / 창 정렬 ▾ close on a click outside them or Esc)
+// - [2026-11-21] type=feat (Title bar chip "반등 감시 <탭> · N종목": state of the rebound watcher (main/reboundPoller.ts), a click
+//   switches it on / off; ☰ > 반등 감시 설정·기록 폴더, 반등 알람 테스트)
 
 import { useEffect, useRef, useState } from 'react';
 import { BOT_GROUPS, BOT_TITLE, botWinOf, useStore, WIN_TITLE, type WinType, type ArrangeMode, type Theme } from '../store';
@@ -13,6 +15,7 @@ import { SymbolSearch } from './SymbolSearch';
 import { useCall, useOutsideClose } from '../hooks';
 import type { IndexQuote } from '../../../shared/market';
 import { fmtNum, fmtPct, signOf, upDown } from '../lib';
+import type { ReboundStatus } from '../../../preload/index';
 
 const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' };
 const THEME_LABEL: Record<Theme, [string, string]> = { system: ['◐', '시스템 설정'], light: ['☀', '라이트'], dark: ['☾', '다크'] };
@@ -65,6 +68,36 @@ function IndexTicker() {
   );
 }
 
+const REBOUND_STATE: Record<ReboundStatus['state'], string> = { off: '꺼짐', rest: '장외 대기', login: '로그인 대기', notab: '탭 없음', run: '감시 중' };
+
+/** [2026-11-21] rebound watcher state; a click switches it on / off */
+function ReboundChip() {
+  const [st, setSt] = useState<ReboundStatus | null>(null);
+  useEffect(() => {
+    void window.hts.reboundStatus().then(setSt);
+    const off = window.hts.onReboundStatus(setSt);
+    return () => void off();
+  }, []);
+  if (!st) return null;
+  const dot = !st.enabled ? 'off' : st.state === 'notab' ? 'error' : st.state === 'run' ? (st.failed ? 'connecting' : 'on') : 'off';
+  const label = st.enabled && st.state === 'run' ? `${st.codes}종목` : REBOUND_STATE[st.enabled ? st.state : 'off'];
+  const tip = [
+    `관심종목 "${st.tab}" 탭의 1분봉 바닥 반등 초입 감시 (감지·알림 전용, 주문 없음)`,
+    st.note || '',
+    st.lastPass ? `마지막 순회 ${new Date(st.lastPass).toLocaleTimeString('ko-KR', { hour12: false })} - 새 봉 판정 ${st.judged ?? 0}종목` : '',
+    `알림 ${st.alerts}회`,
+    `클릭: 감시 ${st.enabled ? '끄기' : '켜기'}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return (
+    <button type="button" className={`rt rt-${dot} rebound-chip`} title={tip} onClick={() => void window.hts.reboundEnable(!st.enabled).then(setSt)}>
+      <i /> 반등 감시 {st.tab} · {label}
+      {st.alerts ? ` · 알림 ${st.alerts}` : ''}
+    </button>
+  );
+}
+
 export function TitleBar({ onSettings }: { onSettings: () => void }) {
   const auth = useStore((s) => s.auth);
   const resetLayout = useStore((s) => s.resetLayout);
@@ -85,6 +118,8 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
       items: [
         { id: 'master', label: { en: 'Refresh stock master', ko: '종목 마스터 새로고침' }, icon: '↻', onClick: () => void window.hts.refreshMaster().then(() => window.hts.authState().then((a) => useStore.getState().setAuth(a))) },
         { id: 'bot', label: { en: 'Bot connection settings', ko: '봇 설정·연결' }, icon: '⚙', onClick: () => void useStore.getState().openBot('settings') },
+        { id: 'rebound-dir', label: { en: 'Rebound watcher: config / log folder', ko: '반등 감시 설정·기록 폴더' }, icon: '▤', onClick: () => void window.hts.reboundOpenDir() },
+        { id: 'rebound-test', label: { en: 'Rebound alert test', ko: '반등 알람 테스트' }, icon: '◉', onClick: () => void window.hts.reboundTest() },
         { id: 'theme', label: { en: 'Switch theme (system / light / dark)', ko: '테마 전환 (시스템 / 라이트 / 다크)' }, icon: '◐', onClick: cycleTheme },
         { id: 'layout', label: { en: 'Reset window layout', ko: '창 배치 초기화' }, icon: '▦', onClick: () => window.confirm('열린 창을 모두 닫고 배치를 초기화할까요?') && resetLayout() },
       ],
@@ -108,6 +143,7 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
             <span className={`rt rt-${rt?.status || 'off'}`} title={rt?.msg || ''}>
               <i /> 실시간 {rt?.status === 'on' ? '연결' : rt?.status === 'connecting' ? '연결 중' : rt?.status === 'error' ? '오류' : '대기'}
             </span>
+            <ReboundChip />
             {mode === 'kis' && auth.keyHint && <span className="muted">앱키 {auth.keyHint}</span>}
             <span className="muted" title={auth.master.error || ''}>
               종목 {auth.master.size.toLocaleString()}

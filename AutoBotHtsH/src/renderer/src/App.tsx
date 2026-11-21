@@ -6,6 +6,7 @@
 // - [2026-11-20] type=feat (Thin scrollbars shown only at the right / bottom edge of a scroll area - installEdgeScrollbars)
 // - [2026-11-20] type=feat (AutoBotHtsH: AutoBotH status line under the toolbar (BotStatusStrip) and its confirmation dialog)
 // - [2026-11-20] type=fix (<details> popovers (bot y축 항목) close on a click outside them - installDetailsAutoClose)
+// - [2026-11-21] type=feat (A rebound alert popup's "열기" shows its symbol in every symbol window (setCodeAll))
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { TitleBar, Toolbar } from './components/Chrome';
@@ -29,6 +30,12 @@ export function App() {
     void useStore.getState().initWatch();
     const t = setInterval(() => void useStore.getState().syncPicks(), 30000);
     return () => clearInterval(t);
+  }, []);
+
+  // [2026-11-21] rebound alert popup > 열기
+  useEffect(() => {
+    const off = window.hts.onReboundOpen((code) => useStore.getState().setCodeAll(code));
+    return () => void off();
   }, []);
 
   useEffect(() => {

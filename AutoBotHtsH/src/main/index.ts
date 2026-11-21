@@ -14,6 +14,10 @@
 // - [2026-11-20] type=feat (AutoBotHtsH: the HtsH main process plus the AutoBotH main process (src/bot/main/botMain.ts - SSH / local
 //   r016 control, log sessions, price service, scheduler; IPC channels and window.api unchanged). One window: attachBotWindow() after it
 //   is created, botQuit() when it closes. importOnce.ts runs first so AutoBotH / HtsH settings are copied before any store opens)
+// - [2026-11-21] type=feat (Rebound watcher (reboundPoller.ts) started with the window: watches the watchlist tab "TEST" on 1-minute bars
+//   through the logged-in KIS backend (not in demo mode) and shows always-on-top popups (reboundAlert.ts). rebound:* IPC - status,
+//   on / off, test popup, open the config / log folder; a popup's "열기" sends rebound:open (the renderer shows the symbol).
+//   Popups close with the main window so the app still quits)
 
 import './importOnce';
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
@@ -32,6 +36,8 @@ import type { MarketBackend, Res } from '../shared/market';
 import { isCode, toKrxRecord, WS_COMBINED, type KisEnv, type WsTr } from '../shared/kis';
 import { KIS_SPEC_COMMIT } from '../shared/kisSpec.generated';
 import { attachBotWindow, botQuit } from '../bot/main/botMain';
+import { ReboundWatcher, sampleAlert } from './reboundPoller';
+import { AlertPopups, reboundDir } from './reboundAlert';
 
 const TASKBAR_TITLE_PAD = '⠀'.repeat(40);
 app.on('browser-window-created', (_e, w) => {
@@ -246,6 +252,33 @@ ipcMain.handle('watch:openDir', () => {
   return shell.openPath(watchDir());
 });
 
+// ---- [2026-11-21] rebound watcher: watchlist tab "TEST", detection + popup only ----
+const popups = new AlertPopups((code) => {
+  send('rebound:open', code);
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+});
+const rebound = new ReboundWatcher({
+  // demo prices are made up: no watching there (HTSH_REBOUND_DEMO=1 for screen tests)
+  backend: () => (backend && (backend.kind === 'kis' || process.env.HTSH_REBOUND_DEMO === '1') ? backend : null),
+  master,
+  log,
+  alert: (a, cfg) => popups.show(a, cfg),
+  status: (s) => send('rebound:status', s),
+});
+ipcMain.handle('rebound:status', () => rebound.status);
+ipcMain.handle('rebound:enable', (_e, on: boolean) => {
+  rebound.setEnabled(!!on);
+  return rebound.status;
+});
+ipcMain.handle('rebound:test', () => popups.show(sampleAlert(rebound.config), rebound.config));
+ipcMain.handle('rebound:openDir', () => {
+  rebound.loadConfig(); // creates the folder and the config file when they are not there yet
+  return shell.openPath(reboundDir());
+});
+
 // ---- window ----
 function versionLabel(): string {
   try {
@@ -277,6 +310,10 @@ function createWindow(): void {
   const w = win;
   w.on('maximize', () => w.webContents.send('win-maximized-changed', true));
   w.on('unmaximize', () => w.webContents.send('win-maximized-changed', false));
+  w.on('closed', () => {
+    rebound.stop();
+    popups.closeAll(); // popups are windows too: left open they would keep the app from quitting
+  });
   w.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\//.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
@@ -304,6 +341,7 @@ ipcMain.handle('win-is-maximized', (e) => !!senderWin(e)?.isMaximized());
 
 void app.whenReady().then(() => {
   createWindow();
+  rebound.start();
   // HTSH_DEMO=1: start in demo mode (screen tests)
   if (process.env.HTSH_DEMO === '1') {
     const d = new DemoMarket();
