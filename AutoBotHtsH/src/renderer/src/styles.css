@@ -258,6 +258,9 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .pc-tline.pending { stroke-dasharray: 4 3; opacity: 0.8; }
 .pc-dayline { stroke: var(--text-3); stroke-dasharray: 2 4; stroke-width: 1; }
 .pc-pane { fill: none; stroke: var(--grid); }
+/* [2026-11-21] x at the top right of a pane: removes the pane */
+.pc-pane-x { position: absolute; z-index: 3; width: 15px; height: 15px; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--text-3); font-size: 13px; line-height: 13px; cursor: pointer; opacity: 0.55; }
+.pc-pane-x:hover { opacity: 1; color: var(--text); background: var(--surface-2); }
 .pc-guide { stroke: var(--text-3); stroke-dasharray: 3 3; stroke-width: 0.8; opacity: 0.7; }
 .pc-pane-label { font-weight: 600; fill: var(--text-2); }
 .pc-legend { font-size: calc(var(--fs) - 2px); fill: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -290,6 +293,18 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .ind-vwap { stroke: #a78bfa; stroke-dasharray: 5 3; }
 .pc-legend-halo { paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
 .pc-legend-val { fill: var(--text); }
+.pc-legend-pct { font-size: calc(var(--fs) - 3px); }
+/* [2026-11-21] values of the hovered bar beside the vertical line (one box per pane) */
+.pc-fly { position: absolute; pointer-events: none; z-index: 2; padding: 1px 6px; border: 1px solid var(--border); border-radius: 4px; background: color-mix(in srgb, var(--surface) 90%, transparent); font-size: calc(var(--fs) - 2px); line-height: 1.4; white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.pc-fly b { color: var(--text); font-weight: 600; }
+.pc-fly span + span { margin-left: 9px; }
+.pc-fly i { display: inline-block; width: 8px; height: 8px; margin-right: 3px; }
+.pc-fly .lg-ind-signal { color: #e08a1e; }
+.pc-fly .lg-ind-di-plus { color: var(--up); }
+.pc-fly .lg-ind-di-minus { color: var(--down); }
+.pc-fly .lg-ind-inv-person { color: #e8a317; }
+.pc-fly .lg-ind-inv-foreign { color: #1fb5c9; }
+.pc-fly .lg-ind-inv-inst { color: #b57cf0; }
 .pc-legend .pc-legend-up { fill: var(--up); font-weight: 600; }
 .pc-legend .pc-legend-dn { fill: var(--down); font-weight: 600; }
 .ind-main { stroke: var(--text); }

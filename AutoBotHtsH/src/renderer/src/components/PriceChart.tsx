@@ -32,6 +32,16 @@
  *   (volRatio / onVolRatio), one between the volume area and the indicator panes sets the indicator pane height (onOscHeight) - the
  *   price + volume area takes the rest; a double click on a handle goes back to the default. invNote: status text of the 투자자 누적
  *   pane while it has no data (loading / KIS error)
+ * - [2026-11-21] type=feat - (user 2026-11-21) (1) each of 시 / 고 / 저 / 종 on the first legend line carries its change vs the
+ *   reference close; (2) while hovering, the values of that bar are shown in a small box beside the vertical line in every pane
+ *   (price overlays, volume, each indicator pane) - on the side with more room (right of the line in the left half, else left);
+ *   the top-left legends then keep their names only; (3) prop `volume` (default on): the volume area can be switched off - the
+ *   price pane takes its room, the handle and the volume legend go away
+ * - [2026-11-21] type=feat - (user 2026-11-21) Volume is a pane of its own like the indicator panes: 가격 / 거래량 / RSI / MACD ...
+ *   are separate boxes. Every pane has its own height (paneHeights / onPaneHeights; default oscHeight): the handle above a pane
+ *   moves the border between it and the pane (or the price pane) above, a double click gives the pane its default height back;
+ *   the price pane takes what is left (at least 120 px - panes shrink in proportion when the window is small). A small x at the
+ *   top right of a pane removes it (onRemovePane). Replaces volRatio / onVolRatio / onOscHeight
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -49,7 +59,9 @@ const AXIS_H = 22;
 const GAP = 8;
 export const PRICE_PANE_H = 300;
 export const OSC_PANE_H = 84;
-const VOL_RATIO = 0.2;
+/** smallest price pane / pane heights */
+const MIN_PRICE_H = 120;
+const MIN_PANE_H = 28;
 const KST = 9 * 3600000;
 const MIN_BARS = 10;
 
@@ -133,10 +145,14 @@ interface Props {
   invMonths?: InvMonths;
   /** shown in the 투자자 누적 pane while it has nothing to draw */
   invNote?: string;
-  /** volume area share of the price + volume area (default 0.2); handles call back with the new value (null = default) */
-  volRatio?: number;
-  onVolRatio?: (v: number | null) => void;
-  onOscHeight?: (v: number | null) => void;
+  /** heights (px) of the panes under the price pane by key ('volume' or an indicator key); a pane without one gets the default */
+  paneHeights?: Record<string, number>;
+  /** a handle was dragged (or double clicked = that key removed): the new heights */
+  onPaneHeights?: (h: Record<string, number>) => void;
+  /** the x of a pane was clicked ('volume' or an indicator key) */
+  onRemovePane?: (key: string) => void;
+  /** volume pane under the price pane (default on) */
+  volume?: boolean;
 }
 
 function niceTicks(lo: number, hi: number, count = 5): number[] {
@@ -284,10 +300,9 @@ export function PriceChart(props: Props) {
   const mode = props.mode ?? (intraday ? 'time' : 'index');
   const axis = props.axis ?? 'left';
   // [2026-11-20] live values while a pane handle is dragged (committed through onVolRatio / onOscHeight on release)
-  const [liveVol, setLiveVol] = useState<number | null>(null);
-  const [liveOsc, setLiveOsc] = useState<number | null>(null);
-  const oscH = liveOsc ?? props.oscHeight ?? OSC_PANE_H;
-  const volRatio = Math.min(0.7, Math.max(0.05, liveVol ?? props.volRatio ?? VOL_RATIO));
+  const [liveH, setLiveH] = useState<Record<string, number> | null>(null);
+  const oscH = props.oscHeight ?? OSC_PANE_H;
+  const showVol = props.volume ?? true;
   const height = props.height ?? chartHeight(indicators, oscH);
   const L = props.left ?? PLOT_LEFT;
   const R = props.right ?? PLOT_RIGHT;
@@ -316,12 +331,23 @@ export function PriceChart(props: Props) {
 
   const osc = oscOf(indicators);
   const W = Math.max(10, width - L - R);
-  const mainH = height - osc.length * (oscH + GAP) - TOP - AXIS_H;
-  const priceH = mainH * (1 - volRatio) - GAP;
-  const volTop = TOP + priceH + GAP;
-  const volH = mainH * volRatio;
-  const oscTop = (j: number) => volTop + volH + GAP + j * (oscH + GAP);
-  const bottom = osc.length ? oscTop(osc.length - 1) + oscH : volTop + volH;
+  // [2026-11-21] panes under the price pane: volume (when on), then one per indicator - each with its own height
+  const paneKeys: string[] = [...(showVol ? ['volume'] : []), ...osc];
+  const inner = height - TOP - AXIS_H;
+  const hmap = liveH ?? props.paneHeights ?? {};
+  const defH = (k: string) => (k === 'volume' ? Math.min(oscH, Math.round(inner * 0.2)) : oscH);
+  let hs = paneKeys.map((k) => Math.max(MIN_PANE_H, hmap[k] ?? defH(k)));
+  const room = Math.max(paneKeys.length * 16, inner - Math.min(MIN_PRICE_H, inner * 0.45) - paneKeys.length * GAP);
+  const sumH = hs.reduce((a, b) => a + b, 0);
+  if (sumH > room) hs = hs.map((v) => (v * room) / sumH); // a small window: every pane gives way in proportion
+  const priceH = inner - hs.reduce((a, b) => a + b + GAP, 0);
+  const paneTop = (j: number) => TOP + priceH + GAP + hs.slice(0, j).reduce((a, b) => a + b + GAP, 0);
+  const vOff = showVol ? 1 : 0;
+  const volTop = showVol ? paneTop(0) : TOP + priceH;
+  const volH = showVol ? hs[0] : 0;
+  const oscTop = (j: number) => paneTop(j + vOff);
+  const oscHt = (j: number) => hs[j + vOff];
+  const bottom = paneKeys.length ? paneTop(paneKeys.length - 1) + hs[paneKeys.length - 1] : TOP + priceH;
   const shift = indicators.includes('ichimoku') ? P.ichiShift : 0;
   const defaultCount = Math.max(MIN_BARS, Math.floor(W / (interactive ? 8 : 7)) - shift);
 
@@ -448,7 +474,7 @@ export function PriceChart(props: Props) {
       const bh = Math.max(1, sy(Math.min(b.o, b.c)) - yTop);
       const body = `M${(x - w / 2).toFixed(1)} ${yTop.toFixed(1)}h${w.toFixed(1)}v${bh.toFixed(1)}h${(-w).toFixed(1)}Z`;
       const vy = sv(b.v);
-      const vol = b.v > 0 ? `M${(x - w / 2).toFixed(1)} ${vy.toFixed(1)}h${w.toFixed(1)}V${(volTop + volH).toFixed(1)}h${(-w).toFixed(1)}Z` : '';
+      const vol = showVol && b.v > 0 ? `M${(x - w / 2).toFixed(1)} ${vy.toFixed(1)}h${w.toFixed(1)}V${(volTop + volH).toFixed(1)}h${(-w).toFixed(1)}Z` : '';
       if (chartStyle === 'ohlc') {
         // OHLC bar: high-low line, open tick left, close tick right (drawn as "wick" paths)
         const tw = Math.max(1.5, w / 2);
@@ -511,6 +537,7 @@ export function PriceChart(props: Props) {
     const panes = osc.map((key, j) => {
       const cfg = paneOf(key, S, P, invMonths);
       const top = oscTop(j);
+      const ph = oscHt(j);
       let vlo = cfg.fixed ? cfg.fixed[0] : Infinity;
       let vhi = cfg.fixed ? cfg.fixed[1] : -Infinity;
       if (!cfg.fixed) {
@@ -527,7 +554,7 @@ export function PriceChart(props: Props) {
         const pd = (vhi - vlo) * 0.08;
         (vlo -= pd), (vhi += pd);
       }
-      const y = (v: number) => top + ((vhi - v) / (vhi - vlo)) * oscH;
+      const y = (v: number) => top + ((vhi - v) / (vhi - vlo)) * ph;
       let histUp = '';
       let histDn = '';
       if (cfg.hist) {
@@ -555,7 +582,7 @@ export function PriceChart(props: Props) {
           if (!sl || !ok(v)) continue;
           const x = sl.x;
           if (g.side === 'buy') {
-            const yb = Math.min(top + oscH - 1, y(v) + 3 + a * 1.6);
+            const yb = Math.min(top + ph - 1, y(v) + 3 + a * 1.6);
             sigBuy += `M${x.toFixed(1)} ${(yb - a * 1.6).toFixed(1)}L${(x + a).toFixed(1)} ${yb.toFixed(1)}L${(x - a).toFixed(1)} ${yb.toFixed(1)}Z`;
           } else {
             const yt = Math.max(top + 1, y(v) - 3 - a * 1.6);
@@ -563,7 +590,7 @@ export function PriceChart(props: Props) {
           }
         }
       }
-      return { key, top, y, lines, guides: cfg.guides, ticks, label: cfg.label, histUp, histDn, series: cfg.series, sigBuy, sigSell };
+      return { key, top, h: ph, y, lines, guides: cfg.guides, ticks, label: cfg.label, histUp, histDn, series: cfg.series, sigBuy, sigSell };
     });
 
     // ---- x labels ----
@@ -589,8 +616,8 @@ export function PriceChart(props: Props) {
         }
       });
     }
-    return { empty: false as const, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, bandPath, panes, xOfTime, dayLines, step, closeLine, xAtTime, sarUp, sarDn };
-  }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, date, width, intraday, L, W, priceH, volTop, volH, oscH, osc.join(), vp, shift, defaultCount, interactive, chartStyle, showSignals, invMonths]); // eslint-disable-line react-hooks/exhaustive-deps
+    return { empty: false as const, vMax, sv, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, bandPath, panes, xOfTime, dayLines, step, closeLine, xAtTime, sarUp, sarDn };
+  }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, date, width, intraday, L, W, priceH, volTop, volH, hs.join(), osc.join(), vp, shift, defaultCount, interactive, chartStyle, showSignals, invMonths, showVol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- interaction ----
   const nearest = (mx: number): number | null => {
@@ -681,28 +708,39 @@ export function PriceChart(props: Props) {
     prevLen.current = bars.length;
   }, [bars.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // [2026-11-20] pane handles: drag = resize, double click = default
-  const startSplit = (which: 'vol' | 'osc') => (e: React.MouseEvent) => {
+  // [2026-11-21] the handle above pane j moves the border between it and what is above (pane j - 1, or the price pane):
+  // down = pane j smaller and the one above larger. Double click: pane j back to its default height
+  const startSplit = (j: number) => (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const y0 = e.clientY;
-    const n = Math.max(1, osc.length);
-    const maxOsc = Math.max(36, (height - TOP - AXIS_H - 140) / n - GAP);
-    let v = which === 'vol' ? volRatio : oscH;
+    const base = [...hs];
+    const maxDown = base[j] - MIN_PANE_H;
+    const maxUp = j > 0 ? base[j - 1] - MIN_PANE_H : priceH - Math.min(MIN_PRICE_H, priceH);
+    let next: Record<string, number> = {};
     const move = (ev: MouseEvent) => {
-      const dy = ev.clientY - y0;
-      if (which === 'vol') setLiveVol((v = Math.min(0.7, Math.max(0.05, (volH - dy) / mainH))));
-      else setLiveOsc((v = Math.min(maxOsc, Math.max(36, oscH - dy / n))));
+      const dy = Math.max(-maxUp, Math.min(maxDown, ev.clientY - y0));
+      const v = [...base];
+      v[j] = base[j] - dy;
+      if (j > 0) v[j - 1] = base[j - 1] + dy;
+      next = Object.fromEntries(paneKeys.map((k, i) => [k, Math.round(v[i])]));
+      setLiveH(next);
     };
     const up = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
-      if (which === 'vol') (props.onVolRatio?.(v), setLiveVol(null));
-      else (props.onOscHeight?.(Math.round(v)), setLiveOsc(null));
+      // every shown pane keeps the height it has now; heights of panes not shown at the moment are kept as saved
+      if (Object.keys(next).length) props.onPaneHeights?.({ ...(props.paneHeights || {}), ...next });
+      setLiveH(null);
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
+  };
+  const resetPane = (key: string) => {
+    const m = { ...(props.paneHeights || {}) };
+    delete m[key];
+    props.onPaneHeights?.(m);
   };
 
   const h = model && !model.empty && hover !== null ? model.slots[hover] : null;
@@ -737,8 +775,12 @@ export function PriceChart(props: Props) {
               </text>
             </g>
           ))}
-          <line x1={L} x2={L + W} y1={volTop + volH} y2={volTop + volH} className="pc-grid" />
-          {!showLegend && (
+          {showVol && showLegend && model.vMax > 0 && volH > 40 && (
+            <text x={axisX} y={model.sv(model.vMax) + 9} className="pc-axis" textAnchor={anchorAxis}>
+              {fmtNum(model.vMax, 0)}
+            </text>
+          )}
+          {!showLegend && showVol && (
             <text x={axisX} y={volTop + 10} className="pc-axis" textAnchor={anchorAxis}>
               거래량
             </text>
@@ -778,11 +820,12 @@ export function PriceChart(props: Props) {
                 <path d={model.dnB} className="pc-dn" />
               </>
             )}
+            {showVol && <rect x={L} y={volTop} width={W} height={volH} className="pc-pane" />}
             <path d={model.upV} className="pc-up vol" />
             <path d={model.dnV} className="pc-dn vol" />
             {model.panes.map((p) => (
               <g key={p.key}>
-                <rect x={L} y={p.top} width={W} height={oscH} className="pc-pane" />
+                <rect x={L} y={p.top} width={W} height={p.h} className="pc-pane" />
                 {p.guides.map((g) => (
                   <line key={g} x1={L} x2={L + W} y1={p.y(g)} y2={p.y(g)} className="pc-guide" />
                 ))}
@@ -794,7 +837,7 @@ export function PriceChart(props: Props) {
                 {p.sigBuy && <path d={p.sigBuy} className="pc-sig-buy" />}
                 {p.sigSell && <path d={p.sigSell} className="pc-sig-sell" />}
                 {p.key === 'investor' && props.invNote && !p.lines.some((l) => l.d) && (
-                  <text x={L + W / 2} y={p.top + oscH / 2 + 4} className="pc-axis" textAnchor="middle">
+                  <text x={L + W / 2} y={p.top + p.h / 2 + 4} className="pc-axis" textAnchor="middle">
                     {props.invNote}
                   </text>
                 )}
@@ -820,28 +863,25 @@ export function PriceChart(props: Props) {
                   <tspan className="pc-legend-name">{p.label}</tspan>
                   {p.series.map((s) => (
                     <tspan key={s.name} className={`lg-${s.cls}`} dx={8}>
-                      {s.name} <tspan className="pc-legend-val">{fmtNum(s.s[li], key2digits(p.key))}</tspan>
+                      {s.name} {!h && <tspan className="pc-legend-val">{fmtNum(s.s[li], key2digits(p.key))}</tspan>}
                     </tspan>
                   ))}
                 </text>
               )}
             </g>
           ))}
-          {showLegend && <Legends S={S} P={P} i={li} x={legendX} anchor={legendAnchor} y={TOP + 12 + infoY} volY={volTop + 11} vol={li >= 0 ? bars[li]?.v : undefined} />}
+          {showLegend && <Legends S={S} P={P} i={li} x={legendX} anchor={legendAnchor} y={TOP + 12 + infoY} volY={volTop + 11} vol={li >= 0 ? bars[li]?.v : undefined} names={!!h} showVol={showVol} />}
           {showLegend && infoSlot && (
             <text x={legendX} y={TOP + 12} className="pc-legend pc-legend-halo" pointerEvents="none">
               <tspan className="pc-legend-name">{barWhen(infoSlot.b, kind)}</tspan>
-              <tspan dx={9}>시 <tspan className={`pc-legend-val ${tone(infoSlot.b.o, infoRef)}`}>{fmtInt(infoSlot.b.o)}</tspan></tspan>
-              <tspan dx={6}>고 <tspan className={`pc-legend-val ${tone(infoSlot.b.h, infoRef)}`}>{fmtInt(infoSlot.b.h)}</tspan></tspan>
-              <tspan dx={6}>저 <tspan className={`pc-legend-val ${tone(infoSlot.b.l, infoRef)}`}>{fmtInt(infoSlot.b.l)}</tspan></tspan>
-              <tspan dx={6}>종 <tspan className={`pc-legend-val ${tone(infoSlot.b.c, infoRef)}`}>{fmtInt(infoSlot.b.c)}</tspan></tspan>
-              <tspan dx={6}>량 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.v)}</tspan></tspan>
-              {infoRef ? (
-                <tspan dx={9} className={tone(infoSlot.b.c, infoRef)}>
-                  {intraday || kind === 'day' ? '전일 대비 ' : '직전 봉 대비 '}
-                  {signedPct(infoSlot.b.c, infoRef)}
+              {([['시', infoSlot.b.o], ['고', infoSlot.b.h], ['저', infoSlot.b.l], ['종', infoSlot.b.c]] as [string, number][]).map(([name, v], k) => (
+                <tspan key={name} dx={k ? 7 : 9}>
+                  {name} <tspan className={`pc-legend-val ${tone(v, infoRef)}`}>{fmtInt(v)}</tspan>
+                  {infoRef ? <tspan className={`pc-legend-pct ${tone(v, infoRef)}`} dx={3}>{signedPct(v, infoRef)}</tspan> : null}
                 </tspan>
-              ) : null}
+              ))}
+              <tspan dx={7}>량 <tspan className="pc-legend-val">{fmtInt(infoSlot.b.v)}</tspan></tspan>
+              {infoRef ? <tspan dx={9} className="pc-legend-pct">{intraday || kind === 'day' ? '(전일 종가 대비)' : '(직전 봉 종가 대비)'}</tspan> : null}
             </text>
           )}
 
@@ -917,12 +957,72 @@ export function PriceChart(props: Props) {
           )}
         </svg>
       )}
-      {model && !model.empty && width > 0 && props.onVolRatio && (
-        <div className="pc-split" style={{ top: volTop - GAP / 2 - 4, left: L, width: W }} onMouseDown={startSplit('vol')} onDoubleClick={() => props.onVolRatio?.(null)} title="끌어서 가격 / 거래량 칸 높이 조절 · 더블클릭: 기본값" />
-      )}
-      {model && !model.empty && width > 0 && props.onOscHeight && osc.length > 0 && (
-        <div className="pc-split" style={{ top: volTop + volH + GAP / 2 - 4, left: L, width: W }} onMouseDown={startSplit('osc')} onDoubleClick={() => props.onOscHeight?.(null)} title="끌어서 차트 / 보조지표 칸 높이 조절 · 더블클릭: 기본값" />
-      )}
+      {/* [2026-11-21] values of the hovered bar beside the vertical line, one box per pane, on the side with more room */}
+      {showLegend && h && model && !model.empty && (() => {
+        const rightSide = h.x < L + W / 2;
+        const pos = rightSide ? { left: h.x + 8 } : { right: width - h.x + 8 };
+        // the names stay at the top left of each pane: a box that would cover them starts below them
+        const near = (labelW: number, boxW: number) => (rightSide ? h.x + 8 < L + labelW : h.x - 8 - boxW < L + labelW);
+        const rows = legendRows(S, P, h.i);
+        return (
+          <>
+            {rows.length > 0 && (
+              <div className="pc-fly" style={{ ...pos, top: TOP + 18 + (near(340, 300) ? 14 * rows.length : 0) }}>
+                {rows.map((row, j) => (
+                  <div key={j}>
+                    {row.map((l, k) => (
+                      <span key={k}>
+                        {l.color && <i style={{ background: l.color }} />}
+                        {l.label} <b>{fmtNum(l.value, l.digits ?? 1)}</b>
+                      </span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+            {showVol && volH > 26 && (
+              <div className="pc-fly" style={{ ...pos, top: volTop + (near(50, 120) ? 14 : 1) }}>
+                <span>
+                  거래량 <b>{fmtInt(h.b.v)}</b>
+                </span>
+              </div>
+            )}
+            {model.panes.map((p) => {
+              const hist = p.key === 'macd' ? S.macd?.hist[h.i] : undefined;
+              if (!p.series.length) return null;
+              return (
+                <div key={p.key} className="pc-fly" style={{ ...pos, top: p.top + (near(230, 130) ? 15 : 1) }}>
+                  {p.series.map((s) => (
+                    <div key={s.name} className={`lg-${s.cls}`}>
+                      {s.name} <b>{fmtNum(s.s[h.i], key2digits(p.key))}</b>
+                    </div>
+                  ))}
+                  {p.key === 'macd' && (
+                    <div>
+                      오실레이터 <b>{fmtNum(hist, 2)}</b>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </>
+        );
+      })()}
+      {model &&
+        !model.empty &&
+        width > 0 &&
+        paneKeys.map((k, j) => (
+          <span key={k}>
+            {props.onPaneHeights && (
+              <div className="pc-split" style={{ top: paneTop(j) - GAP / 2 - 4, left: L, width: W }} onMouseDown={startSplit(j)} onDoubleClick={() => resetPane(k)} title="끌어서 위 칸과 이 칸의 높이 조절 · 더블클릭: 이 칸 기본 높이" />
+            )}
+            {props.onRemovePane && (
+              <button type="button" className="pc-pane-x" style={{ top: paneTop(j) + 2, left: L + W - 17 }} onClick={() => props.onRemovePane?.(k)} title="이 칸 닫기 (지표 메뉴에서 다시 켤 수 있음)">
+                ×
+              </button>
+            )}
+          </span>
+        ))}
       {tooltip && h && (
         <div className="tip pc-tip" style={{ left: Math.min(Math.max(h.x + 12, 0), Math.max(0, width - 250)), top: 8 }}>
           <b>
@@ -967,8 +1067,8 @@ function PriceTag({ x, y, text, cls }: { x: number; y: number; text: string; cls
   );
 }
 
-/** price-pane legend (right-axis layout): MA / BB / VWAP / Ichimoku values at bar i */
-function Legends({ S, P, i, x, y, volY, vol, anchor }: { S: IndicatorSet; P: IndicatorParams; i: number; x: number; y: number; volY: number; vol?: number; anchor: 'start' | 'end' }) {
+/** price-pane overlay values at bar i, one row per group: MAs / Bollinger + VWAP / envelope + channel + SAR / Ichimoku */
+function legendRows(S: IndicatorSet, P: IndicatorParams, i: number): Legend[][] {
   const rows: Legend[][] = [];
   if (S.ma) rows.push(MA_PERIODS.map((p) => ({ label: `MA${p}`, color: MA_COLORS[p], value: S.ma![p][i], digits: 0 })));
   const C = OVERLAY_COLOR;
@@ -990,6 +1090,12 @@ function Legends({ S, P, i, x, y, volY, vol, anchor }: { S: IndicatorSet; P: Ind
       { label: 'B', value: k.senkouB[i], digits: 0 },
     ]);
   }
+  return rows;
+}
+
+/** price-pane legend (right-axis layout); names = names only (the values are shown beside the hover line) */
+function Legends({ S, P, i, x, y, volY, vol, anchor, names, showVol }: { S: IndicatorSet; P: IndicatorParams; i: number; x: number; y: number; volY: number; vol?: number; anchor: 'start' | 'end'; names: boolean; showVol: boolean }) {
+  const rows = legendRows(S, P, i);
   return (
     <g pointerEvents="none">
       {rows.map((row, j) => (
@@ -997,14 +1103,16 @@ function Legends({ S, P, i, x, y, volY, vol, anchor }: { S: IndicatorSet; P: Ind
           {row.map((l, k) => (
             <tspan key={k} dx={k ? 9 : 0}>
               {l.color && <tspan style={{ fill: l.color }}>■ </tspan>}
-              {l.label} <tspan className="pc-legend-val">{fmtNum(l.value, l.digits ?? 1)}</tspan>
+              {l.label} {!names && <tspan className="pc-legend-val">{fmtNum(l.value, l.digits ?? 1)}</tspan>}
             </tspan>
           ))}
         </text>
       ))}
-      <text x={x} y={volY} className="pc-legend pc-legend-halo" textAnchor={anchor}>
-        거래량 {fmtInt(vol)}
-      </text>
+      {showVol && (
+        <text x={x} y={volY} className="pc-legend pc-legend-halo" textAnchor={anchor}>
+          거래량 {names ? '' : fmtInt(vol)}
+        </text>
+      )}
     </g>
   );
 }

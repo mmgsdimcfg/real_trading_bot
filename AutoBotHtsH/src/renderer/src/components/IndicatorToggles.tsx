@@ -8,6 +8,7 @@
  * - [2026-11-06] type=feat - (HtsH) tooltips of the new indicators (Envelope, price channel, Parabolic SAR, CCI, ATR, ROC, TRIX,
  *   disparity, psychological line)
  * - [2026-11-20] type=feat - 투자자 누적 (개인 / 외국인 / 기관 cumulative net buying; day / week / month / year charts only)
+ * - [2026-11-21] type=feat - 거래량 check box (props volume / onVolume) at the head of the pane group: the volume area on / off
  */
 
 import { HTS_PARAMS, INDICATOR_LABEL, MA_PERIODS, OSCILLATORS, OVERLAYS, type IndicatorKey, type IndicatorParams } from '../../../shared/indicators';
@@ -39,13 +40,15 @@ export function indicatorTitle(k: IndicatorKey, P: IndicatorParams = HTS_PARAMS)
   }
 }
 
-export function IndicatorToggles({ value, onChange, kind, keys, params }: { value: IndicatorKey[]; onChange: (v: IndicatorKey[]) => void; kind: ChartKind; keys?: IndicatorKey[]; params?: IndicatorParams }) {
+export function IndicatorToggles({ value, onChange, kind, keys, params, volume, onVolume }: { value: IndicatorKey[]; onChange: (v: IndicatorKey[]) => void; kind: ChartKind; keys?: IndicatorKey[]; params?: IndicatorParams; volume?: boolean; onVolume?: (on: boolean) => void }) {
   const order = [...OVERLAYS, ...OSCILLATORS].filter((k) => !keys || keys.includes(k));
   const intraday = kind === 'tick' || kind === 'min';
   return (
     <span className="ind-toggles">
-      {order.map((k, j) => (
-        <label key={k} className={`check ${j > 0 && OSCILLATORS.includes(k) && OVERLAYS.includes(order[j - 1]) ? 'sep' : ''}`} title={indicatorTitle(k, params)}>
+      {order.map((k, j) => {
+        const firstPane = j > 0 && OSCILLATORS.includes(k) && OVERLAYS.includes(order[j - 1]);
+        const item = (
+        <label key={k} className={`check ${firstPane && !onVolume ? 'sep' : ''}`} title={indicatorTitle(k, params)}>
           <input
             type="checkbox"
             disabled={(k === 'vwap' && !intraday) || (k === 'investor' && intraday)}
@@ -54,7 +57,15 @@ export function IndicatorToggles({ value, onChange, kind, keys, params }: { valu
           />{' '}
           {INDICATOR_LABEL[k]}
         </label>
-      ))}
+        );
+        if (!firstPane || !onVolume) return item;
+        return [
+          <label key="volume" className="check sep" title="거래량 칸 - 가격 칸 아래 (칸 사이 경계를 끌어 높이 조절)">
+            <input type="checkbox" checked={volume ?? true} onChange={(e) => onVolume(e.target.checked)} /> 거래량
+          </label>,
+          item,
+        ];
+      })}
     </span>
   );
 }

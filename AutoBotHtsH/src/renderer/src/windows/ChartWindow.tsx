@@ -167,6 +167,10 @@ export function ChartWindow({ win }: { win: Win }) {
     invM?: InvMonths;
     volR?: number;
     oscH?: number;
+    /** [2026-11-21] volume pane on / off (default on) */
+    vol?: boolean;
+    /** [2026-11-21] pane heights set by dragging, by key ('volume' or an indicator key) */
+    paneH?: Record<string, number>;
   };
   const kind = o.kind || 'day';
   const n = kind === 'tick' ? o.tickN || 30 : o.minN || 1;
@@ -360,10 +364,10 @@ export function ChartWindow({ win }: { win: Win }) {
 
   const saveDraw = (d: Draw) => setOpts(win.id, { draw: { ...(o.draw || {}), [win.code]: d } });
   const chartH = Math.max(200, h);
-  const nOsc = shown.filter((k) => OSCILLATORS.includes(k)).length;
+  const nOsc = shown.filter((k) => OSCILLATORS.includes(k)).length + (o.vol === false ? 0 : 1);
   const autoOsc = Math.max(56, Math.min(100, Math.floor((chartH * 0.42) / Math.max(1, nOsc)) - 8));
   // a height set by dragging, kept inside what the window can show (price + volume keep at least 140 px)
-  const oscH = o.oscH ? Math.max(36, Math.min(o.oscH, Math.floor((chartH - 172) / Math.max(1, nOsc)) - 8)) : autoOsc;
+  const oscH = autoOsc;
   const invNote = !invOn ? '' : inv.err && inv.code === win.code ? `조회 오류: ${inv.err}` : !invRows ? '불러오는 중…' : invRows.length ? '' : '투자자 데이터 없음';
 
   return (
@@ -413,11 +417,11 @@ export function ChartWindow({ win }: { win: Win }) {
         </select>
         <span className="dropdown" ref={panelRef}>
           <button className={panel === 'ind' ? 'on' : ''} onClick={() => setPanel(panel === 'ind' ? '' : 'ind')}>
-            지표 ({ind.length}) ▾
+            지표 ({ind.length + (o.vol === false ? 0 : 1)}) ▾
           </button>
           {panel === 'ind' && (
             <FloatPop className="popover ind-pop" onMouseDown={(e) => e.stopPropagation()}>
-              <IndicatorToggles value={ind} onChange={(v) => setOpts(win.id, { ind: v })} kind={kind} params={params} />
+              <IndicatorToggles value={ind} onChange={(v) => setOpts(win.id, { ind: v })} kind={kind} params={params} volume={o.vol !== false} onVolume={(on) => setOpts(win.id, { vol: on })} />
               <span className="ind-pop-foot">
                 <label className="check" title="보조지표 창에 매수(빨강 ▲) / 매도(파랑 ▼) 신호 표시">
                   <input type="checkbox" checked={sig} onChange={(e) => setOpts(win.id, { sig: e.target.checked })} /> 매수/매도 신호
@@ -487,9 +491,10 @@ export function ChartWindow({ win }: { win: Win }) {
             investor={invRows}
             invMonths={invM}
             invNote={invNote}
-            volRatio={o.volR}
-            onVolRatio={(v) => setOpts(win.id, { volR: v ?? undefined })}
-            onOscHeight={(v) => setOpts(win.id, { oscH: v ?? undefined })}
+            volume={o.vol !== false}
+            paneHeights={o.paneH}
+            onPaneHeights={(m) => setOpts(win.id, { paneH: m })}
+            onRemovePane={(k) => (k === 'volume' ? setOpts(win.id, { vol: false }) : setOpts(win.id, { ind: ind.filter((x) => x !== k) }))}
             trades={[]}
             date=""
             mode="index"
