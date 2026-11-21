@@ -12,6 +12,7 @@ import { contextBridge, ipcRenderer, webFrame } from 'electron';
 import type { MasterItem, KisEnv } from '../shared/kis';
 import type { Res } from '../shared/market';
 import type { PickGroup, PicksEntry } from '../shared/watchPicks';
+import type { ReboundConfig } from '../shared/rebound';
 
 type WatchFile = { groups: PickGroup[]; imported: Record<string, number> };
 
@@ -74,6 +75,10 @@ const hts = {
   reboundStatus: (): Promise<ReboundStatus> => ipcRenderer.invoke('rebound:status'),
   reboundEnable: (on: boolean): Promise<ReboundStatus> => ipcRenderer.invoke('rebound:enable', on),
   reboundTest: (): Promise<void> => ipcRenderer.invoke('rebound:test'),
+  // [2026-11-21] settings dialog: the whole config (the main process makes it safe and writes config.json); refresh = read the tab again
+  reboundConfig: (): Promise<ReboundConfig> => ipcRenderer.invoke('rebound:config'),
+  reboundSaveConfig: (cfg: ReboundConfig): Promise<{ config: ReboundConfig; status: ReboundStatus }> => ipcRenderer.invoke('rebound:saveConfig', cfg),
+  reboundRefresh: (): Promise<void> => ipcRenderer.invoke('rebound:refresh'),
   reboundOpenDir: (): Promise<string> => ipcRenderer.invoke('rebound:openDir'),
   onReboundStatus: (cb: (s: ReboundStatus) => void) => on('rebound:status', cb),
   onReboundOpen: (cb: (code: string) => void) => on('rebound:open', cb),

@@ -5,6 +5,8 @@
 //   CSV and, unless the symbol is in its cooldown, shown as a popup. Runs on timers in the main process (never blocks the window);
 //   rests outside the session windows, re-reads the tab every 5 minutes and the config when its file changes, retries a failed
 //   symbol with a doubling back-off and goes on with the next one. Inquiry calls only - there is no order code)
+// - [2026-11-21] type=feat (saveConfig(): the settings dialog writes the whole config (merged over the defaults, so a bad value
+//   falls back); refreshTab(): the tab is read again at the next pass (its symbols were edited in the dialog))
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -88,6 +90,28 @@ export class ReboundWatcher {
     } catch (e) {
       this.d.log(`[rebound] 설정 파일 오류 - 이전 설정 유지: ${(e as Error).message}`);
     }
+  }
+
+  /** the settings dialog: the whole config, made safe by mergeConfig, written to the file and used from the next pass */
+  saveConfig(raw: unknown): ReboundConfig {
+    const cfg = mergeConfig(raw);
+    try {
+      if (!existsSync(reboundDir())) mkdirSync(reboundDir(), { recursive: true });
+      writeFileSync(configPath(), JSON.stringify(cfg, null, 2), 'utf8');
+      this.cfgMtime = statSync(configPath()).mtimeMs;
+    } catch (e) {
+      this.d.log(`[rebound] 설정 저장 실패: ${(e as Error).message}`);
+    }
+    this.cfg = cfg;
+    this.tabAt = 0;
+    this.d.log(`[rebound] 설정 저장 (탭 "${cfg.tab}", ${cfg.enabled ? '켜짐' : '꺼짐'})`);
+    this.setStatus({ enabled: cfg.enabled, tab: cfg.tab, ...(cfg.enabled ? (this.st.state === 'off' ? { state: 'rest' as const } : {}) : { state: 'off' as const }), note: undefined });
+    return cfg;
+  }
+
+  /** read the watchlist tab again at the next pass */
+  refreshTab(): void {
+    this.tabAt = 0;
   }
 
   /** switch the watcher on / off (written to the config file, the other values kept) */

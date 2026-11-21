@@ -344,6 +344,21 @@ describe('watcher pass', () => {
     return setCfg({});
   });
 
+  it('saveConfig (settings dialog): written merged over the defaults, a bad value falls back, used at once', async () => {
+    const before = watcher.config;
+    const got = watcher.saveConfig({ ...before, tab: 'ABC', angle: { ...before.angle, min: 'x' }, alert: { ...before.alert, cooldownMin: 45 } });
+    expect(got.tab).toBe('ABC');
+    expect(got.angle.min).toBe(REBOUND_DEFAULTS.angle.min);
+    expect(got.alert.cooldownMin).toBe(45);
+    expect(mergeConfig(JSON.parse(readFileSync(configPath(), 'utf8')))).toEqual(got);
+    expect(watcher.config).toEqual(got);
+    expect(watcher.status.tab).toBe('ABC');
+    expect(watcher.saveConfig({ ...got, enabled: false }).enabled).toBe(false);
+    expect(watcher.status).toMatchObject({ enabled: false, state: 'off' });
+    await setCfg({}); // back to the test config
+    watcher.loadConfig();
+  });
+
   it('14:56:02 - the 14:55 bar is judged, one popup; the failing symbol is retried and skipped', async () => {
     await watcher.tick();
     expect(alerts).toHaveLength(1);

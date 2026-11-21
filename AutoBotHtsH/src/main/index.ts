@@ -18,6 +18,7 @@
 //   through the logged-in KIS backend (not in demo mode) and shows always-on-top popups (reboundAlert.ts). rebound:* IPC - status,
 //   on / off, test popup, open the config / log folder; a popup's "열기" sends rebound:open (the renderer shows the symbol).
 //   Popups close with the main window so the app still quits)
+// - [2026-11-21] type=feat (rebound:config / rebound:saveConfig / rebound:refresh for the settings dialog (☰ > 반등 감시 설정))
 
 import './importOnce';
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
@@ -273,6 +274,12 @@ ipcMain.handle('rebound:enable', (_e, on: boolean) => {
   rebound.setEnabled(!!on);
   return rebound.status;
 });
+ipcMain.handle('rebound:config', () => {
+  rebound.loadConfig();
+  return rebound.config;
+});
+ipcMain.handle('rebound:saveConfig', (_e, cfg: unknown) => ({ config: rebound.saveConfig(cfg), status: rebound.status }));
+ipcMain.handle('rebound:refresh', () => rebound.refreshTab());
 ipcMain.handle('rebound:test', () => popups.show(sampleAlert(rebound.config), rebound.config));
 ipcMain.handle('rebound:openDir', () => {
   rebound.loadConfig(); // creates the folder and the config file when they are not there yet

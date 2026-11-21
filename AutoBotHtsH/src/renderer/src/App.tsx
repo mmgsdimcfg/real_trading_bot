@@ -7,6 +7,7 @@
 // - [2026-11-20] type=feat (AutoBotHtsH: AutoBotH status line under the toolbar (BotStatusStrip) and its confirmation dialog)
 // - [2026-11-20] type=fix (<details> popovers (bot y축 항목) close on a click outside them - installDetailsAutoClose)
 // - [2026-11-21] type=feat (A rebound alert popup's "열기" shows its symbol in every symbol window (setCodeAll))
+// - [2026-11-21] type=feat (☰ > 반등 감시 설정 opens the rebound settings dialog (window event 'rebound-settings'))
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { TitleBar, Toolbar } from './components/Chrome';
@@ -15,10 +16,17 @@ import { Login } from './components/Login';
 import { installEdgeScrollbars } from './edgeScrollbars';
 import { installDetailsAutoClose } from './hooks';
 import { BotConfirm, BotStatusStrip } from './windows/BotWindow';
+import { ReboundSettings } from './components/ReboundSettings';
 
 export function App() {
   const auth = useStore((s) => s.auth);
   const [settings, setSettings] = useState(false);
+  const [rebound, setRebound] = useState(false);
+  useEffect(() => {
+    const open = () => setRebound(true);
+    window.addEventListener('rebound-settings', open);
+    return () => window.removeEventListener('rebound-settings', open);
+  }, []);
   const loggedIn = auth?.status === 'in';
 
   // [2026-11-20] scrollbars appear at the edge under the cursor
@@ -57,6 +65,7 @@ export function App() {
       {loggedIn ? <Workspace /> : <div className="workspace-wrap" />}
       {auth && (!loggedIn || settings) && <Login onClose={loggedIn ? () => setSettings(false) : undefined} />}
       {loggedIn && auth.mode === 'demo' && <div className="demo-banner">데모 모드 - 가상 데이터입니다. ☰ → 설정에서 KIS 앱키로 로그인하세요.</div>}
+      {rebound && <ReboundSettings onClose={() => setRebound(false)} />}
       <BotConfirm />
     </div>
   );

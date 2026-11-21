@@ -8,6 +8,8 @@
 // - [2026-11-20] type=fix (봇 ▾ / 창 정렬 ▾ close on a click outside them or Esc)
 // - [2026-11-21] type=feat (Title bar chip "반등 감시 <탭> · N종목": state of the rebound watcher (main/reboundPoller.ts), a click
 //   switches it on / off; ☰ > 반등 감시 설정·기록 폴더, 반등 알람 테스트)
+// - [2026-11-21] type=feat (The chip only shows the state now (no click); ☰ > 반등 감시 설정 opens the settings dialog
+//   (components/ReboundSettings.tsx: on / off, tab, symbols, thresholds; folder and test popup are buttons there))
 
 import { useEffect, useRef, useState } from 'react';
 import { BOT_GROUPS, BOT_TITLE, botWinOf, useStore, WIN_TITLE, type WinType, type ArrangeMode, type Theme } from '../store';
@@ -70,7 +72,7 @@ function IndexTicker() {
 
 const REBOUND_STATE: Record<ReboundStatus['state'], string> = { off: '꺼짐', rest: '장외 대기', login: '로그인 대기', notab: '탭 없음', run: '감시 중' };
 
-/** [2026-11-21] rebound watcher state; a click switches it on / off */
+/** [2026-11-21] rebound watcher state (shown only - it is set in ☰ > 반등 감시 설정) */
 function ReboundChip() {
   const [st, setSt] = useState<ReboundStatus | null>(null);
   useEffect(() => {
@@ -86,15 +88,15 @@ function ReboundChip() {
     st.note || '',
     st.lastPass ? `마지막 순회 ${new Date(st.lastPass).toLocaleTimeString('ko-KR', { hour12: false })} - 새 봉 판정 ${st.judged ?? 0}종목` : '',
     `알림 ${st.alerts}회`,
-    `클릭: 감시 ${st.enabled ? '끄기' : '켜기'}`,
+    '설정: ☰ > 반등 감시 설정',
   ]
     .filter(Boolean)
     .join('\n');
   return (
-    <button type="button" className={`rt rt-${dot} rebound-chip`} title={tip} onClick={() => void window.hts.reboundEnable(!st.enabled).then(setSt)}>
+    <span className={`rt rt-${dot}`} title={tip}>
       <i /> 반등 감시 {st.tab} · {label}
       {st.alerts ? ` · 알림 ${st.alerts}` : ''}
-    </button>
+    </span>
   );
 }
 
@@ -118,8 +120,7 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
       items: [
         { id: 'master', label: { en: 'Refresh stock master', ko: '종목 마스터 새로고침' }, icon: '↻', onClick: () => void window.hts.refreshMaster().then(() => window.hts.authState().then((a) => useStore.getState().setAuth(a))) },
         { id: 'bot', label: { en: 'Bot connection settings', ko: '봇 설정·연결' }, icon: '⚙', onClick: () => void useStore.getState().openBot('settings') },
-        { id: 'rebound-dir', label: { en: 'Rebound watcher: config / log folder', ko: '반등 감시 설정·기록 폴더' }, icon: '▤', onClick: () => void window.hts.reboundOpenDir() },
-        { id: 'rebound-test', label: { en: 'Rebound alert test', ko: '반등 알람 테스트' }, icon: '◉', onClick: () => void window.hts.reboundTest() },
+        { id: 'rebound', label: { en: 'Rebound watcher settings', ko: '반등 감시 설정' }, icon: '◉', onClick: () => window.dispatchEvent(new Event('rebound-settings')) },
         { id: 'theme', label: { en: 'Switch theme (system / light / dark)', ko: '테마 전환 (시스템 / 라이트 / 다크)' }, icon: '◐', onClick: cycleTheme },
         { id: 'layout', label: { en: 'Reset window layout', ko: '창 배치 초기화' }, icon: '▦', onClick: () => window.confirm('열린 창을 모두 닫고 배치를 초기화할까요?') && resetLayout() },
       ],

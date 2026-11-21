@@ -143,9 +143,37 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .rt-on i { background: var(--st-pass); }
 .rt-connecting i { background: var(--st-hold); }
 .rt-error i { background: var(--st-fail); }
-/* [2026-11-21] rebound watcher chip: a button that reads like the status text beside it */
-.rebound-chip { border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; }
-.rebound-chip:hover { color: var(--text); }
+/* [2026-11-21] rebound watcher settings dialog (☰ > 반등 감시 설정) */
+.rb-dialog { width: min(860px, calc(100vw - 40px)); max-height: calc(100vh - 80px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 16px 50px var(--shadow); }
+.rb-dialog > header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.rb-dialog > header h2 { margin: 0; font-size: calc(var(--fs) + 1px); }
+.rb-dialog > header .mini { margin-left: auto; }
+.rb-body { padding: 4px 14px 10px; overflow: auto; }
+.rb-body section { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.rb-body section:last-child { border-bottom: 0; }
+.rb-body h3 { margin: 0 0 6px; font-size: var(--fs); color: var(--text-2); font-weight: 600; }
+.rb-body p { margin: 4px 0; }
+.rb-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+.rb-onoff { font-size: calc(var(--fs) + 1px); }
+.rb-warn { color: var(--st-fail); }
+.rb-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; }
+.rb-row label { display: flex; flex-direction: column; gap: 3px; color: var(--text-2); }
+.rb-row input[type='text'] { width: 150px; }
+.rb-session > span { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; }
+.rb-codes { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 6px 0; max-height: 120px; overflow: auto; }
+.rb-code { display: inline-flex; align-items: center; gap: 4px; padding: 1px 2px 1px 7px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-2); }
+.rb-code i { font-style: normal; color: var(--text-3); font-size: calc(var(--fs) - 2px); }
+.rb-code button { border: 0; background: none; padding: 0 4px; color: var(--text-3); cursor: pointer; }
+.rb-code button:hover { color: var(--st-fail); }
+.rb-add { max-width: 320px; }
+.rb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 3px 22px; }
+.rb-field { display: grid; grid-template-columns: 1fr 96px 130px; align-items: center; gap: 6px; }
+.rb-field input[type='number'] { width: 96px; text-align: right; }
+.rb-field input[type='checkbox'] { justify-self: start; }
+.rb-field em { font-style: normal; color: var(--text-3); font-size: calc(var(--fs) - 2px); }
+.rb-field.changed > span { color: var(--accent); font-weight: 600; }
+.rb-dialog > footer { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-top: 1px solid var(--border); }
+.rb-msg { flex: 1; text-align: right; color: var(--text-2); }
 .ticker { display: inline-flex; gap: 14px; }
 .ticker b { font-variant-numeric: tabular-nums; }
 .win-controls { display: flex; align-items: center; gap: 2px; margin-left: 8px; padding-right: 4px; -webkit-app-region: no-drag; }
@@ -228,6 +256,10 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 /* [2026-11-21] toolbar buttons / labels showed as selected text (blue) after a drag or double click passed over them, and a click
    on the chart (not selectable) never cleared it - toolbars, buttons and window title bars are not selectable (inputs still are) */
 .toolbar, .mdi-title, button, .seg, .dropdown > button { user-select: none; -webkit-user-select: none; }
+/* [2026-11-21] HTS windows (현재가, 종목정보, 관심종목, 순위 ...): dragging the mouse over the rows selected (inverted) the text - the
+   window contents are not selectable; inputs still are, and the bot windows (logs to copy) keep their selection */
+.mdi-body { user-select: none; -webkit-user-select: none; }
+.mdi-body input, .mdi-body textarea, .mdi-body .bot-root { user-select: text; -webkit-user-select: text; }
 .chart-body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .price-chart { position: relative; width: 100%; }
 .price-chart svg { display: block; }
