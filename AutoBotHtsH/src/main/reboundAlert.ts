@@ -27,7 +27,7 @@ const kst = (t: number) => new Date(t + KST).toISOString();
 
 const CSV_HEAD = [
   'detected_at', 'bar_time', 'code', 'name', 'alerted', 'score', 'conds', 'bonus', 'close', 'price', 'change_pct', 'rsi', 'rsi_signal', 'macd', 'macd_signal', 'macd_osc',
-  'di_plus', 'di_minus', 'adx', 'ma5_angle', 'vwap', 'vwap_pct', 'ma5', 'ma20', 'ma60', 'ma120', 'plunge_time', 'plunge_low', 'plunge_volume',
+  'di_plus', 'di_minus', 'adx', 'ma5_angle', 'vwap', 'vwap_pct', 'ma5', 'ma20', 'ma60', 'ma120', 'plunge_time', 'plunge_low', 'plunge_volume', 'plunge_fall_pct',
 ];
 const n = (x: number | undefined, d = 2) => (x === undefined || !Number.isFinite(x) ? '' : Number(x.toFixed(d)).toString());
 
@@ -37,7 +37,7 @@ export function csvRow(a: AlertInfo, alerted: boolean): string {
     kst(a.at).slice(0, 19).replace('T', ' '), hhmm(s.t), a.code, a.name.replace(/[",\r\n]/g, ' '), alerted ? '1' : '0', String(a.res.score),
     COND_KEYS.filter((k) => a.res.conds[k].ok).join(' '), BONUS_KEYS.filter((k) => a.res.bonus[k].ok).join(' '),
     n(s.close, 0), n(a.price, 0), n(a.changePct), n(s.rsi), n(s.rsiSignal), n(s.macd), n(s.macdSignal), n(s.macdOsc), n(s.diPlus), n(s.diMinus), n(s.adx), n(s.angle),
-    n(s.vwap, 1), n(s.vwapPct), n(s.ma5, 1), n(s.ma20, 1), n(s.ma60, 1), n(s.ma120, 1), hhmm(s.plungeT), n(s.plungeLow, 0), n(s.plungeVol, 0),
+    n(s.vwap, 1), n(s.vwapPct), n(s.ma5, 1), n(s.ma20, 1), n(s.ma60, 1), n(s.ma120, 1), hhmm(s.plungeT), n(s.plungeLow, 0), n(s.plungeVol, 0), n(s.plungeFallPct),
   ];
   return f.join(',');
 }

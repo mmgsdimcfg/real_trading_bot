@@ -249,7 +249,7 @@ export function sampleAlert(cfg: ReboundConfig): AlertInfo {
       score: 3,
       conds: { plunge: ok('14:33 저가 38000 거래량 2147'), rsi: ok('돌파 14:53, RSI 53.3/48.8'), macd: ok('돌파 14:46(MACD -84.5)'), dmi: ok('돌파 14:50, DI 32.2/12.6'), ma: ok('골든크로스 14:55'), angle: ok(`14.6° (기준 ${cfg.angle.min}°)`) },
       bonus: { adxTurn: ok('저점 14:51 33.9'), maLong: { ok: false, note: 'MA60 38530.0' }, bbSqueeze: ok('폭 0.89%'), ichimoku: { ok: false, note: '구름 아래' }, macdZero: { ok: false, note: 'MACD -40.3' }, volDry: ok('평균 147.0 / 급락 봉 2147') },
-      snap: { t, close: 38500, ma5: 38450, ma20: 38445, ma60: 38530, ma120: 38800, rsi: 53.3, rsiSignal: 48.8, macd: -40.3, macdSignal: -61.7, macdOsc: 21.4, diPlus: 32.2, diMinus: 12.6, adx: 35.6, angle: 14.6, vwap: 39810, vwapPct: -3.29, bbMid: 38445, bbWidthPct: 0.89, plungeT: t - 22 * 60000, plungeLow: 38000, plungeVol: 2147 },
+      snap: { t, close: 38500, ma5: 38450, ma20: 38445, ma60: 38530, ma120: 38800, rsi: 53.3, rsiSignal: 48.8, macd: -40.3, macdSignal: -61.7, macdOsc: 21.4, diPlus: 32.2, diMinus: 12.6, adx: 35.6, angle: 14.6, vwap: 39810, vwapPct: -3.29, bbMid: 38445, bbWidthPct: 0.89, plungeT: t - 22 * 60000, plungeLow: 38000, plungeVol: 2147, plungeFallPct: -2.7 },
     },
   };
 }

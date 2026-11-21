@@ -225,6 +225,9 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 /* chart window */
 .chart-win { display: flex; flex-direction: column; height: 100%; }
 .chart-body, .price-chart { user-select: none; -webkit-user-select: none; }
+/* [2026-11-21] toolbar buttons / labels showed as selected text (blue) after a drag or double click passed over them, and a click
+   on the chart (not selectable) never cleared it - toolbars, buttons and window title bars are not selectable (inputs still are) */
+.toolbar, .mdi-title, button, .seg, .dropdown > button { user-select: none; -webkit-user-select: none; }
 .chart-body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .price-chart { position: relative; width: 100%; }
 .price-chart svg { display: block; }

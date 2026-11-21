@@ -15,7 +15,7 @@ import { join } from 'node:path';
 const userData = mkdtempSync(join(tmpdir(), 'rebound-test-'));
 vi.mock('electron', () => ({ app: { getPath: () => userData }, BrowserWindow: class {}, screen: {}, shell: { beep: () => undefined } }));
 
-import { completedBars, detectRebound, findPlunge, inEdge, lastCrossUp, maAngle, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../src/shared/rebound';
+import { completedBars, detectRebound, findPlunge, inEdge, lastCrossUp, plungeFall, maAngle, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../src/shared/rebound';
 import { applySets, barsToCsv, main, parseBars, replay } from '../src/shared/reboundReplay';
 import { ReboundWatcher, sampleAlert, configPath } from '../src/main/reboundPoller';
 import { alertHtml, csvRow, type AlertInfo } from '../src/main/reboundAlert';
@@ -78,6 +78,17 @@ describe('reference case 448900 2026-11-20', () => {
     // the KRX window ending right after the 14:33 plunge bar: it is an edge bar, so there is no plunge any more
     const cut = mergeConfig({ ...REBOUND_DEFAULTS, sessions: { ...REBOUND_DEFAULTS.sessions, krx: ['09:00', '14:40'], nxtAfter: null } });
     expect(detectRebound(upTo(at('14:55')), cut).conds.plunge.ok).toBe(false);
+  });
+
+  it('a crash is not judged: a fall into the plunge bar deeper than plunge.maxFallPct fails condition A', () => {
+    const r = detectRebound(upTo(at('14:55')));
+    expect(r.snap.plungeFallPct).toBeCloseTo((38000 / 39050 - 1) * 100, 6); // high of the 60 bars up to 14:33 -> its low
+    expect(r.conds.plunge.note).toContain('낙폭 -2.7%');
+    const tight = detectRebound(upTo(at('14:55')), applySets(REBOUND_DEFAULTS, ['plunge.maxFallPct=2']));
+    expect(tight.conds.plunge.ok).toBe(false);
+    expect(tight.conds.plunge.note).toContain('급락 과대');
+    expect(tight.hit).toBe(false);
+    expect(detectRebound(upTo(at('14:55')), applySets(REBOUND_DEFAULTS, ['plunge.maxFallPct=0'])).hit).toBe(true); // 0 = no limit
   });
 
   it('the original thresholds (angle 15, 4 of 5 bars, ADX low within 3 bars) fire only after the window', () => {
@@ -172,6 +183,13 @@ describe('helpers', () => {
     expect(findPlunge(thin, REBOUND_DEFAULTS)).toBe(-1);
     // out of the 40-bar window
     expect(findPlunge([...bars, ...Array.from({ length: 45 }, (_, i) => bar(72 + i, 9950, 9950, 9950, 9950, 100))], REBOUND_DEFAULTS)).toBe(-1);
+  });
+
+  it('plungeFall: highest high of the window up to the bar -> its low', () => {
+    const bars = [bar(0, 100, 120, 100, 110, 1), bar(1, 110, 110, 100, 100, 1), bar(2, 100, 100, 90, 95, 1)];
+    expect(plungeFall(bars, 2, 60)).toBeCloseTo(-25, 9); // 120 -> 90
+    expect(plungeFall(bars, 2, 2)).toBeCloseTo((90 / 110 - 1) * 100, 9); // the 120 high is outside a 2-bar window
+    expect(plungeFall(bars, 0, 60)).toBeCloseTo((100 / 120 - 1) * 100, 9);
   });
 
   it('findPlunge: a long lower wick counts, a tiny one does not', () => {
@@ -270,7 +288,7 @@ describe('alert text', () => {
   });
 
   it('CSV row keeps its columns whatever the name holds', () => {
-    expect(csvRow(a, true).split(',')).toHaveLength(29);
+    expect(csvRow(a, true).split(',')).toHaveLength(30);
     expect(csvRow(a, false).split(',')[4]).toBe('0');
   });
 });

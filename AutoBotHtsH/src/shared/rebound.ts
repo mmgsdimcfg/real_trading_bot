@@ -11,6 +11,9 @@
  *   (2) edge - the first edge.openMin and the last edge.closeMin minutes of each session window are left out: a plunge bar there
  *   does not count and a bar there is not detected (opening / closing volume passes the "3x volume" test by itself -
  *   161390 09:13 from a 09:02 bar, 236200 15:42 across the close)
+ * - [2026-11-21] type=feat - plunge.maxFallPct / fallWindow (user 2026-11-21): a crash is not a "plunge before a rebound" - when
+ *   the fall from the highest high of the fallWindow bars up to the plunge bar down to its low is deeper than maxFallPct,
+ *   condition A fails (003010 혜인 2026-11-13: -17 % in 12 minutes, detected at 11:38, went on falling). Default 8 %: of 36 sampled alerts the next deepest falls were -6.8 / -5.4 / -5.2 %. 0 = no limit
  */
 
 import { adx, bollinger, ichimoku, macd, normalizeParams, rsi, sma, vwap, HTS_PARAMS, type CalcMethod, type IndicatorParams, type Series } from './indicators';
@@ -61,6 +64,9 @@ export interface ReboundConfig {
     /** volume >= volMult x the mean volume of the `volWindow` bars before it */
     volWindow: number;
     volMult: number;
+    /** the fall into the plunge bar (highest high of the `fallWindow` bars up to it -> its low), percent; deeper than maxFallPct = a crash, not judged (0 = no limit) */
+    fallWindow: number;
+    maxFallPct: number;
   };
   rsi: { min: number; max: number };
   macd: {
@@ -132,7 +138,7 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
   recentMin: 3,
   requireCurrentAbove: true,
   edge: { openMin: 15, closeMin: 15 },
-  plunge: { window: 40, dropPct: -0.8, wickRatio: 2, wickMinPct: 0.3, volWindow: 60, volMult: 3 },
+  plunge: { window: 40, dropPct: -0.8, wickRatio: 2, wickMinPct: 0.3, volWindow: 60, volMult: 3, fallWindow: 60, maxFallPct: 8 },
   rsi: { min: 45, max: 68 },
   macd: { oscRising: 3 },
   angle: { lag: 3, k: 10, min: 14 },
@@ -224,6 +230,8 @@ export interface ReboundSnapshot {
   plungeT: number;
   plungeLow: number;
   plungeVol: number;
+  /** fall into the plunge bar: highest high of the plunge.fallWindow bars up to it -> its low, percent (negative) */
+  plungeFallPct: number;
 }
 
 export interface ReboundResult {
@@ -355,6 +363,13 @@ export function findPlunge(bars: Bar[], cfg: ReboundConfig): number {
   return found;
 }
 
+/** fall into bar j: the highest high of the `window` bars up to and including j -> the low of j, percent (<= 0) */
+export function plungeFall(bars: Bar[], j: number, window: number): number {
+  let hi = -Infinity;
+  for (let k = Math.max(0, j - Math.max(1, window) + 1); k <= j; k++) hi = Math.max(hi, bars[k].h);
+  return hi > 0 ? (bars[j].l / hi - 1) * 100 : NaN;
+}
+
 /**
  * Judge the last bar of `bars` (all of them completed 1-minute bars, oldest first; earlier days may be included for warm-up -
  * VWAP restarts each KST day). Returns the conditions met, the score and the indicator values at that bar.
@@ -401,6 +416,7 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
     plungeT: pj >= 0 ? bars[pj].t : NaN,
     plungeLow: pj >= 0 ? bars[pj].l : NaN,
     plungeVol: pj >= 0 ? bars[pj].v : NaN,
+    plungeFallPct: pj >= 0 ? plungeFall(bars, pj, cfg.plunge.fallWindow) : NaN,
   };
   const no = (note: string): Check => ({ ok: false, note });
   const conds = Object.fromEntries(COND_KEYS.map((k) => [k, no('-')])) as Record<CondKey, Check>;
@@ -415,7 +431,13 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
   const recFrom = i - cfg.recent + 1;
 
   // A. plunge
-  conds.plunge = pj >= 0 ? { ok: true, note: `${hhmm(bars[pj].t)} 저가 ${bars[pj].l} 거래량 ${bars[pj].v}` } : no(`최근 ${cfg.plunge.window}봉에 없음`);
+  const crash = pj >= 0 && cfg.plunge.maxFallPct > 0 && -snap.plungeFallPct > cfg.plunge.maxFallPct;
+  conds.plunge =
+    pj < 0
+      ? no(`최근 ${cfg.plunge.window}봉에 없음`)
+      : crash
+        ? no(`${hhmm(bars[pj].t)} 저가 ${bars[pj].l} - 낙폭 ${f1(snap.plungeFallPct)}% 가 기준 -${cfg.plunge.maxFallPct}% 보다 큼 (급락 과대, 제외)`)
+        : { ok: true, note: `${hhmm(bars[pj].t)} 저가 ${bars[pj].l} 거래량 ${bars[pj].v} 낙폭 ${f1(snap.plungeFallPct)}%` };
 
   // B. RSI crossed its signal, stays above on most of the last M bars, not overbought yet
   {
