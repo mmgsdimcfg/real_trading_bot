@@ -10,6 +10,8 @@
 //   switches it on / off; ☰ > 반등 감시 설정·기록 폴더, 반등 알람 테스트)
 // - [2026-11-21] type=feat (The chip only shows the state now (no click); ☰ > 반등 감시 설정 opens the settings dialog
 //   (components/ReboundSettings.tsx: on / off, tab, symbols, thresholds; folder and test popup are buttons there))
+// - [2026-11-22] type=feat (Title bar "미확인 알람 N": alerts whose popup closed by itself and were not looked at yet; a click
+//   opens the history tab of the rebound settings dialog)
 
 import { useEffect, useRef, useState } from 'react';
 import { BOT_GROUPS, BOT_TITLE, botWinOf, useStore, WIN_TITLE, type WinType, type ArrangeMode, type Theme } from '../store';
@@ -100,6 +102,22 @@ function ReboundChip() {
   );
 }
 
+/** [2026-11-22] number of rebound alerts not looked at yet (their popup closed by itself); a click opens the history */
+function ReboundUnread() {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    void window.hts.reboundUnread().then(setN);
+    const off = window.hts.onReboundUnread(setN);
+    return () => void off();
+  }, []);
+  if (!n) return null;
+  return (
+    <button type="button" className="rebound-unread" title="확인하지 않은 반등 알람 - 클릭하면 히스토리를 엽니다" onClick={() => window.dispatchEvent(new CustomEvent('rebound-settings', { detail: 'history' }))}>
+      미확인 알람 {n}
+    </button>
+  );
+}
+
 export function TitleBar({ onSettings }: { onSettings: () => void }) {
   const auth = useStore((s) => s.auth);
   const resetLayout = useStore((s) => s.resetLayout);
@@ -145,6 +163,7 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
               <i /> 실시간 {rt?.status === 'on' ? '연결' : rt?.status === 'connecting' ? '연결 중' : rt?.status === 'error' ? '오류' : '대기'}
             </span>
             <ReboundChip />
+            <ReboundUnread />
             {mode === 'kis' && auth.keyHint && <span className="muted">앱키 {auth.keyHint}</span>}
             <span className="muted" title={auth.master.error || ''}>
               종목 {auth.master.size.toLocaleString()}

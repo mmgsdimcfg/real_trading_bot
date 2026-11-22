@@ -13,7 +13,10 @@
  *   161390 09:13 from a 09:02 bar, 236200 15:42 across the close)
  * - [2026-11-21] type=feat - plunge.maxFallPct / fallWindow (user 2026-11-21): a crash is not a "plunge before a rebound" - when
  *   the fall from the highest high of the fallWindow bars up to the plunge bar down to its low is deeper than maxFallPct,
- *   condition A fails (003010 혜인 2026-11-13: -17 % in 12 minutes, detected at 11:38, went on falling). Default 8 %: of 36 sampled alerts the next deepest falls were -6.8 / -5.4 / -5.2 %. 0 = no limit
+ *   condition A fails (003010 혜인 2026-11-13: -17 % in 12 minutes, detected at 11:38, went on falling).
+ * - [2026-11-22] type=feat - alert.kakao (send each alert's summary to the user's own KakaoTalk, off by default), alertSummary()
+ *   (the text of that message, at most 200 characters), alert.autoCloseSec default 0 -> 60: a popup that closes by itself leaves
+ *   the alert unread and the title bar counts it Default 8 %: of 36 sampled alerts the next deepest falls were -6.8 / -5.4 / -5.2 %. 0 = no limit
  */
 
 import { adx, bollinger, ichimoku, macd, normalizeParams, rsi, sma, vwap, HTS_PARAMS, type CalcMethod, type IndicatorParams, type Series } from './indicators';
@@ -106,8 +109,10 @@ export interface ReboundConfig {
     /** the same symbol is not alerted again within this many minutes */
     cooldownMin: number;
     sound: boolean;
-    /** close a popup by itself after this many seconds (0 = stays until closed) */
+    /** close a popup by itself after this many seconds (0 = stays until closed); closed that way the alert stays "unread" */
     autoCloseSec: number;
+    /** send a summary of each alert to the user's own KakaoTalk (needs the Kakao login of the settings dialog) */
+    kakao: boolean;
     /** popups kept on screen (the oldest closes) */
     maxPopups: number;
   };
@@ -145,7 +150,7 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
   bonus: { minScore: 3, adxTroughBars: 4, adxDropMin: 2, maNearPct: 0.2, macdZeroPct: 0.05, macdZeroBars: 3 },
   poll: { delaySec: 2, days: 2, gapMs: 150, tabReloadSec: 300, retries: 3, backoffMs: 500 },
   sessions: { krx: ['09:00', '15:30'], nxtPre: ['08:00', '08:50'], nxtAfter: ['15:40', '20:00'] },
-  alert: { cooldownMin: 30, sound: true, autoCloseSec: 0, maxPopups: 6 },
+  alert: { cooldownMin: 30, sound: true, autoCloseSec: 60, kakao: false, maxPopups: 6 },
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -255,6 +260,31 @@ const f2 = (x: number) => (isNum(x) ? x.toFixed(2) : '-');
 const KST = 9 * 3600000;
 /** epoch ms -> "HH:MM" (KST) */
 export const hhmm = (t: number) => (isNum(t) ? new Date(t + KST).toISOString().slice(11, 16) : '-');
+
+const BONUS_SHORT: Record<BonusKey, string> = { adxTurn: 'ADX 반등', maLong: 'MA60/120', bbSqueeze: '볼린저', ichimoku: '일목', macdZero: 'MACD 0선', volDry: '거래량 감소' };
+
+/**
+ * Summary of an alert for a text message (KakaoTalk: at most `max` characters). Lines are dropped from the end when it gets too
+ * long. res = null gives the sample shown in the settings dialog.
+ */
+export function alertSummary(a: { code: string; name: string; price?: number; changePct?: number; res: ReboundResult | null }, max = 200): string {
+  const n = (x: number | undefined, d = 1) => (x === undefined || !isNum(x) ? '-' : x.toFixed(d));
+  const won = (x: number | undefined) => (x === undefined || !isNum(x) ? '-' : Math.round(x).toLocaleString('ko-KR'));
+  const pct = a.changePct === undefined || !isNum(a.changePct) ? '' : ` (${a.changePct >= 0 ? '+' : ''}${a.changePct.toFixed(2)}%)`;
+  const s = a.res?.snap;
+  const lines = s
+    ? [
+        `[바닥 반등 초입] ${a.name}(${a.code})`,
+        `${hhmm(s.t)} 봉 · ${won(a.price ?? s.close)}원${pct} · 가점 ${a.res!.score}점`,
+        `RSI ${n(s.rsi)}/${n(s.rsiSignal)} · MACD ${n(s.macd)}/${n(s.macdSignal)}`,
+        `DI ${n(s.diPlus)}/${n(s.diMinus)} · ADX ${n(s.adx)} · 각도 ${n(s.angle)}°`,
+        `VWAP ${isNum(s.vwapPct) && s.vwapPct >= 0 ? '+' : ''}${n(s.vwapPct, 2)}% · 급락 ${hhmm(s.plungeT)} (${n(s.plungeFallPct)}%)`,
+        `가점: ${BONUS_KEYS.filter((k) => a.res!.bonus[k].ok).map((k) => BONUS_SHORT[k]).join(', ') || '-'}`,
+      ]
+    : [`[바닥 반등 초입] ${a.name}(${a.code})`, `14:55 봉 · ${won(a.price)}원${pct} · 가점 3점`, 'RSI 53.3/48.8 · MACD -40.3/-61.7', 'DI 32.2/12.6 · ADX 35.6 · 각도 14.6°', 'VWAP -3.29% · 급락 14:33 (-2.7%)', '가점: ADX 반등, 볼린저, 거래량 감소'];
+  while (lines.length > 2 && lines.join('\n').length > max) lines.pop();
+  return lines.join('\n').slice(0, max);
+}
 
 /**
  * Which session `now` (epoch ms) falls in: 'krx' (regular hours - every symbol), 'nxt' (NXT pre / after market - NXT symbols only)

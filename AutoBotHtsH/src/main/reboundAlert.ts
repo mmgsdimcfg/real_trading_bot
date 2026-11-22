@@ -4,6 +4,8 @@
 //   HTML in a data: URL with scripts off; its two links ("열기" / "닫기") are caught in will-navigate, so the popup needs no preload.
 //   Optional beep, optional auto-close, the oldest popup closes beyond alert.maxPopups. Every detection is appended to
 //   %APPDATA%\<app>\rebound\detections_YYYYMMDD.csv (alerted or held back by the cooldown))
+// - [2026-11-22] type=feat (show(a, cfg, id): a popup knows its history id; onSeen(id) is called when the user closes it (x) or
+//   opens the symbol - a popup that closes by itself (alert.autoCloseSec) or is pushed out by newer ones is not "seen")
 
 import { app, BrowserWindow, screen, shell } from 'electron';
 import { appendFileSync, existsSync, mkdirSync } from 'fs';
@@ -102,9 +104,13 @@ const GAP = 8;
 export class AlertPopups {
   private wins: BrowserWindow[] = [];
 
-  constructor(private onOpen: (code: string) => void) {}
+  constructor(
+    private onOpen: (code: string) => void,
+    /** the user looked at the alert of this history id: closed its popup by hand or opened the symbol */
+    private onSeen: (id: string) => void = () => undefined,
+  ) {}
 
-  show(a: AlertInfo, cfg: ReboundConfig): void {
+  show(a: AlertInfo, cfg: ReboundConfig, id = ''): void {
     // the oldest go first. Taken off the list here: close() only asks - 'closed' comes later, so waiting for it would loop forever
     while (this.wins.length >= Math.max(1, cfg.alert.maxPopups)) {
       const old = this.wins.shift();
@@ -132,7 +138,9 @@ export class AlertPopups {
       e.preventDefault();
       const m = /^https:\/\/rebound\.invalid\/open\/([0-9A-Z]{6})$/.exec(url);
       if (m) this.onOpen(m[1]);
-      else if (url.startsWith('https://rebound.invalid/close')) w.close();
+      else if (!url.startsWith('https://rebound.invalid/close')) return;
+      if (id) this.onSeen(id);
+      if (!m) w.close();
     });
     w.on('closed', () => {
       this.wins = this.wins.filter((x) => x !== w);

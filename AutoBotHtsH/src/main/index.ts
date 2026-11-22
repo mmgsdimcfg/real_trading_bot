@@ -19,6 +19,10 @@
 //   on / off, test popup, open the config / log folder; a popup's "열기" sends rebound:open (the renderer shows the symbol).
 //   Popups close with the main window so the app still quits)
 // - [2026-11-21] type=feat (rebound:config / rebound:saveConfig / rebound:refresh for the settings dialog (☰ > 반등 감시 설정))
+// - [2026-11-22] type=feat (Rebound alerts are kept (reboundHistory.ts): every popup has a history item, the number of unread ones
+//   goes to the renderer (rebound:unread) - a popup closed by hand / opened is read, one that closed by itself is not.
+//   rebound:history* IPC (list, mark read, delete, show the popup again). KakaoTalk (reboundKakao.ts): with alert.kakao on, the
+//   summary of each alert is sent to the user's own KakaoTalk; rebound:kakao* IPC (state, app keys, login, logout, test message))
 
 import './importOnce';
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
@@ -38,7 +42,10 @@ import { isCode, toKrxRecord, WS_COMBINED, type KisEnv, type WsTr } from '../sha
 import { KIS_SPEC_COMMIT } from '../shared/kisSpec.generated';
 import { attachBotWindow, botQuit } from '../bot/main/botMain';
 import { ReboundWatcher, sampleAlert } from './reboundPoller';
-import { AlertPopups, reboundDir } from './reboundAlert';
+import { AlertPopups, reboundDir, type AlertInfo } from './reboundAlert';
+import { ReboundHistory } from './reboundHistory';
+import { KakaoTalk, type KakaoState } from './reboundKakao';
+import { alertSummary } from '../shared/rebound';
 
 const TASKBAR_TITLE_PAD = '⠀'.repeat(40);
 app.on('browser-window-created', (_e, w) => {
@@ -254,19 +261,35 @@ ipcMain.handle('watch:openDir', () => {
 });
 
 // ---- [2026-11-21] rebound watcher: watchlist tab "TEST", detection + popup only ----
-const popups = new AlertPopups((code) => {
-  send('rebound:open', code);
-  if (win && !win.isDestroyed()) {
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  }
-});
+const history = new ReboundHistory(() => send('rebound:unread', history.unread()));
+const kakao = new KakaoTalk(log);
+const popups = new AlertPopups(
+  (code) => {
+    send('rebound:open', code);
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  },
+  (id) => history.markRead([id]),
+);
+const stockLink = (code: string) => `https://m.stock.naver.com/domestic/stock/${code}/total`;
+/** an alert: kept in the history, shown as a popup and (alert.kakao) sent to the user's KakaoTalk */
+function raiseAlert(a: AlertInfo, cfg: typeof rebound.config): void {
+  const item = history.add(a);
+  popups.show(a, cfg, item.id);
+  if (!cfg.alert.kakao) return;
+  kakao.send(alertSummary(a), stockLink(a.code)).then(
+    () => history.setKakao(item.id, 'sent'),
+    (e) => history.setKakao(item.id, 'failed', errMsg(e)),
+  );
+}
 const rebound = new ReboundWatcher({
   // demo prices are made up: no watching there (HTSH_REBOUND_DEMO=1 for screen tests)
   backend: () => (backend && (backend.kind === 'kis' || process.env.HTSH_REBOUND_DEMO === '1') ? backend : null),
   master,
   log,
-  alert: (a, cfg) => popups.show(a, cfg),
+  alert: (a, cfg) => raiseAlert(a, cfg),
   status: (s) => send('rebound:status', s),
 });
 ipcMain.handle('rebound:status', () => rebound.status);
@@ -281,6 +304,31 @@ ipcMain.handle('rebound:config', () => {
 ipcMain.handle('rebound:saveConfig', (_e, cfg: unknown) => ({ config: rebound.saveConfig(cfg), status: rebound.status }));
 ipcMain.handle('rebound:refresh', () => rebound.refreshTab());
 ipcMain.handle('rebound:test', () => popups.show(sampleAlert(rebound.config), rebound.config));
+// ---- [2026-11-22] alert history + unread count ----
+ipcMain.handle('rebound:history', () => history.list());
+ipcMain.handle('rebound:unread', () => history.unread());
+ipcMain.handle('rebound:historyRead', (_e, ids: string[] | null) => history.markRead(Array.isArray(ids) ? ids.map(String) : null));
+ipcMain.handle('rebound:historyRemove', (_e, ids: string[] | null) => history.remove(Array.isArray(ids) ? ids.map(String) : null));
+ipcMain.handle('rebound:historyPopup', (_e, id: string) => {
+  const item = history.get(String(id));
+  if (item) popups.show(item, { ...rebound.config, alert: { ...rebound.config.alert, sound: false } }, item.id);
+});
+// ---- [2026-11-22] KakaoTalk "나에게 보내기" (keys and tokens stay in the main process) ----
+const kakaoRun = async (fn: () => Promise<unknown> | unknown): Promise<{ ok: boolean; state: KakaoState; error?: string }> => {
+  try {
+    await fn();
+    return { ok: true, state: kakao.state() };
+  } catch (e) {
+    return { ok: false, state: kakao.state(), error: errMsg(e) };
+  }
+};
+ipcMain.handle('rebound:kakaoState', () => kakao.state());
+ipcMain.handle('rebound:kakaoSave', (_e, a: { restKey?: string; clientSecret?: string; redirectUri?: string }) =>
+  kakaoRun(() => kakao.saveApp({ restKey: typeof a?.restKey === 'string' ? a.restKey : '', clientSecret: typeof a?.clientSecret === 'string' ? a.clientSecret : undefined, redirectUri: typeof a?.redirectUri === 'string' ? a.redirectUri : '' })),
+);
+ipcMain.handle('rebound:kakaoLogin', () => kakaoRun(() => kakao.login(win && !win.isDestroyed() ? win : null)));
+ipcMain.handle('rebound:kakaoLogout', () => kakaoRun(() => kakao.logout()));
+ipcMain.handle('rebound:kakaoTest', () => kakaoRun(() => kakao.send(`[AutoBotHtsH] 카카오톡 연결 테스트\n${alertSummary(sampleAlert(rebound.config))}`, stockLink('005930'))));
 ipcMain.handle('rebound:openDir', () => {
   rebound.loadConfig(); // creates the folder and the config file when they are not there yet
   return shell.openPath(reboundDir());

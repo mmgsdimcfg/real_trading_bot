@@ -6,6 +6,7 @@
 // - [2026-11-20] type=feat (AutoBotHtsH: window.api = the AutoBotH bridge (src/bot/preload) for the bot windows)
 // - [2026-11-20] type=feat (hts.setZoom: page zoom factor for the 글자 크기 setting (webFrame, this window only))
 // - [2026-11-21] type=feat (rebound*: status / on-off / test popup / folder of the rebound watcher, onReboundOpen (a popup's "열기"))
+// - [2026-11-22] type=feat (reboundHistory* (alert history, unread count), reboundKakao* (KakaoTalk app keys, login, test message))
 
 import { api as botApi } from '../bot/preload/index';
 import { contextBridge, ipcRenderer, webFrame } from 'electron';
@@ -13,6 +14,12 @@ import type { MasterItem, KisEnv } from '../shared/kis';
 import type { Res } from '../shared/market';
 import type { PickGroup, PicksEntry } from '../shared/watchPicks';
 import type { ReboundConfig } from '../shared/rebound';
+import type { HistoryItem } from '../main/reboundHistory';
+import type { KakaoState as KakaoStateT } from '../main/reboundKakao';
+
+export type ReboundHistoryItem = HistoryItem;
+export type KakaoState = KakaoStateT;
+type KakaoRes = { ok: boolean; state: KakaoState; error?: string };
 
 type WatchFile = { groups: PickGroup[]; imported: Record<string, number> };
 
@@ -79,6 +86,19 @@ const hts = {
   reboundConfig: (): Promise<ReboundConfig> => ipcRenderer.invoke('rebound:config'),
   reboundSaveConfig: (cfg: ReboundConfig): Promise<{ config: ReboundConfig; status: ReboundStatus }> => ipcRenderer.invoke('rebound:saveConfig', cfg),
   reboundRefresh: (): Promise<void> => ipcRenderer.invoke('rebound:refresh'),
+  // [2026-11-22] alert history (ids = null: all) and the number of unread alerts
+  reboundHistory: (): Promise<ReboundHistoryItem[]> => ipcRenderer.invoke('rebound:history'),
+  reboundUnread: (): Promise<number> => ipcRenderer.invoke('rebound:unread'),
+  reboundHistoryRead: (ids: string[] | null): Promise<void> => ipcRenderer.invoke('rebound:historyRead', ids),
+  reboundHistoryRemove: (ids: string[] | null): Promise<void> => ipcRenderer.invoke('rebound:historyRemove', ids),
+  reboundHistoryPopup: (id: string): Promise<void> => ipcRenderer.invoke('rebound:historyPopup', id),
+  onReboundUnread: (cb: (n: number) => void) => on('rebound:unread', cb),
+  // [2026-11-22] KakaoTalk "나에게 보내기": the key / secret go to main once and never come back
+  reboundKakaoState: (): Promise<KakaoState> => ipcRenderer.invoke('rebound:kakaoState'),
+  reboundKakaoSave: (a: { restKey?: string; clientSecret?: string; redirectUri?: string }): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoSave', a),
+  reboundKakaoLogin: (): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoLogin'),
+  reboundKakaoLogout: (): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoLogout'),
+  reboundKakaoTest: (): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoTest'),
   reboundOpenDir: (): Promise<string> => ipcRenderer.invoke('rebound:openDir'),
   onReboundStatus: (cb: (s: ReboundStatus) => void) => on('rebound:status', cb),
   onReboundOpen: (cb: (code: string) => void) => on('rebound:open', cb),

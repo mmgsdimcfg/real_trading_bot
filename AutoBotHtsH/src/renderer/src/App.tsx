@@ -21,9 +21,10 @@ import { ReboundSettings } from './components/ReboundSettings';
 export function App() {
   const auth = useStore((s) => s.auth);
   const [settings, setSettings] = useState(false);
-  const [rebound, setRebound] = useState(false);
+  const [rebound, setRebound] = useState<false | 'settings' | 'history' | 'kakao'>(false);
   useEffect(() => {
-    const open = () => setRebound(true);
+    // detail 'history': the title bar's unread badge opens the history tab
+    const open = (e: Event) => setRebound((e as CustomEvent).detail === 'history' ? 'history' : 'settings');
     window.addEventListener('rebound-settings', open);
     return () => window.removeEventListener('rebound-settings', open);
   }, []);
@@ -65,7 +66,7 @@ export function App() {
       {loggedIn ? <Workspace /> : <div className="workspace-wrap" />}
       {auth && (!loggedIn || settings) && <Login onClose={loggedIn ? () => setSettings(false) : undefined} />}
       {loggedIn && auth.mode === 'demo' && <div className="demo-banner">데모 모드 - 가상 데이터입니다. ☰ → 설정에서 KIS 앱키로 로그인하세요.</div>}
-      {rebound && <ReboundSettings onClose={() => setRebound(false)} />}
+      {rebound && <ReboundSettings initialTab={rebound} onClose={() => setRebound(false)} />}
       <BotConfirm />
     </div>
   );

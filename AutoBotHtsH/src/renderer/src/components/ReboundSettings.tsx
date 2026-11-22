@@ -4,12 +4,17 @@
 //   window), every threshold of the detector, the alert, polling and session hours, the indicator periods. 저장 writes
 //   %APPDATA%\<app>\rebound\config.json through the main process (values out of range fall back to the defaults there); the
 //   watcher uses it from the next minute. Also: defaults, test popup, open the folder)
+// - [2026-11-22] type=feat (Tabs: 설정 / 히스토리 (alerts shown so far, ReboundPanels.HistoryTab) / 카카오톡 (send alerts to the user's own
+//   KakaoTalk, ReboundPanels.KakaoTab). "팝업 유지 시간" = alert.autoCloseSec)
 
 import { useEffect, useMemo, useState } from 'react';
 import { newGroupId, useStore, WATCH_MAX } from '../store';
 import { SymbolSearch } from './SymbolSearch';
 import { REBOUND_DEFAULTS, type ReboundConfig } from '../../../shared/rebound';
 import type { ReboundStatus } from '../../../preload/index';
+import { HistoryTab, KakaoTab } from './ReboundPanels';
+
+type Tab = 'settings' | 'history' | 'kakao';
 
 type Kind = 'num' | 'bool' | 'method';
 interface Field {
@@ -73,7 +78,7 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
     fields: [
       { path: 'alert.cooldownMin', label: '같은 종목 다시 알림까지', unit: '분' },
       { path: 'alert.sound', label: '알림음', kind: 'bool' },
-      { path: 'alert.autoCloseSec', label: '팝업 자동 닫기', unit: '초 (0 = 닫지 않음)' },
+      { path: 'alert.autoCloseSec', label: '팝업 유지 시간', unit: '초 (0 = 닫지 않음)', hint: '이 시간이 지나 저절로 닫힌 알람은 미확인으로 남아 제목 줄에 개수가 표시됩니다' },
       { path: 'alert.maxPopups', label: '화면에 두는 팝업 수', unit: '개' },
     ],
   },
@@ -150,7 +155,8 @@ function Names({ codes, onRemove }: { codes: string[]; onRemove: (code: string) 
   );
 }
 
-export function ReboundSettings({ onClose }: { onClose: () => void }) {
+export function ReboundSettings({ onClose, initialTab = 'settings' }: { onClose: () => void; initialTab?: Tab }) {
+  const [tab, setTab] = useState<Tab>(initialTab);
   const watch = useStore((s) => s.watch);
   const setWatch = useStore((s) => s.setWatch);
   const [cfg, setCfg] = useState<ReboundConfig | null>(null);
@@ -220,7 +226,16 @@ export function ReboundSettings({ onClose }: { onClose: () => void }) {
             ✕
           </button>
         </header>
-        <div className="rb-body">
+        <nav className="rb-tabs seg">
+          {([['settings', '설정'], ['history', '히스토리'], ['kakao', '카카오톡']] as [Tab, string][]).map(([k, label]) => (
+            <button key={k} type="button" className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
+              {label}
+            </button>
+          ))}
+        </nav>
+        {tab === 'history' && <HistoryTab />}
+        {tab === 'kakao' && <KakaoTab enabled={cfg.alert.kakao} onEnabled={(on) => set('alert.kakao', on)} />}
+        <div className="rb-body" style={tab === 'settings' ? undefined : { display: 'none' }}>
           <section className="rb-top">
             <label className="check rb-onoff">
               <input type="checkbox" checked={cfg.enabled} onChange={(e) => set('enabled', e.target.checked)} /> <b>감시 켜기</b>

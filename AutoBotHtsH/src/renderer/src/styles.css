@@ -174,6 +174,40 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .rb-field.changed > span { color: var(--accent); font-weight: 600; }
 .rb-dialog > footer { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-top: 1px solid var(--border); }
 .rb-msg { flex: 1; text-align: right; color: var(--text-2); }
+/* [2026-11-22] tabs, alert history, KakaoTalk tab, unread badge of the title bar */
+.rb-tabs { display: flex; padding: 8px 14px 0; }
+.rb-tabs button { padding: 4px 16px; }
+.rb-ok { color: var(--st-pass); }
+.rb-hist { display: grid; grid-template-columns: 340px 1fr; min-height: 420px; height: calc(100vh - 260px); max-height: 640px; }
+.rb-hist-list { border-right: 1px solid var(--border); overflow: auto; }
+.rb-hist-bar { display: flex; align-items: center; gap: 6px; padding: 8px 10px 6px 14px; position: sticky; top: 0; background: var(--surface); }
+.rb-hist-bar .muted { flex: 1; }
+.rb-hist-empty { padding: 10px 14px; }
+.rb-hist-row { display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; cursor: pointer; white-space: nowrap; }
+.rb-hist-row:hover { background: var(--surface-2); }
+.rb-hist-row.on { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.rb-hist-row > i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.rb-hist-row.unread > i { background: var(--st-fail); }
+.rb-hist-row.unread b { color: var(--text); }
+.rb-hist-row b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.rb-hist-when { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.rb-hist-score { margin-left: auto; color: var(--text-2); }
+.rb-hist-detail { padding: 10px 16px; overflow: auto; user-select: text; -webkit-user-select: text; }
+.rb-hist-detail h3 { margin: 0 0 4px; font-size: calc(var(--fs) + 2px); }
+.rb-hist-detail h4 { margin: 10px 0 3px; font-size: var(--fs); color: var(--text-2); font-weight: 600; border-bottom: 1px solid var(--border); }
+.rb-hist-detail ul { list-style: none; margin: 0; padding: 0; }
+.rb-hist-detail li b { display: inline-block; width: 14px; }
+.rb-hist-detail li.ok b { color: var(--st-pass); }
+.rb-hist-detail li.no { color: var(--text-3); }
+.rb-hist-detail p { margin: 4px 0; }
+.rb-hist-actions { display: flex; gap: 8px; margin-top: 12px; }
+.rb-kform { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-bottom: 8px; }
+.rb-kform label { display: flex; flex-direction: column; gap: 3px; color: var(--text-2); }
+.rb-kform label.wide { grid-column: 1 / -1; }
+.rb-sample { margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); font: inherit; white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
+.rb-guide { margin: 0; padding-left: 20px; line-height: 1.6; user-select: text; -webkit-user-select: text; }
+.rebound-unread { -webkit-app-region: no-drag; border: 0; border-radius: 10px; padding: 1px 9px; background: var(--st-fail); color: #fff; font: inherit; font-size: calc(var(--fs) - 1px); font-weight: 600; cursor: pointer; }
+.rebound-unread:hover { filter: brightness(1.12); }
 .ticker { display: inline-flex; gap: 14px; }
 .ticker b { font-variant-numeric: tabular-nums; }
 .win-controls { display: flex; align-items: center; gap: 2px; margin-left: 8px; padding-right: 4px; -webkit-app-region: no-drag; }
