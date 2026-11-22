@@ -14,13 +14,14 @@
  * - [2026-11-20] type=feat - 운용 시간 = 정규장만 (r001 ENABLE_NXT_SESSION off): every symbol from 09:00 (no NXT pre-market)
  * - [2026-11-23] type=fix - Nothing trades yet (e.g. 08:02 with 운용 시간 = 정규장만): the status read '대상 없음 (거래 전 14 제외)' and
  *   looked like a stopped loop. It now says when the loop starts: '09:00부터 시작 (정규장만 운용 · 14종목 대기)'
+ * - [2026-11-23] type=feat - 운용 시간 = 정규장만 no longer holds the loop until 09:00 (user 2026-11-23): NXT symbols from 08:00 in
+ *   either mode, KRX-only symbols from 09:00 (their prices come from KIS before the bot starts quoting)
  */
 
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { Snapshot, SymbolSummary } from '../../../shared/types';
 import { tradingSessionRange } from '../../../shared/time';
-import { nxtSessionOn } from '../../../shared/control';
 
 export type AutoScope = 'all' | 'active' | 'held';
 
@@ -109,8 +110,7 @@ export function AutoView() {
   const selected = useStore((s) => s.selected);
   const snap = useStore((s) => s.snapshot);
   const live = useStore((s) => s.status.live);
-  const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
-  const { codes, waiting } = autoTargets(snap, cfg.scope, viewTime(live, snap?.replay?.cursor, Date.now()), nxtOn);
+  const { codes, waiting } = autoTargets(snap, cfg.scope, viewTime(live, snap?.replay?.cursor, Date.now()));
   const save = (p: Partial<AutoCfg>) => {
     setCfg((cur) => {
       const next = { ...cur, ...p };
@@ -134,12 +134,12 @@ export function AutoView() {
     if (!cfg.on) return;
     const t = setTimeout(() => {
       const st = useStore.getState();
-      const list = autoTargets(st.snapshot, cfg.scope, viewTime(st.status.live, st.snapshot?.replay?.cursor, Date.now()), nxtSessionOn(st.control.nxt)).codes;
+      const list = autoTargets(st.snapshot, cfg.scope, viewTime(st.status.live, st.snapshot?.replay?.cursor, Date.now())).codes;
       const n = nextCode(list, st.selected);
       if (n && n !== st.selected) st.select(n);
     }, cfg.sec * 1000);
     return () => clearTimeout(t);
-  }, [cfg.on, cfg.sec, cfg.scope, selected, key]); // nxtOn changes the list (key)
+  }, [cfg.on, cfg.sec, cfg.scope, selected, key]);
 
   const pos = selected ? codes.indexOf(selected) : -1;
   return (
@@ -166,11 +166,11 @@ export function AutoView() {
         ))}
       </select>
       {cfg.on && (
-        <span className="muted" title={waiting ? `거래 시작 전 ${waiting}종목은 빠짐 (${nxtOn ? 'NXT 종목 08:00, KRX 종목 09:00부터' : '정규장만 운용 - 09:00부터'})` : undefined}>
+        <span className="muted" title={waiting ? `거래 시작 전 ${waiting}종목은 빠짐 (NXT 종목 08:00, KRX 종목 09:00부터)` : undefined}>
           {codes.length
             ? `${pos >= 0 ? pos + 1 : '-'}/${codes.length}${waiting ? ` (거래 전 ${waiting} 제외)` : ''}`
             : waiting
-              ? `${nxtOn ? '거래 시작(NXT 08:00 / KRX 09:00)부터 시작' : '09:00부터 시작 (정규장만 운용'}${nxtOn ? ' (' : ' · '}${waiting}종목 대기)`
+              ? `거래 시작(NXT 08:00 / KRX 09:00)부터 시작 (${waiting}종목 대기)`
               : '대상 없음'}
         </span>
       )}

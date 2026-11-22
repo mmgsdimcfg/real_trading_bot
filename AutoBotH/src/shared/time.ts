@@ -5,6 +5,8 @@
  * - [2026-11-19] type=feat - KRX-only symbols trade on the KRX after-hours market too (16:00 - 20:00, e.g. 403870 HPSP): their
  *   range is 09:00 - 20:00 (no pre-market)
  * - [2026-11-20] type=feat - 운용 시간 (r001 ENABLE_NXT_SESSION): `nxtOn` false = regular session only -> 09:00 - 15:30 for every symbol
+ * - [2026-11-23] type=fix - shownSessionRange: with 운용 시간 = 정규장만 the live day's range still reaches into the hours being
+ *   traded right now (before 09:00 from the pre-market start, after 15:30 to the evening close) - the timeline was empty at 08:43
  */
 
 const KST_OFFSET_MS = 9 * 3600 * 1000;
@@ -60,6 +62,17 @@ export function tradingSessionRange(date: string | undefined, nxt: boolean, nxtO
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
   if (!nxtOn) return [kstToEpoch(d, '09:00:00'), kstToEpoch(d, '15:30:00')];
   return nxt ? [kstToEpoch(d, '08:00:00'), kstToEpoch(d, '20:00:00')] : [kstToEpoch(d, '09:00:00'), kstToEpoch(d, '20:00:00')];
+}
+
+/** [2026-11-23] Range the timeline shows. 운용 시간 = NXT 포함: tradingSessionRange. 정규장만: 09:00 - 15:30, but on the live day
+ *  (`now` given) the side being traded right now is kept - before 09:00 it starts at the symbol's session start (NXT 08:00),
+ *  after 15:30 it ends at the session end (20:00). `now` null = a past / replayed day. */
+export function shownSessionRange(date: string | undefined, nxt: boolean, nxtOn: boolean, now: number | null): [number, number] | null {
+  const full = tradingSessionRange(date, nxt, true);
+  if (nxtOn || !full) return full;
+  const reg = tradingSessionRange(date, nxt, false) as [number, number];
+  if (now === null || now < full[0] || now > full[1]) return reg;
+  return [now < reg[0] ? full[0] : reg[0], now > reg[1] ? full[1] : reg[1]];
 }
 
 /** "20261104" -> "2026-11-04" */
