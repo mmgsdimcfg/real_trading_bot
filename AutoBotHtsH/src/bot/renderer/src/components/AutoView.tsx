@@ -12,6 +12,8 @@
  *   its name; any other auto view that is on unchecks itself and stops. autoViewStarted() / onAutoViewStarted() are the two ends.
  *   The last one started is kept (localStorage autoview.owner): one saved as on whose window opens later stays off if another started since
  * - [2026-11-20] type=feat - 운용 시간 = 정규장만 (r001 ENABLE_NXT_SESSION off): every symbol from 09:00 (no NXT pre-market)
+ * - [2026-11-23] type=fix - Nothing trades yet (e.g. 08:02 with 운용 시간 = 정규장만): the status read '대상 없음 (거래 전 14 제외)' and
+ *   looked like a stopped loop. It now says when the loop starts: '09:00부터 시작 (정규장만 운용 · 14종목 대기)'
  */
 
 import { useEffect, useState } from 'react';
@@ -165,8 +167,11 @@ export function AutoView() {
       </select>
       {cfg.on && (
         <span className="muted" title={waiting ? `거래 시작 전 ${waiting}종목은 빠짐 (${nxtOn ? 'NXT 종목 08:00, KRX 종목 09:00부터' : '정규장만 운용 - 09:00부터'})` : undefined}>
-          {codes.length ? `${pos >= 0 ? pos + 1 : '-'}/${codes.length}` : '대상 없음'}
-          {waiting ? ` (거래 전 ${waiting} 제외)` : ''}
+          {codes.length
+            ? `${pos >= 0 ? pos + 1 : '-'}/${codes.length}${waiting ? ` (거래 전 ${waiting} 제외)` : ''}`
+            : waiting
+              ? `${nxtOn ? '거래 시작(NXT 08:00 / KRX 09:00)부터 시작' : '09:00부터 시작 (정규장만 운용'}${nxtOn ? ' (' : ' · '}${waiting}종목 대기)`
+              : '대상 없음'}
         </span>
       )}
     </span>
