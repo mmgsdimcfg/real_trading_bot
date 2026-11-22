@@ -422,7 +422,10 @@ describe('chart reuse windows (2026-11-07)', () => {
   });
   it('reuses quotes 8 s in market hours and 5 min outside', () => {
     expect(quoteCacheMs('2026-11-09T09:30:05')).toBe(CHART_CACHE_MS.quoteLive);
-    expect(quoteCacheMs('2026-11-09T15:31:00')).toBe(CHART_CACHE_MS.quoteIdle);
+    expect(quoteCacheMs('2026-11-09T15:31:00')).toBe(CHART_CACHE_MS.quoteNxt); // NXT after-market
+    expect(quoteCacheMs('2026-11-09T08:27:00')).toBe(CHART_CACHE_MS.quoteNxt); // NXT pre-market
+    expect(quoteCacheMs('2026-11-09T20:00:00')).toBe(CHART_CACHE_MS.quoteIdle);
+    expect(quoteCacheMs('2026-11-09T07:59:00')).toBe(CHART_CACHE_MS.quoteIdle);
     expect(quoteCacheMs('2026-11-08T10:00:00')).toBe(CHART_CACHE_MS.quoteIdle); // Sunday
   });
 });

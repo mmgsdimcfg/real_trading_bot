@@ -616,7 +616,7 @@ ipcMain.handle('quotes:get', async (_e, date: string, upTo?: number | null) => {
 // current price + order book + latest trades (r016 `quote`, KIS on the server). unsupported = the server has no `quote` yet
 let quoteUnsupportedAt = 0;
 type QuoteAnswer = { ok: boolean; data?: MarketQuote; error?: string; unsupported?: boolean };
-/** last answer per code (reused for quoteCacheMs: 8 s in market hours, 5 min outside, errors 20 s) + one in-flight call per code */
+/** last answer per code (reused for quoteCacheMs: 4 s in market hours, 20 s in the NXT-only hours, 5 min outside, errors 20 s) + one in-flight call per code */
 const quoteCache = new Map<string, { at: number; res: QuoteAnswer }>();
 const quoteInFlight = new Map<string, Promise<QuoteAnswer>>();
 ipcMain.handle('market:quote', async (_e, code: string) => {

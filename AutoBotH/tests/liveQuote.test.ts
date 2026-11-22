@@ -61,6 +61,9 @@ describe('quote log rows', () => {
       open: 41000, high: 41000, low: 37600, vol: 812345, value: 31234567890 });
     expect(fromMarketQuote({ code: '403870', price: 37800, prev_close: 40000 })).toMatchObject({ pct: -5.5, change: -2200 });
     expect(fromMarketQuote({ code: '403870', price: 0 })).toBeNull();
+    // [2026-11-23] combined (KRX+NXT) price of an NXT symbol outside the KRX session is marked NXT
+    expect(fromMarketQuote({ code: '086280', price: 196200, venue: 'UN' })?.market).toBe('NX');
+    expect(fromMarketQuote({ code: '086280', price: 196200, venue: 'J' })?.market).toBeUndefined();
   });
 
   it('[2026-11-16] keeps the day open / high / low / volume / value', () => {

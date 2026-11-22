@@ -97,6 +97,8 @@ export interface MarketQuote {
   asof?: string;
   source?: string;
   cached_ms?: number;
+  /** [2026-11-23] market the price was asked on: 'J' = KRX, 'UN' = KRX+NXT combined (NXT symbol outside the KRX session) */
+  venue?: string;
   price: number;
   change?: number;
   change_pct?: number;

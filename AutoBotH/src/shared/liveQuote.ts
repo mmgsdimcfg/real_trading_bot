@@ -8,6 +8,8 @@
  *   stck_lwpr / acml_vol / acml_tr_pbmn) for the quote line of the timeline; fmtKrwShort ("2.7억")
  * - [2026-11-16] type=feat - fromMarketQuote: a KIS current-price answer (r016 quote) as a LiveQuote (source 'kis') - the timeline
  *   shows it for symbols r003 does not quote (holdings outside the watch list)
+ * - [2026-11-23] type=fix - fromMarketQuote: venue 'UN' (r016 quote asked the KRX+NXT combined price - an NXT symbol outside the KRX
+ *   session) -> market 'NX', so the price line says NXT
  */
 
 export interface LiveQuote {
@@ -33,7 +35,7 @@ export interface LiveQuote {
 
 /** [2026-11-16] r016 `quote` answer (KIS inquire-price, KRX) -> LiveQuote; null without a price */
 export function fromMarketQuote(q: { code: string; asof?: string; price: number; change?: number; change_pct?: number; prev_close?: number;
-  open?: number; high?: number; low?: number; volume?: number; amount?: number } | null | undefined): LiveQuote | null {
+  open?: number; high?: number; low?: number; volume?: number; amount?: number; venue?: string } | null | undefined): LiveQuote | null {
   if (!q || !(q.price > 0)) return null;
   const t = q.asof ? tsToEpoch(q.asof) : NaN;
   const pct = Number.isFinite(q.change_pct as number) ? (q.change_pct as number)
@@ -41,6 +43,7 @@ export function fromMarketQuote(q: { code: string; asof?: string; price: number;
   const change = Number.isFinite(q.change as number) ? (q.change as number)
     : q.prev_close && q.prev_close > 0 ? q.price - q.prev_close : quoteChange(q.price, pct);
   const out: LiveQuote = { code: q.code, t: Number.isFinite(t) ? t : Date.now(), price: q.price, pct, change, source: 'kis' };
+  if (q.venue === 'UN' || q.venue === 'NX') out.market = 'NX';
   const pos = (v: number | undefined) => (v !== undefined && v !== null && Number.isFinite(v) && v > 0 ? v : undefined);
   const extra = { open: pos(q.open), high: pos(q.high), low: pos(q.low), vol: pos(q.volume), value: pos(q.amount) };
   for (const [k, v] of Object.entries(extra)) if (v !== undefined) (out as unknown as Record<string, number>)[k] = v;

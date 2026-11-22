@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+import shutil
 import tempfile
 import time
 import unittest
@@ -67,8 +68,13 @@ class Base(unittest.TestCase):
         self.rate = mock.patch.object(r018, "_rate_slot", lambda deadline: None)
         self.rate.start()
         r018._SHARED = None
+        # the quote venue depends on the wall clock (UN outside the KRX session): fixed to KRX hours unless a test sets _now itself
+        self.real_quote_market = r018._quote_market
+        self.venue = mock.patch.object(r018, "_quote_market", lambda code, client, now=None: r018.MARKET)
+        self.venue.start()
 
     def tearDown(self):
+        self.venue.stop()
         self.rate.stop()
         self.sleep.stop()
         self.env.stop()
@@ -199,6 +205,32 @@ class QuoteTest(Base):
         r018.quote("005930", client=c3)
         self.assertNotIn("CTPF1002R", [t for t, _ in s3.calls])
         self.assertNotIn("TOKEN_SECRET", cache.read_text())
+
+    def test_venue_unified_for_nxt_symbols_outside_the_krx_session(self):
+        self.venue.stop()
+        try:
+            nxt_info = lambda p: {"output": {"prdt_abrv_name": "삼성전자", "mket_id_cd": "STK", "cptt_trad_tr_psbl_yn": "Y", "nxt_tr_stop_yn": "N"}}
+            krx_info = lambda p: {"output": {"prdt_abrv_name": "삼성전자", "mket_id_cd": "STK", "cptt_trad_tr_psbl_yn": "N"}}
+            cases = [  # (now, info handler, venue) - 2026-11-23 is a Monday, 11-22 a Sunday
+                (datetime(2026, 11, 23, 8, 27), nxt_info, "UN"),     # NXT pre-market
+                (datetime(2026, 11, 23, 16, 30), nxt_info, "UN"),    # NXT after-market
+                (datetime(2026, 11, 23, 10, 0), nxt_info, "J"),      # KRX regular session
+                (datetime(2026, 11, 23, 7, 50), nxt_info, "J"),      # before NXT opens
+                (datetime(2026, 11, 23, 20, 0), nxt_info, "J"),      # after NXT closes
+                (datetime(2026, 11, 22, 8, 27), nxt_info, "J"),      # not a trading day
+                (datetime(2026, 11, 23, 8, 27), krx_info, "J"),      # not traded on NXT
+            ]
+            for now, info, want in cases:
+                shutil.rmtree(self.runtime / "cache", ignore_errors=True)
+                c, s = self.client(dict(QUOTE_HANDLERS, CTPF1002R=info))
+                with mock.patch.object(r018, "_now", return_value=now):
+                    q = r018.quote("005930", client=c)
+                self.assertEqual(q["venue"], want, now)
+                asked = {p["FID_COND_MRKT_DIV_CODE"] for t, p in s.calls if t.startswith("FHKST")}
+                self.assertEqual(asked, {want}, now)   # price, order book and trades on the same venue
+                self.assertEqual(q["price"], 71200)
+        finally:
+            self.venue.start()
 
     def test_partial_failure_keeps_price(self):
         h = dict(QUOTE_HANDLERS, FHKST01010200=lambda p: FakeResp({"rt_cd": "1", "msg_cd": "EGW00999", "msg1": "x"}))

@@ -29,6 +29,14 @@ Update log:
       r017 이 일봉 이력 뒤에 빠진 최근 거래일을 채울 때 쓴다.
     impact: tooling (AutoBotH 일봉 차트)
     compatibility: backward-compatible
+- [2026-11-23] type=fix owner=claude
+    summary: 사용자 보고(08:27 NXT 프리마켓 체결 중인데 AutoBotH 타임라인/종목 보드 현재가가 전일 종가 0.00% 에서 멈춤, 운용 시간 =
+      정규장만이라 r003 현재가 기록도 없음) - quote() 가 항상 KRX(J) 로 물어 KRX 개장 전/마감 후에는 전일 종가(또는 KRX 종가)만 왔다.
+      NXT 거래종목(nxt_flag)은 거래일 08:00~20:00 중 KRX 정규장 밖에서 KRX+NXT 통합(UN)으로 현재가/호가/체결을 묻는다
+      (_quote_market). 응답에 venue("J"|"UN") 추가. 정규장 중과 NXT 비대상 종목은 종전대로 J.
+      확인(20261123 08:30, 086280): J = 204,500 0.00% 거래량 0 / UN = 196,700 -3.81% 거래량 7,456, 호가·체결도 UN 응답.
+    impact: tooling (r016 quote - AutoBotH/AutoBotHtsH 표시 전용). 봇 판단·틱 수집기 기준(J)은 바꾸지 않음
+    compatibility: backward-compatible (응답에 venue 키 추가)
 - [2026-11-19] type=feat owner=claude
     summary: 사용자 요청(HPSP 처럼 NXT 비대상 종목도 KRX 장후 16:00~20:00 에 연속 체결 - 차트가 정규장 마감에서 멈춤)
       (1) minutes(after=True): KRX(J) 분봉을 r014 krx_after 끝(20:00)까지 받는다(캐시 min_ax). 마감 뒤 거래량 0 행(체결 없는 분을
@@ -409,6 +417,21 @@ def _hms(s) -> str:
     return f"{s[0:2]}:{s[2:4]}:{s[4:6]}" if s.isdigit() else ""
 
 
+def _quote_market(code: str, client: Client | None, now: datetime | None = None) -> str:
+    """[2026-11-23] 현재가를 물을 시장: NXT 거래종목이고 거래일 08:00~20:00 중 KRX 정규장 밖이면 UN(KRX+NXT 통합), 아니면 J."""
+    now = now or _now()
+    hours = _session_hours(now.strftime("%Y%m%d"))
+    if hours is None:
+        return MARKET
+    hms = now.strftime("%H%M%S")
+    if not (UNIFIED_HOURS[0] <= hms < UNIFIED_HOURS[1]) or hours[0] <= hms <= hours[1]:
+        return MARKET
+    try:
+        return MARKET_UNIFIED if nxt_flag(code, client) is True else MARKET
+    except Exception:
+        return MARKET
+
+
 def quote(code: str, trades: int = 30, client: Client | None = None) -> dict:
     code = _check_code(code)
     trades = max(0, min(int(trades), 30))
@@ -420,7 +443,8 @@ def quote(code: str, trades: int = 30, client: Client | None = None) -> dict:
         out["trades"] = (out.get("trades") or [])[:trades]
         return out
     client = client or shared_client()
-    params = {"FID_COND_MRKT_DIV_CODE": MARKET, "FID_INPUT_ISCD": code}
+    venue = _quote_market(code, client)
+    params = {"FID_COND_MRKT_DIV_CODE": venue, "FID_INPUT_ISCD": code}
     body, _ = client.get("inquire_price", params)
     p = body.get("output") or {}
     price = _f(p.get("stck_prpr"))
@@ -429,7 +453,7 @@ def quote(code: str, trades: int = 30, client: Client | None = None) -> dict:
     info = name_info(code, client)
     out = {
         "ok": True, "code": code, "name": info.get("name"), "market": info.get("market"),
-        "asof": _now().isoformat(timespec="seconds"), "source": "kis", "cached_ms": 0,
+        "asof": _now().isoformat(timespec="seconds"), "source": "kis", "cached_ms": 0, "venue": venue,
         "price": price, "change": _f(p.get("prdy_vrss")), "change_pct": _f(p.get("prdy_ctrt")),
         "prev_close": _f(p.get("stck_sdpr")), "base_price": _f(p.get("stck_sdpr")),
         "open": _f(p.get("stck_oprc")), "high": _f(p.get("stck_hgpr")), "low": _f(p.get("stck_lwpr")),

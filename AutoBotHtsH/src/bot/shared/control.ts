@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-23] type=fix - quoteCacheMs: 20 s in the NXT-only hours (08:00 - 09:00, 15:30 - 20:00) - was 5 min like the closed market,
+ *   so the KIS price of an NXT symbol stood still before the KRX open (r016 quote now asks the KRX+NXT combined price there)
  * - [2026-11-20] type=feat - 운용 시간 (user 2026-11-20): nxtSessionOn() reads r001 ENABLE_NXT_SESSION (off = regular session only);
  *   collectorWindow() and postcloseAt() follow it (regular only: collector check 08:45 - 15:35, post-close job at
  *   settings.postcloseTimeRegular 15:40; NXT: 07:55 - 19:55, settings.postcloseTime 20:10)
@@ -418,10 +420,10 @@ export function kstNowIso(nowMs: number = Date.now()): string {
  */
 /** [2026-11-11] quoteLive 8 s -> 4 s: the chart tab now takes price / best quotes / trades from the tick file, so the KIS quote only
  *  refreshes the 10-level book - 3 KIS calls per 4 s for the viewed symbol stays inside the shared budget next to r003 (~1.6/s of 2/s) */
-export const CHART_CACHE_MS = { quoteLive: 4000, quoteIdle: 300000, quoteFailed: 20000, daily: 600000, failed: 60000, intradayIdle: 300000 } as const;
+export const CHART_CACHE_MS = { quoteLive: 4000, quoteNxt: 20000, quoteIdle: 300000, quoteFailed: 20000, daily: 600000, failed: 60000, intradayIdle: 300000 } as const;
 
 export function quoteCacheMs(nowIso: string = kstNowIso()): number {
-  return isMarketHours(nowIso) ? CHART_CACHE_MS.quoteLive : CHART_CACHE_MS.quoteIdle;
+  return isMarketHours(nowIso) ? CHART_CACHE_MS.quoteLive : isNxtOnlyHours(nowIso) ? CHART_CACHE_MS.quoteNxt : CHART_CACHE_MS.quoteIdle;
 }
 
 export function isMarketHours(serverIso: string | undefined): boolean {
