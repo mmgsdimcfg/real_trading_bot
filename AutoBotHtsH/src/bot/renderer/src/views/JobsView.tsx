@@ -47,9 +47,12 @@
  *   hi52: label '52주 고점 기록(g048)'; the ① tooltip and the postclose hint mention it
  * - [2026-11-21] type=feat - New pipeline step hi52acct (r021: g049 HI52 swing paper account + random benchmark account, no
  *   orders): label 'HI52 모의계좌(g049)'; the ① tooltip and the postclose hint mention it
+ * - [2026-11-22] type=feat - "선별 결과 메일" texts say the picks also go to KakaoTalk (g002 sends code + name through g007 when the
+ *   host has ~/.kakao; checkbox label / tooltip, plan line, last-run line, automation line). The log box follows its last line
+ *   while a job writes (not while the user has scrolled up to read)
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import { DatePicker, type DayMark } from '../components/DatePicker';
@@ -148,6 +151,17 @@ export function JobsView() {
   /** [2026-11-17] dates that already hold data (r016 job dates) -> calendar marks */
   const [dateMarks, setDateMarks] = useState<Record<string, DayMark> | undefined>(() => peek<Record<string, DayMark>>('jobs:dates'));
 
+  // log box: stays on the last line as lines arrive; scrolling up to read stops that until the box is back at the end
+  const logBox = useRef<HTMLDivElement>(null);
+  const logStick = useRef(true);
+  useEffect(() => {
+    logStick.current = true;
+  }, [sel]);
+  useLayoutEffect(() => {
+    const el = logBox.current;
+    if (el && logStick.current) el.scrollTop = el.scrollHeight;
+  }, [log, sel]);
+
   const running = list?.running?.name || null;
   const selRow = useMemo(() => list?.jobs.find((j) => j.name === sel), [list, sel]);
   const last: JobRun | null = selRow?.last || null;
@@ -219,7 +233,7 @@ export function JobsView() {
     else if (step.apply && !step.scan && infoOk && !infoOk.picks) problem = `${date} 선별 결과가 없습니다 - ② 종목 선별(g002)을 켜세요`;
   }
   const planText = chosen.length
-    ? chosen.map((k) => ({ collect: '데이터 수집(g001)', scan: step.scan && email ? '종목 선별(g002) + 메일 전송' : '종목 선별(g002)', apply: '감시목록 반영(r004)' })[k]).join(' → ') + (edgeAi ? ' → Edge AI 재학습' : '')
+    ? chosen.map((k) => ({ collect: '데이터 수집(g001)', scan: step.scan && email ? '종목 선별(g002) + 메일 · 카카오톡 전송' : '종목 선별(g002)', apply: '감시목록 반영(r004)' })[k]).join(' → ') + (edgeAi ? ' → Edge AI 재학습' : '')
     : '';
 
   const start = async () => {
@@ -351,8 +365,8 @@ export function JobsView() {
               <label className="check" title="③ 감시목록 반영(r004) 뒤에 Edge AI 재학습(g013/g014/g024)을 이어서 실행">
                 <input type="checkbox" checked={edgeAi} onChange={(e) => setEdgeAi(e.target.checked)} /> Edge AI 포함
               </label>
-              <label className="check" title={`② 종목 선별(g002)이 끝나면 선별 종목(본문)과 리포트 파일(첨부)을 이메일로 전송 (g002 --notify-email) · ${local ? '이 PC' : '라즈베리파이'}의 ~/.mail/mail_config.json 설정 필요 · ②를 켜야 보냅니다 · 전송 결과는 아래 로그의 [EMAIL] 줄 (실패해도 작업은 계속)`}>
-                <input type="checkbox" checked={step.scan && email} disabled={!step.scan} onChange={(e) => setEmail(e.target.checked)} /> 선별 결과 메일
+              <label className="check" title={`② 종목 선별(g002)이 끝나면 선별 종목(본문)과 리포트 파일(첨부)을 이메일로 전송 (g002 --notify-email) · 카카오톡으로도 종목코드와 종목명을 전송 · ${local ? '이 PC' : '라즈베리파이'}의 ~/.mail/mail_config.json 설정 필요, 카카오톡은 같은 곳의 ~/.kakao 로그인 파일이 있을 때만 (없으면 메일만) · ②를 켜야 보냅니다 · 전송 결과는 아래 로그의 [EMAIL] / [KAKAO] 줄 (실패해도 작업은 계속)`}>
+                <input type="checkbox" checked={step.scan && email} disabled={!step.scan} onChange={(e) => setEmail(e.target.checked)} /> 선별 결과 메일 · 카카오톡
               </label>
             </div>
           )}
@@ -421,7 +435,7 @@ export function JobsView() {
               {last.args?.scheduled === false && <b title="[시작] 버튼 또는 명령줄로 시작한 실행입니다"> · 수동 실행</b>}
               {' '}· 기준일 {last.args?.date}
               {last.steps.length ? ` · ${last.steps.map((s) => STEP_LABEL[s.name] || s.name).join(' → ')}` : ''}
-              {last.args?.email ? ' · 선별 결과 메일 전송' : ''}
+              {last.args?.email ? ' · 선별 결과 메일 · 카카오톡 전송' : ''}
             </p>
             {pipeline && last.args?.scheduled === true && (
               <p className="muted small">자동 실행의 단계(Edge AI·메일 포함 여부)는 설정/연결 탭의 자동 실행 설정을 따릅니다 - 위 체크박스는 [시작]으로 직접 실행할 때만 적용됩니다.</p>
@@ -477,7 +491,14 @@ export function JobsView() {
             )}
           </>
         )}
-        <div className="log-box mono">
+        <div
+          className="log-box mono"
+          ref={logBox}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            logStick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          }}
+        >
           {log?.lines?.length ? log.lines.map((l, i) => <div key={i}>{l}</div>) : <span className="muted">로그 없음</span>}
         </div>
         {log?.log && <p className="muted small mono">{log.log}</p>}
@@ -491,7 +512,7 @@ export function JobsView() {
               틱 수집기: {settings?.autoCollector ? (nxtOn ? '평일 07:55~19:55 5분마다 확인해 없으면 시작 (KRX 정규장 + NXT 08:00~20:00)' : '평일 08:45~15:35 5분마다 확인해 없으면 시작 (정규장만 - KRX)') : '꺼짐'} {sched?.lastCollectorMsg && <span className="muted">- {sched.lastCollectorMsg}</span>}
             </li>
             <li>
-              장 마감 작업: {settings?.autoPostclose ? `거래일 ${postcloseAt(settings, nxtOn)} 이후 1회 (${nxtOn ? '프리/애프터 포함' : '정규장만'} 운용) (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}${settings.postcloseEmail ? ' + 선별 결과 메일' : ''}` : '꺼짐'}{' '}
+              장 마감 작업: {settings?.autoPostclose ? `거래일 ${postcloseAt(settings, nxtOn)} 이후 1회 (${nxtOn ? '프리/애프터 포함' : '정규장만'} 운용) (r003 종료 후, ①②③ 전부)${settings.postcloseEdgeAi ? ' + Edge AI' : ''}${settings.postcloseEmail ? ' + 선별 결과 메일 · 카카오톡' : ''}` : '꺼짐'}{' '}
               {sched?.lastPostcloseMsg && <span className="muted">- {sched.lastPostcloseMsg}</span>}
             </li>
             <li>
