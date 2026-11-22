@@ -99,6 +99,7 @@ const hts = {
   reboundKakaoLogin: (): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoLogin'),
   reboundKakaoLogout: (): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoLogout'),
   reboundKakaoTest: (): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoTest'),
+  reboundKakaoBotFiles: (): Promise<KakaoRes> => ipcRenderer.invoke('rebound:kakaoBotFiles'),
   reboundOpenDir: (): Promise<string> => ipcRenderer.invoke('rebound:openDir'),
   onReboundStatus: (cb: (s: ReboundStatus) => void) => on('rebound:status', cb),
   onReboundOpen: (cb: (code: string) => void) => on('rebound:open', cb),

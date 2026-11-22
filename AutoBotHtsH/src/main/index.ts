@@ -328,6 +328,8 @@ ipcMain.handle('rebound:kakaoSave', (_e, a: { restKey?: string; clientSecret?: s
 );
 ipcMain.handle('rebound:kakaoLogin', () => kakaoRun(() => kakao.login(win && !win.isDestroyed() ? win : null)));
 ipcMain.handle('rebound:kakaoLogout', () => kakaoRun(() => kakao.logout()));
+// [2026-11-22] login files for the bot's own sender (AutoBot g007): the scan job mails the picks and sends them to KakaoTalk
+ipcMain.handle('rebound:kakaoBotFiles', () => kakaoRun(() => kakao.exportForBot(win && !win.isDestroyed() ? win : null)));
 ipcMain.handle('rebound:kakaoTest', () => kakaoRun(() => kakao.send(`[AutoBotHtsH] 카카오톡 연결 테스트\n${alertSummary(sampleAlert(rebound.config))}`, stockLink('005930'))));
 ipcMain.handle('rebound:openDir', () => {
   rebound.loadConfig(); // creates the folder and the config file when they are not there yet

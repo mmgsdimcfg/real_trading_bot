@@ -3,6 +3,8 @@
 //   first (unread ones marked); a click shows everything the popup showed and marks it read; mark all read, delete, show the popup
 //   again, open the symbol. KakaoTab - the user's Kakao Developers app (REST API key, client secret, redirect URI), Kakao login,
 //   a test message, and the switch that sends each alert's summary to the user's own KakaoTalk)
+// - [2026-11-22] type=feat (KakaoTab: "봇용 로그인 파일 만들기" - login files for the bot (~/.kakao, AutoBot g007) so the scan job
+//   sends its picks (code + name) to KakaoTalk together with the result mail)
 
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
@@ -193,6 +195,23 @@ export function KakaoTab({ enabled, onEnabled }: { enabled: boolean; onEnabled: 
           {st.loggedIn && <span className="muted small">로그인 유지: {day(st.refreshExpiresAt)} 까지 (쓸 때마다 연장)</span>}
         </div>
         {(msg || st.lastError) && <p className={msg && !/실패|오류|필요|닫았/.test(msg) ? 'rb-ok' : 'rb-warn'}>{msg || st.lastError}</p>}
+      </section>
+
+      <section>
+        <h3>3. 봇 선별 결과도 카카오톡으로 받기</h3>
+        <p className="muted small">
+          봇 → 데이터 작업의 "선별 결과 메일"이 메일을 보낼 때, 선별 종목의 종목코드와 종목명만 카카오톡으로 같이 보냅니다. 메일은 봇(파이썬)이 보내므로 봇용 로그인 파일이 따로 필요합니다. 아래 버튼을 누르면 로그인 창이 한 번 더 뜨고, 파일 두 개를{' '}
+          <b>{st.botDir}</b> 에 만듭니다.
+        </p>
+        <div className="rb-row">
+          <button type="button" disabled={busy || !st.configured} onClick={() => void run(() => window.hts.reboundKakaoBotFiles(), '봇용 로그인 파일을 만들었습니다. 다음 선별 결과 메일부터 카카오톡으로도 옵니다.')}>
+            {st.botFiles ? '봇용 로그인 파일 다시 만들기' : '봇용 로그인 파일 만들기'}
+          </button>
+          <span className={st.botFiles ? 'rb-ok' : 'muted'}>{st.botFiles ? '파일 있음 - 이 PC에서 도는 선별 작업은 카카오톡으로도 보냅니다' : '파일 없음 - 선별 결과는 메일로만 갑니다'}</span>
+        </div>
+        <p className="muted small">
+          이 두 파일(kakao_config.json, kakao_token.json)은 암호화되지 않은 파일입니다. 라즈베리파이에서 작업을 돌린다면 두 파일을 파이의 ~/.kakao/ 폴더로 복사하세요. 2개월 넘게 한 번도 보내지 않으면 다시 만들어야 합니다.
+        </p>
       </section>
 
       <section>

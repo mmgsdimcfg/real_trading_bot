@@ -31,6 +31,19 @@ g007_kakao_notify.py
 이후에는 send_text()/send_watchlist() 호출 시 만료 임박한 access_token을
 refresh_token으로 자동 갱신한다. refresh_token 자체가 만료(장기 미사용)되면
 --authorize를 다시 실행해야 한다.
+
+[2026-11-22] 더 쉬운 설정: AutoBotHtsH 앱의 ☰ > 반등 감시 설정 > 카카오톡 탭 > "봇용 로그인 파일 만들기" 가 위 2~3 단계를
+대신한다(로그인 창에서 동의하면 ~/.kakao/kakao_config.json 과 kakao_token.json 을 이 형식으로 써 준다). 라즈베리파이에서
+작업을 돌린다면 그 두 파일을 파이의 ~/.kakao/ 로 복사한다.
+
+Update log:
+- [2026-11-22] type=feat owner=claude
+    summary: 사용자 요청 - 선별 결과 메일을 보낼 때 카카오톡으로 종목코드와 종목명만 같이 보낸다. send_picks(picks, label):
+      "[라벨 선별 N종목]" + 줄마다 "코드 종목명", 200자 한도라 여러 메시지로 나눠 보냄(picks_messages). is_configured():
+      설정/토큰 파일이 둘 다 있을 때만 True - g002 가 --notify-email 때 이것으로 보낼지 정한다.
+      send_text 가 설정 누락(SystemExit)에도 False 를 돌려준다(전에는 호출한 스캔이 그대로 끝났음).
+    impact: tooling (g002 --notify-email / --notify-kakao)
+    compatibility: backward-compatible (send_watchlist 그대로)
 """
 
 from __future__ import annotations
@@ -143,11 +156,16 @@ def _get_valid_access_token() -> str:
     return token["access_token"]
 
 
+def is_configured() -> bool:
+    """설정 파일과 토큰 파일이 둘 다 있다(보낼 준비가 됨). 내용이 맞는지는 보내 봐야 안다."""
+    return CONFIG_PATH.exists() and TOKEN_PATH.exists()
+
+
 def send_text(text: str, link_url: str | None = None) -> bool:
     """카카오톡 '나에게 보내기'로 기본 텍스트 템플릿을 전송한다. 성공 시 True."""
     try:
         access_token = _get_valid_access_token()
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:  # SystemExit: 설정/토큰 파일 없음 - 호출한 쪽(스캔)을 끝내지 않는다
         print(f"[KAKAO] 토큰 조회/갱신 실패: {exc}")
         return False
 
@@ -188,6 +206,44 @@ def send_watchlist(picks: list[str], label: str, max_items: int = 20) -> bool:
             lines.append(f"...외 {len(picks) - max_items}종목")
         body = "\n".join(lines)
     return send_text(body)
+
+
+def _code_name(pick: str) -> str:
+    """'204620_글로벌텍스프리' / '204620,글로벌텍스프리' / '204620 글로벌텍스프리' -> '204620 글로벌텍스프리'."""
+    s = str(pick).strip()
+    for sep in ("_", ",", "\t", " "):
+        if sep in s:
+            code, name = s.split(sep, 1)
+            return f"{code.strip()} {name.strip()}".strip()
+    return s
+
+
+def picks_messages(picks: list[str], label: str, max_chars: int = TEXT_TEMPLATE_MAX_CHARS) -> list[str]:
+    """선별 종목을 '코드 종목명' 줄로 만들어 메시지 한도(max_chars)에 맞게 나눈다. 첫 줄은 머리말, 둘째 메시지부터 (k/n)."""
+    if not picks:
+        return [f"[{label} 선별] 선정 종목 없음"]
+    head = f"[{label} 선별 {len(picks)}종목]"
+    room = max_chars - len(head) - 8  # " (99/99)" 자리
+    chunks: list[list[str]] = [[]]
+    used = 0
+    for line in (_code_name(p)[:room] for p in picks):
+        if chunks[-1] and used + 1 + len(line) > room:
+            chunks.append([])
+            used = 0
+        chunks[-1].append(line)
+        used += (1 if used else 0) + len(line)
+    n = len(chunks)
+    return ["\n".join([head if n == 1 else f"{head} ({k}/{n})", *lines]) for k, lines in enumerate(chunks, 1)]
+
+
+def send_picks(picks: list[str], label: str) -> bool:
+    """선별 종목의 종목코드와 종목명만 보낸다(메시지 한도 때문에 여러 개로 나뉠 수 있음). 모두 성공하면 True."""
+    ok = True
+    for text in picks_messages(picks, label):
+        ok = send_text(text) and ok
+        if not ok:
+            break  # 토큰/설정 문제면 나머지도 실패한다
+    return ok
 
 
 if __name__ == "__main__":

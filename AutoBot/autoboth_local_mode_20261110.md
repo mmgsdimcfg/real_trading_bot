@@ -77,7 +77,9 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   계속. [2026-11-19] collect 실패 뒤에도 history 는 실행한다(수집된 종목의 일봉 이력 갱신 - 20261118 KIS 장애 때 차트 일봉이 전 종목
   하루 비었음). 생략된 뒤 단계는 상태 JSON 의 steps 에 state=skipped + note="<단계> failed" 로 남는다(작업 state 는 failed 그대로). [2026-11-18] `hi52` 단계(g042 --date D --evaluate, postclose 에만, collect 스위치를 따름): HI52 스윙 신호 전진 기록 - §11. [2026-11-11] `--email`(postclose/scan): scan 단계를 `g002 --notify-email` 로 실행해 선별 종목(본문)과 리포트 파일(첨부)을
   메일로 보낸다(g016, 실행 호스트의 `~/.mail/mail_config.json`; scan 단계가 없으면 보내지 않음, 전송 실패는 작업 실패가 아님 -
-  로그의 `[EMAIL]` 줄). 앱은 파이프라인 카드의 "선별 결과 메일" 체크와 설정 `postcloseEmail`(자동 실행)로 붙인다.
+  로그의 `[EMAIL]` 줄). [2026-11-22] 메일을 보내는 실행은 카카오톡("나에게 보내기")으로 종목코드와 종목명만 같이 보낸다 -
+  실행 호스트에 `~/.kakao/kakao_config.json` + `kakao_token.json` 이 있을 때만(AutoBotHtsH 카카오톡 탭의 "봇용 로그인 파일
+  만들기", 파이는 그 두 파일을 복사), 없으면 로그에 `[KAKAO] 건너뜀` 한 줄. 인자와 상태 JSON 은 그대로다. 앱은 파이프라인 카드의 "선별 결과 메일" 체크와 설정 `postcloseEmail`(자동 실행)로 붙인다.
   `--scheduled`: 앱 스케줄러가 시작한 실행 표시(상태 JSON `args.scheduled`, 실행 내용은 같음 - 앱이 "자동 실행 / 수동 실행" 표시).
   한 번에 한 작업. 상태 `runtime/data/jobs/<NAME>.json`(args 에 collect/scan/apply/email/scheduled), 로그 `runtime/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log`.
 - process 백엔드 `stop`은 감시자가 없더라도 r003 잠금이 잡혀 있으면 정지 요청을 보내고, 잠금이 풀릴 때만 성공한다.

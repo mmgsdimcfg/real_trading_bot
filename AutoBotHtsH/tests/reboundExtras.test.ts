@@ -158,6 +158,12 @@ describe('KakaoTalk client', () => {
     expect(k.state()).toMatchObject({ keyHint: 'zzzz…2222', loggedIn: false });
   });
 
+  it('state reports the bot login files (~/.kakao of AutoBot g007)', () => {
+    const st = new KakaoTalk(() => undefined).state();
+    expect(st.botDir.replace(/\\/g, '/')).toMatch(/\/\.kakao$/);
+    expect(typeof st.botFiles).toBe('boolean');
+  });
+
   it('kakaoErrorText: token errors (KOE...) and API errors (negative codes)', () => {
     expect(kakaoErrorText(400, { error: 'invalid_client', error_description: 'Bad client credentials', error_code: 'KOE010' })).toMatch(/KOE010.*시크릿/);
     expect(kakaoErrorText(400, { error_code: 'KOE006', error_description: 'redirect uri mismatch' })).toMatch(/리다이렉트 URI/);

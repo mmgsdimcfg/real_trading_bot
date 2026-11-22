@@ -6,9 +6,15 @@
 //   (6 h) is renewed with the refresh token (about 2 months, renewed by Kakao when it gets short) - a failed renewal asks for a new
 //   login. Key, secret and tokens are kept only encrypted with safeStorage (DPAPI, this Windows user) in rebound\kakao.json and
 //   never go to the renderer. Kakao error codes are turned into a hint about the console setting that is usually wrong)
+// - [2026-11-22] type=feat (exportForBot(): a second Kakao login whose tokens are written, with the app key, to ~/.kakao/
+//   kakao_config.json + kakao_token.json in the format of AutoBot g007_kakao_notify.py - the scan job (g002 --notify-email) then
+//   sends the picks to KakaoTalk from Python, also while this app is closed. Its own token pair, so the app's login and the bot's
+//   never renew each other's refresh token. These two files are plain text (g007's format): anyone who can read the user's home
+//   folder could send KakaoTalk messages to the user with them)
 
 import { BrowserWindow, safeStorage, session } from 'electron';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
 import { reboundDir } from './reboundAlert';
 
@@ -46,6 +52,9 @@ export interface KakaoState {
   refreshExpiresAt: number;
   lastError: string;
   lastSentAt: number;
+  /** ~/.kakao holds the login files of the bot (g007): the scan job can send its picks */
+  botFiles: boolean;
+  botDir: string;
 }
 
 const HINTS: Record<string, string> = {
@@ -70,6 +79,9 @@ export function kakaoErrorText(status: number, body: unknown): string {
   const hint = HINTS[code] || '';
   return [`카카오 오류 ${code || status}`, msg, hint].filter(Boolean).join(' - ');
 }
+
+/** folder of the bot's Kakao files (AutoBot g007_kakao_notify.py: Path.home() / ".kakao") */
+export const kakaoBotDir = () => join(homedir(), '.kakao');
 
 const mask = (k: string) => (k.length > 8 ? `${k.slice(0, 4)}…${k.slice(-4)}` : k ? '…' : '');
 
@@ -123,6 +135,8 @@ export class KakaoTalk {
       refreshExpiresAt: secret.refreshExpiresAt,
       lastError: this.lastError,
       lastSentAt: this.lastSentAt,
+      botFiles: existsSync(join(kakaoBotDir(), 'kakao_config.json')) && existsSync(join(kakaoBotDir(), 'kakao_token.json')),
+      botDir: kakaoBotDir(),
     };
   }
 
@@ -169,11 +183,51 @@ export class KakaoTalk {
    * redirects to the registered URI with ?code=... - caught before it loads, exchanged for tokens.
    */
   async login(parent: BrowserWindow | null): Promise<KakaoState> {
+    const code = await this.authorize(parent);
+    try {
+      await this.token({ grant_type: 'authorization_code', redirect_uri: this.read().stored.redirectUri, code });
+      this.lastError = '';
+      this.log('[kakao] 로그인 완료');
+    } catch (e) {
+      this.lastError = (e as Error).message;
+      throw e;
+    }
+    return this.state();
+  }
+
+  /**
+   * Login files for the bot: one more Kakao login, its tokens and the app key written to ~/.kakao in g007's format (plain JSON).
+   * The app's own login is not touched.
+   */
+  async exportForBot(parent: BrowserWindow | null): Promise<KakaoState> {
+    const code = await this.authorize(parent);
+    const { stored, secret } = this.read();
+    try {
+      const body = new URLSearchParams({ client_id: secret.restKey, grant_type: 'authorization_code', redirect_uri: stored.redirectUri, code });
+      if (secret.clientSecret) body.set('client_secret', secret.clientSecret);
+      const res = await fetch(TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' }, body });
+      const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok || !j.access_token || !j.refresh_token) throw new Error(kakaoErrorText(res.status, j));
+      const dir = kakaoBotDir();
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'kakao_config.json'), JSON.stringify({ rest_api_key: secret.restKey, client_secret: secret.clientSecret, redirect_uri: stored.redirectUri }, null, 2), 'utf8');
+      writeFileSync(join(dir, 'kakao_token.json'), JSON.stringify({ ...j, obtained_at: Date.now() / 1000 }, null, 2), 'utf8');
+      this.lastError = '';
+      this.log(`[kakao] 봇용 로그인 파일 저장 (${dir})`);
+    } catch (e) {
+      this.lastError = (e as Error).message;
+      throw e;
+    }
+    return this.state();
+  }
+
+  /** the Kakao consent window; resolves with the authorization code of the redirect */
+  private async authorize(parent: BrowserWindow | null): Promise<string> {
     const { stored, secret } = this.read();
     if (!secret.restKey) throw new Error('REST API 키를 먼저 저장하세요.');
     const redirect = stored.redirectUri;
     const url = `${AUTH_URL}?${new URLSearchParams({ client_id: secret.restKey, redirect_uri: redirect, response_type: 'code', scope: 'talk_message' })}`;
-    const code = await new Promise<string>((resolve, reject) => {
+    return new Promise<string>((resolve, reject) => {
       const w = new BrowserWindow({
         width: 520,
         height: 720,
@@ -207,15 +261,6 @@ export class KakaoTalk {
       this.lastError = (e as Error).message;
       throw e;
     });
-    try {
-      await this.token({ grant_type: 'authorization_code', redirect_uri: redirect, code });
-      this.lastError = '';
-      this.log('[kakao] 로그인 완료');
-    } catch (e) {
-      this.lastError = (e as Error).message;
-      throw e;
-    }
-    return this.state();
   }
 
   private async ensureToken(force = false): Promise<string> {

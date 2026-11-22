@@ -107,6 +107,12 @@ Update log:
       종목 D+1 시가->종가: 9/22 이후 해당 -0.97% vs 나머지 -0.45%, 이전은 차이 없음. 롤백: EXCLUDE_2D_CLOSE_DOWNTREND=False.
     impact: scanner (선정 종목 감소, g008 탈락 사유 문구 추가)
     compatibility: breaking (선정 기준 강화)
+- [2026-11-22] type=feat owner=claude
+    summary: 사용자 요청 - --notify-email 로 메일을 보낼 때 카카오톡("나에게 보내기", g007 send_picks)으로 종목코드와 종목명만
+      같이 보낸다. 그 호스트에 카카오 설정(~/.kakao/kakao_config.json + kakao_token.json)이 있을 때만 보내고, 없으면
+      [KAKAO] 건너뜀 한 줄만 남긴다. --notify-kakao 도 같은 형식(send_picks)으로 바뀜. 전송 실패는 스캔 결과에 영향 없음.
+    impact: scanner (알림만)
+    compatibility: backward-compatible (카카오 설정이 없는 호스트는 동작 동일)
 - [2026-10-29] type=feat owner=claude
     summary: --notify-email 추가 - 스캔 종료 시 g016_email_notify로 종목 리스트(본문)와 picks/ranked/scanner_report/
       선정이유(ko) 파일(첨부)을 메일 전송. 설정은 ~/.mail/mail_config.json. 전송 실패는 스캔 결과에 영향 없음.
@@ -4155,13 +4161,20 @@ if __name__ == "__main__":
     else:
         print("(없음)")
 
-    if args.notify_kakao:
-        from g007_kakao_notify import send_watchlist
+    # [2026-11-22] 카카오톡(종목코드 + 종목명만): --notify-kakao, 또는 메일을 보내는 실행(--notify-email)에서 이 호스트에
+    # 카카오 설정이 있을 때. 어떤 오류도 스캔 결과에 영향을 주지 않는다.
+    if args.notify_kakao or args.notify_email:
+        try:
+            from g007_kakao_notify import is_configured, send_picks
 
-        if send_watchlist(picks, label):
-            print("[KAKAO] 감시종목 알림 전송 완료")
-        else:
-            print("[KAKAO] 감시종목 알림 전송 실패 (위 로그 참고)")
+            if not args.notify_kakao and not is_configured():
+                print("[KAKAO] 건너뜀 - 이 호스트에 카카오 설정(~/.kakao)이 없음")
+            elif send_picks(picks, label):
+                print("[KAKAO] 선별 종목 알림 전송 완료")
+            else:
+                print("[KAKAO] 선별 종목 알림 전송 실패 (위 로그 참고)")
+        except Exception as exc:  # noqa: BLE001 - 알림은 최선 노력
+            print(f"[KAKAO] 선별 종목 알림 전송 실패: {exc}")
 
     if args.notify_email:
         from g016_email_notify import send_scan_report
