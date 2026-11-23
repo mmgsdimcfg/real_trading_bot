@@ -34,6 +34,7 @@
 //   the window (volR, oscH; a double click on the handle = automatic again). The 투자자 누적 pane says when it is loading or KIS refused)
 // - [2026-11-20] type=fix (drop-downs inside the window (지표 / 기간 설정 / 관심종목 ☆) float over the app (FloatPop) and open toward the
 //   side with room instead of being cut off at the window edge)
+// - [2026-11-23] type=fix (user 2026-11-23: HTS functions do not follow the bot's operating hours - the chart draws every bar it gets; the 정규장만 filter below is removed)
 // - [2026-11-20] type=feat (운용 시간 = 정규장만 (bot setting r001 ENABLE_NXT_SESSION off): tick / minute charts show 09:00 - 15:30 only)
 
 // - [2026-11-20] type=fix (지표 menu / 기간 설정 close on a click outside them or Esc - before, only a click on the chart closed them)
@@ -54,9 +55,6 @@ import { FRACTION_PARAMS, HTS_PARAMS, INV_MONTHS, INV_MONTHS_LABEL, normalizePar
 import { WatchStar } from './ListWindows';
 import { FloatPop } from '../components/FloatPop';
 import { acmlMismatches, applyTrades, tickBarsFromTrades, TRADE_CAP } from '../../../shared/live';
-import { regularOnly } from '../../../bot/shared/price';
-import { nxtSessionOn } from '../../../bot/shared/control';
-import { useStore as useBot } from '../../../bot/renderer/src/store';
 import type { ChartRes, InvestorDay, TicksCursor, TicksRes } from '../../../shared/market';
 import type { TradeTick } from '../../../shared/kis';
 
@@ -361,8 +359,6 @@ export function ChartWindow({ win }: { win: Win }) {
   }, [kind, prevKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const prevBars = kind === 'tick' && prevMin.key === prevKey ? prevMin.bars : NO_BARS;
 
-  // [2026-11-20] 운용 시간 = 정규장만 (bot r001 ENABLE_NXT_SESSION off): tick / minute bars of 09:00 - 15:30 only
-  const nxtOn = useBot((s) => nxtSessionOn(s.control.nxt));
   const allBars: Bar[] = useMemo(() => {
     if (kind === 'tick') {
       const tb = tickBarsFromTrades(trades, n);
@@ -373,7 +369,7 @@ export function ChartWindow({ win }: { win: Win }) {
     // trades after the REST fetch time roll into the bars (REST data is newest up to about its fetch time)
     return applyTrades(res.bars, trades, kind, n, res.at - 1000);
   }, [res, trades, kind, n, prevBars, reqKey]);
-  const bars = useMemo(() => (intraday && !nxtOn ? regularOnly(allBars) : allBars), [allBars, intraday, nxtOn]);
+  const bars = allBars;   // [2026-11-23] every bar - the bot's operating hours do not limit the HTS chart
 
   // REST and realtime trades must share one accumulated-volume basis, or the same trade is counted twice - shown when it happens
   const mismatch = useMemo(() => (kind === 'tick' ? acmlMismatches(trades) : 0), [kind, trades]);

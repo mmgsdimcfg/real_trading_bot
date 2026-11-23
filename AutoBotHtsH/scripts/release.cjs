@@ -70,8 +70,24 @@ if (!yml.endsWith('\n')) yml += '\n';
 yml += `buildNumber: '${buildNumber}'\n`;
 if (files.includes(portable)) yml += `portableFile: ${portable}\n`;
 const notesFile = path.join(root, 'release-notes.txt');
-if (fs.existsSync(notesFile)) {
-  const notes = fs.readFileSync(notesFile, 'utf8').replace(/\r/g, '').trim();
+// [2026-11-23] without a release-notes.txt the notes come from this version's entries of the package.json update log
+// ("... type=feat - v1.2.3_004: text", one line per "(1) (2)" part, prefixed NEW: / FIX: / UPD: by the type) - update-ui.js tags them
+function notesFromLog() {
+  const log = pkg._updateLog || pkg['//'] || [];
+  const mark = `v${version}_${buildNumber}:`;
+  const lines = [];
+  for (const entry of Array.isArray(log) ? log : []) {
+    if (typeof entry !== 'string' || !entry.includes(mark)) continue;
+    const type = (/type=(\w+)/.exec(entry) || [])[1] || '';
+    const tag = type === 'feat' ? 'NEW' : type === 'fix' ? 'FIX' : 'UPD';
+    const text = entry.slice(entry.indexOf(mark) + mark.length).trim();
+    const parts = text.split(/\s*\(\d+\)\s*/).map(x => x.trim().replace(/[,;]\s*$/, '')).filter(Boolean);
+    for (const part of parts) lines.push(`${tag}: ${part}`);
+  }
+  return lines.join('\n');
+}
+{
+  const notes = (fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8').replace(/\r/g, '').trim() : '') || notesFromLog();
   if (notes) yml += 'releaseNotes: |-\n' + notes.split('\n').map(l => '  ' + l).join('\n') + '\n';
 }
 fs.writeFileSync(ymlPath, yml);

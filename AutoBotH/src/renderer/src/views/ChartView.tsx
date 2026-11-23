@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-23] type=fix - The chart shows every bar it gets whatever the bot's operating hours are (user 2026-11-23: displaying data
+ *   is not a bot function) - the 운용 시간 = 정규장만 filter (regularOnly) is gone; the bot setting only governs trading
  * - [2026-11-06] type=feat - Chart tab (HTS-style): any symbol (watched symbols in a list, or any 6-digit code), tick / minute /
  *   daily / weekly / monthly bars with zoom (wheel) and pan (drag, double-click = back to the newest bars), the previous trading day
  *   shown before intraday bars, every indicator (MA, Bollinger, Ichimoku, VWAP / RSI, MACD, ADX, stochastic, Williams %R, MFI, OBV)
@@ -46,13 +48,12 @@ import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
 import { PriceChart, IndicatorLines, barWhen, kstDayStart, refCloseAt } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
-import { MIN_SIZES, TICK_SIZES, groupDaily, regularOnly, ymdEpoch, type Bar, type ChartKind, type MarketQuote, type PriceResponse } from '../../../shared/price';
-import { nxtSessionOn } from '../../../shared/control';
+import { MIN_SIZES, TICK_SIZES, groupDaily, ymdEpoch, type Bar, type ChartKind, type MarketQuote, type PriceResponse } from '../../../shared/price';
 import { computeIndicators, OSCILLATORS, type IndicatorKey, type IndicatorSet } from '../../../shared/indicators';
 import { condTitle, fmtInt } from '../lib';
 import { barsUpTo } from '../../../shared/replay';
 import { peek, put } from '../dataCache';
-import { fmtKstDateTime, fmtKstTime, shownSessionRange } from '../../../shared/time';
+import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
 
 const KINDS: [ChartKind, string][] = [
   ['tick', '틱'],
@@ -306,8 +307,6 @@ export function ChartView() {
   const quoteBar: Bar | null =
     isToday && q && q.open && q.high && q.low && q.price ? { t: dayT0, o: q.open, h: q.high, l: q.low, c: q.price, v: q.volume || 0 } : null;
   const replayCursor = snap?.replay?.cursor ?? null;
-  const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
-  const liveKeep = isToday && status.live && replayCursor === null ? shownSessionRange(day, isNxt || data?.nxt === true, false, Date.now()) : null;
   const bars = useMemo<Bar[]>(() => {
     if (!data?.ok) return [];
     if (!intraday && quoteBar) {
@@ -318,11 +317,9 @@ export function ChartView() {
         return groupDaily(plus, prefs.kind);
       }
     }
-    const all = [...prevDay, ...(intraday ? olderBars : NONE), ...barsUpTo(data.bars, replayCursor, intraday)];
-    // [2026-11-20] 운용 시간 = 정규장만: tick / minute bars of 09:00 - 15:30 only
-    // [2026-11-23] ... plus, on the live day, the hours traded right now (before 09:00 the NXT pre-market, after 15:30 until 20:00)
-    return intraday && !nxtOn ? regularOnly(all, liveKeep) : all;
-  }, [data, daily, olderBars, prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor, nxtOn, liveKeep?.[0], liveKeep?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+    // [2026-11-23] every bar, whatever the bot's operating hours (the chart is a display of data, not a bot function)
+    return [...prevDay, ...(intraday ? olderBars : NONE), ...barsUpTo(data.bars, replayCursor, intraday)];
+  }, [data, daily, olderBars, prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const warm = prevDay.length ? NONE : oldest?.warm;
   const warmBot = prevDay.length ? NONE : oldest?.warmBot;
 

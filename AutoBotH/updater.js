@@ -1,5 +1,8 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - Redesigned update dialog (update-ui.js, design A): the payload carries the installer size, 'update-progress'
+ *   the speed (bytesPerSecond), and 'update-cancel' stops a running download (electron-updater CancellationToken) - 'update-download'
+ *   then answers { ok: false, cancelled: true }
  * - [2026-11-18] type=fix - 'update-progress' also carries full (the installer size from latest.yml files[0].size): a differential
  *   download (blockmap) only fetches the changed blocks, so total (e.g. 12.6 MB) was read as a wrong installer size (112 MB)
  * - [2026-10-15] type=feat - New module (shared by the make_utils Electron programs, same file in each): update check/download against the
@@ -28,6 +31,7 @@ let autoUpdater = null;
 let latestInfo = null;
 let downloading = null;   // Promise while a download is in progress
 let downloaded = false;
+let cancelToken = null;      // CancellationToken of the running download
 
 function errMessage(err) {
   return (err && err.message ? err.message : String(err)).split('\n')[0];
@@ -86,6 +90,7 @@ function toPayload(info) {
     label: `v${info.version}${build ? '_' + build : ''}`,
     current: versionLabel(),
     portable: isPortable,
+    size: (Array.isArray(info.files) && info.files[0] && Number(info.files[0].size)) || 0,
     releaseNotes: notes,
     releaseDate: info.releaseDate || ''
   };
@@ -128,21 +133,31 @@ function initUpdater({ productName, getMainWindow, getVersionLabel } = {}) {
     const fileInfo = Array.isArray(latestInfo.files) ? latestInfo.files[0] : null;
     const full = (fileInfo && Number(fileInfo.size)) || 0;   // whole installer; total < full = differential download (changed blocks only)
     const onProgress = (p) => {
-      if (!sender.isDestroyed()) sender.send('update-progress', { percent: p.percent || 0, transferred: p.transferred, total: p.total, full });
+      if (!sender.isDestroyed()) sender.send('update-progress', { percent: p.percent || 0, transferred: p.transferred, total: p.total, full, speed: p.bytesPerSecond || 0 });
     };
     const u = getUpdater();
     u.on('download-progress', onProgress);
     try {
-      if (!downloading) downloading = u.downloadUpdate();
+      if (!downloading) {
+        const { CancellationToken } = require('electron-updater');
+        cancelToken = new CancellationToken();
+        downloading = u.downloadUpdate(cancelToken);
+      }
       await downloading;
       downloaded = true;
       return { ok: true };
     } catch (err) {
+      if (cancelToken && cancelToken.cancelled) return { ok: false, cancelled: true };
       return { ok: false, message: errMessage(err) };
     } finally {
       downloading = null;
+      cancelToken = null;
       u.removeListener('download-progress', onProgress);
     }
+  });
+
+  ipcMain.on('update-cancel', () => {
+    if (cancelToken && !cancelToken.cancelled) cancelToken.cancel();
   });
 
   ipcMain.on('update-install', () => {

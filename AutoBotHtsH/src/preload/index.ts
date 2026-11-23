@@ -150,6 +150,7 @@ contextBridge.exposeInMainWorld('updater', {
   check: () => ipcRenderer.invoke('update-check'),
   download: () => ipcRenderer.invoke('update-download'),
   install: () => ipcRenderer.send('update-install'),
+  cancel: () => ipcRenderer.send('update-cancel'),   // [2026-11-23] new update dialog
   onAvailable: (cb: (info: unknown) => void) => ipcRenderer.on('update-available', (_e, info) => cb(info)),
   onProgress: (cb: (p: unknown) => void) => ipcRenderer.on('update-progress', (_e, p) => cb(p)),
 });
