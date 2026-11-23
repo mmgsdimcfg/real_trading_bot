@@ -512,8 +512,18 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 /* ---- [2026-11-20] AutoBotHtsH: AutoBotH windows / status line / menu ---- */
 .bot-root.bot-win { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
 .bot-root.bot-win > .app-main { flex: 1; min-height: 0; }
-.bot-root.bot-strip { height: 30px; flex-shrink: 0; overflow: hidden; display: flex; align-items: center; padding-left: 10px; background: var(--surface); border-bottom: 1px solid var(--border); }
-.bot-root.bot-strip .statusbar { font-size: var(--fs); gap: 16px; }
+/* [2026-11-24] strip under the toolbar: open windows (left) + bot status details (right); bot connection / bot / day in the title bar */
+.status-strip { height: 30px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding-left: 8px; background: var(--surface); border-bottom: 1px solid var(--border); overflow: hidden; }
+.open-wins { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; white-space: nowrap; font-size: var(--fs); }
+.open-wins::-webkit-scrollbar { display: none; }
+.open-wins .ow-item { flex-shrink: 0; height: 22px; padding: 0 9px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text-2); font-size: var(--fs); cursor: pointer; }
+.open-wins .ow-item:hover { color: var(--text); border-color: var(--text-3); }
+.open-wins .ow-item.on { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.open-wins .ow-item.min { opacity: 0.55; border-style: dashed; }
+.bot-root.bot-strip-r { flex-shrink: 1; min-width: 0; height: 100%; display: flex; align-items: center; background: none; }
+.bot-root.bot-strip-r .statusbar { font-size: var(--fs); gap: 16px; flex: none; max-width: 100%; }
+.bot-root.bot-tb { flex-shrink: 0; height: 100%; display: flex; align-items: center; background: none; margin-left: 12px; -webkit-app-region: no-drag; }
+.bot-root.bot-tb .statusbar { flex: none; font-size: var(--fs); gap: 14px; }
 .bot-root.bot-confirm { height: auto; overflow: visible; background: none; }
 .dd-menu.bot-menu { min-width: 170px; }
 .dd-group { display: flex; flex-direction: column; }

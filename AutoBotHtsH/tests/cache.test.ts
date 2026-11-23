@@ -181,8 +181,8 @@ describe('watchlist picks files', () => {
     const g0 = [{ id: 'g1', name: '관심 1', codes: ['005930'] }];
     const f = { file: '_20261119_picks.txt', date: '20261119', mtime: 100, codes: ['067920', '332570'] };
     const a = mergePicks(g0, {}, [f], id, 60);
-    expect(a.added).toEqual(['1119']);
-    expect(a.groups[1]).toMatchObject({ name: '1119', codes: ['067920', '332570'], src: f.file });
+    expect(a.added).toEqual(['11/19']);
+    expect(a.groups[1]).toMatchObject({ name: '11/19', codes: ['067920', '332570'], src: f.file });
     // same file again: nothing
     expect(mergePicks(a.groups, a.imported, [f], id, 60).changed).toBe(false);
     // the user deletes the tab: not made again while the file is unchanged
@@ -190,7 +190,7 @@ describe('watchlist picks files', () => {
     expect(mergePicks(del, a.imported, [f], id, 60).changed).toBe(false);
     // the file changes: the tab is made again with the new codes
     const c = mergePicks(del, a.imported, [{ ...f, mtime: 200, codes: ['145020'] }], id, 60);
-    expect(c.groups[1]).toMatchObject({ name: '1119', codes: ['145020'] });
+    expect(c.groups[1]).toMatchObject({ name: '11/19', codes: ['145020'] });
     // an existing tab keeps its id when its file changes
     const d = mergePicks(c.groups, c.imported, [{ ...f, mtime: 300, codes: ['000660'] }], id, 60);
     expect(d.groups[1].id).toBe(c.groups[1].id);

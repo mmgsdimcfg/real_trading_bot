@@ -31,7 +31,7 @@ import { create } from 'zustand';
 import type { AuthState } from '../../preload/index';
 import type { OrderBook, Quote, TradeTick } from '../../shared/kis';
 import { addRealtimeTrades, mergeTrades } from '../../shared/live';
-import { mergePicks, r004Entry } from '../../shared/watchPicks';
+import { mergePicks, r004Entry, renamePickTabs } from '../../shared/watchPicks';
 
 /** KST trading date "YYYY-MM-DD" - the trade cache of a code is dropped when it changes (accumulated volumes restart every day) */
 export const kstDay = () => new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
@@ -480,9 +480,11 @@ export const useStore = create<State>()((set, get) => {
       const f = await window.hts.watchLoad().catch(() => null);
       watchFileReady = true;
       if (f && f.groups.length) {
-        set({ watch: f.groups, watchImported: f.imported || {} });
+        const rn = renamePickTabs(f.groups);
+        set({ watch: rn.groups, watchImported: f.imported || {} });
+        if (rn.changed) saveWatch(rn.groups, f.imported || {});
         try {
-          localStorage.setItem(WATCH_KEY, JSON.stringify(f.groups));
+          localStorage.setItem(WATCH_KEY, JSON.stringify(rn.groups));
         } catch {
           /* storage unavailable */
         }

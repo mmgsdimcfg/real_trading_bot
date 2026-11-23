@@ -82,11 +82,20 @@ export function BotWindow({ win }: { win: Win }) {
   );
 }
 
-/** AutoBotH status line (connection · bot · day · details); its items open the bot windows */
-export function BotStatusStrip() {
+/** [2026-11-24] AutoBotH status, left half (connection · bot · day · 절전 방지) - right end of the title bar */
+export function BotStatusTitle() {
   return (
-    <div className="bot-root bot-strip">
-      <StatusBar embedded />
+    <div className="bot-root bot-tb">
+      <StatusBar embedded part="left" />
+    </div>
+  );
+}
+
+/** AutoBotH status details (message · 수신 · 경고 · 시장 · 감시 · 조건) - right side of the strip under the toolbar */
+export function BotStatusDetails() {
+  return (
+    <div className="bot-root bot-strip-r">
+      <StatusBar embedded part="right" />
     </div>
   );
 }

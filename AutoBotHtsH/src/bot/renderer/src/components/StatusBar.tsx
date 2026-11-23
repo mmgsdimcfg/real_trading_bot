@@ -15,6 +15,8 @@
  * - [2026-11-10] type=feat - Host tag in the connection item (이 PC / 라즈베리파이) and "☕ 절전 방지" while the local r003 keeps the PC awake
  * - [2026-11-20] type=feat - AutoBotHtsH: StatusBar({ embedded }) - only the status line (connection / bot / day / details), shown
  *   under the combined app's toolbar; the title bar, ☰ menu and window buttons are the HtsH ones there
+ * - [2026-11-24] type=feat - AutoBotHtsH: StatusBar({ embedded, part }) - part 'left' (connection / bot / day / 절전 방지) goes to the
+ *   right end of the combined app's title bar, part 'right' (message + details) stays in the strip under the toolbar
  */
 
 import { useEffect, useState } from 'react';
@@ -91,7 +93,7 @@ const CONN_LABEL: Record<string, string> = {
 };
 const SRC_LABEL: Record<string, string> = { server: '서버', cache: '캐시', bundled: '내장본' };
 
-export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
+export function StatusBar({ embedded = false, part }: { embedded?: boolean; part?: 'left' | 'right' } = {}) {
   const status = useStore((s) => s.status);
   const snap = useStore((s) => s.snapshot);
   const setTab = useStore((s) => s.setTab);
@@ -112,8 +114,8 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
   // Left: what is connected, the bot and the day. Right: the day's details as one "a · b · c" line (secondary information)
   const connText = `${status.conn !== 'idle' && status.conn !== 'local' ? (status.mode === 'local' ? '이 PC · ' : '라즈베리파이 · ') : ''}${CONN_LABEL[status.conn] || status.conn}${retry !== null && status.conn === 'reconnecting' ? ` (${retry}s)` : ''}`;
   const filesTip = snap?.files.map((f) => `${f.name}  ${f.offset}/${f.size}`).join('\n') || '';
-  const line = (
-      <div className="statusbar" onDoubleClick={(e) => !embedded && e.target === e.currentTarget && window.winCtl.toggleMaximize()}>
+  const leftItems = (
+      <>
         <span className={`conn conn-${status.conn}`} title={status.message || ''}>
           {connText}
         </span>
@@ -139,6 +141,10 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
             절전 방지
           </span>
         )}
+      </>
+  );
+  const rightItems = (
+      <>
         {status.message && <span className="sb-msg" title={status.message}>{status.message}</span>}
         <span className="sb-right">
           {status.prefetch && status.prefetch.date === status.date && (
@@ -169,6 +175,14 @@ export function StatusBar({ embedded = false }: { embedded?: boolean } = {}) {
           )}
           <span title={`파일 ${snap?.files.length || 0} · ${fmtBytes(bytes)} · ${fmtInt(snap?.lines)}줄`}>조건 {SRC_LABEL[status.conditionsSource || ''] || '-'}</span>
         </span>
+      </>
+  );
+  if (part === 'left') return <div className="statusbar sb-left">{leftItems}</div>;
+  if (part === 'right') return <div className="statusbar">{rightItems}</div>;
+  const line = (
+      <div className="statusbar" onDoubleClick={(e) => !embedded && e.target === e.currentTarget && window.winCtl.toggleMaximize()}>
+        {leftItems}
+        {rightItems}
       </div>
   );
   if (embedded) return line;

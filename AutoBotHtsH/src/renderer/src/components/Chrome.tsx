@@ -12,11 +12,15 @@
 //   (components/ReboundSettings.tsx: on / off, tab, symbols, thresholds; folder and test popup are buttons there))
 // - [2026-11-22] type=feat (Title bar "미확인 알람 N": alerts whose popup closed by itself and were not looked at yet; a click
 //   opens the history tab of the rebound settings dialog)
+// - [2026-11-24] type=feat (Title bar: the bot status (이 PC · 연결됨 / 봇 / 날짜 LIVE / 절전 방지) right-aligned before the window
+//   buttons; OpenWinList - the open windows as buttons in the strip under the toolbar (click = bring to front / restore, again on
+//   the front one = minimize))
 
 import { useEffect, useRef, useState } from 'react';
-import { BOT_GROUPS, BOT_TITLE, botWinOf, useStore, WIN_TITLE, type WinType, type ArrangeMode, type Theme } from '../store';
+import { BOT_GROUPS, BOT_TITLE, botWinOf, SYMBOL_WINS, useStore, WIN_TITLE, type Win, type WinType, type ArrangeMode, type Theme } from '../store';
 import { SymbolSearch } from './SymbolSearch';
-import { useCall, useOutsideClose } from '../hooks';
+import { BotStatusTitle } from '../windows/BotWindow';
+import { useCall, useOutsideClose, useSymbol } from '../hooks';
 import type { IndexQuote } from '../../../shared/market';
 import { fmtNum, fmtPct, signOf, upDown } from '../lib';
 import type { ReboundStatus } from '../../../preload/index';
@@ -178,8 +182,35 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
           </>
         )}
       </div>
+      {auth?.status === 'in' && <BotStatusTitle />}
       <WindowButtons />
     </header>
+  );
+}
+
+function OpenWinItem({ win, front }: { win: Win; front: boolean }) {
+  const sym = useSymbol(SYMBOL_WINS.includes(win.type) ? win.code : '');
+  const label = `${WIN_TITLE[win.type]}${sym?.name ? ` ${sym.name}` : ''}`;
+  return (
+    <button
+      type="button"
+      className={`ow-item ${front ? 'on' : ''} ${win.min ? 'min' : ''}`}
+      title={`${label}${win.min ? ' (최소화됨)' : ''} - 누르면 앞으로, 앞에 있는 창을 누르면 최소화`}
+      onClick={() => (front ? useStore.getState().toggleMin(win.id) : useStore.getState().focus(win.id))}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** [2026-11-24] open windows in opening order; the active one is marked, minimized ones are dimmed */
+export function OpenWinList() {
+  const wins = useStore((s) => s.wins);
+  const active = useStore((s) => s.active);
+  return (
+    <div className="open-wins">
+      {wins.length ? wins.map((w) => <OpenWinItem key={w.id} win={w} front={w.id === active && !w.min} />) : <span className="muted">열린 창 없음</span>}
+    </div>
   );
 }
 

@@ -19,8 +19,19 @@ export interface PicksEntry {
   codes: string[];
 }
 
-/** tab name of a picks file: MMDD of its date */
-export const picksTabName = (date: string) => date.slice(4, 8);
+/** tab name of a picks file / r004: MM/DD of its date ([2026-11-24] was MMDD) */
+export const picksTabName = (date: string) => `${date.slice(4, 6)}/${date.slice(6, 8)}`;
+
+/** [2026-11-24] tabs made from a picks file / r004 under the old MMDD name get the MM/DD name (user tabs are left alone) */
+export function renamePickTabs<G extends PickGroup>(groups: G[]): { groups: G[]; changed: boolean } {
+  let changed = false;
+  const out = groups.map((g) => {
+    if (!g.src || !/^\d{4}$/.test(g.name)) return g;
+    changed = true;
+    return { ...g, name: `${g.name.slice(0, 2)}/${g.name.slice(2)}` };
+  });
+  return { groups: changed ? out : groups, changed };
+}
 
 /** [2026-11-23] key of the r004 tab of a trading day (PickGroup.src / imported) */
 export const r004Src = (day: string) => `r004:${day}`;
