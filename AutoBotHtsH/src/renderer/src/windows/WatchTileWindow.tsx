@@ -6,11 +6,14 @@
 // - [2026-11-23] type=feat (자동 보기 on the tile window (user 2026-11-23): the group's tiles are shown one after another every N s in
 //   every open symbol window, in the order on screen (the chosen sort), the current tile framed and kept in view. Its own setting
 //   (autobothtsh.watchTileAuto); one auto view at a time - starting it stops the timeline's / the list window's and the other way round)
+// - [2026-11-23] type=feat (종목 추가: the symbol search of the list window on the tile toolbar too - the picked symbol is added to the
+//   shown group (not twice, up to WATCH_MAX))
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, type Win } from '../store';
+import { useStore, WATCH_MAX, type Win } from '../store';
 import { useCall } from '../hooks';
 import { NxtTag } from '../components/NxtTag';
+import { SymbolSearch } from '../components/SymbolSearch';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import type { WatchRow } from '../../../shared/kis';
 import { fmtInt, fmtKrwBig, fmtPct, upDown } from '../lib';
@@ -130,6 +133,16 @@ export function WatchTileWindow({ win }: { win: Win }) {
         ))}
       </div>
       <div className="win-tb">
+        <SymbolSearch
+          compact
+          placeholder="종목 추가"
+          onPick={(c) => {
+            if (!group || codes.includes(c) || codes.length >= WATCH_MAX) return;
+            const st = useStore.getState();
+            st.setWatch(st.watch.map((g) => (g.id === group.id ? { ...g, codes: [...g.codes, c] } : g)));
+            setSel(c);
+          }}
+        />
         <select value={sort} onChange={(e) => setOpts(win.id, { sort: e.target.value })} title="타일 순서">
           {SORTS.map(([k, label]) => (
             <option key={k} value={k}>
@@ -138,7 +151,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
           ))}
         </select>
         <span className="muted small" title="NXT 표시 종목은 KRX 장이 닫힌 시간(09:00 이전, 15:40 이후)에 NXT 시세로 표시합니다">
-          {codes.length}종목 · <span className="up">상승 {ups}</span> · <span className="down">하락 {downs}</span> · 3초마다
+          {codes.length}/{WATCH_MAX}종목 · <span className="up">상승 {ups}</span> · <span className="down">하락 {downs}</span> · 3초마다
         </span>
         <span className="watch-auto" title={`이 그룹 종목을 화면에 보이는 순서대로 ${auto.sec}초마다 열린 종목 창에 표시 (타일을 누르면 그 종목부터 이어감). 타임라인 / 관심종목 창의 자동 보기와 동시에 실행되지 않습니다`}>
           <label className="check">
@@ -156,7 +169,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
           />
           초{auto.on && shown.length ? ` · ${sel && shown.includes(sel) ? shown.indexOf(sel) + 1 : '-'}/${shown.length}` : ''}
         </span>
-        <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 우클릭 → 메뉴 · 종목 추가는 관심종목 창에서</span>
+        <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 우클릭 → 메뉴(삭제 / 복사)</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
       <div className="tile-grid">
@@ -207,7 +220,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
             </button>
           );
         })}
-        {!codes.length && <p className="muted center tile-empty">이 그룹에 종목이 없습니다. 관심종목 창에서 종목을 추가하세요.</p>}
+        {!codes.length && <p className="muted center tile-empty">이 그룹에 종목이 없습니다. 위 검색칸에서 종목을 추가하세요.</p>}
       </div>
       {menu && group && <WatchMenu at={menu} groupId={group.id} link={win.link} onClose={() => setMenu(null)} onRemoved={(c) => sel === c && setSel(null)} />}
     </div>

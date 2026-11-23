@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-23] type=feat - v1.0.11_004: 관심종목(타일) 창 도구줄에 종목 추가 검색칸 - 고른 종목을 보고 있는 그룹에 추가(중복 제외, 그룹당 60종목까지)",
     "[2026-11-23] type=fix - v1.0.11_003: 현재가 창 투자자 탭 - 누적 선택 줄도 위에 고정(표만 스크롤)",
     "[2026-11-23] type=feat - v1.0.11_002: 현재가 창의 투자자 탭도 약 1년치 표시 + 누적 합계 행(표시 안 함 / 1달 / 3달 / 6달 / 1년) - 종목정보 창과 같은 표(components/InvestorPanel)",
     "[2026-11-23] type=feat - v1.0.11_001: 종목정보 창 - 창 높이를 종목정보가 모두 보이도록 한 번 자동으로 맞춤(기본 960x700), 투자자별 순매수는 창 안에서 스크롤, 최근 30일 대신 약 1년치 표시(차트의 투자자 누적과 같은 저장 데이터, 실전 계좌는 KRX+NXT 통합 기준), 누적 합계 행 추가(표시 안 함 / 1달 / 3달 / 6달 / 1년 선택)",
@@ -95,7 +96,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "004",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",
