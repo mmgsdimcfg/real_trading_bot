@@ -425,7 +425,12 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .info-win { overflow: auto; padding: 4px 10px 10px; }
 .info-win h3 { margin: 6px 0; font-size: var(--fs); }
 .info-win h4 { margin: 12px 0 5px; font-size: var(--fs); color: var(--text-2); }
-.info-win .tab-scroll { max-height: 260px; flex: none; }
+.info-win .tab-scroll { max-height: none; flex: none; }
+/* [2026-11-23] stock information | investor net buying side by side; the investor column drops below when the window is narrow */
+.info-cols { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: flex-start; }
+.info-main { flex: 1 1 250px; min-width: 250px; }
+.info-inv { flex: 1.4 1 330px; min-width: 330px; }
+.info-inv h4:first-child { margin-top: 4px; }
 .range-bar { position: relative; display: inline-block; width: 80px; height: 6px; margin-left: 8px; background: linear-gradient(90deg, var(--down), var(--up)); border-radius: 3px; vertical-align: middle; opacity: 0.8; }
 .range-bar i { position: absolute; top: -3px; width: 3px; height: 12px; background: var(--text); border-radius: 1px; transform: translateX(-1px); }
 .idx-row { display: flex; gap: 6px; padding: 6px; }
@@ -530,3 +535,14 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .tile-rows span { display: flex; justify-content: space-between; gap: 4px; min-width: 0; overflow: hidden; }
 .tile-rows em { font-style: normal; color: var(--text-3); }
 .tile-empty { grid-column: 1 / -1; padding: 24px 0; }
+
+/* [2026-11-23] right-click menu of a watchlist symbol (components/WatchMenu.tsx) */
+.ctx-menu { z-index: 10001; display: flex; flex-direction: column; min-width: 190px; max-height: calc(100vh - 8px); overflow-y: auto; padding: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px var(--shadow); user-select: none; -webkit-user-select: none; }
+.ctx-head { padding: 4px 10px 5px; border-bottom: 1px solid var(--grid); margin-bottom: 3px; white-space: nowrap; }
+.ctx-item { display: flex; justify-content: space-between; align-items: center; gap: 14px; border: none; background: none; text-align: left; padding: 5px 10px; border-radius: 4px; white-space: nowrap; }
+.ctx-item:hover:not(:disabled) { background: var(--hover); }
+.ctx-item:disabled { opacity: 0.45; cursor: default; }
+.ctx-item small { color: var(--text-3); }
+.ctx-item.danger { color: var(--up); }
+.ctx-sep { height: 1px; margin: 3px 4px; background: var(--grid); }
+.ctx-note { padding: 5px 10px; color: var(--text-3); }

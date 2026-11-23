@@ -72,6 +72,8 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
     fields: [
       { path: 'edge.openMin', label: '시작 후', unit: '분' },
       { path: 'edge.closeMin', label: '끝나기 전', unit: '분' },
+      { path: 'edge.preOpenMin', label: 'NXT 프리마켓 시작 후', unit: '분', hint: '프리마켓(08:00~08:50)은 짧아서 따로 둡니다' },
+      { path: 'edge.preCloseMin', label: 'NXT 프리마켓 끝나기 전', unit: '분' },
     ],
   },
   {

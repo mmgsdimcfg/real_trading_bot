@@ -224,7 +224,10 @@ describe('helpers', () => {
     const c = REBOUND_DEFAULTS;
     expect([inEdge(c, at('09:00')), inEdge(c, at('09:14')), inEdge(c, at('09:15'))]).toEqual([true, true, false]);
     expect([inEdge(c, at('15:15')), inEdge(c, at('15:16')), inEdge(c, at('15:30'))]).toEqual([false, true, true]);
-    expect([inEdge(c, at('08:05')), inEdge(c, at('08:20')), inEdge(c, at('15:42')), inEdge(c, at('16:00')), inEdge(c, at('19:50'))]).toEqual([true, false, true, false, true]);
+    expect([inEdge(c, at('08:20')), inEdge(c, at('15:42')), inEdge(c, at('16:00')), inEdge(c, at('19:50'))]).toEqual([false, true, false, true]);
+    // [2026-11-23] NXT pre-market 08:00 - 08:50: its own edges, 5 / 5 minutes
+    expect([inEdge(c, at('08:00')), inEdge(c, at('08:04')), inEdge(c, at('08:05')), inEdge(c, at('08:45')), inEdge(c, at('08:46')), inEdge(c, at('08:50'))]).toEqual([true, true, false, false, true, true]);
+    expect(inEdge(applySets(c, ['edge.preOpenMin=15']), at('08:10'))).toBe(true);
     expect(inEdge(applySets(c, ['edge.openMin=0', 'edge.closeMin=0']), at('09:00'))).toBe(false);
   });
 

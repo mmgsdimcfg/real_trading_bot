@@ -2,6 +2,8 @@
 // - [2026-11-06] type=feat (Stock info window: KIS search_stock_info fields with the official Korean labels (listing date, shares, capital,
 //   par value, sector classes, KOSPI200 membership, halt / administrative flags, NXT tradability ...), valuation from the current quote
 //   (market cap, PER / PBR / EPS / BPS, foreign ownership, 52-week range position) and investor net buying for the last days)
+// - [2026-11-23] type=feat (투자자별 순매수 sits to the right of the stock information (user 2026-11-23); under it when the window is too
+//   narrow for both columns)
 
 import type { Win } from '../store';
 import { useCall, useSymbol } from '../hooks';
@@ -30,6 +32,8 @@ export function InfoWindow({ win }: { win: Win }) {
       <h3>
         {sym?.name || win.code} <span className="mono muted">{win.code}</span> {sym?.nxt && <NxtMark />} <span className="muted small">{sym ? `${sym.market}` : ''}</span>
       </h3>
+      <div className="info-cols">
+      <div className="info-main">
       {d && (
         <div className="kv-grid">
           <span>시가총액</span>
@@ -67,9 +71,13 @@ export function InfoWindow({ win }: { win: Win }) {
           </span>
         ))}
       </div>
+      </div>
+      <div className="info-inv">
       <h4>투자자별 순매수 (주)</h4>
       <div className="tab-scroll">
         <InvestorTab code={win.code} />
+      </div>
+      </div>
       </div>
     </div>
   );

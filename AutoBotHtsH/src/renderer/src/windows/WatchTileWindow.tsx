@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react';
 import { useStore, type Win } from '../store';
 import { useCall } from '../hooks';
 import { NxtTag } from '../components/NxtTag';
+import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import type { WatchRow } from '../../../shared/kis';
 import { fmtInt, fmtKrwBig, fmtPct, upDown } from '../lib';
 
@@ -53,6 +54,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const sort = (SORTS.some(([k]) => k === win.opts.sort) ? win.opts.sort : 'list') as TileSort;
   const r = useCall<WatchRow[]>('multi', [codes], 3000, codes.length > 0);
   const [sel, setSel] = useState<string | null>(null);
+  const [menu, setMenu] = useState<MenuAt | null>(null);
   const byCode = useMemo(() => new Map((r.data || []).map((x) => [x.code, x])), [r.data]);
   const shown = useMemo(() => sortTiles(codes, byCode, sort), [codes, byCode, sort]);
   const ups = shown.filter((c) => (byCode.get(c)?.change || 0) > 0).length;
@@ -78,7 +80,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
         <span className="muted small" title="NXT 표시 종목은 KRX 장이 닫힌 시간(09:00 이전, 15:40 이후)에 NXT 시세로 표시합니다">
           {codes.length}종목 · <span className="up">상승 {ups}</span> · <span className="down">하락 {downs}</span> · 3초마다
         </span>
-        <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 종목 추가/삭제는 관심종목 창에서</span>
+        <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 우클릭 → 메뉴 · 종목 추가는 관심종목 창에서</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
       <div className="tile-grid">
@@ -94,6 +96,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
               style={{ ['--heat' as string]: tileHeat(x?.changePct) }}
               onClick={() => (setSel(c), setCodeAll(c))}
               onDoubleClick={() => useStore.getState().open('chart', { code: c, link: win.link })}
+              onContextMenu={(e) => (e.preventDefault(), setSel(c), setMenu({ code: c, name: x?.name || '', x: e.clientX, y: e.clientY }))}
             >
               <span className="tile-head">
                 <b className="tile-name">{x?.name || c}</b>
@@ -129,6 +132,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
         })}
         {!codes.length && <p className="muted center tile-empty">이 그룹에 종목이 없습니다. 관심종목 창에서 종목을 추가하세요.</p>}
       </div>
+      {menu && group && <WatchMenu at={menu} groupId={group.id} link={win.link} onClose={() => setMenu(null)} onRemoved={(c) => sel === c && setSel(null)} />}
     </div>
   );
 }

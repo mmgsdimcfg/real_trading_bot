@@ -19,6 +19,9 @@
  *   bar opened gapPct or more under the previous bar's close and is still within plunge.window, the gap counts as the plunge -
  *   its bar is the lowest low since the open (findGapPlunge). No volume test (the opening bar is always heavy) and the session
  *   edge does not exclude it; the crash limit (maxFallPct) and the edge rule for the judged bar still apply. 0 = off
+ * - [2026-11-23] type=feat - edge.preOpenMin / preCloseMin (user 2026-11-23): the NXT pre-market window (08:00 - 08:50) has its own,
+ *   shorter edges (5 / 5 minutes) - with 15 / 15 only 08:15 - 08:35 of its 50 minutes was judged. KRX and the after-market keep
+ *   edge.openMin / closeMin
  * - [2026-11-22] type=feat - alert.kakao (send each alert's summary to the user's own KakaoTalk, off by default), alertSummary()
  *   (the text of that message, at most 200 characters), alert.autoCloseSec default 0 -> 60: a popup that closes by itself leaves
  *   the alert unread and the title bar counts it Default 8 %: of 36 sampled alerts the next deepest falls were -6.8 / -5.4 / -5.2 %. 0 = no limit
@@ -60,7 +63,8 @@ export interface ReboundConfig {
   /** RSI > signal and DI+ > DI- must hold on the judged bar too */
   requireCurrentAbove: boolean;
   /** minutes left out at the start / end of each session window (0 = none): no plunge bar and no detection there */
-  edge: { openMin: number; closeMin: number };
+  /** [2026-11-23] preOpenMin / preCloseMin: the same for the NXT pre-market window (sessions.nxtPre) */
+  edge: { openMin: number; closeMin: number; preOpenMin: number; preCloseMin: number };
   plunge: {
     /** the plunge bar is within the last `window` bars */
     window: number;
@@ -150,7 +154,7 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
   recent: 5,
   recentMin: 3,
   requireCurrentAbove: true,
-  edge: { openMin: 15, closeMin: 15 },
+  edge: { openMin: 15, closeMin: 15, preOpenMin: 5, preCloseMin: 5 },
   plunge: { window: 40, dropPct: -0.8, wickRatio: 2, wickMinPct: 0.3, volWindow: 60, volMult: 3, fallWindow: 60, maxFallPct: 8, gapPct: -1.5 },
   rsi: { min: 45, max: 68 },
   macd: { oscRising: 3 },
@@ -322,7 +326,10 @@ export function inEdge(cfg: ReboundConfig, t: number): boolean {
     if (!w) continue;
     const s = min(w[0]);
     const e = min(w[1]);
-    if ((m >= s && m < s + cfg.edge.openMin) || (m <= e && m > e - cfg.edge.closeMin)) return true;
+    const pre = w === cfg.sessions.nxtPre;
+    const open = pre ? cfg.edge.preOpenMin : cfg.edge.openMin;
+    const close = pre ? cfg.edge.preCloseMin : cfg.edge.closeMin;
+    if ((m >= s && m < s + open) || (m <= e && m > e - close)) return true;
   }
   return false;
 }

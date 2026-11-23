@@ -18,6 +18,7 @@
 // - [2026-11-20] type=feat (Watchlist (user 2026-11-20): group tabs can be dragged to a new order; 자동 보기 - the group's symbols are shown
 //   in every open symbol window one after another every N s (3 - 600, kept per PC), the current row framed by a thin line; only one
 //   auto view runs - starting it here stops the timeline's and the other way round (AUTO_VIEW_EVENT))
+// - [2026-11-23] type=feat (Watchlist rows: right-click menu (components/WatchMenu) - open windows, copy / move to another tab, delete)
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LINK_COLORS, newGroupId, useStore, WATCH_MAX, type Win } from '../store';
 import { useCall, useOutsideClose } from '../hooks';
@@ -39,6 +40,7 @@ function loadWatchAuto(): WatchAutoCfg {
 import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
 import { FloatPop } from '../components/FloatPop';
+import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import { PriceChart } from '../components/PriceChart';
 import type { RankRow, WatchRow } from '../../../shared/kis';
 import type { ChartRes, IndexQuote, NewsRow, RankReq, RankType } from '../../../shared/market';
@@ -77,6 +79,7 @@ export function WatchWindow({ win }: { win: Win }) {
   const [rename, setRename] = useState<string | null>(null);
   const [dragFrom, setDragFrom] = useState<string | null>(null);
   const [dragTab, setDragTab] = useState<string | null>(null);
+  const [menu, setMenu] = useState<MenuAt | null>(null);
   // [2026-11-20] 자동 보기
   const [auto, setAuto] = useState<WatchAutoCfg>(loadWatchAuto);
   const [secText, setSecText] = useState(String(auto.sec));
@@ -242,7 +245,7 @@ export function WatchWindow({ win }: { win: Win }) {
           />
           초{auto.on && codes.length ? ` · ${sel && codes.includes(sel) ? codes.indexOf(sel) + 1 : '-'}/${codes.length}` : ''}
         </span>
-        <span className="muted small watch-hint">클릭·Enter → 열린 창 모두 · 끌어서 순서 변경</span>
+        <span className="muted small watch-hint">클릭·Enter → 열린 창 모두 · 끌어서 순서 변경 · 우클릭 → 메뉴</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
       <div className="tab-scroll">
@@ -274,6 +277,7 @@ export function WatchWindow({ win }: { win: Win }) {
                   onDrop={(e) => (e.preventDefault(), dragFrom && move(dragFrom, codes.indexOf(c)), setDragFrom(null))}
                   onDragEnd={() => setDragFrom(null)}
                   onClick={() => (setSel(c), setCodeAll(c))}
+                  onContextMenu={(e) => (e.preventDefault(), setSel(c), setMenu({ code: c, name: x?.name || '', x: e.clientX, y: e.clientY }))}
                 >
                   <td>
                     <b>{x?.name || c}</b> <span className="mono muted small">{c}</span> <NxtTag code={c} />
@@ -298,6 +302,7 @@ export function WatchWindow({ win }: { win: Win }) {
           </tbody>
         </table>
       </div>
+      {menu && group && <WatchMenu at={menu} groupId={group.id} link={win.link} onClose={() => setMenu(null)} onRemoved={(c) => sel === c && setSel(null)} />}
     </div>
   );
 }
