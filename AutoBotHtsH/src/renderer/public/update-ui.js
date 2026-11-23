@@ -1,5 +1,6 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - "Restart automatically when done" is ticked by default (user request); untick it to restart later
  * - [2026-11-23] type=feat - Redesigned dialog (design A, same as TermH / BBoxH): a dark card with its own header (icon, short title, old ->
  *   new version chips) and one screen per stage - available (what is new with NEW / FIX / UPD tags and "show all", installer size,
  *   Later / Update now, skip link) -> downloading (big percent, size, speed and time left, gradient bar, "restart automatically when
@@ -217,7 +218,7 @@
         <div class="uh-stage" data-for="downloading">
           <div class="uh-prog-row"><div class="uh-pct"><b>0</b><span>%</span></div><div class="uh-prog-info"><div class="uh-size"></div><div class="uh-speed"></div></div></div>
           <div class="uh-bar"><div></div></div>
-          <label class="uh-check-row"><input type="checkbox" class="uh-auto"><span class="uh-auto-label"></span></label>
+          <label class="uh-check-row"><input type="checkbox" class="uh-auto" checked><span class="uh-auto-label"></span></label>
           <div class="uh-actions"><button type="button" class="uh-btn uh-ghost uh-cancel"></button><button type="button" class="uh-btn uh-bg"></button></div>
         </div>
         <div class="uh-stage" data-for="downloaded">
