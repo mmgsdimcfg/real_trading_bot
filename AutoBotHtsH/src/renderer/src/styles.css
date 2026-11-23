@@ -575,7 +575,10 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 /* [2026-11-23] tile size: 작게 = name / price / change only, 크게 = wider with larger text */
 .tile-grid.tile-s { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 4px; }
 .tile-s .tile { padding: 5px 7px 6px; gap: 1px; }
-.tile-s .tile-rows, .tile-s .tile-range, .tile-s .tile-code { display: none; }
+/* [2026-11-23] the small size shows the chosen fields too (it hid everything but name / price / change): one value per line */
+.tile-s .tile-rows { grid-template-columns: 1fr; font-size: calc(var(--fs) * 0.88); }
+.tile-s .tile-code { font-size: calc(var(--fs) * 0.82); }
+.tile-s .tile-range { padding: 2px 0 1px; }
 .tile-s .tile-price { font-size: calc(var(--fs) * 1.2); }
 .tile-grid.tile-l { grid-template-columns: repeat(auto-fill, minmax(226px, 1fr)); gap: 8px; }
 .tile-l .tile { padding: 10px 12px 11px; gap: 4px; font-size: calc(var(--fs) * 1.12); }

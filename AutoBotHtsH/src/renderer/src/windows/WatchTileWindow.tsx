@@ -15,6 +15,8 @@
 // - [2026-11-23] type=feat (항목 menu (user 2026-11-23): which values a tile shows - 종목코드, 대비·등락률, 위치 막대, 시가, 고가, 저가,
 //   거래량, 거래대금, 매도호가, 매수호가 (the two quotes are off at first). Kept with the window (opts.fields); the name and the
 //   price are always shown. The small tile size still shows the name, price and change only)
+// - [2026-11-23] type=feat (The small tile size shows the chosen fields too (user 2026-11-23) - narrower tiles, smaller text, one value
+//   per line; it used to show the name, price and change only)
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
@@ -212,7 +214,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
             </option>
           ))}
         </select>
-        <select value={size} onChange={(e) => setOpts(win.id, { size: e.target.value })} title="타일 크기 (작게: 종목명 / 현재가 / 등락만)">
+        <select value={size} onChange={(e) => setOpts(win.id, { size: e.target.value })} title="타일 크기 (작게: 좁은 타일과 작은 글자, 항목은 한 줄에 하나씩)">
           {SIZES.map(([k, label]) => (
             <option key={k} value={k}>
               {label}
@@ -220,7 +222,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
           ))}
         </select>
         <span className="dropdown" ref={fieldsRef}>
-          <button className="mini" onClick={() => setFieldsOpen((o) => !o)} title="타일에 표시할 항목 (종목명과 현재가는 항상 표시 · 크기 '작게'에서는 종목명 / 현재가 / 등락만)">
+          <button className="mini" onClick={() => setFieldsOpen((o) => !o)} title="타일에 표시할 항목 (종목명과 현재가는 항상 표시)">
             항목 ({fields.length}/{TILE_FIELDS.length}) ▾
           </button>
           {fieldsOpen && (
