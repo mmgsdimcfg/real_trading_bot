@@ -48,5 +48,8 @@ describe('watchlist columns', () => {
     expect(sortWatch(codes, rows, { key: 'name', dir: 1 })).toEqual(['2', '3', '1', 'X']);
     expect(sortWatch(codes, rows, { key: 'volume', dir: -1 })).toEqual(['3', '1', '2', 'X']); // 1 and 2 tie: registered order
     expect(sortWatch(codes, rows, { key: 'ask', dir: -1 })).toEqual(codes); // no values at all
+    // [2026-11-23] by code: every symbol has one, also those without a price yet
+    expect(sortWatch(['3', 'X', '1', '2'], rows, { key: 'code', dir: 1 })).toEqual(['1', '2', '3', 'X']);
+    expect(nextWatchSort(null, 'code')).toEqual({ key: 'code', dir: 1 });
   });
 });

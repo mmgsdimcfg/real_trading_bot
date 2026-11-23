@@ -26,6 +26,8 @@
 //   a third click back to the registered order; names sort A to Z first. Kept with the window (opts.sortKey / sortDir). While
 //   sorted, the order shown is the one 자동 보기 and the arrow keys follow, and reordering (drag, ↑ ↓, Alt+arrows) is off - the
 //   registered order is not changed by a sort. Symbols without a value yet stay last)
+// - [2026-11-23] type=feat (Watchlist: sort by 종목코드 too (the 코드 label in the 종목 column title); a bell marks the symbols that raised
+//   a rebound alert today - a click shows that alert again (components/AlarmMark))
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LINK_COLORS, newGroupId, useStore, WATCH_MAX, type Win } from '../store';
 import { useCall, useOutsideClose } from '../hooks';
@@ -48,6 +50,7 @@ import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
 import { FloatPop } from '../components/FloatPop';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
+import { AlarmMark, useTodayAlerts } from '../components/AlarmMark';
 import { nextWatchSort, sortWatch, WATCH_COL_LABEL, WATCH_COLS, watchSortOf, type WatchCol, type WatchSortKey } from '../watchSort';
 import { PriceChart } from '../components/PriceChart';
 import type { RankRow, WatchRow } from '../../../shared/kis';
@@ -98,6 +101,7 @@ export function WatchWindow({ win }: { win: Win }) {
   const [dragFrom, setDragFrom] = useState<string | null>(null);
   const [dragTab, setDragTab] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuAt | null>(null);
+  const alerts = useTodayAlerts();
   const picked = useMemo(() => watchColsOf(win.opts.cols), [win.opts.cols]);
   const showCode = picked.includes('code');
   const cols = picked.filter((k): k is WatchCol => k !== 'code');
@@ -302,8 +306,13 @@ export function WatchWindow({ win }: { win: Win }) {
         <table className="grid hover">
           <thead>
             <tr>
-              <th className="sortable" onClick={() => sortBy('name')} title="누르면 정렬 (가나다순 → 역순 → 등록순)">
-                종목{sortMark('name')}
+              <th>
+                <span className="sortable" onClick={() => sortBy('name')} title="종목명으로 정렬 (가나다순 → 역순 → 등록순)">
+                  종목{sortMark('name')}
+                </span>
+                <span className="sortable th-sub" onClick={() => sortBy('code')} title="종목코드로 정렬 (오름차순 → 내림차순 → 등록순)">
+                  코드{sortMark('code')}
+                </span>
               </th>
               <th className="num sortable" onClick={() => sortBy('price')} title="누르면 정렬 (높은순 → 낮은순 → 등록순)">
                 현재가{sortMark('price')}
@@ -334,7 +343,7 @@ export function WatchWindow({ win }: { win: Win }) {
                   onContextMenu={(e) => (e.preventDefault(), setSel(c), setMenu({ code: c, name: x?.name || '', x: e.clientX, y: e.clientY }))}
                 >
                   <td>
-                    <b>{x?.name || c}</b> {showCode && <span className="mono muted small">{c}</span>} <NxtTag code={c} />
+                    <b>{x?.name || c}</b> {showCode && <span className="mono muted small">{c}</span>} <NxtTag code={c} /> <AlarmMark alerts={alerts.get(c)} />
                   </td>
                   <td className={`num ${upDown(s)}`}>{fmtInt(x?.price)}</td>
                   {cols.map((k) => (

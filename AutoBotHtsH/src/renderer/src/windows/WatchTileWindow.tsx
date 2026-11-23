@@ -30,6 +30,7 @@ import { NxtTag } from '../components/NxtTag';
 import { SymbolSearch } from '../components/SymbolSearch';
 import { FloatPop } from '../components/FloatPop';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
+import { AlarmMark, useTodayAlerts } from '../components/AlarmMark';
 import type { WatchRow } from '../../../shared/kis';
 import { fmtInt, fmtKrwBig, fmtPct, upDown } from '../lib';
 import { firstDir, SORT_KEYS, SORT_LABEL, sortWatch, watchSortOf, type WatchSort, type WatchSortKey } from '../watchSort';
@@ -136,6 +137,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const r = useCall<WatchRow[]>('multi', [codes], 3000, codes.length > 0);
   const [sel, setSel] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuAt | null>(null);
+  const alerts = useTodayAlerts();
   const [dragFrom, setDragFrom] = useState<string | null>(null);
   const canDrag = !sort;
   const dropOn = (target: string) => {
@@ -305,6 +307,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
             >
               <span className="tile-head">
                 <b className="tile-name">{x?.name || c}</b>
+                <AlarmMark alerts={alerts.get(c)} />
                 <NxtTag code={c} />
                 {has('code') && <span className="mono muted small tile-code">{c}</span>}
               </span>

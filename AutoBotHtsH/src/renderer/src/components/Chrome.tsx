@@ -245,6 +245,10 @@ export function Toolbar() {
           </span>
         )}
       </span>
+      {/* [2026-11-23] rebound watcher settings beside the bot menu (user 2026-11-23); also in the ☰ menu */}
+      <button onClick={() => window.dispatchEvent(new Event('rebound-settings'))} title="바닥 반등 감시 설정 · 알림 히스토리 · 카카오톡">
+        반등감시
+      </button>
       <span className="dropdown" ref={arrRef}>
         <button onClick={() => setArrOpen(!arrOpen)}>창 정렬 ▾</button>
         {arrOpen && (

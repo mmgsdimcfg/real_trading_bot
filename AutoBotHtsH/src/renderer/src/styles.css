@@ -598,3 +598,11 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 /* [2026-11-23] previous close reference line of tick / minute charts */
 .pc-ref { stroke: var(--text-2); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.85; }
 .pc-ref-label { fill: var(--text-2); }
+
+/* [2026-11-23] bell on watchlist symbols that raised a rebound alert today (components/AlarmMark.tsx) */
+.alarm-mark { display: inline-flex; align-items: center; padding: 0 5px; border-radius: 9px; background: color-mix(in srgb, #f59f00 22%, transparent); color: var(--text); font-size: calc(var(--fs) - 2px); line-height: 1.5; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.alarm-mark.unread { background: #f59f00; color: #1a1a1a; font-weight: 700; }
+.alarm-mark:hover { outline: 1px solid var(--accent); }
+.grid th .sortable { cursor: pointer; }
+.grid th .sortable:hover { color: var(--text); }
+.grid th .th-sub { margin-left: 10px; font-weight: 400; color: var(--text-3); }
