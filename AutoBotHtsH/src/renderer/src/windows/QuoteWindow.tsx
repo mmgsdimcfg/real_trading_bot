@@ -19,7 +19,8 @@ import { useCall, useRealtime, useSymbol } from '../hooks';
 import { WatchStar } from './ListWindows';
 import { NxtMark } from '../components/NxtTag';
 import type { OrderBook, Quote, TradeTick } from '../../../shared/kis';
-import type { DailyRow, InvestorRow, TicksRes } from '../../../shared/market';
+import type { DailyRow, TicksRes } from '../../../shared/market';
+import { InvestorPanel } from '../components/InvestorPanel';
 import { arrow, fmtInt, fmtKrwBig, fmtNum, fmtPct, signOf, upDown } from '../lib';
 
 const NO_TRADES: TradeTick[] = [];
@@ -224,7 +225,7 @@ export function QuoteWindow({ win }: { win: Win }) {
           </table>
         )}
         {tab === 'daily' && <DailyTab code={code} />}
-        {tab === 'investor' && <InvestorTab code={code} />}
+        {tab === 'investor' && <InvestorPanel win={win} inTab />}
       </div>
     </div>
   );
@@ -256,39 +257,6 @@ function DailyTab({ code }: { code: string }) {
             <td className="num">{fmtInt(r.volume)}</td>
             <td className={`num ${upDown(Math.sign(r.foreignNet || 0))}`}>{fmtInt(r.foreignNet)}</td>
             <td className="num">{fmtNum(r.foreignRate)}%</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-export function InvestorTab({ code }: { code: string }) {
-  const d = useCall<InvestorRow[]>('investor', [code], 60000);
-  if (d.error) return <div className="empty small">{d.error}</div>;
-  return (
-    <table className="grid">
-      <thead>
-        <tr>
-          <th>일자</th>
-          <th className="num">종가</th>
-          <th className="num">개인</th>
-          <th className="num">외국인</th>
-          <th className="num">기관</th>
-          <th className="num" title="백만원">외국인 금액</th>
-          <th className="num" title="백만원">기관 금액</th>
-        </tr>
-      </thead>
-      <tbody>
-        {(d.data || []).map((r) => (
-          <tr key={r.date}>
-            <td className="mono">{ymd(r.date)}</td>
-            <td className={`num ${upDown(Math.sign(r.change))}`}>{fmtInt(r.close)}</td>
-            <td className={`num ${upDown(Math.sign(r.person))}`}>{fmtInt(r.person)}</td>
-            <td className={`num ${upDown(Math.sign(r.foreign))}`}>{fmtInt(r.foreign)}</td>
-            <td className={`num ${upDown(Math.sign(r.institution))}`}>{fmtInt(r.institution)}</td>
-            <td className={`num ${upDown(Math.sign(r.foreignAmt || 0))}`}>{fmtInt(r.foreignAmt)}</td>
-            <td className={`num ${upDown(Math.sign(r.institutionAmt || 0))}`}>{fmtInt(r.institutionAmt)}</td>
           </tr>
         ))}
       </tbody>
