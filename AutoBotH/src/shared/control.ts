@@ -214,6 +214,8 @@ export interface ControlState {
   autoSell?: PaperModeState;
   /** [2026-11-13] server AUTO_SELL_SCOPE (bot_only / all) - undefined until read / on a server without it */
   autoSellScope?: PaperModeState;
+  /** [2026-11-23] server EDGE_ONLY_LOG_ONLY ('true' = candidates only, no paper buys) - undefined until read / on a server without it */
+  paperLogOnly?: PaperModeState;
 }
 
 /** [2026-11-13] one account holding as r016 `holdings` reports it (r023 snapshot): the bot's and the hand-bought quantity */

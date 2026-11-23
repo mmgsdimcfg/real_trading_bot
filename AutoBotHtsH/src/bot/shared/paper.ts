@@ -272,6 +272,15 @@ function modeOf(data: unknown, key: string): PaperModeState | null {
   return { effective: v.effective.toLowerCase(), running: typeof v.running === 'string' ? v.running.toLowerCase() : null, pending: !!v.pending };
 }
 
+/** [2026-11-23] r001 EDGE_ONLY_LOG_ONLY: true = paper trading records candidates only, no new paper buys */
+export const PAPER_LOG_ONLY_KEY = 'EDGE_ONLY_LOG_ONLY';
+/** `get EDGE_ONLY_LOG_ONLY` data -> 'true' / 'false' state (the value is a boolean on the server); null on a server without the key */
+export function parsePaperLogOnly(data: unknown): PaperModeState | null {
+  const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[PAPER_LOG_ONLY_KEY];
+  if (!v || typeof v.effective !== 'boolean') return null;
+  return { effective: String(v.effective), running: typeof v.running === 'boolean' ? String(v.running) : null, pending: !!v.pending };
+}
+
 /** `get EDGE_ONLY_MODE` data -> state; null when the server does not know the key (older server code) */
 export const parsePaperMode = (data: unknown): PaperModeState | null => modeOf(data, PAPER_KEY);
 

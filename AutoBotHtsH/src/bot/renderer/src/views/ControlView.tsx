@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, type AutoSellMode, type EdgeModelInfo, type TradeMode } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -451,6 +451,25 @@ export function ControlView() {
       setModeBusy(false);
     }
   };
+  // [2026-11-23] EDGE_ONLY_LOG_ONLY (user 2026-11-23: paper trading that is on should paper-buy): the checkbox beside 매매 방식
+  // switches the new paper buys on / off; off = candidates are recorded only (the server default since 2026-11-20)
+  const logOnly = control.paperLogOnly;
+  const paperBuys = logOnly ? logOnly.effective !== 'true' : false;
+  const paperBuysRunning = logOnly ? (logOnly.running ?? logOnly.effective) !== 'true' : false;
+  const paperBuysPending = !!logOnly && logOnly.running !== null && (logOnly.pending || paperBuysRunning !== paperBuys);
+  const setPaperBuys = async (on: boolean) => {
+    const text = on
+      ? 'Edge AI 신호가 뜨면 가상 매수 / 가상 청산을 기록합니다 (실제 주문 없음).'
+      : '신규 가상 매수를 하지 않고, 신호가 뜬 봉을 후보로만 기록합니다. 이미 있는 가상 보유는 그대로 청산됩니다.';
+    if (!window.confirm(`가상 매수 실행: ${on ? '켬' : '끔'}\n\n${text}\n\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet({ [PAPER_LOG_ONLY_KEY]: !on });
+      if (!r.ok) window.alert(`가상 매수 설정을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setModeBusy(false);
+    }
+  };
   // [2026-11-13] AUTO_SELL_SCOPE: the automatic sells sell only what the bot bought / the whole holding (hand-bought included)
   const sellScope = control.autoSellScope;
   const sellScopeMode = autoSellScopeOf(sellScope?.effective);
@@ -656,9 +675,17 @@ export function ControlView() {
                 : tradeMode === 'edge'
                   ? 'Edge AI 신호만으로 실제 주문 중'
                   : tradeMode === 'rules+paper' && paper?.running === 'paper'
-                    ? '가상 매매 진행 중'
+                    ? logOnly && !paperBuysRunning
+                      ? '가상 매매 후보 기록만 (가상 매수 꺼짐)'
+                      : '가상 매매 진행 중'
                     : ''}
             </span>
+          )}
+          {tradeMode === 'rules+paper' && logOnly && (
+            <label className="check" title="켜면 Edge AI 신호가 뜰 때 가상 매수 / 청산을 기록합니다 (실제 주문 없음). 끄면 후보만 기록합니다 (서버 EDGE_ONLY_LOG_ONLY). r003 재시작 후 적용">
+              <input type="checkbox" checked={paperBuys} disabled={busy || !connected || modeBusy} onChange={(e) => void setPaperBuys(e.target.checked)} /> 가상 매수 실행
+              {paperBuysPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {paperBuysRunning ? '켬' : '끔'})</span>}
+            </label>
           )}
           {!paper && strategy && <span className="muted small">가상 매매 / Edge AI 방식은 서버 코드 갱신 후 선택할 수 있습니다</span>}
           {/* [2026-11-12] automatic sells: everything / only the net -2% stop / none (the user sells by hand) */}
