@@ -838,3 +838,6 @@
    inputs and the texts people copy (logs, raw log lines, detail boxes) still are */
 .bot-root .app-main { user-select: none; -webkit-user-select: none; }
 .bot-root .app-main input, .bot-root .app-main textarea, .bot-root .app-main pre, .bot-root .app-main code, .bot-root .log-box, .bot-root .coll-log, .bot-root .raw, .bot-root .raw-cell, .bot-root .detail { user-select: text; -webkit-user-select: text; }
+/* [2026-11-23] previous close reference line of tick / minute charts */
+.bot-root .pc-ref { stroke: var(--text-2); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.85; }
+.bot-root .pc-ref-label { fill: var(--text-2); }

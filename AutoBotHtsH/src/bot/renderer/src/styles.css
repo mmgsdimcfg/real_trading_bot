@@ -845,3 +845,6 @@ button.pick-chip:disabled { cursor: default; opacity: .6; }
    inputs and the texts people copy (logs, raw log lines, detail boxes) still are */
 .app-main { user-select: none; -webkit-user-select: none; }
 .app-main input, .app-main textarea, .app-main pre, .app-main code, .log-box, .coll-log, .raw, .raw-cell, .detail { user-select: text; -webkit-user-select: text; }
+/* [2026-11-23] previous close reference line of tick / minute charts */
+.pc-ref { stroke: var(--text-2); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.85; }
+.pc-ref-label { fill: var(--text-2); }

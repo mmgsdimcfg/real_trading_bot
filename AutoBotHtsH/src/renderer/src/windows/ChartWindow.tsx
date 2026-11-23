@@ -40,13 +40,14 @@
 // - [2026-11-20] type=fix (Switching 일 -> 분 (any bar kind / size / days / symbol) drew the old bars with the new settings until the new
 //   data came: daily bars as minute bars got a dotted day line between every bar. The loaded data keeps the request it answers (key);
 //   bars of another request are not drawn - "불러오는 중" instead)
+import type { Quote } from '../../../shared/kis';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { kstDay, useStore, type Win } from '../store';
 import { PriceChart } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
 import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
-import { useOutsideClose, useRealtime } from '../hooks';
+import { useCall, useOutsideClose, useRealtime } from '../hooks';
 import { MIN_SIZES, TICK_SIZES, type Bar, type ChartKind } from '../../../shared/price';
 import { FRACTION_PARAMS, HTS_PARAMS, INV_MONTHS, INV_MONTHS_LABEL, normalizeParams, OSCILLATORS, type CalcMethod, type IndicatorKey, type IndicatorParams, type InvMonths } from '../../../shared/indicators';
 import { WatchStar } from './ListWindows';
@@ -179,6 +180,8 @@ export function ChartWindow({ win }: { win: Win }) {
   const params = useMemo(() => normalizeParams(o.params), [o.params]);
   const draw = o.draw?.[win.code] || { h: [], t: [] };
   const intraday = kind === 'tick' || kind === 'min';
+  // [2026-11-23] previous close for the reference line when the chart holds today's bars only
+  const refQuote = useCall<Quote>('quote', [win.code], 60000, intraday);
   const shown = useMemo(() => ind.filter((k) => (k !== 'vwap' || intraday) && (k !== 'investor' || !intraday)), [ind.join(), intraday]); // eslint-disable-line react-hooks/exhaustive-deps
   const invOn = shown.includes('investor');
   const invM: InvMonths = INV_MONTHS.includes(o.invM as InvMonths) ? (o.invM as InvMonths) : 3;
@@ -496,6 +499,7 @@ export function ChartWindow({ win }: { win: Win }) {
             onPaneHeights={(m) => setOpts(win.id, { paneH: m })}
             onRemovePane={(k) => (k === 'volume' ? setOpts(win.id, { vol: false }) : setOpts(win.id, { ind: ind.filter((x) => x !== k) }))}
             trades={[]}
+            refClose={refQuote.data?.prevClose}
             date=""
             mode="index"
             axis="right"

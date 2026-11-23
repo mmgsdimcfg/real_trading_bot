@@ -1,4 +1,7 @@
 /*
+// - [2026-11-23] type=feat (Tick / minute charts draw the previous trading day's close as a dotted reference line with its
+//    price (user 2026-11-23): the last bar of the day before among the bars, else the last warm-up bar, else props.refClose (the
+//    quote's previous close). The price scale reaches it when it is within 15 % of the shown range)
  * Update log
  * - [2026-11-05] type=feat - Candlestick price chart for the timeline tab (custom SVG, one <path> per color so thousands of 1-tick
  *   bars stay cheap). The plot area uses the same margins as the recharts charts around it (left 8 + 150 axis, right 24), so for
@@ -106,6 +109,8 @@ interface Props {
   trades: Trade[];
   /** open position price (horizontal line) */
   buyPrice?: number;
+  /** [2026-11-23] previous trading day's close when the bars do not hold that day (tick / minute charts) */
+  refClose?: number;
   /** YYYYMMDD of the viewed day (highlighted on D/W/M) */
   date: string;
   /** 'time': x = time domain (timeline, intraday); 'index': evenly spaced bars. Default: time for tick/min, index otherwise */
@@ -297,6 +302,8 @@ export function PriceChart(props: Props) {
   const chartStyle = props.style ?? 'candle';
   const showSignals = props.signals ?? true;
   const intraday = kind === 'tick' || kind === 'min';
+  // [2026-11-23] previous trading day's close - the reference line of tick / minute charts
+  const refPrice = intraday ? (refCloseAt(bars, bars.length - 1, true) ?? (warm.length ? warm[warm.length - 1].c : undefined) ?? props.refClose) : undefined;
   const mode = props.mode ?? (intraday ? 'time' : 'index');
   const axis = props.axis ?? 'left';
   // [2026-11-20] live values while a pane handle is dragged (committed through onVolRatio / onOscHeight on release)
@@ -444,6 +451,7 @@ export function PriceChart(props: Props) {
     const marks = trades.filter((t) => Number.isFinite(t.price) && t.price > 0 && inRange(t.ts));
     for (const t of marks) take(t.price);
     if (buyPrice && buyPrice > 0 && buyPrice > lo * 0.8 && buyPrice < hi * 1.2) take(buyPrice);
+    if (refPrice && refPrice > 0 && refPrice > lo * 0.85 && refPrice < hi * 1.15) take(refPrice);
     const pad = (hi - lo) * 0.06 || hi * 0.01 || 1;
     lo -= pad;
     hi += pad;
@@ -617,7 +625,7 @@ export function PriceChart(props: Props) {
       });
     }
     return { empty: false as const, vMax, sv, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, bandPath, panes, xOfTime, dayLines, step, closeLine, xAtTime, sarUp, sarDn };
-  }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, date, width, intraday, L, W, priceH, volTop, volH, hs.join(), osc.join(), vp, shift, defaultCount, interactive, chartStyle, showSignals, invMonths, showVol]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, refPrice, date, width, intraday, L, W, priceH, volTop, volH, hs.join(), osc.join(), vp, shift, defaultCount, interactive, chartStyle, showSignals, invMonths, showVol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- interaction ----
   const nearest = (mx: number): number | null => {
@@ -907,6 +915,14 @@ export function PriceChart(props: Props) {
           </g>
 
           {/* position + fills */}
+          {refPrice && refPrice > model.lo && refPrice < model.hi && (
+            <g>
+              <line x1={L} x2={L + W} y1={model.sy(refPrice)} y2={model.sy(refPrice)} className="pc-ref" />
+              <text x={L + 4} y={model.sy(refPrice) - 3} className="pc-label pc-ref-label">
+                전일 종가 {fmtInt(refPrice)}
+              </text>
+            </g>
+          )}
           {buyPrice && buyPrice > model.lo && buyPrice < model.hi && (
             <g>
               <line x1={L} x2={L + W} y1={model.sy(buyPrice)} y2={model.sy(buyPrice)} className="pc-pos" />
