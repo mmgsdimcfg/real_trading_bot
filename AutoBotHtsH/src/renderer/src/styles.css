@@ -422,15 +422,31 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .grid.hover tbody tr:hover { background: var(--hover); }
 .grid tr.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .list-win, .info-win, .index-win { display: flex; flex-direction: column; height: 100%; }
-.info-win { overflow: auto; padding: 4px 10px 10px; }
+.info-win { overflow: hidden; padding: 4px 10px 8px; container-type: inline-size; }
 .info-win h3 { margin: 6px 0; font-size: var(--fs); }
 .info-win h4 { margin: 12px 0 5px; font-size: var(--fs); color: var(--text-2); }
-.info-win .tab-scroll { max-height: none; flex: none; }
 /* [2026-11-23] stock information | investor net buying side by side; the investor column drops below when the window is narrow */
-.info-cols { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: flex-start; }
-.info-main { flex: 1 1 250px; min-width: 250px; }
-.info-inv { flex: 1.4 1 330px; min-width: 330px; }
-.info-inv h4:first-child { margin-top: 4px; }
+/* [2026-11-23] each column scrolls inside the window (the investor table holds about a year); one column under the other, scrolled
+   together, when the window is narrow */
+.info-cols { flex: 1; min-height: 0; display: flex; gap: 4px 18px; }
+.info-main { flex: 1 1 250px; min-width: 250px; min-height: 0; overflow: auto; }
+.info-inv { flex: 1.4 1 330px; min-width: 330px; min-height: 0; display: flex; flex-direction: column; }
+.info-inv .tab-scroll { flex: 1; min-height: 0; overflow: auto; }
+.inv-head { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding-bottom: 4px; }
+.info-win .inv-head h4 { margin: 2px 0; }
+.inv-cum { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); white-space: nowrap; }
+.inv-cum select { padding: 1px 5px; }
+.inv-table thead { position: sticky; top: 0; z-index: 1; }
+.inv-table thead th { position: static; }
+.inv-table .inv-sum th { background: var(--surface-3); color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; border-bottom: 2px solid var(--border); }
+.inv-table .inv-sum th.up { color: var(--up); }
+.inv-table .inv-sum th.down { color: var(--down); }
+.inv-table .inv-sum th.muted, .inv-table .inv-sum small { color: var(--text-3); font-weight: 400; }
+@container (max-width: 640px) {
+  .info-cols { flex-direction: column; overflow: auto; }
+  .info-main, .info-inv { flex: none; overflow: visible; }
+  .info-inv .tab-scroll { flex: none; overflow: visible; }
+}
 .range-bar { position: relative; display: inline-block; width: 80px; height: 6px; margin-left: 8px; background: linear-gradient(90deg, var(--down), var(--up)); border-radius: 3px; vertical-align: middle; opacity: 0.8; }
 .range-bar i { position: absolute; top: -3px; width: 3px; height: 12px; background: var(--text); border-radius: 1px; transform: translateX(-1px); }
 .idx-row { display: flex; gap: 6px; padding: 6px; }

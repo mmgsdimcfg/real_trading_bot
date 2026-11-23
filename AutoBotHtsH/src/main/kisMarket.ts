@@ -101,12 +101,15 @@ const mergeBars = (...lists: Bar[][]): Bar[] => {
 const INV_REUSE_MS = 5 * 60000;
 const INV_DAYS = 372;
 const INV_PAGES = 15;
+/** [2026-11-23] rows carry close / change / amounts from this cache version on; older saved rows are loaded again */
+const INV_V = 2;
 interface InvCache {
   rows: InvestorDay[];
   at: number;
   /** the rows are complete from this date (YYYYMMDD) on */
   from: string;
   mk?: 'J' | 'UN';
+  v?: number;
 }
 const prevYmd = (d: string) => ymd(new Date(Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)) - 86400000));
 
@@ -559,7 +562,7 @@ export class KisMarket implements MarketBackend {
     let hit = this.inv.get(code);
     if (!hit && this.disk) {
       const d = this.disk.get<InvCache>(`${this.client.env}_inv_${code}`);
-      if (d && Array.isArray(d.rows)) this.inv.set(code, (hit = d));
+      if (d && Array.isArray(d.rows) && d.v === INV_V) this.inv.set(code, (hit = d));
     }
     if (hit && hit.rows.length && Date.now() - hit.at < INV_REUSE_MS && dayOf(hit.at) === ymd(kstNow())) return hit.rows;
     let p = this.invBusy.get(code);
@@ -608,7 +611,17 @@ export class KisMarket implements MarketBackend {
         }
         const got = rowsOf(r.output2)
           .filter((o) => /^\d{8}$/.test(o.stck_bsop_date || '') && o.stck_bsop_date <= date)
-          .map((o) => ({ date: o.stck_bsop_date, person: num(o.prsn_ntby_qty) || 0, foreign: num(o.frgn_ntby_qty) || 0, institution: num(o.orgn_ntby_qty) || 0 }));
+          .map((o) => ({
+            date: o.stck_bsop_date,
+            person: num(o.prsn_ntby_qty) || 0,
+            foreign: num(o.frgn_ntby_qty) || 0,
+            institution: num(o.orgn_ntby_qty) || 0,
+            close: num(o.stck_clpr),
+            change: signed(o.prdy_vrss, o.prdy_vrss_sign),
+            personAmt: num(o.prsn_ntby_tr_pbmn),
+            foreignAmt: num(o.frgn_ntby_tr_pbmn),
+            institutionAmt: num(o.orgn_ntby_tr_pbmn),
+          }));
         if (!got.length) {
           if (page === 0 && mk === 'UN' && !cached.length) throw new Error('UN: no rows');
           break;
@@ -628,7 +641,7 @@ export class KisMarket implements MarketBackend {
       throw e;
     }
     const rows = [...map.values()].filter((r) => r.date >= start).sort((a, b) => (a.date < b.date ? -1 : 1));
-    const c: InvCache = { rows, at: Date.now(), from: covered ? start : from, mk };
+    const c: InvCache = { rows, at: Date.now(), from: covered ? start : from, mk, v: INV_V };
     this.inv.set(code, c);
     this.disk?.put(`${this.client.env}_inv_${code}`, c);
     return rows;

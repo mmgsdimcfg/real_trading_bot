@@ -78,7 +78,7 @@ export const SYMBOL_WINS: WinType[] = ['chart', 'quote', 'info', 'news'];
 const DEFAULT_SIZE: Record<WinType, [number, number]> = {
   chart: [760, 520],
   quote: [520, 560],
-  info: [960, 520],
+  info: [960, 700],
   watch: [560, 380],
   watchtile: [720, 480],
   rank: [600, 460],

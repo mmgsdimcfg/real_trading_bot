@@ -84,6 +84,12 @@ export interface InvestorDay {
   person: number;
   foreign: number;
   institution: number;
+  /** [2026-11-23] close, change vs the previous close and net buy amounts (million KRW) - the stock info window's table */
+  close?: number;
+  change?: number;
+  personAmt?: number;
+  foreignAmt?: number;
+  institutionAmt?: number;
 }
 
 export interface InfoField {

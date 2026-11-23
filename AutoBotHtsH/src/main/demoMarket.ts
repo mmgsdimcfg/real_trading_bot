@@ -244,7 +244,8 @@ export class DemoMarket implements MarketBackend {
         drift = drift * 0.9 + (r() - 0.5) * 120000;
         const f = Math.round(drift + (r() - 0.5) * 300000);
         const o = Math.round(-drift * 0.5 + (r() - 0.5) * 200000);
-        return { date: new Date(b.t + KST).toISOString().slice(0, 10).replace(/-/g, ''), person: -f - o, foreign: f, institution: o };
+        const amt = (n: number) => Math.round((n * b.c) / 1e6);
+        return { date: new Date(b.t + KST).toISOString().slice(0, 10).replace(/-/g, ''), person: -f - o, foreign: f, institution: o, close: b.c, change: b.c - b.o, personAmt: amt(-f - o), foreignAmt: amt(f), institutionAmt: amt(o) };
       });
   }
 
