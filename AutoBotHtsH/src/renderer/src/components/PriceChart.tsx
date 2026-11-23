@@ -1,4 +1,6 @@
 /*
+// - [2026-11-23] type=feat (props.alerts: bells over the bars where a rebound alert was raised (user 2026-11-23) - drawn above the high
+//   of the bar that holds the alert's bar time, tooltip with the alert, a click calls onAlertClick)
 // - [2026-11-23] type=feat (Tick / minute charts draw the previous trading day's close as a dotted reference line with its
 //    price (user 2026-11-23): the last bar of the day before among the bars, else the last warm-up bar, else props.refClose (the
 //    quote's previous close). The price scale reaches it when it is within 15 % of the shown range)
@@ -140,6 +142,9 @@ interface Props {
   /** horizontal price lines drawn by the user */
   hlines?: number[];
   onAddHline?: (price: number) => void;
+  /** [2026-11-23] alert marks: a bell above the bar holding time t (epoch ms) */
+  alerts?: { t: number; id: string; title: string }[];
+  onAlertClick?: (id: string) => void;
   /** trend lines drawn by the user (bar time / price pairs) */
   tlines?: { t1: number; p1: number; t2: number; p2: number }[];
   onAddTline?: (l: { t1: number; p1: number; t2: number; p2: number }) => void;
@@ -913,6 +918,25 @@ export function PriceChart(props: Props) {
               <line x1={model.xAtTime(pending.t) ?? 0} x2={h.x} y1={model.sy(pending.p)} y2={hoverY} className="pc-tline pending" />
             )}
           </g>
+
+          {/* [2026-11-23] rebound alert bells */}
+          {(props.alerts || []).map((a) => {
+            const x = model.xAtTime(a.t);
+            if (x === null || x < L || x > L + W) return null;
+            let bar: Bar | undefined;
+            for (let k = bars.length - 1; k >= 0; k--) {
+              if (bars[k].t <= a.t) {
+                bar = bars[k];
+                break;
+              }
+            }
+            const y = Math.max(16, (bar ? model.sy(bar.h) : model.sy(model.hi)) - 8);
+            return (
+              <text key={a.id} x={x} y={y} textAnchor="middle" className="pc-bell" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), props.onAlertClick?.(a.id))}>
+                🔔<title>{a.title}</title>
+              </text>
+            );
+          })}
 
           {/* position + fills */}
           {refPrice && refPrice > model.lo && refPrice < model.hi && (

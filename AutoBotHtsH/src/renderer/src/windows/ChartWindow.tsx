@@ -45,6 +45,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { kstDay, useStore, type Win } from '../store';
 import { PriceChart } from '../components/PriceChart';
 import { IndicatorToggles } from '../components/IndicatorToggles';
+import { useTodayAlerts } from '../components/AlarmMark';
 import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
 import { useCall, useOutsideClose, useRealtime } from '../hooks';
@@ -182,6 +183,18 @@ export function ChartWindow({ win }: { win: Win }) {
   const intraday = kind === 'tick' || kind === 'min';
   // [2026-11-23] previous close for the reference line when the chart holds today's bars only
   const refQuote = useCall<Quote>('quote', [win.code], 60000, intraday);
+  // [2026-11-23] today's rebound alerts of this symbol as bells on tick / minute charts
+  const todayAlerts = useTodayAlerts().get(win.code);
+  const bells = useMemo(
+    () =>
+      intraday && todayAlerts
+        ? todayAlerts.map((a) => {
+            const hm = (t: number) => new Date(t + 9 * 3600000).toISOString().slice(11, 16);
+            return { t: a.res.snap.t, id: a.id, title: `바닥 반등 알림 · ${hm(a.at)} 감지 (봉 ${hm(a.res.snap.t)}) · 가점 ${a.res.score}점 · 누르면 내역 표시` };
+          })
+        : undefined,
+    [intraday, todayAlerts],
+  );
   const shown = useMemo(() => ind.filter((k) => (k !== 'vwap' || intraday) && (k !== 'investor' || !intraday)), [ind.join(), intraday]); // eslint-disable-line react-hooks/exhaustive-deps
   const invOn = shown.includes('investor');
   const invM: InvMonths = INV_MONTHS.includes(o.invM as InvMonths) ? (o.invM as InvMonths) : 3;
@@ -500,6 +513,8 @@ export function ChartWindow({ win }: { win: Win }) {
             onRemovePane={(k) => (k === 'volume' ? setOpts(win.id, { vol: false }) : setOpts(win.id, { ind: ind.filter((x) => x !== k) }))}
             trades={[]}
             refClose={refQuote.data?.prevClose}
+            alerts={bells}
+            onAlertClick={(id) => void window.hts.reboundHistoryPopup(id)}
             date=""
             mode="index"
             axis="right"
