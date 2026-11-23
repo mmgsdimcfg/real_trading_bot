@@ -14,7 +14,7 @@ vi.mock('../src/renderer/src/components/SymbolSearch', () => ({ SymbolSearch: ()
 vi.mock('../src/renderer/src/components/WatchMenu', () => ({ WatchMenu: () => null }));
 vi.mock('../src/bot/renderer/src/components/AutoView', () => ({ clampSec: (v: unknown) => Number(v) || 10 }));
 
-import { moveCode, rangePos, tileFieldsOf, tileHeat, TILE_FIELDS_DEFAULT, tileSizeOf, tileSortOf } from '../src/renderer/src/windows/WatchTileWindow';
+import { moveCode, rangePos, tileFieldsOf, tileHeat, TILE_FIELDS_DEFAULT, tileSizeOf, tileSortOf, tileTintOf } from '../src/renderer/src/windows/WatchTileWindow';
 import { firstDir, SORT_LABEL, sortWatch } from '../src/renderer/src/watchSort';
 import type { WatchRow } from '../src/shared/kis';
 
@@ -54,6 +54,9 @@ describe('watchlist tiles', () => {
     expect(TILE_FIELDS_DEFAULT).not.toContain('ask');
     expect(tileFieldsOf(['bid', 'x', 'code', 'volume'])).toEqual(['code', 'volume', 'bid']);
     expect(tileFieldsOf([])).toEqual([]);
+  });
+  it('[2026-11-23] tint select: saved multiplier, anything else is normal', () => {
+    expect([tileTintOf(0), tileTintOf(0.5), tileTintOf(3), tileTintOf(undefined), tileTintOf(7), tileTintOf('2')]).toEqual([0, 0.5, 3, 1, 1, 1]);
   });
   it('tint strength: 3 % is full, unknown is none', () => {
     expect([tileHeat(0), tileHeat(1.5), tileHeat(-3), tileHeat(12), tileHeat(undefined)]).toEqual([0, 0.5, 1, 1, 0]);

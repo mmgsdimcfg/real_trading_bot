@@ -533,8 +533,9 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .tile-win .watch-groups { padding-bottom: 0; }
 .tile-grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 6px; padding: 6px; align-content: start; }
 .tile { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 7px 9px 8px; text-align: left; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); color: var(--text); cursor: pointer; font: inherit; min-width: 0; }
-.tile.up { background: color-mix(in srgb, var(--up) calc(var(--heat, 0) * 16%), var(--surface-2)); border-color: color-mix(in srgb, var(--up) calc(var(--heat, 0) * 45%), var(--border)); }
-.tile.down { background: color-mix(in srgb, var(--down) calc(var(--heat, 0) * 16%), var(--surface-2)); border-color: color-mix(in srgb, var(--down) calc(var(--heat, 0) * 45%), var(--border)); }
+/* [2026-11-23] --tint (0 - 3, the 색 select) scales the tint; the border stops at 100 % */
+.tile.up { background: color-mix(in srgb, var(--up) calc(var(--heat, 0) * var(--tint, 1) * 16%), var(--surface-2)); border-color: color-mix(in srgb, var(--up) min(100%, calc(var(--heat, 0) * var(--tint, 1) * 45%)), var(--border)); }
+.tile.down { background: color-mix(in srgb, var(--down) calc(var(--heat, 0) * var(--tint, 1) * 16%), var(--surface-2)); border-color: color-mix(in srgb, var(--down) min(100%, calc(var(--heat, 0) * var(--tint, 1) * 45%)), var(--border)); }
 .tile:hover { border-color: var(--accent); }
 .tile.sel { outline: 2px solid var(--accent); outline-offset: -1px; }
 .tile-head { display: flex; align-items: center; gap: 5px; min-width: 0; }

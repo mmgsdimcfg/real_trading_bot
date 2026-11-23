@@ -20,6 +20,8 @@
 // - [2026-11-23] type=feat (정렬 like the list window's column titles (user 2026-11-23): 등록순 or any value - 종목명, 현재가, 대비, 등락률,
 //   거래량, 거래대금, 시가, 고가, 저가, 매도호가, 매수호가 - with a direction button (높은순 / 낮은순, names 가나다순 / 역순). Same sort as
 //   the list window (watchSort.ts). Kept with the window (opts.sortKey / sortDir); the older opts.sort values are read as before)
+// - [2026-11-23] type=feat (색 select (user 2026-11-23): how strongly a tile is tinted by its change rate - 끔 / 약하게 / 보통 / 진하게 /
+//   아주 진하게 (multiplier 0 / 0.5 / 1 / 2 / 3 of the tint), kept with the window (opts.tint))
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
@@ -71,6 +73,16 @@ export function tileFieldsOf(v: unknown): TileField[] {
 /** the fields shown as label + value rows under the price, in menu order */
 const ROW_FIELDS: TileField[] = ['open', 'high', 'low', 'volume', 'amount', 'ask', 'bid'];
 
+const TINTS: [number, string][] = [
+  [0, '색 끔'],
+  [0.5, '색 약하게'],
+  [1, '색 보통'],
+  [2, '색 진하게'],
+  [3, '색 아주 진하게'],
+];
+/** the saved tint multiplier; anything else is the normal strength */
+export const tileTintOf = (v: unknown): number => (TINTS.some(([k]) => k === v) ? (v as number) : 1);
+
 export type TileSize = 's' | 'm' | 'l';
 const SIZES: [TileSize, string][] = [
   ['s', '작게'],
@@ -114,6 +126,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const codes = group?.codes || [];
   const sort = tileSortOf(win.opts);
   const size = tileSizeOf(win.opts.size);
+  const tint = tileTintOf(win.opts.tint);
   const fields = useMemo(() => tileFieldsOf(win.opts.fields), [win.opts.fields]);
   const has = (f: TileField) => fields.includes(f);
   const rowFields = ROW_FIELDS.filter(has) as ('open' | 'high' | 'low' | 'volume' | 'amount' | 'ask' | 'bid')[];
@@ -223,6 +236,13 @@ export function WatchTileWindow({ win }: { win: Win }) {
             </option>
           ))}
         </select>
+        <select value={tint} onChange={(e) => setOpts(win.id, { tint: Number(e.target.value) })} title="등락률에 따른 타일 색의 진하기 (등락률 3%에서 가장 진함)">
+          {TINTS.map(([k, label]) => (
+            <option key={k} value={k}>
+              {label}
+            </option>
+          ))}
+        </select>
         <span className="dropdown" ref={fieldsRef}>
           <button className="mini" onClick={() => setFieldsOpen((o) => !o)} title="타일에 표시할 항목 (종목명과 현재가는 항상 표시)">
             항목 ({fields.length}/{TILE_FIELDS.length}) ▾
@@ -262,7 +282,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
         <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 우클릭 → 메뉴(삭제 / 복사) · {canDrag ? '끌어서 순서 변경' : '순서 변경은 등록순에서'}</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
-      <div className={`tile-grid tile-${size}`}>
+      <div className={`tile-grid tile-${size}`} style={{ ['--tint' as string]: tint }}>
         {shown.map((c) => {
           const x = byCode.get(c);
           const s = x ? Math.sign(x.change) : 0;
