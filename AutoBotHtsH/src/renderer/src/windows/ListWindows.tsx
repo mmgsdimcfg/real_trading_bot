@@ -22,6 +22,10 @@
 // - [2026-11-23] type=feat (Watchlist 항목 menu (user 2026-11-23): which columns the list shows - 종목코드, 대비, 등락률, 거래량, 거래대금,
 //   시가, 고가, 저가, 매도호가, 매수호가 (시가 and the two quotes are off at first = the columns so far). Kept with the window
 //   (opts.cols); the name and the price are always shown)
+// - [2026-11-23] type=feat (Watchlist: a click on a column title sorts the list (user 2026-11-23) - high to low, again low to high,
+//   a third click back to the registered order; names sort A to Z first. Kept with the window (opts.sortKey / sortDir). While
+//   sorted, the order shown is the one 자동 보기 and the arrow keys follow, and reordering (drag, ↑ ↓, Alt+arrows) is off - the
+//   registered order is not changed by a sort. Symbols without a value yet stay last)
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LINK_COLORS, newGroupId, useStore, WATCH_MAX, type Win } from '../store';
 import { useCall, useOutsideClose } from '../hooks';
@@ -70,6 +74,36 @@ export const WATCH_COLS_DEFAULT: ('code' | WatchCol)[] = ['code', 'change', 'cha
 export function watchColsOf(v: unknown): ('code' | WatchCol)[] {
   if (!Array.isArray(v)) return WATCH_COLS_DEFAULT;
   return WATCH_COLS.filter((c) => v.includes(c));
+}
+
+export type WatchSortKey = 'name' | 'price' | WatchCol;
+const SORT_KEYS: WatchSortKey[] = ['name', 'price', 'change', 'changePct', 'volume', 'amount', 'open', 'high', 'low', 'ask', 'bid'];
+export const watchSortOf = (key: unknown, dir: unknown): { key: WatchSortKey; dir: 1 | -1 } | null =>
+  SORT_KEYS.includes(key as WatchSortKey) ? { key: key as WatchSortKey, dir: dir === 1 ? 1 : -1 } : null;
+/** the next state of a click on column `key`: first click = high to low (names A to Z), second = the other way, third = no sort */
+export function nextWatchSort(cur: { key: WatchSortKey; dir: 1 | -1 } | null, key: WatchSortKey): { key: WatchSortKey; dir: 1 | -1 } | null {
+  const first: 1 | -1 = key === 'name' ? 1 : -1;
+  if (!cur || cur.key !== key) return { key, dir: first };
+  return cur.dir === first ? { key, dir: first === 1 ? -1 : 1 } : null;
+}
+/** codes in the sorted order (dir 1 = ascending); symbols without a value last, ties in the registered order */
+export function sortWatch(codes: string[], rows: Map<string, WatchRow>, sort: { key: WatchSortKey; dir: 1 | -1 } | null): string[] {
+  if (!sort) return codes;
+  const val = (c: string): number | string | null => {
+    const x = rows.get(c);
+    if (!x) return null;
+    if (sort.key === 'name') return x.name || null;
+    const v = x[sort.key];
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  };
+  return codes
+    .map((c, i) => ({ c, i, v: val(c) }))
+    .sort((a, b) => {
+      if (a.v === null || b.v === null) return (a.v === null ? 1 : 0) - (b.v === null ? 1 : 0) || a.i - b.i;
+      const d = typeof a.v === 'string' || typeof b.v === 'string' ? String(a.v).localeCompare(String(b.v), 'ko') : a.v - b.v;
+      return d * sort.dir || a.i - b.i;
+    })
+    .map((x) => x.c);
 }
 
 function useRowActions(win: Win) {
@@ -131,11 +165,12 @@ export function WatchWindow({ win }: { win: Win }) {
     if (auto.on && !autoViewMayResume('watch')) saveAuto({ on: false });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const codesKey = codes.join(',');
+  const shownRef = useRef<string[]>(codes);
   useEffect(() => {
     if (!auto.on || !codes.length) return;
     // the first step at once when nothing of this group is selected, then one step per interval (a click restarts the interval)
     const step = () => {
-      const n = nextCode(codes, sel);
+      const n = nextCode(shownRef.current, sel);
       if (n) (setSel(n), setCodeAll(n));
     };
     if (!sel || !codes.includes(sel)) {
@@ -160,6 +195,14 @@ export function WatchWindow({ win }: { win: Win }) {
     setWatch(next);
   };
   const byCode = useMemo(() => new Map((r.data || []).map((x) => [x.code, x])), [r.data]);
+  const sort = watchSortOf(win.opts.sortKey, win.opts.sortDir);
+  const shown = useMemo(() => sortWatch(codes, byCode, sort), [codes, byCode, sort?.key, sort?.dir]); // eslint-disable-line react-hooks/exhaustive-deps
+  shownRef.current = shown;
+  const sortBy = (key: WatchSortKey) => {
+    const n = nextWatchSort(sort, key);
+    setOpts(win.id, { sortKey: n?.key ?? null, sortDir: n?.dir ?? null });
+  };
+  const sortMark = (key: WatchSortKey) => (sort?.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '');
 
   const saveCodes = (c: string[]) => group && setWatch(groups.map((g) => (g.id === group.id ? { ...g, codes: c } : g)));
   const pickGroup = (id: string) => (setOpts(win.id, { group: id }), setSel(null));
@@ -196,14 +239,14 @@ export function WatchWindow({ win }: { win: Win }) {
   };
   const onKey = (e: React.KeyboardEvent) => {
     if (!sel) return;
-    const i = codes.indexOf(sel);
+    const i = shown.indexOf(sel);
     if (e.key === 'Delete') remove(sel);
     else if (e.key === 'Enter') setCodeAll(sel);
     else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
       const j = i + (e.key === 'ArrowUp' ? -1 : 1);
-      if (e.altKey) move(sel, j);
-      else if (codes[j]) (setSel(codes[j]), act.pick(codes[j]));
+      if (e.altKey) !sort && move(sel, j);
+      else if (shown[j]) (setSel(shown[j]), act.pick(shown[j]));
     }
   };
 
@@ -248,10 +291,10 @@ export function WatchWindow({ win }: { win: Win }) {
       </div>
       <div className="win-tb">
         <SymbolSearch compact placeholder="종목 추가" onPick={(c) => !codes.includes(c) && codes.length < WATCH_MAX && saveCodes([...codes, c])} />
-        <button className="mini" disabled={!sel} onClick={() => sel && move(sel, codes.indexOf(sel) - 1)} title="위로 (Alt+↑)">
+        <button className="mini" disabled={!sel || !!sort} onClick={() => sel && move(sel, codes.indexOf(sel) - 1)} title={sort ? '정렬 중에는 순서를 바꿀 수 없습니다 (열 제목을 다시 눌러 등록순으로)' : '위로 (Alt+↑)'}>
           ↑
         </button>
-        <button className="mini" disabled={!sel} onClick={() => sel && move(sel, codes.indexOf(sel) + 1)} title="아래로 (Alt+↓)">
+        <button className="mini" disabled={!sel || !!sort} onClick={() => sel && move(sel, codes.indexOf(sel) + 1)} title={sort ? '정렬 중에는 순서를 바꿀 수 없습니다 (열 제목을 다시 눌러 등록순으로)' : '아래로 (Alt+↓)'}>
           ↓
         </button>
         <button className="mini" disabled={!sel} onClick={() => sel && remove(sel)} title="삭제 (Delete)">
@@ -291,26 +334,31 @@ export function WatchWindow({ win }: { win: Win }) {
             onBlur={() => (saveAuto({ sec: clampSec(secText) }), setSecText(String(clampSec(secText))))}
             onKeyDown={(e) => (e.stopPropagation(), e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur())}
           />
-          초{auto.on && codes.length ? ` · ${sel && codes.includes(sel) ? codes.indexOf(sel) + 1 : '-'}/${codes.length}` : ''}
+          초{auto.on && codes.length ? ` · ${sel && shown.includes(sel) ? shown.indexOf(sel) + 1 : '-'}/${codes.length}` : ''}
         </span>
-        <span className="muted small watch-hint">클릭·Enter → 열린 창 모두 · 끌어서 순서 변경 · 우클릭 → 메뉴</span>
+        <span className="muted small watch-hint">클릭·Enter → 열린 창 모두 · {sort ? '열 제목 → 정렬 (세 번째 클릭: 등록순)' : '끌어서 순서 변경 · 열 제목 → 정렬'} · 우클릭 → 메뉴</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
       <div className="tab-scroll">
         <table className="grid hover">
           <thead>
             <tr>
-              <th>종목</th>
-              <th className="num">현재가</th>
+              <th className="sortable" onClick={() => sortBy('name')} title="누르면 정렬 (가나다순 → 역순 → 등록순)">
+                종목{sortMark('name')}
+              </th>
+              <th className="num sortable" onClick={() => sortBy('price')} title="누르면 정렬 (높은순 → 낮은순 → 등록순)">
+                현재가{sortMark('price')}
+              </th>
               {cols.map((k) => (
-                <th key={k} className="num">
+                <th key={k} className="num sortable" onClick={() => sortBy(k)} title="누르면 정렬 (높은순 → 낮은순 → 등록순)">
                   {WATCH_COL_LABEL[k]}
+                  {sortMark(k)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {codes.map((c) => {
+            {shown.map((c) => {
               const x = byCode.get(c);
               const s = x ? Math.sign(x.change) : 0;
               return (
@@ -318,7 +366,7 @@ export function WatchWindow({ win }: { win: Win }) {
                   key={c}
                   ref={auto.on && sel === c ? curRow : undefined}
                   className={`${sel === c ? 'sel' : ''} ${auto.on && sel === c ? 'auto-cur' : ''} ${dragFrom && dragFrom !== c ? 'drop-ok' : ''}`}
-                  draggable
+                  draggable={!sort}
                   onDragStart={(e) => (setDragFrom(c), (e.dataTransfer.effectAllowed = 'move'))}
                   onDragOver={(e) => dragFrom && e.preventDefault()}
                   onDrop={(e) => (e.preventDefault(), dragFrom && move(dragFrom, codes.indexOf(c)), setDragFrom(null))}
