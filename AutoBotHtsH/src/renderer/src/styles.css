@@ -546,3 +546,4 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .ctx-item.danger { color: var(--up); }
 .ctx-sep { height: 1px; margin: 3px 4px; background: var(--grid); }
 .ctx-note { padding: 5px 10px; color: var(--text-3); }
+.tile.auto-cur { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }

@@ -10,6 +10,7 @@ vi.mock('../src/renderer/src/store', () => ({ useStore: () => undefined }));
 vi.mock('../src/renderer/src/hooks', () => ({ useCall: () => ({}) }));
 vi.mock('../src/renderer/src/components/NxtTag', () => ({ NxtTag: () => null }));
 vi.mock('../src/renderer/src/components/WatchMenu', () => ({ WatchMenu: () => null }));
+vi.mock('../src/bot/renderer/src/components/AutoView', () => ({ clampSec: (v: unknown) => Number(v) || 10 }));
 
 import { rangePos, sortTiles, tileHeat } from '../src/renderer/src/windows/WatchTileWindow';
 import type { WatchRow } from '../src/shared/kis';
