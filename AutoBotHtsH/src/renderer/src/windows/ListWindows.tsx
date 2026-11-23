@@ -19,6 +19,9 @@
 //   in every open symbol window one after another every N s (3 - 600, kept per PC), the current row framed by a thin line; only one
 //   auto view runs - starting it here stops the timeline's and the other way round (AUTO_VIEW_EVENT))
 // - [2026-11-23] type=feat (Watchlist rows: right-click menu (components/WatchMenu) - open windows, copy / move to another tab, delete)
+// - [2026-11-23] type=feat (Watchlist 항목 menu (user 2026-11-23): which columns the list shows - 종목코드, 대비, 등락률, 거래량, 거래대금,
+//   시가, 고가, 저가, 매도호가, 매수호가 (시가 and the two quotes are off at first = the columns so far). Kept with the window
+//   (opts.cols); the name and the price are always shown)
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LINK_COLORS, newGroupId, useStore, WATCH_MAX, type Win } from '../store';
 import { useCall, useOutsideClose } from '../hooks';
@@ -46,6 +49,28 @@ import type { RankRow, WatchRow } from '../../../shared/kis';
 import type { ChartRes, IndexQuote, NewsRow, RankReq, RankType } from '../../../shared/market';
 import { INDEXES } from '../../../shared/market';
 import { fmtInt, fmtKrwBig, fmtNum, fmtPct, signOf, upDown } from '../lib';
+
+export type WatchCol = 'change' | 'changePct' | 'volume' | 'amount' | 'open' | 'high' | 'low' | 'ask' | 'bid';
+/** menu entries: 'code' (shown inside the name cell) and the value columns, in table order */
+export const WATCH_COLS: ('code' | WatchCol)[] = ['code', 'change', 'changePct', 'volume', 'amount', 'open', 'high', 'low', 'ask', 'bid'];
+export const WATCH_COL_LABEL: Record<'code' | WatchCol, string> = {
+  code: '종목코드',
+  change: '대비',
+  changePct: '등락률',
+  volume: '거래량',
+  amount: '거래대금',
+  open: '시가',
+  high: '고가',
+  low: '저가',
+  ask: '매도호가',
+  bid: '매수호가',
+};
+export const WATCH_COLS_DEFAULT: ('code' | WatchCol)[] = ['code', 'change', 'changePct', 'volume', 'amount', 'high', 'low'];
+/** the saved choice (unknown names dropped, table order kept); the default when nothing was saved */
+export function watchColsOf(v: unknown): ('code' | WatchCol)[] {
+  if (!Array.isArray(v)) return WATCH_COLS_DEFAULT;
+  return WATCH_COLS.filter((c) => v.includes(c));
+}
 
 function useRowActions(win: Win) {
   const { setCode, open } = useStore.getState();
@@ -80,6 +105,12 @@ export function WatchWindow({ win }: { win: Win }) {
   const [dragFrom, setDragFrom] = useState<string | null>(null);
   const [dragTab, setDragTab] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuAt | null>(null);
+  const picked = useMemo(() => watchColsOf(win.opts.cols), [win.opts.cols]);
+  const showCode = picked.includes('code');
+  const cols = picked.filter((k): k is WatchCol => k !== 'code');
+  const [colsOpen, setColsOpen] = useState(false);
+  const colsRef = useOutsideClose<HTMLSpanElement>(colsOpen, () => setColsOpen(false));
+  const toggleCol = (k: 'code' | WatchCol) => setOpts(win.id, { cols: WATCH_COLS.filter((c) => (c === k ? !picked.includes(c) : picked.includes(c))) });
   // [2026-11-20] 자동 보기
   const [auto, setAuto] = useState<WatchAutoCfg>(loadWatchAuto);
   const [secText, setSecText] = useState(String(auto.sec));
@@ -226,6 +257,23 @@ export function WatchWindow({ win }: { win: Win }) {
         <button className="mini" disabled={!sel} onClick={() => sel && remove(sel)} title="삭제 (Delete)">
           삭제
         </button>
+        <span className="dropdown" ref={colsRef} onKeyDown={(e) => e.stopPropagation()}>
+          <button className="mini" onClick={() => setColsOpen((o) => !o)} title="목록에 표시할 항목 (종목명과 현재가는 항상 표시)">
+            항목 ({picked.length}/{WATCH_COLS.length}) ▾
+          </button>
+          {colsOpen && (
+            <FloatPop className="dd-menu" onMouseDown={(e) => e.stopPropagation()}>
+              {WATCH_COLS.map((k) => (
+                <label key={k} className="check dd-check">
+                  <input type="checkbox" checked={picked.includes(k)} onChange={() => toggleCol(k)} /> {WATCH_COL_LABEL[k]}
+                </label>
+              ))}
+              <button type="button" onClick={() => setOpts(win.id, { cols: WATCH_COLS_DEFAULT })}>
+                기본값으로
+              </button>
+            </FloatPop>
+          )}
+        </span>
         <span className="muted small" title="NXT 표시 종목은 KRX 장이 닫힌 시간(09:00 이전, 15:40 이후)에 NXT 시세로 표시합니다">
           {codes.length}/{WATCH_MAX}종목 · 3초마다 · 장외 시간은 NXT 시세
         </span>
@@ -254,12 +302,11 @@ export function WatchWindow({ win }: { win: Win }) {
             <tr>
               <th>종목</th>
               <th className="num">현재가</th>
-              <th className="num">대비</th>
-              <th className="num">등락률</th>
-              <th className="num">거래량</th>
-              <th className="num">거래대금</th>
-              <th className="num">고가</th>
-              <th className="num">저가</th>
+              {cols.map((k) => (
+                <th key={k} className="num">
+                  {WATCH_COL_LABEL[k]}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -280,21 +327,20 @@ export function WatchWindow({ win }: { win: Win }) {
                   onContextMenu={(e) => (e.preventDefault(), setSel(c), setMenu({ code: c, name: x?.name || '', x: e.clientX, y: e.clientY }))}
                 >
                   <td>
-                    <b>{x?.name || c}</b> <span className="mono muted small">{c}</span> <NxtTag code={c} />
+                    <b>{x?.name || c}</b> {showCode && <span className="mono muted small">{c}</span>} <NxtTag code={c} />
                   </td>
                   <td className={`num ${upDown(s)}`}>{fmtInt(x?.price)}</td>
-                  <td className={`num ${upDown(s)}`}>{fmtInt(x?.change)}</td>
-                  <td className={`num ${upDown(s)}`}>{fmtPct(x?.changePct)}</td>
-                  <td className="num">{fmtInt(x?.volume)}</td>
-                  <td className="num">{fmtKrwBig(x?.amount)}</td>
-                  <td className="num">{fmtInt(x?.high)}</td>
-                  <td className="num">{fmtInt(x?.low)}</td>
+                  {cols.map((k) => (
+                    <td key={k} className={`num ${k === 'change' || k === 'changePct' ? upDown(s) : ''}`}>
+                      {k === 'changePct' ? fmtPct(x?.changePct) : k === 'amount' ? fmtKrwBig(x?.amount) : fmtInt(x?.[k])}
+                    </td>
+                  ))}
                 </tr>
               );
             })}
             {!codes.length && (
               <tr>
-                <td colSpan={8} className="muted center">
+                <td colSpan={2 + cols.length} className="muted center">
                   위 검색칸에서 종목을 추가하세요.
                 </td>
               </tr>
