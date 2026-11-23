@@ -10,6 +10,8 @@
 //   shown group (not twice, up to WATCH_MAX))
 // - [2026-11-23] type=feat (Tiles can be dragged to a new place (user 2026-11-23) - in 등록순 only: the other orders are computed from
 //   the prices, a drop there would have no place to keep. moveCode() is the group edit)
+// - [2026-11-23] type=feat (Tile size (user 2026-11-23): 작게 (name, price, change only - more tiles per row) / 보통 / 크게 (wider, larger
+//   text), kept with the window (opts.size))
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
@@ -43,6 +45,14 @@ const SORTS: [TileSort, string][] = [
   ['pctAsc', '등락률 낮은순'],
   ['amount', '거래대금순'],
 ];
+
+export type TileSize = 's' | 'm' | 'l';
+const SIZES: [TileSize, string][] = [
+  ['s', '작게'],
+  ['m', '보통'],
+  ['l', '크게'],
+];
+export const tileSizeOf = (v: unknown): TileSize => (v === 's' || v === 'l' ? v : 'm');
 
 /** codes in the chosen order; symbols without a price yet keep their place at the end (list order among themselves) */
 export function sortTiles(codes: string[], rows: Map<string, WatchRow>, sort: TileSort): string[] {
@@ -85,6 +95,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const group = groups.find((g) => g.id === win.opts.group) || groups[0];
   const codes = group?.codes || [];
   const sort = (SORTS.some(([k]) => k === win.opts.sort) ? win.opts.sort : 'list') as TileSort;
+  const size = tileSizeOf(win.opts.size);
   const r = useCall<WatchRow[]>('multi', [codes], 3000, codes.length > 0);
   const [sel, setSel] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuAt | null>(null);
@@ -168,6 +179,13 @@ export function WatchTileWindow({ win }: { win: Win }) {
             </option>
           ))}
         </select>
+        <select value={size} onChange={(e) => setOpts(win.id, { size: e.target.value })} title="타일 크기 (작게: 종목명 / 현재가 / 등락만)">
+          {SIZES.map(([k, label]) => (
+            <option key={k} value={k}>
+              {label}
+            </option>
+          ))}
+        </select>
         <span className="muted small" title="NXT 표시 종목은 KRX 장이 닫힌 시간(09:00 이전, 15:40 이후)에 NXT 시세로 표시합니다">
           {codes.length}/{WATCH_MAX}종목 · <span className="up">상승 {ups}</span> · <span className="down">하락 {downs}</span> · 3초마다
         </span>
@@ -190,7 +208,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
         <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 우클릭 → 메뉴(삭제 / 복사) · {canDrag ? '끌어서 순서 변경' : '순서 변경은 등록순에서'}</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
-      <div className="tile-grid">
+      <div className={`tile-grid tile-${size}`}>
         {shown.map((c) => {
           const x = byCode.get(c);
           const s = x ? Math.sign(x.change) : 0;

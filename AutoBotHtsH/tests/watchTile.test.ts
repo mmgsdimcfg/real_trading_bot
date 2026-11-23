@@ -13,7 +13,7 @@ vi.mock('../src/renderer/src/components/SymbolSearch', () => ({ SymbolSearch: ()
 vi.mock('../src/renderer/src/components/WatchMenu', () => ({ WatchMenu: () => null }));
 vi.mock('../src/bot/renderer/src/components/AutoView', () => ({ clampSec: (v: unknown) => Number(v) || 10 }));
 
-import { moveCode, rangePos, sortTiles, tileHeat } from '../src/renderer/src/windows/WatchTileWindow';
+import { moveCode, rangePos, sortTiles, tileHeat, tileSizeOf } from '../src/renderer/src/windows/WatchTileWindow';
 import type { WatchRow } from '../src/shared/kis';
 
 const row = (code: string, changePct: number, amount: number): WatchRow => ({ code, name: code, price: 100, change: changePct, changePct, volume: 1, amount });
@@ -35,6 +35,9 @@ describe('watchlist tiles', () => {
     expect(moveCode(l, 'B', 'B')).toBe(l);
     expect(moveCode(l, 'X', 'B')).toBe(l);
     expect(moveCode(l, 'B', 'X')).toBe(l);
+  });
+  it('[2026-11-23] tile size: unknown values are the normal size', () => {
+    expect([tileSizeOf('s'), tileSizeOf('l'), tileSizeOf('m'), tileSizeOf(undefined), tileSizeOf('x')]).toEqual(['s', 'l', 'm', 'm', 'm']);
   });
   it('tint strength: 3 % is full, unknown is none', () => {
     expect([tileHeat(0), tileHeat(1.5), tileHeat(-3), tileHeat(12), tileHeat(undefined)]).toEqual([0, 0.5, 1, 1, 0]);
