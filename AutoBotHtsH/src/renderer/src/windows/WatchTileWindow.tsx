@@ -8,6 +8,8 @@
 //   (autobothtsh.watchTileAuto); one auto view at a time - starting it stops the timeline's / the list window's and the other way round)
 // - [2026-11-23] type=feat (종목 추가: the symbol search of the list window on the tile toolbar too - the picked symbol is added to the
 //   shown group (not twice, up to WATCH_MAX))
+// - [2026-11-23] type=feat (Tiles can be dragged to a new place (user 2026-11-23) - in 등록순 only: the other orders are computed from
+//   the prices, a drop there would have no place to keep. moveCode() is the group edit)
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
@@ -58,6 +60,15 @@ export function sortTiles(codes: string[], rows: Map<string, WatchRow>, sort: Ti
     .map((x) => x.c);
 }
 
+/** `code` moved to the place of `target` in the list (the others keep their order); unchanged when either is missing */
+export function moveCode(codes: string[], code: string, target: string): string[] {
+  const to = codes.indexOf(target);
+  if (code === target || to < 0 || !codes.includes(code)) return codes;
+  const rest = codes.filter((c) => c !== code);
+  rest.splice(to, 0, code);
+  return rest;
+}
+
 /** tint strength 0 - 1 of a change rate (3 % = full) */
 export const tileHeat = (pct: number | undefined) => (typeof pct === 'number' && Number.isFinite(pct) ? Math.min(1, Math.abs(pct) / 3) : 0);
 
@@ -77,6 +88,13 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const r = useCall<WatchRow[]>('multi', [codes], 3000, codes.length > 0);
   const [sel, setSel] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuAt | null>(null);
+  const [dragFrom, setDragFrom] = useState<string | null>(null);
+  const canDrag = sort === 'list';
+  const dropOn = (target: string) => {
+    if (!group || !dragFrom) return;
+    const st = useStore.getState();
+    st.setWatch(st.watch.map((g) => (g.id === group.id ? { ...g, codes: moveCode(g.codes, dragFrom, target) } : g)));
+  };
   const byCode = useMemo(() => new Map((r.data || []).map((x) => [x.code, x])), [r.data]);
   const shown = useMemo(() => sortTiles(codes, byCode, sort), [codes, byCode, sort]);
   const ups = shown.filter((c) => (byCode.get(c)?.change || 0) > 0).length;
@@ -169,7 +187,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
           />
           초{auto.on && shown.length ? ` · ${sel && shown.includes(sel) ? shown.indexOf(sel) + 1 : '-'}/${shown.length}` : ''}
         </span>
-        <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 우클릭 → 메뉴(삭제 / 복사)</span>
+        <span className="muted small watch-hint">클릭 → 열린 창 모두 · 더블클릭 → 차트 · 우클릭 → 메뉴(삭제 / 복사) · {canDrag ? '끌어서 순서 변경' : '순서 변경은 등록순에서'}</span>
       </div>
       {r.error && <p className="err">{r.error}</p>}
       <div className="tile-grid">
@@ -182,7 +200,12 @@ export function WatchTileWindow({ win }: { win: Win }) {
               type="button"
               key={c}
               ref={auto.on && sel === c ? curTile : undefined}
-              className={`tile ${upDown(s)} ${sel === c ? 'sel' : ''} ${auto.on && sel === c ? 'auto-cur' : ''}`}
+              className={`tile ${upDown(s)} ${sel === c ? 'sel' : ''} ${auto.on && sel === c ? 'auto-cur' : ''} ${dragFrom === c ? 'dragging' : dragFrom ? 'drop-ok' : ''}`}
+              draggable={canDrag}
+              onDragStart={(e) => (setDragFrom(c), (e.dataTransfer.effectAllowed = 'move'))}
+              onDragOver={(e) => dragFrom && dragFrom !== c && e.preventDefault()}
+              onDrop={(e) => (e.preventDefault(), dropOn(c), setDragFrom(null))}
+              onDragEnd={() => setDragFrom(null)}
               style={{ ['--heat' as string]: tileHeat(x?.changePct) }}
               onClick={() => (setSel(c), setCodeAll(c))}
               onDoubleClick={() => useStore.getState().open('chart', { code: c, link: win.link })}

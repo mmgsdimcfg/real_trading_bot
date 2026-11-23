@@ -570,3 +570,5 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .info-inv.in-tab .tab-scroll { flex: 1; min-height: 0; overflow: auto; }
 .info-inv.in-tab .inv-head { padding: 4px 6px; flex-wrap: wrap; }
 .info-inv.in-tab .inv-head h4 { margin: 0; font-size: var(--fs); color: var(--text-2); }
+.tile.dragging { opacity: 0.45; }
+.tile.drop-ok { outline: 1px dashed var(--accent); outline-offset: -2px; }

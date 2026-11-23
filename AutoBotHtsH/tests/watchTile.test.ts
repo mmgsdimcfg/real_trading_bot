@@ -13,7 +13,7 @@ vi.mock('../src/renderer/src/components/SymbolSearch', () => ({ SymbolSearch: ()
 vi.mock('../src/renderer/src/components/WatchMenu', () => ({ WatchMenu: () => null }));
 vi.mock('../src/bot/renderer/src/components/AutoView', () => ({ clampSec: (v: unknown) => Number(v) || 10 }));
 
-import { rangePos, sortTiles, tileHeat } from '../src/renderer/src/windows/WatchTileWindow';
+import { moveCode, rangePos, sortTiles, tileHeat } from '../src/renderer/src/windows/WatchTileWindow';
 import type { WatchRow } from '../src/shared/kis';
 
 const row = (code: string, changePct: number, amount: number): WatchRow => ({ code, name: code, price: 100, change: changePct, changePct, volume: 1, amount });
@@ -26,6 +26,15 @@ describe('watchlist tiles', () => {
     expect(sortTiles(codes, rows, 'pctDesc')).toEqual(['A', 'C', 'B', 'X']);
     expect(sortTiles(codes, rows, 'pctAsc')).toEqual(['B', 'C', 'A', 'X']);
     expect(sortTiles(codes, rows, 'amount')).toEqual(['B', 'A', 'C', 'X']);
+  });
+  it('[2026-11-23] drag: the tile takes the place of the one it is dropped on', () => {
+    const l = ['A', 'B', 'C', 'D'];
+    expect(moveCode(l, 'A', 'C')).toEqual(['B', 'C', 'A', 'D']);
+    expect(moveCode(l, 'D', 'A')).toEqual(['D', 'A', 'B', 'C']);
+    expect(moveCode(l, 'B', 'C')).toEqual(['A', 'C', 'B', 'D']);
+    expect(moveCode(l, 'B', 'B')).toBe(l);
+    expect(moveCode(l, 'X', 'B')).toBe(l);
+    expect(moveCode(l, 'B', 'X')).toBe(l);
   });
   it('tint strength: 3 % is full, unknown is none', () => {
     expect([tileHeat(0), tileHeat(1.5), tileHeat(-3), tileHeat(12), tileHeat(undefined)]).toEqual([0, 0.5, 1, 1, 0]);

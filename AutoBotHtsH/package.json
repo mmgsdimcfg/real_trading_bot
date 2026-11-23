@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-23] type=feat - v1.0.11_005: 관심종목(타일) 창 - 타일을 끌어서 순서 변경(등록순일 때, 놓은 타일 자리로 이동). 등락률 / 거래대금 정렬에서는 순서가 시세로 정해져 끌기 불가",
     "[2026-11-23] type=feat - v1.0.11_004: 관심종목(타일) 창 도구줄에 종목 추가 검색칸 - 고른 종목을 보고 있는 그룹에 추가(중복 제외, 그룹당 60종목까지)",
     "[2026-11-23] type=fix - v1.0.11_003: 현재가 창 투자자 탭 - 누적 선택 줄도 위에 고정(표만 스크롤)",
     "[2026-11-23] type=feat - v1.0.11_002: 현재가 창의 투자자 탭도 약 1년치 표시 + 누적 합계 행(표시 안 함 / 1달 / 3달 / 6달 / 1년) - 종목정보 창과 같은 표(components/InvestorPanel)",
@@ -96,7 +97,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "005",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",
