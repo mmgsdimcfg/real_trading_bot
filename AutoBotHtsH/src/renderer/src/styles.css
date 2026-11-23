@@ -565,7 +565,8 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .tile.auto-cur { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
 
 /* [2026-11-23] investor panel inside the 투자자 tab of the current price window: the tab body is the scroller */
-.info-inv.in-tab { display: block; min-width: 0; }
-.info-inv.in-tab .tab-scroll { overflow: visible; }
+/* [2026-11-23] ... the panel fills the tab body and only its table scrolls, so the 누적 select row stays on top too */
+.info-inv.in-tab { display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.info-inv.in-tab .tab-scroll { flex: 1; min-height: 0; overflow: auto; }
 .info-inv.in-tab .inv-head { padding: 4px 6px; flex-wrap: wrap; }
 .info-inv.in-tab .inv-head h4 { margin: 0; font-size: var(--fs); color: var(--text-2); }
