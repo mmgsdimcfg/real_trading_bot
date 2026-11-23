@@ -7,13 +7,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/renderer/src/store', () => ({ useStore: () => undefined }));
-vi.mock('../src/renderer/src/hooks', () => ({ useCall: () => ({}) }));
+vi.mock('../src/renderer/src/hooks', () => ({ useCall: () => ({}), useOutsideClose: () => ({ current: null }) }));
+vi.mock('../src/renderer/src/components/FloatPop', () => ({ FloatPop: () => null }));
 vi.mock('../src/renderer/src/components/NxtTag', () => ({ NxtTag: () => null }));
 vi.mock('../src/renderer/src/components/SymbolSearch', () => ({ SymbolSearch: () => null }));
 vi.mock('../src/renderer/src/components/WatchMenu', () => ({ WatchMenu: () => null }));
 vi.mock('../src/bot/renderer/src/components/AutoView', () => ({ clampSec: (v: unknown) => Number(v) || 10 }));
 
-import { moveCode, rangePos, sortTiles, tileHeat, tileSizeOf } from '../src/renderer/src/windows/WatchTileWindow';
+import { moveCode, rangePos, sortTiles, tileFieldsOf, tileHeat, TILE_FIELDS_DEFAULT, tileSizeOf } from '../src/renderer/src/windows/WatchTileWindow';
 import type { WatchRow } from '../src/shared/kis';
 
 const row = (code: string, changePct: number, amount: number): WatchRow => ({ code, name: code, price: 100, change: changePct, changePct, volume: 1, amount });
@@ -38,6 +39,12 @@ describe('watchlist tiles', () => {
   });
   it('[2026-11-23] tile size: unknown values are the normal size', () => {
     expect([tileSizeOf('s'), tileSizeOf('l'), tileSizeOf('m'), tileSizeOf(undefined), tileSizeOf('x')]).toEqual(['s', 'l', 'm', 'm', 'm']);
+  });
+  it('[2026-11-23] tile fields: default without a saved choice, unknown names dropped, menu order kept', () => {
+    expect(tileFieldsOf(undefined)).toEqual(TILE_FIELDS_DEFAULT);
+    expect(TILE_FIELDS_DEFAULT).not.toContain('ask');
+    expect(tileFieldsOf(['bid', 'x', 'code', 'volume'])).toEqual(['code', 'volume', 'bid']);
+    expect(tileFieldsOf([])).toEqual([]);
   });
   it('tint strength: 3 % is full, unknown is none', () => {
     expect([tileHeat(0), tileHeat(1.5), tileHeat(-3), tileHeat(12), tileHeat(undefined)]).toEqual([0, 0.5, 1, 1, 0]);

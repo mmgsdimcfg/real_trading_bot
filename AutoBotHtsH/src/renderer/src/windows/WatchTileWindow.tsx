@@ -12,12 +12,16 @@
 //   the prices, a drop there would have no place to keep. moveCode() is the group edit)
 // - [2026-11-23] type=feat (Tile size (user 2026-11-23): 작게 (name, price, change only - more tiles per row) / 보통 / 크게 (wider, larger
 //   text), kept with the window (opts.size))
+// - [2026-11-23] type=feat (항목 menu (user 2026-11-23): which values a tile shows - 종목코드, 대비·등락률, 위치 막대, 시가, 고가, 저가,
+//   거래량, 거래대금, 매도호가, 매수호가 (the two quotes are off at first). Kept with the window (opts.fields); the name and the
+//   price are always shown. The small tile size still shows the name, price and change only)
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
-import { useCall } from '../hooks';
+import { useCall, useOutsideClose } from '../hooks';
 import { NxtTag } from '../components/NxtTag';
 import { SymbolSearch } from '../components/SymbolSearch';
+import { FloatPop } from '../components/FloatPop';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import type { WatchRow } from '../../../shared/kis';
 import { fmtInt, fmtKrwBig, fmtPct, upDown } from '../lib';
@@ -45,6 +49,29 @@ const SORTS: [TileSort, string][] = [
   ['pctAsc', '등락률 낮은순'],
   ['amount', '거래대금순'],
 ];
+
+export type TileField = 'code' | 'change' | 'bar' | 'open' | 'high' | 'low' | 'volume' | 'amount' | 'ask' | 'bid';
+export const TILE_FIELDS: TileField[] = ['code', 'change', 'bar', 'open', 'high', 'low', 'volume', 'amount', 'ask', 'bid'];
+export const FIELD_LABEL: Record<TileField, string> = {
+  code: '종목코드',
+  change: '대비 · 등락률',
+  bar: '저가~고가 위치 막대',
+  open: '시가',
+  high: '고가',
+  low: '저가',
+  volume: '거래량',
+  amount: '거래대금',
+  ask: '매도호가',
+  bid: '매수호가',
+};
+export const TILE_FIELDS_DEFAULT: TileField[] = ['code', 'change', 'bar', 'open', 'high', 'low', 'volume', 'amount'];
+/** the saved choice (unknown names dropped, kept in menu order); the default when nothing was saved */
+export function tileFieldsOf(v: unknown): TileField[] {
+  if (!Array.isArray(v)) return TILE_FIELDS_DEFAULT;
+  return TILE_FIELDS.filter((f) => v.includes(f));
+}
+/** the fields shown as label + value rows under the price, in menu order */
+const ROW_FIELDS: TileField[] = ['open', 'high', 'low', 'volume', 'amount', 'ask', 'bid'];
 
 export type TileSize = 's' | 'm' | 'l';
 const SIZES: [TileSize, string][] = [
@@ -96,6 +123,12 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const codes = group?.codes || [];
   const sort = (SORTS.some(([k]) => k === win.opts.sort) ? win.opts.sort : 'list') as TileSort;
   const size = tileSizeOf(win.opts.size);
+  const fields = useMemo(() => tileFieldsOf(win.opts.fields), [win.opts.fields]);
+  const has = (f: TileField) => fields.includes(f);
+  const rowFields = ROW_FIELDS.filter(has) as ('open' | 'high' | 'low' | 'volume' | 'amount' | 'ask' | 'bid')[];
+  const [fieldsOpen, setFieldsOpen] = useState(false);
+  const fieldsRef = useOutsideClose<HTMLSpanElement>(fieldsOpen, () => setFieldsOpen(false));
+  const toggleField = (f: TileField) => setOpts(win.id, { fields: TILE_FIELDS.filter((k) => (k === f ? !has(k) : has(k))) });
   const r = useCall<WatchRow[]>('multi', [codes], 3000, codes.length > 0);
   const [sel, setSel] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuAt | null>(null);
@@ -186,6 +219,23 @@ export function WatchTileWindow({ win }: { win: Win }) {
             </option>
           ))}
         </select>
+        <span className="dropdown" ref={fieldsRef}>
+          <button className="mini" onClick={() => setFieldsOpen((o) => !o)} title="타일에 표시할 항목 (종목명과 현재가는 항상 표시 · 크기 '작게'에서는 종목명 / 현재가 / 등락만)">
+            항목 ({fields.length}/{TILE_FIELDS.length}) ▾
+          </button>
+          {fieldsOpen && (
+            <FloatPop className="dd-menu" onMouseDown={(e) => e.stopPropagation()}>
+              {TILE_FIELDS.map((f) => (
+                <label key={f} className="check dd-check">
+                  <input type="checkbox" checked={has(f)} onChange={() => toggleField(f)} /> {FIELD_LABEL[f]}
+                </label>
+              ))}
+              <button type="button" onClick={() => setOpts(win.id, { fields: TILE_FIELDS_DEFAULT })}>
+                기본값으로
+              </button>
+            </FloatPop>
+          )}
+        </span>
         <span className="muted small" title="NXT 표시 종목은 KRX 장이 닫힌 시간(09:00 이전, 15:40 이후)에 NXT 시세로 표시합니다">
           {codes.length}/{WATCH_MAX}종목 · <span className="up">상승 {ups}</span> · <span className="down">하락 {downs}</span> · 3초마다
         </span>
@@ -232,32 +282,28 @@ export function WatchTileWindow({ win }: { win: Win }) {
               <span className="tile-head">
                 <b className="tile-name">{x?.name || c}</b>
                 <NxtTag code={c} />
-                <span className="mono muted small tile-code">{c}</span>
+                {has('code') && <span className="mono muted small tile-code">{c}</span>}
               </span>
               <span className={`tile-price ${upDown(s)}`}>{fmtInt(x?.price)}</span>
-              <span className={`tile-chg ${upDown(s)}`}>
-                {s > 0 ? '▲' : s < 0 ? '▼' : ''} {fmtInt(x ? Math.abs(x.change) : undefined)} <b>{fmtPct(x?.changePct)}</b>
-              </span>
-              <span className="tile-range" title="저가 ~ 고가 사이의 현재가 위치">
-                <span className="tile-bar">{pos !== null && <i style={{ left: `${pos}%` }} />}</span>
-              </span>
-              <span className="tile-rows">
-                <span>
-                  <em>시가</em> {fmtInt(x?.open)}
+              {has('change') && (
+                <span className={`tile-chg ${upDown(s)}`}>
+                  {s > 0 ? '▲' : s < 0 ? '▼' : ''} {fmtInt(x ? Math.abs(x.change) : undefined)} <b>{fmtPct(x?.changePct)}</b>
                 </span>
-                <span>
-                  <em>거래량</em> {fmtInt(x?.volume)}
+              )}
+              {has('bar') && (
+                <span className="tile-range" title="저가 ~ 고가 사이의 현재가 위치">
+                  <span className="tile-bar">{pos !== null && <i style={{ left: `${pos}%` }} />}</span>
                 </span>
-                <span>
-                  <em>고가</em> {fmtInt(x?.high)}
+              )}
+              {rowFields.length > 0 && (
+                <span className={`tile-rows ${rowFields.length === 1 ? 'one' : ''}`}>
+                  {rowFields.map((f) => (
+                    <span key={f}>
+                      <em>{FIELD_LABEL[f]}</em> {f === 'amount' ? fmtKrwBig(x?.amount) : fmtInt(x?.[f])}
+                    </span>
+                  ))}
                 </span>
-                <span>
-                  <em>거래대금</em> {fmtKrwBig(x?.amount)}
-                </span>
-                <span>
-                  <em>저가</em> {fmtInt(x?.low)}
-                </span>
-              </span>
+              )}
             </button>
           );
         })}

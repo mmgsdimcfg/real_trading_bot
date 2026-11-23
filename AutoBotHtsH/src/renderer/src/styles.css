@@ -581,3 +581,4 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .tile-l .tile { padding: 10px 12px 11px; gap: 4px; font-size: calc(var(--fs) * 1.12); }
 .tile-l .tile-price { font-size: calc(var(--fs) * 1.9); }
 .tile-l .tile-rows { font-size: calc(var(--fs) * 1.02); gap: 2px 12px; }
+.tile-rows.one { grid-template-columns: 1fr; }
