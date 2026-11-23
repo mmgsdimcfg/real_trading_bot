@@ -48,27 +48,14 @@ import { SymbolSearch } from '../components/SymbolSearch';
 import { NxtTag } from '../components/NxtTag';
 import { FloatPop } from '../components/FloatPop';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
+import { nextWatchSort, sortWatch, WATCH_COL_LABEL, WATCH_COLS, watchSortOf, type WatchCol, type WatchSortKey } from '../watchSort';
 import { PriceChart } from '../components/PriceChart';
 import type { RankRow, WatchRow } from '../../../shared/kis';
 import type { ChartRes, IndexQuote, NewsRow, RankReq, RankType } from '../../../shared/market';
 import { INDEXES } from '../../../shared/market';
 import { fmtInt, fmtKrwBig, fmtNum, fmtPct, signOf, upDown } from '../lib';
 
-export type WatchCol = 'change' | 'changePct' | 'volume' | 'amount' | 'open' | 'high' | 'low' | 'ask' | 'bid';
-/** menu entries: 'code' (shown inside the name cell) and the value columns, in table order */
-export const WATCH_COLS: ('code' | WatchCol)[] = ['code', 'change', 'changePct', 'volume', 'amount', 'open', 'high', 'low', 'ask', 'bid'];
-export const WATCH_COL_LABEL: Record<'code' | WatchCol, string> = {
-  code: '종목코드',
-  change: '대비',
-  changePct: '등락률',
-  volume: '거래량',
-  amount: '거래대금',
-  open: '시가',
-  high: '고가',
-  low: '저가',
-  ask: '매도호가',
-  bid: '매수호가',
-};
+export { WATCH_COL_LABEL, WATCH_COLS, type WatchCol } from '../watchSort';
 export const WATCH_COLS_DEFAULT: ('code' | WatchCol)[] = ['code', 'change', 'changePct', 'volume', 'amount', 'high', 'low'];
 /** the saved choice (unknown names dropped, table order kept); the default when nothing was saved */
 export function watchColsOf(v: unknown): ('code' | WatchCol)[] {
@@ -76,35 +63,7 @@ export function watchColsOf(v: unknown): ('code' | WatchCol)[] {
   return WATCH_COLS.filter((c) => v.includes(c));
 }
 
-export type WatchSortKey = 'name' | 'price' | WatchCol;
-const SORT_KEYS: WatchSortKey[] = ['name', 'price', 'change', 'changePct', 'volume', 'amount', 'open', 'high', 'low', 'ask', 'bid'];
-export const watchSortOf = (key: unknown, dir: unknown): { key: WatchSortKey; dir: 1 | -1 } | null =>
-  SORT_KEYS.includes(key as WatchSortKey) ? { key: key as WatchSortKey, dir: dir === 1 ? 1 : -1 } : null;
-/** the next state of a click on column `key`: first click = high to low (names A to Z), second = the other way, third = no sort */
-export function nextWatchSort(cur: { key: WatchSortKey; dir: 1 | -1 } | null, key: WatchSortKey): { key: WatchSortKey; dir: 1 | -1 } | null {
-  const first: 1 | -1 = key === 'name' ? 1 : -1;
-  if (!cur || cur.key !== key) return { key, dir: first };
-  return cur.dir === first ? { key, dir: first === 1 ? -1 : 1 } : null;
-}
-/** codes in the sorted order (dir 1 = ascending); symbols without a value last, ties in the registered order */
-export function sortWatch(codes: string[], rows: Map<string, WatchRow>, sort: { key: WatchSortKey; dir: 1 | -1 } | null): string[] {
-  if (!sort) return codes;
-  const val = (c: string): number | string | null => {
-    const x = rows.get(c);
-    if (!x) return null;
-    if (sort.key === 'name') return x.name || null;
-    const v = x[sort.key];
-    return typeof v === 'number' && Number.isFinite(v) ? v : null;
-  };
-  return codes
-    .map((c, i) => ({ c, i, v: val(c) }))
-    .sort((a, b) => {
-      if (a.v === null || b.v === null) return (a.v === null ? 1 : 0) - (b.v === null ? 1 : 0) || a.i - b.i;
-      const d = typeof a.v === 'string' || typeof b.v === 'string' ? String(a.v).localeCompare(String(b.v), 'ko') : a.v - b.v;
-      return d * sort.dir || a.i - b.i;
-    })
-    .map((x) => x.c);
-}
+export { nextWatchSort, sortWatch, watchSortOf, type WatchSort, type WatchSortKey } from '../watchSort';
 
 function useRowActions(win: Win) {
   const { setCode, open } = useStore.getState();

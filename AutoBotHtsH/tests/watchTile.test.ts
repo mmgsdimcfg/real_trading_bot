@@ -14,7 +14,8 @@ vi.mock('../src/renderer/src/components/SymbolSearch', () => ({ SymbolSearch: ()
 vi.mock('../src/renderer/src/components/WatchMenu', () => ({ WatchMenu: () => null }));
 vi.mock('../src/bot/renderer/src/components/AutoView', () => ({ clampSec: (v: unknown) => Number(v) || 10 }));
 
-import { moveCode, rangePos, sortTiles, tileFieldsOf, tileHeat, TILE_FIELDS_DEFAULT, tileSizeOf } from '../src/renderer/src/windows/WatchTileWindow';
+import { moveCode, rangePos, tileFieldsOf, tileHeat, TILE_FIELDS_DEFAULT, tileSizeOf, tileSortOf } from '../src/renderer/src/windows/WatchTileWindow';
+import { firstDir, SORT_LABEL, sortWatch } from '../src/renderer/src/watchSort';
 import type { WatchRow } from '../src/shared/kis';
 
 const row = (code: string, changePct: number, amount: number): WatchRow => ({ code, name: code, price: 100, change: changePct, changePct, volume: 1, amount });
@@ -23,10 +24,18 @@ const codes = ['A', 'X', 'B', 'C']; // X has no price yet
 
 describe('watchlist tiles', () => {
   it('orders the tiles; a symbol without a price stays last', () => {
-    expect(sortTiles(codes, rows, 'list')).toEqual(['A', 'X', 'B', 'C']);
-    expect(sortTiles(codes, rows, 'pctDesc')).toEqual(['A', 'C', 'B', 'X']);
-    expect(sortTiles(codes, rows, 'pctAsc')).toEqual(['B', 'C', 'A', 'X']);
-    expect(sortTiles(codes, rows, 'amount')).toEqual(['B', 'A', 'C', 'X']);
+    expect(sortWatch(codes, rows, tileSortOf({}))).toEqual(['A', 'X', 'B', 'C']);
+    expect(sortWatch(codes, rows, tileSortOf({ sort: 'pctDesc' }))).toEqual(['A', 'C', 'B', 'X']);
+    expect(sortWatch(codes, rows, tileSortOf({ sort: 'pctAsc' }))).toEqual(['B', 'C', 'A', 'X']);
+    expect(sortWatch(codes, rows, tileSortOf({ sort: 'amount' }))).toEqual(['B', 'A', 'C', 'X']);
+  });
+  it('[2026-11-23] sort select: sortKey / sortDir win over the older opts.sort; null key = registered order', () => {
+    expect(tileSortOf({ sort: 'pctDesc', sortKey: 'volume', sortDir: 1 })).toEqual({ key: 'volume', dir: 1 });
+    expect(tileSortOf({ sort: 'pctDesc', sortKey: null })).toBeNull();
+    expect(tileSortOf({ sort: 'list' })).toBeNull();
+    expect([firstDir('name'), firstDir('price')]).toEqual([1, -1]);
+    expect(SORT_LABEL.changePct).toBe('등락률');
+    expect(sortWatch(codes, rows, tileSortOf({ sortKey: 'name', sortDir: -1 }))).toEqual(['C', 'B', 'A', 'X']);
   });
   it('[2026-11-23] drag: the tile takes the place of the one it is dropped on', () => {
     const l = ['A', 'B', 'C', 'D'];

@@ -17,6 +17,9 @@
 //   price are always shown. The small tile size still shows the name, price and change only)
 // - [2026-11-23] type=feat (The small tile size shows the chosen fields too (user 2026-11-23) - narrower tiles, smaller text, one value
 //   per line; it used to show the name, price and change only)
+// - [2026-11-23] type=feat (정렬 like the list window's column titles (user 2026-11-23): 등록순 or any value - 종목명, 현재가, 대비, 등락률,
+//   거래량, 거래대금, 시가, 고가, 저가, 매도호가, 매수호가 - with a direction button (높은순 / 낮은순, names 가나다순 / 역순). Same sort as
+//   the list window (watchSort.ts). Kept with the window (opts.sortKey / sortDir); the older opts.sort values are read as before)
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
@@ -27,6 +30,7 @@ import { FloatPop } from '../components/FloatPop';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import type { WatchRow } from '../../../shared/kis';
 import { fmtInt, fmtKrwBig, fmtPct, upDown } from '../lib';
+import { firstDir, SORT_KEYS, SORT_LABEL, sortWatch, watchSortOf, type WatchSort, type WatchSortKey } from '../watchSort';
 import { AUTO_MAX_SEC, AUTO_MIN_SEC, autoViewMayResume, autoViewStarted, clampSec, nextCode, onAutoViewStarted } from '../../../bot/renderer/src/components/AutoView';
 
 const TILE_AUTO_KEY = 'autobothtsh.watchTileAuto';
@@ -43,14 +47,6 @@ function loadTileAuto(): TileAutoCfg {
     return { on: false, sec: 10 };
   }
 }
-
-export type TileSort = 'list' | 'pctDesc' | 'pctAsc' | 'amount';
-const SORTS: [TileSort, string][] = [
-  ['list', '등록순'],
-  ['pctDesc', '등락률 높은순'],
-  ['pctAsc', '등락률 낮은순'],
-  ['amount', '거래대금순'],
-];
 
 export type TileField = 'code' | 'change' | 'bar' | 'open' | 'high' | 'low' | 'volume' | 'amount' | 'ask' | 'bid';
 export const TILE_FIELDS: TileField[] = ['code', 'change', 'bar', 'open', 'high', 'low', 'volume', 'amount', 'ask', 'bid'];
@@ -83,20 +79,13 @@ const SIZES: [TileSize, string][] = [
 ];
 export const tileSizeOf = (v: unknown): TileSize => (v === 's' || v === 'l' ? v : 'm');
 
-/** codes in the chosen order; symbols without a price yet keep their place at the end (list order among themselves) */
-export function sortTiles(codes: string[], rows: Map<string, WatchRow>, sort: TileSort): string[] {
-  if (sort === 'list') return codes;
-  const val = (c: string): number | null => {
-    const x = rows.get(c);
-    if (!x) return null;
-    const v = sort === 'amount' ? x.amount : x.changePct;
-    return typeof v === 'number' && Number.isFinite(v) ? v : null;
-  };
-  const dir = sort === 'pctAsc' ? 1 : -1;
-  return codes
-    .map((c, i) => ({ c, i, v: val(c) }))
-    .sort((a, b) => (a.v === null || b.v === null ? (a.v === null ? 1 : 0) - (b.v === null ? 1 : 0) || a.i - b.i : (a.v - b.v) * dir || a.i - b.i))
-    .map((x) => x.c);
+/** the saved sort; windows saved before sortKey / sortDir existed carry opts.sort ('pctDesc' | 'pctAsc' | 'amount' | 'list') */
+export function tileSortOf(opts: Record<string, unknown>): WatchSort | null {
+  if (opts.sortKey !== undefined) return watchSortOf(opts.sortKey, opts.sortDir);
+  if (opts.sort === 'pctDesc') return { key: 'changePct', dir: -1 };
+  if (opts.sort === 'pctAsc') return { key: 'changePct', dir: 1 };
+  if (opts.sort === 'amount') return { key: 'amount', dir: -1 };
+  return null;
 }
 
 /** `code` moved to the place of `target` in the list (the others keep their order); unchanged when either is missing */
@@ -123,7 +112,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const setCodeAll = useStore((s) => s.setCodeAll);
   const group = groups.find((g) => g.id === win.opts.group) || groups[0];
   const codes = group?.codes || [];
-  const sort = (SORTS.some(([k]) => k === win.opts.sort) ? win.opts.sort : 'list') as TileSort;
+  const sort = tileSortOf(win.opts);
   const size = tileSizeOf(win.opts.size);
   const fields = useMemo(() => tileFieldsOf(win.opts.fields), [win.opts.fields]);
   const has = (f: TileField) => fields.includes(f);
@@ -135,14 +124,14 @@ export function WatchTileWindow({ win }: { win: Win }) {
   const [sel, setSel] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuAt | null>(null);
   const [dragFrom, setDragFrom] = useState<string | null>(null);
-  const canDrag = sort === 'list';
+  const canDrag = !sort;
   const dropOn = (target: string) => {
     if (!group || !dragFrom) return;
     const st = useStore.getState();
     st.setWatch(st.watch.map((g) => (g.id === group.id ? { ...g, codes: moveCode(g.codes, dragFrom, target) } : g)));
   };
   const byCode = useMemo(() => new Map((r.data || []).map((x) => [x.code, x])), [r.data]);
-  const shown = useMemo(() => sortTiles(codes, byCode, sort), [codes, byCode, sort]);
+  const shown = useMemo(() => sortWatch(codes, byCode, sort), [codes, byCode, sort?.key, sort?.dir]); // eslint-disable-line react-hooks/exhaustive-deps
   const ups = shown.filter((c) => (byCode.get(c)?.change || 0) > 0).length;
   const downs = shown.filter((c) => (byCode.get(c)?.change || 0) < 0).length;
   // 자동 보기 (same rules as the list window's)
@@ -207,13 +196,26 @@ export function WatchTileWindow({ win }: { win: Win }) {
             setSel(c);
           }}
         />
-        <select value={sort} onChange={(e) => setOpts(win.id, { sort: e.target.value })} title="타일 순서">
-          {SORTS.map(([k, label]) => (
+        <select
+          value={sort?.key || ''}
+          onChange={(e) => {
+            const k = e.target.value as WatchSortKey | '';
+            setOpts(win.id, { sortKey: k || null, sortDir: k ? firstDir(k) : null });
+          }}
+          title="타일 순서"
+        >
+          <option value="">등록순</option>
+          {SORT_KEYS.map((k) => (
             <option key={k} value={k}>
-              {label}
+              {SORT_LABEL[k]}
             </option>
           ))}
         </select>
+        {sort && (
+          <button className="mini" onClick={() => setOpts(win.id, { sortKey: sort.key, sortDir: sort.dir === 1 ? -1 : 1 })} title="정렬 방향 바꾸기">
+            {sort.key === 'name' ? (sort.dir === 1 ? '가나다순 ▲' : '역순 ▼') : sort.dir === -1 ? '높은순 ▼' : '낮은순 ▲'}
+          </button>
+        )}
         <select value={size} onChange={(e) => setOpts(win.id, { size: e.target.value })} title="타일 크기 (작게: 좁은 타일과 작은 글자, 항목은 한 줄에 하나씩)">
           {SIZES.map(([k, label]) => (
             <option key={k} value={k}>
