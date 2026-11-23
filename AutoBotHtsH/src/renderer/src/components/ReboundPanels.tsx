@@ -5,15 +5,119 @@
 //   a test message, and the switch that sends each alert's summary to the user's own KakaoTalk)
 // - [2026-11-22] type=feat (KakaoTab: "봇용 로그인 파일 만들기" - login files for the bot (~/.kakao, AutoBot g007) so the scan job
 //   sends its picks (code + name) to KakaoTalk together with the result mail)
+// - [2026-11-23] type=feat (user 2026-11-23: HistoryTab is list | detail | 1-minute chart of the alert's day (HistChart) - the same
+//   PriceChart as the chart window with that window's indicators / periods / style, a bell on the alert bar and the view placed on
+//   it; the earlier days are the warm-up of the indicators)
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { PriceChart } from './PriceChart';
+import { normalizeParams, OSCILLATORS, type IndicatorKey, type IndicatorParams } from '../../../shared/indicators';
+import type { Bar } from '../../../shared/price';
+import type { ChartRes } from '../../../shared/market';
 import { alertSummary, BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm } from '../../../shared/rebound';
 import type { KakaoState, ReboundHistoryItem } from '../../../preload/index';
 
 const KST = 9 * 3600000;
 const when = (t: number) => new Date(t + KST).toISOString().slice(5, 16).replace('T', ' ');
 const num = (x: number | undefined, d = 1) => (x === undefined || !Number.isFinite(x) ? '-' : x.toLocaleString('ko-KR', { minimumFractionDigits: d, maximumFractionDigits: d }));
+
+const DAY = 86400000;
+/** KST midnight (epoch ms) of the day holding t */
+export const kstDay0 = (t: number) => Math.floor((t + KST) / DAY) * DAY - KST;
+/** weekdays from the day of t to today (both included) - enough trading days to reach that day */
+export function daysBack(t: number, now = Date.now()): number {
+  let n = 0;
+  for (let d = kstDay0(t); d <= kstDay0(now); d += DAY) {
+    const wd = new Date(d + KST).getUTCDay();
+    if (wd !== 0 && wd !== 6) n++;
+  }
+  return Math.max(1, n);
+}
+/** the bars of the alert's day and the bars before it (indicator warm-up) */
+export function splitDay(bars: Bar[], t: number): { day: Bar[]; warm: Bar[] } {
+  const d0 = kstDay0(t);
+  return { day: bars.filter((b) => b.t >= d0 && b.t < d0 + DAY), warm: bars.filter((b) => b.t < d0) };
+}
+
+type ChartOpts = { ind?: IndicatorKey[]; params?: IndicatorParams; style?: 'candle' | 'line' | 'ohlc'; vol?: boolean; sig?: boolean; paneH?: Record<string, number> };
+
+/** [2026-11-23] 1-minute chart of the alert's day - same chart and settings as the chart window */
+function HistChart({ item }: { item: ReboundHistoryItem }) {
+  // the chart window's choices (indicators, periods, style, volume, signals); its defaults when no chart window is open
+  const o = (useStore((s) => s.wins.find((w) => w.type === 'chart'))?.opts || {}) as ChartOpts;
+  const ind = o.ind || ['ma', 'bb', 'macd'];
+  const params = useMemo(() => normalizeParams(o.params), [o.params]);
+  const t = item.res.snap.t;
+  const days = Math.min(20, daysBack(t) + 1);
+  const [res, setRes] = useState<{ key: string; bars: Bar[]; err: string }>({ key: '', bars: [], err: '' });
+  const key = `${item.code}|${days}|${kstDay0(t)}`;
+  useEffect(() => {
+    let alive = true;
+    void window.hts.call<ChartRes>('chart', { code: item.code, kind: 'min', n: 1, days }).then((r) => {
+      if (alive) setRes({ key, bars: r.ok ? r.data.bars : [], err: r.ok ? '' : r.error });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { day, warm } = useMemo(() => splitDay(res.key === key ? res.bars : [], t), [res, key, t]);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [h, setH] = useState(300);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setH(el.clientHeight));
+    ro.observe(el);
+    setH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+  const chartH = Math.max(200, h);
+  const nOsc = ind.filter((k) => OSCILLATORS.includes(k)).length + (o.vol === false ? 0 : 1);
+  const oscH = Math.max(56, Math.min(100, Math.floor((chartH * 0.42) / Math.max(1, nOsc)) - 8));
+  const shown = useMemo(() => ind.filter((k) => k !== 'investor'), [ind.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const bell = useMemo(() => [{ t, id: item.id, title: `바닥 반등 알림 · 봉 ${hhmm(t)} · 가점 ${item.res.score}점` }], [t, item.id, item.res.score]);
+  const loading = res.key !== key;
+  return (
+    <div className="rb-hist-chart">
+      <div className="rb-hist-chart-bar">
+        <b>{item.name}</b> <span className="muted">1분봉 · {new Date(kstDay0(t) + KST).toISOString().slice(0, 10)} · 알림 봉 {hhmm(t)}</span>
+        <span className="muted small">{loading ? '불러오는 중…' : res.err ? `조회 오류: ${res.err}` : `${day.length}봉`} · 지표·기간·형태는 차트 창 설정을 따릅니다</span>
+      </div>
+      <div className="rb-hist-chart-body" ref={bodyRef}>
+        {!loading && !res.err && !day.length && <div className="empty">그날 분봉을 받지 못했습니다 (지난 날짜 분봉은 최근 20거래일, 실전 서버에서만).</div>}
+        {day.length > 0 && (
+          <PriceChart
+            key={key}
+            bars={day}
+            warm={warm}
+            kind="min"
+            n={1}
+            indicators={shown}
+            volume={o.vol !== false}
+            paneHeights={o.paneH}
+            trades={[]}
+            alerts={bell}
+            onAlertClick={(id) => void window.hts.reboundHistoryPopup(id)}
+            focusT={t}
+            date=""
+            mode="index"
+            axis="right"
+            left={6}
+            right={70}
+            height={chartH}
+            oscHeight={oscH}
+            interactive
+            tooltip={false}
+            signals={o.sig ?? true}
+            params={params}
+            style={o.style || 'candle'}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function HistoryTab() {
   const [items, setItems] = useState<ReboundHistoryItem[]>([]);
@@ -59,7 +163,7 @@ export function HistoryTab() {
       </div>
       <div className="rb-hist-detail">
         {!cur ? (
-          <p className="muted">왼쪽 목록에서 알림을 고르면 내역이 표시됩니다.</p>
+          <p className="muted">왼쪽 목록에서 알림을 고르면 내역과 그날 분봉 차트가 표시됩니다.</p>
         ) : (
           <>
             <h3>
@@ -106,6 +210,7 @@ export function HistoryTab() {
           </>
         )}
       </div>
+      {cur ? <HistChart item={cur} /> : <div className="rb-hist-chart empty muted">분봉 차트</div>}
     </div>
   );
 }

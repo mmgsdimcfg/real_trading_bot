@@ -8,6 +8,8 @@
 // - [2026-11-20] type=fix (<details> popovers (bot y축 항목) close on a click outside them - installDetailsAutoClose)
 // - [2026-11-21] type=feat (A rebound alert popup's "열기" shows its symbol in every symbol window (setCodeAll))
 // - [2026-11-21] type=feat (☰ > 반등 감시 설정 opens the rebound settings dialog (window event 'rebound-settings'))
+// - [2026-11-23] type=feat (user 2026-11-23: 'rebound-settings' opens the rebound window (MDI window 'rebound') instead of a dialog;
+//   detail 'history' switches it to the history tab)
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { TitleBar, Toolbar } from './components/Chrome';
@@ -16,15 +18,17 @@ import { Login } from './components/Login';
 import { installEdgeScrollbars } from './edgeScrollbars';
 import { installDetailsAutoClose } from './hooks';
 import { BotConfirm, BotStatusStrip } from './windows/BotWindow';
-import { ReboundSettings } from './components/ReboundSettings';
 
 export function App() {
   const auth = useStore((s) => s.auth);
   const [settings, setSettings] = useState(false);
-  const [rebound, setRebound] = useState<false | 'settings' | 'history' | 'kakao'>(false);
   useEffect(() => {
-    // detail 'history': the title bar's unread badge opens the history tab
-    const open = (e: Event) => setRebound((e as CustomEvent).detail === 'history' ? 'history' : 'settings');
+    // [2026-11-23] the rebound window (one per app); detail 'history': the title bar's unread badge shows the history tab
+    const open = (e: Event) => {
+      const st = useStore.getState();
+      const id = st.open('rebound');
+      if ((e as CustomEvent).detail === 'history') st.setOpts(id, { tab: 'history' });
+    };
     window.addEventListener('rebound-settings', open);
     return () => window.removeEventListener('rebound-settings', open);
   }, []);
@@ -71,7 +75,6 @@ export function App() {
       {loggedIn ? <Workspace /> : <div className="workspace-wrap" />}
       {auth && (!loggedIn || settings) && <Login onClose={loggedIn ? () => setSettings(false) : undefined} />}
       {loggedIn && auth.mode === 'demo' && <div className="demo-banner">데모 모드 - 가상 데이터입니다. ☰ → 설정에서 KIS 앱키로 로그인하세요.</div>}
-      {rebound && <ReboundSettings initialTab={rebound} onClose={() => setRebound(false)} />}
       <BotConfirm />
     </div>
   );

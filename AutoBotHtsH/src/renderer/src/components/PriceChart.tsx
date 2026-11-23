@@ -142,6 +142,8 @@ interface Props {
   /** horizontal price lines drawn by the user */
   hlines?: number[];
   onAddHline?: (price: number) => void;
+  /** [2026-11-23] index mode: the first view shows the bar holding this time (epoch ms) at about 3/4 of the width (null view) */
+  focusT?: number;
   /** [2026-11-23] alert marks: a bell above the bar holding time t (epoch ms) */
   alerts?: { t: number; id: string; title: string }[];
   onAlertClick?: (id: string) => void;
@@ -374,9 +376,15 @@ export function PriceChart(props: Props) {
   // viewport: follow the newest bar unless the user zoomed/panned away from it
   const vp = useMemo(() => {
     const count = Math.min(bars.length, Math.max(MIN_BARS, view?.count ?? defaultCount));
-    const end = view ? Math.min(bars.length, Math.max(Math.min(count, bars.length), view.end)) : bars.length;
+    let end = view ? Math.min(bars.length, Math.max(Math.min(count, bars.length), view.end)) : bars.length;
+    // [2026-11-23] focusT: the bar at that time sits at about 3/4 of the plot until the user zooms / pans
+    if (!view && props.focusT !== undefined) {
+      let fi = bars.findIndex((b) => b.t > props.focusT!);
+      fi = fi < 0 ? bars.length - 1 : Math.max(0, fi - 1);
+      end = Math.min(bars.length, Math.max(count, fi + 1 + Math.floor(count / 4)));
+    }
     return { start: Math.max(0, end - count), end, count };
-  }, [view, bars.length, defaultCount]);
+  }, [view, bars, defaultCount, props.focusT]);
 
   const model = useMemo(() => {
     if (!bars.length || width <= 0) return null;

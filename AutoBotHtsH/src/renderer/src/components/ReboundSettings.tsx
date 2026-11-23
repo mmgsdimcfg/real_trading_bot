@@ -6,9 +6,11 @@
 //   watcher uses it from the next minute. Also: defaults, test popup, open the folder)
 // - [2026-11-22] type=feat (Tabs: 설정 / 히스토리 (alerts shown so far, ReboundPanels.HistoryTab) / 카카오톡 (send alerts to the user's own
 //   KakaoTalk, ReboundPanels.KakaoTab). "팝업 유지 시간" = alert.autoCloseSec)
+// - [2026-11-23] type=feat (user 2026-11-23: shown as a normal MDI window (ReboundWindow, window type 'rebound') like the other windows
+//   instead of a dialog over the whole app - the tab is kept in the window options; 닫기 closes the window)
 
 import { useEffect, useMemo, useState } from 'react';
-import { newGroupId, useStore, WATCH_MAX } from '../store';
+import { newGroupId, useStore, WATCH_MAX, type Win } from '../store';
 import { SymbolSearch } from './SymbolSearch';
 import { REBOUND_DEFAULTS, type ReboundConfig } from '../../../shared/rebound';
 import type { ReboundStatus } from '../../../preload/index';
@@ -158,8 +160,15 @@ function Names({ codes, onRemove }: { codes: string[]; onRemove: (code: string) 
   );
 }
 
-export function ReboundSettings({ onClose, initialTab = 'settings' }: { onClose: () => void; initialTab?: Tab }) {
-  const [tab, setTab] = useState<Tab>(initialTab);
+/** [2026-11-23] the MDI window 'rebound' */
+export function ReboundWindow({ win }: { win: Win }) {
+  const setOpts = useStore((s) => s.setOpts);
+  const close = useStore((s) => s.close);
+  const tab = (['settings', 'history', 'kakao'] as Tab[]).includes(win.opts.tab as Tab) ? (win.opts.tab as Tab) : 'settings';
+  return <ReboundSettings tab={tab} setTab={(t) => setOpts(win.id, { tab: t })} onClose={() => close(win.id)} />;
+}
+
+export function ReboundSettings({ onClose, tab, setTab }: { onClose: () => void; tab: Tab; setTab: (t: Tab) => void }) {
   const watch = useStore((s) => s.watch);
   const setWatch = useStore((s) => s.setWatch);
   const [cfg, setCfg] = useState<ReboundConfig | null>(null);
@@ -173,12 +182,6 @@ export function ReboundSettings({ onClose, initialTab = 'settings' }: { onClose:
     const off = window.hts.onReboundStatus(setSt);
     return () => void off();
   }, []);
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', esc);
-    return () => window.removeEventListener('keydown', esc);
-  }, [onClose]);
-
   const tabName = cfg?.tab.trim() || '';
   const group = useMemo(() => watch.find((g) => g.name.trim().toLowerCase() === tabName.toLowerCase()), [watch, tabName]);
   if (!cfg) return null;
@@ -220,21 +223,14 @@ export function ReboundSettings({ onClose, initialTab = 'settings' }: { onClose:
   const changed = (f: Field) => getAt(cfg, f.path) !== getAt(REBOUND_DEFAULTS, f.path);
 
   return (
-    <div className="login-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="rb-dialog">
-        <header>
-          <h2>바닥 반등 초입 감시 설정</h2>
-          <span className="muted small">감지·알림 전용 - 주문은 내지 않습니다</span>
-          <button type="button" className="mini" onClick={onClose} title="닫기 (Esc)">
-            ✕
-          </button>
-        </header>
+      <div className="rb-dialog rb-win">
         <nav className="rb-tabs seg">
           {([['settings', '설정'], ['history', '히스토리'], ['kakao', '카카오톡']] as [Tab, string][]).map(([k, label]) => (
             <button key={k} type="button" className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
               {label}
             </button>
           ))}
+          <span className="muted small rb-sub">감지·알림 전용 - 주문은 내지 않습니다</span>
         </nav>
         {tab === 'history' && <HistoryTab />}
         {tab === 'kakao' && <KakaoTab enabled={cfg.alert.kakao} onEnabled={(on) => set('alert.kakao', on)} />}
@@ -352,6 +348,5 @@ export function ReboundSettings({ onClose, initialTab = 'settings' }: { onClose:
           </button>
         </footer>
       </div>
-    </div>
   );
 }

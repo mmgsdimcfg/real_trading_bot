@@ -19,6 +19,8 @@
 //   window shows the code without opening one - used for the symbol picked in a bot window)
 // - [2026-11-20] type=feat (글자 크기 in points (user 2026-11-20): fontPt 8 - 14 pt (default 9 - user 2026-11-20; was 10) sets the CSS size variable --fs that every
 //   font size of the app uses; the page zoom of the earlier setting is reset to 100 %)
+// - [2026-11-23] type=feat (Window type 'rebound' (user 2026-11-23): the rebound watcher settings / history / KakaoTalk are a normal MDI
+//   window instead of a dialog over the app; opts.tab keeps the tab shown)
 // - [2026-11-20] type=feat (One window per kind (user 2026-11-20): open() focuses the open window of that kind instead of adding another
 //   (a symbol window then shows the asked code); a saved layout with several windows of one kind keeps the front one)
 
@@ -36,7 +38,7 @@ import { wsToOrderBook, wsToTrade } from '../../shared/kis';
 export const BOT_TABS = ['control', 'jobs', 'collector', 'pipeline', 'board', 'timeline', 'chart', 'positions', 'trades', 'paper', 'settings'] as const;
 export type BotTab = (typeof BOT_TABS)[number];
 export type BotWinType = `bot-${BotTab}`;
-export type WinType = 'chart' | 'quote' | 'info' | 'watch' | 'watchtile' | 'rank' | 'index' | 'news' | BotWinType;
+export type WinType = 'chart' | 'quote' | 'info' | 'watch' | 'watchtile' | 'rank' | 'index' | 'news' | 'rebound' | BotWinType;
 export const isBotWin = (t: WinType): t is BotWinType => t.startsWith('bot-');
 export const botWinOf = (tab: BotTab): BotWinType => `bot-${tab}`;
 
@@ -69,6 +71,7 @@ export const WIN_TITLE: Record<WinType, string> = {
   rank: '순위',
   index: '지수',
   news: '뉴스',
+  rebound: '바닥 반등 초입 감시',
   ...(Object.fromEntries(BOT_TABS.map((t) => [botWinOf(t), BOT_TITLE[t]])) as Record<BotWinType, string>),
 };
 
@@ -84,6 +87,7 @@ const DEFAULT_SIZE: Record<WinType, [number, number]> = {
   rank: [600, 460],
   index: [480, 360],
   news: [520, 360],
+  rebound: [1360, 760],
   // bot views were made for a full window
   ...(Object.fromEntries(BOT_TABS.map((t) => [botWinOf(t), [1180, 760]])) as Record<BotWinType, [number, number]>),
 };

@@ -201,6 +201,17 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .rb-hist-detail li.no { color: var(--text-3); }
 .rb-hist-detail p { margin: 4px 0; }
 .rb-hist-actions { display: flex; gap: 8px; margin-top: 12px; }
+/* [2026-11-23] the rebound window (MDI) fills its frame; history = list | detail | minute chart */
+.rb-dialog.rb-win { width: auto; max-height: none; flex: 1; min-height: 0; border: 0; border-radius: 0; box-shadow: none; }
+.rb-win > .rb-body { flex: 1; min-height: 0; }
+.rb-win .rb-tabs { align-items: center; gap: 0; padding: 6px 14px 6px; border-bottom: 1px solid var(--border); }
+.rb-win .rb-sub { margin-left: 14px; }
+.rb-win .rb-hist { flex: 1; min-height: 0; height: auto; max-height: none; grid-template-columns: minmax(260px, 300px) minmax(300px, 380px) minmax(320px, 1fr); }
+.rb-hist-detail { border-right: 1px solid var(--border); }
+.rb-hist-chart { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.rb-hist-chart.empty { align-items: center; justify-content: center; }
+.rb-hist-chart-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 12px 6px; }
+.rb-hist-chart-body { flex: 1; min-height: 0; position: relative; }
 .rb-kform { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-bottom: 8px; }
 .rb-kform label { display: flex; flex-direction: column; gap: 3px; color: var(--text-2); }
 .rb-kform label.wide { grid-column: 1 / -1; }
@@ -508,7 +519,9 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .dd-group { display: flex; flex-direction: column; }
 .dd-group + .dd-group { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 3px; }
 .dd-caption { font-size: calc(var(--fs) - 3px); color: var(--text-3); padding: 2px 10px; }
-.dd-menu button.on { font-weight: 600; }
+/* [2026-11-23] an open window's entry: accent text (the global button.on made it white on the light menu - unreadable) */
+.dd-menu button.on { font-weight: 600; color: var(--accent); background: none; border-color: transparent; }
+.dd-menu button.on:hover { background: var(--hover); }
 
 /* [2026-11-20] 글자 크기 setting (KIS 로그인 · 설정) */
 .login-sub { margin: 10px 0 0; font-size: var(--fs); color: var(--text-2); font-weight: 600; }

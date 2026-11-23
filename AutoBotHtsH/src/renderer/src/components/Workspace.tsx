@@ -4,6 +4,7 @@
 //   Minimized windows sit in the tray at the bottom. The workspace size is reported to the store so arrange / maximize use the real area)
 // - [2026-11-20] type=feat (AutoBotHtsH: bot-<tab> windows show the AutoBotH view (BotWindow); they have no link colour picker)
 // - [2026-11-20] type=fix (link colour picker closes on a click outside it or Esc)
+// - [2026-11-23] type=feat (window 'rebound' -> ReboundSettings (settings / history / KakaoTalk); no link colour picker)
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { isBotWin, LINK_COLORS, WIN_TITLE, SYMBOL_WINS, useStore, type Win } from '../store';
@@ -16,6 +17,7 @@ import { RankWindow } from '../windows/RankWindow';
 import { IndexWindow } from '../windows/IndexWindow';
 import { NewsWindow } from '../windows/NewsWindow';
 import { BotWindow } from '../windows/BotWindow';
+import { ReboundWindow } from './ReboundSettings';
 import { useOutsideClose, useSymbol } from '../hooks';
 import { NxtMark } from './NxtTag';
 
@@ -28,6 +30,7 @@ const BODY: Record<string, (p: { win: Win }) => ReactNode> = {
   rank: RankWindow,
   index: IndexWindow,
   news: NewsWindow,
+  rebound: ReboundWindow,
 };
 /** [2026-11-20] bot-<tab> windows -> BotWindow */
 const bodyOf = (t: Win['type']) => BODY[t] || (t.startsWith('bot-') ? BotWindow : null);
@@ -103,7 +106,7 @@ function Frame({ win, active }: { win: Win; active: boolean }) {
   return (
     <div className={`mdi-win ${active ? 'active' : ''} ${win.max ? 'max' : ''}`} style={style} onMouseDown={() => focus(win.id)}>
       <div className="mdi-title" onMouseDown={start('move')} onDoubleClick={() => toggleMax(win.id)} style={{ borderTopColor: LINK_COLORS[win.link] || undefined }}>
-        {!isBotWin(win.type) && <LinkPicker win={win} />}
+        {!isBotWin(win.type) && win.type !== 'rebound' && <LinkPicker win={win} />}
         <b>{WIN_TITLE[win.type]}</b>
         {hasSym && (
           <span className="mdi-sym">
