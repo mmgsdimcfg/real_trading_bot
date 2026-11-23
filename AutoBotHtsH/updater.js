@@ -1,5 +1,9 @@
 /*
  * Update log
+ * - [2026-11-23] type=fix - The installer stayed in %LOCALAPPDATA%\<updaterCacheDirName>\pending after it was installed (80-110 MB per
+ *   program, until the next update download): pruneInstalledPending() removes that folder at the startup check when its installer
+ *   (update-info.json fileName ..._vX.Y.Z_NNN.exe) is not newer than the running version. A newer installer that waits for its
+ *   install is kept, and installer.exe / current.blockmap (base of the next differential download) are left alone
  * - [2026-11-23] type=feat - Redesigned update dialog (update-ui.js, design A): the payload carries the installer size, 'update-progress'
  *   the speed (bytesPerSecond), and 'update-cancel' stops a running download (electron-updater CancellationToken) - 'update-download'
  *   then answers { ok: false, cancelled: true }
@@ -96,6 +100,32 @@ function toPayload(info) {
   };
 }
 
+// [2026-11-23] electron-updater leaves the installed installer in <LOCALAPPDATA>/<updaterCacheDirName>/pending until the next
+// download. Removed at start when it is not newer than this version (a locked file is retried at the next start)
+function pruneInstalledPending() {
+  try {
+    const base = process.env.LOCALAPPDATA;
+    const yml = fs.readFileSync(path.join(process.resourcesPath, 'app-update.yml'), 'utf8');
+    const m = /^updaterCacheDirName:\s*['"]?([^'\"\r\n]+)/m.exec(yml);
+    if (!base || !m) return;
+    const dir = path.join(base, m[1].trim(), 'pending');
+    if (!fs.existsSync(dir)) return;
+    let fileName = '';
+    try { fileName = JSON.parse(fs.readFileSync(path.join(dir, 'update-info.json'), 'utf8')).fileName || ''; } catch (e) {}
+    if (!fileName) fileName = fs.readdirSync(dir).find(n => /\.exe$/i.test(n)) || '';
+    const v = /_v(\d+)\.(\d+)\.(\d+)_(\d{3})\b/.exec(fileName);
+    if (!v) return;                                   // unknown installer - leave it
+    const pending = v.slice(1, 5).map(Number);
+    const current = app.getVersion().split('-')[0].split('.').map(n => parseInt(n, 10) || 0).concat([0, 0, 0]).slice(0, 3);
+    current.push(readLocalBuildNumber());
+    for (let i = 0; i < 4; i++) {
+      if (pending[i] > current[i]) return;              // newer than this version: still to be installed
+      if (pending[i] < current[i]) break;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (e) {}
+}
+
 /* { status: 'available' | 'none' | 'error' | 'dev', info?, message? } */
 async function checkForUpdate() {
   if (!app.isPackaged) return { status: 'dev' };
@@ -170,6 +200,7 @@ function initUpdater({ productName, getMainWindow, getVersionLabel } = {}) {
   app.whenReady().then(() => {
     if (!app.isPackaged) return;
     const start = () => setTimeout(async () => {
+      if (!isPortable) pruneInstalledPending();
       const r = await checkForUpdate();
       const w = mainWindow();
       if (r.status === 'available' && w) w.webContents.send('update-available', r.info);
@@ -186,4 +217,4 @@ function initUpdater({ productName, getMainWindow, getVersionLabel } = {}) {
   });
 }
 
-module.exports = { initUpdater, preferBuildNumber };
+module.exports = { initUpdater, preferBuildNumber, pruneInstalledPending };
