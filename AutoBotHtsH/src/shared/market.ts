@@ -132,7 +132,8 @@ export interface RankReq {
 }
 
 export interface MarketBackend {
-  readonly kind: 'kis' | 'demo';
+  /** [2026-11-23] 'guest' = through another AutoBotHtsH that is logged in to KIS (main/guest.ts) */
+  readonly kind: 'kis' | 'demo' | 'guest';
   quote(code: string): Promise<Quote>;
   orderbook(code: string): Promise<OrderBook>;
   trades(code: string): Promise<TradeTick[]>;

@@ -3,6 +3,9 @@
 //   issued access token are stored only encrypted with safeStorage (DPAPI, tied to the Windows user) and never sent to the renderer.
 //   No account number is asked for or stored - HtsH is inquiry-only)
 
+// - [2026-11-23] type=feat (Guest mode: the host's relay setting {enabled, port, password} and the guest's saved host {url, password}
+//   - the passwords only encrypted with safeStorage like the KIS keys, never sent to the renderer)
+
 import Store from 'electron-store';
 import { safeStorage } from 'electron';
 import type { KisEnv } from '../shared/kis';
@@ -16,11 +19,15 @@ interface Stored {
   tokenEnc: string;
   /** last app key shown masked on the login screen (e.g. "PSab…x9") */
   keyHint: string;
+  /** [2026-11-23] encrypted JSON {enabled, port, password} - this PC relays market data to guests */
+  guestHostEnc: string;
+  /** [2026-11-23] encrypted JSON {url, password} - the host this PC connects to as a guest */
+  guestEnc: string;
 }
 
 const store = new Store<Stored>({
   name: 'htsh-settings',
-  defaults: { env: 'real', remember: true, credEnc: '', tokenEnc: '', keyHint: '' },
+  defaults: { env: 'real', remember: true, credEnc: '', tokenEnc: '', keyHint: '', guestHostEnc: '', guestEnc: '' },
 });
 
 const enc = (s: string) => {
@@ -97,3 +104,41 @@ export const tokenStore = {
     store.set('tokenEnc', t ? enc(JSON.stringify(t)) : '');
   },
 };
+
+// ---- [2026-11-23] guest mode ----
+export interface GuestHostCfg {
+  enabled: boolean;
+  port: number;
+  password: string;
+}
+export function guestHostCfg(): GuestHostCfg | null {
+  const raw = dec(store.get('guestHostEnc'));
+  if (!raw) return null;
+  try {
+    const c = JSON.parse(raw) as Partial<GuestHostCfg>;
+    return typeof c.port === 'number' && typeof c.password === 'string' ? { enabled: c.enabled === true, port: c.port, password: c.password } : null;
+  } catch {
+    return null;
+  }
+}
+export function saveGuestHostCfg(c: GuestHostCfg): void {
+  store.set('guestHostEnc', enc(JSON.stringify(c)));
+}
+
+export interface GuestCreds {
+  url: string;
+  password: string;
+}
+export function savedGuest(): GuestCreds | null {
+  const raw = dec(store.get('guestEnc'));
+  if (!raw) return null;
+  try {
+    const c = JSON.parse(raw) as Partial<GuestCreds>;
+    return c.url && c.password ? { url: c.url, password: c.password } : null;
+  } catch {
+    return null;
+  }
+}
+export function rememberGuest(c: GuestCreds | null): void {
+  store.set('guestEnc', c ? enc(JSON.stringify(c)) : '');
+}

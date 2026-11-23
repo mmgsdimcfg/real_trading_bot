@@ -24,6 +24,9 @@
 //   rebound:history* IPC (list, mark read, delete, show the popup again). KakaoTalk (reboundKakao.ts): with alert.kakao on, the
 //   summary of each alert is sent to the user's own KakaoTalk; rebound:kakao* IPC (state, app keys, login, logout, test message))
 
+// - [2026-11-23] type=feat (Guest mode (user 2026-11-23, guest.ts): auth:guest logs this PC in through another AutoBotHtsH (RemoteMarket,
+//   no realtime feed - the windows poll); guest:host* lets a KIS-logged-in PC relay its market calls to guests (GuestHost, off by
+//   default, port + password). Both the renderer and the guests go through callMarket() - the fixed list of inquiry methods)
 import './importOnce';
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { createRequire } from 'node:module';
@@ -36,7 +39,8 @@ import { Master } from './master';
 import { DemoFeed, KisFeed, type Feed, type RtData, type RtStatus } from './realtime';
 import { ChartDiskCache } from './chartCache';
 import { loadWatchFile, saveWatchFile, scanPicks, watchDir, type WatchFile } from './watchlist';
-import { forgetCreds, loginDefaults, rememberCreds, savedCreds, tokenStore, maskKey, type Creds } from './settings';
+import { forgetCreds, guestHostCfg, loginDefaults, rememberCreds, rememberGuest, saveGuestHostCfg, savedCreds, savedGuest, tokenStore, maskKey, type Creds } from './settings';
+import { GUEST_PASS_MIN, GUEST_PORT_DEFAULT, GuestHost, lanAddresses, normalizeHostUrl, RemoteMarket } from './guest';
 import type { MarketBackend, Res } from '../shared/market';
 import { isCode, toKrxRecord, WS_COMBINED, type KisEnv, type WsTr } from '../shared/kis';
 import { KIS_SPEC_COMMIT } from '../shared/kisSpec.generated';
@@ -61,6 +65,8 @@ let backend: MarketBackend | null = null;
 let client: KisClient | null = null;
 let feed: Feed | null = null;
 let rtStatus: { status: RtStatus; msg?: string } = { status: 'off' };
+/** [2026-11-23] server (real / paper) of the host this PC is a guest of */
+let guestEnv: KisEnv | null = null;
 const master = new Master(DEMO_MASTER);
 const logLines: string[] = [];
 
@@ -78,7 +84,7 @@ function authState() {
   return {
     status: backend ? 'in' : 'out',
     mode: backend?.kind || null,
-    env: client?.env || d.env,
+    env: client?.env || guestEnv || d.env,
     keyHint: client ? maskKey(client.creds.appKey) : d.keyHint,
     remember: d.remember,
     hasSaved: d.hasSaved,
@@ -86,6 +92,7 @@ function authState() {
     master: { size: master.size, date: master.date, error: master.error },
     rt: rtStatus,
     specCommit: KIS_SPEC_COMMIT,
+    guest: { url: backend instanceof RemoteMarket ? backend.base : savedGuest()?.url || '', hasSaved: !!savedGuest() },
   };
 }
 
@@ -116,6 +123,7 @@ function closeSession() {
   feed = null;
   backend = null;
   client = null;
+  guestEnv = null;
   rtStatus = { status: 'off' };
 }
 
@@ -173,7 +181,9 @@ ipcMain.handle('auth:logout', (_e, forget: boolean) => {
   return authState();
 });
 
-ipcMain.handle('mkt:call', async (_e, method: Method, ...args: unknown[]): Promise<Res<unknown>> => {
+ipcMain.handle('mkt:call', (_e, method: Method, ...args: unknown[]) => callMarket(method, args));
+/** one market call - the renderer's (mkt:call) and a guest's (GuestHost): only the METHODS above, arguments checked */
+async function callMarket(method: Method, args: unknown[]): Promise<Res<unknown>> {
   if (!backend) return { ok: false, error: '로그인하세요.' };
   if (!METHODS.includes(method)) return { ok: false, error: `허용되지 않은 호출: ${method}` };
   const first = args[0];
@@ -189,6 +199,64 @@ ipcMain.handle('mkt:call', async (_e, method: Method, ...args: unknown[]): Promi
     return { ok: true, data: await fn.apply(backend, args) };
   } catch (e) {
     return { ok: false, error: errMsg(e), code: (e as KisError).code };
+  }
+}
+
+// ---- [2026-11-23] guest mode ----
+ipcMain.handle('auth:guest', async (_e, req: { url?: string; password?: string; remember?: boolean; useSaved?: boolean }) => {
+  closeSession();
+  try {
+    const saved = req.useSaved ? savedGuest() : null;
+    if (req.useSaved && !saved) throw new Error('저장된 호스트가 없습니다.');
+    const url = normalizeHostUrl(saved ? saved.url : String(req.url || ''));
+    const password = saved ? saved.password : String(req.password || '');
+    if (!url) throw new Error('호스트 주소를 확인하세요 (예: 192.168.0.10 또는 192.168.0.10:47800).');
+    if (!password) throw new Error('암호를 입력하세요.');
+    const r = new RemoteMarket(url, password);
+    const info = await r.hello();
+    if (info?.app !== 'AutoBotHtsH') throw new Error('AutoBotHtsH 호스트가 아닙니다.');
+    if (info.mode !== 'kis') throw new Error('호스트 PC의 AutoBotHtsH가 KIS에 로그인되어 있지 않습니다.');
+    backend = r;
+    guestEnv = info.env === 'paper' ? 'paper' : 'real';
+    if (!saved) rememberGuest(req.remember ? { url, password } : null);
+    log(`[auth] 게스트 접속 (${url}, 호스트 v${info.version})`);
+    void master.ensure().then(() => send('auth:state', authState()));
+    return { ok: true, data: authState() };
+  } catch (e) {
+    closeSession();
+    return { ok: false, error: errMsg(e) };
+  }
+});
+ipcMain.handle('auth:guestForget', () => (rememberGuest(null), authState()));
+
+const guestHost = new GuestHost({
+  // guests are served only from this PC's own KIS login (a guest or demo PC does not relay)
+  call: (method, args) => (backend?.kind === 'kis' ? callMarket(method as Method, args) : Promise.resolve({ ok: false as const, error: '호스트 PC의 AutoBotHtsH가 KIS에 로그인되어 있지 않습니다.' })),
+  info: () => ({ app: 'AutoBotHtsH', version: versionLabel(), mode: backend?.kind || null, env: client?.env || 'real' }),
+  log,
+});
+function guestHostState() {
+  const c = guestHostCfg();
+  return { ...guestHost.status(), enabled: !!c?.enabled, port: c?.port || GUEST_PORT_DEFAULT, hasPassword: !!c?.password, passMin: GUEST_PASS_MIN, addresses: lanAddresses() };
+}
+async function applyGuestHost(): Promise<void> {
+  const c = guestHostCfg();
+  if (c?.enabled && c.password) await guestHost.start(c.port, c.password);
+  else await guestHost.stop();
+}
+ipcMain.handle('guest:hostState', () => guestHostState());
+ipcMain.handle('guest:hostSave', async (_e, req: { enabled?: boolean; port?: number; password?: string }) => {
+  try {
+    const cur = guestHostCfg();
+    const port = Math.round(Number(req.port)) || cur?.port || GUEST_PORT_DEFAULT;
+    if (port < 1024 || port > 65535) throw new Error('포트는 1024 ~ 65535 사이로 입력하세요.');
+    const password = req.password ? String(req.password) : cur?.password || '';
+    if (req.enabled && password.length < GUEST_PASS_MIN) throw new Error(`암호는 ${GUEST_PASS_MIN}자 이상으로 정하세요.`);
+    saveGuestHostCfg({ enabled: !!req.enabled, port, password });
+    await applyGuestHost();
+    return { ok: true, data: guestHostState() };
+  } catch (e) {
+    return { ok: false, error: errMsg(e) };
   }
 });
 
@@ -286,7 +354,7 @@ function raiseAlert(a: AlertInfo, cfg: typeof rebound.config): void {
 }
 const rebound = new ReboundWatcher({
   // demo prices are made up: no watching there (HTSH_REBOUND_DEMO=1 for screen tests)
-  backend: () => (backend && (backend.kind === 'kis' || process.env.HTSH_REBOUND_DEMO === '1') ? backend : null),
+  backend: () => (backend && (backend.kind === 'kis' || backend.kind === 'guest' || process.env.HTSH_REBOUND_DEMO === '1') ? backend : null),
   master,
   log,
   alert: (a, cfg) => raiseAlert(a, cfg),
@@ -399,6 +467,7 @@ ipcMain.handle('win-is-maximized', (e) => !!senderWin(e)?.isMaximized());
 void app.whenReady().then(() => {
   createWindow();
   rebound.start();
+  void applyGuestHost();
   // HTSH_DEMO=1: start in demo mode (screen tests)
   if (process.env.HTSH_DEMO === '1') {
     const d = new DemoMarket();
@@ -408,6 +477,7 @@ void app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  void guestHost.stop();
   closeSession();
   botQuit();
   app.quit();

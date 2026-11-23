@@ -43,7 +43,7 @@ const on = <T>(ch: string, cb: (d: T) => void) => {
 
 export interface AuthState {
   status: 'in' | 'out';
-  mode: 'kis' | 'demo' | null;
+  mode: 'kis' | 'demo' | 'guest' | null;
   env: KisEnv;
   keyHint: string;
   remember: boolean;
@@ -52,6 +52,21 @@ export interface AuthState {
   master: { size: number; date: string; error: string };
   rt: { status: 'off' | 'connecting' | 'on' | 'error'; msg?: string };
   specCommit: string;
+  /** [2026-11-23] guest mode: the host connected to (or the saved one) */
+  guest?: { url: string; hasSaved: boolean };
+}
+
+/** [2026-11-23] this PC as the guests' host (main/guest.ts) */
+export interface GuestHostState {
+  enabled: boolean;
+  port: number;
+  hasPassword: boolean;
+  passMin: number;
+  addresses: string[];
+  on: boolean;
+  clients: number;
+  calls: number;
+  error: string;
 }
 
 const hts = {
@@ -61,6 +76,11 @@ const hts = {
   authState: (): Promise<AuthState> => ipcRenderer.invoke('auth:state'),
   login: (req: { env: KisEnv; appKey?: string; appSecret?: string; remember: boolean; useSaved?: boolean }): Promise<Res<AuthState>> => ipcRenderer.invoke('auth:login', req),
   demo: (): Promise<AuthState> => ipcRenderer.invoke('auth:demo'),
+  /** [2026-11-23] guest mode: connect to a host / forget the saved host; the host's relay setting */
+  guestLogin: (req: { url?: string; password?: string; remember?: boolean; useSaved?: boolean }): Promise<Res<AuthState>> => ipcRenderer.invoke('auth:guest', req),
+  guestForget: (): Promise<AuthState> => ipcRenderer.invoke('auth:guestForget'),
+  guestHostState: (): Promise<GuestHostState> => ipcRenderer.invoke('guest:hostState'),
+  guestHostSave: (req: { enabled: boolean; port: number; password?: string }): Promise<Res<GuestHostState>> => ipcRenderer.invoke('guest:hostSave', req),
   logout: (forget: boolean): Promise<AuthState> => ipcRenderer.invoke('auth:logout', forget),
   onAuth: (cb: (s: AuthState) => void) => on('auth:state', cb),
   call: <T>(method: string, ...args: unknown[]): Promise<Res<T>> => ipcRenderer.invoke('mkt:call', method, ...args),

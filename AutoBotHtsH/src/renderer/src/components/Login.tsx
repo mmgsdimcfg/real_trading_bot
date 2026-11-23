@@ -5,10 +5,14 @@
 // - [2026-11-20] type=feat (글자 크기 in points 8 - 14 pt (default 9 pt) - the text size of the whole app, not a zoom)
 // - [2026-11-20] type=feat (AutoBotHtsH: title "KIS 로그인 · 설정"; 화면 section with 글자 크기 (80 - 150 %, also Ctrl + = / - / 0) and a
 //   link to the bot connection settings)
+// - [2026-11-23] type=feat (Guest mode (user 2026-11-23): 게스트 접속 - host address + password instead of a KIS key (this PC then shows
+//   the host's market data); 게스트 접속 허용 - on a PC logged in to KIS: relay on / off, port, password, this PC's addresses and
+//   how many guests are connected)
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { KisEnv } from '../../../shared/kis';
 import { FONT_PT_DEFAULT, FONT_PTS, useStore } from '../store';
+import type { GuestHostState } from '../../../preload';
 
 /** [2026-11-20] 글자 크기 in points - one text size for the whole app (chart text 2px smaller, small marks 3px smaller) */
 export function FontScaleRow() {
@@ -28,6 +32,53 @@ export function FontScaleRow() {
   );
 }
 
+/** [2026-11-23] this PC relays its KIS market data to guest PCs */
+function GuestHostPanel() {
+  const [st, setSt] = useState<GuestHostState | null>(null);
+  const [port, setPort] = useState('');
+  const [pass, setPass] = useState('');
+  const [msg, setMsg] = useState('');
+  const load = () => void window.hts.guestHostState().then((s) => (setSt(s), setPort((p) => p || String(s.port))));
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!st) return null;
+  const save = async (enabled: boolean) => {
+    const r = await window.hts.guestHostSave({ enabled, port: Number(port), password: pass || undefined });
+    if (r.ok) (setSt(r.data), setPass(''), setMsg(r.data.error || (enabled ? '게스트 접속을 허용했습니다.' : '게스트 접속을 껐습니다.')));
+    else setMsg(r.error);
+  };
+  return (
+    <>
+      <h3 className="login-sub">게스트 접속 허용 (이 PC가 시세 중계)</h3>
+      <p className="muted small">인증키가 없는 다른 PC의 AutoBotHtsH가 이 PC를 통해 시세를 조회합니다. 본인 PC끼리만 쓰세요. 켜면 Windows 방화벽 허용 창이 뜰 수 있습니다.</p>
+      <div className="guest-row">
+        <label>
+          포트
+          <input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} inputMode="numeric" />
+        </label>
+        <label>
+          {st.hasPassword ? '암호 (바꿀 때만 입력)' : `암호 (${st.passMin}자 이상)`}
+          <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" />
+        </label>
+      </div>
+      <div className="guest-row">
+        <button className={st.enabled ? '' : 'primary'} onClick={() => void save(true)}>
+          {st.enabled ? '설정 저장' : '게스트 접속 허용'}
+        </button>
+        {st.enabled && <button onClick={() => void save(false)}>끄기</button>}
+      </div>
+      <p className="muted small">
+        {st.on ? `중계 중 · 게스트 ${st.clients}대 · 조회 ${st.calls.toLocaleString('ko-KR')}건` : st.enabled ? `중계 시작 실패${st.error ? ` - ${st.error}` : ''}` : '꺼짐'}
+        {st.on && st.addresses.length > 0 && ` · 게스트 PC에 입력할 주소: ${st.addresses.map((a) => `${a}:${st.port}`).join(', ')}`}
+      </p>
+      {msg && <p className="login-msg">{msg}</p>}
+    </>
+  );
+}
+
 export function Login({ onClose }: { onClose?: () => void }) {
   const auth = useStore((s) => s.auth);
   const setAuth = useStore((s) => s.setAuth);
@@ -37,6 +88,21 @@ export function Login({ onClose }: { onClose?: () => void }) {
   const [remember, setRemember] = useState(auth?.remember ?? true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [gUrl, setGUrl] = useState(auth?.guest?.url || '');
+  const [gPass, setGPass] = useState('');
+  const [gRemember, setGRemember] = useState(true);
+  const guest = async (useSaved: boolean) => {
+    setBusy(true);
+    setMsg('호스트에 접속 중…');
+    const r = await window.hts.guestLogin({ url: gUrl, password: gPass, remember: gRemember, useSaved });
+    setBusy(false);
+    setGPass('');
+    if (r.ok) {
+      setAuth(r.data);
+      setMsg('');
+      onClose?.();
+    } else setMsg(r.error);
+  };
 
   const go = async (useSaved: boolean) => {
     setBusy(true);
@@ -91,10 +157,34 @@ export function Login({ onClose }: { onClose?: () => void }) {
         <button className="wide" disabled={busy} onClick={() => void window.hts.demo().then((a) => (setAuth(a), onClose?.()))}>
           데모 모드로 둘러보기 (가상 데이터)
         </button>
+        <h3 className="login-sub">게스트 접속 (인증키 없는 PC)</h3>
+        <p className="muted small">KIS에 로그인된 다른 PC의 AutoBotHtsH(호스트)를 통해 시세를 받습니다. 호스트 PC의 설정에서 "게스트 접속 허용"을 켠 뒤, 거기 나온 주소와 암호를 넣으세요.</p>
+        {auth?.guest?.hasSaved && (
+          <button className="primary wide" disabled={busy} onClick={() => void guest(true)}>
+            저장된 호스트로 접속 ({auth.guest.url.replace(/^https?:\/\//, '')})
+          </button>
+        )}
+        <div className="guest-row">
+          <label>
+            호스트 주소
+            <input value={gUrl} onChange={(e) => setGUrl(e.target.value)} placeholder="192.168.0.10:47800" spellCheck={false} autoComplete="off" />
+          </label>
+          <label>
+            암호
+            <input type="password" value={gPass} onChange={(e) => setGPass(e.target.value)} autoComplete="off" />
+          </label>
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={gRemember} onChange={(e) => setGRemember(e.target.checked)} /> 호스트와 암호를 이 PC에 저장 (Windows 계정으로 암호화)
+        </label>
+        <button className="wide" disabled={busy || !gUrl || !gPass} onClick={() => void guest(false)}>
+          게스트로 접속
+        </button>
         {msg && <p className="login-msg">{msg}</p>}
         <p className="muted small">
           실전/모의 서버는 앱키를 발급받은 계좌 종류와 같아야 합니다. 같은 앱키를 다른 프로그램(자동매매 등)과 함께 쓰면 초당 호출 한도를 나눠 쓰게 되므로, 가능하면 HtsH용 앱키를 따로 쓰세요.
         </p>
+        {auth?.status === 'in' && auth.mode === 'kis' && <GuestHostPanel />}
         <h3 className="login-sub">화면</h3>
         <FontScaleRow />
         {auth?.status === 'in' && (

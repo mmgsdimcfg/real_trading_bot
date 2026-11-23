@@ -158,6 +158,11 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
         {auth?.status === 'in' && (
           <>
             <b className={`badge ${mode === 'demo' ? 'demo' : auth.env}`}>{mode === 'demo' ? '데모' : auth.env === 'real' ? '실전 서버' : '모의 서버'}</b>
+            {mode === 'guest' && (
+              <b className="badge guest" title={`게스트 모드 - ${auth.guest?.url || ''} 의 AutoBotHtsH를 통해 시세를 받습니다 (실시간 연결 없음, 주기적으로 갱신)`}>
+                게스트
+              </b>
+            )}
             <b className="badge ro" title="주문·계좌 기능이 없습니다. 시세 조회 TR만 허용합니다.">조회 전용</b>
             <span className={`rt rt-${rt?.status || 'off'}`} title={rt?.msg || ''}>
               <i /> 실시간 {rt?.status === 'on' ? '연결' : rt?.status === 'connecting' ? '연결 중' : rt?.status === 'error' ? '오류' : '대기'}
