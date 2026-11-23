@@ -14,6 +14,11 @@
  * - [2026-11-21] type=feat - plunge.maxFallPct / fallWindow (user 2026-11-21): a crash is not a "plunge before a rebound" - when
  *   the fall from the highest high of the fallWindow bars up to the plunge bar down to its low is deeper than maxFallPct,
  *   condition A fails (003010 혜인 2026-11-13: -17 % in 12 minutes, detected at 11:38, went on falling).
+ * - [2026-11-23] type=feat - plunge.gapPct (user 2026-11-23: 008770 호텔신라 opened 2.4 % under the previous close at 08:00 and
+ *   rebounded, nothing was detected - an overnight gap is no single plunge bar): when no plunge bar is found and the day's first
+ *   bar opened gapPct or more under the previous bar's close and is still within plunge.window, the gap counts as the plunge -
+ *   its bar is the lowest low since the open (findGapPlunge). No volume test (the opening bar is always heavy) and the session
+ *   edge does not exclude it; the crash limit (maxFallPct) and the edge rule for the judged bar still apply. 0 = off
  * - [2026-11-22] type=feat - alert.kakao (send each alert's summary to the user's own KakaoTalk, off by default), alertSummary()
  *   (the text of that message, at most 200 characters), alert.autoCloseSec default 0 -> 60: a popup that closes by itself leaves
  *   the alert unread and the title bar counts it Default 8 %: of 36 sampled alerts the next deepest falls were -6.8 / -5.4 / -5.2 %. 0 = no limit
@@ -70,6 +75,9 @@ export interface ReboundConfig {
     /** the fall into the plunge bar (highest high of the `fallWindow` bars up to it -> its low), percent; deeper than maxFallPct = a crash, not judged (0 = no limit) */
     fallWindow: number;
     maxFallPct: number;
+    /** [2026-11-23] gap-down open: the day's first bar opening this much (percent, negative) or more under the previous close counts as
+     *  the plunge when there is no plunge bar (0 = off) */
+    gapPct: number;
   };
   rsi: { min: number; max: number };
   macd: {
@@ -143,7 +151,7 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
   recentMin: 3,
   requireCurrentAbove: true,
   edge: { openMin: 15, closeMin: 15 },
-  plunge: { window: 40, dropPct: -0.8, wickRatio: 2, wickMinPct: 0.3, volWindow: 60, volMult: 3, fallWindow: 60, maxFallPct: 8 },
+  plunge: { window: 40, dropPct: -0.8, wickRatio: 2, wickMinPct: 0.3, volWindow: 60, volMult: 3, fallWindow: 60, maxFallPct: 8, gapPct: -1.5 },
   rsi: { min: 45, max: 68 },
   macd: { oscRising: 3 },
   angle: { lag: 3, k: 10, min: 14 },
@@ -237,6 +245,8 @@ export interface ReboundSnapshot {
   plungeVol: number;
   /** fall into the plunge bar: highest high of the plunge.fallWindow bars up to it -> its low, percent (negative) */
   plungeFallPct: number;
+  /** [2026-11-23] gap of the day's open vs the previous close, percent - set only when the gap-down open is the plunge */
+  plungeGapPct?: number;
 }
 
 export interface ReboundResult {
@@ -393,6 +403,28 @@ export function findPlunge(bars: Bar[], cfg: ReboundConfig): number {
   return found;
 }
 
+const kstDayOf = (t: number) => Math.floor((t + KST) / 86400000);
+
+/**
+ * [2026-11-23] Gap-down open as the plunge: the first bar of the last bar's KST day opened plunge.gapPct or more under the previous
+ * bar's close and lies within the last plunge.window bars. The plunge bar is the lowest low since that open (the earliest of equals).
+ */
+export function findGapPlunge(bars: Bar[], cfg: ReboundConfig): { j: number; open: number; gapPct: number } | null {
+  const i = bars.length - 1;
+  const p = cfg.plunge;
+  if (!(p.gapPct < 0) || i < 1) return null;
+  const day = kstDayOf(bars[i].t);
+  let open = i;
+  while (open > 0 && kstDayOf(bars[open - 1].t) === day) open--;
+  if (open < 1 || open < i - p.window + 1) return null;
+  const pc = bars[open - 1].c;
+  const gapPct = pc > 0 ? (bars[open].o / pc - 1) * 100 : 0;
+  if (!(gapPct <= p.gapPct)) return null;
+  let j = open;
+  for (let k = open + 1; k <= i; k++) if (bars[k].l < bars[j].l) j = k;
+  return { j, open, gapPct };
+}
+
 /** fall into bar j: the highest high of the `window` bars up to and including j -> the low of j, percent (<= 0) */
 export function plungeFall(bars: Bar[], j: number, window: number): number {
   let hi = -Infinity;
@@ -422,7 +454,9 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
   const at = (s: Series) => (i >= 0 ? s[i] : NaN);
   const bbW = (k: number) => (isNum(B.mid[k]) && B.mid[k] !== 0 ? ((B.upper[k] - B.lower[k]) / B.mid[k]) * 100 : NaN);
 
-  const pj = i >= 1 ? findPlunge(bars, cfg) : -1;
+  const pBar = i >= 1 ? findPlunge(bars, cfg) : -1;
+  const gap = pBar < 0 ? findGapPlunge(bars, cfg) : null;
+  const pj = gap ? gap.j : pBar;
   const snap: ReboundSnapshot = {
     t: i >= 0 ? bars[i].t : NaN,
     close: at(close),
@@ -447,6 +481,7 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
     plungeLow: pj >= 0 ? bars[pj].l : NaN,
     plungeVol: pj >= 0 ? bars[pj].v : NaN,
     plungeFallPct: pj >= 0 ? plungeFall(bars, pj, cfg.plunge.fallWindow) : NaN,
+    ...(gap ? { plungeGapPct: gap.gapPct } : {}),
   };
   const no = (note: string): Check => ({ ok: false, note });
   const conds = Object.fromEntries(COND_KEYS.map((k) => [k, no('-')])) as Record<CondKey, Check>;
@@ -467,7 +502,9 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
       ? no(`최근 ${cfg.plunge.window}봉에 없음`)
       : crash
         ? no(`${hhmm(bars[pj].t)} 저가 ${bars[pj].l} - 낙폭 ${f1(snap.plungeFallPct)}% 가 기준 -${cfg.plunge.maxFallPct}% 보다 큼 (급락 과대, 제외)`)
-        : { ok: true, note: `${hhmm(bars[pj].t)} 저가 ${bars[pj].l} 거래량 ${bars[pj].v} 낙폭 ${f1(snap.plungeFallPct)}%` };
+        : gap
+          ? { ok: true, note: `갭 하락 시가 ${hhmm(bars[gap.open].t)} ${f1(gap.gapPct)}% (전봉 종가 대비), 저점 ${hhmm(bars[pj].t)} ${bars[pj].l} 낙폭 ${f1(snap.plungeFallPct)}%` }
+          : { ok: true, note: `${hhmm(bars[pj].t)} 저가 ${bars[pj].l} 거래량 ${bars[pj].v} 낙폭 ${f1(snap.plungeFallPct)}%` };
 
   // B. RSI crossed its signal, stays above on most of the last M bars, not overbought yet
   {

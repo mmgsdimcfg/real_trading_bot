@@ -36,6 +36,7 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
       { path: 'plunge.volWindow', label: '평균 거래량 범위', unit: '봉' },
       { path: 'plunge.maxFallPct', label: '낙폭 한도 (악재성 급락 제외)', unit: '% (0 = 제한 없음)', hint: '급락 봉 앞 최고가 -> 급락 봉 저가 낙폭이 이보다 크면 감지하지 않음' },
       { path: 'plunge.fallWindow', label: '낙폭을 재는 범위', unit: '봉' },
+      { path: 'plunge.gapPct', label: '갭 하락 시가 인정', unit: '% 이하 (0 = 끔)', hint: '급락 봉이 없을 때, 당일 첫 봉 시가가 전봉 종가보다 이만큼 낮게 시작했으면 급락 선행으로 인정 (음수). 급락 봉은 시가 이후 최저가 봉' },
     ],
   },
   {

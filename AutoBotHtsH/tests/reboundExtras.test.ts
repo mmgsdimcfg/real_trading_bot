@@ -170,3 +170,31 @@ describe('KakaoTalk client', () => {
     expect(kakaoErrorText(500, {})).toBe('카카오 오류 500');
   });
 });
+
+// [2026-11-23] gap-down open as the plunge (plunge.gapPct)
+import { findGapPlunge } from '../src/shared/rebound';
+
+describe('gap-down open as the plunge', () => {
+  const KST = 9 * 3600000;
+  const at = (day: number, hm: string) => Date.UTC(2026, 10, day, +hm.slice(0, 2), +hm.slice(3)) - KST;
+  const bar = (t: number, o: number, l: number, c: number) => ({ t, o, h: Math.max(o, c), l, c, v: 100 });
+  // previous day closes at 1000; the day opens at `open`, dips to 960 on its 2nd bar, then recovers
+  const day = (open: number, n = 10) => [
+    bar(at(20, '19:58'), 1000, 1000, 1000),
+    bar(at(20, '19:59'), 1000, 1000, 1000),
+    bar(at(23, '08:00'), open, open - 5, open),
+    bar(at(23, '08:01'), open, 960, 970),
+    ...Array.from({ length: n }, (_, k) => bar(at(23, `08:${String(k + 2).padStart(2, '0')}`), 970 + k, 970 + k, 972 + k)),
+  ];
+
+  it('a 2 % gap counts; the plunge bar is the lowest low since the open', () => {
+    const g = findGapPlunge(day(980), REBOUND_DEFAULTS);
+    expect(g).toMatchObject({ j: 3, open: 2 });
+    expect(g!.gapPct).toBeCloseTo(-2, 5);
+  });
+  it('a small gap, the rule switched off, or an open older than the window do not count', () => {
+    expect(findGapPlunge(day(995), REBOUND_DEFAULTS)).toBeNull();
+    expect(findGapPlunge(day(980), { ...REBOUND_DEFAULTS, plunge: { ...REBOUND_DEFAULTS.plunge, gapPct: 0 } })).toBeNull();
+    expect(findGapPlunge(day(980, 45), REBOUND_DEFAULTS)).toBeNull(); // the open is 46 bars back, window 40
+  });
+});
