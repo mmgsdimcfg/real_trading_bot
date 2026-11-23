@@ -52,7 +52,7 @@ import { computeIndicators, OSCILLATORS, type IndicatorKey, type IndicatorSet } 
 import { condTitle, fmtInt } from '../lib';
 import { barsUpTo } from '../../../shared/replay';
 import { peek, put } from '../dataCache';
-import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
+import { fmtKstDateTime, fmtKstTime, shownSessionRange } from '../../../shared/time';
 
 const KINDS: [ChartKind, string][] = [
   ['tick', '틱'],
@@ -307,6 +307,7 @@ export function ChartView() {
     isToday && q && q.open && q.high && q.low && q.price ? { t: dayT0, o: q.open, h: q.high, l: q.low, c: q.price, v: q.volume || 0 } : null;
   const replayCursor = snap?.replay?.cursor ?? null;
   const nxtOn = useStore((s) => nxtSessionOn(s.control.nxt));
+  const liveKeep = isToday && status.live && replayCursor === null ? shownSessionRange(day, isNxt || data?.nxt === true, false, Date.now()) : null;
   const bars = useMemo<Bar[]>(() => {
     if (!data?.ok) return [];
     if (!intraday && quoteBar) {
@@ -319,8 +320,9 @@ export function ChartView() {
     }
     const all = [...prevDay, ...(intraday ? olderBars : NONE), ...barsUpTo(data.bars, replayCursor, intraday)];
     // [2026-11-20] 운용 시간 = 정규장만: tick / minute bars of 09:00 - 15:30 only
-    return intraday && !nxtOn ? regularOnly(all) : all;
-  }, [data, daily, olderBars, prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor, nxtOn]); // eslint-disable-line react-hooks/exhaustive-deps
+    // [2026-11-23] ... plus, on the live day, the hours traded right now (before 09:00 the NXT pre-market, after 15:30 until 20:00)
+    return intraday && !nxtOn ? regularOnly(all, liveKeep) : all;
+  }, [data, daily, olderBars, prevDay, prefs.kind, quoteBar?.c, quoteBar?.h, quoteBar?.l, quoteBar?.v, replayCursor, nxtOn, liveKeep?.[0], liveKeep?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const warm = prevDay.length ? NONE : oldest?.warm;
   const warmBot = prevDay.length ? NONE : oldest?.warmBot;
 

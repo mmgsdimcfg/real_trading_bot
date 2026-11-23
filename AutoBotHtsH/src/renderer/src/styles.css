@@ -507,3 +507,26 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .grid td.up, .grid td.down, .grid td.gain, .grid td.loss, .price-tag, .price-tag b,
 .bot-root .board-grid td:nth-child(2), .bot-root .res-fail, .bot-root .res-pass, .bot-root .gain, .bot-root .loss,
 .bot-root .symline, .bot-root .picker, .bot-root h3, .bot-root h4 { font-weight: 700; }
+
+/* [2026-11-23] 관심종목(타일) window (windows/WatchTileWindow.tsx): tiles tinted by the change rate (--heat 0 - 1) */
+.tile-win .watch-groups { padding-bottom: 0; }
+.tile-grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 6px; padding: 6px; align-content: start; }
+.tile { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 7px 9px 8px; text-align: left; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); color: var(--text); cursor: pointer; font: inherit; min-width: 0; }
+.tile.up { background: color-mix(in srgb, var(--up) calc(var(--heat, 0) * 16%), var(--surface-2)); border-color: color-mix(in srgb, var(--up) calc(var(--heat, 0) * 45%), var(--border)); }
+.tile.down { background: color-mix(in srgb, var(--down) calc(var(--heat, 0) * 16%), var(--surface-2)); border-color: color-mix(in srgb, var(--down) calc(var(--heat, 0) * 45%), var(--border)); }
+.tile:hover { border-color: var(--accent); }
+.tile.sel { outline: 2px solid var(--accent); outline-offset: -1px; }
+.tile-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.tile-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.tile-code { margin-left: auto; flex-shrink: 0; }
+.tile-price { font-size: calc(var(--fs) * 1.45); font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.tile-chg { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tile-chg b { margin-left: 4px; }
+.tile-price.flat, .tile-chg.flat { color: var(--text); }
+.tile-range { display: block; padding: 3px 0 2px; }
+.tile-bar { position: relative; display: block; height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--down), var(--up)); opacity: 0.75; }
+.tile-bar i { position: absolute; top: -3px; width: 3px; height: 10px; border-radius: 1px; background: var(--text); transform: translateX(-1px); }
+.tile-rows { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 8px; font-size: calc(var(--fs) * 0.92); color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tile-rows span { display: flex; justify-content: space-between; gap: 4px; min-width: 0; overflow: hidden; }
+.tile-rows em { font-style: normal; color: var(--text-3); }
+.tile-empty { grid-column: 1 / -1; padding: 24px 0; }

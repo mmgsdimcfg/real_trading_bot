@@ -506,9 +506,10 @@ export function mergeMinuteBars(kis: Bar[], ticks: Bar[]): Bar[] {
 
 /** [2026-11-20] tick / minute bars inside the regular session (09:00 - 15:30 KST, the 15:30 closing print included) - the charts
  *  when the bot runs the regular session only (운용 시간 = 정규장만, r001 ENABLE_NXT_SESSION off) */
-export function regularOnly<T extends { t: number }>(bars: T[]): T[] {
+export function regularOnly<T extends { t: number }>(bars: T[], keep: [number, number] | null = null): T[] {
   return bars.filter((b) => {
     const s = kstSecondOfDay(b.t);
-    return s >= 9 * 3600 && s <= 15.5 * 3600;
+    // [2026-11-23] `keep`: the live day's range being traded right now (time.ts shownSessionRange) stays as well
+    return (s >= 9 * 3600 && s <= 15.5 * 3600) || (!!keep && b.t >= keep[0] && b.t <= keep[1]);
   });
 }

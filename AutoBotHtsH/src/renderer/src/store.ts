@@ -36,7 +36,7 @@ import { wsToOrderBook, wsToTrade } from '../../shared/kis';
 export const BOT_TABS = ['control', 'jobs', 'collector', 'pipeline', 'board', 'timeline', 'chart', 'positions', 'trades', 'paper', 'settings'] as const;
 export type BotTab = (typeof BOT_TABS)[number];
 export type BotWinType = `bot-${BotTab}`;
-export type WinType = 'chart' | 'quote' | 'info' | 'watch' | 'rank' | 'index' | 'news' | BotWinType;
+export type WinType = 'chart' | 'quote' | 'info' | 'watch' | 'watchtile' | 'rank' | 'index' | 'news' | BotWinType;
 export const isBotWin = (t: WinType): t is BotWinType => t.startsWith('bot-');
 export const botWinOf = (tab: BotTab): BotWinType => `bot-${tab}`;
 
@@ -65,6 +65,7 @@ export const WIN_TITLE: Record<WinType, string> = {
   quote: '현재가',
   info: '종목정보',
   watch: '관심종목',
+  watchtile: '관심종목(타일)',
   rank: '순위',
   index: '지수',
   news: '뉴스',
@@ -79,6 +80,7 @@ const DEFAULT_SIZE: Record<WinType, [number, number]> = {
   quote: [520, 560],
   info: [520, 520],
   watch: [560, 380],
+  watchtile: [720, 480],
   rank: [600, 460],
   index: [480, 360],
   news: [520, 360],

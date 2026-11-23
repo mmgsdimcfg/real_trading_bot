@@ -840,3 +840,8 @@ button.pick-chip:disabled { cursor: default; opacity: .6; }
 .auto-view { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
 .auto-view .auto-sec { width: 58px; padding: 2px 6px; }
 .auto-view select { padding: 2px 6px; font-size: 12.5px; }
+
+/* [2026-11-23] dragging the mouse over a view selected (inverted) its labels and never cleared - the views are not selectable;
+   inputs and the texts people copy (logs, raw log lines, detail boxes) still are */
+.app-main { user-select: none; -webkit-user-select: none; }
+.app-main input, .app-main textarea, .app-main pre, .app-main code, .log-box, .coll-log, .raw, .raw-cell, .detail { user-select: text; -webkit-user-select: text; }

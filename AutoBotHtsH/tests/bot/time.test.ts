@@ -39,6 +39,15 @@ describe('tradingSessionRange', () => {
   });
 });
 
+describe('regularOnly with the live range', () => {
+  it('[2026-11-23] keeps the bars of the range traded right now', () => {
+    const b = (hms: string) => ({ t: kstToEpoch('2026-11-23', hms) });
+    const keep = shownSessionRange('20261123', true, false, kstToEpoch('2026-11-23', '08:43:00'));
+    const out = regularOnly([{ t: kstToEpoch('2026-11-20', '08:30:00') }, b('08:10:00'), b('09:00:00'), b('16:00:00')], keep);
+    expect(out.map((x) => fmtKstDateTime(x.t).slice(5, 16))).toEqual(['11-23 08:10', '11-23 09:00']);
+  });
+});
+
 describe('regularOnly', () => {
   it('keeps the bars of 09:00 - 15:30 KST', () => {
     const b = (hm: string) => ({ t: kstToEpoch('2026-11-16', hm), o: 1, h: 1, l: 1, c: 1, v: 1 });

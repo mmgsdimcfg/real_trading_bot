@@ -11,6 +11,7 @@ import { ChartWindow } from '../windows/ChartWindow';
 import { QuoteWindow } from '../windows/QuoteWindow';
 import { InfoWindow } from '../windows/InfoWindow';
 import { WatchWindow } from '../windows/WatchWindow';
+import { WatchTileWindow } from '../windows/WatchTileWindow';
 import { RankWindow } from '../windows/RankWindow';
 import { IndexWindow } from '../windows/IndexWindow';
 import { NewsWindow } from '../windows/NewsWindow';
@@ -23,6 +24,7 @@ const BODY: Record<string, (p: { win: Win }) => ReactNode> = {
   quote: QuoteWindow,
   info: InfoWindow,
   watch: WatchWindow,
+  watchtile: WatchTileWindow,
   rank: RankWindow,
   index: IndexWindow,
   news: NewsWindow,

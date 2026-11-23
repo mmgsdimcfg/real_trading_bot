@@ -833,3 +833,8 @@
 .bot-root .auto-view { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs); color: var(--text-2); white-space: nowrap; }
 .bot-root .auto-view .auto-sec { width: 58px; padding: 2px 6px; }
 .bot-root .auto-view select { padding: 2px 6px; font-size: var(--fs); }
+
+/* [2026-11-23] dragging the mouse over a view selected (inverted) its labels and never cleared - the views are not selectable;
+   inputs and the texts people copy (logs, raw log lines, detail boxes) still are */
+.bot-root .app-main { user-select: none; -webkit-user-select: none; }
+.bot-root .app-main input, .bot-root .app-main textarea, .bot-root .app-main pre, .bot-root .app-main code, .bot-root .log-box, .bot-root .coll-log, .bot-root .raw, .bot-root .raw-cell, .bot-root .detail { user-select: text; -webkit-user-select: text; }

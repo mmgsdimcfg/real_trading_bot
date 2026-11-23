@@ -178,7 +178,7 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
   );
 }
 
-const OPEN: WinType[] = ['chart', 'quote', 'info', 'watch', 'rank', 'index', 'news'];
+const OPEN: WinType[] = ['chart', 'quote', 'info', 'watch', 'watchtile', 'rank', 'index', 'news'];
 const ARR: [ArrangeMode | 'min' | 'restore' | 'close', string][] = [
   ['cascade', '계단식'],
   ['tile', '바둑판식'],
