@@ -7,7 +7,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { GUEST_PATH, GUEST_PORT_DEFAULT, GuestHost, normalizeHostUrl, RemoteMarket, samePass } from '../src/main/guest';
+import { callerOf, GUEST_PATH, GUEST_PORT_DEFAULT, GuestHost, normalizeHostUrl, RemoteMarket, samePass } from '../src/main/guest';
 import type { Res } from '../src/shared/market';
 
 const PASS = 'correct-horse-9';
@@ -90,6 +90,20 @@ describe('guest mode', () => {
     await host!.stop();
     expect(host!.status().on).toBe(false);
     await expect(new RemoteMarket(ok.base, PASS).hello()).rejects.toThrow('호스트에 연결할 수 없습니다');
+  });
+
+  it('[2026-11-23] behind a local tunnel the lockout and the guest count go by the forwarded address', async () => {
+    expect(callerOf('192.168.0.7', { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '9.9.9.9' })).toBe('192.168.0.7'); // direct: headers not trusted
+    expect(callerOf('127.0.0.1', { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '9.9.9.9' })).toBe('1.2.3.4');
+    expect(callerOf('::1', { 'x-forwarded-for': '6.6.6.6, 5.5.5.5' })).toBe('5.5.5.5'); // the entry the nearest proxy appended
+    expect(callerOf('127.0.0.1', {})).toBe('127.0.0.1');
+    const { base } = await start();
+    const post = (ip: string, key: string) => fetch(`${base}${GUEST_PATH}/call`, { method: 'POST', headers: { 'x-htsh-key': key, 'cf-connecting-ip': ip, 'content-type': 'application/json' }, body: JSON.stringify({ method: 'quote', args: ['005930'] }) });
+    for (let k = 0; k < 5; k++) expect((await post('1.1.1.1', 'wrong-password')).status).toBe(401);
+    expect((await post('1.1.1.1', PASS)).status).toBe(429); // the stranger is locked out
+    expect((await post('2.2.2.2', PASS)).status).toBe(200); // the real guest is not
+    expect((await post('3.3.3.3', PASS)).status).toBe(200);
+    expect(host!.status().clients).toBe(2);
   });
 
   it('normalizeHostUrl and samePass', () => {

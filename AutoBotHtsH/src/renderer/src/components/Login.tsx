@@ -72,8 +72,13 @@ function GuestHostPanel() {
       </div>
       <p className="muted small">
         {st.on ? `중계 중 · 게스트 ${st.clients}대 · 조회 ${st.calls.toLocaleString('ko-KR')}건` : st.enabled ? `중계 시작 실패${st.error ? ` - ${st.error}` : ''}` : '꺼짐'}
-        {st.on && st.addresses.length > 0 && ` · 게스트 PC에 입력할 주소: ${st.addresses.map((a) => `${a}:${st.port}`).join(', ')}`}
+        {st.on && st.addresses.length > 0 && ` · 같은 네트워크의 게스트 PC에 입력할 주소: ${st.addresses.map((a) => `${a}:${st.port}`).join(', ')}`}
       </p>
+      {st.on && (
+        <p className="muted small">
+          위 주소는 같은 공유기(네트워크) 안에서만 통합니다. 회사 ↔ 집처럼 다른 곳에서 접속하려면 두 PC를 같은 VPN(예: Tailscale)에 넣고 그 VPN 주소를 쓰거나, 이 PC의 포트 {st.port} 로 연결되는 본인의 HTTPS 터널 주소(https://…)를 게스트 PC에 입력하세요. 공유기 포트포워딩으로 그대로 여는 것은 권하지 않습니다.
+        </p>
+      )}
       {msg && <p className="login-msg">{msg}</p>}
     </>
   );

@@ -6,6 +6,10 @@
 //   MarketBackend, every method one call to the host. The password travels in the x-htsh-key header, is compared in constant time,
 //   five wrong tries from one address lock it out for a minute; bodies are limited to 64 KB. Plain HTTP: meant for the home network
 //   or behind the user's own HTTPS tunnel. No realtime feed for guests - their windows poll)
+// - [2026-11-23] type=fix (Behind a tunnel on the host PC (cloudflared, an SSH reverse tunnel ...) every guest arrives from 127.0.0.1:
+//   one stranger's five wrong passwords locked every guest out and the guest count stayed at 1. For a loopback connection the
+//   caller's address is taken from CF-Connecting-IP (set by Cloudflare, not by the caller) or the last X-Forwarded-For entry (the
+//   one the nearest proxy appended); a direct connection keeps its socket address - its headers are not trusted)
 
 import http from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -46,6 +50,18 @@ export function normalizeHostUrl(input: string): string | null {
   if ((u.protocol !== 'http:' && u.protocol !== 'https:') || !u.hostname || u.username || u.password) return null;
   if (u.protocol === 'http:' && !u.port) u.port = String(GUEST_PORT_DEFAULT);
   return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`;
+}
+
+const isLoopback = (a: string) => a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+/** who is calling: the socket address, or - when a local proxy forwards the request - the address that proxy reports */
+export function callerOf(remote: string | undefined, headers: Record<string, string | string[] | undefined>): string {
+  const ip = remote || '?';
+  if (!isLoopback(ip)) return ip;
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[v.length - 1] : v) || '';
+  const cf = one(headers['cf-connecting-ip']).trim();
+  if (cf) return cf.slice(0, 64);
+  const xff = one(headers['x-forwarded-for']).split(',').pop()?.trim();
+  return xff ? xff.slice(0, 64) : ip;
 }
 
 /** IPv4 addresses of this PC other PCs can reach (shown on the host panel) */
@@ -158,7 +174,7 @@ export class GuestHost {
       res.end(text);
     };
     try {
-      const ip = req.socket.remoteAddress || '?';
+      const ip = callerOf(req.socket.remoteAddress, req.headers);
       const path = (req.url || '').split('?')[0];
       if (req.method !== 'POST' || (path !== `${GUEST_PATH}/hello` && path !== `${GUEST_PATH}/call`)) return reply(404, { ok: false, error: 'not found' });
       if (this.locked(ip)) return reply(429, { ok: false, error: '암호를 여러 번 틀려 잠시 막혔습니다. 1분 뒤 다시 시도하세요.' });
