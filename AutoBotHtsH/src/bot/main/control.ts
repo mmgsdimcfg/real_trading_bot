@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - refreshNxt asks for ENABLE_NXT_SESSION and ENABLE_NXT_TRADING in one `get` (a server without the
+ *   second key answers rc 2 with the first one - parsed all the same)
  * - [2026-11-05] type=feat - r003 remote control (guide 20261105). R016Client: every server change goes through
  *   `live_trading/r016_control.py` over SSH exec - one serial queue for all calls (never two at once), 30 s timeout (service
  *   verbs 120 s because systemctl waits for r003 to save its state, up to 90 s), stdin for `watchlist set --stdin`, stdout JSON
@@ -49,6 +51,7 @@ import {
   buildR016Command,
   isMarketHours,
   NXT_KEY,
+  NXT_TRADE_KEY,
   parseNxt,
   parseR016Output,
   setArgs,
@@ -302,7 +305,9 @@ export function createControl(deps: ControlDeps) {
     if (!deps.isConnected()) return state.nxt;
     const myGen = gen;
     try {
-      const r = await cl().run(['get', NXT_KEY]);
+      // [2026-11-23] + ENABLE_NXT_TRADING. An older server reports it as unknown (rc 2) but still returns the first key
+      let r = await cl().run(['get', NXT_KEY, NXT_TRADE_KEY]);
+      if (!r.ok) r = await cl().run(['get', NXT_KEY]);
       if (myGen !== gen) return state.nxt;
       const nxt = r.ok ? parseNxt(r.data) : null;
       if (!nxt) return state.nxt;

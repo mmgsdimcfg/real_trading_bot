@@ -20,6 +20,19 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-23] type=feat owner=claude
+    summary: 사용자 결정(가상 매매를 NXT 시간에도) - EdgeOnlyRunner(nxt=EDGE_ONLY_NXT and ENABLE_NXT_SESSION). 종목 루프의
+      on_symbol 과 턴 끝의 poll_orphans / write_status 가 NXT 세션에도 돈다(수집기 종목 poll_collector 는 정규장만).
+    impact: live paper only (주문 없음)
+    compatibility: backward-compatible (EDGE_ONLY_NXT=False 면 종전과 동일)
+- [2026-11-23] type=feat owner=claude
+    summary: 사용자 요청(모니터링 시간 / 자동매매 시간 분리, NXT 당일 청산을 시장가처럼) - (1) nxt_trading_enabled() =
+      ENABLE_NXT_SESSION and ENABLE_NXT_TRADING. 꺼져 있으면 NXT 세션에는 주문이 없다: is_new_entry_allowed False,
+      get_order_spec None(매도 포함), 15:20 정규장 청산이 NXT 가능 종목도 청산, 19:59 청산 없음. 루프/시세/가상 매매는
+      ENABLE_NXT_SESSION 대로 20:00 까지 돈다. (2) NXT 당일 청산 가격 = 매수1호가 - NXT_FORCE_EXIT_BID_TICKS 틱 지정가
+      (r002 marketable_sell_limit, 0 이면 종전 현재가 지정가).
+    impact: live
+    compatibility: (1) backward-compatible (기본 True) (2) breaking - r001 Update log 2026-11-23 참조
 - [2026-11-20] type=fix owner=claude
     summary: 가상 매매(r022) 미청산 버그 - 종목 루프에서 on_symbol 을 못 받은 가상 보유(직접 매수 -> HOLD SKIP, 감시 이탈 등)를 턴 끝에
       poll_orphans(틱 파일 가격)로 평가. 20261120 443060 사례. EdgeOnlyRunner 에 EDGE_ONLY_EXCLUDE_FUNDS /
@@ -886,6 +899,8 @@ from r001_define_config import (
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
+    ENABLE_NXT_TRADING,
+    NXT_FORCE_EXIT_BID_TICKS,
     ENABLE_GATE_DECISION_LOG,
     ENABLE_LIVE_QUOTE_LOG,
     LIVE_PRICE_BB_BUFFER_PCT,
@@ -984,6 +999,7 @@ from r001_define_config import (
     ENTRY_ENGINE_CONFIG,
 )
 from r002_strategy_core_shared import (
+    marketable_sell_limit,
     load_symbol_market_map,
     market_regime_ok,
     StrategyConfig,
@@ -1945,6 +1961,12 @@ def is_regular_call_auction(now: datetime) -> bool:
     return REGULAR_NEW_ENTRY_CUTOFF <= current_time < REGULAR_END
 
 
+def nxt_trading_enabled() -> bool:
+    """[2026-11-23] Orders go out in the NXT sessions too (자동매매 시간 = 08:00~20:00). ENABLE_NXT_SESSION alone only means the
+    loop watches those hours (monitoring / paper trading)."""
+    return bool(ENABLE_NXT_SESSION and ENABLE_NXT_TRADING)
+
+
 def is_nxt_session(now: datetime) -> bool:
     if not ENABLE_NXT_SESSION:
         return False
@@ -1981,7 +2003,7 @@ def is_new_entry_allowed(now: datetime, nxt_tradeable: bool) -> bool:
         # [2026-10-04] 점심 구간/진입 허용창 밖 신규 매수 금지(r001 ENABLE_MIDDAY_NO_ENTRY,
         # ENABLE_REGULAR_ENTRY_WINDOW) - 보유 종목 매도는 영향 없음
         return now.time() < REGULAR_NEW_ENTRY_CUTOFF and not is_regular_new_entry_blocked_time(now.time())
-    if not ENABLE_NXT_SESSION or not nxt_tradeable or not is_nxt_session(now):
+    if not nxt_trading_enabled() or not nxt_tradeable or not is_nxt_session(now):   # [2026-11-23] 자동매매 시간 = 정규장만이면 NXT 신규 매수 없음
         return False
     current_time = now.time()
     if MORNING_NXT_START <= current_time <= MORNING_NXT_END:
@@ -2048,7 +2070,7 @@ def _fetch_orderbook_totals(code: str, market_div: str) -> tuple[float | None, f
 def get_order_spec(now: datetime, nxt_tradeable: bool) -> dict | None:
     if is_regular_session(now):
         return {"exchange": "KRX", "ord_dvsn": "01", "ord_unpr": "0"}
-    if not ENABLE_NXT_SESSION:
+    if not nxt_trading_enabled():   # [2026-11-23] no order of any kind in the NXT sessions unless NXT trading is on
         return None
     if is_nxt_session(now) and nxt_tradeable:
         return {"exchange": "NXT", "ord_dvsn": "00", "ord_unpr": None}
@@ -2454,7 +2476,8 @@ def _make_edge_only_runner(date_str: str):
                                 collector_max_positions=c_pos, collector_max_entries=c_ent,
                                 exclude_funds=bool(getattr(_cfg_mod, "EDGE_ONLY_EXCLUDE_FUNDS", True)),
                                 no_reentry_after_sl=bool(getattr(_cfg_mod, "EDGE_ONLY_NO_REENTRY_AFTER_SL", True)),
-                                log_only=bool(getattr(_cfg_mod, "EDGE_ONLY_LOG_ONLY", False)))
+                                log_only=bool(getattr(_cfg_mod, "EDGE_ONLY_LOG_ONLY", False)),
+                                nxt=bool(ENABLE_NXT_SESSION and getattr(_cfg_mod, "EDGE_ONLY_NXT", False)))
         # [2026-11-20] the day's KRX tick files also price the paper positions r003 did not evaluate (poll_orphans)
         runner.tick_feed = CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
         runner.collector_feed = runner.tick_feed if collector else None
@@ -5452,8 +5475,9 @@ def run_scheduled_liquidations(
             if not _is_today_buy_position(code, pos, date_str, today_buy_codes):
                 log(f"  [REG CLS SKIP] {_sym_label(code)} | NOT_TODAY_BUY_POSITION")
                 continue
-            if ENABLE_NXT_SESSION and nxt_map.get(code, False):
-                # [2026-10-05] NXT 운용 시 NXT 가능 종목은 19:59:58 NXT 청산(현재가 1회)으로 넘긴다.
+            if nxt_trading_enabled() and nxt_map.get(code, False):
+                # [2026-10-05] NXT 운용 시 NXT 가능 종목은 NXT 청산(AFTERNOON_NXT_FORCE_EXIT)으로 넘긴다.
+                # [2026-11-23] 자동매매 시간이 정규장만(ENABLE_NXT_TRADING=False)이면 넘기지 않고 여기서 청산한다.
                 log(f"  [REG CLS DEFR] {_sym_label(code)} | NXT_SESSION_CLOSE_AT {AFTERNOON_NXT_FORCE_EXIT:%H:%M:%S}")
                 continue
             if api.has_pending_order(code):
@@ -5474,7 +5498,7 @@ def run_scheduled_liquidations(
             api.trade_lock_until.pop(code, None)
             api.place_sell_order(code, int(pos["quantity"]), current_dt, reason, nxt_map.get(code, False), price=price, code_name=watch_map.get(code, ""))
 
-    if ENABLE_NXT_SESSION and (not state["done_1959"]) and current_time >= AFTERNOON_NXT_FORCE_EXIT:
+    if nxt_trading_enabled() and (not state["done_1959"]) and current_time >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_1959"] = True
         for code, pos in list(api.get_open_positions().items()):
             if code not in watch_map:
@@ -5516,13 +5540,21 @@ def run_scheduled_liquidations(
                 continue
 
             api.trade_lock_until.pop(code, None)
+            # [2026-11-23] NXT has no market order: a limit NXT_FORCE_EXIT_BID_TICKS steps below the best bid fills at once like
+            # one (the fill is at the bid side, the limit is only the floor). 0 ticks = the old limit at the current price.
+            limit_px = price
+            mode = "ONE_SHOT_LIMIT_AT_CURRENT"
+            if int(NXT_FORCE_EXIT_BID_TICKS) > 0:
+                bid_px, _ask_px = _fetch_bid_ask_price(code, "NX")
+                limit_px = float(marketable_sell_limit(bid_px, price, int(NXT_FORCE_EXIT_BID_TICKS)))
+                mode = f"ONE_SHOT_LIMIT_BELOW_BID bid={bid_px or 0:,.0f} ticks={int(NXT_FORCE_EXIT_BID_TICKS)}"
             log(
-                f"  [NXT CLOSE   ] {_sym_label(code)} | ONE_SHOT_LIMIT_AT_CURRENT | price={price:,.0f} "
+                f"  [NXT CLOSE   ] {_sym_label(code)} | {mode} | price={price:,.0f} limit={limit_px:,.0f} "
                 f"src={'live' if live_px else 'account'} qty={int(pos['quantity'])}"
             )
             api.place_sell_order(
                 code, int(pos["quantity"]), submit_dt, reason, nxt_map.get(code, False),
-                price=price, code_name=watch_map.get(code, ""), limit_price=price,
+                price=price, code_name=watch_map.get(code, ""), limit_price=limit_px,
             )
 
 
@@ -5530,7 +5562,7 @@ def _nxt_force_exit_pending(now: datetime, state: dict) -> bool:
     """[2026-10-05] NXT 당일 청산(19:59:58)이 아직 안 됐고 청산 시각 AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS초 전
     이후인가. 청산 시각이 지나도 미처리면 계속 True(Codex 2차: 긴 API 호출로 대기 구간을 건너뛰어도 종목 감시를
     멈추고 바로 청산으로 가도록)."""
-    if not ENABLE_NXT_SESSION or state.get("done_1959"):
+    if not nxt_trading_enabled() or state.get("done_1959"):
         return False
     if str(AUTO_SELL_MODE).strip().lower() in ("stop_only", "off"):
         return False   # [2026-11-12] no scheduled liquidation in the manual-sell modes: nothing to wait for
@@ -5790,8 +5822,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     log(f"  [FEAT R004 WL] Watchlist source: {watch_file}")
 
-    if ENABLE_NXT_SESSION:
+    if nxt_trading_enabled():
         log("MODE BANNER: REGULAR+NXT_MODE")
+    elif ENABLE_NXT_SESSION:
+        log("MODE BANNER: REGULAR_ONLY_TRADING+NXT_WATCH_MODE (orders in the regular session only, NXT hours are watched)")
     else:
         log("MODE BANNER: REGULAR_ONLY_MODE")
 
@@ -6269,7 +6303,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 # [2026-11-12] Edge-AI-only paper trading (r022, no orders) - only when r001 EDGE_ONLY_MODE == "paper"
                 if (
                     edge_only is not None
-                    and is_regular_session(current_dt)
+                    and (is_regular_session(current_dt)
+                         or (getattr(edge_only, "nxt", False) and nxt_tradeable and is_nxt_session(current_dt)))   # [2026-11-23]
                     and price_source in ("live", "cached_live")
                     and price is not None and price > 0
                 ):
@@ -6477,8 +6512,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
             # [2026-11-19] Edge-AI-only paper trading of the tick collector's symbols outside the watchlist (r022, no orders,
             # bars / price from the tick files - no KIS call); the watched / held symbols were evaluated in the loop above
-            if edge_only is not None and is_regular_session(current_dt):
-                if getattr(edge_only, "collector_feed", None) is not None:
+            if edge_only is not None and (is_regular_session(current_dt)
+                                          or (getattr(edge_only, "nxt", False) and is_nxt_session(current_dt))):
+                if getattr(edge_only, "collector_feed", None) is not None and is_regular_session(current_dt):
                     try:
                         edge_only.poll_collector(edge_only.collector_feed, datetime.now(), set(watch_map) | set(iter_codes),
                                                  getattr(edge_only, "collector_poll_s", 5.0))

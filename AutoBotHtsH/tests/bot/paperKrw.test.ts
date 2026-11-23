@@ -21,7 +21,7 @@ describe('paper trade KRW', () => {
 
 describe('paper trade totals', () => {
   it('sums buy and sell amounts of closed trades', () => {
-    const base = { group: 'watch' as const, name: 'x', entryTs: 0 };
+    const base = { group: 'watch' as const, session: 'regular' as const, name: 'x', entryTs: 0 };
     const t = paperTotals(
       [
         { ...base, code: '000001', entry: 10_000, exitTs: 1, exit: 10_200, netPct: 1.8 },

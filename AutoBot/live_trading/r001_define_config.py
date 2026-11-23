@@ -1,6 +1,23 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-23] type=feat owner=claude
+#     summary: 사용자 결정(가상 매매를 NXT 시간에도, 세션 구분 기록) - EDGE_ONLY_NXT(True) 신설. ENABLE_NXT_SESSION 도 켜져 있을 때
+#       r022 가상 매매가 NXT 장전(08:05~08:35 매수, 08:45 청산)/장후(15:35~19:30 매수, 19:50 청산)에도 감시 종목(NXT 가능)을
+#       평가하고 ENTRY/EXIT/CANDIDATE 에 session(regular/nxt_pre/nxt_after)을 남긴다. 모델은 정규장 데이터로 학습된 것 그대로.
+#     impact: live paper only (주문 없음, r003 재시작 후)
+#     compatibility: backward-compatible (정규장 동작 불변. 롤백: EDGE_ONLY_NXT=False)
+# - [2026-11-23] type=feat owner=claude
+#     summary: 사용자 요청(모니터링 시간과 자동매매 시간 분리) - ENABLE_NXT_TRADING(True) 신설. ENABLE_NXT_SESSION 은 "모니터링/수집
+#       시간에 NXT 포함"(r003 루프 08:00~20:00, 틱 수집, 차트)으로 남고, 실주문(신규 매수/매도/당일 청산)이 NXT 세션에도 나가는지는
+#       ENABLE_NXT_SESSION and ENABLE_NXT_TRADING 으로 정한다. False 면 NXT 가능 종목도 15:20 정규장 청산, NXT 세션에는 주문 없음.
+#     impact: live / sim (r003, g003 - r003 재시작 후)
+#     compatibility: backward-compatible (기본 True = 종전 동작. 롤백: 값 True)
+# - [2026-11-23] type=tune owner=claude
+#     summary: 사용자 결정(NXT 당일 청산을 시장가처럼) - NXT 는 시장가 주문이 없어 매수1호가보다 NXT_FORCE_EXIT_BID_TICKS(3)틱 낮은
+#       지정가 1회로 청산(종전: 현재가 지정가 1회 - 미체결 가능). 체결 여유를 위해 AFTERNOON_NXT_FORCE_EXIT 19:59:58 -> 19:59:50.
+#     impact: live (NXT 당일 청산 주문 가격/시각)
+#     compatibility: breaking (롤백: NXT_FORCE_EXIT_BID_TICKS=0, AFTERNOON_NXT_FORCE_EXIT=dt_time(19, 59, 58))
 # - [2026-11-20] type=feat owner=claude
 #     summary: 사용자 결정(가상 매매 개선 1번) - EDGE_ONLY_LOG_ONLY(True) 신설: r022 신규 가상 매수 중단, 후보 기록만.
 #     impact: live paper only (r003 재시작 후 - 주문 없음)
@@ -1652,7 +1669,11 @@ ATR_PERIOD = 14
 # Session / time constants
 # ---------------------------------------------------------------------------
 # NXT 세션 활성화 여부 및 시간 설정
-ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부
+ENABLE_NXT_SESSION = True  # NXT 세션 포함 운용 여부 ([2026-11-23] = 모니터링/수집 시간. 실주문은 아래 ENABLE_NXT_TRADING 도 켜져야 함)
+# [2026-11-23] 자동매매(실주문) 시간 - True: NXT 세션에도 신규 매수/매도/당일 청산(19:59:50). False: 정규장만 매매하고
+# NXT 세션은 보기만(시세/차트/가상 매매는 계속) - 당일 매수분은 NXT 가능 종목도 15:20 정규장에서 청산한다.
+# ENABLE_NXT_SESSION=False 면 이 값과 무관하게 정규장만. 롤백: True.
+ENABLE_NXT_TRADING = True
 MORNING_NXT_START = dt_time(8, 0)
 MORNING_NXT_END = dt_time(8, 50)
 REGULAR_START = dt_time(9, 0)
@@ -1704,7 +1725,10 @@ AFTERNOON_NXT_NEW_ENTRY_CUTOFF = dt_time(19, 59)
 # 15:20 정규장 청산을 건너뛰고 이 시각에 현재가 지정가로 1번만 청산 주문(재주문/정정 없음). 20:00 마감 기준
 # 주문 지연 2초를 감안해 19:59:58. NXT 불가 종목은 NXT 운용 여부와 무관하게 15:20 정규장 청산.
 # ENABLE_NXT_SESSION=False면 종전대로 15:20 정규장 청산만 수행.
-AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59, 58)
+AFTERNOON_NXT_FORCE_EXIT = dt_time(19, 59, 50)   # [2026-11-23] 19:59:58 -> 19:59:50 (아래 크로싱 지정가가 체결될 여유)
+# [2026-11-23] NXT 당일 청산 주문 가격 - NXT 는 시장가가 없어 매수1호가보다 이 틱 수만큼 낮은 지정가로 낸다(즉시 체결 목적,
+# 매수호가 조회 실패 시 현재가 기준). 0 = 종전(현재가 지정가 1회).
+NXT_FORCE_EXIT_BID_TICKS = 3
 # 위 청산 시각 N초 전부터는 종목별 감시 루프를 멈추고 청산 시각까지 대기 - 턴 처리가 길어져 청산 시각을
 # 놓치는 것(다음 턴 시작이 20:00 이후)을 막는다. 신규 매수는 이미 19:59에 마감된 구간.
 AFTERNOON_NXT_FORCE_EXIT_PREP_SECONDS = 15
@@ -2085,6 +2109,10 @@ EDGE_ONLY_NO_REENTRY_AFTER_SL = True
 # 못했다(모델은 방향이 아니라 변동폭을 순위화). True = 신규 가상 매수 없이 트리거 봉마다 후보(피처·점수·막힌 사유·가격)를
 # edge_only_candidates_<날짜>.jsonl 에 기록하고, 이미 있는 가상 보유는 그대로 청산. 롤백(가상 매수 재개): False.
 EDGE_ONLY_LOG_ONLY = True
+# [2026-11-23] 가상 매매를 NXT 세션에도 (ENABLE_NXT_SESSION=True 일 때만): 감시 종목 중 NXT 가능 종목을 장전 08:05~08:35 /
+# 장후 15:35~19:30 에 같은 정책으로 평가하고 08:45 / 19:50 에 가상 청산. 기록에 session 구분. 수집기 종목(틱 파일)은 정규장만.
+# 모델은 정규장 데이터로만 학습됐으므로 NXT 세션 성과는 따로 봐야 한다. 롤백: False.
+EDGE_ONLY_NXT = True
 
 # =============================================================================
 # [2026-11-15] 적응형 익절·손절 엔진 (r024 엔진 / r025 틱 특징 / r026 shadow 러너) - 사용자 결정(설계 Q1: shadow 먼저)

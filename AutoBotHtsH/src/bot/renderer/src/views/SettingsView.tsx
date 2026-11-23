@@ -1,5 +1,8 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - 운용 시간 split in two (user 2026-11-23): 모니터링 시간 (ENABLE_NXT_SESSION) and 자동매매 시간
+ *   (ENABLE_NXT_TRADING - 08:00~20:00 only inside the monitoring hours); the list says what each combination does (close
+ *   time, paper trading in the NXT sessions, post-close job 20:05)
  * - [2026-11-04] type=feat - Settings / connection: SSH (host, port, user, key file + passphrase or password - stored encrypted by
  *   the main process), remote root, python path, poll interval, session open time, cache retention; date selection (server folders
  *   and local cache), local folder (fixtures), condition JSON refresh, and the list of unknown tags/reasons
@@ -28,7 +31,7 @@ import { peek, put } from '../dataCache';
 import type { Settings } from '../../../shared/types';
 import { fmtInt } from '../lib';
 import { ymdDash } from '../../../shared/time';
-import { NXT_KEY, nxtSessionOn, resolveSessionOpen, type DoctorReport, type SchemaDoc } from '../../../shared/control';
+import { NXT_KEY, NXT_TRADE_KEY, nxtSessionOn, resolveSessionOpen, type DoctorReport, type SchemaDoc } from '../../../shared/control';
 import { EditorActions, useValueEditing, ValuesEditor, type EditItem } from '../components/ValuesEditor';
 
 export function SettingsView() {
@@ -393,7 +396,7 @@ function RunModeSection({ form, set, onConnect, onSave, msg }: { form: Settings;
             <span className="small" style={{ marginLeft: 24 }} title="운용 시간(매매 시간 설정)에 따라 둘 중 하나로 시작합니다">
               시작 시각: 정규장만{' '}
               <input value={form.postcloseTimeRegular} style={{ width: 64 }} onChange={(e) => set('postcloseTimeRegular', e.target.value)} placeholder="15:40" /> · 프리/애프터 포함{' '}
-              <input value={form.postcloseTime} style={{ width: 64 }} onChange={(e) => set('postcloseTime', e.target.value)} placeholder="20:10" /> 이후{' '}
+              <input value={form.postcloseTime} style={{ width: 64 }} onChange={(e) => set('postcloseTime', e.target.value)} placeholder="20:05" /> 이후{' '}
               <span className="muted">(지금: {nxtOn ? '프리/애프터 포함' : '정규장만'})</span>
             </span>
             <label className="check">
@@ -503,7 +506,7 @@ function DoctorTable({ a, b, aErr, bErr, aLabel, bLabel }: { a?: DoctorReport | 
   );
 }
 
-/** "매매 시간 (서버 r003)" - ENABLE_NXT_SESSION toggle */
+/** "운용 시간" - 모니터링 시간 (ENABLE_NXT_SESSION) and 자동매매 시간 (ENABLE_NXT_TRADING) */
 function NxtSection() {
   const connected = useStore((s) => s.status.conn === 'connected');
   const nxt = useStore((s) => s.control.nxt);
@@ -511,54 +514,93 @@ function NxtSection() {
   const bumpHistory = useStore((s) => s.bumpHistory);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const trade = nxt?.trade;
 
-  const change = async (on: boolean) => {
+  const change = async (key: string, on: boolean, base: boolean) => {
     if (!nxt || busy) return;
     setBusy(true);
     setMsg('저장 중…');
     // back to the r001 value = remove the override (no leftover key); otherwise store the override
-    const r = on === nxt.base ? await window.api.ctlUnset([NXT_KEY]) : await window.api.ctlSet({ [NXT_KEY]: on });
+    const r = on === base ? await window.api.ctlUnset([key]) : await window.api.ctlSet({ [key]: on });
     setBusy(false);
     bumpHistory();
     setMsg(r.ok ? `저장했습니다.${running ? ' r003을 재시작하면 반영됩니다.' : ' 다음 r003 실행부터 적용됩니다.'}` : `실패: ${r.error}`);
   };
   const onOff = (v: boolean | null | undefined) => (v === true ? '켬' : v === false ? '끔' : '-');
+  const note = (f: { effective: boolean; base: boolean; has_override: boolean; running: boolean | null; pending: boolean }) => (
+    <span className="muted small">
+      저장값 {onOff(f.effective)}
+      {f.has_override ? ` (r001 기본 ${onOff(f.base)}에서 변경)` : ' (r001 기본값)'} · 실행 중 r003 {running ? onOff(f.running) : '정지'}
+      {f.pending && running && <b className="pill pend">재시작 필요</b>}
+    </span>
+  );
+  // 자동매매 08:00~20:00 needs the monitoring hours to cover them
+  const tradeLocked = !nxt?.effective;
+  const tradeOn = !!nxt?.effective && (trade ? trade.effective : true);
 
   return (
     <section>
-      <h3>운용 시간 (서버 r001 ENABLE_NXT_SESSION)</h3>
+      <h3>운용 시간</h3>
       {!connected && <p className="muted">서버에 연결되어 있을 때만 바꿀 수 있습니다.{nxt ? ` (마지막으로 읽은 값: ${onOff(nxt.effective)})` : ''}</p>}
       <div className="actions">
+        <b style={{ minWidth: 96 }}>모니터링 시간</b>
         <span className="seg" title="r001 ENABLE_NXT_SESSION">
-          <button className={nxt && !nxt.effective ? 'on' : ''} disabled={!connected || !nxt || busy} onClick={() => nxt?.effective && void change(false)}>
+          <button className={nxt && !nxt.effective ? 'on' : ''} disabled={!connected || !nxt || busy} onClick={() => nxt?.effective && void change(NXT_KEY, false, nxt.base)}>
             정규장만 (09:00~15:30)
           </button>
-          <button className={nxt?.effective ? 'on' : ''} disabled={!connected || !nxt || busy} onClick={() => nxt && !nxt.effective && void change(true)}>
+          <button className={nxt?.effective ? 'on' : ''} disabled={!connected || !nxt || busy} onClick={() => nxt && !nxt.effective && void change(NXT_KEY, true, nxt.base)}>
             프리/애프터 포함 (08:00~20:00)
           </button>
         </span>
-        {nxt && (
-          <span className="muted small">
-            저장값 {onOff(nxt.effective)}
-            {nxt.has_override ? ` (r001 기본 ${onOff(nxt.base)}에서 변경)` : ' (r001 기본값)'} · 실행 중 r003 {running ? onOff(nxt.running) : '정지'}
-            {nxt.pending && running && <b className="pill pend">재시작 필요</b>}
-          </span>
-        )}
-        <span className="muted small">{msg}</span>
+        {nxt && note(nxt)}
       </div>
+      <div className="actions">
+        <b style={{ minWidth: 96 }}>자동매매 시간</b>
+        <span className="seg" title="r001 ENABLE_NXT_TRADING">
+          <button
+            className={nxt && !tradeOn ? 'on' : ''}
+            disabled={!connected || !trade || busy || tradeLocked}
+            onClick={() => trade?.effective && void change(NXT_TRADE_KEY, false, trade.base)}
+          >
+            정규장만 (15:20 청산)
+          </button>
+          <button
+            className={tradeOn ? 'on' : ''}
+            disabled={!connected || !trade || busy || tradeLocked}
+            onClick={() => trade && !trade.effective && void change(NXT_TRADE_KEY, true, trade.base)}
+          >
+            08:00~20:00 (NXT 19:59:50 청산)
+          </button>
+        </span>
+        {nxt && !trade && <span className="muted small">서버 코드가 이 설정을 아직 모릅니다 (서버 갱신 후 표시) - 지금은 모니터링 시간과 같이 움직입니다.</span>}
+        {trade && tradeLocked && <span className="muted small">모니터링 시간이 정규장만이면 자동매매도 정규장만입니다.</span>}
+        {trade && !tradeLocked && note(trade)}
+      </div>
+      <p className="muted small">{msg}</p>
       <ul className="muted small">
         <li>
-          <b>정규장만</b>: 매매 15:20 신규 진입 마감·당일 매수분 청산, 15:30 종료 · 틱 수집기 KRX만 · 장 마감 작업(데이터 수집 → 선별 → AI 학습 → r004 반영 →
-          메일) 15:40 · 차트·타임라인 09:00~15:30
+          <b>모니터링 정규장만</b>: 봇·차트·타임라인 09:00~15:30, 틱 수집기 KRX만, 장 마감 작업(데이터 수집 → 선별 → AI 학습 → r004 반영 → 메일) 15:40. 자동매매도
+          정규장만 - 15:20 신규 진입 마감·당일 매수분 시장가 청산.
         </li>
         <li>
-          <b>프리/애프터 포함</b>: NXT 오전 08:00~08:50, 오후 15:30~20:00 도 매매 - 당일 매수분 중 NXT 거래 가능 종목은 19:59:58 청산(NXT 불가 종목은 15:20),
-          20:00 종료 · 틱 수집기 KRX + NXT · 장 마감 작업 20:10 · 차트·타임라인 08:00~20:00
+          <b>모니터링 08:00~20:00</b>: 봇·차트·타임라인·틱 수집기(KRX + NXT)가 NXT 오전 08:00~08:50, 오후 15:30~20:00 도 돌고, 가상 매매(Edge AI)도 NXT 시간에
+          매수/청산합니다(기록에 NXT 장전/장후 표시 - 모델은 정규장 데이터로 학습된 것). 장 마감 작업 20:05.
         </li>
-        <li>가상 매매(Edge AI)는 어느 쪽이든 정규장(09:05~14:50 매수)만 합니다 - 모델이 정규장 데이터로 학습됨.</li>
         <li>
-          서버 <code>live_overrides.json</code>에 저장됩니다. r003·틱 수집기는 다시 시작해야 반영되고, 앱 화면과 이 PC의 자동 실행 시각은 바로 따라갑니다. 장 마감 작업
-          시각은 "실행 위치 / 자동 실행"에서 바꿉니다.
+          <b>자동매매 08:00~20:00</b>: NXT 시간에도 실주문 - 당일 매수분 중 NXT 거래 가능 종목은 19:59:50 에 매수호가보다 3틱 낮은 지정가(NXT는 시장가 없음 - 즉시
+          체결용)로 청산, NXT 불가 종목은 15:20 시장가 청산.
+        </li>
+        <li>
+          <b>자동매매 정규장만</b> (모니터링은 08:00~20:00): NXT 시간에는 주문이 전혀 나가지 않고 보기만 합니다 - 당일 매수분은 NXT 가능 종목도 15:20 에 시장가 청산.
+          15:20 에 청산되지 않고 남은 보유분은 NXT 시간에 손절도 나가지 않으니 직접 처리해야 합니다.
+        </li>
+        <li>
+          종목 선별(g002)은 어느 설정이든 정규장(09:00~15:30) 데이터만으로 계산합니다. 데이터 수집(g001)은 NXT 가능 종목이면 08:00~20:00, 아니면 정규장만
+          받습니다.
+        </li>
+        <li>
+          서버 <code>live_overrides.json</code>에 저장됩니다. r003·틱 수집기는 다시 시작해야 반영되고, 앱 화면과 이 PC의 자동 실행 시각은 모니터링 시간을 바로
+          따라갑니다. 장 마감 작업 시각은 "실행 위치 / 자동 실행"에서 바꿉니다.
         </li>
       </ul>
     </section>

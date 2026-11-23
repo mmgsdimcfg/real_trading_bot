@@ -340,3 +340,24 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - `quote` 응답에 `venue` 추가: `"J"`(KRX) 또는 `"UN"`(KRX+NXT 통합). NXT 거래종목은 거래일 08:00~20:00 중 KRX 정규장 밖에서 통합 시세로
   현재가·호가·체결을 묻는다(그 전에는 항상 J 라 KRX 개장 전에 전일 종가 0.00% 만 왔다). 정규장 중과 NXT 비대상 종목은 J 그대로.
 - 앱: `venue` 가 UN 이면 현재가 줄에 NXT 표시, NXT 시간대의 quote 재사용 시간 5분 -> 20초. 표시 전용이며 봇 판단은 바꾸지 않는다.
+
+## 모니터링 시간 / 자동매매 시간 분리 (2026-11-23)
+- r001 `ENABLE_NXT_SESSION` = 모니터링 시간(r003 루프·시세·틱 수집·차트가 NXT 08:00~08:50, 15:30~20:00 도 도는지). 신규 r001
+  `ENABLE_NXT_TRADING`(기본 True) = 자동매매 시간. 실주문이 NXT 세션에 나가는 조건은 두 값 모두 True (`r003.nxt_trading_enabled()`).
+  `ENABLE_NXT_SESSION=True, ENABLE_NXT_TRADING=False` 면 NXT 시간에는 주문이 없다: 신규 매수 차단, `get_order_spec` None(매도 포함),
+  NXT 가능 종목도 15:20 정규장 시장가 청산, 19:59 청산 없음. g003 도 같은 스위치를 따른다.
+- NXT 당일 청산: `AFTERNOON_NXT_FORCE_EXIT` 19:59:58 -> 19:59:50, 가격은 매수1호가보다 `NXT_FORCE_EXIT_BID_TICKS`(3)틱 낮은 지정가 1회
+  (NXT 는 시장가 없음, 호가 조회 실패 시 현재가 기준, 0 이면 종전 현재가 지정가). 정규장 청산(15:20 시장가)은 그대로.
+- r016 계약 변경 없음: 앱은 `get ENABLE_NXT_SESSION ENABLE_NXT_TRADING` 한 번으로 두 값을 읽고(`values` 의 키별 base / override /
+  effective / running / pending), `set` / `unset` 으로 바꾼다. 키를 모르는 옛 서버는 rc 2 + `unknown` 으로 답하므로 앱은
+  `get ENABLE_NXT_SESSION` 으로 다시 묻고 자동매매 시간 스위치를 "서버 갱신 후 표시"로 둔다.
+- 앱 설정 "운용 시간": 모니터링 시간(정규장만 / 08:00~20:00)과 자동매매 시간(정규장만 / 08:00~20:00). 자동매매 08:00~20:00 은
+  모니터링이 08:00~20:00 일 때만 고를 수 있다. 장 마감 작업 시각은 모니터링 시간을 따른다(08:00~20:00 -> 기본 20:05, 종전 20:10;
+  정규장만 -> 15:40). 저장돼 있던 20:10 은 앱이 한 번 20:05 로 옮긴다.
+- 가상 매매(r022): 신규 r001 `EDGE_ONLY_NXT`(기본 True) 와 `ENABLE_NXT_SESSION` 이 모두 True 면 감시 종목 중 NXT 가능 종목을 NXT 장전
+  (매수 08:05~08:35, 청산 08:45) / 장후(매수 15:35~19:30, 청산 19:50)에도 평가한다. `edge_only_<날짜>.jsonl` 의 ENTRY / EXIT 와
+  `edge_only_candidates_<날짜>.jsonl` 의 CANDIDATE 에 `"session"`: `"regular"` | `"nxt_pre"` | `"nxt_after"` (없는 기록 = regular).
+  `edge_only_status_<날짜>.json` 에 `"nxt"`(bool), `"nxt_sessions"`: `{"nxt_pre": {"entry_window": ["08:05","08:35"], "force_exit":
+  "08:45"}, "nxt_after": {...}}` (꺼져 있으면 `{}`), 보유 행의 `position.session`. 수집기 종목(KRX 틱 파일)은 정규장만.
+  모델은 정규장 데이터로 학습된 것이므로 NXT 세션 성과는 session 으로 나눠서 본다.
+- 불변: 종목 선별(g002)은 정규장 09:00~15:30 행만 집계, 데이터 수집(g001)은 NXT 가능 종목이면 08:00~20:00 / 아니면 정규장만.

@@ -1477,6 +1477,19 @@ def krx_tick_size(price: float) -> int:
     return 1_000
 
 
+def marketable_sell_limit(bid: float | None, fallback: float, ticks: int) -> int:
+    """[2026-11-23] Sell limit price that crosses the book: `ticks` price steps below the best bid (below `fallback`, the last
+    price, when there is no bid). Used where a market order does not exist (NXT). Steps follow the tick table across bands
+    (5,000 -> 4,995); never below one tick."""
+    price = float(bid) if (bid is not None and bid > 0) else float(fallback)
+    for _ in range(max(0, int(ticks))):
+        step = krx_tick_size(price - 0.01)
+        if price - step < step:
+            break
+        price -= step
+    return int(round(price))
+
+
 def bb_upper_gap_min_pct_for_price(price: float) -> tuple[float, float]:
     # 현재가의 1틱 폭(%)에 맞는 BB 상단 여유 최소치(%)와 1틱%를 돌려준다
     # (BB_UPPER_GAP_MIN_PCT_BY_TICK 구간, 미해당 시 BB_UPPER_GAP_MIN_PCT).

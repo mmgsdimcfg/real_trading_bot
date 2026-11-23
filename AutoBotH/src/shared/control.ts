@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - 자동매매 시간 (user 2026-11-23): NxtState.trade = r001 ENABLE_NXT_TRADING as r016 `get` reports it
+ *   (undefined on a server without the key), parseNxt reads both keys, nxtTradingOn(); POSTCLOSE_NXT_DEFAULT 20:10 -> 20:05
  * - [2026-11-23] type=fix - quoteCacheMs: 20 s in the NXT-only hours (08:00 - 09:00, 15:30 - 20:00) - was 5 min like the closed market,
  *   so the KIS price of an NXT symbol stood still before the KRX open (r016 quote now asks the KRX+NXT combined price there)
  * - [2026-11-20] type=feat - 운용 시간 (user 2026-11-20): nxtSessionOn() reads r001 ENABLE_NXT_SESSION (off = regular session only);
@@ -253,24 +255,48 @@ export interface NxtState {
   has_override: boolean;
   /** effective differs from running -> r003 restart needed */
   pending: boolean;
+  /** [2026-11-23] r001 ENABLE_NXT_TRADING (orders in the NXT sessions too) - undefined: the server does not know the key yet */
+  trade?: NxtFlag;
+}
+export interface NxtFlag {
+  effective: boolean;
+  running: boolean | null;
+  base: boolean;
+  has_override: boolean;
+  pending: boolean;
 }
 
 export const NXT_KEY = 'ENABLE_NXT_SESSION';
+/** [2026-11-23] 자동매매 시간: real orders in the NXT sessions (only together with NXT_KEY) */
+export const NXT_TRADE_KEY = 'ENABLE_NXT_TRADING';
 /** r001 MORNING_NXT_START / REGULAR_START */
 export const NXT_OPEN = '08:00';
 export const REGULAR_OPEN = '09:00';
 
 /** `get ENABLE_NXT_SESSION` data -> NxtState (null when the key is missing or not a bool) */
 export function parseNxt(data: unknown): NxtState | null {
-  const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[NXT_KEY];
-  if (!v || typeof v.effective !== 'boolean') return null;
-  return {
-    effective: v.effective,
-    running: typeof v.running === 'boolean' ? v.running : null,
-    base: typeof v.base === 'boolean' ? v.base : v.effective,
-    has_override: !!v.has_override,
-    pending: !!v.pending,
-  };
+  const values = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values;
+  const flag = (v: Record<string, unknown> | undefined): NxtFlag | null =>
+    !v || typeof v.effective !== 'boolean'
+      ? null
+      : {
+          effective: v.effective,
+          running: typeof v.running === 'boolean' ? v.running : null,
+          base: typeof v.base === 'boolean' ? v.base : v.effective,
+          has_override: !!v.has_override,
+          pending: !!v.pending,
+        };
+  const main = flag(values?.[NXT_KEY]);
+  if (!main) return null;
+  const trade = flag(values?.[NXT_TRADE_KEY]);
+  return trade ? { ...main, trade } : main;
+}
+
+/** [2026-11-23] Orders go out in the NXT sessions: monitoring includes them AND trading does (a server without the key: as monitoring) */
+export function nxtTradingOn(nxt: NxtState | null | undefined): boolean {
+  if (!nxt) return true;
+  const session = nxt.running ?? nxt.effective;
+  return session && (nxt.trade ? (nxt.trade.running ?? nxt.trade.effective) : true);
 }
 
 /**
@@ -787,7 +813,7 @@ export function postcloseAt(s: { postcloseTime: string; postcloseTimeRegular?: s
   return nxt ? s.postcloseTime : s.postcloseTimeRegular || POSTCLOSE_REGULAR_DEFAULT;
 }
 export const POSTCLOSE_REGULAR_DEFAULT = '15:40';
-export const POSTCLOSE_NXT_DEFAULT = '20:10';
+export const POSTCLOSE_NXT_DEFAULT = '20:05';   // [2026-11-23] 20:10 -> 20:05 (user)
 
 /**
  * Cross-host guard before starting r003 on `self` (decision only; the main process does the calls).

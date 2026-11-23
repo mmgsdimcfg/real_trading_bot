@@ -144,7 +144,7 @@ function ProfileInfo({ current }: { current: RiskProfile }) {
           </table>
           <p className="muted small">
             모든 프로파일에서 같은 것: 하드스탑 -3.5% (매수 4분 뒤 활성, 10초 확인), ATR 손절 1.5×ATR·최소 -3.5% (4분 뒤, 20초 확인), 1차 익절 +3.0%에 40% (ATR 연동), 이익 잠금 +1.0% 뒤
-            -0.4% 반납 시 전량, 15:20 정규장 청산 (NXT 가능 종목은 19:59:58). 값은 서버 live_trading/risk_profiles/*.json 기준이며 바꾼 프로파일은 다음 실행/재시작부터
+            -0.4% 반납 시 전량, 15:20 정규장 청산 (자동매매 시간이 08:00~20:00 이면 NXT 가능 종목은 19:59:50). 값은 서버 live_trading/risk_profiles/*.json 기준이며 바꾼 프로파일은 다음 실행/재시작부터
             적용됩니다.
           </p>
         </div>

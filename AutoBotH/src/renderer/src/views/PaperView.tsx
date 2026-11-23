@@ -1,5 +1,6 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - NXT sessions: a tag (NXT 장전 / NXT 장후) on trades opened there, their buy windows on the status line
  * - [2026-11-12] type=feat - 가상 매매 tab: the Edge-AI-only paper trades of the viewed day (server r022, no orders) - whether the
  *   running bot has the mode on, the day summary (closed / open, wins, sum and mean net %), the open virtual positions with the
  *   current price and the unrealized %, and the closed trades (newest first). Re-read with every snapshot while the day is live
@@ -39,6 +40,7 @@ import { fmtKstTime } from '../../../shared/time';
 import {
   PAPER_EXIT_KO,
   PAPER_GROUP_KO,
+  PAPER_SESSION_KO,
   PAPER_STAGE_KO,
   paperOpenPct,
   paperSummary,
@@ -304,6 +306,8 @@ export function PaperView() {
             확률 기준 {pst.threshold !== undefined ? pst.threshold.toFixed(3) : '-'}
             {pst.label?.tp !== undefined ? ` · 목표 +${pst.label.tp}% / 손절 -${pst.label.sl}% / ${pst.label.horizon}분` : ''}
             {pst.entryWindow ? ` · 매수 ${pst.entryWindow[0]}~${pst.entryWindow[1]}` : ''}
+            {pst.nxt && pst.nxtSessions?.nxt_pre ? ` · NXT 장전 ${pst.nxtSessions.nxt_pre.entryWindow.join('~')}` : ''}
+            {pst.nxt && pst.nxtSessions?.nxt_after ? ` · NXT 장후 ${pst.nxtSessions.nxt_after.entryWindow.join('~')}` : ''}
             {pst.modelId ? ` · 모델 ${pst.modelId}` : ''}
           </span>
         </div>
@@ -403,6 +407,7 @@ export function PaperView() {
                   <td>
                     {t.code} {t.name} <NxtTag code={t.code} />
                     {t.group === 'collector' && <span className="code-tag">수집기</span>}
+                    {t.session !== 'regular' && <span className="code-tag">{PAPER_SESSION_KO[t.session]}</span>}
                   </td>
                   <td className="num">{fmtInt(t.entry)}</td>
                   <BuySize entry={t.entry} budget={orderKrw} />
@@ -454,6 +459,7 @@ export function PaperView() {
                 <td>
                   {t.code} {t.name} <NxtTag code={t.code} />
                   {t.group === 'collector' && <span className="code-tag">수집기</span>}
+                    {t.session !== 'regular' && <span className="code-tag">{PAPER_SESSION_KO[t.session]}</span>}
                 </td>
                 <td className="num">{fmtInt(t.entry)}</td>
                 <BuySize entry={t.entry} budget={orderKrw} />

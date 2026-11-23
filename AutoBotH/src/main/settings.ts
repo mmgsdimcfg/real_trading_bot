@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - post-close time with the NXT sessions 20:10 -> 20:05 (user 2026-11-23). A stored 20:10 (the old
+ *   default) is moved to 20:05 once (meta.postclose2005)
  * - [2026-11-10] type=fix - detectLocalRoot() also tries D:/C:\make_utils\Trading (the PC folders moved under make_utils/Trading)
  * - [2026-11-04] type=feat - Settings in %APPDATA%/autoboth/autoboth-settings.json (electron-store). The key passphrase / password is
  *   stored only encrypted with safeStorage (DPAPI on Windows) - never in plain text and never sent back to the renderer.
@@ -56,7 +58,7 @@ const DEFAULTS: Stored = {
   localStatusPollSec: 5,
   autoCollector: true,
   autoPostclose: false,
-  postcloseTime: '20:10',
+  postcloseTime: '20:05',
   postcloseTimeRegular: '15:40',
   postcloseEdgeAi: false,
   postcloseEmail: false,
@@ -119,6 +121,8 @@ export function localProblem(s: Settings = getSettings()): string {
 interface Meta {
   lastPostcloseYmd?: string;
   lastPostcloseSyncYmd?: string;
+  /** [2026-11-23] the old default post-close time 20:10 was moved to 20:05 (done once) */
+  postclose2005?: boolean;
   /** the local mode connected at least once (a detached local r003 may exist even when the local settings break later) */
   localEverUsed?: boolean;
 }
@@ -130,6 +134,11 @@ const store = new Store<Stored>({ name: 'autoboth-settings', defaults: DEFAULTS 
 if (!store.get('localRoot')) {
   const d = detectLocalRoot();
   if (d) store.set('localRoot', d);
+}
+// [2026-11-23] default post-close time 20:10 -> 20:05: a stored 20:10 is the old default, moved once (a later 20:10 is the user's)
+if (!getMeta().postclose2005) {
+  if (store.get('postcloseTime') === '20:10') store.set('postcloseTime', '20:05');
+  setMeta({ postclose2005: true });
 }
 
 // v1 -> v2: pemPath was the key file

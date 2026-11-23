@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-23] type=feat - PaperTrade.session / position.session ('regular' | 'nxt_pre' | 'nxt_after', server r022 nxt=True;
+ *   a record without it is regular), PaperStatus.nxt + nxtSessions (entry windows / force exits of the NXT sessions)
  * - [2026-11-12] type=feat - Edge-AI-only paper trading (server r022, r001 EDGE_ONLY_MODE): the day's virtual trades from
  *   runtime/data/live_runtime/edge_only_YYYYMMDD.jsonl (ENTRY / EXIT lines -> one PaperTrade per entry, open while it has no
  *   EXIT), the day summary, and the mode as r016 `get EDGE_ONLY_MODE` reports it (stored / running / restart pending)
@@ -19,11 +21,17 @@
 
 export type PaperGroup = 'watch' | 'collector';
 export const PAPER_GROUP_KO: Record<PaperGroup, string> = { watch: '감시 종목', collector: '수집기 종목' };
+/** [2026-11-23] session a paper trade was opened in */
+export type PaperSession = 'regular' | 'nxt_pre' | 'nxt_after';
+export const PAPER_SESSION_KO: Record<PaperSession, string> = { regular: '정규장', nxt_pre: 'NXT 장전', nxt_after: 'NXT 장후' };
+export const paperSession = (v: unknown): PaperSession => (v === 'nxt_pre' || v === 'nxt_after' ? v : 'regular');
 
 export interface PaperTrade {
   code: string;
   /** [2026-11-19] which symbols the trade came from */
   group: PaperGroup;
+  /** [2026-11-23] regular | nxt_pre | nxt_after */
+  session: PaperSession;
   name: string;
   /** epoch ms of the virtual buy */
   entryTs: number;
@@ -75,6 +83,7 @@ export function parsePaperLines(text: string): PaperTrade[] {
       const t: PaperTrade = {
         code,
         group: r.group === 'collector' ? 'collector' : 'watch',
+        session: paperSession(r.session),
         name: String(r.name || ''),
         entryTs: ts,
         entry,
@@ -131,7 +140,7 @@ export interface PaperStatusSymbol {
   prob?: number;
   /** epoch ms the runner last looked at the symbol */
   at?: number;
-  position?: { entry: number; tp: number; sl: number; ts: number; prob?: number };
+  position?: { entry: number; tp: number; sl: number; ts: number; prob?: number; session?: PaperSession };
 }
 
 export interface PaperGroupStatus {
@@ -152,8 +161,23 @@ export interface PaperStatus {
   entryWindow?: [string, string];
   /** [2026-11-20] server r001 EDGE_ONLY_LOG_ONLY: no new paper buys, trigger bars are only recorded as candidates */
   logOnly?: boolean;
+  /** [2026-11-23] the runner also paper-trades the NXT sessions (r001 EDGE_ONLY_NXT) */
+  nxt?: boolean;
+  nxtSessions?: Partial<Record<PaperSession, { entryWindow: [string, string]; forceExit: string }>>;
   groups: Record<PaperGroup, PaperGroupStatus>;
   symbols: PaperStatusSymbol[];
+}
+
+function nxtSessions(raw: unknown): PaperStatus['nxtSessions'] {
+  const out: NonNullable<PaperStatus['nxtSessions']> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const key of ['nxt_pre', 'nxt_after'] as const) {
+    const v = (raw as Record<string, { entry_window?: unknown; force_exit?: unknown }>)[key];
+    if (v && Array.isArray(v.entry_window) && v.entry_window.length === 2) {
+      out[key] = { entryWindow: [String(v.entry_window[0]), String(v.entry_window[1])], forceExit: String(v.force_exit || '') };
+    }
+  }
+  return out;
 }
 
 /** edge_only_status_<date>.json text -> status; null when it is not a status file */
@@ -194,7 +218,7 @@ export function parsePaperStatus(text: string): PaperStatus | null {
       stage: typeof raw.stage === 'string' ? raw.stage : undefined,
       prob: num(raw.prob),
       at: Number.isFinite(at) ? at : undefined,
-      position: entry ? { entry, tp: num(p?.tp) ?? NaN, sl: num(p?.sl) ?? NaN, ts: Number.isFinite(pts) ? pts : NaN, prob: num(p?.prob) } : undefined,
+      position: entry ? { entry, tp: num(p?.tp) ?? NaN, sl: num(p?.sl) ?? NaN, ts: Number.isFinite(pts) ? pts : NaN, prob: num(p?.prob), session: paperSession(p?.session) } : undefined,
     });
   }
   const win = Array.isArray(j.entry_window) && j.entry_window.length === 2 ? ([String(j.entry_window[0]), String(j.entry_window[1])] as [string, string]) : undefined;
@@ -206,6 +230,8 @@ export function parsePaperStatus(text: string): PaperStatus | null {
     label: (j.label as PaperStatus['label']) || undefined,
     entryWindow: win,
     logOnly: j.log_only === true,
+    nxt: j.nxt === true,
+    nxtSessions: nxtSessions(j.nxt_sessions),
     groups: { watch: grp(groups.watch), collector: grp(groups.collector) },
     symbols,
   };

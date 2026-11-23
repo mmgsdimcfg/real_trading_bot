@@ -33,6 +33,15 @@ Runs the same on Linux (Raspberry Pi) and Windows. Each host uses its own model 
 post-close job from that host's data folder).
 
 Update log:
+- [2026-11-23] type=feat owner=claude
+    summary: 사용자 결정(가상 매매를 NXT 시간에도, 세션 구분 기록) - EdgeOnlyRunner(nxt=True): NXT 장전(nxt_pre 08:00~08:50) /
+      장후(nxt_after 15:30~20:00)에도 r003 이 넘긴 1분봉(NXT 봉)으로 같은 정책을 평가한다. 세션별 매수 창과 강제 청산
+      (NXT_SESSIONS: 08:05~08:35 / 08:45, 15:35~19:30 / 19:50). 장후는 정규장 봉에 이어 붙인 봉으로, 장전은 장전 봉만으로
+      지표/피처를 만든다(첫 봉이 08:10 이후면 no_history). ENTRY / EXIT / CANDIDATE 와 보유 상태에 "session"
+      (regular / nxt_pre / nxt_after; 없는 예전 기록 = regular). 정규장 보유는 종전대로 15:15, NXT 보유는 그 세션의 청산 시각.
+      수집기 종목(KRX 틱 파일)은 정규장만. 모델은 정규장 데이터로 학습된 것 - NXT 성과는 session 으로 나눠 본다.
+    impact: live paper only (주문 없음)
+    compatibility: backward-compatible (nxt=False 또는 정규장 시간에는 종전과 동일)
 - [2026-11-20] type=feat owner=claude
     summary: 사용자 결정(가상 매매 검토 3차, Codex 합의) - log-only 모드(r001 EDGE_ONLY_LOG_ONLY): 신규 가상 매수를 하지 않고 트리거가 뜬
       봉마다 CANDIDATE 한 줄(55개 피처, 점수·컷·모델, 막힌 사유 fund/sl_today, 가격·틱, 라벨 설정)을 edge_only_candidates_<날짜>.jsonl
@@ -87,6 +96,42 @@ from r002_strategy_core_shared import krx_tick_size
 ENTRY_START = dt_time(9, 5)
 ENTRY_END = dt_time(14, 50)
 FORCE_EXIT = dt_time(15, 15)
+# [2026-11-23] NXT sessions of the paper runner: bars with lo < label <= hi belong to the session; buys between entry_start and
+# entry_end; every position of the session is closed at force_exit (before the session ends)
+NXT_SESSIONS = {
+    "nxt_pre": {"lo": dt_time(8, 0), "hi": dt_time(8, 50), "entry_start": dt_time(8, 5), "entry_end": dt_time(8, 35),
+                "force_exit": dt_time(8, 45)},
+    "nxt_after": {"lo": dt_time(15, 30), "hi": dt_time(20, 0), "entry_start": dt_time(15, 35), "entry_end": dt_time(19, 30),
+                  "force_exit": dt_time(19, 50)},
+}
+NXT_PRE_FIRST_BAR_BY = dt_time(8, 10)   # nxt_pre: no prediction unless the session's bars start by this label
+SESSIONS = ("regular",) + tuple(NXT_SESSIONS)
+
+
+def nxt_session_of(t: dt_time) -> str | None:
+    """The NXT session a wall-clock time falls in (None: regular hours or outside)."""
+    for name, w in NXT_SESSIONS.items():
+        if w["lo"] <= t <= w["hi"] and not (name == "nxt_after" and t == w["lo"]):
+            return name
+    return None
+
+
+def force_exit_of(session: str | None) -> dt_time:
+    w = NXT_SESSIONS.get(str(session or "regular"))
+    return w["force_exit"] if w else FORCE_EXIT
+
+
+def nxt_raw_1min(frame_1min: pd.DataFrame | None, trade_date, session: str) -> pd.DataFrame | None:
+    """End-labeled OHLCV 1m bars of one NXT session on trade_date (r011.session_raw_1min for the NXT hours)."""
+    if frame_1min is None or len(frame_1min) == 0:
+        return None
+    w = NXT_SESSIONS[session]
+    idx = pd.DatetimeIndex(frame_1min.index)
+    t = idx.time
+    mask = (idx.normalize() == pd.Timestamp(trade_date).normalize()) & (t > w["lo"]) & (t <= w["hi"])
+    raw = frame_1min.loc[mask, ["open", "high", "low", "close", "volume"]]
+    raw = raw[~raw.index.duplicated(keep="last")].sort_index()
+    return None if raw.empty else raw
 TRIGGER_CACHE_BARS = 200      # the live trigger never sees more history (r003 1m cache cap, g013 TRIGGER_CACHE_BARS)
 FEE_RATE = 0.00015
 SELL_TAX_RATE = 0.0020
@@ -112,7 +157,7 @@ class EdgeOnlyRunner:
     def __init__(self, model_dir: Path, data_root: Path, out_dir: Path, date_str: str, log: Callable[[str], None], config,
                  min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
                  collector_max_positions: int = 0, collector_max_entries: int = 0,
-                 exclude_funds: bool = True, no_reentry_after_sl: bool = True, log_only: bool = False):
+                 exclude_funds: bool = True, no_reentry_after_sl: bool = True, log_only: bool = False, nxt: bool = False):
         self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir))
         self.data_root = Path(data_root)
         self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
@@ -126,6 +171,9 @@ class EdgeOnlyRunner:
         self.limits = {"watch": (self.max_positions, self.max_entries),
                        "collector": (int(collector_max_positions), int(collector_max_entries))}
         self.bars: dict[str, pd.DataFrame] = {}
+        # [2026-11-23] NXT sessions too (r001 EDGE_ONLY_NXT and ENABLE_NXT_SESSION): their bars are kept apart from the regular store
+        self.nxt = bool(nxt)
+        self.xbars: dict[tuple[str, str], pd.DataFrame] = {}
         self.last_bar: dict[str, pd.Timestamp] = {}
         self.positions: dict[str, dict] = {}
         self.entries = {g: 0 for g in GROUPS}
@@ -185,7 +233,8 @@ class EdgeOnlyRunner:
                     self.entries[group] += 1
                     self.positions[code] = {"name": rec.get("name"), "entry": float(rec["entry"]), "ts": pd.Timestamp(rec["ts"]),
                                             "tp": float(rec["tp_px"]), "sl": float(rec["sl_px"]), "horizon": float(rec["horizon"]),
-                                            "prob": rec.get("prob"), "group": group}
+                                            "prob": rec.get("prob"), "group": group,
+                                            "session": rec.get("session") if rec.get("session") in SESSIONS else "regular"}
                 elif rec.get("event") == "EXIT":
                     self.positions.pop(code, None)
                     self.closed.append(float(rec.get("net_pct") or 0.0))
@@ -305,7 +354,8 @@ class EdgeOnlyRunner:
             if pos is None:
                 continue
             frame, price = None, None
-            if feed is not None:
+            # [2026-11-23] the tick file holds regular-session prints only: it must not price a position of an NXT session
+            if feed is not None and pos.get("session", "regular") == "regular":
                 try:
                     frame, price = feed.poll(code, now)
                 except Exception as exc:
@@ -339,6 +389,10 @@ class EdgeOnlyRunner:
             if code not in self.positions:
                 self._stage(code, "sold")
         if frame_1m is None or len(frame_1m) == 0:
+            return
+        sess = nxt_session_of(now.time()) if self.nxt else None
+        if sess is not None:                   # [2026-11-23] NXT pre / after session: its own bars and windows
+            self._on_symbol_nxt(code, name, now, frame_1m, price, group, sess, was_open, st)
             return
         raw = r011.session_raw_1min(frame_1m, now.date())
         if raw is None or raw.empty:
@@ -379,8 +433,67 @@ class EdgeOnlyRunner:
             return
         self._check_entry(code, name, now, price, store, group)
 
+    def _on_symbol_nxt(self, code: str, name: str, now: datetime, frame_1m, price: float, group: str, sess: str,
+                       was_open: bool, st: dict) -> None:
+        """[2026-11-23] The same policy in an NXT session. nxt_after continues the day's regular bars (day open / VWAP / history
+        from 09:01); nxt_pre has only its own bars. Entry window and force exit come from NXT_SESSIONS."""
+        raw = nxt_raw_1min(frame_1m, now.date(), sess)
+        if raw is None or raw.empty:
+            return
+        old = self.xbars.get((code, sess))
+        own = raw if old is None or old.empty else pd.concat([old, raw[raw.index > old.index[-1]]])
+        own = own[~own.index.duplicated(keep="last")].sort_index()
+        self.xbars[(code, sess)] = own
+        key = own.index[-1]
+        if self.last_bar.get(code) == key:
+            return  # no new completed bar
+        self.last_bar[code] = key
+        regular = self.bars.get(code) if sess == "nxt_after" else None
+        store = own if regular is None or regular.empty else pd.concat([regular, own])
+        st.update(bar=pd.Timestamp(key).strftime("%H:%M"), bars=int(len(own)))
+        if was_open:
+            if code in self.positions:
+                self._stage(code, "held", self.positions[code].get("prob"))
+            return
+        if len(own) < r011.MIN_SESSION_BARS:
+            self._stage(code, "wait_bars")
+            return
+        w = NXT_SESSIONS[sess]
+        t = pd.Timestamp(key).time()
+        if t < w["entry_start"] or t > w["entry_end"] or now.time() > w["entry_end"]:
+            self._stage(code, "outside_window")
+            return
+        block = None
+        if self.exclude_funds and r011.is_fund_product(name):
+            block = "fund"
+        elif self.no_reentry_after_sl and code in self.sl_today:
+            block = "sl_today"
+        if self.log_only:
+            self._check_entry(code, name, now, price, store, group, block=block, session=sess)
+            return
+        if block:
+            self._stage(code, block)
+            return
+        max_pos, max_ent = self.limits[group]
+        if self._open_count(group) >= max_pos or self.entries[group] >= max_ent:
+            self._stage(code, "limit")
+            return
+        self._check_entry(code, name, now, price, store, group, session=sess)
+
+    @staticmethod
+    def _frames(store: pd.DataFrame, session: str):
+        """(m1, m3) for compute_features. regular / nxt_after: r011.feature_frames (history window anchored at 09:01).
+        nxt_pre: the session's own bars, only when they start by NXT_PRE_FIRST_BAR_BY."""
+        if session != "nxt_pre":
+            return r011.feature_frames(store)
+        if store is None or store.empty or pd.Timestamp(store.index[0]).time() > NXT_PRE_FIRST_BAR_BY:
+            return None
+        m1 = r011.fast_indicators(store)
+        return m1, r011.completed_3min(m1)
+
     def _candidate(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame, group: str, trigger: str,
-                   info: dict, feats: dict | None, prob, threshold, meta: dict | None, block: str | None, reason: str) -> None:
+                   info: dict, feats: dict | None, prob, threshold, meta: dict | None, block: str | None, reason: str,
+                   session: str = "regular") -> None:
         """[2026-11-20] log-only: one CANDIDATE row per trigger bar (id = date:code:bar:model - a restart does not repeat it)"""
         bar = pd.Timestamp(store.index[-1])
         model_id = (meta or {}).get("model_id") or (getattr(self.model, "meta", None) or {}).get("model_id")
@@ -391,6 +504,7 @@ class EdgeOnlyRunner:
         tick = krx_tick_size(price)
         p = float(prob) if prob is not None and r011.valid_prob(prob) else None
         rec = {"schema_version": 1, "event": "CANDIDATE", "id": cid, "date": self.date_str, "code": code, "name": name, "group": group,
+               "session": session,
                "bar": bar.isoformat(), "ts": now.isoformat(timespec="seconds"), "trigger": trigger,
                "trigger_info": {k: v for k, v in (info or {}).items() if isinstance(v, (int, float, str, bool)) or v is None},
                "feature_version": r011.FEATURE_VERSION, "features": feats, "prob": p, "threshold": threshold, "model_id": model_id,
@@ -406,7 +520,7 @@ class EdgeOnlyRunner:
         self._stage(code, "candidate", p)
 
     def _check_entry(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame, group: str = "watch",
-                     block: str | None = None) -> None:
+                     block: str | None = None, session: str = "regular") -> None:
         m1_all = r011.fast_indicators(store)
         last = m1_all.iloc[-1]
         if not float(last["close"]) > float(last["BB_MIDDLE"]):   # every trigger path needs the close above the 1m BB mid
@@ -418,17 +532,17 @@ class EdgeOnlyRunner:
         if not ok:
             self._stage(code, "no_trigger")
             return
-        frames = r011.feature_frames(store)
+        frames = self._frames(store, session)
         if frames is None:
             if self.log_only:
-                self._candidate(code, name, now, price, store, group, reason, info, None, None, None, None, block, "no_history")
+                self._candidate(code, name, now, price, store, group, reason, info, None, None, None, None, block, "no_history", session)
                 return
             self._stage(code, "no_history")
             return   # history window incomplete (late start): no prediction, no entry
         threshold = self._threshold()
         if threshold is None:
             if self.log_only:
-                self._candidate(code, name, now, price, store, group, reason, info, None, None, None, None, block, "no_model")
+                self._candidate(code, name, now, price, store, group, reason, info, None, None, None, None, block, "no_model", session)
                 return
             self._stage(code, "no_model")
             return
@@ -448,7 +562,7 @@ class EdgeOnlyRunner:
             why = "no_model" if not ok_p else (block or ("below_threshold" if prob < threshold else "would_buy"))
             self._candidate(code, name, now, price, store, group, reason, info,
                             {k: (None if v is None or (isinstance(v, float) and v != v) else float(v)) for k, v in feats.items()},
-                            prob, threshold, meta, block, why)
+                            prob, threshold, meta, block, why, session)
             return
         if prob is None or not r011.valid_prob(prob) or prob < threshold:
             self._stage(code, "no_model" if prob is None else "below_threshold", prob if r011.valid_prob(prob) else None)
@@ -457,13 +571,15 @@ class EdgeOnlyRunner:
         label = self._label()
         entry = price + krx_tick_size(price)
         pos = {"name": name, "entry": entry, "ts": pd.Timestamp(now), "tp": entry * (1 + label["tp"] / 100.0),
-               "sl": entry * (1 - label["sl"] / 100.0), "horizon": label["horizon"], "prob": float(prob), "group": group}
+               "sl": entry * (1 - label["sl"] / 100.0), "horizon": label["horizon"], "prob": float(prob), "group": group,
+               "session": session}
         self.positions[code] = pos
         self.entries[group] += 1
         self._emit({"event": "ENTRY", "ts": now.isoformat(timespec="seconds"), "code": code, "name": name, "entry": entry,
                     "price": price, "prob": float(prob), "threshold": threshold, "trigger": reason, "tp_px": pos["tp"],
-                    "sl_px": pos["sl"], "horizon": label["horizon"], "model_id": (meta or {}).get("model_id"), "group": group})
-        self.log(f"{TAG} {code}_{name}{GROUP_KO[group]} | PAPER BUY {entry:,.0f} p={prob:.3f} thr={threshold:.3f} {reason} "
+                    "sl_px": pos["sl"], "horizon": label["horizon"], "model_id": (meta or {}).get("model_id"), "group": group,
+                    "session": session})
+        self.log(f"{TAG} {code}_{name}{GROUP_KO[group]}{'' if session == 'regular' else f' [{session}]'} | PAPER BUY {entry:,.0f} p={prob:.3f} thr={threshold:.3f} {reason} "
                  f"| tp {pos['tp']:,.0f} sl {pos['sl']:,.0f} {label['horizon']:.0f}min | open={self._open_count(group)} "
                  f"entries={self.entries[group]}/{self.limits[group][1]}")
 
@@ -475,7 +591,7 @@ class EdgeOnlyRunner:
             reason, exit_px = "tp", pos["tp"]                      # a resting sell at the target
         elif price <= pos["sl"]:
             reason, exit_px = "sl", price - krx_tick_size(price)
-        elif now.time() >= FORCE_EXIT:
+        elif now.time() >= force_exit_of(pos.get("session")):   # [2026-11-23] 15:15, or the NXT session's own time
             reason, exit_px = "eod", price - krx_tick_size(price)
         elif held_min >= pos["horizon"]:
             reason, exit_px = "time", price - krx_tick_size(price)
@@ -490,7 +606,7 @@ class EdgeOnlyRunner:
         group = pos.get("group", "watch")
         self._emit({"event": "EXIT", "ts": now.isoformat(timespec="seconds"), "code": code, "name": pos.get("name"),
                     "reason": reason, "entry": pos["entry"], "exit": exit_px, "net_pct": net, "held_min": round(held_min, 1),
-                    "prob": pos.get("prob"), "group": group})
+                    "prob": pos.get("prob"), "group": group, "session": pos.get("session", "regular")})
         self.log(f"{TAG} {code}_{pos.get('name')}{GROUP_KO.get(group, '')} | PAPER SELL {exit_px:,.0f} {reason} net={net:+.2f}% held={held_min:.0f}min "
                  f"| day: {len(self.closed)} trades {wins} wins sum={sum(self.closed):+.2f}%")
 
@@ -618,7 +734,7 @@ def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
                "at": st.get("at")}
         if pos is not None:
             row["position"] = {"entry": pos["entry"], "tp": pos["tp"], "sl": pos["sl"], "ts": pd.Timestamp(pos["ts"]).isoformat(),
-                               "prob": pos.get("prob")}
+                               "prob": pos.get("prob"), "session": pos.get("session", "regular")}
         symbols.append(row)
     meta = {}
     try:
@@ -629,6 +745,11 @@ def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
         "asof": now.isoformat(timespec="seconds"), "date": runner.date_str, "log_only": bool(getattr(runner, "log_only", False)),
         "model_id": meta.get("model_id"), "threshold": runner._threshold(), "label": runner._label(),
         "entry_window": [ENTRY_START.strftime("%H:%M"), ENTRY_END.strftime("%H:%M")], "force_exit": FORCE_EXIT.strftime("%H:%M"),
+        # [2026-11-23] NXT sessions the runner also trades on paper (empty when off)
+        "nxt": bool(getattr(runner, "nxt", False)),
+        "nxt_sessions": ({k: {"entry_window": [w["entry_start"].strftime("%H:%M"), w["entry_end"].strftime("%H:%M")],
+                              "force_exit": w["force_exit"].strftime("%H:%M")} for k, w in NXT_SESSIONS.items()}
+                         if getattr(runner, "nxt", False) else {}),
         "groups": {g: {"open": runner._open_count(g), "max_positions": runner.limits[g][0], "entries": runner.entries[g],
                        "max_entries": runner.limits[g][1], "enabled": runner.limits[g][1] > 0} for g in GROUPS},
         "symbols": symbols,

@@ -456,6 +456,7 @@ ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD,
     DEFINE_TODAY_CODE_PATH,
     ENABLE_BOX_RANGE_HOLD_TECH_SELL,
     ENABLE_NXT_SESSION,
+    ENABLE_NXT_TRADING,
     ENABLE_SESSION_EXIT_HOLD_WITHIN_STOP,
     ENABLE_TP_EXTENSION_TRAILING,
     LIVE_PRICE_BB_BUFFER_PCT as SIM_LIVE_PRICE_BB_BUFFER_PCT,
@@ -1050,6 +1051,11 @@ def is_regular_session(ts: pd.Timestamp) -> bool:
     return REGULAR_START <= ts.time() <= REGULAR_END
 
 
+def nxt_trading_enabled() -> bool:
+    """[2026-11-23] r003 parity: orders in the NXT sessions only with ENABLE_NXT_SESSION and ENABLE_NXT_TRADING."""
+    return bool(ENABLE_NXT_SESSION and ENABLE_NXT_TRADING)
+
+
 def is_nxt_session(ts: pd.Timestamp) -> bool:
     if not ENABLE_NXT_SESSION:
         return False
@@ -1147,7 +1153,7 @@ def is_new_entry_allowed(ts: pd.Timestamp, nxt_tradeable: bool) -> bool:
     if is_regular_session(ts):
         # [2026-10-04] r003 parity: 점심 구간/진입 허용창 밖 신규 매수 금지
         return ts.time() < REGULAR_NEW_ENTRY_CUTOFF and not is_regular_new_entry_blocked_time(ts.time())
-    if not ENABLE_NXT_SESSION:
+    if not nxt_trading_enabled():   # [2026-11-23] r003 parity
         return False
     current_time = ts.time()
     if is_nxt_session(ts) and nxt_tradeable:
@@ -2297,7 +2303,7 @@ def run_scheduled_liquidations(
             pos = sim.positions.get(code)
             if pos is None:
                 continue
-            if ENABLE_NXT_SESSION and bool(nxt_tradeable_fn(code)):
+            if nxt_trading_enabled() and bool(nxt_tradeable_fn(code)):   # [2026-11-23] r003 parity
                 # [2026-10-05] r003 parity: NXT 운용 시 NXT 가능 종목은 19:59:58 NXT 청산으로 넘긴다.
                 continue
             price = get_latest_price_up_to(price_frames[code], ts)
@@ -2308,7 +2314,7 @@ def run_scheduled_liquidations(
             if action == "sell":
                 sim.sell(code, price, ts, reason, "regular")
 
-    if ENABLE_NXT_SESSION and (not state["done_nxt"]) and ts.time() >= AFTERNOON_NXT_FORCE_EXIT:
+    if nxt_trading_enabled() and (not state["done_nxt"]) and ts.time() >= AFTERNOON_NXT_FORCE_EXIT:
         state["done_nxt"] = True
         for code in list(sim.positions.keys()):
             pos = sim.positions.get(code)
