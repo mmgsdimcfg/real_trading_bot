@@ -8,6 +8,8 @@
 // - [2026-11-20] type=fix (<details> popovers (bot y축 항목) close on a click outside them - installDetailsAutoClose)
 // - [2026-11-21] type=feat (A rebound alert popup's "열기" shows its symbol in every symbol window (setCodeAll))
 // - [2026-11-21] type=feat (☰ > 반등 감시 설정 opens the rebound settings dialog (window event 'rebound-settings'))
+// - [2026-11-23] type=feat (user 2026-11-23: the bot's r004 (종목 선별 -> 감시목록 반영) becomes the watchlist tab of the next trading
+//   day at the front - store.syncR004 at start and every 60 s)
 // - [2026-11-23] type=feat (user 2026-11-23: 'rebound-settings' opens the rebound window (MDI window 'rebound') instead of a dialog;
 //   detail 'history' switches it to the history tab)
 import { useEffect, useState } from 'react';
@@ -42,7 +44,10 @@ export function App() {
   useEffect(() => {
     void useStore.getState().initWatch();
     const t = setInterval(() => void useStore.getState().syncPicks(), 30000);
-    return () => clearInterval(t);
+    // [2026-11-23] bot r004 -> tab of its trading day (each call runs r016 on the bot host, so once a minute)
+    const first = setTimeout(() => void useStore.getState().syncR004(), 8000);
+    const t2 = setInterval(() => void useStore.getState().syncR004(), 60000);
+    return () => (clearInterval(t), clearTimeout(first), clearInterval(t2));
   }, []);
 
   // [2026-11-21] rebound alert popup > 열기

@@ -21,6 +21,9 @@
 //   font size of the app uses; the page zoom of the earlier setting is reset to 100 %)
 // - [2026-11-23] type=feat (Window type 'rebound' (user 2026-11-23): the rebound watcher settings / history / KakaoTalk are a normal MDI
 //   window instead of a dialog over the app; opts.tab keeps the tab shown)
+// - [2026-11-23] type=feat (syncR004 (user 2026-11-23): the bot's r004 after the 종목 선별 -> 감시목록 반영 job is the watchlist tab of
+//   the next trading day (MMDD of the r004 header for_trading_day) at the front; refreshed when r004 changes, not made again after
+//   the user deleted it until r004 changes)
 // - [2026-11-20] type=feat (One window per kind (user 2026-11-20): open() focuses the open window of that kind instead of adding another
 //   (a symbol window then shows the asked code); a saved layout with several windows of one kind keeps the front one)
 
@@ -28,7 +31,7 @@ import { create } from 'zustand';
 import type { AuthState } from '../../preload/index';
 import type { OrderBook, Quote, TradeTick } from '../../shared/kis';
 import { addRealtimeTrades, mergeTrades } from '../../shared/live';
-import { mergePicks } from '../../shared/watchPicks';
+import { mergePicks, r004Entry } from '../../shared/watchPicks';
 
 /** KST trading date "YYYY-MM-DD" - the trade cache of a code is dropped when it changes (accumulated volumes restart every day) */
 export const kstDay = () => new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
@@ -176,6 +179,8 @@ interface State {
   initWatch: () => Promise<void>;
   /** [2026-11-19] new / changed picks files -> tabs; returns the names of the tabs made */
   syncPicks: () => Promise<string[]>;
+  /** [2026-11-23] bot r004 -> watchlist tab of its trading day (first); names of the tabs made */
+  syncR004: () => Promise<string[]>;
   /** add / remove a code in a group */
   toggleWatch: (groupId: string, code: string) => void;
   theme: Theme;
@@ -488,6 +493,17 @@ export const useStore = create<State>()((set, get) => {
       if (!watchFileReady) return [];
       const picks = await window.hts.watchPicks().catch(() => []);
       const r = mergePicks(get().watch, get().watchImported, picks, newGroupId, WATCH_MAX);
+      if (!r.changed) return [];
+      set({ watch: r.groups, watchImported: r.imported });
+      saveWatch(r.groups, r.imported);
+      return r.added;
+    },
+    syncR004: async () => {
+      if (!watchFileReady || !window.api?.watchlistGet) return [];
+      const res = await window.api.watchlistGet().catch(() => null);
+      const e = res?.ok ? r004Entry(res.data) : null;
+      if (!e) return [];
+      const r = mergePicks(get().watch, get().watchImported, [e], newGroupId, WATCH_MAX, true);
       if (!r.changed) return [];
       set({ watch: r.groups, watchImported: r.imported });
       saveWatch(r.groups, r.imported);
