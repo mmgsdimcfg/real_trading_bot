@@ -43,7 +43,12 @@ export function App() {
 
   // [2026-11-21] rebound alert popup > 열기
   useEffect(() => {
-    const off = window.hts.onReboundOpen((code) => useStore.getState().setCodeAll(code));
+    // [2026-11-23] ... and the chart window comes to the front (opened when there is none, restored when minimized) - user 2026-11-23
+    const off = window.hts.onReboundOpen((code) => {
+      const st = useStore.getState();
+      st.setCodeAll(code);
+      st.open('chart', { code });
+    });
     return () => void off();
   }, []);
 

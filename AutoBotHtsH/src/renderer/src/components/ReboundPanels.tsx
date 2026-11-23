@@ -93,7 +93,7 @@ export function HistoryTab() {
             </p>
             {cur.kakao && <p className={cur.kakao === 'sent' ? 'rb-ok' : 'rb-warn'}>{cur.kakao === 'sent' ? '카카오톡으로 전송했습니다.' : `카카오톡 전송 실패: ${cur.kakaoError || ''}`}</p>}
             <div className="rb-hist-actions">
-              <button type="button" onClick={() => useStore.getState().setCodeAll(cur.code)} title="이 종목을 차트·현재가 창에 표시">
+              <button type="button" onClick={() => (useStore.getState().setCodeAll(cur.code), useStore.getState().open('chart', { code: cur.code }))} title="이 종목을 열린 종목 창에 표시하고 차트 창을 앞으로">
                 종목 열기
               </button>
               <button type="button" onClick={() => void window.hts.reboundHistoryPopup(cur.id)}>
