@@ -4,6 +4,8 @@
 // - [2026-11-23] type=feat (Tick / minute charts draw the previous trading day's close as a dotted reference line with its
 //    price (user 2026-11-23): the last bar of the day before among the bars, else the last warm-up bar, else props.refClose (the
 //    quote's previous close). The price scale reaches it when it is within 15 % of the shown range)
+// - [2026-11-24] type=feat (Last-price tag on the right axis: price, then the change % on a second line (user 2026-11-24); colour by
+//   the sign against the previous close - red up, blue down, black flat)
  * Update log
  * - [2026-11-05] type=feat - Candlestick price chart for the timeline tab (custom SVG, one <path> per color so thousands of 1-tick
  *   bars stay cheap). The plot area uses the same margins as the recharts charts around it (left 8 + 150 axis, right 24), so for
@@ -985,9 +987,14 @@ export function PriceChart(props: Props) {
           })}
 
           {/* last price tag (right axis) */}
-          {axis === 'right' && last && (
-            <PriceTag x={L + W + 2} y={model.sy(last.b.c)} text={fmtInt(last.b.c)} cls={last.b.c >= last.b.o ? 'up' : 'dn'} />
-          )}
+          {/* [2026-11-24] two lines: price and the change against the previous close (intraday: previous trading day's close,
+              D/W/M/Y: previous bar); red up / blue down / black flat */}
+          {axis === 'right' && last && (() => {
+            const ref = intraday ? refPrice : refCloseAt(bars, last.i, false);
+            const c = last.b.c;
+            const cls = ref === undefined ? (c >= last.b.o ? 'up' : 'dn') : c > ref ? 'up' : c < ref ? 'dn' : 'flat';
+            return <PriceTag x={L + W + 2} y={model.sy(c)} text={fmtInt(c)} sub={ref ? signedPct(c, ref) : undefined} cls={cls} />;
+          })()}
 
           {/* hover */}
           {h && (
@@ -1103,8 +1110,20 @@ export function PriceChart(props: Props) {
 
 const key2digits = (k: IndicatorKey) => (k === 'obv' || k === 'investor' ? 0 : k === 'macd' || k === 'roc' ? 2 : k === 'trix' ? 3 : 1);
 
-function PriceTag({ x, y, text, cls }: { x: number; y: number; text: string; cls: string }) {
-  const w = text.length * 7 + 10;
+function PriceTag({ x, y, text, cls, sub }: { x: number; y: number; text: string; cls: string; sub?: string }) {
+  const w = Math.max(text.length, sub?.length ?? 0) * 7 + 10;
+  if (sub)
+    return (
+      <g className={`pc-tag pc-tag-${cls}`} pointerEvents="none">
+        <rect x={x} y={y - 9} width={w} height={32} rx={3} />
+        <text x={x + 5} y={y + 4}>
+          {text}
+        </text>
+        <text x={x + 5} y={y + 18} className="pc-tag-sub">
+          {sub}
+        </text>
+      </g>
+    );
   return (
     <g className={`pc-tag pc-tag-${cls}`} pointerEvents="none">
       <rect x={x} y={y - 9} width={w} height={18} rx={3} />

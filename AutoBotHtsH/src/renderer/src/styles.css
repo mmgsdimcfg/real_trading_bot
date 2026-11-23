@@ -354,6 +354,8 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .pc-tag text { font-size: calc(var(--fs) - 2px); font-weight: 600; fill: #fff; font-variant-numeric: tabular-nums; }
 .pc-tag-up rect { fill: var(--up); }
 .pc-tag-dn rect { fill: var(--down); }
+.pc-tag-flat rect { fill: #111; }
+.pc-tag .pc-tag-sub { font-weight: 500; }
 .pc-tag-cross rect { fill: var(--surface-2); stroke: var(--text-3); }
 .pc-tag-cross text { fill: var(--text); }
 .pc-ind { font-size: calc(var(--fs) - 2px); color: var(--text-2); font-variant-numeric: tabular-nums; }
