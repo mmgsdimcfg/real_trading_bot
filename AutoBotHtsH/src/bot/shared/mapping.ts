@@ -29,6 +29,9 @@
  *   last confirmed minute - mostly NXT after-market, thin trading) was listed as unknown: mapped like FRAME_UNAVAILABLE (_009 legacy)
  * - [2026-11-20] type=fix - [REENTRY PNL] (r003 after a position is sold out: last_exit_profit / re-entry limit / used) was listed as
  *   unknown: added to IGNORED_TAGS (bookkeeping, not a condition)
+ * - [2026-11-24] type=fix - r003 scheduled liquidation lines (15:20 regular close / NXT 19:59) were listed as unknown
+ *   ("[REG CLS SKIP] ... | NOT_TODAY_BUY_POSITION"): [REG CLS *] / [NXT CLS *] become sell events on the SESSION_CLOSE row -
+ *   SKIP / DEFR (passed to the NXT close) info, HOLD hold, MISS (NXT deadline passed) fail
  */
 
 import type { Condition, ConditionsDoc, EvalResult, Side } from './types';
@@ -311,6 +314,12 @@ export function classify(tag: string, rest: string): ClassifyOutcome {
       return ev({ side: 'sell', condKey: 'PREP', sub: STATUS_SUB, result: 'info', reason: firstSeg(rest) });
     case 'TP_EXTENSION':
       return ev({ side: 'sell', condKey: '_008', result: 'info', reason: firstSeg(rest) });
+  }
+  const cls = /^(REG|NXT) CLS (SKIP|DEFR|HOLD|MISS)$/.exec(tag);
+  if (cls) {
+    // [2026-11-24] scheduled liquidation (r003 15:20 / NXT 19:59): why a held symbol was not sold at the session close
+    const result: EvalResult = cls[2] === 'HOLD' ? 'hold' : cls[2] === 'MISS' ? 'fail' : 'info';
+    return ev({ side: 'sell', condKey: 'SESSION_CLOSE', sub: tag, result, reason: firstSeg(rest) });
   }
   if (BUY_ORDER_TAGS.has(tag)) {
     const result: EvalResult = tag === 'BUY EXEC' ? 'pass' : tag === 'BUY NOFILL' || tag === 'BUY RP ABAND' ? 'fail' : 'info';

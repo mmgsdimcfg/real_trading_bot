@@ -496,4 +496,15 @@ describe('timeline cap (2026-11-17)', () => {
     // the stats still count every reject
     expect(e.snapshot().buyStats._009.block).toBe(3600);
   });
+
+  it('[2026-11-24] scheduled liquidation lines ([REG CLS *] / [NXT CLS *]) -> SESSION_CLOSE row, not unknown', () => {
+    const p = parseMainLine('2026-11-24 15:20:03,456 [INFO]   [REG CLS SKIP] 053610_프로텍 | NOT_TODAY_BUY_POSITION');
+    expect(p.kind).toBe('tagged');
+    if (p.kind !== 'tagged') return;
+    expect(p.code).toBe('053610');
+    expect(classify(p.tag, p.rest)).toMatchObject({ kind: 'event', ev: { side: 'sell', condKey: 'SESSION_CLOSE', result: 'info', reason: 'NOT_TODAY_BUY_POSITION' } });
+    expect(classify('REG CLS HOLD', 'KEEP | price=1,000 buy=900')).toMatchObject({ kind: 'event', ev: { condKey: 'SESSION_CLOSE', result: 'hold' } });
+    expect(classify('NXT CLS MISS', 'DEADLINE_PASSED now=20:00:00.1')).toMatchObject({ kind: 'event', ev: { condKey: 'SESSION_CLOSE', result: 'fail' } });
+    expect(classify('REG CLS DEFR', 'NXT_SESSION_CLOSE_AT 19:59:00')).toMatchObject({ kind: 'event', ev: { condKey: 'SESSION_CLOSE', result: 'info' } });
+  });
 });
