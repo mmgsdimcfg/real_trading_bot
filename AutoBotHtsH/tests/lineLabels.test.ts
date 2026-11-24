@@ -26,3 +26,12 @@ describe('placeLineLabels', () => {
     expect(t.y).toBeGreaterThanOrEqual(16);
   });
 });
+
+describe('placeLineLabels value', () => {
+  it('carries the value and widens the tag for it', () => {
+    const [a] = placeLineLabels([flat('MA5', 100)], [], [], area);
+    const [b] = placeLineLabels([{ ...flat('MA5', 100), value: '70,450' }], [], [], area);
+    expect(b.value).toBe('70,450');
+    expect(b.w).toBeGreaterThan(a.w);
+  });
+});

@@ -7,6 +7,7 @@
 // - [2026-11-24] type=feat (Last-price tag on the right axis: price, then the change % on a second line (user 2026-11-24); colour by
 //   the sign against the previous close - red up, blue down, black flat)
  * Update log
+ * - [2026-11-24] type=feat - line name tags also show the line's latest visible value (e.g. "MA5 70,450")
  * - [2026-11-24] type=feat - props.lineLabels: name tags (MA5 / VWAP / 볼린저 중 / 엔벨 / 채널 / 전환 / 기준) on the price-pane lines,
  *   placed by lineLabels.ts where they cover no candle, other line, legend or tag
  * - [2026-11-05] type=feat - Candlestick price chart for the timeline tab (custom SVG, one <path> per color so thousands of 1-tick
@@ -560,11 +561,17 @@ export function PriceChart(props: Props) {
     if (S.env) named.push({ name: '엔벨 상', s: S.env.upper, color: OVERLAY_COLOR.env }, { name: '엔벨 하', s: S.env.lower, color: OVERLAY_COLOR.env });
     if (S.donchian) named.push({ name: '채널 상', s: S.donchian.upper, color: OVERLAY_COLOR.donchian }, { name: '채널 하', s: S.donchian.lower, color: OVERLAY_COLOR.donchian });
     if (S.ichimoku) named.push({ name: '전환', s: S.ichimoku.tenkan, color: OVERLAY_COLOR.tenkan }, { name: '기준', s: S.ichimoku.kijun, color: OVERLAY_COLOR.kijun });
-    const labelLines: LabelLine[] = named.map((n) => ({
-      name: n.name,
-      color: n.color,
-      pts: slots.filter((sl) => ok(n.s[sl.i])).map((sl) => [sl.x, sy(n.s[sl.i])] as [number, number]),
-    }));
+    const labelLines: LabelLine[] = named.map((n) => {
+      const vis = slots.filter((sl) => ok(n.s[sl.i]));
+      // [2026-11-24] the line's latest visible value next to its name
+      const lastV = vis.length ? n.s[vis[vis.length - 1].i] : undefined;
+      return {
+        name: n.name,
+        value: ok(lastV) ? fmtInt(Math.round(lastV)) : undefined,
+        color: n.color,
+        pts: vis.map((sl) => [sl.x, sy(n.s[sl.i])] as [number, number]),
+      };
+    });
     if (S.ichimoku) {
       const k = S.ichimoku;
       const cp = [...slots.map((sl) => ({ x: sl.x, a: k.senkouA[sl.i], b: k.senkouB[sl.i] })), ...futureIdx.map((f) => ({ x: f.x, a: k.senkouA[f.idx], b: k.senkouB[f.idx] }))];
@@ -869,6 +876,7 @@ export function PriceChart(props: Props) {
                 <rect x={t.x} y={t.y} width={t.w} height={t.h} rx={3} style={{ stroke: t.color }} />
                 <text x={t.x + t.w / 2} y={t.y + t.h - 3.5} textAnchor="middle" style={{ fill: t.color }}>
                   {t.name}
+                  {t.value && <tspan className="pc-line-tag-val"> {t.value}</tspan>}
                 </text>
               </g>
             ))}

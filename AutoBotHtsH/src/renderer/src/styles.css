@@ -358,6 +358,8 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 /* [2026-11-24] name tags on the price-pane lines (PriceChart lineLabels) */
 .pc-line-tag rect { fill: var(--surface); fill-opacity: 0.88; stroke-width: 1; }
 .pc-line-tag text { font-size: calc(var(--fs) - 3px); font-weight: 600; }
+/* [2026-11-24] the line's latest value after its name */
+.pc-line-tag .pc-line-tag-val { font-weight: 400; }
 .pc-tag .pc-tag-sub { font-weight: 500; }
 .pc-tag-cross rect { fill: var(--surface-2); stroke: var(--text-3); }
 .pc-tag-cross text { fill: var(--text); }

@@ -1,10 +1,13 @@
 // Update log
+// - [2026-11-24] type=feat (user 2026-11-24): LabelLine.value - the line's latest value shown after the name, counted in the tag width
 // - [2026-11-24] type=feat (Name tags on the price-pane indicator lines (MA5 / VWAP / 볼린저 중 / 전환 / 기준 ...) (user 2026-11-24): each tag
 //   is put on its own line where it covers nothing - no candle, no other line, no legend, no tag placed before it. Candidates run
 //   from the newest bar to the oldest, above and below the line (3 / 9 / 16 / 24 px away); the first free spot wins, else the spot with the least overlap)
 
 export interface LabelLine {
   name: string;
+  /** [2026-11-24] value shown after the name (the line's latest value), counted in the tag width */
+  value?: string;
   /** pixel points of the line, sorted by x (gaps already dropped) */
   pts: [number, number][];
   color?: string;
@@ -20,6 +23,7 @@ export interface Box {
 
 export interface PlacedLabel extends Box {
   name: string;
+  value?: string;
   color?: string;
   cls?: string;
 }
@@ -77,7 +81,7 @@ export function placeLineLabels(lines: LabelLine[], candles: Box[], blocked: Box
   for (const ln of lines) {
     const pts = ln.pts.filter(([x, y]) => x >= area.x && x <= area.x + area.w && y >= area.y && y <= area.y + area.h);
     if (pts.length < 2) continue;
-    const w = Math.ceil(ln.name.length * charW + 8);
+    const w = Math.ceil((ln.name.length + (ln.value ? ln.value.length + 1 : 0)) * charW + 8);
     const stride = Math.max(1, Math.floor(pts.length / 60));
     let best = null as { b: Box; cost: number } | null;
     for (let k = pts.length - 1, step = 0; k >= 0; k -= stride, step++) {
@@ -97,7 +101,7 @@ export function placeLineLabels(lines: LabelLine[], candles: Box[], blocked: Box
       if (best && best.cost < 1) break;
     }
     if (!best) continue;
-    const p: PlacedLabel = { ...best.b, name: ln.name, color: ln.color, cls: ln.cls };
+    const p: PlacedLabel = { ...best.b, name: ln.name, value: ln.value, color: ln.color, cls: ln.cls };
     placed.push(p);
     avoid.push(p);
   }
