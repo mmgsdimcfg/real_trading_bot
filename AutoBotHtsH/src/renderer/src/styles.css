@@ -199,6 +199,8 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .rb-hist-detail li b { display: inline-block; width: 14px; }
 .rb-hist-detail li.ok b { color: var(--st-pass); }
 .rb-hist-detail li.no { color: var(--text-3); }
+/* [2026-11-24] rebound history: lower highs (downtrend) warning */
+.rb-hist-detail li.warn, .rb-hist-detail li.warn b { color: var(--st-warn, #d98a00); }
 .rb-hist-detail p { margin: 4px 0; }
 .rb-hist-actions { display: flex; gap: 8px; margin-top: 12px; }
 /* [2026-11-23] the rebound window (MDI) fills its frame; history = list | detail | minute chart */

@@ -42,6 +42,16 @@ describe('alert summary (KakaoTalk text)', () => {
     expect(s).toContain('38,500원 (-2.41%) · 가점 3점');
     expect(s).toContain('RSI 53.3/48.8');
     expect(s).toContain('가점: ADX 반등, 볼린저, 거래량 감소');
+    expect(s).toContain('가점 3점 · 고점↓(다이버전스)'); // [2026-11-24] the sample is under lower highs with the divergence
+  });
+
+  it('(Codex) at the 200-character edge the indicator lines go before the bonus list', () => {
+    for (let len = 1; len <= 40; len++) {
+      const t = alertSummary({ ...alertOf('448900', 0), name: '가'.repeat(len) });
+      expect(t.length).toBeLessThanOrEqual(KAKAO_TEXT_MAX);
+      if (t.includes('RSI 53.3/48.8')) expect(t).toContain('가점: ADX 반등, 볼린저, 거래량 감소');
+      expect(t).toContain('고점↓(다이버전스)');
+    }
   });
 
   it('drops lines from the end when the name is long, and gives a sample without a result', () => {

@@ -8,6 +8,8 @@
 //   KakaoTalk, ReboundPanels.KakaoTab). "팝업 유지 시간" = alert.autoCloseSec)
 // - [2026-11-23] type=feat (user 2026-11-23: shown as a normal MDI window (ReboundWindow, window type 'rebound') like the other windows
 //   instead of a dialog over the whole app - the tab is kept in the window options; 닫기 closes the window)
+// - [2026-11-24] type=feat (section "고점 낮아짐 (우하향) 확인": lowerHigh.block (default off = shown only), divExempt, pivotBars,
+//   rangeBars, minDropPct, minTicks)
 
 import { useEffect, useMemo, useState } from 'react';
 import { newGroupId, useStore, WATCH_MAX, type Win } from '../store';
@@ -66,6 +68,19 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
       { path: 'bonus.maNearPct', label: 'MA60 / MA120 근접', unit: '% 이내' },
       { path: 'bonus.macdZeroPct', label: 'MACD 0선 근처', unit: '% (가격 대비)' },
       { path: 'bonus.macdZeroBars', label: 'MACD 0선 돌파 인정 범위', unit: '봉 안' },
+    ],
+  },
+  {
+    // [2026-11-24] lower highs (downtrend) check
+    title: '고점 낮아짐 (우하향) 확인',
+    note: '급락 전 두 전고점(H1, H2)과 반등 고점이 차례로 낮으면(H1 > H2 > 현재) "고점 낮아짐"으로 팝업·히스토리·감지 기록에 표시합니다. 아래 "알림 안 보냄"을 켜면 이 경우 알림을 보내지 않고 감지 기록에만 남깁니다 (재알림 대기 시간도 쓰지 않음).',
+    fields: [
+      { path: 'lowerHigh.block', label: '고점 낮아짐이면 알림 안 보냄', kind: 'bool', hint: '끄면 표시만 합니다 (기본)' },
+      { path: 'lowerHigh.divExempt', label: 'RSI 상승 다이버전스면 그래도 알림', kind: 'bool', hint: '급락 저점이 H1~H2 사이 저점보다 낮은데 RSI 는 더 높을 때' },
+      { path: 'lowerHigh.pivotBars', label: '전고점 판정', unit: '봉 (좌우)', hint: '좌우로 이만큼의 봉보다 높은 봉을 전고점으로 봅니다' },
+      { path: 'lowerHigh.rangeBars', label: '전고점 찾는 범위', unit: '봉 (같은 날·같은 장)' },
+      { path: 'lowerHigh.minDropPct', label: '낮아짐으로 보는 최소 차이', unit: '% 이상', hint: 'H1 -> H2, H2 -> 현재 고점 각각' },
+      { path: 'lowerHigh.minTicks', label: '그리고 최소 호가 차이', unit: '틱 이상' },
     ],
   },
   {

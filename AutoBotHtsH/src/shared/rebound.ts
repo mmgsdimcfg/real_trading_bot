@@ -25,6 +25,14 @@
  * - [2026-11-22] type=feat - alert.kakao (send each alert's summary to the user's own KakaoTalk, off by default), alertSummary()
  *   (the text of that message, at most 200 characters), alert.autoCloseSec default 0 -> 60: a popup that closes by itself leaves
  *   the alert unread and the title bar counts it Default 8 %: of 36 sampled alerts the next deepest falls were -6.8 / -5.4 / -5.2 %. 0 = no limit
+ * - [2026-11-24] type=feat - Lower highs (downtrend) check (user 2026-11-24, Codex review "수정 후 채택"): lowerHighs() - the last two
+ *   swing highs before the plunge bar (H1, H2) and the high of the rebound since it (Hc). H1 > H2 > Hc, each step at least
+ *   lowerHigh.minDropPct % and minTicks KRX ticks lower = 'lh' (the rebound is still under a falling sequence of highs).
+ *   Swing high = a run of equal highs (the last bar of the run stands for it) higher than pivotBars bars on each side, all of them in
+ *   the judged bar's own KST day and session window, centred within rangeBars bars; fewer than two = 'na'. Also: RSI bullish
+ *   divergence (the plunge low under the lowest low between H1 and H2 while RSI on the plunge bar is higher). Always computed and
+ *   shown (popup / history / CSV); res.lowerHigh.blocked only when lowerHigh.block (default off) - the poller then logs the detection
+ *   without an alert. hit itself is unchanged
  */
 
 import { adx, bollinger, ichimoku, macd, normalizeParams, rsi, sma, vwap, HTS_PARAMS, type CalcMethod, type IndicatorParams, type Series } from './indicators';
@@ -115,6 +123,20 @@ export interface ReboundConfig {
     retries: number;
     backoffMs: number;
   };
+  /** [2026-11-24] lower highs (downtrend) check - always shown; block = no alert for 'lh' (detection still logged) */
+  lowerHigh: {
+    block: boolean;
+    /** with block: an 'lh' detection with an RSI bullish divergence is still alerted */
+    divExempt: boolean;
+    /** swing high = higher than this many completed bars on each side */
+    pivotBars: number;
+    /** swing highs centred within this many bars before the judged bar */
+    rangeBars: number;
+    /** each step (H1 -> H2, H2 -> Hc) at least this % lower ... */
+    minDropPct: number;
+    /** ... and at least this many KRX ticks lower */
+    minTicks: number;
+  };
   /** KST "HH:MM" windows; outside all of them (and on weekends) the watcher rests */
   sessions: { krx: [string, string]; nxtPre: [string, string] | null; nxtAfter: [string, string] | null };
   alert: {
@@ -160,6 +182,7 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
   macd: { oscRising: 3 },
   angle: { lag: 3, k: 10, min: 14 },
   bonus: { minScore: 3, adxTroughBars: 4, adxDropMin: 2, maNearPct: 0.2, macdZeroPct: 0.05, macdZeroBars: 3 },
+  lowerHigh: { block: false, divExempt: true, pivotBars: 5, rangeBars: 150, minDropPct: 0.2, minTicks: 2 },
   poll: { delaySec: 2, days: 2, gapMs: 150, tabReloadSec: 300, retries: 3, backoffMs: 500 },
   sessions: { krx: ['09:00', '15:30'], nxtPre: ['08:00', '08:50'], nxtAfter: ['15:40', '20:00'] },
   alert: { cooldownMin: 30, sound: true, autoCloseSec: 60, kakao: false, maxPopups: 6 },
@@ -253,6 +276,24 @@ export interface ReboundSnapshot {
   plungeGapPct?: number;
 }
 
+/** [2026-11-24] lower highs check of a detection */
+export interface LowerHigh {
+  /** 'lh' H1 > H2 > Hc (downtrend), 'no' not lower, 'na' not judged (fewer than two swing highs, no bar after the plunge) */
+  state: 'lh' | 'no' | 'na';
+  /** epoch ms / price of the two swing highs (older first) */
+  h1t?: number;
+  h1?: number;
+  h2t?: number;
+  h2?: number;
+  /** highest high from the bar after the plunge to the judged bar */
+  hc?: number;
+  /** RSI bullish divergence: plunge low under the lowest low between H1 and H2, RSI higher */
+  div: boolean;
+  /** lowerHigh.block is on and this one is not alerted ('lh', no divergence exemption) */
+  blocked: boolean;
+  note: string;
+}
+
 export interface ReboundResult {
   /** every required condition holds, the score reaches bonus.minScore and the bar is not in a session edge */
   hit: boolean;
@@ -264,6 +305,8 @@ export interface ReboundResult {
   conds: Record<CondKey, Check>;
   bonus: Record<BonusKey, Check>;
   snap: ReboundSnapshot;
+  /** [2026-11-24] lower highs check (missing in history items from before it) */
+  lowerHigh?: LowerHigh;
   /** why nothing was judged (too few bars) */
   skip?: string;
 }
@@ -278,8 +321,8 @@ export const hhmm = (t: number) => (isNum(t) ? new Date(t + KST).toISOString().s
 const BONUS_SHORT: Record<BonusKey, string> = { adxTurn: 'ADX 반등', maLong: 'MA60/120', bbSqueeze: '볼린저', ichimoku: '일목', macdZero: 'MACD 0선', volDry: '거래량 감소' };
 
 /**
- * Summary of an alert for a text message (KakaoTalk: at most `max` characters). Lines are dropped from the end when it gets too
- * long. res = null gives the sample shown in the settings dialog.
+ * Summary of an alert for a text message (KakaoTalk: at most `max` characters). When it gets too long the VWAP, DI and RSI lines
+ * are dropped first, the bonus list last. res = null gives the sample shown in the settings dialog.
  */
 export function alertSummary(a: { code: string; name: string; price?: number; changePct?: number; res: ReboundResult | null }, max = 200): string {
   const n = (x: number | undefined, d = 1) => (x === undefined || !isNum(x) ? '-' : x.toFixed(d));
@@ -289,15 +332,22 @@ export function alertSummary(a: { code: string; name: string; price?: number; ch
   const lines = s
     ? [
         `[바닥 반등 초입] ${a.name}(${a.code})`,
-        `${hhmm(s.t)} 봉 · ${won(a.price ?? s.close)}원${pct} · 가점 ${a.res!.score}점`,
+        // [2026-11-24] lower highs: a short tag on this line (a line of its own pushed the bonus line past 200 characters)
+        `${hhmm(s.t)} 봉 · ${won(a.price ?? s.close)}원${pct} · 가점 ${a.res!.score}점${a.res!.lowerHigh?.state === 'lh' ? ` · 고점↓${a.res!.lowerHigh.div ? '(다이버전스)' : ''}` : ''}`,
         `RSI ${n(s.rsi)}/${n(s.rsiSignal)} · MACD ${n(s.macd)}/${n(s.macdSignal)}`,
         `DI ${n(s.diPlus)}/${n(s.diMinus)} · ADX ${n(s.adx)} · 각도 ${n(s.angle)}°`,
         `VWAP ${isNum(s.vwapPct) && s.vwapPct >= 0 ? '+' : ''}${n(s.vwapPct, 2)}% · 급락 ${hhmm(s.plungeT)} (${n(s.plungeFallPct)}%)`,
         `가점: ${BONUS_KEYS.filter((k) => a.res!.bonus[k].ok).map((k) => BONUS_SHORT[k]).join(', ') || '-'}`,
       ]
     : [`[바닥 반등 초입] ${a.name}(${a.code})`, `14:55 봉 · ${won(a.price)}원${pct} · 가점 3점`, 'RSI 53.3/48.8 · MACD -40.3/-61.7', 'DI 32.2/12.6 · ADX 35.6 · 각도 14.6°', 'VWAP -3.29% · 급락 14:33 (-2.7%)', '가점: ADX 반등, 볼린저, 거래량 감소'];
-  while (lines.length > 2 && lines.join('\n').length > max) lines.pop();
-  return lines.join('\n').slice(0, max);
+  // [2026-11-24] (Codex) too long: the indicator lines go first (VWAP, DI, RSI), the bonus list last
+  const kept = lines.map((text, k) => ({ text, k }));
+  for (const drop of [4, 3, 2, 5]) {
+    if (kept.map((x) => x.text).join('\n').length <= max) break;
+    const at = kept.findIndex((x) => x.k === drop);
+    if (at >= 0) kept.splice(at, 1);
+  }
+  return kept.map((x) => x.text).join('\n').slice(0, max);
 }
 
 /**
@@ -411,6 +461,95 @@ export function findPlunge(bars: Bar[], cfg: ReboundConfig): number {
 }
 
 const kstDayOf = (t: number) => Math.floor((t + KST) / 86400000);
+
+/** KRX tick size of a price */
+export function krxTick(p: number): number {
+  return p < 2000 ? 1 : p < 5000 ? 5 : p < 20000 ? 10 : p < 50000 ? 50 : p < 200000 ? 100 : p < 500000 ? 500 : 1000;
+}
+
+/** the price `n` KRX ticks below `p`, each step with the tick of the price under it (5,000 -> 4,995 -> 4,990) */
+export function ticksDown(p: number, n: number): number {
+  // (Codex) a whole tick band at a time, so a huge minTicks costs at most 7 steps; below 0 = no price is that far below
+  const LOWS = [500000, 200000, 50000, 20000, 5000, 2000, 0];
+  let x = p;
+  let left = Math.max(0, Math.round(n));
+  while (left > 0) {
+    if (x <= 0) return -Infinity;
+    const t = krxTick(x - 1);
+    const low = LOWS.find((l) => x - 1 >= l) ?? 0;
+    const room = Math.ceil((x - low) / t); // ticks of size t until the band's low
+    if (left <= room) return x - left * t;
+    x -= room * t;
+    left -= room;
+  }
+  return x;
+}
+
+/** index of the session window (krx 0, nxtPre 1, nxtAfter 2) `t` falls in, -1 outside all */
+function sessionIdx(cfg: ReboundConfig, t: number): number {
+  const d = new Date(t + KST);
+  const m = d.getUTCHours() * 60 + d.getUTCMinutes();
+  const min = (s: string) => +s.split(':')[0] * 60 + +s.split(':')[1];
+  const ws = [cfg.sessions.krx, cfg.sessions.nxtPre, cfg.sessions.nxtAfter];
+  for (let k = 0; k < ws.length; k++) {
+    const w = ws[k];
+    if (w && m >= min(w[0]) && m <= min(w[1])) return k;
+  }
+  return -1;
+}
+
+const won = (x: number) => Math.round(x).toLocaleString('ko-KR');
+
+export function lowerHighLabel(x: LowerHigh | undefined): string {
+  if (!x) return '-';
+  return x.state === 'lh' ? '고점 낮아짐 (우하향)' : x.state === 'no' ? '고점 낮아짐 아님' : '고점 판정 불가';
+}
+
+/**
+ * [2026-11-24] Lower highs before a rebound (see the update log): bars[i] = the judged bar, pj = the plunge bar, rsiS = RSI series.
+ */
+export function lowerHighs(bars: Bar[], i: number, pj: number, cfg: ReboundConfig, rsiS: Series): LowerHigh {
+  const c = cfg.lowerHigh;
+  const na = (note: string): LowerHigh => ({ state: 'na', div: false, blocked: false, note });
+  if (i < 1 || pj < 0 || pj >= i) return na('급락 뒤 봉 없음');
+  const L = Math.max(1, Math.round(c.pivotBars));
+  // the judged bar's own day and session window
+  const day = kstDayOf(bars[i].t);
+  const ses = sessionIdx(cfg, bars[i].t);
+  if (ses < 0) return na('운영 시간 밖 봉'); // (Codex 2026-11-24) bars between the windows are not one session
+  let s0 = i;
+  while (s0 > 0 && kstDayOf(bars[s0 - 1].t) === day && sessionIdx(cfg, bars[s0 - 1].t) === ses) s0--;
+  const piv: number[] = [];
+  const lo = Math.max(s0, i - Math.max(1, Math.round(c.rangeBars)));
+  for (let a = s0 + L; a < pj; a++) {
+    // a run of equal highs a..b (the last bar stands for it)
+    let b = a;
+    while (b + 1 < pj && bars[b + 1].h === bars[a].h) b++;
+    const h = bars[a].h;
+    let ok = b >= lo && b + L <= i;
+    for (let k = a - L; ok && k < a; k++) ok = bars[k].h < h;
+    for (let k = b + 1; ok && k <= b + L; k++) ok = bars[k].h < h;
+    if (ok) piv.push(b);
+    a = b;
+  }
+  if (piv.length < 2) return na(`급락 전 전고점 ${piv.length}개 (2개 필요)`);
+  const k1 = piv[piv.length - 2];
+  const k2 = piv[piv.length - 1];
+  const h1 = bars[k1].h;
+  const h2 = bars[k2].h;
+  let hc = -Infinity;
+  for (let k = pj + 1; k <= i; k++) hc = Math.max(hc, bars[k].h);
+  const lower = (a: number, b: number) => a > b && ((a - b) / a) * 100 >= c.minDropPct && b <= ticksDown(a, c.minTicks);
+  const lh = lower(h1, h2) && lower(h2, hc);
+  let sl = -1;
+  for (let k = k1 + 1; k < k2; k++) if (sl < 0 || bars[k].l < bars[sl].l) sl = k;
+  const div = sl >= 0 && bars[pj].l < bars[sl].l && isNum(rsiS[pj]) && isNum(rsiS[sl]) && rsiS[pj] > rsiS[sl];
+  const blocked = c.block && lh && !(c.divExempt && div);
+  const seq = `${hhmm(bars[k1].t)} ${won(h1)} → ${hhmm(bars[k2].t)} ${won(h2)} → 현재 ${won(hc)}`;
+  const dv = div ? `, RSI 상승 다이버전스 (${f1(rsiS[sl])} → ${f1(rsiS[pj])})` : '';
+  const tail = blocked ? ' - 알림 안 보냄' : lh && c.block && div && c.divExempt ? ' - 다이버전스라 알림' : '';
+  return { state: lh ? 'lh' : 'no', h1t: bars[k1].t, h1, h2t: bars[k2].t, h2, hc, div, blocked, note: `${seq}${dv}${tail}` };
+}
 
 /**
  * [2026-11-23] Gap-down open as the plunge: the first bar of the last bar's KST day opened plunge.gapPct or more under the previous
@@ -599,5 +738,6 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
 
   const required = COND_KEYS.every((k) => conds[k].ok);
   const score = BONUS_KEYS.filter((k) => bonus[k].ok).length;
-  return { hit: required && score >= bz.minScore && !edge, edge, required, score, conds, bonus, snap };
+  const lowerHigh = lowerHighs(bars, i, pj, cfg, R.rsi);
+  return { hit: required && score >= bz.minScore && !edge, edge, required, score, conds, bonus, snap, lowerHigh };
 }

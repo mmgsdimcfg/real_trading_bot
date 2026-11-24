@@ -5,6 +5,7 @@
  *   the app's chart cache) - detected inside 14:40 ~ 14:58 and never in the falling stretch 13:00 ~ 14:35; indicator values at the
  *   detected bar re-computed here from their definitions; plunge / crossing / angle / session helpers; config merge; the watcher's
  *   pass with a fake backend and clock (completed bars only, cooldown, CSV, a failing symbol does not stop the pass)
+ * - [2026-11-24] type=test - CSV with the lower highs columns (38), an old-layout day file left alone (rows go to _2.csv)
  */
 
 import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
@@ -18,7 +19,7 @@ vi.mock('electron', () => ({ app: { getPath: () => userData }, BrowserWindow: cl
 import { completedBars, detectRebound, findPlunge, inEdge, lastCrossUp, plungeFall, maAngle, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../src/shared/rebound';
 import { applySets, barsToCsv, main, parseBars, replay } from '../src/shared/reboundReplay';
 import { ReboundWatcher, sampleAlert, configPath } from '../src/main/reboundPoller';
-import { alertHtml, csvRow, type AlertInfo } from '../src/main/reboundAlert';
+import { alertHtml, csvRow, logDetection, type AlertInfo } from '../src/main/reboundAlert';
 import type { Bar } from '../src/shared/price';
 import type { MarketBackend } from '../src/shared/market';
 
@@ -291,8 +292,37 @@ describe('alert text', () => {
   });
 
   it('CSV row keeps its columns whatever the name holds', () => {
-    expect(csvRow(a, true).split(',')).toHaveLength(30);
+    // [2026-11-24] 30 -> 38: lower_high, lh_h1_time, lh_h1, lh_h2_time, lh_h2, lh_hc, lh_div, suppressed
+    expect(csvRow(a, true).split(',')).toHaveLength(38);
     expect(csvRow(a, false).split(',')[4]).toBe('0');
+    const lh: AlertInfo = { ...a, res: { ...a.res, lowerHigh: { state: 'lh', h1t: a.res.snap.t - 1800000, h1: 39050, h2t: a.res.snap.t - 900000, h2: 38800, hc: 38700, div: false, blocked: true, note: 'x' } } };
+    expect(csvRow(lh, false, 'lower_high').split(',').slice(30)).toEqual(['lh', hm(a.res.snap.t - 1800000), '39050', hm(a.res.snap.t - 900000), '38800', '38700', '0', 'lower_high']);
+  });
+
+  it('[2026-11-24] a day file in the old layout is left alone - new rows go to detections_YYYYMMDD_2.csv', () => {
+    const dir = join(userData, 'rebound');
+    mkdirSync(dir, { recursive: true });
+    const old = join(dir, 'detections_20261121.csv');
+    const oldText = '﻿detected_at,bar_time\r\nx,y\r\n';
+    writeFileSync(old, oldText, 'utf8');
+    const day = Date.UTC(2026, 10, 21, 1, 0); // 10:00 KST
+    logDetection({ ...a, at: day }, true);
+    logDetection({ ...a, at: day + 60000 }, false, 'lower_high');
+    expect(readFileSync(old, 'utf8')).toBe(oldText);
+    const rows = readFileSync(join(dir, 'detections_20261121_2.csv'), 'utf8').trim().split('\r\n');
+    expect(rows).toHaveLength(3);
+    expect(rows[0].replace(/^﻿/, '').split(',').slice(-2)).toEqual(['lh_div', 'suppressed']);
+    expect(rows[2].split(',').at(-1)).toBe('lower_high');
+    // (Codex) _2 in another layout too -> _3; an empty _2 gets the header
+    writeFileSync(join(dir, 'detections_20261122.csv'), oldText, 'utf8');
+    writeFileSync(join(dir, 'detections_20261122_2.csv'), oldText, 'utf8');
+    logDetection({ ...a, at: day + 86400000 }, true);
+    expect(readFileSync(join(dir, 'detections_20261122_2.csv'), 'utf8')).toBe(oldText);
+    expect(readFileSync(join(dir, 'detections_20261122_3.csv'), 'utf8').split('\r\n')).toHaveLength(3);
+    writeFileSync(join(dir, 'detections_20261123.csv'), oldText, 'utf8');
+    writeFileSync(join(dir, 'detections_20261123_2.csv'), '', 'utf8');
+    logDetection({ ...a, at: day + 2 * 86400000 }, true);
+    expect(readFileSync(join(dir, 'detections_20261123_2.csv'), 'utf8').replace(/^﻿/, '').startsWith('detected_at,bar_time,code')).toBe(true);
   });
 });
 
@@ -390,6 +420,7 @@ describe('watcher pass', () => {
     expect(alerts).toHaveLength(1);
     expect(csv()).toHaveLength(3);
     expect(csv()[2].split(',').slice(1, 5)).toEqual(['15:05', '448900', '한국피아이엠', '0']);
+    expect(csv()[2].split(',').at(-1)).toBe('cooldown'); // [2026-11-24] why it was not alerted
   });
 
   it('rests outside the sessions, waits for a login, reports a missing tab, can be switched off', async () => {
@@ -411,5 +442,66 @@ describe('watcher pass', () => {
     expect(calls.length).toBe(n);
     expect(JSON.parse(readFileSync(configPath(), 'utf8')).enabled).toBe(false);
     expect(existsSync(configPath())).toBe(true);
+  });
+});
+
+// [2026-11-24] lowerHigh.block in the live watcher: a blocked detection is logged (alerted 0, suppressed lower_high), no popup, and it
+// does not start the cooldown - the next detection of the symbol that passes is alerted even within 30 minutes
+describe('watcher pass - lower highs blocked', () => {
+  let clock = at('14:56') + 2000;
+  const alerts: AlertInfo[] = [];
+  const backend = {
+    kind: 'kis',
+    chart: async () => ({ bars: ref.filter((b) => b.t <= clock), name: '한국피아이엠' }),
+    quote: async () => ({ code: '448900', price: 38500, change: -950, changePct: -2.41, sign: '5' }),
+  } as unknown as MarketBackend;
+  const watcher = new ReboundWatcher({ backend: () => backend, master: { get: () => undefined, nxtKnown: false }, log: () => undefined, alert: (a) => alerts.push(a), status: () => undefined, now: () => clock });
+  let stamp = Math.floor(Date.now() / 1000) + 10000;
+  const setLh = (lh: Partial<ReboundConfig['lowerHigh']>) => {
+    const cfg = mergeConfig({ ...REBOUND_DEFAULTS, poll: { ...REBOUND_DEFAULTS.poll, gapMs: 0, backoffMs: 1, tabReloadSec: 0 }, lowerHigh: { ...REBOUND_DEFAULTS.lowerHigh, ...lh } });
+    mkdirSync(join(userData, 'rebound'), { recursive: true });
+    writeFileSync(configPath(), JSON.stringify(cfg));
+    stamp += 10;
+    utimesSync(configPath(), stamp, stamp);
+  };
+  // data rows only (no header), [] before the first one - the test does not lean on the CSV of the tests before it
+  const rows = () => {
+    const f = join(userData, 'rebound', 'detections_20261120.csv');
+    return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\r\n').slice(1) : [];
+  };
+  const mkWatcher = () =>
+    new ReboundWatcher({ backend: () => backend, master: { get: () => undefined, nxtKnown: false }, log: () => undefined, alert: (a) => alerts.push(a), status: () => undefined, now: () => clock });
+
+  it('14:55 under lower highs, no divergence exemption: logged only; 15:05 with the exemption: alerted (no cooldown from 14:55)', async () => {
+    mkdirSync(join(userData, 'watchlist'), { recursive: true });
+    writeFileSync(join(userData, 'watchlist', 'watchlist.json'), JSON.stringify({ groups: [{ id: 'g1', name: 'TEST', codes: ['448900'] }], imported: {} }));
+    setLh({ block: true, divExempt: false });
+    const n0 = rows().length;
+    await watcher.tick();
+    expect(alerts).toHaveLength(0);
+    const r = rows();
+    expect(r).toHaveLength(n0 + 1);
+    const f = r[r.length - 1].split(',');
+    expect([f[1], f[4], f[30], f.at(-1)]).toEqual(['14:55', '0', 'lh', 'lower_high']);
+    setLh({ block: true, divExempt: true });
+    clock = at('15:06') + 2000;
+    await watcher.tick();
+    expect(alerts.map((a) => hm(a.res.snap.t))).toEqual(['15:05']);
+    expect(alerts[0].res.lowerHigh).toMatchObject({ state: 'lh', div: true, blocked: false });
+    expect(rows().at(-1)!.split(',')[4]).toBe('1');
+  });
+
+  it('(Codex) not judged (no swing highs in range) with block on: alerted as usual', async () => {
+    mkdirSync(join(userData, 'watchlist'), { recursive: true }); // runs on its own too
+    writeFileSync(join(userData, 'watchlist', 'watchlist.json'), JSON.stringify({ groups: [{ id: 'g1', name: 'TEST', codes: ['448900'] }], imported: {} }));
+    const w = mkWatcher();
+    alerts.length = 0;
+    clock = at('14:56') + 2000;
+    setLh({ block: true, divExempt: false, rangeBars: 1 });
+    await w.tick();
+    expect(alerts.map((a) => hm(a.res.snap.t))).toEqual(['14:55']);
+    expect(alerts[0].res.lowerHigh).toMatchObject({ state: 'na', blocked: false });
+    const f = rows().at(-1)!.split(',');
+    expect([f[1], f[4], f[30], f.at(-1)]).toEqual(['14:55', '1', 'na', '']);
   });
 });

@@ -7,6 +7,8 @@
 //   symbol with a doubling back-off and goes on with the next one. Inquiry calls only - there is no order code)
 // - [2026-11-21] type=feat (saveConfig(): the settings dialog writes the whole config (merged over the defaults, so a bad value
 //   falls back); refreshTab(): the tab is read again at the next pass (its symbols were edited in the dialog))
+// - [2026-11-24] type=feat (lowerHigh.block (default off): a detection whose res.lowerHigh.blocked is set is written to the CSV
+//   (alerted 0, suppressed "lower_high") without a popup / KakaoTalk message and without starting the symbol's cooldown)
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -192,6 +194,17 @@ export class ReboundWatcher {
   private async detected(backend: MarketBackend, code: string, name: string, res: AlertInfo['res']): Promise<void> {
     const now = this.now();
     const info: AlertInfo = { code, name, at: now, res };
+    // [2026-11-24] lowerHigh.block: a detection under falling highs is logged (alerted 0, suppressed lower_high) but not alerted and
+    // does not use up the cooldown - a later detection of the same symbol that passes is still alerted
+    if (res.lowerHigh?.blocked) {
+      try {
+        logDetection(info, false, 'lower_high');
+      } catch (e) {
+        this.d.log(`[rebound] 감지 기록 실패: ${(e as Error).message}`);
+      }
+      this.d.log(`[rebound] 감지 ${name}(${code}) 봉 ${hhmm(res.snap.t)} 점수 ${res.score} - 고점 낮아짐, 알림 안 보냄 (${res.lowerHigh.note})`);
+      return;
+    }
     const cool = now - (this.lastAlert.get(code) ?? -Infinity) < this.cfg.alert.cooldownMin * 60000;
     if (!cool) {
       try {
@@ -203,7 +216,7 @@ export class ReboundWatcher {
       }
     }
     try {
-      logDetection(info, !cool);
+      logDetection(info, !cool, cool ? 'cooldown' : ''); // [2026-11-24] why it was not alerted (Codex)
     } catch (e) {
       this.d.log(`[rebound] 감지 기록 실패: ${(e as Error).message}`);
     }
@@ -273,6 +286,8 @@ export function sampleAlert(cfg: ReboundConfig): AlertInfo {
       score: 3,
       conds: { plunge: ok('14:33 저가 38000 거래량 2147'), rsi: ok('돌파 14:53, RSI 53.3/48.8'), macd: ok('돌파 14:46(MACD -84.5)'), dmi: ok('돌파 14:50, DI 32.2/12.6'), ma: ok('골든크로스 14:55'), angle: ok(`14.6° (기준 ${cfg.angle.min}°)`) },
       bonus: { adxTurn: ok('저점 14:51 33.9'), maLong: { ok: false, note: 'MA60 38530.0' }, bbSqueeze: ok('폭 0.89%'), ichimoku: { ok: false, note: '구름 아래' }, macdZero: { ok: false, note: 'MACD -40.3' }, volDry: ok('평균 147.0 / 급락 봉 2147') },
+      // [2026-11-24] the lower highs section of the popup
+      lowerHigh: { state: 'lh', h1t: t - 50 * 60000, h1: 39050, h2t: t - 28 * 60000, h2: 38800, hc: 38700, div: true, blocked: false, note: `${hhmm(t - 50 * 60000)} 39,050 → ${hhmm(t - 28 * 60000)} 38,800 → 현재 38,700, RSI 상승 다이버전스 (23.1 → 33.3)` },
       snap: { t, close: 38500, ma5: 38450, ma20: 38445, ma60: 38530, ma120: 38800, rsi: 53.3, rsiSignal: 48.8, macd: -40.3, macdSignal: -61.7, macdOsc: 21.4, diPlus: 32.2, diMinus: 12.6, adx: 35.6, angle: 14.6, vwap: 39810, vwapPct: -3.29, bbMid: 38445, bbWidthPct: 0.89, plungeT: t - 22 * 60000, plungeLow: 38000, plungeVol: 2147, plungeFallPct: -2.7 },
     },
   };

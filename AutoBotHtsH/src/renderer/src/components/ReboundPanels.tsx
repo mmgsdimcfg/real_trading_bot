@@ -8,6 +8,7 @@
 // - [2026-11-23] type=feat (user 2026-11-23: HistoryTab is list | detail | 1-minute chart of the alert's day (HistChart) - the same
 //   PriceChart as the chart window with that window's indicators / periods / style, a bell on the alert bar and the view placed on
 //   it; the earlier days are the warm-up of the indicators)
+// - [2026-11-24] type=feat (HistoryTab detail: "추세 구조" - the lower highs check of the alert (고점 낮아짐 / 아님 / 판정 불가))
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
@@ -15,7 +16,7 @@ import { PriceChart } from './PriceChart';
 import { normalizeParams, OSCILLATORS, type IndicatorKey, type IndicatorParams } from '../../../shared/indicators';
 import type { Bar } from '../../../shared/price';
 import type { ChartRes } from '../../../shared/market';
-import { alertSummary, BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm } from '../../../shared/rebound';
+import { alertSummary, BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, lowerHighLabel } from '../../../shared/rebound';
 import type { KakaoState, ReboundHistoryItem } from '../../../preload/index';
 
 const KST = 9 * 3600000;
@@ -190,6 +191,17 @@ export function HistoryTab() {
                 </li>
               ))}
             </ul>
+            {cur.res.lowerHigh && (
+              <>
+                <h4>추세 구조</h4>
+                <ul>
+                  <li className={cur.res.lowerHigh.state === 'lh' ? 'warn' : cur.res.lowerHigh.state === 'no' ? 'ok' : 'no'}>
+                    <b>{cur.res.lowerHigh.state === 'lh' ? '!' : cur.res.lowerHigh.state === 'no' ? '✓' : '·'}</b> {lowerHighLabel(cur.res.lowerHigh)}{' '}
+                    <span className="muted">{cur.res.lowerHigh.note}</span>
+                  </li>
+                </ul>
+              </>
+            )}
             <h4>지표</h4>
             <p className="rb-hist-ind">
               RSI {num(cur.res.snap.rsi)} / {num(cur.res.snap.rsiSignal)} · MACD {num(cur.res.snap.macd)} / {num(cur.res.snap.macdSignal)} · DI+ {num(cur.res.snap.diPlus)} / DI- {num(cur.res.snap.diMinus)} / ADX {num(cur.res.snap.adx)}

@@ -6,11 +6,14 @@
 //   %APPDATA%\<app>\rebound\detections_YYYYMMDD.csv (alerted or held back by the cooldown))
 // - [2026-11-22] type=feat (show(a, cfg, id): a popup knows its history id; onSeen(id) is called when the user closes it (x) or
 //   opens the symbol - a popup that closes by itself (alert.autoCloseSec) or is pushed out by newer ones is not "seen")
+// - [2026-11-24] type=feat (lower highs check: popup section "추세 구조" (고점 낮아짐 / 아님 / 판정 불가 with H1 -> H2 -> current high and
+//   the RSI divergence); CSV columns lower_high, lh_h1_time, lh_h1, lh_h2_time, lh_h2, lh_hc, lh_div, suppressed - a day file written
+//   by an older version keeps its layout and the new rows go to detections_YYYYMMDD_2.csv)
 
 import { app, BrowserWindow, screen, shell } from 'electron';
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
-import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, type ReboundConfig, type ReboundResult } from '../shared/rebound';
+import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, lowerHighLabel, type ReboundConfig, type ReboundResult } from '../shared/rebound';
 
 export interface AlertInfo {
   code: string;
@@ -30,27 +33,57 @@ const kst = (t: number) => new Date(t + KST).toISOString();
 const CSV_HEAD = [
   'detected_at', 'bar_time', 'code', 'name', 'alerted', 'score', 'conds', 'bonus', 'close', 'price', 'change_pct', 'rsi', 'rsi_signal', 'macd', 'macd_signal', 'macd_osc',
   'di_plus', 'di_minus', 'adx', 'ma5_angle', 'vwap', 'vwap_pct', 'ma5', 'ma20', 'ma60', 'ma120', 'plunge_time', 'plunge_low', 'plunge_volume', 'plunge_fall_pct',
+  // [2026-11-24] lower highs check: state lh / no / na, H1 / H2 / Hc, RSI divergence, why the alert was not sent ('' sent / cooldown)
+  'lower_high', 'lh_h1_time', 'lh_h1', 'lh_h2_time', 'lh_h2', 'lh_hc', 'lh_div', 'suppressed',
 ];
 const n = (x: number | undefined, d = 2) => (x === undefined || !Number.isFinite(x) ? '' : Number(x.toFixed(d)).toString());
 
-export function csvRow(a: AlertInfo, alerted: boolean): string {
+export function csvRow(a: AlertInfo, alerted: boolean, suppressed = ''): string {
   const s = a.res.snap;
+  const lh = a.res.lowerHigh;
   const f = [
     kst(a.at).slice(0, 19).replace('T', ' '), hhmm(s.t), a.code, a.name.replace(/[",\r\n]/g, ' '), alerted ? '1' : '0', String(a.res.score),
     COND_KEYS.filter((k) => a.res.conds[k].ok).join(' '), BONUS_KEYS.filter((k) => a.res.bonus[k].ok).join(' '),
     n(s.close, 0), n(a.price, 0), n(a.changePct), n(s.rsi), n(s.rsiSignal), n(s.macd), n(s.macdSignal), n(s.macdOsc), n(s.diPlus), n(s.diMinus), n(s.adx), n(s.angle),
     n(s.vwap, 1), n(s.vwapPct), n(s.ma5, 1), n(s.ma20, 1), n(s.ma60, 1), n(s.ma120, 1), hhmm(s.plungeT), n(s.plungeLow, 0), n(s.plungeVol, 0), n(s.plungeFallPct),
+    lh?.state ?? '', lh?.h1t === undefined ? '' : hhmm(lh.h1t), n(lh?.h1, 0), lh?.h2t === undefined ? '' : hhmm(lh.h2t), n(lh?.h2, 0), n(lh?.hc, 0),
+    lh ? (lh.div ? '1' : '0') : '', suppressed,
   ];
   return f.join(',');
 }
 
-/** append one detection to today's CSV (created with a header) */
-export function logDetection(a: AlertInfo, alerted: boolean): void {
+/** the header line of a CSV file, from its first 4 KB only ('' when empty or unreadable) */
+function headOf(file: string): string {
+  let fd = -1;
+  try {
+    fd = openSync(file, 'r');
+    const buf = Buffer.alloc(4096);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return buf.subarray(0, n).toString('utf8').split(/\r?\n/, 1)[0].replace(/^﻿/, '');
+  } catch {
+    return '';
+  } finally {
+    if (fd >= 0) closeSync(fd);
+  }
+}
+
+/**
+ * Append one detection to today's CSV (created with a header). [2026-11-24] A file of the day in another layout (written by an older
+ * version) is left as it is: the rows go to detections_YYYYMMDD_2.csv (then _3, ...) - the first one that does not exist, is empty or
+ * has this header - so no file mixes two layouts.
+ */
+export function logDetection(a: AlertInfo, alerted: boolean, suppressed = ''): void {
   const dir = reboundDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const file = join(dir, `detections_${kst(a.at).slice(0, 10).replace(/-/g, '')}.csv`);
-  const head = existsSync(file) ? '' : `﻿${CSV_HEAD.join(',')}\r\n`;
-  appendFileSync(file, `${head}${csvRow(a, alerted)}\r\n`, 'utf8');
+  const ymd = kst(a.at).slice(0, 10).replace(/-/g, '');
+  const want = CSV_HEAD.join(',');
+  const empty = (f: string) => !existsSync(f) || statSync(f).size === 0;
+  const fits = (f: string) => empty(f) || headOf(f) === want;
+  let file = join(dir, `detections_${ymd}.csv`);
+  for (let k = 2; k < 100 && !fits(file); k++) file = join(dir, `detections_${ymd}_${k}.csv`);
+  if (!fits(file)) throw new Error(`detections_${ymd} ~ _99.csv 가 모두 다른 형식입니다`); // (Codex) the last one is checked too
+  const head = empty(file) ? `﻿${want}\r\n` : '';
+  appendFileSync(file, `${head}${csvRow(a, alerted, suppressed)}\r\n`, 'utf8');
 }
 
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
@@ -76,7 +109,7 @@ main::-webkit-scrollbar{width:8px}main::-webkit-scrollbar-thumb{background:#3a3f
 h1{margin:0;font-size:15px}h1 small{color:#9aa0aa;font-weight:normal}
 .px{font-size:14px;margin:2px 0 6px}.up{color:#ff5b5b}.dn{color:#4d8dff}
 ul{list-style:none;margin:0 0 6px;padding:0}li{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-li b{display:inline-block;width:12px}li.ok b{color:#5fd38d}li.no{color:#737985}li i{font-style:normal;color:#8a909b;margin-left:6px;font-size:11px}
+li b{display:inline-block;width:12px}li.ok b{color:#5fd38d}li.warn{color:#ffb347}li.warn b{color:#ffb347}li.wrap{white-space:normal}li.wrap i{display:block;margin-left:12px}li.no{color:#737985}li i{font-style:normal;color:#8a909b;margin-left:6px;font-size:11px}
 h2{margin:4px 0 2px;font-size:11px;color:#9aa0aa;font-weight:normal;border-bottom:1px solid #2c3038}
 table{border-collapse:collapse;width:100%}th{text-align:left;color:#9aa0aa;font-weight:normal;padding:0 6px 0 0;white-space:nowrap}td{text-align:right}
 footer{padding:3px 8px;color:#737985;font-size:11px;border-top:1px solid #2c3038}
@@ -87,6 +120,7 @@ footer{padding:3px 8px;color:#737985;font-size:11px;border-top:1px solid #2c3038
 <div class="px ${up ? 'up' : 'dn'}">${num(price, 0)}${a.changePct === undefined ? '' : ` &nbsp;${up ? '+' : ''}${num(a.changePct, 2)}%`}</div>
 <h2>필수 조건</h2><ul>${COND_KEYS.map((k) => li(a.res.conds[k].ok, COND_LABEL[k], a.res.conds[k].note)).join('')}</ul>
 <h2>가점 ${a.res.score}점 (기준 ${minScore}점)</h2><ul>${BONUS_KEYS.map((k) => li(a.res.bonus[k].ok, BONUS_LABEL[k], a.res.bonus[k].note)).join('')}</ul>
+${a.res.lowerHigh ? `<h2>추세 구조</h2><ul><li class="wrap ${a.res.lowerHigh.state === 'lh' ? 'warn' : a.res.lowerHigh.state === 'no' ? 'ok' : 'no'}" title="${esc(a.res.lowerHigh.note)}"><b>${a.res.lowerHigh.state === 'lh' ? '!' : a.res.lowerHigh.state === 'no' ? '✓' : '·'}</b> ${esc(lowerHighLabel(a.res.lowerHigh))}<i>${esc(a.res.lowerHigh.note)}</i></li></ul>` : ''}
 <h2>지표</h2><table>
 ${row('RSI / 시그널', `${num(s.rsi)} / ${num(s.rsiSignal)}`)}
 ${row('MACD / 시그널', `${num(s.macd)} / ${num(s.macdSignal)}`)}
@@ -98,7 +132,7 @@ ${row('VWAP 대비', `${Number.isFinite(s.vwapPct) ? `${s.vwapPct >= 0 ? '+' : '
 }
 
 const W = 440;
-const H = 490;
+const H = 490; // kept with the "추세 구조" section (2026-11-24): taller would put only one popup per column on a 1080p screen - the body scrolls
 const GAP = 8;
 
 export class AlertPopups {

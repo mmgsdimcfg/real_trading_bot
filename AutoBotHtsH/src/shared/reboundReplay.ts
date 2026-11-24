@@ -4,10 +4,12 @@
  *   app) are fed one bar at a time to detectRebound(), exactly as the poller does with completed bars, and every detection is listed
  *   (`npm run replay -- <file> [--date YYYYMMDD] [--from HH:MM] [--to HH:MM] [--explain HH:MM] [--all] [--config file]
  *   [--set key=value ...]`). parseBars / replay are pure (tests/rebound.test.ts); main() is the CLI (scripts/rebound-replay.cjs)
+ * - [2026-11-24] type=feat - lowerHigh: a detection blocked by lowerHigh.block is listed as "감지(고점 낮아짐, 알림 안 함)" and does not
+ *   start the cooldown (as in the poller); --explain / --all also print the lower highs check
  */
 
 import { readFileSync } from 'node:fs';
-import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, detectRebound, hhmm, mergeConfig, REBOUND_DEFAULTS, type ReboundConfig, type ReboundResult } from './rebound';
+import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, detectRebound, hhmm, lowerHighLabel, mergeConfig, REBOUND_DEFAULTS, type ReboundConfig, type ReboundResult } from './rebound';
 import type { Bar } from './price';
 
 const KST = 9 * 3600000;
@@ -72,7 +74,7 @@ export function replay(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS, from 
     if (!k || kstYmd(t) !== kstYmd(bars[k - 1].t)) dayStart.push(k);
     if (t < from || t > to) continue;
     const res = detectRebound(bars.slice(dayStart[Math.max(0, dayStart.length - days)], k + 1), cfg);
-    const alert = res.hit && t - lastAlert >= cfg.alert.cooldownMin * 60000;
+    const alert = res.hit && !res.lowerHigh?.blocked && t - lastAlert >= cfg.alert.cooldownMin * 60000; // a blocked one does not start the cooldown
     if (alert) lastAlert = t;
     out.push({ t, res, alert });
   }
@@ -104,6 +106,7 @@ function table(res: ReboundResult): string[] {
   return [
     ...COND_KEYS.map((k) => `    [${mark(res.conds[k].ok)}] ${COND_LABEL[k]}: ${res.conds[k].note}`),
     ...BONUS_KEYS.map((k) => `    (${mark(res.bonus[k].ok)}) ${BONUS_LABEL[k]}: ${res.bonus[k].note}`),
+    ...(res.lowerHigh ? [`    {${res.lowerHigh.state}} ${lowerHighLabel(res.lowerHigh)}: ${res.lowerHigh.note}`] : []),
   ];
 }
 
@@ -142,7 +145,7 @@ export function main(argv: string[], print: (s: string) => void = console.log): 
     if (r.res.hit) hits++;
     if (!show) continue;
     const s = r.res.snap;
-    const tag = r.res.hit ? (r.alert ? '감지(알림)' : '감지(쿨다운)') : r.res.required ? (r.res.edge && r.res.score >= cfg.bonus.minScore ? '장 경계 제외' : '필수만 충족') : '미충족';
+    const tag = r.res.hit ? (r.alert ? '감지(알림)' : r.res.lowerHigh?.blocked ? '감지(고점 낮아짐, 알림 안 함)' : '감지(쿨다운)') : r.res.required ? (r.res.edge && r.res.score >= cfg.bonus.minScore ? '장 경계 제외' : '필수만 충족') : '미충족';
     print(`${hhmm(r.t)} ${tag} 점수 ${r.res.score} 종가 ${s.close} RSI ${s.rsi.toFixed(1)}/${s.rsiSignal.toFixed(1)} MACD ${s.macd.toFixed(1)}/${s.macdSignal.toFixed(1)} DI ${s.diPlus.toFixed(1)}/${s.diMinus.toFixed(1)} ADX ${s.adx.toFixed(1)} 각도 ${s.angle.toFixed(1)}° VWAP ${s.vwapPct.toFixed(2)}%`);
     if (opt.explain || opt.all) for (const l of table(r.res)) print(l);
   }
