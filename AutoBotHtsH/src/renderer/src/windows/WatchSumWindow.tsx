@@ -4,11 +4,14 @@
 //   window narrow. A click shows the symbol in every open symbol window, a double click opens a chart, right-click = the watchlist menu
 //   (open windows / copy / move / delete), ↑ ↓ move the selection. Column titles sort (high to low / low to high / registered order),
 //   kept with the window (opts.group / sortKey / sortDir))
+// - [2026-11-24] type=feat (종목 추가 search box under the group drop-down (user 2026-11-24): adds the symbol to the shown group - an
+//   existing one is just selected)
 
 import { useMemo, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
 import { useCall } from '../hooks';
 import { NxtTag } from '../components/NxtTag';
+import { SymbolSearch } from '../components/SymbolSearch';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import { AlarmMark, useTodayAlerts } from '../components/AlarmMark';
 import type { WatchRow } from '../../../shared/kis';
@@ -65,6 +68,19 @@ export function WatchSumWindow({ win }: { win: Win }) {
         <span className="muted small" title={`${codes.length}/${WATCH_MAX}종목 · 3초마다 · 장외 시간은 NXT 시세`}>
           <span className="up">▲{ups}</span> <span className="down">▼{downs}</span>
         </span>
+      </div>
+      {/* [2026-11-24] 종목 추가 (user 2026-11-24): the picked symbol is added to the shown group (not twice, up to WATCH_MAX) and selected */}
+      <div className="win-tb sum-add">
+        <SymbolSearch
+          compact
+          placeholder={codes.length >= WATCH_MAX ? `최대 ${WATCH_MAX}종목` : '종목 추가'}
+          onPick={(c) => {
+            if (!group || codes.includes(c) || codes.length >= WATCH_MAX) return void (codes.includes(c) && pick(c));
+            const st = useStore.getState();
+            st.setWatch(st.watch.map((g) => (g.id === group.id ? { ...g, codes: [...g.codes, c] } : g)));
+            pick(c);
+          }}
+        />
       </div>
       {r.error && <p className="err">{r.error}</p>}
       <div className="tab-scroll">
