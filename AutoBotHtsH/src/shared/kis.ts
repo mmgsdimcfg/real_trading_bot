@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-24] type=feat (Quote.vwap = 가중평균가: REST wghn_avrg_stck_prc, realtime WGHN_AVRG_STCK_PRC)
 // - [2026-11-06] type=feat (KIS OpenAPI core for HtsH, pure functions (tests/kis.test.ts): server domains (real / paper), the inquiry-only
 //   allowlist built from the generated spec (kisSpec.generated.ts) - only GET quotations/ranking TRs and the two realtime market-data TRs
 //   are allowed, order / balance / account TRs are rejected by prefix as a second check -, realtime frame parsing ("0|H0STCNT0|003|a^b^..."),
@@ -216,6 +217,8 @@ export interface Quote {
   volume?: number;
   amount?: number;
   volRatio?: number;
+  /** [2026-11-24] 가중평균가 - the day's volume weighted average price (REST wghn_avrg_stck_prc, realtime WGHN_AVRG_STCK_PRC) */
+  vwap?: number;
   per?: number;
   pbr?: number;
   eps?: number;
@@ -258,6 +261,7 @@ export function toQuote(code: string, o: Record<string, string>): Quote {
     volume: opt(o.acml_vol),
     amount: opt(o.acml_tr_pbmn),
     volRatio: opt(o.prdy_vrss_vol_rate),
+    vwap: opt(o.wghn_avrg_stck_prc),
     per: opt(o.per),
     pbr: opt(o.pbr),
     eps: opt(o.eps),
@@ -381,6 +385,7 @@ export function wsToTrade(r: Record<string, string>): { trade: TradeTick; quote:
       low: opt(r.STCK_LWPR),
       volume: opt(r.ACML_VOL),
       amount: opt(r.ACML_TR_PBMN),
+      vwap: opt(r.WGHN_AVRG_STCK_PRC),
       halted: r.TRHT_YN === 'Y',
     },
   };

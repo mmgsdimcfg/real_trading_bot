@@ -132,6 +132,7 @@ export class DemoMarket implements MarketBackend {
       volume: day.v,
       amount: day.v * price,
       volRatio: 87.4,
+      vwap: Math.round((day.o + Math.max(day.h, price) + Math.min(day.l, price) + price) / 4),
       per: 12.8,
       pbr: 1.31,
       eps: Math.round(price / 12.8),

@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-24] type=feat (Chart option 선 이름 (opts.tags, default on) -> PriceChart lineLabels: name tags on the price-pane lines)
 // - [2026-11-09] type=fix (Period settings: "RSI / ADX 계산" selects (MTS / Wilder); saved and typed parameters go through normalizeParams() -
 //   periods are whole numbers (a typed 14.5 made RSI and its marks vanish), unknown values fall back to the defaults)
 // - [2026-11-06] type=feat (Chart window: tick (realtime) / minute (1-60, 1-20 days) / day / week / month / year bars from KIS, candle /
@@ -164,6 +165,8 @@ export function ChartWindow({ win }: { win: Win }) {
     params?: IndicatorParams;
     draw?: Record<string, Draw>;
     sig?: boolean;
+    /** [2026-11-24] name tags on the price-pane lines (default on) */
+    tags?: boolean;
     invM?: InvMonths;
     volR?: number;
     oscH?: number;
@@ -207,6 +210,7 @@ export function ChartWindow({ win }: { win: Win }) {
   const [tool, setTool] = useState<'none' | 'hline' | 'tline'>('none');
   const panelRef = useOutsideClose<HTMLSpanElement>(panel !== '', () => setPanel(''));
   const sig = o.sig ?? true;
+  const tags = o.tags ?? true;
   const bodyRef = useRef<HTMLDivElement>(null);
   const [h, setH] = useState(300);
 
@@ -438,6 +442,9 @@ export function ChartWindow({ win }: { win: Win }) {
                 <label className="check" title="보조지표 창에 매수(빨강 ▲) / 매도(파랑 ▼) 신호 표시">
                   <input type="checkbox" checked={sig} onChange={(e) => setOpts(win.id, { sig: e.target.checked })} /> 매수/매도 신호
                 </label>
+                <label className="check" title="이동평균·VWAP 등 가격 차트의 선마다 이름을 빈 곳에 표시">
+                  <input type="checkbox" checked={tags} onChange={(e) => setOpts(win.id, { tags: e.target.checked })} /> 선 이름
+                </label>
                 <button className="mini" onClick={() => setPanel('params')}>
                   기간 설정…
                 </button>
@@ -521,6 +528,7 @@ export function ChartWindow({ win }: { win: Win }) {
             interactive
             tooltip={false}
             signals={sig}
+            lineLabels={tags}
             params={params}
             style={o.style || 'candle'}
             tool={tool}

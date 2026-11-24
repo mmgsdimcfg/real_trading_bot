@@ -355,6 +355,9 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .pc-tag-up rect { fill: var(--up); }
 .pc-tag-dn rect { fill: var(--down); }
 .pc-tag-flat rect { fill: #111; }
+/* [2026-11-24] name tags on the price-pane lines (PriceChart lineLabels) */
+.pc-line-tag rect { fill: var(--surface); fill-opacity: 0.88; stroke-width: 1; }
+.pc-line-tag text { font-size: calc(var(--fs) - 3px); font-weight: 600; }
 .pc-tag .pc-tag-sub { font-weight: 500; }
 .pc-tag-cross rect { fill: var(--surface-2); stroke: var(--text-3); }
 .pc-tag-cross text { fill: var(--text); }

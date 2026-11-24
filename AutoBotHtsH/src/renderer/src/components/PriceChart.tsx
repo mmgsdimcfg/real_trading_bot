@@ -7,6 +7,8 @@
 // - [2026-11-24] type=feat (Last-price tag on the right axis: price, then the change % on a second line (user 2026-11-24); colour by
 //   the sign against the previous close - red up, blue down, black flat)
  * Update log
+ * - [2026-11-24] type=feat - props.lineLabels: name tags (MA5 / VWAP / 볼린저 중 / 엔벨 / 채널 / 전환 / 기준) on the price-pane lines,
+ *   placed by lineLabels.ts where they cover no candle, other line, legend or tag
  * - [2026-11-05] type=feat - Candlestick price chart for the timeline tab (custom SVG, one <path> per color so thousands of 1-tick
  *   bars stay cheap). The plot area uses the same margins as the recharts charts around it (left 8 + 150 axis, right 24), so for
  *   tick / minute bars the x axis is the buy-evaluation chart's time domain and candles line up with the evaluation dots above.
@@ -53,6 +55,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { samePeriod, type Bar, type ChartKind } from '../../../shared/price';
+import { placeLineLabels, type Box, type LabelLine } from './lineLabels';
 import { HTS_PARAMS, computeIndicators, investorCum, INV_MONTHS_LABEL, type InvestorDayRow, type InvMonths, MA_PERIODS, OSCILLATORS, signalLine, signals as signalsOf, type IndicatorKey, type IndicatorParams, type IndicatorSet, type Series } from '../../../shared/indicators';
 import type { Trade } from '../../../shared/types';
 import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
@@ -137,6 +140,8 @@ interface Props {
   onHover?: (i: number | null, left?: boolean) => void;
   /** buy (red ▲) / sell (blue ▼) marks on the indicator panes (default on) */
   signals?: boolean;
+  /** [2026-11-24] name tag on each price-pane indicator line (MA5, VWAP, ...) where it covers nothing (default off) */
+  lineLabels?: boolean;
   /** indicator periods (default HTS_PARAMS) */
   params?: IndicatorParams;
   /** chart style */
@@ -547,6 +552,19 @@ export function PriceChart(props: Props) {
         else sarDn += dot;
       }
     }
+    // [2026-11-24] the named lines for the name tags (props.lineLabels)
+    const named: { name: string; s: Series; color?: string; cls?: string }[] = [];
+    if (S.ma) for (const p of MA_PERIODS) named.push({ name: `MA${p}`, s: S.ma[p], color: MA_COLORS[p] });
+    if (S.bb) named.push({ name: '볼린저 중', s: S.bb.mid, color: OVERLAY_COLOR.bb });
+    if (S.vwap) named.push({ name: 'VWAP', s: S.vwap, color: OVERLAY_COLOR.vwap });
+    if (S.env) named.push({ name: '엔벨 상', s: S.env.upper, color: OVERLAY_COLOR.env }, { name: '엔벨 하', s: S.env.lower, color: OVERLAY_COLOR.env });
+    if (S.donchian) named.push({ name: '채널 상', s: S.donchian.upper, color: OVERLAY_COLOR.donchian }, { name: '채널 하', s: S.donchian.lower, color: OVERLAY_COLOR.donchian });
+    if (S.ichimoku) named.push({ name: '전환', s: S.ichimoku.tenkan, color: OVERLAY_COLOR.tenkan }, { name: '기준', s: S.ichimoku.kijun, color: OVERLAY_COLOR.kijun });
+    const labelLines: LabelLine[] = named.map((n) => ({
+      name: n.name,
+      color: n.color,
+      pts: slots.filter((sl) => ok(n.s[sl.i])).map((sl) => [sl.x, sy(n.s[sl.i])] as [number, number]),
+    }));
     if (S.ichimoku) {
       const k = S.ichimoku;
       const cp = [...slots.map((sl) => ({ x: sl.x, a: k.senkouA[sl.i], b: k.senkouB[sl.i] })), ...futureIdx.map((f) => ({ x: f.x, a: k.senkouA[f.idx], b: k.senkouB[f.idx] }))];
@@ -639,7 +657,7 @@ export function PriceChart(props: Props) {
         }
       });
     }
-    return { empty: false as const, vMax, sv, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, bandPath, panes, xOfTime, dayLines, step, closeLine, xAtTime, sarUp, sarDn };
+    return { empty: false as const, vMax, sv, slots, sy, py, lo, hi, upW, dnW, upB, dnB, upV, dnV, labels, highlight, marks, overlay, cloudPaths, bandPath, panes, xOfTime, dayLines, step, closeLine, xAtTime, sarUp, sarDn, labelLines };
   }, [bars, S, indicators, kind, n, mode, props.domain, xTicks, trades, buyPrice, refPrice, date, width, intraday, L, W, priceH, volTop, volH, hs.join(), osc.join(), vp, shift, defaultCount, interactive, chartStyle, showSignals, invMonths, showVol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- interaction ----
@@ -780,6 +798,19 @@ export function PriceChart(props: Props) {
   const infoRef = infoSlot ? refCloseAt(bars, infoSlot.i, intraday) : undefined;
   const infoY = showLegend ? 14 : 0;
 
+  // [2026-11-24] line name tags: avoid the candles, the other lines, the legend block (top left) and the last-price tag
+  const legendRowsN = showLegend && li >= 0 ? legendRows(S, P, li).length : 0;
+  const lineTags = useMemo(() => {
+    if (!props.lineLabels || !model || model.empty || !model.labelLines.length) return [];
+    const candles: Box[] = model.slots.map((sl) => {
+      const top = model.sy(sl.b.h);
+      return { x: sl.x - Math.max(1.5, sl.w / 2), y: top, w: Math.max(3, sl.w), h: Math.max(2, model.sy(sl.b.l) - top) };
+    });
+    const blocked: Box[] = [];
+    if (showLegend) blocked.push({ x: L, y: TOP, w: Math.min(W, 480), h: 16 + infoY + legendRowsN * 14 });
+    return placeLineLabels(model.labelLines, candles, blocked, { x: L, y: TOP, w: W, h: priceH });
+  }, [props.lineLabels, model, showLegend, legendRowsN, infoY, L, W, priceH]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className={`price-chart ${interactive ? 'interactive' : ''}`} ref={ref} style={{ height }}>
       {model && !model.empty && width > 0 && (
@@ -832,6 +863,14 @@ export function PriceChart(props: Props) {
             )}
             {model.overlay.map((o, i) => (
               <path key={i} d={o.d} className={`ind-line ${o.cls || ''}`} style={o.color ? { stroke: o.color } : undefined} />
+            ))}
+            {lineTags.map((t) => (
+              <g key={t.name} className="pc-line-tag" pointerEvents="none">
+                <rect x={t.x} y={t.y} width={t.w} height={t.h} rx={3} style={{ stroke: t.color }} />
+                <text x={t.x + t.w / 2} y={t.y + t.h - 3.5} textAnchor="middle" style={{ fill: t.color }}>
+                  {t.name}
+                </text>
+              </g>
             ))}
             {chartStyle === 'line' ? (
               <path d={model.closeLine} className="pc-close-line" />

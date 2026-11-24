@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-24] type=feat (가중평균가 (VWAP, wghn_avrg_stck_prc) row with its distance from the current price (user 2026-11-24))
 // - [2026-11-06] type=fix (Trades showed twice (realtime + REST copy): the REST list now comes from 'ticks' (accumulated volume = exact
 //   match with realtime) instead of inquire_ccnl, whose strength differs from the realtime CTTR)
 // - [2026-11-06] type=fix (Trade list: the cached trades (now up to 30,000 with the tick chart back-fill) and the polled REST list are
@@ -136,6 +137,11 @@ export function QuoteWindow({ win }: { win: Win }) {
           <b className={cls(live.low, prev)}>{fmtInt(live.low)}</b>
           <span>전일 종가</span>
           <b>{fmtInt(prev)}</b>
+          <span title="가중평균가 (VWAP) - 오늘 체결된 가격을 거래량으로 가중해 평균한 값. 괄호는 현재가가 이보다 얼마나 위/아래인지">가중평균가</span>
+          <b className={cls(live.vwap, prev)}>
+            {fmtInt(live.vwap)}
+            {live.vwap ? <span className="muted small"> ({fmtPct(((live.price - live.vwap) / live.vwap) * 100)})</span> : null}
+          </b>
           <span>상한가</span>
           <b className="up">{fmtInt(live.upper)}</b>
           <span>하한가</span>

@@ -40,7 +40,7 @@ export function splitDay(bars: Bar[], t: number): { day: Bar[]; warm: Bar[] } {
   return { day: bars.filter((b) => b.t >= d0 && b.t < d0 + DAY), warm: bars.filter((b) => b.t < d0) };
 }
 
-type ChartOpts = { ind?: IndicatorKey[]; params?: IndicatorParams; style?: 'candle' | 'line' | 'ohlc'; vol?: boolean; sig?: boolean; paneH?: Record<string, number> };
+type ChartOpts = { ind?: IndicatorKey[]; params?: IndicatorParams; style?: 'candle' | 'line' | 'ohlc'; vol?: boolean; sig?: boolean; tags?: boolean; paneH?: Record<string, number> };
 
 /** [2026-11-23] 1-minute chart of the alert's day - same chart and settings as the chart window */
 function HistChart({ item }: { item: ReboundHistoryItem }) {
@@ -110,6 +110,7 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
             interactive
             tooltip={false}
             signals={o.sig ?? true}
+            lineLabels={o.tags ?? true}
             params={params}
             style={o.style || 'candle'}
           />
