@@ -23,7 +23,8 @@
 //   시가, 고가, 저가, 매도호가, 매수호가 (시가 and the two quotes are off at first = the columns so far). Kept with the window
 //   (opts.cols); the name and the price are always shown)
 // - [2026-11-23] type=feat (Watchlist: a click on a column title sorts the list (user 2026-11-23) - high to low, again low to high,
-//   a third click back to the registered order; names sort A to Z first. Kept with the window (opts.sortKey / sortDir). While
+//   a third click back to the registered order; names sort A to Z first. Kept with the window (opts.sortKey / sortDir; nothing
+//   chosen yet = change rate high to low since 2026-11-24 (listSortOf), the registered order is kept as sortKey null). While
 //   sorted, the order shown is the one 자동 보기 and the arrow keys follow, and reordering (drag, ↑ ↓, Alt+arrows) is off - the
 //   registered order is not changed by a sort. Symbols without a value yet stay last)
 // - [2026-11-23] type=feat (Watchlist: sort by 종목코드 too (the 코드 label in the 종목 column title); a bell marks the symbols that raised
@@ -51,7 +52,7 @@ import { NxtTag } from '../components/NxtTag';
 import { FloatPop } from '../components/FloatPop';
 import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import { AlarmMark, useTodayAlerts } from '../components/AlarmMark';
-import { nextWatchSort, sortWatch, WATCH_COL_LABEL, WATCH_COLS, watchSortOf, type WatchCol, type WatchSortKey } from '../watchSort';
+import { nextWatchSort, sortWatch, WATCH_COL_LABEL, WATCH_COLS, watchSortOf, type WatchCol, type WatchSort, type WatchSortKey } from '../watchSort';
 import { PriceChart } from '../components/PriceChart';
 import type { RankRow, WatchRow } from '../../../shared/kis';
 import type { ChartRes, IndexQuote, NewsRow, RankReq, RankType } from '../../../shared/market';
@@ -67,6 +68,14 @@ export function watchColsOf(v: unknown): ('code' | WatchCol)[] {
 }
 
 export { nextWatchSort, sortWatch, watchSortOf, type WatchSort, type WatchSortKey } from '../watchSort';
+
+/** [2026-11-24] the list window's sort: nothing chosen yet = change rate, high to low (user 2026-11-24); the registered order
+ *  (third click on a column title) is kept as sortKey null */
+export const LIST_SORT_DEFAULT: WatchSort = { key: 'changePct', dir: -1 };
+export function listSortOf(opts: Record<string, unknown>): WatchSort | null {
+  if (opts.sortKey === undefined) return LIST_SORT_DEFAULT;
+  return watchSortOf(opts.sortKey, opts.sortDir);
+}
 
 function useRowActions(win: Win) {
   const { setCode, open } = useStore.getState();
@@ -158,7 +167,7 @@ export function WatchWindow({ win }: { win: Win }) {
     setWatch(next);
   };
   const byCode = useMemo(() => new Map((r.data || []).map((x) => [x.code, x])), [r.data]);
-  const sort = watchSortOf(win.opts.sortKey, win.opts.sortDir);
+  const sort = listSortOf(win.opts);
   const shown = useMemo(() => sortWatch(codes, byCode, sort), [codes, byCode, sort?.key, sort?.dir]); // eslint-disable-line react-hooks/exhaustive-deps
   shownRef.current = shown;
   const sortBy = (key: WatchSortKey) => {

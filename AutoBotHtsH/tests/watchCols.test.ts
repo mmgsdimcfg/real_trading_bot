@@ -2,6 +2,7 @@
  * Update log
  * - [2026-11-23] type=test - Watchlist list window, 항목 menu: the default columns (those shown before the menu existed), unknown
  *   names dropped, table order kept
+ * - [2026-11-24] type=test - list window sort: nothing chosen = change rate high to low, registered order (sortKey null) kept
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -15,7 +16,7 @@ vi.mock('../src/renderer/src/components/WatchMenu', () => ({ WatchMenu: () => nu
 vi.mock('../src/renderer/src/components/PriceChart', () => ({ PriceChart: () => null }));
 vi.mock('../src/bot/renderer/src/components/AutoView', () => ({ clampSec: (v: unknown) => Number(v) || 10 }));
 
-import { nextWatchSort, sortWatch, WATCH_COLS_DEFAULT, watchColsOf, watchSortOf } from '../src/renderer/src/windows/ListWindows';
+import { listSortOf, nextWatchSort, sortWatch, WATCH_COLS_DEFAULT, watchColsOf, watchSortOf } from '../src/renderer/src/windows/ListWindows';
 import type { WatchRow } from '../src/shared/kis';
 
 describe('watchlist columns', () => {
@@ -51,5 +52,11 @@ describe('watchlist columns', () => {
     // [2026-11-23] by code: every symbol has one, also those without a price yet
     expect(sortWatch(['3', 'X', '1', '2'], rows, { key: 'code', dir: 1 })).toEqual(['1', '2', '3', 'X']);
     expect(nextWatchSort(null, 'code')).toEqual({ key: 'code', dir: 1 });
+  });
+
+  it('[2026-11-24] list sort: nothing chosen = change rate high to low; sortKey null = registered order', () => {
+    expect(listSortOf({})).toEqual({ key: 'changePct', dir: -1 });
+    expect(listSortOf({ sortKey: null, sortDir: null })).toBeNull();
+    expect(listSortOf({ sortKey: 'volume', sortDir: 1 })).toEqual({ key: 'volume', dir: 1 });
   });
 });
