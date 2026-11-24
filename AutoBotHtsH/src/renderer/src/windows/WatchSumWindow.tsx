@@ -6,6 +6,8 @@
 //   kept with the window (opts.group / sortKey / sortDir))
 // - [2026-11-24] type=feat (종목 추가 search box under the group drop-down (user 2026-11-24): adds the symbol to the shown group - an
 //   existing one is just selected)
+// - [2026-11-24] type=feat (Default sort: 등락률 high to low (user 2026-11-24) - re-sorted with every price update; a click on the
+//   column titles changes it as before, the third click (registered order) is kept as sortKey null)
 
 import { useMemo, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
@@ -16,12 +18,16 @@ import { WatchMenu, type MenuAt } from '../components/WatchMenu';
 import { AlarmMark, useTodayAlerts } from '../components/AlarmMark';
 import type { WatchRow } from '../../../shared/kis';
 import { fmtInt, fmtPct, upDown } from '../lib';
-import { nextWatchSort, sortWatch, watchSortOf, type WatchSortKey } from '../watchSort';
+import { nextWatchSort, sortWatch, watchSortOf, type WatchSort, type WatchSortKey } from '../watchSort';
 
 /** the columns of the summary list (the sort keys of their titles) */
 export const SUM_SORT_KEYS: WatchSortKey[] = ['name', 'price', 'changePct'];
+/** the sort of a new window: change rate, high to low - re-sorted at every price update (3 s) */
+export const SUM_SORT_DEFAULT: WatchSort = { key: 'changePct', dir: -1 };
 /** the saved sort, kept only for the three columns shown */
-export function sumSortOf(opts: Record<string, unknown>) {
+export function sumSortOf(opts: Record<string, unknown>): WatchSort | null {
+  // [2026-11-24] nothing chosen yet = change rate, high to low (user 2026-11-24); the registered order is kept as sortKey null
+  if (opts.sortKey === undefined) return SUM_SORT_DEFAULT;
   const s = watchSortOf(opts.sortKey, opts.sortDir);
   return s && SUM_SORT_KEYS.includes(s.key) ? s : null;
 }

@@ -71,8 +71,8 @@ export const WIN_TITLE: Record<WinType, string> = {
   quote: '현재가',
   info: '종목정보',
   watch: '관심종목',
-  watchtile: '관심종목(타일)',
-  watchsum: '관심종목(요약)',
+  watchtile: '관심(타일)', // [2026-11-24] shorter titles (user 2026-11-24): 관심종목(타일) -> 관심(타일)
+  watchsum: '관심(요약)',
   rank: '순위',
   index: '지수',
   news: '뉴스',
