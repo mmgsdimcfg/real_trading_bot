@@ -24,7 +24,10 @@ const codes = ['A', 'X', 'B', 'C']; // X has no price yet
 
 describe('watchlist tiles', () => {
   it('orders the tiles; a symbol without a price stays last', () => {
-    expect(sortWatch(codes, rows, tileSortOf({}))).toEqual(['A', 'X', 'B', 'C']);
+    // [2026-11-24] nothing chosen = change rate high to low; registered order = sortKey null (or the older sort 'list')
+    expect(tileSortOf({})).toEqual({ key: 'changePct', dir: -1 });
+    expect(sortWatch(codes, rows, tileSortOf({}))).toEqual(sortWatch(codes, rows, tileSortOf({ sort: 'pctDesc' })));
+    expect(sortWatch(codes, rows, tileSortOf({ sortKey: null }))).toEqual(['A', 'X', 'B', 'C']);
     expect(sortWatch(codes, rows, tileSortOf({ sort: 'pctDesc' }))).toEqual(['A', 'C', 'B', 'X']);
     expect(sortWatch(codes, rows, tileSortOf({ sort: 'pctAsc' }))).toEqual(['B', 'C', 'A', 'X']);
     expect(sortWatch(codes, rows, tileSortOf({ sort: 'amount' }))).toEqual(['B', 'A', 'C', 'X']);

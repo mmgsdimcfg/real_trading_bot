@@ -22,6 +22,8 @@
 //   the list window (watchSort.ts). Kept with the window (opts.sortKey / sortDir); the older opts.sort values are read as before)
 // - [2026-11-23] type=feat (색 select (user 2026-11-23): how strongly a tile is tinted by its change rate - 끔 / 약하게 / 보통 / 진하게 /
 //   아주 진하게 (multiplier 0 / 0.5 / 1 / 2 / 3 of the tint), kept with the window (opts.tint))
+// - [2026-11-24] type=feat (Default order: 등락률 high to low (user 2026-11-24) - re-sorted with every price update; 등록순 or another
+//   order picked in the select is kept as before)
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, WATCH_MAX, type Win } from '../store';
@@ -98,7 +100,9 @@ export function tileSortOf(opts: Record<string, unknown>): WatchSort | null {
   if (opts.sort === 'pctDesc') return { key: 'changePct', dir: -1 };
   if (opts.sort === 'pctAsc') return { key: 'changePct', dir: 1 };
   if (opts.sort === 'amount') return { key: 'amount', dir: -1 };
-  return null;
+  if (opts.sort === 'list') return null;
+  // [2026-11-24] nothing chosen yet = change rate, high to low (user 2026-11-24); 등록순 in the select is kept as sortKey null
+  return { key: 'changePct', dir: -1 };
 }
 
 /** `code` moved to the place of `target` in the list (the others keep their order); unchanged when either is missing */
