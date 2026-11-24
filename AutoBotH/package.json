@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-24] type=fix - v2.3.37_005: 타입 검사 오류 (PriceChart 그리기 도구 addDrawing 인자 타입) 수정 - drawings.ts 를 AutoBotHtsH 사본과 같게 (동작 변화 없음)",
     "[2026-11-24] type=fix - v2.3.37_004: 설정 탭 알 수 없는 태그 목록에 [REG CLS SKIP] NOT_TODAY_BUY_POSITION (15:20 예약 청산 때 오늘 산 종목이 아니라 건너뜀) 이 나오던 문제 - 예약 청산 로그 [REG CLS *] / [NXT CLS *] 를 매도 타임라인 세션 종료 행으로 분류",
     "[2026-11-23] type=feat - v2.3.37_003: 업데이트 창의 \"완료되면 자동으로 재시작\" 을 기본으로 체크 (다운로드가 끝나면 바로 설치 후 재시작, 체크를 풀면 나중에 재시작)",
     "[2026-11-23] type=fix - v2.3.37_002: 업데이트로 받은 설치 파일이 설치가 끝난 뒤에도 남아 있던 문제(앱마다 80~110 MB) - 이미 설치된 버전의 설치 파일은 다음 실행 때 자동으로 지움 (아직 설치하지 않은 새 버전 파일은 유지)",
@@ -174,7 +175,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "005",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

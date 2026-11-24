@@ -37,7 +37,10 @@ function save(): void {
 
 export const getDrawings = (code: string): Drawing[] => all[code] || [];
 
-export function addDrawing(code: string, d: Omit<Drawing, 'id'>): void {
+/** [2026-11-20] Omit over each member of the union (plain Omit<Drawing, 'id'> kept only the common keys - tsc errors in PriceChart) */
+type NewDrawing = Drawing extends infer D ? (D extends unknown ? Omit<D, 'id'> : never) : never;
+
+export function addDrawing(code: string, d: NewDrawing): void {
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   all = { ...all, [code]: [...getDrawings(code), { ...d, id } as Drawing] };
   save();
