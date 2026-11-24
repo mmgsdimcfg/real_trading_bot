@@ -290,7 +290,7 @@ export function ReboundSettings({ onClose, tab, setTab }: { onClose: () => void;
             {group ? (
               <>
                 <p className="muted small">
-                  "{group.name}" 탭의 종목 {group.codes.length}/{WATCH_MAX} - 여기서 바꾸면 관심종목 창에도 바로 반영됩니다.
+                  "{group.name}" 탭의 종목 {group.codes.length}/{WATCH_MAX} - 여기서 바꾸면 관심(목록) 창에도 바로 반영됩니다.
                   {group.src ? ` 이 탭은 ${group.src} 파일에서 만든 탭이라 파일이 바뀌면 목록이 다시 맞춰집니다.` : ''}
                 </p>
                 <Names codes={group.codes} onRemove={(c) => editCodes(group.codes.filter((x) => x !== c))} />

@@ -64,7 +64,7 @@ export function WatchSumWindow({ win }: { win: Win }) {
   return (
     <div className="list-win watch-win sum-win" tabIndex={0} onKeyDown={onKey}>
       <div className="win-tb sum-tb">
-        <select value={group?.id || ''} onChange={(e) => (setOpts(win.id, { group: e.target.value }), setSel(null))} title="관심 그룹 (그룹 편집은 관심종목 창에서)">
+        <select value={group?.id || ''} onChange={(e) => (setOpts(win.id, { group: e.target.value }), setSel(null))} title="관심 그룹 (그룹 추가·이름 바꾸기·삭제는 관심(목록) 창에서)">
           {groups.map((g) => (
             <option key={g.id} value={g.id}>
               {g.name} ({g.codes.length})
@@ -128,7 +128,7 @@ export function WatchSumWindow({ win }: { win: Win }) {
             {!codes.length && (
               <tr>
                 <td colSpan={3} className="muted center">
-                  이 그룹에 종목이 없습니다. 관심종목 창에서 추가하세요.
+                  이 그룹에 종목이 없습니다. 위 검색칸에서 추가하세요.
                 </td>
               </tr>
             )}

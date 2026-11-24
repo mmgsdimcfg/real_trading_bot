@@ -265,7 +265,7 @@ export function WatchTileWindow({ win }: { win: Win }) {
         <span className="muted small" title="NXT 표시 종목은 KRX 장이 닫힌 시간(09:00 이전, 15:40 이후)에 NXT 시세로 표시합니다">
           {codes.length}/{WATCH_MAX}종목 · <span className="up">상승 {ups}</span> · <span className="down">하락 {downs}</span> · 3초마다
         </span>
-        <span className="watch-auto" title={`이 그룹 종목을 화면에 보이는 순서대로 ${auto.sec}초마다 열린 종목 창에 표시 (타일을 누르면 그 종목부터 이어감). 타임라인 / 관심종목 창의 자동 보기와 동시에 실행되지 않습니다`}>
+        <span className="watch-auto" title={`이 그룹 종목을 화면에 보이는 순서대로 ${auto.sec}초마다 열린 종목 창에 표시 (타일을 누르면 그 종목부터 이어감). 타임라인 / 관심(목록) 창의 자동 보기와 동시에 실행되지 않습니다`}>
           <label className="check">
             <input type="checkbox" checked={auto.on} onChange={(e) => saveAuto({ on: e.target.checked })} /> 자동 보기
           </label>
