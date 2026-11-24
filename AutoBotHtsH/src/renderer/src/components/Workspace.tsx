@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-24] type=feat (Window type 'watchsum' 관심종목(요약) (user 2026-11-24): 종목명 / 현재가 / 등락률 only, windows/WatchSumWindow.tsx)
 // - [2026-11-06] type=feat (MDI workspace: every HtsH window is a frame inside the main window - title bar (type icon, title, symbol, link
 //   colour picker, minimize / maximize / close), drag to move, 8-direction resize, double-click title to maximize, click to focus (z-order).
 //   Minimized windows sit in the tray at the bottom. The workspace size is reported to the store so arrange / maximize use the real area)
@@ -13,6 +14,7 @@ import { QuoteWindow } from '../windows/QuoteWindow';
 import { InfoWindow } from '../windows/InfoWindow';
 import { WatchWindow } from '../windows/WatchWindow';
 import { WatchTileWindow } from '../windows/WatchTileWindow';
+import { WatchSumWindow } from '../windows/WatchSumWindow';
 import { RankWindow } from '../windows/RankWindow';
 import { IndexWindow } from '../windows/IndexWindow';
 import { NewsWindow } from '../windows/NewsWindow';
@@ -27,6 +29,7 @@ const BODY: Record<string, (p: { win: Win }) => ReactNode> = {
   info: InfoWindow,
   watch: WatchWindow,
   watchtile: WatchTileWindow,
+  watchsum: WatchSumWindow,
   rank: RankWindow,
   index: IndexWindow,
   news: NewsWindow,

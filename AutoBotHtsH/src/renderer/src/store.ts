@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-24] type=feat (Window type 'watchsum' 관심종목(요약) (user 2026-11-24): 종목명 / 현재가 / 등락률 only, windows/WatchSumWindow.tsx)
 // - [2026-11-06] type=feat (HtsH renderer state (zustand): login state; the MDI window list (type, position, size, z-order, minimized /
 //   maximized, link group, symbol, per-window options) with focus / move / resize / arrange (cascade, tile, rows, columns, minimize /
 //   restore / close all); link groups 1-4 - changing the symbol of a linked window changes every window of the same colour; realtime caches
@@ -41,7 +42,7 @@ import { wsToOrderBook, wsToTrade } from '../../shared/kis';
 export const BOT_TABS = ['control', 'jobs', 'collector', 'pipeline', 'board', 'timeline', 'chart', 'positions', 'trades', 'paper', 'settings'] as const;
 export type BotTab = (typeof BOT_TABS)[number];
 export type BotWinType = `bot-${BotTab}`;
-export type WinType = 'chart' | 'quote' | 'info' | 'watch' | 'watchtile' | 'rank' | 'index' | 'news' | 'rebound' | BotWinType;
+export type WinType = 'chart' | 'quote' | 'info' | 'watch' | 'watchtile' | 'watchsum' | 'rank' | 'index' | 'news' | 'rebound' | BotWinType;
 export const isBotWin = (t: WinType): t is BotWinType => t.startsWith('bot-');
 export const botWinOf = (tab: BotTab): BotWinType => `bot-${tab}`;
 
@@ -71,6 +72,7 @@ export const WIN_TITLE: Record<WinType, string> = {
   info: '종목정보',
   watch: '관심종목',
   watchtile: '관심종목(타일)',
+  watchsum: '관심종목(요약)',
   rank: '순위',
   index: '지수',
   news: '뉴스',
@@ -87,6 +89,7 @@ const DEFAULT_SIZE: Record<WinType, [number, number]> = {
   info: [960, 700],
   watch: [560, 380],
   watchtile: [720, 480],
+  watchsum: [330, 460],
   rank: [600, 460],
   index: [480, 360],
   news: [520, 360],

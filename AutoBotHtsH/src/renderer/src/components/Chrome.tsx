@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-24] type=feat (Toolbar: + 관심종목(요약) (watchsum) after 관심종목(타일))
 // - [2026-11-06] type=feat (Title bar (TermH style, frame:false): icon + HtsH, connection badges (실전 / 모의 / 데모, 조회 전용, realtime
 //   state), KOSPI / KOSDAQ ticker, ☰ (shared app-menu.js: 설정 = 로그인 정보, 종목 마스터 새로고침, 레이아웃 초기화, 업데이트 확인, HtsH 정보)
 //   and window buttons. Toolbar: symbol search for the active window, buttons that open windows, the arrange menu)
@@ -214,7 +215,7 @@ export function OpenWinList() {
   );
 }
 
-const OPEN: WinType[] = ['chart', 'quote', 'info', 'watch', 'watchtile', 'rank', 'index', 'news'];
+const OPEN: WinType[] = ['chart', 'quote', 'info', 'watch', 'watchtile', 'watchsum', 'rank', 'index', 'news'];
 const ARR: [ArrangeMode | 'min' | 'restore' | 'close', string][] = [
   ['cascade', '계단식'],
   ['tile', '바둑판식'],
