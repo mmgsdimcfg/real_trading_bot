@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-25] type=feat - paper exits set by the user (server r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN,
+ *   0 = the model's label): PAPER_EXIT_KEYS, parsePaperExit, paperExitInput, paperExitChanges; status model_label
  * - [2026-11-23] type=feat - PaperTrade.session / position.session ('regular' | 'nxt_pre' | 'nxt_after', server r022 nxt=True;
  *   a record without it is regular), PaperStatus.nxt + nxtSessions (entry windows / force exits of the NXT sessions)
  * - [2026-11-12] type=feat - Edge-AI-only paper trading (server r022, r001 EDGE_ONLY_MODE): the day's virtual trades from
@@ -157,7 +159,10 @@ export interface PaperStatus {
   date: string;
   modelId?: string;
   threshold?: number;
+  /** the exits new paper buys use (since 2026-11-25 the r001 EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN where set, else the model's) */
   label?: { tp?: number; sl?: number; horizon?: number };
+  /** [2026-11-25] the model's own label (absent on an older server = same as label) */
+  modelLabel?: { tp?: number; sl?: number; horizon?: number };
   entryWindow?: [string, string];
   /** [2026-11-20] server r001 EDGE_ONLY_LOG_ONLY: no new paper buys, trigger bars are only recorded as candidates */
   logOnly?: boolean;
@@ -228,6 +233,7 @@ export function parsePaperStatus(text: string): PaperStatus | null {
     modelId: typeof j.model_id === 'string' ? j.model_id : undefined,
     threshold: num(j.threshold),
     label: (j.label as PaperStatus['label']) || undefined,
+    modelLabel: (j.model_label as PaperStatus['modelLabel']) || undefined,
     entryWindow: win,
     logOnly: j.log_only === true,
     nxt: j.nxt === true,
@@ -305,6 +311,51 @@ export function parsePaperLogOnly(data: unknown): PaperModeState | null {
   const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[PAPER_LOG_ONLY_KEY];
   if (!v || typeof v.effective !== 'boolean') return null;
   return { effective: String(v.effective), running: typeof v.running === 'boolean' ? String(v.running) : null, pending: !!v.pending };
+}
+
+/** [2026-11-25] r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT (%) / EDGE_ONLY_HORIZON_MIN (minutes): the exits of new paper buys,
+ *  0 = the model's label (user 2026-11-25: set them in the app) */
+export const PAPER_EXIT_KEYS = { tp: 'EDGE_ONLY_TP_PCT', sl: 'EDGE_ONLY_SL_PCT', horizon: 'EDGE_ONLY_HORIZON_MIN' } as const;
+export type PaperExitKind = keyof typeof PAPER_EXIT_KEYS;
+export const PAPER_EXIT_KINDS: PaperExitKind[] = ['tp', 'sl', 'horizon'];
+/** allowed range of a set value (0 = the model's label) */
+export const PAPER_EXIT_MAX: Record<PaperExitKind, number> = { tp: 30, sl: 30, horizon: 720 };
+export interface PaperExitValue {
+  /** value r003 uses at its next start (0 = the model's label) */
+  effective: number;
+  /** value the running r003 uses (null = not running / unknown) */
+  running: number | null;
+  pending: boolean;
+}
+export type PaperExitState = Record<PaperExitKind, PaperExitValue>;
+
+/** `get EDGE_ONLY_TP_PCT EDGE_ONLY_SL_PCT EDGE_ONLY_HORIZON_MIN` data -> state; null on a server without the keys */
+export function parsePaperExit(data: unknown): PaperExitState | null {
+  const vals = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values;
+  const out: Partial<PaperExitState> = {};
+  for (const k of PAPER_EXIT_KINDS) {
+    const v = vals?.[PAPER_EXIT_KEYS[k]];
+    if (!v || typeof v.effective !== 'number' || !Number.isFinite(v.effective)) return null;
+    out[k] = { effective: v.effective, running: typeof v.running === 'number' && Number.isFinite(v.running) ? v.running : null, pending: !!v.pending };
+  }
+  return out as PaperExitState;
+}
+
+/** an input box's text -> the value to store: '' = 0 (the model's label); null = not a number / out of range.
+ *  Percentages keep two decimals, the minutes are whole */
+export function paperExitInput(kind: PaperExitKind, text: string): number | null {
+  const t = text.trim();
+  if (t === '') return 0;
+  if (!/^\d+(\.\d+)?$/.test(t)) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0 || n > PAPER_EXIT_MAX[kind]) return null;
+  if (kind === 'horizon') return Number.isInteger(n) ? n : null;
+  return Math.round(n * 100) / 100;
+}
+
+/** the r016 set changes: percentages as floats, minutes as an integer (r001 kinds: float / float / int) */
+export function paperExitChanges(v: Record<PaperExitKind, number>): Record<string, number> {
+  return { [PAPER_EXIT_KEYS.tp]: v.tp, [PAPER_EXIT_KEYS.sl]: v.sl, [PAPER_EXIT_KEYS.horizon]: Math.round(v.horizon) };
 }
 
 /** `get EDGE_ONLY_MODE` data -> state; null when the server does not know the key (older server code) */

@@ -466,6 +466,10 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.6; }
 .grid tbody tr.nohover:hover { background: none; cursor: default; }
 .grid td.wrap { white-space: normal; word-break: break-all; }
 button.mini { padding: 1px 7px; font-size: 11.5px; }
+/* [2026-11-25] control tab: paper exits (익절 / 손절 / 보유 시간) */
+.paper-exit { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.paper-exit-in { width: 4.2em; text-align: right; }
+.paper-exit-in[aria-invalid='true'] { border-color: var(--st-hold); }
 .push-right { margin-left: auto; }
 details.adv { margin-top: 10px; }
 details.adv > summary { cursor: pointer; color: var(--text-2); font-size: 12.5px; }

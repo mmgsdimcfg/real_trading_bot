@@ -33,6 +33,13 @@ Runs the same on Linux (Raspberry Pi) and Windows. Each host uses its own model 
 post-close job from that host's data folder).
 
 Update log:
+- [2026-11-25] type=feat owner=claude
+    summary: 사용자 요청(가상 매매 익절/손절을 앱에서 설정) - EdgeOnlyRunner(tp_pct, sl_pct, horizon_min): 0 보다 크면 모델 라벨
+      (current_meta.json label) 대신 그 값으로 새 가상 매수의 목표/손절/보유 시간을 정한다(r001 EDGE_ONLY_TP_PCT /
+      EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN, 0 = 모델 라벨). 이미 있는 가상 보유는 매수 때 정한 값 그대로. 상태 파일 label =
+      실제 쓰는 값, model_label = 모델 값. CANDIDATE 의 label 은 모델 값 그대로(학습 정의와 맞추는 연구용).
+    impact: live paper only (주문 없음)
+    compatibility: backward-compatible (세 값 모두 0 이면 종전과 동일)
 - [2026-11-23] type=feat owner=claude
     summary: 사용자 결정(가상 매매를 NXT 시간에도, 세션 구분 기록) - EdgeOnlyRunner(nxt=True): NXT 장전(nxt_pre 08:00~08:50) /
       장후(nxt_after 15:30~20:00)에도 r003 이 넘긴 1분봉(NXT 봉)으로 같은 정책을 평가한다. 세션별 매수 창과 강제 청산
@@ -83,6 +90,7 @@ Update log:
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -147,6 +155,15 @@ GROUP_KO = {"watch": "", "collector": " [수집기]"}
 _CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
 
 
+def _pos_or_zero(v) -> float:
+    """a finite number > 0, else 0.0 (= not set)"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) and f > 0 else 0.0
+
+
 def net_pct(entry: float, exit_px: float) -> float:
     """Net % of a round trip after commission (both sides) and sell tax."""
     cost = entry * FEE_RATE + exit_px * (FEE_RATE + SELL_TAX_RATE)
@@ -157,7 +174,8 @@ class EdgeOnlyRunner:
     def __init__(self, model_dir: Path, data_root: Path, out_dir: Path, date_str: str, log: Callable[[str], None], config,
                  min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
                  collector_max_positions: int = 0, collector_max_entries: int = 0,
-                 exclude_funds: bool = True, no_reentry_after_sl: bool = True, log_only: bool = False, nxt: bool = False):
+                 exclude_funds: bool = True, no_reentry_after_sl: bool = True, log_only: bool = False, nxt: bool = False,
+                 tp_pct: float = 0.0, sl_pct: float = 0.0, horizon_min: float = 0.0):
         self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir))
         self.data_root = Path(data_root)
         self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
@@ -165,6 +183,8 @@ class EdgeOnlyRunner:
         self.log = log
         self.config = config
         self.min_prob = float(min_prob or 0.0)
+        # [2026-11-25] exit overrides of new paper buys (% / % / minutes); 0 or less = the model's label
+        self.exit_override = {"tp": _pos_or_zero(tp_pct), "sl": _pos_or_zero(sl_pct), "horizon": _pos_or_zero(horizon_min)}
         self.max_positions = int(max_positions)
         self.max_entries = int(max_entries)
         # [2026-11-19] per-group limits: the watchlist (r003's symbols) and the collector-only symbols count separately
@@ -246,13 +266,20 @@ class EdgeOnlyRunner:
             self.sl_today = set()
 
     # ---- helpers ----------------------------------------------------------------------------
-    def _label(self) -> dict:
+    def _model_label(self) -> dict:
+        """the model's label definition (current_meta.json label, DEFAULT_LABEL for a missing key)"""
         lab = {}
         try:
             lab = dict((self.model.meta or {}).get("label") or {})
         except Exception:
             lab = {}
         return {k: float(lab.get(k) or DEFAULT_LABEL[k]) for k in DEFAULT_LABEL}
+
+    def _label(self) -> dict:
+        """the exits of a new paper buy: the model's label, each value replaced by its r001 override when that is > 0"""
+        lab = self._model_label()
+        ov = getattr(self, "exit_override", None) or {}
+        return {k: (ov[k] if ov.get(k, 0) > 0 else v) for k, v in lab.items()}
 
     def _threshold(self) -> float | None:
         if self.min_prob > 0:
@@ -510,7 +537,7 @@ class EdgeOnlyRunner:
                "feature_version": r011.FEATURE_VERSION, "features": feats, "prob": p, "threshold": threshold, "model_id": model_id,
                "would_buy": bool(p is not None and threshold is not None and p >= threshold and not block), "block": block,
                "reason": reason, "price": price, "price_source": "live", "tick": tick, "tick_pct": tick / price * 100 if price else None,
-               "label": self._label()}
+               "label": self._model_label()}
         try:
             self.cand_path.parent.mkdir(parents=True, exist_ok=True)
             with self.cand_path.open("a", encoding="utf-8") as fh:
@@ -744,6 +771,7 @@ def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
     payload = {
         "asof": now.isoformat(timespec="seconds"), "date": runner.date_str, "log_only": bool(getattr(runner, "log_only", False)),
         "model_id": meta.get("model_id"), "threshold": runner._threshold(), "label": runner._label(),
+        "model_label": runner._model_label(),
         "entry_window": [ENTRY_START.strftime("%H:%M"), ENTRY_END.strftime("%H:%M")], "force_exit": FORCE_EXIT.strftime("%H:%M"),
         # [2026-11-23] NXT sessions the runner also trades on paper (empty when off)
         "nxt": bool(getattr(runner, "nxt", False)),

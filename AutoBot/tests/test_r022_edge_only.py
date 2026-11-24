@@ -193,6 +193,19 @@ class ExitTest(Base):
         self.assertAlmostEqual(pos["sl"], 10310.0 * 0.99)
         self.assertEqual(pos["horizon"], 30.0)
 
+    def test_user_exit_overrides_replace_the_model_label(self):
+        # [2026-11-25] r001 EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN > 0 win over the model label; 0 / bad values keep the model's
+        r = self.runner(model=FakeModel(0.6, label={"tp": 3.0, "sl": 1.0, "horizon": 30}), tp_pct=1.5, sl_pct=0, horizon_min=90)
+        self.assertEqual(r._label(), {"tp": 1.5, "sl": 1.0, "horizon": 90.0})
+        self.assertEqual(r._model_label(), {"tp": 3.0, "sl": 1.0, "horizon": 30.0})
+        pos = self.open(r)
+        self.assertAlmostEqual(pos["tp"], 10310.0 * 1.015)
+        self.assertAlmostEqual(pos["sl"], 10310.0 * 0.99)
+        self.assertEqual(pos["horizon"], 90.0)
+        r2 = self.runner(model=FakeModel(0.6, label={"tp": 3.0, "sl": 1.0, "horizon": 30}), tp_pct=-1, sl_pct="x",
+                         horizon_min=float("nan"))
+        self.assertEqual(r2._label(), r2._model_label())
+
 
 class RestartTest(Base):
     def test_open_positions_and_counters_survive_a_restart(self):

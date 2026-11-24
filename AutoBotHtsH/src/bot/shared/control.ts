@@ -36,7 +36,7 @@
  */
 
 import { shellPath, shellQuote } from './shell';
-import type { PaperModeState } from './paper';
+import type { PaperExitState, PaperModeState } from './paper';
 
 // ---- response types --------------------------------------------------------------------------
 
@@ -218,6 +218,8 @@ export interface ControlState {
   autoSellScope?: PaperModeState;
   /** [2026-11-23] server EDGE_ONLY_LOG_ONLY ('true' = candidates only, no paper buys) - undefined until read / on a server without it */
   paperLogOnly?: PaperModeState;
+  /** [2026-11-25] server EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN (paper exits, 0 = the model's label) - undefined until read / older server */
+  paperExit?: PaperExitState;
 }
 
 /** [2026-11-13] one account holding as r016 `holdings` reports it (r023 snapshot): the bot's and the hand-bought quantity */

@@ -1,6 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-25] type=feat owner=claude
+#     summary: 사용자 요청(가상 매매 익절/손절을 앱에서 설정) - EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT (%) / EDGE_ONLY_HORIZON_MIN (분)
+#       신설, 기본 0 = 모델 라벨 그대로. 0 보다 크면 r022 가 새 가상 매수의 목표/손절/보유 시간 상한으로 쓴다. r016 set 으로 편집.
+#     impact: live paper only (주문 없음, r003 재시작 후)
+#     compatibility: backward-compatible (기본 0 = 종전과 동일. 롤백: 0)
 # - [2026-11-23] type=feat owner=claude
 #     summary: 사용자 결정(가상 매매를 NXT 시간에도, 세션 구분 기록) - EDGE_ONLY_NXT(True) 신설. ENABLE_NXT_SESSION 도 켜져 있을 때
 #       r022 가상 매매가 NXT 장전(08:05~08:35 매수, 08:45 청산)/장후(15:35~19:30 매수, 19:50 청산)에도 감시 종목(NXT 가능)을
@@ -2113,6 +2118,13 @@ EDGE_ONLY_LOG_ONLY = True
 # 장후 15:35~19:30 에 같은 정책으로 평가하고 08:45 / 19:50 에 가상 청산. 기록에 session 구분. 수집기 종목(틱 파일)은 정규장만.
 # 모델은 정규장 데이터로만 학습됐으므로 NXT 세션 성과는 따로 봐야 한다. 롤백: False.
 EDGE_ONLY_NXT = True
+# [2026-11-25] 가상 매매 익절 / 손절 / 보유 시간 상한 (사용자 요청: AutoBotH 제어 화면에서 설정). 0 = 모델 라벨(current_meta.json
+# label, 현재 +2.0% / -1.77% / 400분 같은 값) 그대로. 0 보다 크면 그 값으로 새 가상 매수의 목표/손절/시간을 정한다(이미 있는 가상
+# 보유는 매수 때 정한 값 유지). 단위: % (2.0 = +2.0%), 분. 모델 확률은 라벨 기준으로 학습된 것이라 바꾸면 확률의 뜻과 어긋난다.
+# EDGE_ONLY_MODE="paper" 일 때만(주문 없음). r003 재시작 후 적용. 롤백: 0.
+EDGE_ONLY_TP_PCT = 0.0
+EDGE_ONLY_SL_PCT = 0.0
+EDGE_ONLY_HORIZON_MIN = 0
 
 # =============================================================================
 # [2026-11-15] 적응형 익절·손절 엔진 (r024 엔진 / r025 틱 특징 / r026 shadow 러너) - 사용자 결정(설계 Q1: shadow 먼저)

@@ -361,3 +361,12 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   "08:45"}, "nxt_after": {...}}` (꺼져 있으면 `{}`), 보유 행의 `position.session`. 수집기 종목(KRX 틱 파일)은 정규장만.
   모델은 정규장 데이터로 학습된 것이므로 NXT 세션 성과는 session 으로 나눠서 본다.
 - 불변: 종목 선별(g002)은 정규장 09:00~15:30 행만 집계, 데이터 수집(g001)은 NXT 가능 종목이면 08:00~20:00 / 아니면 정규장만.
+
+## 가상 매매 청산 기준 직접 설정 (2026-11-25)
+- 신규 r001 `EDGE_ONLY_TP_PCT` / `EDGE_ONLY_SL_PCT` (%, float, 2.0 = +2.0%) / `EDGE_ONLY_HORIZON_MIN` (분, int). 기본 0 = 모델 라벨
+  (`runtime/edge_ai/current_meta.json` label) 그대로. 0 보다 크면 r022 가 새 가상 매수의 목표 / 손절 / 보유 시간 상한으로 쓴다.
+  이미 있는 가상 보유(재시작 복원 포함)는 매수 때 정한 값 그대로. r003 재시작 후 적용. 주문 없음.
+- r016 계약 변경 없음: 앱은 `get` 에 세 키를 함께 묻고 `set` 으로 바꾼다(앱 범위 tp / sl 0~30, horizon 0~720 정수). 키를 모르는 옛 서버는
+  rc 2 + `unknown` 으로 답하고 나머지 값은 그대로 오므로 앱은 입력칸만 숨긴다.
+- `edge_only_status_<날짜>.json`: `label` = 실제 쓰는 값(설정이 반영된 값), 신규 `model_label` = 모델 값(옛 서버에는 없음).
+  `edge_only_candidates_<날짜>.jsonl` 의 CANDIDATE `label` 은 모델 값 그대로(연구용, 학습 정의와 맞춤).

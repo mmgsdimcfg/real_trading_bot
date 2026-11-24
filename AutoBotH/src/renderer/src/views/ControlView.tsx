@@ -24,10 +24,12 @@
  *   and a table of the keys each profile changes (server risk_profiles/*.json), plus what stays the same in all of them
  * - [2026-11-18] type=perf - Peer status, change history, override list and Edge AI model: the last answers (dataCache) are shown
  *   at once when the tab is opened again, then refreshed
+ * - [2026-11-25] type=feat - 가상 청산 익절 / 손절 / 보유 시간 boxes beside 가상 매수 실행 (server r001 EDGE_ONLY_TP_PCT /
+ *   EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN, empty = the model's label shown as the placeholder; r003 restart, new paper buys only)
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -687,6 +689,10 @@ export function ControlView() {
               {paperBuysPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {paperBuysRunning ? '켬' : '끔'})</span>}
             </label>
           )}
+          {/* [2026-11-25] paper exits (user 2026-11-25): 익절 / 손절 / 보유 시간, empty = the model's label */}
+          {tradeMode === 'rules+paper' && control.paperExit && (
+            <PaperExitEdit st={control.paperExit} model={edgeModel || null} disabled={busy || !connected || modeBusy} />
+          )}
           {!paper && strategy && <span className="muted small">가상 매매 / Edge AI 방식은 서버 코드 갱신 후 선택할 수 있습니다</span>}
           {/* [2026-11-12] automatic sells: everything / only the net -2% stop / none (the user sells by hand) */}
           <label title="r003 재시작 후 적용됩니다. '손절만'은 수수료+거래세 포함 순손익 -2%에서만 자동 매도하고, '끔'은 봇이 어떤 매도도 하지 않습니다. 두 경우 모두 당일 청산을 하지 않습니다.">
@@ -871,6 +877,83 @@ function EdgeModelLine({ m, tradeMode }: { m: EdgeModelInfo | null; tradeMode: T
     <span className="muted small edge-model" title={detail}>
       Edge AI 모델 <b className="mono">{m.modelId}</b> · {edgeLabelKo(m)} · 기준 {m.threshold === null ? '-' : m.threshold.toFixed(3)}
       {m.runKept ? ` · +2% 도달 ${pct1(m.runKept.tp2)}` : ''} · <span className={m.promoted ? '' : 'warn-text'}>{m.promoted ? '승격됨' : '승격 안 됨'}</span> · {use}
+    </span>
+  );
+}
+
+const EXIT_KO: Record<PaperExitKind, string> = { tp: '익절', sl: '손절', horizon: '보유 시간' };
+/** "+2%" / "-1.77%" / "400분" */
+const exitText = (k: PaperExitKind, v: number | null | undefined): string =>
+  v === null || v === undefined ? '?' : k === 'tp' ? `+${v}%` : k === 'sl' ? `-${v}%` : `${v}분`;
+
+/** [2026-11-25] the exits of new paper buys (server r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN): an empty box
+ *  = 0 = the model's label (shown as the placeholder). Applies to paper buys made after the next r003 start; open paper positions
+ *  keep the exits they were bought with */
+function PaperExitEdit({ st, model, disabled }: { st: PaperExitState; model: EdgeModelInfo | null; disabled: boolean }) {
+  const fromState = (): Record<PaperExitKind, string> => ({
+    tp: st.tp.effective > 0 ? String(st.tp.effective) : '',
+    sl: st.sl.effective > 0 ? String(st.sl.effective) : '',
+    horizon: st.horizon.effective > 0 ? String(st.horizon.effective) : '',
+  });
+  const [text, setText] = useState(fromState);
+  const [saving, setSaving] = useState(false);
+  const stKey = PAPER_EXIT_KINDS.map((k) => st[k].effective).join(',');
+  useEffect(() => setText(fromState()), [stKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vals = { tp: paperExitInput('tp', text.tp), sl: paperExitInput('sl', text.sl), horizon: paperExitInput('horizon', text.horizon) };
+  const bad = PAPER_EXIT_KINDS.filter((k) => vals[k] === null);
+  const changed = !bad.length && PAPER_EXIT_KINDS.some((k) => vals[k] !== st[k].effective);
+  const pending = PAPER_EXIT_KINDS.some((k) => st[k].running !== null && (st[k].pending || st[k].running !== st[k].effective));
+  const modelOf = (k: PaperExitKind) => (model ? model[k] : null);
+  /** what a stored value means: the set value, or the model's */
+  const meaning = (k: PaperExitKind, v: number) => (v > 0 ? exitText(k, v) : `모델 값 ${exitText(k, modelOf(k))}`);
+  const save = async () => {
+    if (!changed) return;
+    const v = vals as Record<PaperExitKind, number>;
+    const lines = PAPER_EXIT_KINDS.map((k) => `${EXIT_KO[k]}: ${meaning(k, v[k])}`).join('\n');
+    const custom = PAPER_EXIT_KINDS.some((k) => v[k] > 0);
+    const note = custom ? '\n\n모델 확률은 모델 라벨 기준(익절/손절/시간)으로 학습된 값이라, 기준을 바꾸면 확률의 뜻과 어긋납니다.' : '';
+    if (
+      !window.confirm(
+        `가상 매매 청산 기준\n\n${lines}${note}\n\n실제 주문은 없습니다. r003 재시작 후 새 가상 매수부터 적용되고, 이미 있는 가상 보유는 매수 때 정한 기준 그대로입니다. 바꿀까요?`,
+      )
+    )
+      return;
+    setSaving(true);
+    try {
+      const r = await window.api.ctlSet(paperExitChanges(v));
+      if (!r.ok) window.alert(`가상 매매 청산 기준을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const box = (k: PaperExitKind) => (
+    <input
+      className="paper-exit-in"
+      type="text"
+      inputMode="decimal"
+      value={text[k]}
+      placeholder={modelOf(k) !== null ? String(modelOf(k)) : '모델'}
+      disabled={disabled || saving}
+      aria-invalid={vals[k] === null}
+      onChange={(e) => setText((t) => ({ ...t, [k]: e.target.value }))}
+      onKeyDown={(e) => e.key === 'Enter' && void save()}
+    />
+  );
+  return (
+    <span
+      className="paper-exit"
+      title={`가상 매매 청산 기준 (서버 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN). 빈칸 = 모델 값(흐린 숫자). 익절·손절 0~30%, 보유 시간 0~720분. r003 재시작 후 새 가상 매수부터 적용`}
+    >
+      가상 청산 익절 +{box('tp')}% 손절 -{box('sl')}% 보유 {box('horizon')}분
+      <button className="mini" disabled={disabled || saving || !changed} onClick={() => void save()}>
+        적용
+      </button>
+      {bad.length > 0 && <span className="badge-warn">{bad.map((k) => EXIT_KO[k]).join(', ')} 값 확인</span>}
+      {pending && (
+        <span className="badge-warn">
+          → r003 재시작 후 적용 (실행 중: {PAPER_EXIT_KINDS.map((k) => meaning(k, st[k].running ?? st[k].effective)).join(' / ')})
+        </span>
+      )}
     </span>
   );
 }

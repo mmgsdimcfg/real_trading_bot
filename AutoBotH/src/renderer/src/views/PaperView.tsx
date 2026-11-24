@@ -30,6 +30,7 @@
  *   -170,670원 of 10.8 M bought); now the KRW sum over the bought amount, so % and 원 agree. The 거래당 평균 card is gone (its simple mean
  *   is in the tooltip). The 매수 / 매도 line stays on one line
  * - [2026-11-20] type=feat - 'new paper buys off (candidates only)' badge when the server runs log-only (EDGE_ONLY_LOG_ONLY)
+ * - [2026-11-25] type=feat - the exits line says when they were set by hand (server model_label differs) and shows the model's
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -305,6 +306,7 @@ export function PaperView() {
           <span className="muted">
             확률 기준 {pst.threshold !== undefined ? pst.threshold.toFixed(3) : '-'}
             {pst.label?.tp !== undefined ? ` · 목표 +${pst.label.tp}% / 손절 -${pst.label.sl}% / ${pst.label.horizon}분` : ''}
+            {exitDiffers(pst) ? ` (직접 설정 - 모델 +${pst.modelLabel!.tp}% / -${pst.modelLabel!.sl}% / ${pst.modelLabel!.horizon}분)` : ''}
             {pst.entryWindow ? ` · 매수 ${pst.entryWindow[0]}~${pst.entryWindow[1]}` : ''}
             {pst.nxt && pst.nxtSessions?.nxt_pre ? ` · NXT 장전 ${pst.nxtSessions.nxt_pre.entryWindow.join('~')}` : ''}
             {pst.nxt && pst.nxtSessions?.nxt_after ? ` · NXT 장후 ${pst.nxtSessions.nxt_after.entryWindow.join('~')}` : ''}
@@ -483,4 +485,12 @@ export function PaperView() {
       </div>
     </div>
   );
+}
+
+/** [2026-11-25] the exits in use differ from the model's label (set in the control tab: EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN) */
+function exitDiffers(pst: PaperStatus): boolean {
+  const a = pst.label;
+  const m = pst.modelLabel;
+  if (!a || !m || m.tp === undefined) return false;
+  return a.tp !== m.tp || a.sl !== m.sl || a.horizon !== m.horizon;
 }
