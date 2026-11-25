@@ -44,7 +44,7 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -804,7 +804,9 @@ export function ControlView() {
             <>
               <div className="tk-head">
                 <b>청산 기준</b>
-                <span className="muted small">Edge AI 매매(실제·가상)의 익절 / 손절 / 보유 시간 · 규칙 매매는 아래 매도 설정의 자동 매도 규칙으로 청산</span>
+                <span className="muted small" title={COMMON_EXIT_NOTE}>
+                  규칙 매매 · Edge AI 매매 공통 (익절 / 손절 / 보유 시간) · 규칙 매매는 기존 청산 규칙에 더해, 먼저 닿으면 전량 매도
+                </span>
               </div>
               <div className="tk">
                 <PaperExitEdit st={control.paperExit} model={edgeModel || null} real={liveOn || liveRunning || liveHeld || tradeMode === 'edge'} disabled={busy || !connected || modeBusy} />
@@ -1158,7 +1160,8 @@ function PaperExitEdit({ st, model, real, disabled }: { st: PaperExitState; mode
     const v = vals as Record<PaperExitKind, number>;
     const lines = PAPER_EXIT_KINDS.map((k) => `${EXIT_KO[k]}: ${meaning(k, v[k])}`).join('\n');
     const custom = PAPER_EXIT_KINDS.some((k) => v[k] > 0);
-    const note = custom ? '\n\n모델 확률은 모델 라벨 기준(익절/손절/시간)으로 학습된 값이라, 기준을 바꾸면 확률의 뜻과 어긋납니다.' : '';
+    const note =
+      (custom ? '\n\n모델 확률은 모델 라벨 기준(익절/손절/시간)으로 학습된 값이라, 기준을 바꾸면 확률의 뜻과 어긋납니다.' : '') + `\n\n규칙 매매: ${COMMON_EXIT_NOTE}`;
     if (
       !window.confirm(
         real

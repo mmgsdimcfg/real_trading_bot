@@ -465,6 +465,11 @@ export const EDGE_LIVE_GATE_KEYS: string[] = [EDGE_LIVE_KEY, 'EDGE_ONLY_MODE', '
 export const EDGE_LIVE_EXIT_NOTE =
   'Edge AI 실제 매매로 산 수량은 자동 매도 설정과 무관하게 Edge 청산 기준(손절 / 익절 / 보유 시간 / 15:20)으로 자동 매도됩니다.';
 
+/** [2026-11-25] how the control tab's 청산 기준 acts on rule-strategy positions (server r006 _c03_common_exit_bounds) */
+export const COMMON_EXIT_NOTE =
+  '값을 넣은 항목만 규칙 매매 보유분에도 적용됩니다 (빈칸은 미적용). 기존 규칙 청산(분할 익절·트레일링·적응형 엔진·15:20)은 그대로 두고, ' +
+  '익절 % 도달 / 손절 % 도달 / 보유 시간 경과 중 먼저 닿으면 잔량 전부를 매도합니다. 정규장에서만, 자동 매도가 전체일 때만 판정합니다. r003 재시작 후 적용.';
+
 /** [2026-11-25] the limits of the Edge AI live orders (r001 EDGE_LIVE_*; the ranges are r016's EDGE_LIVE_RANGES) */
 export const EDGE_LIVE_LIMIT_KEYS = {
   order: 'EDGE_LIVE_ORDER_KRW',

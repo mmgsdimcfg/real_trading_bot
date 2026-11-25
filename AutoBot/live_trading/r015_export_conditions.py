@@ -64,6 +64,7 @@ SELL_FRAME_BY_FUNC = {
     "_015_shared_reversal_sell": "3m",
     "_s04_net_stop_loss": "live",   # [2026-11-12] AUTO_SELL_MODE="stop_only"
     "_x02_track_if_fresh": "live+3m",
+    "_c03_common_exit_bounds": "live",   # [2026-11-25] 공통 청산 기준 상한·하한 (현재가 손익 / 보유 시간)
     "_x10_adaptive_exit": "live+tick",   # [2026-11-15] EXIT_ENGINE_MODE="live" (r027: REST 현재가 + g011 틱 파일)
 }
 FRAMES_LEGEND = {

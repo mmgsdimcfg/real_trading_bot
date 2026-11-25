@@ -358,16 +358,17 @@ class R006Tests(Base):
     def test_mode_selection(self):
         with mock.patch.object(r006, "AUTO_SELL_MODE", "all"):
             with mock.patch.object(r006, "EXIT_ENGINE_MODE", "live"):
-                self.assertIs(r006.active_sell_conditions(), r006.ADAPTIVE_SELL_CONDITIONS)
+                self.assertIs(r006.active_sell_conditions(), r006._with_common_exit(r006.ADAPTIVE_SELL_CONDITIONS))  # [2026-11-25] + the common exit bounds
             with mock.patch.object(r006, "EXIT_ENGINE_MODE", "shadow"):
-                self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
+                self.assertIs(r006.active_sell_conditions(), r006._with_common_exit(r006.SELL_CONDITIONS))  # [2026-11-25] + the common exit bounds
         with mock.patch.object(r006, "EXIT_ENGINE_MODE", "live"):
             with mock.patch.object(r006, "AUTO_SELL_MODE", "stop_only"):
                 self.assertIs(r006.active_sell_conditions(), r006.STOP_ONLY_SELL_CONDITIONS)
             with mock.patch.object(r006, "AUTO_SELL_MODE", "off"):
                 self.assertIs(r006.active_sell_conditions(), r006.MANUAL_SELL_CONDITIONS)
         with mock.patch.object(r006, "AUTO_SELL_MODE", "all"), mock.patch.object(r006, "EXIT_ENGINE_MODE", "live"):
-            for strategy, expected in (("normal", r006.ADAPTIVE_SELL_CONDITIONS), ("basic", r006.ADAPTIVE_SELL_CONDITIONS),
+            adaptive = r006._with_common_exit(r006.ADAPTIVE_SELL_CONDITIONS)   # [2026-11-25] + the common exit bounds
+            for strategy, expected in (("normal", adaptive), ("basic", adaptive),
                                        ("edge", r006.EDGE_SELL_CONDITIONS)):   # edge keeps its model-label exits
                 with mock.patch.object(r006, "TRADING_STRATEGY_MODE", strategy):
                     self.assertIs(r006.active_sell_conditions(), expected)

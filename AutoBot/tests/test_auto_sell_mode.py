@@ -60,9 +60,9 @@ class ModeListTest(unittest.TestCase):
                     self.assertIs(r006.active_sell_conditions(), r006.MANUAL_SELL_CONDITIONS)
         with mock.patch.object(r006, "EXIT_ENGINE_MODE", "shadow"):     # [2026-11-15] live engine replaces "all" (test_r027)
             with mock.patch.object(r006, "AUTO_SELL_MODE", "all"):
-                self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
+                self.assertIs(r006.active_sell_conditions(), r006._with_common_exit(r006.SELL_CONDITIONS))  # [2026-11-25] + the common exit bounds
             with mock.patch.object(r006, "AUTO_SELL_MODE", "typo"):      # an unknown value keeps the full automatic sells
-                self.assertIs(r006.active_sell_conditions(), r006.SELL_CONDITIONS)
+                self.assertIs(r006.active_sell_conditions(), r006._with_common_exit(r006.SELL_CONDITIONS))  # [2026-11-25] + the common exit bounds
 
     def test_lists_hold_no_other_exit(self):
         self.assertEqual([c.func_name for c in r006.STOP_ONLY_SELL_CONDITIONS],

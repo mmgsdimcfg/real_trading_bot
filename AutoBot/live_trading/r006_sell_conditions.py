@@ -1052,12 +1052,13 @@ def active_sell_conditions() -> tuple[SellCondition, ...]:
     if auto == "off":
         return MANUAL_SELL_CONDITIONS
     mode = str(TRADING_STRATEGY_MODE).lower()
+    # [2026-11-25] 규칙 매매 목록(normal / basic / 적응형)에는 공통 청산 기준(_c03)을 포지션 추적 바로 뒤에 끼운다
     if exit_engine_mode() == "live" and mode != "edge":
         # [2026-11-15] 적응형 청산 엔진이 매도 판정 (normal/basic). edge 는 모델 라벨 정의 청산(_e10~_e12)을 유지한다.
-        return ADAPTIVE_SELL_CONDITIONS
+        return _with_common_exit(ADAPTIVE_SELL_CONDITIONS)
     if mode == "edge":
         return EDGE_SELL_CONDITIONS   # [2026-11-12] Edge AI 단독 실매매: 모델 라벨 정의로 매도
-    return BASIC_SELL_CONDITIONS if mode == "basic" else SELL_CONDITIONS
+    return _with_common_exit(BASIC_SELL_CONDITIONS if mode == "basic" else SELL_CONDITIONS)
 
 
 def evaluate_sell_conditions(ctx: SellContext, conditions: tuple[SellCondition, ...] | None = None) -> SellDecision:
@@ -1258,6 +1259,72 @@ def _e12_edge_time_exit(ctx: SellContext) -> bool:
         return False
     _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_TIME_{int(hold)}MIN", f" held={held/60.0:.0f}min")
     return True
+
+
+# =============================================================================================
+# [2026-11-25] 공통 청산 기준 (사용자 결정: 앱 제어 탭 맨 위 "청산 기준"을 규칙 매매에도 - 상한·하한으로 추가).
+# r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT (%) / EDGE_ONLY_HORIZON_MIN (분) 중 0 보다 크게 정한 값만 규칙 매매 보유분에 적용한다
+# (빈칸 = 0 = 그 항목은 적용 안 함 - Edge 쪽 기본값 EDGE_TP_PCT 등으로 대체하지 않는다). 기존 규칙 청산(분할 익절 / 트레일링 /
+# 적응형 엔진 / 하드 손절 / 15:20)은 그대로 두고, 이 기준에 먼저 닿으면 잔량 전부를 판다. 손익은 가격 기준(비용 제외).
+# AUTO_SELL_MODE=all 일 때의 규칙 목록에만 들어간다(stop_only / off 는 그 설정대로). 현재가가 stale 이면 판정하지 않는다.
+# Codex 검토 반영: 정규장에서만 판정(NXT 시간에는 시세가 KRX 종가로 대체될 수 있다 - 그 값으로 전량 매도하지 않는다),
+# 주문이 접수되지 않으면(쿨다운·거절) 뒤의 기존 청산 조건을 계속 평가, 적응형 엔진 목록에서는 엔진 뒤(엔진이 자기 주문 체결을
+# 먼저 맞춘다). 손익률은 계좌 평균단가 기준(규칙 매도 조건들과 같은 값).
+
+def common_exit_values() -> tuple[float, float, float]:
+    """(take profit ratio, stop ratio, max hold minutes) set for the rule strategy's positions; 0 = that bound is not set"""
+    return _pos_num(EDGE_ONLY_TP_PCT) / 100.0, _pos_num(EDGE_ONLY_SL_PCT) / 100.0, _pos_num(EDGE_ONLY_HORIZON_MIN)
+
+
+def _c03_common_exit_bounds(ctx: SellContext) -> bool:
+    tp, sl, hold = common_exit_values()
+    if not (tp or sl or hold) or ctx.services.is_stale_live_price_source(ctx.price_source):
+        return False
+    is_regular = getattr(ctx.services, "is_regular_session", None)
+    if not callable(is_regular) or not is_regular(ctx.current_dt):
+        return False                              # regular session only (an NXT-hours quote can be the KRX close)
+    qty = int(ctx.pos.get("quantity", 0) or 0)
+    if qty <= 0:
+        return False
+    reason, detail = "", ""
+    if sl and ctx.pnl_pct <= -sl + _BASIC_EPS:
+        reason = f"COMMON_SL_{_pct_txt(sl)}PCT"
+    elif tp and ctx.pnl_pct >= tp - _BASIC_EPS:
+        reason = f"COMMON_TP_{_pct_txt(tp)}PCT"
+    elif hold:
+        held = _hold_info(ctx)[2]
+        if held >= hold * 60.0:
+            reason, detail = f"COMMON_TIME_{int(hold)}MIN", f" held={held / 60.0:.0f}min"
+    if not reason:
+        return False
+    marked = ctx.state.signal_sell_bar.get(ctx.code)
+    if _basic_sell(ctx, qty, reason, detail):
+        return True
+    # not accepted (cooldown, rejection, quantity 0): the rule exits after this one are still judged this turn
+    if marked is None:
+        ctx.state.signal_sell_bar.pop(ctx.code, None)
+    else:
+        ctx.state.signal_sell_bar[ctx.code] = marked
+    return False
+
+
+_COND_COMMON_EXIT = SellCondition(
+    30, "_c03_common_exit_bounds", "EXIT", "[공통] 청산 기준 상한·하한",
+    "앱 제어 탭 청산 기준(EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN) 중 정한 값(> 0)에 먼저 닿으면 잔량 전부 매도 "
+    "(익절 도달 / 손절 도달 / 보유 시간 경과). 기존 규칙 청산은 그대로",
+    ("EDGE_ONLY_TP_PCT", "EDGE_ONLY_SL_PCT", "EDGE_ONLY_HORIZON_MIN"), _c03_common_exit_bounds)
+_COMMON_LISTS: dict[int, tuple[SellCondition, ...]] = {}
+
+
+def _with_common_exit(conds: tuple[SellCondition, ...]) -> tuple[SellCondition, ...]:
+    """the list with the common exit bounds: right after the position tracking (no 2), but after the adaptive engine where the
+    list has it (the engine reconciles its own orders first)"""
+    out = _COMMON_LISTS.get(id(conds))
+    if out is None:
+        at = next((i + 1 for i, c in enumerate(conds) if c.func_name == "_x10_adaptive_exit"),
+                  next((i + 1 for i, c in enumerate(conds) if c.no == 2), 0))
+        out = _COMMON_LISTS[id(conds)] = conds[:at] + (_COND_COMMON_EXIT,) + conds[at:]
+    return out
 
 
 EDGE_SELL_CONDITIONS: tuple[SellCondition, ...] = (
