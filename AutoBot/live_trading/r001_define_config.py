@@ -2134,7 +2134,9 @@ EDGE_ONLY_LOG_ONLY = True
 # [2026-11-25] 사용 안 함 (사용자 결정, Codex 검토): 가상 매매의 NXT 운용은 자동매매 시간(nxt_trading_enabled = ENABLE_NXT_SESSION and
 # ENABLE_NXT_TRADING)을 따른다. 예전 live_overrides 에 남아 있어도 오류가 나지 않게 상수만 남긴다.
 EDGE_ONLY_NXT = True
-# [2026-11-25] 가상 매매 익절 / 손절 / 보유 시간 상한 (사용자 요청: AutoBotH 제어 화면에서 설정). 0 = 모델 라벨(current_meta.json
+# [2026-11-25] Edge AI 익절 / 손절 / 보유 시간 상한 - 앱 제어 탭 한 곳에서 정하는 값(사용자 결정). 가상 매매(r022)와 Edge AI 실주문(edge
+# 전략 r006 _e10~_e12, 0 이면 아래 EDGE_TP_PCT 등) 공통. 규칙 매매·반등 알림에는 쓰지 않는다(다단계 / 매수가 없음).
+# 가상 매매: 0 = 모델 라벨(current_meta.json
 # label, 현재 +2.0% / -1.77% / 400분 같은 값) 그대로. 0 보다 크면 그 값으로 새 가상 매수의 목표/손절/시간을 정한다(이미 있는 가상
 # 보유는 매수 때 정한 값 유지). 단위: % (2.0 = +2.0%), 분. 모델 확률은 라벨 기준으로 학습된 것이라 바꾸면 확률의 뜻과 어긋난다.
 # EDGE_ONLY_MODE="paper" 일 때만(주문 없음). r003 재시작 후 적용. 롤백: 0.

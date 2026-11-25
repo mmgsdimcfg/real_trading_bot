@@ -34,6 +34,12 @@ Order [numbers = evaluation order since 2026-11-08, old number in brackets]
     번호는 재사용하지 않는다(로그/문서 호환).
 
 Update log (append only):
+- [2026-11-25] type=feat owner=claude
+    summary: 사용자 결정(익절/손절은 한 곳에서, Codex 검토 권고: 규칙 매매에는 적용 안 함) - edge 매도(_e10~_e12)도 앱 제어 탭의
+      Edge AI 익절/손절 값(r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT (%) / EDGE_ONLY_HORIZON_MIN (분))을 쓴다: 0 보다 크면 그 값,
+      0 이면 종전 EDGE_TP_PCT / EDGE_SL_PCT (비율) / EDGE_MAX_HOLD_MINUTES. 매 평가 때 읽으므로 r003 재시작 후 이미 보유한 종목에도 적용.
+    impact: live (TRADING_STRATEGY_MODE="edge" 이고 AUTO_SELL_MODE="all" 일 때만)
+    compatibility: backward-compatible (기본 0 = 종전과 동일)
 - [2026-11-18] type=tune owner=claude
     summary: 사용자 결정 - `_002` ATR 손절선에 하한 r001 ATR_STOP_MIN_LOSS_PCT(0.035): 손절선 = -max(ATR% x 배수, 하한). 하드스탑/
       급락 가드 값(-3.5%)은 r001/risk_profiles 에서 변경.
@@ -141,6 +147,9 @@ from r001_define_config import (
     EDGE_TP_PCT,
     EDGE_SL_PCT,
     EDGE_MAX_HOLD_MINUTES,
+    EDGE_ONLY_TP_PCT,
+    EDGE_ONLY_SL_PCT,
+    EDGE_ONLY_HORIZON_MIN,
     BASIC_TP1_PCT,
     BASIC_TP1_RATIO,
     BASIC_TP2_PCT,
@@ -1202,25 +1211,52 @@ BASIC_SELL_CONDITIONS: tuple[SellCondition, ...] = (
 # Edge AI 모델의 라벨 정의 그대로다: +EDGE_TP_PCT 익절 / -EDGE_SL_PCT 손절 / EDGE_MAX_HOLD_MINUTES 경과. 모두 잔량 전량.
 # 손익(pnl_pct)은 비용 제외 가격 기준(현재가/평균매입가-1). 당일 강제청산은 r003 이 그대로 처리한다.
 
+def _pos_num(v) -> float:
+    """a finite number > 0, else 0.0 (= not set); inf / NaN / overflow never reach the sell checks"""
+    import math
+    try:
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return f if math.isfinite(f) and f > 0 else 0.0
+
+
+def _pct_txt(ratio: float) -> str:
+    """0.015 -> '1.5', 0.0154 -> '1.54' (the reason keeps the set precision)"""
+    return f"{ratio * 100:.2f}".rstrip("0").rstrip(".") if abs(ratio * 1000 - round(ratio * 1000)) > 1e-9 else f"{ratio * 100:.1f}"
+
+
+def edge_exit_values() -> tuple[float, float, float]:
+    """[2026-11-25] (take profit ratio, stop ratio, max hold minutes) of the edge sells: the app's Edge AI exits
+    (EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT in %, EDGE_ONLY_HORIZON_MIN) where set (> 0), else EDGE_TP_PCT / EDGE_SL_PCT / EDGE_MAX_HOLD_MINUTES"""
+    tp = _pos_num(EDGE_ONLY_TP_PCT) / 100.0 or float(EDGE_TP_PCT)
+    sl = _pos_num(EDGE_ONLY_SL_PCT) / 100.0 or float(EDGE_SL_PCT)
+    hold = _pos_num(EDGE_ONLY_HORIZON_MIN) or float(EDGE_MAX_HOLD_MINUTES)
+    return tp, sl, hold
+
+
 def _e10_edge_take_profit(ctx: SellContext) -> bool:
-    if ctx.pnl_pct < EDGE_TP_PCT - _BASIC_EPS:
+    tp, _, _ = edge_exit_values()
+    if ctx.pnl_pct < tp - _BASIC_EPS:
         return False
-    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_TP_{EDGE_TP_PCT*100:.1f}PCT")
+    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_TP_{_pct_txt(tp)}PCT")
     return True
 
 
 def _e11_edge_stop_loss(ctx: SellContext) -> bool:
-    if ctx.pnl_pct > -EDGE_SL_PCT + _BASIC_EPS:
+    _, sl, _ = edge_exit_values()
+    if ctx.pnl_pct > -sl + _BASIC_EPS:
         return False
-    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_SL_{EDGE_SL_PCT*100:.1f}PCT")
+    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_SL_{_pct_txt(sl)}PCT")
     return True
 
 
 def _e12_edge_time_exit(ctx: SellContext) -> bool:
+    _, _, hold = edge_exit_values()
     _, _token, held = _hold_info(ctx)
-    if held < float(EDGE_MAX_HOLD_MINUTES) * 60.0:
+    if held < float(hold) * 60.0:
         return False
-    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_TIME_{int(EDGE_MAX_HOLD_MINUTES)}MIN", f" held={held/60.0:.0f}min")
+    _basic_sell(ctx, int(ctx.pos["quantity"]), f"EDGE_TIME_{int(hold)}MIN", f" held={held/60.0:.0f}min")
     return True
 
 

@@ -392,3 +392,10 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   이면 체크박스 대신 "서버 설정" 표시 + "규칙 매매 방식으로 전환"(normal + paper off, 확인 후).
 - 가상 매매를 꺼도(off / edge) 오늘 `edge_only_<날짜>.jsonl` 에 열린 가상 보유가 있으면 r003 이 close_only 러너로 그 보유만 마감까지
   청산한다. 상태 파일에 `"close_only"`(bool).
+
+## Edge AI 익절/손절 한 곳에서 (2026-11-25, trade_modes_plan_20261125.md 3단계)
+- 새 키 없음: 앱 제어 탭 "Edge AI 청산" 칸 = r001 `EDGE_ONLY_TP_PCT` / `EDGE_ONLY_SL_PCT` (%) / `EDGE_ONLY_HORIZON_MIN` (분) 이 유일한 입력처.
+  r022 가상 매매(0 = 모델 라벨)와 r006 edge 전략 실주문 매도 _e10~_e12(0 = `EDGE_TP_PCT` / `EDGE_SL_PCT` 비율 / `EDGE_MAX_HOLD_MINUTES`)가 같이 쓴다.
+  r006 은 매 평가 때 읽음 - r003 재시작 후 이미 보유한 종목에도 적용(edge + AUTO_SELL_MODE all 일 때만). 매도 사유 `EDGE_TP_1.54PCT` 처럼 설정 정밀도.
+- 규칙 매매(r006 normal / basic 다단계, HARD_STOP, AUTO_SELL_STOP_NET_PCT, 적응형 엔진)와 반등 알림에는 적용하지 않는다(사용자 결정).
+- 앱은 가상 매매 또는 edge 전략일 때 칸을 보인다. 서버 r006 이 예전 코드면 실주문에는 반영되지 않으므로 앱과 서버 코드를 같이 갱신할 것.

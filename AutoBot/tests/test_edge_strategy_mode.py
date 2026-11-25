@@ -173,6 +173,28 @@ class SellRulesTest(unittest.TestCase):
             peak_pnl_pct=max(0.0, price / self.ENTRY - 1), bar_time=None, state=SimpleNamespace(signal_sell_bar={}))
         return c, api, logs
 
+    def test_app_exits_replace_the_edge_defaults(self):
+        # [2026-11-25] one place for the Edge AI exits: EDGE_ONLY_TP_PCT / SL_PCT (%) / HORIZON_MIN > 0 win, 0 keeps EDGE_TP_PCT etc.
+        self.assertEqual(r006.edge_exit_values(), (r006.EDGE_TP_PCT, r006.EDGE_SL_PCT, float(r006.EDGE_MAX_HOLD_MINUTES)))
+        with mock.patch.multiple(r006, EDGE_ONLY_TP_PCT=1.5, EDGE_ONLY_SL_PCT=0.0, EDGE_ONLY_HORIZON_MIN=90):
+            self.assertEqual(r006.edge_exit_values(), (0.015, r006.EDGE_SL_PCT, 90.0))
+            c, api, _ = self.ctx(10149.0)
+            self.assertFalse(r006._e10_edge_take_profit(c))
+            c, api, _ = self.ctx(10150.0)
+            self.assertTrue(r006._e10_edge_take_profit(c))
+            self.assertEqual(api.orders, [(7, "EDGE_TP_1.5PCT")])
+            c, api, _ = self.ctx(10000.0, held_min=91.0)
+            self.assertTrue(r006._e12_edge_time_exit(c))
+            self.assertEqual(api.orders, [(7, "EDGE_TIME_90MIN")])
+        with mock.patch.multiple(r006, EDGE_ONLY_TP_PCT=0.0, EDGE_ONLY_SL_PCT=1.54, EDGE_ONLY_HORIZON_MIN=0):
+            c, api, _ = self.ctx(9847.0)                                     # -1.53%: kept
+            self.assertFalse(r006._e11_edge_stop_loss(c))
+            c, api, _ = self.ctx(9846.0)                                     # -1.54%
+            self.assertTrue(r006._e11_edge_stop_loss(c))
+            self.assertEqual(api.orders, [(7, "EDGE_SL_1.54PCT")])
+        with mock.patch.multiple(r006, EDGE_ONLY_TP_PCT=float("inf"), EDGE_ONLY_SL_PCT=float("nan"), EDGE_ONLY_HORIZON_MIN=10**400):
+            self.assertEqual(r006.edge_exit_values(), (r006.EDGE_TP_PCT, r006.EDGE_SL_PCT, float(r006.EDGE_MAX_HOLD_MINUTES)))
+
     def test_take_profit_sells_everything_at_two_percent(self):
         c, api, logs = self.ctx(10199.0)
         self.assertFalse(r006._e10_edge_take_profit(c))

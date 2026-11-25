@@ -27,6 +27,8 @@
  * - [2026-11-25] type=feat - 매매 방식 = checkboxes 규칙 매매 (server RULE_BUY_ENABLED) / Edge AI 가상 매매 (EDGE_ONLY_MODE) / 반등 알림
  *   (AutoBotHtsH only, found through window.api.reboundStatus / reboundEnable) in any combination (user 2026-11-25, Codex review).
  *   The checkboxes never change TRADING_STRATEGY_MODE; a server on edge / basic shows it with a 규칙 매매 방식으로 전환 button
+ * - [2026-11-25] type=feat - the exits box is "Edge AI 청산": one place for the paper runner and the edge strategy's real sells
+ *   (server r006 reads the same keys), shown in paper and edge mode; empty box = the model (paper) / the server default (edge)
  * - [2026-11-25] type=feat - 가상 청산 익절 / 손절 / 보유 시간 boxes beside 가상 매수 실행 (server r001 EDGE_ONLY_TP_PCT /
  *   EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN, empty = the model's label shown as the placeholder; r003 restart, new paper buys only)
  */
@@ -781,9 +783,9 @@ export function ControlView() {
               {paperBuysPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {paperBuysRunning ? '켬' : '끔'})</span>}
             </label>
           )}
-          {/* [2026-11-25] paper exits (user 2026-11-25): 익절 / 손절 / 보유 시간, empty = the model's label */}
-          {tradeMode === 'rules+paper' && control.paperExit && (
-            <PaperExitEdit st={control.paperExit} model={edgeModel || null} disabled={busy || !connected || modeBusy} />
+          {/* [2026-11-25] Edge AI exits, one place for the paper runner and the edge strategy's real sells (user 2026-11-25) */}
+          {(tradeMode === 'rules+paper' || tradeMode === 'edge') && control.paperExit && (
+            <PaperExitEdit st={control.paperExit} model={edgeModel || null} real={tradeMode === 'edge'} disabled={busy || !connected || modeBusy} />
           )}
           {!paper && strategy && <span className="muted small">가상 매매 / Edge AI 방식은 서버 코드 갱신 후 선택할 수 있습니다</span>}
           {/* [2026-11-12] automatic sells: everything / only the net -2% stop / none (the user sells by hand) */}
@@ -978,10 +980,11 @@ const EXIT_KO: Record<PaperExitKind, string> = { tp: '익절', sl: '손절', hor
 const exitText = (k: PaperExitKind, v: number | null | undefined): string =>
   v === null || v === undefined ? '?' : k === 'tp' ? `+${v}%` : k === 'sl' ? `-${v}%` : `${v}분`;
 
-/** [2026-11-25] the exits of new paper buys (server r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN): an empty box
- *  = 0 = the model's label (shown as the placeholder). Applies to paper buys made after the next r003 start; open paper positions
- *  keep the exits they were bought with */
-function PaperExitEdit({ st, model, disabled }: { st: PaperExitState; model: EdgeModelInfo | null; disabled: boolean }) {
+/** [2026-11-25] the Edge AI exits (server r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN), one place for the paper
+ *  runner (r022) and the edge strategy's real sells (r006 _e10~_e12). An empty box = 0 = paper: the model's label (the placeholder),
+ *  edge: the server's EDGE_TP_PCT / EDGE_SL_PCT / EDGE_MAX_HOLD_MINUTES. Paper: new paper buys after the next r003 start (open paper
+ *  positions keep theirs); edge: every evaluation after the restart, held positions too. real = the server runs the edge strategy */
+function PaperExitEdit({ st, model, real, disabled }: { st: PaperExitState; model: EdgeModelInfo | null; real: boolean; disabled: boolean }) {
   const fromState = (): Record<PaperExitKind, string> => ({
     tp: st.tp.effective > 0 ? String(st.tp.effective) : '',
     sl: st.sl.effective > 0 ? String(st.sl.effective) : '',
@@ -997,7 +1000,8 @@ function PaperExitEdit({ st, model, disabled }: { st: PaperExitState; model: Edg
   const pending = PAPER_EXIT_KINDS.some((k) => st[k].running !== null && (st[k].pending || st[k].running !== st[k].effective));
   const modelOf = (k: PaperExitKind) => (model ? model[k] : null);
   /** what a stored value means: the set value, or the model's */
-  const meaning = (k: PaperExitKind, v: number) => (v > 0 ? exitText(k, v) : `모델 값 ${exitText(k, modelOf(k))}`);
+  const meaning = (k: PaperExitKind, v: number) =>
+    v > 0 ? exitText(k, v) : real ? '서버 기본값 (EDGE_TP_PCT 등)' : `모델 값 ${exitText(k, modelOf(k))}`;
   const save = async () => {
     if (!changed) return;
     const v = vals as Record<PaperExitKind, number>;
@@ -1006,14 +1010,16 @@ function PaperExitEdit({ st, model, disabled }: { st: PaperExitState; model: Edg
     const note = custom ? '\n\n모델 확률은 모델 라벨 기준(익절/손절/시간)으로 학습된 값이라, 기준을 바꾸면 확률의 뜻과 어긋납니다.' : '';
     if (
       !window.confirm(
-        `가상 매매 청산 기준\n\n${lines}${note}\n\n실제 주문은 없습니다. r003 재시작 후 새 가상 매수부터 적용되고, 이미 있는 가상 보유는 매수 때 정한 기준 그대로입니다. 바꿀까요?`,
+        real
+          ? `Edge AI 청산 기준 (실제 주문)\n\n${lines}${note}\n\nEdge AI 실주문 방식의 실제 매도 기준이 바뀝니다. r003 재시작 후부터 이미 보유한 종목에도 적용됩니다 (자동 매도가 전체일 때). 바꿀까요?`
+          : `Edge AI 청산 기준 (가상 매매)\n\n${lines}${note}\n\n실제 주문은 없습니다. r003 재시작 후 새 가상 매수부터 적용되고, 이미 있는 가상 보유는 매수 때 정한 기준 그대로입니다. 가상 매매와 Edge AI 실주문 방식이 같은 값을 씁니다. 바꿀까요?`,
       )
     )
       return;
     setSaving(true);
     try {
       const r = await window.api.ctlSet(paperExitChanges(v));
-      if (!r.ok) window.alert(`가상 매매 청산 기준을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+      if (!r.ok) window.alert(`Edge AI 청산 기준을 바꾸지 못했습니다:${r.error || JSON.stringify(r.data?.rejected || {})}`);
     } finally {
       setSaving(false);
     }
@@ -1024,7 +1030,7 @@ function PaperExitEdit({ st, model, disabled }: { st: PaperExitState; model: Edg
       type="text"
       inputMode="decimal"
       value={text[k]}
-      placeholder={modelOf(k) !== null ? String(modelOf(k)) : '모델'}
+      placeholder={real ? '기본' : modelOf(k) !== null ? String(modelOf(k)) : '모델'}
       disabled={disabled || saving}
       aria-invalid={vals[k] === null}
       onChange={(e) => setText((t) => ({ ...t, [k]: e.target.value }))}
@@ -1034,9 +1040,9 @@ function PaperExitEdit({ st, model, disabled }: { st: PaperExitState; model: Edg
   return (
     <span
       className="paper-exit"
-      title={`가상 매매 청산 기준 (서버 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN). 빈칸 = 모델 값(흐린 숫자). 익절·손절 0~30%, 보유 시간 0~720분. r003 재시작 후 새 가상 매수부터 적용`}
+      title={`Edge AI 청산 기준 - 가상 매매와 Edge AI 실주문 공통 (서버 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN). 가격 기준(수수료 제외). 빈칸 = 가상: 모델 값(흐린 숫자), 실주문: 서버 기본(+2.0% / -1.7% / 60분). 규칙 매매에는 쓰지 않습니다. 익절·손절 0~30%, 보유 시간 0~720분. r003 재시작 후 적용`}
     >
-      가상 청산 익절 +{box('tp')}% 손절 -{box('sl')}% 보유 {box('horizon')}분
+      Edge AI 청산 익절 +{box('tp')}% 손절 -{box('sl')}% 보유 {box('horizon')}분
       <button className="mini" disabled={disabled || saving || !changed} onClick={() => void save()}>
         적용
       </button>
