@@ -71,6 +71,20 @@ Update log:
       조회가 계좌보다 늦으면 bot_only 매도를 보류).
       Codex 17차 반영: 다 빼지 못한 매도량(debt)을 장부에 저장해 다음 조회의 매수(봇 매수부터)에서도 갚음 - 그 종목이 계좌와
       안정적으로 맞춰지면(reconcile 의 stable) 지움. 기준점에도 그때의 debt 를 함께 저장.
+    - [2026-11-25] type=feat - Edge AI 실주문 병행(edge_live_parallel_plan_20261125.md): 등록 주문에 strategy("edge") 표시(정정 주문도
+      이어받음), Edge 주문의 체결로만 바뀌는 Edge 장부(state["edge"] 종목별 수량·원가·진입 시각 - 계좌 평균단가와 무관)와 그날
+      누계(state["edge_day"] 매수 횟수·실현 손익·손절 종목). Edge 수량은 봇 몫을 넘지 않게 맞춘다(edge_cap).
+      Codex 코드 검토 반영: 체결 단가는 주문별 누적 체결금액의 차액으로(조회의 평균가는 누적 평균 - applied_amt),
+      주문 한 건의 상태 조회 결과도 바로 반영(apply_order_status - 전체 조회를 기다리는 동안의 손절 공백 제거, 이중 반영 없음).
+      2차 검토 반영: 가격 없이 반영된 Edge 매수 체결(unpriced)은 뒤의 조회가 가격을 보여 주면 원가를 보정(수량 증분이 없어도).
+      3차 검토 반영: Edge 장부를 매수 주문별 묶음(lots {주문 키: 수량, 평균가})으로 - 묶음의 원가는 그 주문의 누적 평균가 그대로
+      (증분 계산·미가격 보정이 겹쳐 원가가 두 번 들어가던 문제 제거). 매도 체결 단가의 증분 계산은 직전 기록이 직전까지 반영한
+      수량과 맞을 때만(applied_amt = [누적 금액, 그때의 누적 수량]).
+      4차 검토 반영: 묶음 원가는 누적 체결 수량이 장부에 반영한 수량과 같은 행으로만 갱신(늦게 도착한 과거 행 무시), 같은 조회의
+      매도보다 먼저 갱신. 주문가(ord_unpr)는 체결가로 쓰지 않음(가격 미상).
+      5차 검토 반영: 그날 상한(clamp_to_day_bound)은 주문별로 max(조회 행의 누적 체결, 이미 반영한 누적 체결)을 쓰고 조회에 없는
+      오늘의 등록 주문도 반영분을 넣음(단건 상태 조회보다 뒤처진 전체 조회가 봇·Edge 수량을 줄이지 않게). 묶음 원가는 그 값이
+      어느 누적 수량의 평균인지(avg_at) 함께 기록 - 반영 수량과 다르면 원가 미상(edge_avg_price 0).
     impact: live (r003 의 bot_only 자동매도 수량)
     compatibility: 새 파일. 기존 파일은 읽기만(백업 후)
 - [2026-11-25] type=feat owner=claude
@@ -341,6 +355,28 @@ def load_fill_state(live_runtime_dir: Path) -> tuple[dict | None, str]:
             if lt:
                 datetime.strptime(str(lt), "%Y%m%d")
                 state[name] = str(lt)
+        book = raw.get("edge") or {}
+        if not isinstance(book, dict):
+            raise ValueError("edge")
+        state["edge"] = {}
+        for c, b in book.items():
+            lots = {str(k): {"qty": int(v["qty"]), "avg": float(v.get("avg", 0.0)), "avg_at": int(v.get("avg_at", -1))}
+                    for k, v in (b.get("lots") or {}).items() if int(v.get("qty", 0)) > 0}
+            if lots:
+                state["edge"][_norm(c)] = {"qty": sum(x["qty"] for x in lots.values()), "lots": lots,
+                                           "entry_at": str(b.get("entry_at", ""))}
+        ed = raw.get("edge_day")
+        if ed:
+            if not isinstance(ed, dict):
+                raise ValueError("edge_day")
+            state["edge_day"] = {"date": str(ed.get("date", "")), "entries": int(ed.get("entries", 0)),
+                                 "realized": float(ed.get("realized", 0.0)),
+                                 "sl_codes": [_norm(c) for c in (ed.get("sl_codes") or [])],
+                                 **({"unpriced_sells": int(ed["unpriced_sells"])} if ed.get("unpriced_sells") else {})}
+        amts = raw.get("applied_amt") or {}
+        if not isinstance(amts, dict):
+            raise ValueError("applied_amt")
+        state["applied_amt"] = {str(k): [float(v[0]), int(v[1])] for k, v in amts.items()}
         debt = raw.get("debt") or {}
         if not isinstance(debt, dict):
             raise ValueError("debt")
@@ -373,16 +409,18 @@ def migrate_from_ledger(old: dict[str, dict] | None) -> dict:
 
 
 def register_order(state: dict, ord_dt: str, odno: str, code: str, side: str, qty: int, at: str = "",
-                   baseline: bool = False) -> bool:
+                   baseline: bool = False, strategy: str = "") -> bool:
     """a bot order the broker accepted. False when the order number is empty or it is registered already. baseline: its fills up
-    to the next complete listing are not applied (an order recovered while switching from the old ledger)"""
+    to the next complete listing are not applied (an order recovered while switching from the old ledger). strategy: "edge" for
+    an Edge AI live order (its fills move the edge book), else the rule strategy"""
     if not str(odno or "").strip().lstrip("0"):
         return False
     key = fill_key(ord_dt, odno)
     if key in state["registry"]:
         return False
     state["registry"][key] = {"code": _norm(code), "side": "sell" if side == "sell" else "buy", "qty": int(qty), "at": at,
-                              "terminal": False, "last_change": "", **({"baseline": True} if baseline else {})}
+                              "terminal": False, "last_change": "", **({"baseline": True} if baseline else {}),
+                              **({"strategy": EDGE} if strategy == EDGE else {})}
     return True
 
 
@@ -398,7 +436,8 @@ def _row_int(row: dict, key: str) -> int:
         return 0
 
 
-def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None) -> list[tuple[str, str, int, str]]:
+def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None,
+                    costs: tuple[float, float] = (0.0, 0.0), partial: bool = False) -> list[tuple[str, str, int, str]]:
     """Apply the fills of a COMPLETE daily order/fill listing (KIS inquire_daily_ccld output1 rows) to the bot's quantities.
     Only rows of registered bot orders count; a modified order (orgn_odno = a registered order) is registered as its child.
     A row whose symbol / side does not match the registry is not applied (reported with delta 0 and a ':mismatch' key).
@@ -420,7 +459,8 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None) 
             if parent is not None:
                 reg[key] = {"code": parent["code"], "side": parent["side"], "qty": _row_int(r, "ord_qty"), "at": now_s,
                             "terminal": False, "last_change": "", "child_of": fill_key(r.get("ord_dt", ""), org),
-                            **({"baseline": True} if parent.get("baseline") else {})}
+                            **({"baseline": True} if parent.get("baseline") else {}),
+                            **({"strategy": parent["strategy"]} if parent.get("strategy") else {})}
                 added = True
     out = []
     dropped: list[str] = []
@@ -431,7 +471,7 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None) 
             # [2026-11-25] an order recovered when switching from the old ledger: its fills so far are already in the inherited bot
             # quantity (or were deliberately not counted) - only fills after the first listing that SHOWS it are applied
             if r is None:
-                if key.split(":", 1)[0] < (now or datetime.now()).strftime("%Y%m%d"):
+                if not partial and key.split(":", 1)[0] < (now or datetime.now()).strftime("%Y%m%d"):
                     dropped.append(key)               # a past day's order the broker does not list: not an order
                 continue
             if _norm(r.get("pdno", "")) == e["code"]:
@@ -479,6 +519,7 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None) 
     # paid from the buys that follow - the bot's buys first (the bot part stays smallest)
     # [Codex 17th] kept between listings (state["debt"]): the buy that pays may show up in a later listing than the sale
     debt: dict[str, int] = state.setdefault("debt", {})
+    _edge_reprice(state, by_key)                    # [Codex 4th] lot costs first: a sell of this listing uses them
     ordered = sorted(moves, key=lambda m: (not m[0], m[1] != "bot"))   # sells, then bot buys, then buys by hand
     for is_sell, who, code, delta, key, tot in ordered:
         row = _code_row(state, code)
@@ -501,6 +542,8 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None) 
                 left = delta - take_m
                 take_b = min(row["bot_qty"], left)
                 row["bot_qty"] -= take_b
+            if who == "bot":
+                _edge_fill(state, reg.get(key), by_key.get(key), code, "sell", take_b, now_s, costs, key, delta, tot)
             unpaid = delta - take_b - take_m
             if unpaid > 0:
                 debt[code] = debt.get(code, 0) + unpaid
@@ -510,6 +553,7 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None) 
             debt[code] = debt.get(code, 0) - pay
             if who == "bot":
                 row["bot_qty"] += delta - pay
+                _edge_fill(state, reg.get(key), by_key.get(key), code, "buy", delta - pay, now_s, costs, key, delta, tot)
                 out.append((code, "buy", delta, key))
             else:
                 # [Codex 9th] the account showed this buy before the listing did: the comparison already put it in the manual part
@@ -525,7 +569,192 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None) 
         state["applied"][key] = tot
     for code in [c for c, q in debt.items() if q <= 0]:
         debt.pop(code, None)
+    _edge_reprice(state, by_key)
+    edge_cap(state)
     return out
+
+
+# ---- [2026-11-25] Edge AI live orders: the edge book (fills of orders registered with strategy "edge") -----------------------
+EDGE = "edge"
+
+
+def _row_price(r: dict | None) -> float:
+    """the average fill price of a listing row (avg_prvs, else amount / quantity); 0 = not known"""
+    if not r:
+        return 0.0
+    for name in ("avg_prvs", "avg_pric"):
+        try:
+            v = float(str(r.get(name, "") or "0").replace(",", ""))
+            if v > 0:
+                return v
+        except (TypeError, ValueError):
+            pass
+    qty = _row_int(r, "tot_ccld_qty")
+    try:
+        amt = float(str(r.get("tot_ccld_amt", "") or "0").replace(",", ""))
+        return amt / qty if qty > 0 and amt > 0 else 0.0   # the order price is not a fill price: unknown
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def edge_day(state: dict, today: str) -> dict:
+    """the day's edge counters {date, entries, realized, sl_codes} (a new day starts from zero)"""
+    d = state.get("edge_day")
+    if not isinstance(d, dict) or d.get("date") != today:
+        d = state["edge_day"] = {"date": today, "entries": 0, "realized": 0.0, "sl_codes": []}
+    return d
+
+
+def _delta_price(state: dict, key: str, r: dict | None, delta: int, tot: int) -> float:
+    """the price of the `delta` shares an order filled since it was applied last. The listing gives the order's CUMULATIVE average:
+    price = (cumulative amount now - cumulative amount recorded before) / delta - only when the record before covers exactly the
+    quantity applied before (else the cumulative average). 0 = not known. Used for sells (realized result)."""
+    avg = _row_price(r)
+    try:
+        cum = float(str((r or {}).get("tot_ccld_amt", "") or "0").replace(",", ""))
+    except (TypeError, ValueError):
+        cum = 0.0
+    if cum <= 0:
+        cum = avg * tot
+    amts = state.setdefault("applied_amt", {})
+    prev = amts.get(key) or [0.0, 0]
+    if cum > 0:
+        amts[key] = [cum, int(tot)]
+    if delta > 0 and cum > 0 and int(prev[1]) == int(tot) - int(delta) and cum - float(prev[0]) > 0:
+        return (cum - float(prev[0])) / delta
+    return avg
+
+
+def _edge_take(b: dict, n: int, applied: dict | None = None) -> tuple[int, float, bool]:
+    """take n shares out of an edge position's lots, oldest first: (taken, their cost, cost known)"""
+    taken, cost, known = 0, 0.0, True
+    for key in list(b["lots"]):
+        if taken >= n:
+            break
+        lot = b["lots"][key]
+        q = min(int(lot["qty"]), n - taken)
+        taken += q
+        cost += q * float(lot["avg"])
+        known = known and float(lot["avg"]) > 0 and (applied is None or int(lot.get("avg_at", -1)) == int(applied.get(key, 0) or 0))
+        lot["qty"] = int(lot["qty"]) - q
+        if lot["qty"] <= 0:
+            b["lots"].pop(key, None)
+    b["qty"] = sum(int(lot["qty"]) for lot in b["lots"].values())
+    return taken, cost, known
+
+
+def _edge_fill(state: dict, entry: dict | None, r: dict | None, code: str, side: str, qty: int, now_s: str,
+               costs: tuple[float, float], key: str = "", delta: int = 0, tot: int = 0) -> None:
+    """a fill of a bot order that went into (buy) / came out of (sell) the bot part: when the order is an edge order it moves the
+    edge book too. The book holds one lot per buy order; a lot's cost is that order's cumulative average price (the account's
+    average price mixes in shares bought by hand)."""
+    if not entry or entry.get("strategy") != EDGE:
+        return
+    book = state.setdefault("edge", {})
+    b = book.get(code)
+    if side == "buy":
+        if qty <= 0:
+            return
+        if b is None:
+            b = book[code] = {"qty": 0, "lots": {}, "entry_at": str(entry.get("at") or now_s)}
+        lot = b["lots"].setdefault(key or "?", {"qty": 0, "avg": 0.0, "avg_at": -1})
+        lot["qty"] = int(lot["qty"]) + int(qty)
+        avg = _row_price(r)
+        if avg > 0:                                 # the order's cumulative average: the cost of every share it filled so far
+            lot["avg"], lot["avg_at"] = avg, int(tot)
+        b["qty"] = sum(int(x["qty"]) for x in b["lots"].values())
+        return
+    px = _delta_price(state, key, r, delta, tot) if key else _row_price(r)
+    if qty <= 0 or not b or int(b["qty"]) <= 0:
+        return
+    sold, cost, known = _edge_take(b, int(qty), state["applied"])
+    day = edge_day(state, now_s[:10].replace("-", ""))
+    if sold > 0 and px > 0 and known:
+        commission, sell_tax = costs
+        day["realized"] = float(day.get("realized", 0.0)) + sold * px - cost - (
+            px * sold * (commission + sell_tax) + cost * commission) / 100.0
+    elif sold > 0:
+        day["unpriced_sells"] = int(day.get("unpriced_sells", 0)) + sold
+    if int(b["qty"]) <= 0:
+        book.pop(code, None)
+
+
+def _edge_reprice(state: dict, by_key: dict[str, dict]) -> None:
+    """a lot's cost follows its order's cumulative average whenever a row of that order shows it (also without new quantity -
+    an order status booked the fills before their price was known)"""
+    for b in (state.get("edge") or {}).values():
+        for key, lot in b["lots"].items():
+            r = by_key.get(key)
+            # [Codex 4th] only a row that shows exactly the quantity applied of this order (an older row came late: ignored)
+            if r is None or _row_int(r, "tot_ccld_qty") != int(state["applied"].get(key, -1)):
+                continue
+            px = _row_price(r)
+            if px > 0:
+                lot["avg"], lot["avg_at"] = px, _row_int(r, "tot_ccld_qty")
+
+
+def apply_order_status(state: dict, ord_dt: str, odno: str, code: str, side: str, ord_qty: int, filled: int, remaining: int,
+                       avg_price: float, cancelled: bool = False, now: datetime | None = None,
+                       costs: tuple[float, float] = (0.0, 0.0), amount: float = 0.0) -> list[tuple[str, str, int, str]]:
+    """[Codex code review] the status of ONE registered order (the broker's row of exactly this order number) applied at once -
+    the complete listing comes later and finds these fills applied (same cumulative count, nothing twice). Nothing for an order
+    that is not registered or whose symbol / side differs."""
+    key = fill_key(ord_dt, odno)
+    e = state["registry"].get(key)
+    if e is None or e["code"] != _norm(code) or e["side"] != ("sell" if side == "sell" else "buy"):
+        return []
+    r = {"ord_dt": ord_dt, "odno": odno, "orgn_odno": "", "pdno": _norm(code), "sll_buy_dvsn_cd": "01" if side == "sell" else "02",
+         "ord_qty": str(int(ord_qty)), "tot_ccld_qty": str(int(filled)), "rmn_qty": str(int(remaining)),
+         "cncl_yn": "Y" if cancelled else "", "rjct_qty": "0", "cncl_cfrm_qty": "0", "avg_prvs": str(float(avg_price or 0.0)),
+         "tot_ccld_amt": str(float(amount or 0.0))}
+    return apply_fill_rows(state, [r], now, costs, partial=True)
+
+
+def edge_cap(state: dict) -> None:
+    """the edge quantity never exceeds the bot part (a hand sale, the day bound or the account comparison took it down)"""
+    book = state.get("edge") or {}
+    for code in list(book):
+        b = book[code]
+        over = int(b["qty"]) - fill_bot_quantity(state, code)
+        if over > 0:
+            _edge_take(b, over)
+        if int(b["qty"]) <= 0:
+            book.pop(code, None)
+
+
+def edge_quantity(state: dict | None, code) -> int:
+    b = ((state or {}).get("edge") or {}).get(_norm(code))
+    return int(b.get("qty", 0)) if isinstance(b, dict) else 0
+
+
+def edge_avg_price(state: dict | None, code) -> float:
+    """the edge position's own average cost; 0 while the price of one of its lots is not known - a lot's average counts only
+    when it is the average of exactly the quantity applied of its order ([Codex 5th] a fill added without a price: unknown)"""
+    b = ((state or {}).get("edge") or {}).get(_norm(code))
+    if not isinstance(b, dict) or int(b.get("qty", 0)) <= 0:
+        return 0.0
+    lots = b.get("lots") or {}
+    applied = (state or {}).get("applied") or {}
+    if not lots or any(float(lot["avg"]) <= 0 or int(lot.get("avg_at", -1)) != int(applied.get(key, 0) or 0)
+                       for key, lot in lots.items()):
+        return 0.0
+    return sum(int(lot["qty"]) * float(lot["avg"]) for lot in lots.values()) / int(b["qty"])
+
+
+def edge_entry_at(state: dict | None, code) -> str:
+    b = ((state or {}).get("edge") or {}).get(_norm(code))
+    return str(b.get("entry_at", "")) if isinstance(b, dict) else ""
+
+
+def edge_open_buy_codes(state: dict | None) -> set[str]:
+    """symbols with an edge buy order that is not finished (its fills may still come)"""
+    return {e["code"] for e in ((state or {}).get("registry") or {}).values()
+            if e.get("strategy") == EDGE and e.get("side") == "buy" and not e.get("terminal")}
+
+
+def edge_codes(state: dict | None) -> set[str]:
+    """symbols the edge strategy holds or is buying"""
+    return {c for c, b in ((state or {}).get("edge") or {}).items() if int(b.get("qty", 0)) > 0} | edge_open_buy_codes(state)
 
 
 def _code_row(state: dict, code: str) -> dict:
@@ -557,6 +786,7 @@ def deduct_once(state: dict, key: str, code: str, qty: int) -> tuple[int, int] |
     new = max(0, old - int(qty))
     _code_row(state, code)["bot_qty"] = new
     ded[key] = {"code": code, "qty": int(qty), "from": old}
+    edge_cap(state)
     return old, new
 
 
@@ -629,6 +859,7 @@ def reconcile_account(state: dict, account_qty: dict[str, int], stable: set[str]
         if a == 0 and row["bot_qty"] == 0 and (row["manual_qty"] or 0) == 0:
             state["codes"].pop(code, None)
             waiting.pop(code, None)
+    edge_cap(state)
     return out
 
 
@@ -654,6 +885,7 @@ def clamp_to_day_bound(state: dict, rows: list[dict], today: str) -> list[tuple[
         return []
     reg, a_app = state["registry"], anchor.get("applied") or {}
     per: dict[str, list[tuple[bool, str, int]]] = {}
+    in_rows: set[str] = set()
     for r in rows or []:
         if str(r.get("ord_dt", "")).strip() != today:
             continue
@@ -670,9 +902,17 @@ def clamp_to_day_bound(state: dict, rows: list[dict], today: str) -> list[tuple[
                 continue
             seen = max(seen, int(e.get("base", 0) or 0))   # [Codex 13th] both are counts of the same fills: once
             who = "bot"
-        qty = _row_int(r, "tot_ccld_qty") - seen
+        in_rows.add(key)
+        # [Codex 5th, Edge AI live] a row that is behind what was applied already (an order status came first): not less
+        qty = max(_row_int(r, "tot_ccld_qty"), int(state["applied"].get(key, 0) or 0)) - seen
         if qty > 0:
             per.setdefault(code, []).append((side_cd == "01", who, qty))
+    for key, e in reg.items():                  # a registered order of today the listing does not show: what was applied of it
+        if key in in_rows or not key.startswith(today + ":") or e.get("baseline"):
+            continue
+        qty = int(state["applied"].get(key, 0) or 0) - max(int(a_app.get(key, 0)), int(e.get("base", 0) or 0))
+        if qty > 0:
+            per.setdefault(e["code"], []).append((e["side"] == "sell", "bot", qty))
     out = []
     waiting = baseline_codes(state)
     for code, moves in per.items():
@@ -700,6 +940,7 @@ def clamp_to_day_bound(state: dict, rows: list[dict], today: str) -> list[tuple[
             if row["manual_qty"] is not None:
                 row["manual_qty"] += old - b
             out.append((code, old, b))
+    edge_cap(state)
     return out
 
 
@@ -747,13 +988,16 @@ def prune_fill_state(state: dict, today: str, keep_days: int = FILL_KEEP_DAYS) -
             cutoff = min(cutoff, datetime.strptime(min(dates), "%Y%m%d").toordinal())
     except ValueError:
         return
+    # [Codex 6th, Edge AI live] the buy orders of lots the edge strategy still holds keep their counts (the lot's cost is
+    # checked against them), however old
+    held_lots = {k for b in (state.get("edge") or {}).values() for k in (b.get("lots") or {})}
     for key in list(state["registry"]):
         day = key.split(":", 1)[0]
         try:
             old = datetime.strptime(day, "%Y%m%d").toordinal() < cutoff
         except ValueError:
             old = False
-        if old and state["registry"][key].get("terminal"):
+        if old and state["registry"][key].get("terminal") and key not in held_lots:
             state["registry"].pop(key, None)
             state["applied"].pop(key, None)
     for key in list(state["applied"]):
@@ -764,6 +1008,8 @@ def prune_fill_state(state: dict, today: str, keep_days: int = FILL_KEEP_DAYS) -
                 state["applied"].pop(key, None)     # a manual order's count, older than keep_days
         except ValueError:
             pass
+    for key in [k for k in (state.get("applied_amt") or {}) if k not in state["applied"]]:
+        state["applied_amt"].pop(key, None)
     for key in list(state.get("deducted") or {}):
         try:
             if datetime.strptime(key.split(":", 1)[0], "%Y%m%d").toordinal() < cutoff:
