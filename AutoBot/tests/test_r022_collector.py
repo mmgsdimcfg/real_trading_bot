@@ -223,5 +223,82 @@ class PollTest(Base):
         self.assertEqual(self.records()[-1]["reason"], "sl")
 
 
+class MissedDaysTest(Base):
+    """[2026-11-25] paper positions left open on an earlier day (r003 stopped before that day's close)"""
+
+    def entry(self, day, code, nxt=False, price=10000.0, ts="09:30:05"):
+        return {"event": "ENTRY", "ts": f"{day[:4]}-{day[4:6]}-{day[6:]}T{ts}", "code": code, "name": "x", "entry": price + 10,
+                "price": price, "tp_px": 99999, "sl_px": 1, "horizon": 60, "nxt": nxt}
+
+    def day_file(self, day, rows):
+        (self.out / f"edge_only_{day}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    def ticks(self, day, code, rows, nxt=False):
+        d = self.out / "ticks" / day / ("nxt" if nxt else "")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{code}.csv").write_text(HEADER + "\n" + "\n".join(
+            row(code, hms, p, 1, i + 1, s).replace(DAY, day) for i, (hms, p, s) in enumerate(rows)) + "\n", encoding="utf-8")
+
+    def exits(self, day):
+        rows = []
+        for x in (self.out / f"edge_only_{day}.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(x))
+            except ValueError:
+                continue                                                           # the torn line of a test
+        return [r for r in rows if r["event"] == "EXIT"]
+
+    def test_regular_auction_nxt_last_print_and_fallbacks(self):
+        d = "20261120"
+        self.day_file(d, [self.entry(d, "000001"), self.entry(d, "000002"), self.entry(d, "000003", nxt=True),
+                          self.entry(d, "000004"), self.entry(d, "000005"), {"event": "EXIT", "code": "000005"}])
+        self.ticks(d, "000001", [("151900", 10100, "regular"), ("153001", 10200, "close_auction")])
+        self.ticks(d, "000002", [("151900", 10100, "regular"), ("152500", 9000, "regular")])   # after 15:20: not used
+        self.ticks(d, "000003", [("195900", 10300, "post"), ("195955", 9000, "post")], nxt=True)   # after 19:59:50: not used
+        logs = []
+        n = r022.close_missed_days(self.out, self.out / "ticks", "20261125", logs.append, now=datetime(2026, 11, 25, 8, 0))
+        self.assertEqual(n, 4)
+        got = {e["code"]: e for e in self.exits(d) if e.get("reason") == "close_missed"}
+        self.assertEqual((got["000001"]["exit"], got["000001"]["fill"], got["000001"].get("estimated")), (10200, "auction", None))
+        self.assertEqual(got["000001"]["ts"], "2026-11-20T15:20:00")
+        self.assertEqual((got["000002"]["exit"], got["000002"]["fill"], got["000002"]["estimated"]), (10090, "last", True))
+        self.assertEqual((got["000003"]["exit"], got["000003"]["ts"], got["000003"].get("estimated")), (10290, "2026-11-20T19:59:50", None))
+        self.assertEqual((got["000004"]["fill"], got["000004"]["estimated"], got["000004"]["exit"]), ("entry_record", True, 9990))
+        self.assertEqual(got["000001"]["recorded_at"], "2026-11-25T08:00:00")
+        # idempotent; today's and older-than-7-days files are not touched
+        self.assertEqual(r022.close_missed_days(self.out, self.out / "ticks", "20261125", logs.append), 0)
+
+    def test_torn_last_line_out_of_order_and_stale_nxt_prints(self):
+        # [Codex review] a torn last line does not swallow the EXIT; the latest print by trade time wins; an NXT print more than
+        # 180 s before 19:59:50 is used but marked estimated
+        d = "20261121"
+        self.day_file(d, [self.entry(d, "000001"), self.entry(d, "000002", nxt=True)])
+        with (self.out / f"edge_only_{d}.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write('{"event": "CANDID')                                          # torn
+        self.ticks(d, "000001", [("151900", 10100, "regular"), ("151000", 9000, "regular")])    # arrival order != trade time
+        self.ticks(d, "000002", [("195000", 10300, "post")], nxt=True)
+        self.assertEqual(r022.close_missed_days(self.out, self.out / "ticks", "20261125", lambda m: None), 2)
+        got = {e["code"]: e for e in self.exits(d)}
+        self.assertEqual(got["000001"]["exit"], 10090)                              # 15:19:00 print, not the later-read 15:10
+        self.assertEqual((got["000002"]["exit"], got["000002"]["estimated"]), (10290, True))
+        self.assertEqual(r022.close_missed_days(self.out, self.out / "ticks", "20261125", lambda m: None), 0)
+
+    def test_a_line_torn_inside_a_korean_character_is_skipped(self):
+        d = "20261122"
+        self.day_file(d, [self.entry(d, "000001")])
+        with (self.out / f"edge_only_{d}.jsonl").open("ab") as fh:
+            fh.write('{"event": "CANDIDATE", "name": "한'.encode("utf-8")[:-1])     # cut inside the last character
+        self.assertEqual(r022.close_missed_days(self.out, self.out / "ticks", "20261125", lambda m: None), 1)
+        self.assertEqual(r022.open_codes_in(self.out / f"edge_only_{d}.jsonl"), set())
+
+    def test_today_and_old_days_are_left(self):
+        self.day_file("20261125", [self.entry("20261125", "000001")])
+        self.day_file("20261101", [self.entry("20261101", "000002")])
+        logs = []
+        self.assertEqual(r022.close_missed_days(self.out, self.out / "ticks", "20261125", logs.append), 0)
+        self.assertEqual(self.exits("20261125") + self.exits("20261101"), [])
+        self.assertTrue(any("older than 7 days" in x for x in logs))
+
+
 if __name__ == "__main__":
     unittest.main()

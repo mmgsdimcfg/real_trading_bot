@@ -21,6 +21,11 @@ Update log format (append only):
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 남은 과제 B - _make_edge_only_runner 가 먼저 r022.close_missed_days() 로 지난 날짜에 남은 가상 보유를 정리(가상 매매가 꺼져
+      있어도). 날짜가 바뀌어 러너를 새로 만들 때도 같음.
+    impact: paper only
+    compatibility: backward-compatible
+- [2026-11-25] type=feat owner=claude
     summary: 사용자 결정(매매 방식 조합, Codex 검토) - (1) r001 RULE_BUY_ENABLED=False 면 규칙 매수 조건이 통과해도 place_buy_order 를
       부르지 않는다(규칙 기반 전략 normal / basic 만 - edge 는 무관): _025 의 traded_today 예약을 되돌리고 [RULE BUY OFF] 로그만(signal_buy_bar 는 남겨 같은 봉 반복 로그 방지).
       보유 매도·미체결 매수 정리·회계는 그대로. (2) 가상 매매를 끈 뒤(EDGE_ONLY_MODE off / edge 방식)에도 오늘 기록에 열린 가상 보유가
@@ -2487,6 +2492,13 @@ def _make_v2_shadow_runner(date_str: str):
 
 def _make_edge_only_runner(date_str: str):
     """[2026-11-12] Edge-AI-only paper runner (r022) or None. Lazy import: EDGE_ONLY_MODE="off" adds nothing."""
+    # [2026-11-25] paper positions left open on earlier days (r003 stopped before that day's close): closed in their day's file
+    try:
+        import r001_define_config as _cfg_days
+        from r022_edge_only import close_missed_days
+        close_missed_days(Path(LIVE_RUNTIME_DIR), Path(_cfg_days.TICK_DATA_DIR), date_str, log)
+    except Exception as exc:
+        log(f"  [EDGE ONLY   ] earlier days' paper positions check failed: {exc}")
     close_only = False
     if str(EDGE_ONLY_MODE).lower() != "paper" or str(TRADING_STRATEGY_MODE).lower() == "edge":
         # [2026-11-25] paper trading off (or the edge strategy): still close today's open paper positions, nothing new

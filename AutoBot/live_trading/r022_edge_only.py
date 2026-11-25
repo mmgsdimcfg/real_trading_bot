@@ -34,6 +34,15 @@ post-close job from that host's data folder).
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 남은 과제 B(Codex 계획 검토 반영) - close_missed_days(): r003 이 마감 전에 멈춰 지난 날짜 파일에 남은 가상 보유를 그날 파일에
+      EXIT(reason close_missed) 로 정리. 시각 = 그날 예정 청산(15:20 / NXT 19:59:50), 가격 = 단일가 체결 / NXT 마지막 체결(19:59:50 까지)
+      / 마지막 정규장 체결(15:20 까지, estimated) / 매수 기록(estimated), price_at / recorded_at 기록. 7일(달력) 안만, 그보다 오래된 것은
+      개수만 로그. 같은 ENTRY 에 두 번 쓰지 않음. last_print_until(): 시각 상한이 있는 틱 파일 마지막 체결.
+      Codex 코드 검토 반영: 끝이 잘린 파일엔 줄바꿈부터 넣고 기록, 마지막 체결은 체결 시각 기준(수신 순서 아님), NXT 체결이 19:59:50 보다
+      180초 넘게 오래됐으면 estimated, 기간은 달력 7일(연휴 포함).
+    impact: paper only (기록 파일)
+    compatibility: backward-compatible
+- [2026-11-25] type=feat owner=claude
     summary: 사용자 결정(매매 방식 조합, Codex 검토: 가상 매매를 꺼도 열린 가상 보유는 청산) - EdgeOnlyRunner(close_only=True): 보유
       청산(tp/sl/time/세션 마감)만 하고 신규 가상 매수·후보 기록·수집기 신규 평가는 하지 않는다. open_codes_in(path): 그날 기록에서
       아직 열린 종목. 상태 파일에 close_only. _restore 는 잘린 줄만 건너뛴다(예전: 파일 전체를 버림, Codex 검토).
@@ -214,7 +223,7 @@ def open_codes_in(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     open_: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             rec = json.loads(line)
         except ValueError:
@@ -224,6 +233,152 @@ def open_codes_in(path: Path) -> set[str]:
             open_.add(code)
         elif rec.get("event") == "EXIT":
             open_.discard(code)
+    return open_
+
+
+# ---- [2026-11-25] open paper positions of earlier days (r003 stopped before the session close) ---------------------------------
+
+def last_print_until(path: Path, date_str: str, until_hhmmss: str, sessions: tuple[str, ...],
+                     since_hhmmss: str = "000000") -> tuple[float, str] | None:
+    """(price, HHMMSS) of the latest print (by trade time - the collector writes in arrival order) of a tick file between
+    `since_hhmmss` and `until_hhmmss` in `sessions` (None without one). Same row rules as CollectorTickFeed (header widths, bsop_date,
+    session column; files without it: 09:00 <= t < 15:20 = regular)."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    best = None
+    cols = None
+    width = 0
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            fields = line.rstrip("\r\n").split(",")
+            if cols is None:
+                cols = {c: i for i, c in enumerate(fields)}
+                width = len(fields)
+                continue
+            if len(fields) != width:
+                continue
+            try:
+                t = fields[cols["trade_time"]].strip().zfill(6)
+                price = float(fields[cols["price"]])
+                day = fields[cols["bsop_date"]].strip() if "bsop_date" in cols else date_str
+            except (KeyError, ValueError):
+                continue
+            if day != date_str or not price > 0 or not t.isdigit() or t > until_hhmmss or t < since_hhmmss:
+                continue
+            sess = fields[cols["session"]].strip() if "session" in cols else ("regular" if "090000" <= t < "152000" else "")
+            if sess in sessions and (best is None or t >= best[1]):
+                best = (price, t)
+    return best
+
+
+def close_missed_days(out_dir: Path, ticks_root: Path, today: str, log: Callable[[str], None], lookback_days: int = 7,
+                      now: datetime | None = None) -> int:
+    """[2026-11-25] Paper positions still open in an earlier day's edge_only_<date>.jsonl (r003 stopped before that day's session
+    close) get an EXIT in that day's file: reason close_missed, at that day's scheduled close (15:20 regular / 19:59:50 NXT holding).
+    Price: regular -> the closing auction print, else the last regular print up to 15:20 (estimated), else the buy record (estimated);
+    NXT holding -> the last NXT print up to 19:59:50, else the same regular fallbacks (estimated). Fields: price_at (HHMMSS of the price
+    used, if any), recorded_at (now). Days within lookback_days (calendar) before `today`; older open positions are only counted.
+    Idempotent (an ENTRY with an EXIT is not touched). Returns how many were closed. Never raises."""
+    n = 0
+    try:
+        now = now or datetime.now()
+        out_dir = Path(out_dir)
+        ticks_root = Path(ticks_root)
+        t0 = datetime.strptime(today, "%Y%m%d")
+        older = 0
+        for path in sorted(out_dir.glob("edge_only_*.jsonl")):
+            day = path.stem[len("edge_only_"):]
+            if not (len(day) == 8 and day.isdigit()) or day >= today:
+                continue
+            open_ = _open_entries(path)
+            if not open_:
+                continue
+            if (t0 - datetime.strptime(day, "%Y%m%d")).days > lookback_days:
+                older += len(open_)
+                continue
+            base = datetime.strptime(day, "%Y%m%d")
+            for code, rec in open_.items():
+                try:
+                    nxt = rec.get("nxt") is True
+                    close_t = NXT_CLOSE if nxt else REGULAR_CLOSE
+                    fill, estimated, px, px_at = None, True, None, None
+                    if nxt:
+                        lp = last_print_until(ticks_root / day / "nxt" / f"{code}.csv", day, NXT_CLOSE.strftime("%H%M%S"),
+                                              ("pre", "regular", "post"))
+                        if lp:
+                            # a print older than PRICE_FRESH_S before the close is used but marked estimated (r022 rule)
+                            age = (datetime.strptime(NXT_CLOSE.strftime("%H%M%S"), "%H%M%S")
+                                   - datetime.strptime(lp[1], "%H%M%S")).total_seconds()
+                            px, px_at, fill, estimated = tick_down(lp[0]), lp[1], "last", age > PRICE_FRESH_S
+                    if px is None and not nxt:
+                        lp = last_print_until(ticks_root / day / f"{code}.csv", day, "153200", ("close_auction",))
+                        if lp:
+                            px, px_at, fill, estimated = lp[0], lp[1], "auction", False
+                    if px is None:
+                        lp = last_print_until(ticks_root / day / f"{code}.csv", day, REGULAR_CLOSE.strftime("%H%M%S"), ("regular",))
+                        if lp:
+                            px, px_at, fill = tick_down(lp[0]), lp[1], "last"
+                    if px is None:
+                        px, fill = tick_down(float(rec.get("price") or rec["entry"])), "entry_record"
+                    at = base.replace(hour=close_t.hour, minute=close_t.minute, second=close_t.second)
+                    entry = float(rec["entry"])
+                    held = (pd.Timestamp(at) - pd.Timestamp(rec["ts"])).total_seconds() / 60.0
+                    out = {"event": "EXIT", "ts": at.isoformat(timespec="seconds"), "code": code, "name": rec.get("name"),
+                           "reason": "close_missed", "entry": entry, "exit": px, "net_pct": net_pct(entry, px),
+                           "held_min": round(held, 1), "prob": rec.get("prob"), "group": rec.get("group") or "watch",
+                           "session": rec.get("session") or "regular", "nxt": nxt, "fill": fill,
+                           "recorded_at": now.isoformat(timespec="seconds")}
+                    if px_at:
+                        out["price_at"] = px_at
+                    if estimated:
+                        out["estimated"] = True
+                    _append_line(path, json.dumps(out, ensure_ascii=False, default=str))
+                    n += 1
+                    log(f"{TAG} {code}_{rec.get('name')} | PAPER SELL {px:,.0f} close_missed ({day}, {fill}"
+                        f"{', estimated' if estimated else ''}) net={out['net_pct']:+.2f}% - r003 stopped before that day's close")
+                except Exception as exc:
+                    log(f"{TAG} {code} close_missed ({day}) failed: {type(exc).__name__}: {exc}")
+        if older:
+            log(f"{TAG} {older} open paper position(s) older than {lookback_days} days left as they are")
+    except Exception as exc:
+        try:
+            log(f"{TAG} close_missed error: {type(exc).__name__}: {exc}")
+        except Exception:
+            pass
+    return n
+
+
+def _append_line(path: Path, line: str) -> None:
+    """append one JSONL record; a file whose last line is torn (no newline) gets a newline first so the record stays whole"""
+    path = Path(path)
+    lead = ""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            if fh.tell() > 0:
+                fh.seek(-1, 2)
+                lead = "" if fh.read(1) == b"\n" else "\n"
+    except OSError:
+        lead = ""
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(lead + line + "\n")
+        fh.flush()
+
+
+def _open_entries(path: Path) -> dict[str, dict]:
+    """code -> the ENTRY record still without an EXIT in a day's file (torn lines skipped)"""
+    open_: dict[str, dict] = {}
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        code = str(rec.get("code") or "")
+        if rec.get("event") == "ENTRY":
+            open_[code] = rec
+        elif rec.get("event") == "EXIT":
+            open_.pop(code, None)
     return open_
 
 
@@ -305,7 +460,7 @@ class EdgeOnlyRunner:
         self._cand_ids: set[str] = set()
         if self.log_only and self.cand_path.is_file():
             try:
-                for line in self.cand_path.read_text(encoding="utf-8").splitlines():
+                for line in self.cand_path.read_text(encoding="utf-8", errors="replace").splitlines():
                     self._cand_ids.add(str(json.loads(line).get("id") or ""))
             except Exception as exc:
                 self.log(f"{TAG} candidate log restore failed ({type(exc).__name__}: {exc})")
@@ -332,7 +487,7 @@ class EdgeOnlyRunner:
         if not self.out_path.is_file():
             return
         try:
-            for line in self.out_path.read_text(encoding="utf-8").splitlines():
+            for line in self.out_path.read_text(encoding="utf-8", errors="replace").splitlines():
                 try:
                     rec = json.loads(line)
                 except ValueError:

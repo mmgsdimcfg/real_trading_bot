@@ -70,6 +70,8 @@ export const PAPER_EXIT_KO: Record<string, string> = {
   // [2026-11-25] session closes (server r022): regular-only holdings into the 15:20 closing auction, NXT holdings at 19:59:50
   close_regular: '정규장 종가 청산',
   close_nxt: 'NXT 마감 청산',
+  // [2026-11-25] r003 stopped before that day's close: closed at its next start, at that day's close (server r022 close_missed_days)
+  close_missed: '미청산 정리',
 };
 
 const tsToEpoch = (s: unknown): number => {

@@ -399,3 +399,9 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   r006 은 매 평가 때 읽음 - r003 재시작 후 이미 보유한 종목에도 적용(edge + AUTO_SELL_MODE all 일 때만). 매도 사유 `EDGE_TP_1.54PCT` 처럼 설정 정밀도.
 - 규칙 매매(r006 normal / basic 다단계, HARD_STOP, AUTO_SELL_STOP_NET_PCT, 적응형 엔진)와 반등 알림에는 적용하지 않는다(사용자 결정).
 - 앱은 가상 매매 또는 edge 전략일 때 칸을 보인다. 서버 r006 이 예전 코드면 실주문에는 반영되지 않으므로 앱과 서버 코드를 같이 갱신할 것.
+
+## 지난 날짜 미청산 가상 보유 정리 / 세션 보고서 (2026-11-25, trade_modes_plan_20261125.md 8절 B·C)
+- r003 이 가상 매매 러너를 만들 때(가상 매매가 꺼져 있어도) r022 `close_missed_days()` 가 지난 달력 7일의 `edge_only_<날짜>.jsonl` 에 남은
+  가상 보유를 그 날짜 파일에 EXIT 로 정리: `reason` `close_missed`, `ts` = 그날 예정 청산(15:20 / NXT 19:59:50), `price_at` (쓴 체결의 HHMMSS),
+  `recorded_at`, `fill` `auction` | `last` | `entry_record`, 신선한 가격이 아니면 `estimated`. 앱 표시 "미청산 정리".
+- `data_simulation/g050_paper_session_report.py`: 가상 매매 세션별 성과 보고서(`runtime/research/paper_session/`). 앱은 읽지 않음.

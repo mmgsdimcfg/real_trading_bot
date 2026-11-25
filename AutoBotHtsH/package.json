@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-25] type=feat - v1.0.24_003: 가상 매매 청산 사유 미청산 정리 표시 (r003 이 마감 전에 멈춘 날의 가상 보유를 다음 실행 때 그날 마감 기준으로 정리 - 서버 r022 close_missed)",
     "[2026-11-25] type=feat - v1.0.24_002: 제어 탭 청산 칸 이름을 Edge AI 청산으로 - 가상 매매와 Edge AI 실주문(edge) 공통 (서버 r006 도 같은 값 사용), edge 방식에서도 표시, 빈칸 의미(가상 = 모델 값, 실주문 = 서버 기본) 안내",
     "[2026-11-25] type=feat - v1.0.24_001: 제어 탭 매매 방식을 체크박스 조합으로 - 규칙 매매(서버 RULE_BUY_ENABLED) / Edge AI 가상 매매(EDGE_ONLY_MODE) / 반등 알림(이 앱, 바로 적용). 반등 감시를 순회 중 끄면 그 순회의 알림도 보내지 않음. 서버가 edge / basic 이면 표시 + 규칙 매매 방식으로 전환 버튼",
     "[2026-11-25] type=feat - v1.0.23_001: 가상 매매 청산 사유 정규장 종가 청산 / NXT 마감 청산 표시, 마지막 가격으로 계산한 청산은 (추정) 표시 (서버 r022: 정규장 종목 15:20 종가 단일가, NXT 종목 19:59:50 청산)",
@@ -133,7 +134,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "003",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",
