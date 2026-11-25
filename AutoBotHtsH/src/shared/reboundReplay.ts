@@ -9,7 +9,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, detectRebound, hhmm, lowerHighLabel, mergeConfig, REBOUND_DEFAULTS, type ReboundConfig, type ReboundResult } from './rebound';
+import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, cooldownKey, detectRebound, hhmm, lowerHighLabel, mergeConfig, REBOUND_DEFAULTS, SETUP_KEYS, SETUP_LABEL, type ReboundConfig, type ReboundResult } from './rebound';
 import type { Bar } from './price';
 
 const KST = 9 * 3600000;
@@ -66,7 +66,7 @@ export interface ReplayRow {
  */
 export function replay(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS, from = -Infinity, to = Infinity): ReplayRow[] {
   const out: ReplayRow[] = [];
-  let lastAlert = -Infinity;
+  const lastAlert = new Map<string, number>(); // [2026-11-25] per kind (cooldownKey), as the poller
   const dayStart: number[] = []; // index of the first bar of each KST day
   const days = Math.max(1, Math.round(cfg.poll.days));
   for (let k = 0; k < bars.length; k++) {
@@ -74,8 +74,9 @@ export function replay(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS, from 
     if (!k || kstYmd(t) !== kstYmd(bars[k - 1].t)) dayStart.push(k);
     if (t < from || t > to) continue;
     const res = detectRebound(bars.slice(dayStart[Math.max(0, dayStart.length - days)], k + 1), cfg);
-    const alert = res.hit && !res.lowerHigh?.blocked && t - lastAlert >= cfg.alert.cooldownMin * 60000; // a blocked one does not start the cooldown
-    if (alert) lastAlert = t;
+    const key = cooldownKey('', res);
+    const alert = res.hit && !res.lowerHigh?.blocked && t - (lastAlert.get(key) ?? -Infinity) >= cfg.alert.cooldownMin * 60000; // a blocked one does not start the cooldown
+    if (alert) lastAlert.set(key, t);
     out.push({ t, res, alert });
   }
   return out;
@@ -107,6 +108,7 @@ function table(res: ReboundResult): string[] {
     ...COND_KEYS.map((k) => `    [${mark(res.conds[k].ok)}] ${COND_LABEL[k]}: ${res.conds[k].note}`),
     ...BONUS_KEYS.map((k) => `    (${mark(res.bonus[k].ok)}) ${BONUS_LABEL[k]}: ${res.bonus[k].note}`),
     ...(res.lowerHigh ? [`    {${res.lowerHigh.state}} ${lowerHighLabel(res.lowerHigh)}: ${res.lowerHigh.note}`] : []),
+    ...(res.setups ? SETUP_KEYS.map((k) => `    <${mark(res.setups![k].ok)}> ${SETUP_LABEL[k]}: ${res.setups![k].note}`) : []),
   ];
 }
 
@@ -146,7 +148,7 @@ export function main(argv: string[], print: (s: string) => void = console.log): 
     if (!show) continue;
     const s = r.res.snap;
     const tag = r.res.hit ? (r.alert ? '감지(알림)' : r.res.lowerHigh?.blocked ? '감지(고점 낮아짐, 알림 안 함)' : '감지(쿨다운)') : r.res.required ? (r.res.edge && r.res.score >= cfg.bonus.minScore ? '장 경계 제외' : '필수만 충족') : '미충족';
-    print(`${hhmm(r.t)} ${tag} 점수 ${r.res.score} 종가 ${s.close} RSI ${s.rsi.toFixed(1)}/${s.rsiSignal.toFixed(1)} MACD ${s.macd.toFixed(1)}/${s.macdSignal.toFixed(1)} DI ${s.diPlus.toFixed(1)}/${s.diMinus.toFixed(1)} ADX ${s.adx.toFixed(1)} 각도 ${s.angle.toFixed(1)}° VWAP ${s.vwapPct.toFixed(2)}%`);
+    print(`${hhmm(r.t)} ${tag}${r.res.setup ? ` [${SETUP_LABEL[r.res.setup]}] ${r.res.setups![r.res.setup].note} |` : ''} 점수 ${r.res.score} 종가 ${s.close} RSI ${s.rsi.toFixed(1)}/${s.rsiSignal.toFixed(1)} MACD ${s.macd.toFixed(1)}/${s.macdSignal.toFixed(1)} DI ${s.diPlus.toFixed(1)}/${s.diMinus.toFixed(1)} ADX ${s.adx.toFixed(1)} 각도 ${s.angle.toFixed(1)}° VWAP ${s.vwapPct.toFixed(2)}%`);
     if (opt.explain || opt.all) for (const l of table(r.res)) print(l);
   }
   print(`감지 ${hits}봉, 알림 ${rows.filter((r) => r.alert).length}회`);

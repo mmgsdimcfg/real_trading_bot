@@ -33,6 +33,14 @@
  *   divergence (the plunge low under the lowest low between H1 and H2 while RSI on the plunge bar is higher). Always computed and
  *   shown (popup / history / CSV); res.lowerHigh.blocked only when lowerHigh.block (default off) - the poller then logs the detection
  *   without an alert. hit itself is unchanged
+ * - [2026-11-25] type=feat - Three more setups beside the classic "바닥 반등 초입" (user 2026-11-25, 377300 카카오페이 chart: 09:15 /
+ *   09:41 / 12:07 were not detected - none of them is a plunge followed by five indicator crossings): detectSetups() -
+ *   vTurn "V자 반전" (a climax-volume bar makes the session's low, a bar within setups.vTurn.bars closes above that bar's high and
+ *   MA5), pullback "눌림목 반등" (a leg up, a 20-62 % pullback that holds above VWAP and brings MA5 down to MA20, then the first
+ *   close back above MA5 and MA20), vwapHold "VWAP 지지 반등" (price above VWAP dips to / under it on heavy volume and closes back
+ *   above VWAP and MA5). res.setups holds every check, res.setup the one that made the hit when the classic detector did not.
+ *   The judged bar still must not be in a session edge; the climax bar of vTurn may be (after setups.openSkipMin minutes).
+ *   Alert cooldown is per kind (cooldownKey) - 09:15 V and 09:41 pullback of one symbol are both alerted
  */
 
 import { adx, bollinger, ichimoku, macd, normalizeParams, rsi, sma, vwap, HTS_PARAMS, type CalcMethod, type IndicatorParams, type Series } from './indicators';
@@ -137,6 +145,51 @@ export interface ReboundConfig {
     /** ... and at least this many KRX ticks lower */
     minTicks: number;
   };
+  /** [2026-11-25] the extra setups (see the update log); enabled = master switch, each has its own `on` */
+  setups: {
+    enabled: boolean;
+    /** vTurn: a climax bar in the first minutes of a session window is not taken (opening volume) */
+    openSkipMin: number;
+    vTurn: {
+      on: boolean;
+      /** the climax bar is within this many bars before the judged bar */
+      bars: number;
+      /** its volume >= volMult x the mean of plunge.volWindow bars before it, and the highest of the peakBars bars before it */
+      volMult: number;
+      peakBars: number;
+      /** its low is the lowest of the lowWindow bars before it (same session) */
+      lowWindow: number;
+      /** fall into it (highest high of fallWindow bars -> its low) at least this %, at most plunge.maxFallPct */
+      fallWindow: number;
+      minFallPct: number;
+      /** judged close at least this % above the climax low */
+      minBouncePct: number;
+    };
+    pullback: {
+      on: boolean;
+      /** the leg (low -> high) and the pullback lie in the last legWindow bars; the leg rises at least legMinPct % */
+      legWindow: number;
+      legMinPct: number;
+      /** pullback depth as a fraction of the leg */
+      retraceMin: number;
+      retraceMax: number;
+      /** bars from the leg high to the judged bar, at least */
+      minBars: number;
+      /** the pullback low may be this % under VWAP at most */
+      vwapTolPct: number;
+    };
+    vwapHold: {
+      on: boolean;
+      /** of the aboveWindow bars before the dip at least aboveMin (fraction) closed above VWAP */
+      aboveWindow: number;
+      aboveMin: number;
+      /** the dip (a low at / under VWAP) is within the last dipBars bars, at most maxUnderPct % under VWAP */
+      dipBars: number;
+      maxUnderPct: number;
+      /** a dip bar's volume >= volMult x the mean of plunge.volWindow bars before the dip */
+      volMult: number;
+    };
+  };
   /** KST "HH:MM" windows; outside all of them (and on weekends) the watcher rests */
   sessions: { krx: [string, string]; nxtPre: [string, string] | null; nxtAfter: [string, string] | null };
   alert: {
@@ -184,6 +237,13 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
   bonus: { minScore: 3, adxTroughBars: 4, adxDropMin: 2, maNearPct: 0.2, macdZeroPct: 0.05, macdZeroBars: 3 },
   lowerHigh: { block: false, divExempt: true, pivotBars: 5, rangeBars: 150, minDropPct: 0.2, minTicks: 2 },
   poll: { delaySec: 2, days: 2, gapMs: 150, tabReloadSec: 300, retries: 3, backoffMs: 500 },
+  setups: {
+    enabled: true,
+    openSkipMin: 5,
+    vTurn: { on: true, bars: 4, volMult: 4, peakBars: 20, lowWindow: 60, fallWindow: 30, minFallPct: 1.5, minBouncePct: 0.6 },
+    pullback: { on: true, legWindow: 40, legMinPct: 2, retraceMin: 0.2, retraceMax: 0.62, minBars: 5, vwapTolPct: 0.2 },
+    vwapHold: { on: true, aboveWindow: 30, aboveMin: 0.8, dipBars: 6, maxUnderPct: 0.6, volMult: 3 },
+  },
   sessions: { krx: ['09:00', '15:30'], nxtPre: ['08:00', '08:50'], nxtAfter: ['15:40', '20:00'] },
   alert: { cooldownMin: 30, sound: true, autoCloseSec: 60, kakao: false, maxPopups: 6 },
 };
@@ -234,6 +294,15 @@ export const BONUS_LABEL: Record<BonusKey, string> = {
   macdZero: 'MACD 0선 근처·돌파',
   volDry: '반등 구간 거래량 감소',
 };
+/** [2026-11-25] the extra setups */
+export type SetupKind = 'vTurn' | 'pullback' | 'vwapHold';
+export const SETUP_LABEL: Record<SetupKind, string> = { vTurn: 'V자 반전', pullback: '눌림목 반등', vwapHold: 'VWAP 지지 반등' };
+export const SETUP_KEYS = Object.keys(SETUP_LABEL) as SetupKind[];
+export const CLASSIC_LABEL = '바닥 반등 초입';
+/** title of a detection: the setup that made it, or the classic name */
+export const kindLabel = (res: { setup?: SetupKind } | null | undefined): string => (res?.setup ? SETUP_LABEL[res.setup] : CLASSIC_LABEL);
+/** alert cooldown key: one per symbol and kind */
+export const cooldownKey = (code: string, res: { setup?: SetupKind }): string => (res.setup ? `${code}|${res.setup}` : code);
 export const COND_KEYS = Object.keys(COND_LABEL) as CondKey[];
 export const BONUS_KEYS = Object.keys(BONUS_LABEL) as BonusKey[];
 
@@ -307,6 +376,10 @@ export interface ReboundResult {
   snap: ReboundSnapshot;
   /** [2026-11-24] lower highs check (missing in history items from before it) */
   lowerHigh?: LowerHigh;
+  /** [2026-11-25] the extra setups' checks (missing in older history items) */
+  setups?: Record<SetupKind, Check>;
+  /** [2026-11-25] the setup that made this a hit - unset when the classic conditions did (or there is no hit) */
+  setup?: SetupKind;
   /** why nothing was judged (too few bars) */
   skip?: string;
 }
@@ -329,7 +402,16 @@ export function alertSummary(a: { code: string; name: string; price?: number; ch
   const won = (x: number | undefined) => (x === undefined || !isNum(x) ? '-' : Math.round(x).toLocaleString('ko-KR'));
   const pct = a.changePct === undefined || !isNum(a.changePct) ? '' : ` (${a.changePct >= 0 ? '+' : ''}${a.changePct.toFixed(2)}%)`;
   const s = a.res?.snap;
-  const lines = s
+  const su = a.res?.setup;
+  const lines = s && su
+    ? [
+        `[${SETUP_LABEL[su]}] ${a.name}(${a.code})`,
+        `${hhmm(s.t)} 봉 · ${won(a.price ?? s.close)}원${pct}`,
+        a.res!.setups?.[su]?.note ?? '-',
+        `RSI ${n(s.rsi)}/${n(s.rsiSignal)} · MACD ${n(s.macd)}/${n(s.macdSignal)}`,
+        `VWAP ${isNum(s.vwapPct) && s.vwapPct >= 0 ? '+' : ''}${n(s.vwapPct, 2)}% · MA5 ${won(s.ma5)} · MA20 ${won(s.ma20)}`,
+      ]
+    : s
     ? [
         `[바닥 반등 초입] ${a.name}(${a.code})`,
         // [2026-11-24] lower highs: a short tag on this line (a line of its own pushed the bonus line past 200 characters)
@@ -342,7 +424,7 @@ export function alertSummary(a: { code: string; name: string; price?: number; ch
     : [`[바닥 반등 초입] ${a.name}(${a.code})`, `14:55 봉 · ${won(a.price)}원${pct} · 가점 3점`, 'RSI 53.3/48.8 · MACD -40.3/-61.7', 'DI 32.2/12.6 · ADX 35.6 · 각도 14.6°', 'VWAP -3.29% · 급락 14:33 (-2.7%)', '가점: ADX 반등, 볼린저, 거래량 감소'];
   // [2026-11-24] (Codex) too long: the indicator lines go first (VWAP, DI, RSI), the bonus list last
   const kept = lines.map((text, k) => ({ text, k }));
-  for (const drop of [4, 3, 2, 5]) {
+  for (const drop of su ? [3, 4] : [4, 3, 2, 5]) {
     if (kept.map((x) => x.text).join('\n').length <= max) break;
     const at = kept.findIndex((x) => x.k === drop);
     if (at >= 0) kept.splice(at, 1);
@@ -578,6 +660,147 @@ export function plungeFall(bars: Bar[], j: number, window: number): number {
   return hi > 0 ? (bars[j].l / hi - 1) * 100 : NaN;
 }
 
+/** minutes from the start of the session window `t` falls in (Infinity outside every window) */
+function minIntoSession(cfg: ReboundConfig, t: number): number {
+  const k = sessionIdx(cfg, t);
+  const w = [cfg.sessions.krx, cfg.sessions.nxtPre, cfg.sessions.nxtAfter][k];
+  if (!w) return Infinity;
+  const d = new Date(t + KST);
+  return d.getUTCHours() * 60 + d.getUTCMinutes() - (+w[0].split(':')[0] * 60 + +w[0].split(':')[1]);
+}
+
+/**
+ * [2026-11-25] The extra setups at the last bar (see the update log). ma5 / ma20 / V (VWAP) are the series detectRebound computed.
+ * Every window stays inside the judged bar's own KST day and session window.
+ */
+export function detectSetups(bars: Bar[], cfg: ReboundConfig, ma5: Series, ma20: Series, V: Series): Record<SetupKind, Check> {
+  const i = bars.length - 1;
+  const z = cfg.setups;
+  const no = (note: string): Check => ({ ok: false, note });
+  const out: Record<SetupKind, Check> = { vTurn: no('-'), pullback: no('-'), vwapHold: no('-') };
+  if (i < 2) return out;
+  const b = bars[i];
+  const day = kstDayOf(b.t);
+  const ses = sessionIdx(cfg, b.t);
+  // regular session only: the NXT pre / after market is too thin for a volume climax or a VWAP test to mean anything
+  if (ses !== 0) return { vTurn: no('정규장 밖 봉'), pullback: no('정규장 밖 봉'), vwapHold: no('정규장 밖 봉') };
+  let s0 = i;
+  while (s0 > 0 && kstDayOf(bars[s0 - 1].t) === day && sessionIdx(cfg, bars[s0 - 1].t) === ses) s0--;
+  const volAvg = (j: number) => {
+    let s = 0;
+    let n = 0;
+    for (let k = Math.max(0, j - cfg.plunge.volWindow); k < j; k++) (s += bars[k].v), n++;
+    return n ? s / n : NaN;
+  };
+  const up = b.c > b.o;
+
+  // ---- V자 반전: climax-volume low, then a close above that bar's high and MA5
+  if (!z.vTurn.on) out.vTurn = no('꺼짐');
+  else {
+    const c = z.vTurn;
+    let note = `최근 ${c.bars}봉에 거래량 실린 저점 봉 없음`;
+    for (let j = i - 1; j >= Math.max(s0 + 1, i - Math.max(1, Math.round(c.bars))); j--) {
+      const x = bars[j];
+      if (minIntoSession(cfg, x.t) < z.openSkipMin) continue;
+      const avg = volAvg(j);
+      let peak = 0;
+      for (let k = Math.max(s0, j - c.peakBars); k < j; k++) peak = Math.max(peak, bars[k].v);
+      if (!(avg > 0 && x.v >= c.volMult * avg && x.v > peak)) continue;
+      let lowBefore = Infinity;
+      for (let k = Math.max(s0, j - c.lowWindow); k < j; k++) lowBefore = Math.min(lowBefore, bars[k].l);
+      let lowAfter = Infinity;
+      for (let k = j + 1; k <= i; k++) lowAfter = Math.min(lowAfter, bars[k].l);
+      let hi = -Infinity;
+      for (let k = Math.max(s0, j - c.fallWindow + 1); k <= j; k++) hi = Math.max(hi, bars[k].h);
+      const fall = hi > 0 ? (x.l / hi - 1) * 100 : NaN;
+      const bounce = x.l > 0 ? (b.c / x.l - 1) * 100 : NaN;
+      const head = `저점 봉 ${hhmm(x.t)} ${won(x.l)} 거래량 ${x.v} (평균의 ${f1(x.v / avg)}배) 낙폭 ${f1(fall)}%`;
+      if (!(x.l < lowBefore)) note = `${head} - 장중 저점 아님`;
+      else if (!(lowAfter >= x.l)) note = `${head} - 저점 이탈`;
+      else if (!(-fall >= c.minFallPct)) note = `${head} - 낙폭 부족 (기준 -${c.minFallPct}%)`;
+      else if (cfg.plunge.maxFallPct > 0 && -fall > cfg.plunge.maxFallPct) note = `${head} - 급락 과대 (기준 -${cfg.plunge.maxFallPct}%)`;
+      else if (!(b.c > x.h && b.c > ma5[i] && up)) note = `${head} - 회복 미확인 (종가 ${won(b.c)} / 저점 봉 고가 ${won(x.h)} / MA5 ${f1(ma5[i])})`;
+      else if (!(bounce >= c.minBouncePct)) note = `${head} - 반등폭 ${f2(bounce)}% 부족`;
+      else {
+        out.vTurn = { ok: true, note: `${head} → 종가 ${won(b.c)} 회복 (+${f2(bounce)}%)` };
+        break;
+      }
+    }
+    if (!out.vTurn.ok) out.vTurn = no(note);
+  }
+
+  // ---- 눌림목 반등: a leg up, a pullback above VWAP that brings MA5 to MA20, the first close back above both
+  if (!z.pullback.on) out.pullback = no('꺼짐');
+  else {
+    const c = z.pullback;
+    const lo = Math.max(s0, i - Math.max(5, Math.round(c.legWindow)));
+    // the leg: the lowest low of the window, then the highest high after it (the latest of equals) up to minBars bars ago
+    const hEnd = i - Math.max(1, Math.round(c.minBars));
+    let lk = -1;
+    for (let k = lo; k < hEnd; k++) if (lk < 0 || bars[k].l < bars[lk].l) lk = k;
+    let hk = -1;
+    if (lk >= 0) for (let k = lk + 1; k <= hEnd; k++) if (hk < 0 || bars[k].h >= bars[hk].h) hk = k;
+    if (hk < 0 || lk < 0 || lk >= hk) out.pullback = no('상승 구간 없음');
+    else {
+      const H = bars[hk].h;
+      const L = bars[lk].l;
+      const leg = L > 0 ? (H / L - 1) * 100 : 0;
+      let pk = hk + 1;
+      for (let k = hk + 1; k <= i; k++) if (bars[k].l < bars[pk].l) pk = k;
+      const PL = bars[pk].l;
+      const retr = H > L ? (H - PL) / (H - L) : NaN;
+      let touched = false;
+      let broke = false; // a high above the leg high after it: no pullback any more
+      for (let k = hk + 1; k <= i; k++) {
+        if (isNum(ma5[k]) && isNum(ma20[k]) && ma5[k] <= ma20[k]) touched = true;
+        if (bars[k].h > H) broke = true;
+      }
+      const top = Math.max(ma5[i], ma20[i]);
+      const prevTop = Math.max(ma5[i - 1], ma20[i - 1]);
+      const head = `상승 ${hhmm(bars[lk].t)} ${won(L)} → ${hhmm(bars[hk].t)} ${won(H)} (+${f1(leg)}%), 눌림 저점 ${hhmm(bars[pk].t)} ${won(PL)} (되돌림 ${isNum(retr) ? Math.round(retr * 100) : '-'}%)`;
+      if (!(leg >= c.legMinPct)) out.pullback = no(`${head} - 상승폭 부족 (기준 +${c.legMinPct}%)`);
+      else if (broke) out.pullback = no(`${head} - 이미 고점 돌파`);
+      else if (!(retr >= c.retraceMin && retr <= c.retraceMax)) out.pullback = no(`${head} - 되돌림 범위 밖 (${Math.round(c.retraceMin * 100)}~${Math.round(c.retraceMax * 100)}%)`);
+      else if (!(isNum(V[pk]) && PL >= V[pk] * (1 - c.vwapTolPct / 100))) out.pullback = no(`${head} - 눌림 저점이 VWAP ${f1(V[pk])} 아래`);
+      else if (!touched) out.pullback = no(`${head} - MA5 가 MA20 까지 내려오지 않음`);
+      else if (!(isNum(top) && isNum(prevTop) && b.c > top && up && bars[i - 1].c <= prevTop)) out.pullback = no(`${head} - 회복 봉 아님 (종가 ${won(b.c)} / MA5 ${f1(ma5[i])} / MA20 ${f1(ma20[i])})`);
+      else out.pullback = { ok: true, note: `${head} → 종가 ${won(b.c)} 가 MA5·MA20 회복` };
+    }
+  }
+
+  // ---- VWAP 지지 반등: above VWAP, a heavy-volume dip to / under it, a close back above VWAP and MA5
+  if (!z.vwapHold.on) out.vwapHold = no('꺼짐');
+  else {
+    const c = z.vwapHold;
+    const d0 = i - Math.max(1, Math.round(c.dipBars)) + 1;
+    const a0 = d0 - Math.max(1, Math.round(c.aboveWindow));
+    if (a0 < s0 || !isNum(V[i])) out.vwapHold = no('장 시작 후 봉 부족');
+    else {
+      let above = 0;
+      for (let k = a0; k < d0; k++) if (isNum(V[k]) && bars[k].c > V[k]) above++;
+      const ratio = above / (d0 - a0);
+      let under = -Infinity; // deepest low under VWAP, percent (negative = stayed above)
+      let vmax = 0;
+      let dk = -1;
+      for (let k = d0; k <= i; k++) {
+        if (!isNum(V[k]) || V[k] <= 0) continue;
+        const u = (1 - bars[k].l / V[k]) * 100;
+        if (u > under) (under = u), (dk = k);
+        vmax = Math.max(vmax, bars[k].v);
+      }
+      const avg = volAvg(d0);
+      const head = `VWAP ${f1(V[i])}, 저점 ${dk >= 0 ? `${hhmm(bars[dk].t)} ${won(bars[dk].l)}` : '-'} (VWAP 대비 ${f2(-under)}%), 거래량 최대 ${vmax} (평균의 ${f1(vmax / avg)}배)`;
+      if (!(ratio >= c.aboveMin)) out.vwapHold = no(`${head} - 직전 ${c.aboveWindow}봉 중 ${above}봉만 VWAP 위`);
+      else if (!(under >= 0)) out.vwapHold = no(`${head} - VWAP 까지 내려오지 않음`);
+      else if (!(under <= c.maxUnderPct)) out.vwapHold = no(`${head} - VWAP 이탈 과대 (기준 ${c.maxUnderPct}%)`);
+      else if (!(avg > 0 && vmax >= c.volMult * avg)) out.vwapHold = no(`${head} - 거래량 부족 (기준 ${c.volMult}배)`);
+      else if (!(b.c > V[i] && b.c > ma5[i] && b.c >= b.o && b.c > bars[i - 1].c)) out.vwapHold = no(`${head} - 회복 봉 아님 (종가 ${won(b.c)} / MA5 ${f1(ma5[i])})`);
+      else out.vwapHold = { ok: true, note: `${head} → 종가 ${won(b.c)} 가 VWAP·MA5 회복` };
+    }
+  }
+  return out;
+}
+
 /**
  * Judge the last bar of `bars` (all of them completed 1-minute bars, oldest first; earlier days may be included for warm-up -
  * VWAP restarts each KST day). Returns the conditions met, the score and the indicator values at that bar.
@@ -739,5 +962,20 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
   const required = COND_KEYS.every((k) => conds[k].ok);
   const score = BONUS_KEYS.filter((k) => bonus[k].ok).length;
   const lowerHigh = lowerHighs(bars, i, pj, cfg, R.rsi);
-  return { hit: required && score >= bz.minScore && !edge, edge, required, score, conds, bonus, snap, lowerHigh };
+  const classic = required && score >= bz.minScore && !edge;
+  // [2026-11-25] the extra setups: they make a hit of their own when the classic conditions do not
+  const setups = cfg.setups.enabled ? detectSetups(bars, cfg, ma5, ma20, V) : undefined;
+  const setup = !classic && !edge && setups ? SETUP_KEYS.find((k) => setups[k].ok) : undefined;
+  return {
+    hit: classic || !!setup,
+    edge,
+    required,
+    score,
+    conds,
+    bonus,
+    snap,
+    lowerHigh: setup ? { ...lowerHigh, blocked: false } : lowerHigh, // the lower-highs block belongs to the classic plunge
+    ...(setups ? { setups } : {}),
+    ...(setup ? { setup } : {}),
+  };
 }

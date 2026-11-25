@@ -42,6 +42,7 @@
 // - [2026-11-20] type=fix (Switching 일 -> 분 (any bar kind / size / days / symbol) drew the old bars with the new settings until the new
 //   data came: daily bars as minute bars got a dotted day line between every bar. The loaded data keeps the request it answers (key);
 //   bars of another request are not drawn - "불러오는 중" instead)
+import { kindLabel } from '../../../shared/rebound';
 import type { Quote } from '../../../shared/kis';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { kstDay, useStore, type Win } from '../store';
@@ -191,7 +192,7 @@ export function ChartWindow({ win }: { win: Win }) {
       intraday && todayAlerts
         ? todayAlerts.map((a) => {
             const hm = (t: number) => new Date(t + 9 * 3600000).toISOString().slice(11, 16);
-            return { t: a.res.snap.t, id: a.id, title: `바닥 반등 알림 · ${hm(a.at)} 감지 (봉 ${hm(a.res.snap.t)}) · 가점 ${a.res.score}점 · 누르면 내역 표시` };
+            return { t: a.res.snap.t, id: a.id, title: `${kindLabel(a.res)} 알림 · ${hm(a.at)} 감지 (봉 ${hm(a.res.snap.t)})${a.res.setup ? '' : ` · 가점 ${a.res.score}점`} · 누르면 내역 표시` };
           })
         : undefined,
     [intraday, todayAlerts],

@@ -13,7 +13,7 @@
 import { app, BrowserWindow, screen, shell } from 'electron';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
-import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, lowerHighLabel, type ReboundConfig, type ReboundResult } from '../shared/rebound';
+import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, kindLabel, lowerHighLabel, SETUP_KEYS, SETUP_LABEL, type ReboundConfig, type ReboundResult } from '../shared/rebound';
 
 export interface AlertInfo {
   code: string;
@@ -35,6 +35,8 @@ const CSV_HEAD = [
   'di_plus', 'di_minus', 'adx', 'ma5_angle', 'vwap', 'vwap_pct', 'ma5', 'ma20', 'ma60', 'ma120', 'plunge_time', 'plunge_low', 'plunge_volume', 'plunge_fall_pct',
   // [2026-11-24] lower highs check: state lh / no / na, H1 / H2 / Hc, RSI divergence, why the alert was not sent ('' sent / cooldown)
   'lower_high', 'lh_h1_time', 'lh_h1', 'lh_h2_time', 'lh_h2', 'lh_hc', 'lh_div', 'suppressed',
+  // [2026-11-25] kind: classic / vTurn / pullback / vwapHold, and what the setup measured
+  'kind', 'setup_note',
 ];
 const n = (x: number | undefined, d = 2) => (x === undefined || !Number.isFinite(x) ? '' : Number(x.toFixed(d)).toString());
 
@@ -48,6 +50,7 @@ export function csvRow(a: AlertInfo, alerted: boolean, suppressed = ''): string 
     n(s.vwap, 1), n(s.vwapPct), n(s.ma5, 1), n(s.ma20, 1), n(s.ma60, 1), n(s.ma120, 1), hhmm(s.plungeT), n(s.plungeLow, 0), n(s.plungeVol, 0), n(s.plungeFallPct),
     lh?.state ?? '', lh?.h1t === undefined ? '' : hhmm(lh.h1t), n(lh?.h1, 0), lh?.h2t === undefined ? '' : hhmm(lh.h2t), n(lh?.h2, 0), n(lh?.hc, 0),
     lh ? (lh.div ? '1' : '0') : '', suppressed,
+    a.res.setup ?? 'classic', a.res.setup ? (a.res.setups?.[a.res.setup]?.note ?? '').replace(/[",\r\n]/g, ' ') : '',
   ];
   return f.join(',');
 }
@@ -97,7 +100,7 @@ export function alertHtml(a: AlertInfo, minScore: number): string {
   const li = (ok: boolean, label: string, note: string) => `<li class="${ok ? 'ok' : 'no'}" title="${esc(note)}"><b>${ok ? '✓' : '·'}</b> ${esc(label)}<i>${esc(note)}</i></li>`;
   const row = (k: string, v: string) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`;
   return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>바닥 반등 초입 ${esc(a.name)}</title><style>
+<title>${esc(kindLabel(a.res))} ${esc(a.name)}</title><style>
 *{box-sizing:border-box}html,body{margin:0;height:100%}
 body{font:12px/1.45 "Malgun Gothic","Segoe UI",sans-serif;background:#15171c;color:#d7dae0;border:1px solid #e0a23a;overflow:hidden;display:flex;flex-direction:column}
 header{display:flex;align-items:center;gap:6px;padding:6px 8px;background:#2a2212;-webkit-app-region:drag}
@@ -114,11 +117,12 @@ h2{margin:4px 0 2px;font-size:11px;color:#9aa0aa;font-weight:normal;border-botto
 table{border-collapse:collapse;width:100%}th{text-align:left;color:#9aa0aa;font-weight:normal;padding:0 6px 0 0;white-space:nowrap}td{text-align:right}
 footer{padding:3px 8px;color:#737985;font-size:11px;border-top:1px solid #2c3038}
 </style></head><body>
-<header><b>바닥 반등 초입</b><span>${esc(kst(a.at).slice(11, 19))} 감지 · 봉 ${esc(hhmm(s.t))}</span><a href="https://rebound.invalid/open/${esc(a.code)}" title="앱에서 이 종목 열기">열기</a><a href="https://rebound.invalid/close" title="닫기">✕</a></header>
+<header><b>${esc(kindLabel(a.res))}</b><span>${esc(kst(a.at).slice(11, 19))} 감지 · 봉 ${esc(hhmm(s.t))}</span><a href="https://rebound.invalid/open/${esc(a.code)}" title="앱에서 이 종목 열기">열기</a><a href="https://rebound.invalid/close" title="닫기">✕</a></header>
 <main>
 <h1>${esc(a.name)} <small>(${esc(a.code)})</small></h1>
 <div class="px ${up ? 'up' : 'dn'}">${num(price, 0)}${a.changePct === undefined ? '' : ` &nbsp;${up ? '+' : ''}${num(a.changePct, 2)}%`}</div>
-<h2>필수 조건</h2><ul>${COND_KEYS.map((k) => li(a.res.conds[k].ok, COND_LABEL[k], a.res.conds[k].note)).join('')}</ul>
+${a.res.setups ? `<h2>추가 유형${a.res.setup ? ` - ${esc(SETUP_LABEL[a.res.setup])} 로 감지` : ''}</h2><ul>${SETUP_KEYS.map((k) => `<li class="wrap ${a.res.setups![k].ok ? 'ok' : 'no'}" title="${esc(a.res.setups![k].note)}"><b>${a.res.setups![k].ok ? '✓' : '·'}</b> ${esc(SETUP_LABEL[k])}<i>${esc(a.res.setups![k].note)}</i></li>`).join('')}</ul>` : ''}
+<h2>필수 조건${a.res.setup ? ' (바닥 반등 초입 - 참고)' : ''}</h2><ul>${COND_KEYS.map((k) => li(a.res.conds[k].ok, COND_LABEL[k], a.res.conds[k].note)).join('')}</ul>
 <h2>가점 ${a.res.score}점 (기준 ${minScore}점)</h2><ul>${BONUS_KEYS.map((k) => li(a.res.bonus[k].ok, BONUS_LABEL[k], a.res.bonus[k].note)).join('')}</ul>
 ${a.res.lowerHigh ? `<h2>추세 구조</h2><ul><li class="wrap ${a.res.lowerHigh.state === 'lh' ? 'warn' : a.res.lowerHigh.state === 'no' ? 'ok' : 'no'}" title="${esc(a.res.lowerHigh.note)}"><b>${a.res.lowerHigh.state === 'lh' ? '!' : a.res.lowerHigh.state === 'no' ? '✓' : '·'}</b> ${esc(lowerHighLabel(a.res.lowerHigh))}<i>${esc(a.res.lowerHigh.note)}</i></li></ul>` : ''}
 <h2>지표</h2><table>
@@ -162,7 +166,7 @@ export class AlertPopups {
       alwaysOnTop: true,
       show: false,
       backgroundColor: '#15171c',
-      title: `바닥 반등 초입 ${a.name}`,
+      title: `${kindLabel(a.res)} ${a.name}`,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false },
     });
     w.setAlwaysOnTop(true, 'floating');

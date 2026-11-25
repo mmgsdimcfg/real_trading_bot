@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.0.28_001 (2026-11-25): 반등 감시에 추가 유형 3종 - V자 반전 / 눌림목 반등 / VWAP 지지 반등 (377300 카카오페이 11-25 09:15, 09:41, 12:07 기준). 정규장만 판정, 유형별 쿨다운, 설정에서 유형별 on/off, 팝업·히스토리·감지 CSV(kind, setup_note)에 유형 표시",
     "[2026-11-25] type=feat - v1.0.27_002: 제어 탭 - 매매 방식과 그 청산 방식을 짝으로 배치(규칙 매매 아래 기본 청산 안내 + 추가 기준, Edge AI 매매 아래 청산 방식), 규칙 매매 기본 청산 방식 안내(자동 매도 설정별), 값을 바꾸고 저장하지 않았으면 적용 버튼 빨간 테두리 + 변경됨 표시(청산 기준, 실제 매매 한도)",
     "[2026-11-25] type=feat - v1.0.27_001: 제어 탭 청산 기준을 매매 방식별로 분리 - 규칙 매매 줄(서버 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN, 빈칸 = 미적용, 기존 규칙 청산에 더해 먼저 닿으면 전량 매도)과 Edge AI 매매 줄(EDGE_ONLY_*)을 따로 입력. 구형 서버에서는 규칙 매매 줄 숨김",
     "[2026-11-25] type=feat - v1.0.26_002: 제어 탭 청산 기준 안내 - 규칙 매매에도 적용됨을 표시 (값을 넣은 항목만, 기존 규칙 청산에 더해 먼저 닿으면 전량 매도, 정규장 / 자동 매도 전체일 때 - 서버 r006 공통 청산 기준). 청산 기준 저장 확인창에도 같은 안내",
@@ -85,7 +86,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -139,7 +140,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

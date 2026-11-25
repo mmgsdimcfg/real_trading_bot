@@ -13,7 +13,7 @@
 //   stops, a detection is recorded with suppressed "disabled" and not alerted, the pass does not publish enabled again)
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { completedBars, detectRebound, hhmm, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../shared/rebound';
+import { completedBars, cooldownKey, detectRebound, hhmm, kindLabel, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../shared/rebound';
 import type { MarketBackend } from '../shared/market';
 import type { MasterItem } from '../shared/kis';
 import { logDetection, reboundDir, type AlertInfo } from './reboundAlert';
@@ -216,7 +216,9 @@ export class ReboundWatcher {
       this.d.log(`[rebound] 감지 ${name}(${code}) - 반등 알림이 꺼져 알림 안 보냄`);
       return;
     }
-    const cool = now - (this.lastAlert.get(code) ?? -Infinity) < this.cfg.alert.cooldownMin * 60000;
+    // [2026-11-25] the cooldown is per symbol and kind: a V turn at 09:15 does not silence the pullback of the same symbol at 09:41
+    const ck = cooldownKey(code, res);
+    const cool = now - (this.lastAlert.get(ck) ?? -Infinity) < this.cfg.alert.cooldownMin * 60000;
     if (!cool) {
       try {
         const q = await backend.quote(code);
@@ -231,9 +233,9 @@ export class ReboundWatcher {
     } catch (e) {
       this.d.log(`[rebound] 감지 기록 실패: ${(e as Error).message}`);
     }
-    this.d.log(`[rebound] 감지 ${name}(${code}) 봉 ${hhmm(res.snap.t)} 점수 ${res.score}${cool ? ' - 쿨다운 중, 알림 생략' : ''}`);
+    this.d.log(`[rebound] 감지 [${kindLabel(res)}] ${name}(${code}) 봉 ${hhmm(res.snap.t)} ${res.setup ? res.setups?.[res.setup]?.note ?? '' : `점수 ${res.score}`}${cool ? ' - 쿨다운 중, 알림 생략' : ''}`);
     if (cool) return;
-    this.lastAlert.set(code, now);
+    this.lastAlert.set(ck, now);
     this.st.alerts++;
     this.d.alert(info, this.cfg);
   }

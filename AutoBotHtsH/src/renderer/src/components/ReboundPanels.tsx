@@ -16,7 +16,7 @@ import { PriceChart } from './PriceChart';
 import { normalizeParams, OSCILLATORS, type IndicatorKey, type IndicatorParams } from '../../../shared/indicators';
 import type { Bar } from '../../../shared/price';
 import type { ChartRes } from '../../../shared/market';
-import { alertSummary, BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, lowerHighLabel } from '../../../shared/rebound';
+import { alertSummary, BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, kindLabel, lowerHighLabel, SETUP_KEYS, SETUP_LABEL } from '../../../shared/rebound';
 import type { KakaoState, ReboundHistoryItem } from '../../../preload/index';
 
 const KST = 9 * 3600000;
@@ -77,7 +77,7 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
   const nOsc = ind.filter((k) => OSCILLATORS.includes(k)).length + (o.vol === false ? 0 : 1);
   const oscH = Math.max(56, Math.min(100, Math.floor((chartH * 0.42) / Math.max(1, nOsc)) - 8));
   const shown = useMemo(() => ind.filter((k) => k !== 'investor'), [ind.join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  const bell = useMemo(() => [{ t, id: item.id, title: `바닥 반등 알림 · 봉 ${hhmm(t)} · 가점 ${item.res.score}점` }], [t, item.id, item.res.score]);
+  const bell = useMemo(() => [{ t, id: item.id, title: `${kindLabel(item.res)} 알림 · 봉 ${hhmm(t)}${item.res.setup ? '' : ` · 가점 ${item.res.score}점`}` }], [t, item.id, item.res.score, item.res.setup]);
   const loading = res.key !== key;
   return (
     <div className="rb-hist-chart">
@@ -158,7 +158,7 @@ export function HistoryTab() {
             <span className="rb-hist-when">{when(it.at)}</span>
             <b>{it.name}</b>
             <span className="muted">{it.code}</span>
-            <span className="rb-hist-score">{it.res.score}점</span>
+            <span className="rb-hist-score" title={kindLabel(it.res)}>{it.res.setup ? SETUP_LABEL[it.res.setup] : `${it.res.score}점`}</span>
             {it.kakao && <span className={it.kakao === 'sent' ? 'rb-ok' : 'rb-warn'} title={it.kakao === 'sent' ? '카카오톡 전송됨' : `카카오톡 전송 실패: ${it.kakaoError || ''}`}>톡</span>}
           </div>
         ))}
@@ -173,9 +173,21 @@ export function HistoryTab() {
             </h3>
             <p>
               {new Date(cur.at + KST).toISOString().slice(0, 19).replace('T', ' ')} 감지 · 봉 {hhmm(cur.res.snap.t)} · {num(cur.price ?? cur.res.snap.close, 0)}원
-              {cur.changePct === undefined ? '' : ` (${cur.changePct >= 0 ? '+' : ''}${num(cur.changePct, 2)}%)`} · 가점 {cur.res.score}점
+              {cur.changePct === undefined ? '' : ` (${cur.changePct >= 0 ? '+' : ''}${num(cur.changePct, 2)}%)`} · {cur.res.setup ? kindLabel(cur.res) : `가점 ${cur.res.score}점`}
             </p>
-            <h4>필수 조건</h4>
+            {cur.res.setups && (
+              <>
+                <h4>추가 유형{cur.res.setup ? ` - ${SETUP_LABEL[cur.res.setup]} 로 감지` : ''}</h4>
+                <ul>
+                  {SETUP_KEYS.map((k) => (
+                    <li key={k} className={cur.res.setups![k].ok ? 'ok' : 'no'}>
+                      <b>{cur.res.setups![k].ok ? '✓' : '·'}</b> {SETUP_LABEL[k]} <span className="muted">{cur.res.setups![k].note}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <h4>필수 조건{cur.res.setup ? ' (바닥 반등 초입 - 참고)' : ''}</h4>
             <ul>
               {COND_KEYS.map((k) => (
                 <li key={k} className={cur.res.conds[k].ok ? 'ok' : 'no'}>

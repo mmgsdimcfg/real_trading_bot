@@ -293,10 +293,12 @@ describe('alert text', () => {
 
   it('CSV row keeps its columns whatever the name holds', () => {
     // [2026-11-24] 30 -> 38: lower_high, lh_h1_time, lh_h1, lh_h2_time, lh_h2, lh_hc, lh_div, suppressed
-    expect(csvRow(a, true).split(',')).toHaveLength(38);
+    // [2026-11-25] 38 -> 40: kind, setup_note
+    expect(csvRow(a, true).split(',')).toHaveLength(40);
+    expect(csvRow(a, true).split(',').slice(-2)).toEqual(['classic', '']);
     expect(csvRow(a, false).split(',')[4]).toBe('0');
     const lh: AlertInfo = { ...a, res: { ...a.res, lowerHigh: { state: 'lh', h1t: a.res.snap.t - 1800000, h1: 39050, h2t: a.res.snap.t - 900000, h2: 38800, hc: 38700, div: false, blocked: true, note: 'x' } } };
-    expect(csvRow(lh, false, 'lower_high').split(',').slice(30)).toEqual(['lh', hm(a.res.snap.t - 1800000), '39050', hm(a.res.snap.t - 900000), '38800', '38700', '0', 'lower_high']);
+    expect(csvRow(lh, false, 'lower_high').split(',').slice(30, 38)).toEqual(['lh', hm(a.res.snap.t - 1800000), '39050', hm(a.res.snap.t - 900000), '38800', '38700', '0', 'lower_high']);
   });
 
   it('[2026-11-24] a day file in the old layout is left alone - new rows go to detections_YYYYMMDD_2.csv', () => {
@@ -311,8 +313,8 @@ describe('alert text', () => {
     expect(readFileSync(old, 'utf8')).toBe(oldText);
     const rows = readFileSync(join(dir, 'detections_20261121_2.csv'), 'utf8').trim().split('\r\n');
     expect(rows).toHaveLength(3);
-    expect(rows[0].replace(/^﻿/, '').split(',').slice(-2)).toEqual(['lh_div', 'suppressed']);
-    expect(rows[2].split(',').at(-1)).toBe('lower_high');
+    expect(rows[0].replace(/^﻿/, '').split(',').slice(-4)).toEqual(['lh_div', 'suppressed', 'kind', 'setup_note']);
+    expect(rows[2].split(',').at(-3)).toBe('lower_high');
     // (Codex) _2 in another layout too -> _3; an empty _2 gets the header
     writeFileSync(join(dir, 'detections_20261122.csv'), oldText, 'utf8');
     writeFileSync(join(dir, 'detections_20261122_2.csv'), oldText, 'utf8');
@@ -420,7 +422,7 @@ describe('watcher pass', () => {
     expect(alerts).toHaveLength(1);
     expect(csv()).toHaveLength(3);
     expect(csv()[2].split(',').slice(1, 5)).toEqual(['15:05', '448900', '한국피아이엠', '0']);
-    expect(csv()[2].split(',').at(-1)).toBe('cooldown'); // [2026-11-24] why it was not alerted
+    expect(csv()[2].split(',')[37]).toBe('cooldown'); // [2026-11-24] why it was not alerted
   });
 
   it('rests outside the sessions, waits for a login, reports a missing tab, can be switched off', async () => {
@@ -482,7 +484,7 @@ describe('watcher pass - lower highs blocked', () => {
     const r = rows();
     expect(r).toHaveLength(n0 + 1);
     const f = r[r.length - 1].split(',');
-    expect([f[1], f[4], f[30], f.at(-1)]).toEqual(['14:55', '0', 'lh', 'lower_high']);
+    expect([f[1], f[4], f[30], f[37]]).toEqual(['14:55', '0', 'lh', 'lower_high']);
     setLh({ block: true, divExempt: true });
     clock = at('15:06') + 2000;
     await watcher.tick();
@@ -502,6 +504,6 @@ describe('watcher pass - lower highs blocked', () => {
     expect(alerts.map((a) => hm(a.res.snap.t))).toEqual(['14:55']);
     expect(alerts[0].res.lowerHigh).toMatchObject({ state: 'na', blocked: false });
     const f = rows().at(-1)!.split(',');
-    expect([f[1], f[4], f[30], f.at(-1)]).toEqual(['14:55', '1', 'na', '']);
+    expect([f[1], f[4], f[30], f[37]]).toEqual(['14:55', '1', 'na', '']);
   });
 });

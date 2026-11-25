@@ -84,6 +84,33 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
     ],
   },
   {
+    // [2026-11-25] the extra setups (user: 377300 09:15 / 09:41 / 12:07)
+    title: '추가 유형 (V자 반전 · 눌림목 반등 · VWAP 지지 반등)',
+    note: '위 A~F + 가점(바닥 반등 초입)에 해당하지 않아도 아래 세 유형 중 하나면 감지합니다. 정규장에서만 판정하고, 알림 쿨다운은 종목·유형별로 따로 셉니다. V자 반전: 거래량이 터진 장중 저점 봉 뒤, 그 봉 고가와 MA5 위로 종가 회복. 눌림목 반등: 상승 뒤 일부 되돌림(VWAP 위 유지, MA5 가 MA20 까지 내려옴) 후 종가가 MA5·MA20 회복. VWAP 지지 반등: VWAP 위에 있던 주가가 거래량과 함께 VWAP 를 건드리고 다시 VWAP·MA5 위로 마감.',
+    fields: [
+      { path: 'setups.enabled', label: '추가 유형 감지', kind: 'bool', hint: '끄면 바닥 반등 초입만 감지합니다' },
+      { path: 'setups.vTurn.on', label: 'V자 반전', kind: 'bool' },
+      { path: 'setups.vTurn.bars', label: 'V자: 저점 봉 뒤 회복 기한', unit: '봉 안' },
+      { path: 'setups.vTurn.volMult', label: 'V자: 저점 봉 거래량 배수', unit: '배 이상', hint: '앞 봉 평균 대비, 그리고 앞 20봉 중 최대' },
+      { path: 'setups.vTurn.minFallPct', label: 'V자: 저점까지 낙폭', unit: '% 이상', hint: '앞 30봉 최고가 -> 저점 봉 저가' },
+      { path: 'setups.vTurn.minBouncePct', label: 'V자: 저점 대비 반등', unit: '% 이상' },
+      { path: 'setups.openSkipMin', label: 'V자: 장 시작 직후 저점 봉 제외', unit: '분' },
+      { path: 'setups.pullback.on', label: '눌림목 반등', kind: 'bool' },
+      { path: 'setups.pullback.legWindow', label: '눌림목: 상승·눌림을 찾는 범위', unit: '봉' },
+      { path: 'setups.pullback.legMinPct', label: '눌림목: 앞선 상승폭', unit: '% 이상' },
+      { path: 'setups.pullback.retraceMin', label: '눌림목: 되돌림 하한', unit: '(상승폭 대비 비율)' },
+      { path: 'setups.pullback.retraceMax', label: '눌림목: 되돌림 상한', unit: '(상승폭 대비 비율)' },
+      { path: 'setups.pullback.minBars', label: '눌림목: 고점 뒤 최소 경과', unit: '봉' },
+      { path: 'setups.pullback.vwapTolPct', label: '눌림목: VWAP 아래 허용', unit: '%' },
+      { path: 'setups.vwapHold.on', label: 'VWAP 지지 반등', kind: 'bool' },
+      { path: 'setups.vwapHold.aboveWindow', label: 'VWAP: 직전 확인 범위', unit: '봉' },
+      { path: 'setups.vwapHold.aboveMin', label: 'VWAP: 그중 VWAP 위 종가 비율', unit: '이상 (0~1)' },
+      { path: 'setups.vwapHold.dipBars', label: 'VWAP: 건드린 뒤 회복 기한', unit: '봉 안' },
+      { path: 'setups.vwapHold.maxUnderPct', label: 'VWAP: 아래로 이탈 허용', unit: '% 이하' },
+      { path: 'setups.vwapHold.volMult', label: 'VWAP: 거래량 배수', unit: '배 이상' },
+    ],
+  },
+  {
     title: '장 경계 제외',
     note: '각 운영 시간대의 처음 / 마지막 구간은 감지하지 않고 급락 봉으로도 치지 않습니다 (0 = 끔).',
     fields: [
