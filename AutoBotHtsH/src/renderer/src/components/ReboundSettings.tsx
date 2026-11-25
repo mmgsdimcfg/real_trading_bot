@@ -86,7 +86,7 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
   {
     // [2026-11-25] the extra setups (user: 377300 09:15 / 09:41 / 12:07)
     title: '추가 유형 (V자 반전 · 눌림목 반등 · VWAP 지지 반등)',
-    note: '위 A~F + 가점(바닥 반등 초입)에 해당하지 않아도 아래 세 유형 중 하나면 감지합니다. 정규장에서만 판정하고, 알림 쿨다운은 종목·유형별로 따로 셉니다. V자 반전: 거래량이 터진 장중 저점 봉 뒤, 그 봉 고가와 MA5 위로 종가 회복. 눌림목 반등: 상승 뒤 일부 되돌림(VWAP 위 유지, MA5 가 MA20 까지 내려옴) 후 종가가 MA5·MA20 회복. VWAP 지지 반등: VWAP 위에 있던 주가가 거래량과 함께 VWAP 를 건드리고 다시 VWAP·MA5 위로 마감.',
+    note: '위 A~F + 가점(바닥 반등 초입)에 해당하지 않아도 아래 세 유형 중 하나면 감지합니다. 정규장에서만 판정하고, 알림 쿨다운은 종목·유형별로 따로 셉니다. V자 반전: 거래량이 터진 장중 저점 봉 뒤, 그 봉 고가와 MA5 위로 종가 회복. 눌림목 반등: 상승 뒤 20~50% 되돌림(VWAP 위 유지, MA5 가 MA20 까지 내려옴, 눌림 구간 거래량 감소) 후 종가가 MA5·MA20 회복. VWAP 지지 반등: VWAP 위에 있던 주가가 거래량과 함께 VWAP 를 건드리고 다시 VWAP·MA5 위로 마감.',
     fields: [
       { path: 'setups.enabled', label: '추가 유형 감지', kind: 'bool', hint: '끄면 바닥 반등 초입만 감지합니다' },
       { path: 'setups.vTurn.on', label: 'V자 반전', kind: 'bool' },
@@ -102,6 +102,8 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
       { path: 'setups.pullback.retraceMax', label: '눌림목: 되돌림 상한', unit: '(상승폭 대비 비율)' },
       { path: 'setups.pullback.minBars', label: '눌림목: 고점 뒤 최소 경과', unit: '봉' },
       { path: 'setups.pullback.vwapTolPct', label: '눌림목: VWAP 아래 허용', unit: '%' },
+      { path: 'setups.pullback.volDryMax', label: '눌림목: 눌림 구간 거래량', unit: '배 이하 (0 = 끔)', hint: '상승 구간 평균 거래량 대비 - 눌림이 상승보다 조용해야 합니다' },
+      { path: 'setups.pullback.trigVolMult', label: '눌림목: 회복 봉 거래량', unit: '배 이상 (0 = 끔)', hint: '앞 봉 평균 거래량 대비' },
       { path: 'setups.vwapHold.on', label: 'VWAP 지지 반등', kind: 'bool' },
       { path: 'setups.vwapHold.aboveWindow', label: 'VWAP: 직전 확인 범위', unit: '봉' },
       { path: 'setups.vwapHold.aboveMin', label: 'VWAP: 그중 VWAP 위 종가 비율', unit: '이상 (0~1)' },

@@ -44,6 +44,17 @@ describe('rebound setups - 377300 2026-11-25', () => {
     expect(early.setups!.pullback.note).toContain('MA5 가 MA20 까지 내려오지 않음');
   });
 
+  it('[2026-11-25] stricter pullback: 10:31 (leg +2.8 %, under the 3 % minimum) is no longer a hit; the old thresholds bring it back', () => {
+    const r = detectRebound(upTo('10:31'));
+    expect(r.hit).toBe(false);
+    expect(r.setups!.pullback.note).toContain('상승폭 부족 (기준 +3%)');
+    const old = applySets(REBOUND_DEFAULTS, ['setups.pullback.legMinPct=2', 'setups.pullback.retraceMax=0.62', 'setups.pullback.volDryMax=0', 'setups.pullback.trigVolMult=0']);
+    expect(detectRebound(upTo('10:31'), old).setup).toBe('pullback');
+    // the volume tests: an impossible bound fails the 09:41 bar with its own note
+    expect(detectRebound(upTo('09:41'), applySets(REBOUND_DEFAULTS, ['setups.pullback.volDryMax=0.1'])).setups!.pullback.note).toContain('눌림 구간 거래량이 줄지 않음');
+    expect(detectRebound(upTo('09:41'), applySets(REBOUND_DEFAULTS, ['setups.pullback.trigVolMult=5'])).setups!.pullback.note).toContain('회복 봉 거래량 부족');
+  });
+
   it('12:07 is the VWAP hold; the bar before it (a down close) is not', () => {
     const r = detectRebound(upTo('12:07'));
     expect(r.setup).toBe('vwapHold');

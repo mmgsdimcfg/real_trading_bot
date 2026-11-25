@@ -41,6 +41,10 @@
  *   above VWAP and MA5). res.setups holds every check, res.setup the one that made the hit when the classic detector did not.
  *   The judged bar still must not be in a session edge; the climax bar of vTurn may be (after setups.openSkipMin minutes).
  *   Alert cooldown is per kind (cooldownKey) - 09:15 V and 09:41 pullback of one symbol are both alerted
+ * - [2026-11-25] type=feat - pullback made stricter (user 2026-11-25: too many alerts - 0.56 per symbol-day of the 66 cached symbols):
+ *   legMinPct 2 -> 3, retraceMax 0.62 -> 0.5, and two volume tests - volDryMax (mean volume of the pullback bars at most 0.8 x that
+ *   of the leg bars: the pullback is quieter than the rise) and trigVolMult (the recovery bar's volume at least 1 x the mean of the
+ *   plunge.volWindow bars before it). 0 switches either off. The same replay gives 0.07 per symbol-day; 377300 09:41 still passes
  */
 
 import { adx, bollinger, ichimoku, macd, normalizeParams, rsi, sma, vwap, HTS_PARAMS, type CalcMethod, type IndicatorParams, type Series } from './indicators';
@@ -177,6 +181,10 @@ export interface ReboundConfig {
       minBars: number;
       /** the pullback low may be this % under VWAP at most */
       vwapTolPct: number;
+      /** mean volume of the pullback bars (after the leg high, before the judged bar) <= this x the leg's mean volume (0 = off) */
+      volDryMax: number;
+      /** the judged bar's volume >= this x the mean of plunge.volWindow bars before it (0 = off) */
+      trigVolMult: number;
     };
     vwapHold: {
       on: boolean;
@@ -241,7 +249,7 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
     enabled: true,
     openSkipMin: 5,
     vTurn: { on: true, bars: 4, volMult: 4, peakBars: 20, lowWindow: 60, fallWindow: 30, minFallPct: 1.5, minBouncePct: 0.6 },
-    pullback: { on: true, legWindow: 40, legMinPct: 2, retraceMin: 0.2, retraceMax: 0.62, minBars: 5, vwapTolPct: 0.2 },
+    pullback: { on: true, legWindow: 40, legMinPct: 3, retraceMin: 0.2, retraceMax: 0.5, minBars: 5, vwapTolPct: 0.2, volDryMax: 0.8, trigVolMult: 1 },
     vwapHold: { on: true, aboveWindow: 30, aboveMin: 0.8, dipBars: 6, maxUnderPct: 0.6, volMult: 3 },
   },
   sessions: { krx: ['09:00', '15:30'], nxtPre: ['08:00', '08:50'], nxtAfter: ['15:40', '20:00'] },
@@ -755,6 +763,14 @@ export function detectSetups(bars: Bar[], cfg: ReboundConfig, ma5: Series, ma20:
         if (isNum(ma5[k]) && isNum(ma20[k]) && ma5[k] <= ma20[k]) touched = true;
         if (bars[k].h > H) broke = true;
       }
+      const mean = (a: number, z: number) => {
+        let s = 0;
+        let n = 0;
+        for (let k = a; k <= z; k++) (s += bars[k].v), n++;
+        return n ? s / n : NaN;
+      };
+      const dry = mean(hk + 1, i - 1) / mean(lk, hk); // pullback volume vs the leg's
+      const trig = b.v / volAvg(i);
       const top = Math.max(ma5[i], ma20[i]);
       const prevTop = Math.max(ma5[i - 1], ma20[i - 1]);
       const head = `상승 ${hhmm(bars[lk].t)} ${won(L)} → ${hhmm(bars[hk].t)} ${won(H)} (+${f1(leg)}%), 눌림 저점 ${hhmm(bars[pk].t)} ${won(PL)} (되돌림 ${isNum(retr) ? Math.round(retr * 100) : '-'}%)`;
@@ -763,8 +779,10 @@ export function detectSetups(bars: Bar[], cfg: ReboundConfig, ma5: Series, ma20:
       else if (!(retr >= c.retraceMin && retr <= c.retraceMax)) out.pullback = no(`${head} - 되돌림 범위 밖 (${Math.round(c.retraceMin * 100)}~${Math.round(c.retraceMax * 100)}%)`);
       else if (!(isNum(V[pk]) && PL >= V[pk] * (1 - c.vwapTolPct / 100))) out.pullback = no(`${head} - 눌림 저점이 VWAP ${f1(V[pk])} 아래`);
       else if (!touched) out.pullback = no(`${head} - MA5 가 MA20 까지 내려오지 않음`);
+      else if (c.volDryMax > 0 && !(dry <= c.volDryMax)) out.pullback = no(`${head} - 눌림 구간 거래량이 줄지 않음 (상승 구간의 ${f2(dry)}배, 기준 ${c.volDryMax}배 이하)`);
       else if (!(isNum(top) && isNum(prevTop) && b.c > top && up && bars[i - 1].c <= prevTop)) out.pullback = no(`${head} - 회복 봉 아님 (종가 ${won(b.c)} / MA5 ${f1(ma5[i])} / MA20 ${f1(ma20[i])})`);
-      else out.pullback = { ok: true, note: `${head} → 종가 ${won(b.c)} 가 MA5·MA20 회복` };
+      else if (c.trigVolMult > 0 && !(trig >= c.trigVolMult)) out.pullback = no(`${head} - 회복 봉 거래량 부족 (평균의 ${f2(trig)}배, 기준 ${c.trigVolMult}배)`);
+      else out.pullback = { ok: true, note: `${head}, 눌림 거래량 ${f2(dry)}배 → 종가 ${won(b.c)} 가 MA5·MA20 회복` };
     }
   }
 
