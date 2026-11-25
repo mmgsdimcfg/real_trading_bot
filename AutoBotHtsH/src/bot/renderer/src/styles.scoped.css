@@ -474,6 +474,11 @@
 .bot-root .paper-exit { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .bot-root .paper-exit-in { width: 4.2em; text-align: right; }
 .bot-root .paper-exit-in[aria-invalid='true'] { border-color: var(--st-hold); }
+.bot-root .paper-exit-in.edge-live-in { width: 6.5em; }
+.bot-root .tk-opt.tk-opt-in { padding-left: 22px; }
+.bot-root .tk-lab { display: inline-block; min-width: 4.6em; font-weight: 600; font-size: var(--fs); color: var(--text-2); }
+.bot-root button.mini.dirty:not(:disabled) { border-color: #d93025; color: #d93025; box-shadow: 0 0 0 1px #d93025 inset; font-weight: 600; }
+.bot-root .dirty-note { font-size: var(--fs); color: #d93025; font-weight: 600; white-space: nowrap; }
 .bot-root .push-right { margin-left: auto; }
 .bot-root details.adv { margin-top: 10px; }
 .bot-root details.adv > summary { cursor: pointer; color: var(--text-2); font-size: var(--fs); }

@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-25] type=feat - v1.0.27_002: 제어 탭 - 매매 방식과 그 청산 방식을 짝으로 배치(규칙 매매 아래 기본 청산 안내 + 추가 기준, Edge AI 매매 아래 청산 방식), 규칙 매매 기본 청산 방식 안내(자동 매도 설정별), 값을 바꾸고 저장하지 않았으면 적용 버튼 빨간 테두리 + 변경됨 표시(청산 기준, 실제 매매 한도)",
     "[2026-11-25] type=feat - v1.0.27_001: 제어 탭 청산 기준을 매매 방식별로 분리 - 규칙 매매 줄(서버 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN, 빈칸 = 미적용, 기존 규칙 청산에 더해 먼저 닿으면 전량 매도)과 Edge AI 매매 줄(EDGE_ONLY_*)을 따로 입력. 구형 서버에서는 규칙 매매 줄 숨김",
     "[2026-11-25] type=feat - v1.0.26_002: 제어 탭 청산 기준 안내 - 규칙 매매에도 적용됨을 표시 (값을 넣은 항목만, 기존 규칙 청산에 더해 먼저 닿으면 전량 매도, 정규장 / 자동 매도 전체일 때 - 서버 r006 공통 청산 기준). 청산 기준 저장 확인창에도 같은 안내",
     "[2026-11-25] type=feat - v1.0.26_001: 제어 탭 구조 변경 - 청산 기준을 맨 위로, 매매 방식은 규칙 매매 / Edge AI 매매 두 가지(Edge AI 아래 실제 매매 · 가상 매매 체크), 반등 알림은 별도 묶음. Edge AI 실제 매매(서버 EDGE_LIVE_ORDERS, 규칙 매매와 병행): 한도 입력(1회 금액 / 동시 보유 / 하루 횟수 / 하루 손실)과 오늘 현황 표시, 자동 매도가 전체일 때만. SSH 키 접속: 공개키(.pub) 경로를 넣어도 옆의 개인키 사용",
@@ -138,7 +139,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "001",
+    "buildNumber": "002",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",
