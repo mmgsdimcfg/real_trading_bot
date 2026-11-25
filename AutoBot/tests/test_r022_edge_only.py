@@ -497,6 +497,20 @@ class SessionCloseTest(Base):
         feed.last_print.return_value = (9000.0, self.at("09:00", 0))           # 40 min old
         self.assertEqual(r2.poll_collector(feed, self.at("09:40"), set()), 0)
 
+    def test_close_only_runner_closes_but_never_buys(self):
+        # [2026-11-25] paper trading switched off with an open position: exits only
+        r = self.runner()
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        c = self.runner(close_only=True)
+        self.assertIn("010060", c.positions)
+        c.on_symbol("010061", "y", self.at("09:40"), frame(40), 10300.0)        # would be a buy
+        self.assertNotIn("010061", c.positions)
+        c.on_symbol("010060", "x", self.at("09:41"), frame(41), 10600.0)        # target reached
+        self.assertEqual((self.records()[-1]["event"], self.records()[-1]["reason"]), ("EXIT", "tp"))
+        self.assertTrue(c.write_status(self.at("09:41"), force=True))
+        st = json.loads((self.out / f"edge_only_status_{DAY}.json").read_text(encoding="utf-8"))
+        self.assertTrue(st["close_only"])
+
     def test_restart_restores_the_nxt_flag(self):
         r = self.runner(nxt=True)
         r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=True)

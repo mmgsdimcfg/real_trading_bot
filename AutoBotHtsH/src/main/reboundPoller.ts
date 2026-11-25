@@ -9,7 +9,8 @@
 //   falls back); refreshTab(): the tab is read again at the next pass (its symbols were edited in the dialog))
 // - [2026-11-24] type=feat (lowerHigh.block (default off): a detection whose res.lowerHigh.blocked is set is written to the CSV
 //   (alerted 0, suppressed "lower_high") without a popup / KakaoTalk message and without starting the symbol's cooldown)
-
+// - [2026-11-25] type=fix (switched off while a pass was running - the control tab's 반등 알림 checkbox, Codex review: the pass
+//   stops, a detection is recorded with suppressed "disabled" and not alerted, the pass does not publish enabled again)
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { completedBars, detectRebound, hhmm, mergeConfig, msToNextPoll, REBOUND_DEFAULTS, sessionOf, tabCodes, type ReboundConfig } from '../shared/rebound';
@@ -205,6 +206,16 @@ export class ReboundWatcher {
       this.d.log(`[rebound] 감지 ${name}(${code}) 봉 ${hhmm(res.snap.t)} 점수 ${res.score} - 고점 낮아짐, 알림 안 보냄 (${res.lowerHigh.note})`);
       return;
     }
+    // [2026-11-25] switched off while this pass was running (control tab 반등 알림 / settings, Codex review): recorded, not alerted
+    if (!this.cfg.enabled) {
+      try {
+        logDetection(info, false, 'disabled');
+      } catch (e) {
+        this.d.log(`[rebound] 감지 기록 실패: ${(e as Error).message}`);
+      }
+      this.d.log(`[rebound] 감지 ${name}(${code}) - 반등 알림이 꺼져 알림 안 보냄`);
+      return;
+    }
     const cool = now - (this.lastAlert.get(code) ?? -Infinity) < this.cfg.alert.cooldownMin * 60000;
     if (!cool) {
       try {
@@ -248,7 +259,7 @@ export class ReboundWatcher {
       let failed = 0;
       let firstErr = '';
       for (const code of this.codes) {
-        if (this.halt || this.d.backend() !== backend) break; // logged out / switched
+        if (this.halt || this.d.backend() !== backend || !this.cfg.enabled) break; // logged out / switched / [2026-11-25] switched off
         // NXT pre / after market: symbols that do not trade on NXT have no new bars
         if (session === 'nxt' && this.d.master.nxtKnown && !this.d.master.get(code)?.nxt) continue;
         try {
@@ -260,6 +271,7 @@ export class ReboundWatcher {
         if (cfg.poll.gapMs > 0) await sleep(cfg.poll.gapMs);
       }
       if (failed) this.d.log(`[rebound] 조회 실패 ${failed}종목 (${firstErr})`);
+      if (!this.cfg.enabled) return; // [2026-11-25] switched off during the pass: setEnabled already published 'off'
       this.setStatus({ enabled: true, tab: cfg.tab, state: 'run', codes: this.codes.length, lastPass: this.now(), judged, failed, note: failed ? `조회 실패 ${failed}종목 - ${firstErr}` : undefined });
     } catch (e) {
       this.d.log(`[rebound] 순회 오류: ${(e as Error).message}`);

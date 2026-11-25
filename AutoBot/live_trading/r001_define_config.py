@@ -1,6 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-25] type=feat owner=claude
+#     summary: 사용자 결정(매매 방식 조합: 규칙 매매 / Edge AI 가상 매매 / 반등 알림, Codex 검토) - RULE_BUY_ENABLED(True) 신설.
+#       False = 규칙 매매(r005 매수 조건)의 신규 매수 주문을 내지 않는다. 조건 평가·로그, 미체결 매수 정리, 보유 매도(AUTO_SELL_MODE),
+#       일일 손실·재진입 회계, 가상 매매·수집은 그대로.
+#     impact: live (False 일 때 신규 매수 없음)
+#     compatibility: backward-compatible (기본 True = 종전과 동일)
 # - [2026-11-25] type=change owner=claude
 #     summary: EDGE_ONLY_NXT 사용 안 함 - r022 가상 매매의 NXT 운용 = nxt_trading_enabled() (r003). 상수는 예전 override 호환용으로 남김.
 #     impact: live paper only
@@ -1534,6 +1540,10 @@ TICK_FEED_WARN_AFTER_SECONDS = 180.0
 #   주의: 과거 검증(g029, 2026-08-14~11-11 58일)에서 모든 확률 기준이 거래당 -0.43 ~ -0.58% 였다.
 #   "edge" 일 때는 가상 매매(EDGE_ONLY_MODE="paper")를 돌리지 않는다(같은 방식의 중복).
 TRADING_STRATEGY_MODE = "normal"   # "normal" | "basic" | "edge"
+# [2026-11-25] 매매 방식 "규칙 매매" 켜기/끄기 (앱 제어 탭 체크박스, 사용자 결정). False = 규칙 매수 조건을 모두 통과해도 신규 매수
+# 주문을 내지 않는다([RULE BUY OFF] 로그만). 규칙 기반 전략(TRADING_STRATEGY_MODE normal / basic)에만 적용 - edge 는 무관. 보유분 매도(AUTO_SELL_MODE / 엔진 / 당일 청산), 미체결 매수 정리, 일일 손실·재진입 회계,
+# 가상 매매(EDGE_ONLY_MODE), 수집은 그대로. AUTO_SELL_MODE 가 stop_only / off 면 보유가 남을 수 있다. r003 재시작 후 적용.
+RULE_BUY_ENABLED = True
 EDGE_TP_PCT = 0.020             # edge 모드 익절 (라벨 tp 2.0%)
 EDGE_SL_PCT = 0.017             # edge 모드 손절 (라벨 sl 1.7%)
 EDGE_MAX_HOLD_MINUTES = 60      # edge 모드 보유 시간 상한 (라벨 horizon 60분)

@@ -43,7 +43,7 @@
  */
 
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
-import { AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_KEY, STRATEGY_KEY, parseAutoSell, parseAutoSellScope, parseModes, parsePaperLogOnly, PAPER_LOG_ONLY_KEY, PAPER_EXIT_KEYS, parsePaperExit } from '../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_KEY, STRATEGY_KEY, parseAutoSell, parseAutoSellScope, parseModes, parsePaperLogOnly, PAPER_LOG_ONLY_KEY, PAPER_EXIT_KEYS, parsePaperExit, RULE_BUY_KEY, parseRuleBuy } from '../shared/paper';
 import type { ArgvRunner } from './localRunner';
 import type { ConfirmRequest, ConfirmRow, ConfirmSpec } from '../shared/types';
 import {
@@ -444,7 +444,7 @@ export function createControl(deps: ControlDeps) {
     const myGen = gen;
     try {
       // [2026-11-25] + the paper exits (EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN); r016 lists unknown keys apart, so an older server still answers
-      const r = await cl().run(['get', STRATEGY_KEY, PAPER_KEY, AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_LOG_ONLY_KEY, ...Object.values(PAPER_EXIT_KEYS)]);
+      const r = await cl().run(['get', STRATEGY_KEY, PAPER_KEY, AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_LOG_ONLY_KEY, ...Object.values(PAPER_EXIT_KEYS), RULE_BUY_KEY]);
       if (myGen !== gen) return;
       const m = parseModes(r.data);
       push({
@@ -454,6 +454,7 @@ export function createControl(deps: ControlDeps) {
         autoSellScope: parseAutoSellScope(r.data) || undefined,
         paperLogOnly: parsePaperLogOnly(r.data) || undefined,
         paperExit: parsePaperExit(r.data) || undefined,
+        ruleBuy: parseRuleBuy(r.data) || undefined,
       });
     } catch {
       /* keep the last known value */
@@ -756,7 +757,7 @@ export function createControl(deps: ControlDeps) {
     clear: () => {
       gen++;
       statusInFlight = null;
-      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, paper: undefined, strategy: undefined, autoSell: undefined, autoSellScope: undefined, paperLogOnly: undefined, paperExit: undefined, lastAction: undefined });
+      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, paper: undefined, strategy: undefined, autoSell: undefined, autoSellScope: undefined, paperLogOnly: undefined, paperExit: undefined, ruleBuy: undefined, lastAction: undefined });
     },
   };
 }

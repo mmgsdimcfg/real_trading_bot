@@ -24,12 +24,15 @@
  *   and a table of the keys each profile changes (server risk_profiles/*.json), plus what stays the same in all of them
  * - [2026-11-18] type=perf - Peer status, change history, override list and Edge AI model: the last answers (dataCache) are shown
  *   at once when the tab is opened again, then refreshed
+ * - [2026-11-25] type=feat - 매매 방식 = checkboxes 규칙 매매 (server RULE_BUY_ENABLED) / Edge AI 가상 매매 (EDGE_ONLY_MODE) / 반등 알림
+ *   (AutoBotHtsH only, found through window.api.reboundStatus / reboundEnable) in any combination (user 2026-11-25, Codex review).
+ *   The checkboxes never change TRADING_STRATEGY_MODE; a server on edge / basic shows it with a 규칙 매매 방식으로 전환 button
  * - [2026-11-25] type=feat - 가상 청산 익절 / 손절 / 보유 시간 boxes beside 가상 매수 실행 (server r001 EDGE_ONLY_TP_PCT /
  *   EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN, empty = the model's label shown as the placeholder; r003 restart, new paper buys only)
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, TRADE_KINDS, type TradeKind } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -414,6 +417,77 @@ export function ControlView() {
       setModeBusy(false);
     }
   };
+  // [2026-11-25] 매매 방식 = any combination of 규칙 매매 (server RULE_BUY_ENABLED) / Edge AI 가상 매매 (EDGE_ONLY_MODE paper) /
+  // 반등 알림 (AutoBotHtsH app setting; AutoBotH has no rebound watcher). TRADING_STRATEGY_MODE is not touched by the checkboxes
+  const ruleBuy = control.ruleBuy;
+  const normalMode = !strategy || tradeMode === 'rules' || tradeMode === 'rules+paper'; // not read yet: the (disabled) checkboxes
+  const rulesOn = ruleBuy ? ruleBuy.effective === 'true' : true;
+  const rulesRunning = ruleBuy ? (ruleBuy.running ?? ruleBuy.effective) === 'true' : true;
+  const rulesPending = !!ruleBuy && ruleBuy.running !== null && (ruleBuy.pending || rulesRunning !== rulesOn);
+  const paperOn = tradeMode === 'rules+paper';
+  const paperRunning = runningMode === 'rules+paper';
+  const rb = reboundApi();
+  const [reboundOn, setReboundOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!rb) return;
+    let alive = true;
+    const load = () =>
+      void rb
+        .reboundStatus()
+        .then((s) => alive && setReboundOn(!!s.enabled))
+        .catch(() => undefined);
+    load();
+    const id = window.setInterval(load, 10000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const kinds: TradeKind[] = rb ? TRADE_KINDS : ['rules', 'paper'];
+  const comboNow = { rules: rulesOn, paper: paperOn, rebound: !!reboundOn };
+  const comboRunning = { rules: rulesRunning, paper: paperRunning, rebound: !!reboundOn };
+  const setKind = async (kind: TradeKind, on: boolean) => {
+    if (kind === 'rebound') {
+      if (!rb) return;
+      const s = await rb.reboundEnable(on);
+      setReboundOn(!!s.enabled);
+      return;
+    }
+    const next = { rules: kind === 'rules' ? on : rulesOn, paper: kind === 'paper' ? on : paperOn };
+    const changes = comboChanges(next, { rules: rulesOn, paper: paperOn }, !!ruleBuy);
+    if (!changes) return;
+    const sellMode = autoSellOf(control.autoSell?.effective);
+    const text =
+      kind === 'rules'
+        ? on
+          ? '규칙 매매를 켭니다. 규칙 매수 조건을 통과하면 실제 매수 주문을 냅니다.'
+          : '규칙 매매를 끕니다. 규칙 매수 조건을 통과해도 신규 매수 주문을 내지 않습니다(로그만).\n' +
+            `이미 보유한 종목의 매도는 자동 매도 설정(${AUTO_SELL_KO[sellMode]})대로 계속됩니다.` +
+            (sellMode === 'all' ? '' : '\n자동 매도가 전체가 아니므로 보유 종목이 남을 수 있습니다 - 직접 매도해야 합니다.')
+        : on
+          ? 'Edge AI 신호로 가상 매매를 합니다 (실제 주문 없음, 가상 매매 탭).'
+          : '신규 가상 매수를 멈춥니다. 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다.';
+    const restart = 'r003 재시작 후부터 적용됩니다. 미체결 주문이 있으면 정리된 뒤(또는 장 마감 후) 재시작하세요 - 재시작하면 미체결 주문 추적이 끊깁니다.';
+    if (!window.confirm(`${TRADE_KIND_KO[kind]}: ${on ? '켬' : '끔'}\n\n${text}\n\n${restart}\n\n바꿀까요?`)) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet(changes);
+      if (!r.ok) window.alert(`매매 방식을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setModeBusy(false);
+    }
+  };
+  /** the server runs another strategy (edge = Edge AI real orders, basic): back to the rule-based strategy */
+  const toNormal = async () => {
+    if (
+      !window.confirm(
+        `서버 매매 방식(${strategy?.effective || '-'})을 규칙 매매 방식(normal)으로 바꿉니다.\n\n` +
+          '이미 보유한 종목의 매도 규칙도 규칙 매매 방식으로 바뀝니다. Edge AI 가상 매매는 꺼진 상태로 시작합니다.\n\nr003 재시작 후부터 적용됩니다. 바꿀까요?',
+      )
+    )
+      return;
+    await setTradeMode('rules');
+  };
   // [2026-11-12] the Edge AI model in use (current_meta.json of the connected host), re-read every minute like the bot does
   const [edgeModel, setEdgeModel] = useState<EdgeModelInfo | null | undefined>(() => peek<EdgeModelInfo | null>('control:edge'));
   useEffect(() => {
@@ -656,33 +730,51 @@ export function ControlView() {
             <input type="checkbox" checked={dryRun} disabled={busy} onChange={(e) => setMode({ dryRun: e.target.checked, profile })} /> dry-run
           </label>
           {mode && (mode.dryRun !== st?.dry_run || mode.profile !== st?.risk_profile) && <span className="muted small">다음 실행/재시작부터 적용 (r003.env에 저장)</span>}
-          {/* [2026-11-12] trade mode: rule-based / rule-based + Edge AI paper trading / Edge AI only with real orders */}
-          <label title="r003 재시작 후 적용됩니다. 가상 매매는 주문 없이 기록만 하고(가상 매매 탭), Edge AI 방식은 모델 신호만으로 실제 주문을 냅니다.">
-            매매 방식{' '}
-            <select value={tradeMode} disabled={busy || !strategy || !connected || modeBusy} onChange={(e) => void setTradeMode(e.target.value as TradeMode)}>
-              <option value="rules">{TRADE_MODE_KO.rules}</option>
-              <option value="rules+paper" disabled={!paper}>
-                {TRADE_MODE_KO['rules+paper']}
-              </option>
-              <option value="edge" disabled={!paper}>
-                {TRADE_MODE_KO.edge}
-              </option>
-              {tradeMode === 'other' && <option value="other">{strategy?.effective || '-'} (서버 설정)</option>}
-            </select>
-          </label>
-          {strategy && (
-            <span className={tradeMode === 'edge' ? 'badge-warn' : 'muted small'}>
-              {modePending
-                ? `→ r003 재시작 후 적용 (실행 중: ${TRADE_MODE_KO[runningMode]})`
-                : tradeMode === 'edge'
-                  ? 'Edge AI 신호만으로 실제 주문 중'
-                  : tradeMode === 'rules+paper' && paper?.running === 'paper'
-                    ? logOnly && !paperBuysRunning
+          {/* [2026-11-25] 매매 방식: any combination of 규칙 매매 / Edge AI 가상 매매 / 반등 알림 (user 2026-11-25, Codex review) */}
+          <span className="trade-kinds" title="규칙 매매·Edge AI 가상 매매는 r003 재시작 후 적용, 반등 알림은 바로 적용됩니다. 가상 매매는 실제 주문 없이 기록만 합니다(가상 매매 탭).">
+            매매 방식
+            {normalMode ? (
+              <>
+                <label className="check" title={ruleBuy ? '규칙 매수 조건(r005)으로 실제 매수 주문 (서버 RULE_BUY_ENABLED)' : '서버 코드 갱신 후 끌 수 있습니다'}>
+                  <input type="checkbox" checked={rulesOn} disabled={busy || !connected || modeBusy || !ruleBuy} onChange={(e) => void setKind('rules', e.target.checked)} />{' '}
+                  {TRADE_KIND_KO.rules}
+                </label>
+                <label className="check" title="Edge AI 모델 신호로 가상 매수 / 청산 기록 (실제 주문 없음, 서버 EDGE_ONLY_MODE)">
+                  <input type="checkbox" checked={paperOn} disabled={busy || !connected || modeBusy || !paper} onChange={(e) => void setKind('paper', e.target.checked)} />{' '}
+                  {TRADE_KIND_KO.paper}
+                </label>
+              </>
+            ) : (
+              <>
+                <span className="badge-warn">
+                  서버 설정: {tradeMode === 'edge' ? 'Edge AI 실주문 (edge)' : strategy?.effective || '-'}
+                  {modePending && ` → r003 재시작 후 적용 (실행 중: ${strategy?.running || '-'})`}
+                </span>
+                <button className="mini" disabled={busy || !connected || modeBusy} onClick={() => void toNormal()}>
+                  규칙 매매 방식으로 전환
+                </button>
+              </>
+            )}
+            {rb && (
+              <label className="check" title="관심 종목의 반등 조건 감시 + 팝업 / 카카오 알림 (이 PC 의 앱에서 동작, 바로 적용)">
+                <input type="checkbox" checked={!!reboundOn} disabled={reboundOn === null} onChange={(e) => void setKind('rebound', e.target.checked)} />{' '}
+                {TRADE_KIND_KO.rebound}
+              </label>
+            )}
+            {strategy && normalMode && (
+              <span className={comboLabel(comboNow, kinds) === '모두 꺼짐' ? 'badge-warn' : 'muted small'}>
+                {rulesPending || modePending
+                  ? `→ r003 재시작 후 적용 (실행 중: ${
+                      strategy.running && strategy.running !== 'normal' ? `서버 설정 ${strategy.running}` : comboLabel(comboRunning, kinds)
+                    })`
+                  : comboLabel(comboNow, kinds) === '모두 꺼짐'
+                    ? '모두 꺼짐 - 신규 매수·알림 없음 (보유 매도는 자동 매도 설정대로)'
+                    : paperOn && paper?.running === 'paper' && logOnly && !paperBuysRunning
                       ? '가상 매매 후보 기록만 (가상 매수 꺼짐)'
-                      : '가상 매매 진행 중'
-                    : ''}
-            </span>
-          )}
+                      : ''}
+              </span>
+            )}
+          </span>
           {tradeMode === 'rules+paper' && logOnly && (
             <label className="check" title="켜면 Edge AI 신호가 뜰 때 가상 매수 / 청산을 기록합니다 (실제 주문 없음). 끄면 후보만 기록합니다 (서버 EDGE_ONLY_LOG_ONLY). r003 재시작 후 적용">
               <input type="checkbox" checked={paperBuys} disabled={busy || !connected || modeBusy} onChange={(e) => void setPaperBuys(e.target.checked)} /> 가상 매수 실행
@@ -956,4 +1048,12 @@ function PaperExitEdit({ st, model, disabled }: { st: PaperExitState; model: Edg
       )}
     </span>
   );
+}
+
+/** [2026-11-25] the rebound watcher's on / off of AutoBotHtsH (its preload has these; AutoBotH has no rebound watcher -> null) */
+type ReboundApi = { reboundStatus: () => Promise<{ enabled: boolean }>; reboundEnable: (on: boolean) => Promise<{ enabled: boolean }> };
+function reboundApi(): ReboundApi | null {
+  // AutoBotHtsH's preload exposes them on window.hts (Codex review)
+  const a = (window as unknown as { hts?: Partial<ReboundApi> }).hts;
+  return a && typeof a.reboundStatus === 'function' && typeof a.reboundEnable === 'function' ? (a as ReboundApi) : null;
 }

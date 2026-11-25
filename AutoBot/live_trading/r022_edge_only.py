@@ -34,6 +34,12 @@ post-close job from that host's data folder).
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 사용자 결정(매매 방식 조합, Codex 검토: 가상 매매를 꺼도 열린 가상 보유는 청산) - EdgeOnlyRunner(close_only=True): 보유
+      청산(tp/sl/time/세션 마감)만 하고 신규 가상 매수·후보 기록·수집기 신규 평가는 하지 않는다. open_codes_in(path): 그날 기록에서
+      아직 열린 종목. 상태 파일에 close_only. _restore 는 잘린 줄만 건너뛴다(예전: 파일 전체를 버림, Codex 검토).
+    impact: live paper only (주문 없음)
+    compatibility: backward-compatible (close_only=False 기본)
+- [2026-11-25] type=feat owner=claude
     summary: 사용자 결정(가상 매매 청산을 운용 시간·종목의 NXT 가능 여부에 맞춤, Codex 검토 권고안) -
       (1) 청산 시각: 정규장 종목(또는 정규장만 운용) = 15:20 종가 단일가 청산, 가상 체결가 = 15:30 단일가 체결가(틱 파일 close_auction),
           15:32 까지 없으면 마지막 정규장 가격 - 1틱 + estimated. NXT 가능 종목(NXT 포함 운용) = 19:59:50, NXT 현재가 - 1틱
@@ -202,6 +208,25 @@ def _pos_or_zero(v) -> float:
     return f if math.isfinite(f) and f > 0 else 0.0
 
 
+def open_codes_in(path: Path) -> set[str]:
+    """[2026-11-25] codes with an ENTRY and no EXIT yet in a day's edge_only_<date>.jsonl (empty when there is no file)"""
+    path = Path(path)
+    if not path.is_file():
+        return set()
+    open_: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        code = str(rec.get("code") or "")
+        if rec.get("event") == "ENTRY":
+            open_.add(code)
+        elif rec.get("event") == "EXIT":
+            open_.discard(code)
+    return open_
+
+
 def tick_down(price: float) -> float:
     """[2026-11-25] one price step below (tick table across bands: 2,000 -> 1,999, 5,000 -> 4,995)"""
     return float(marketable_sell_limit(None, float(price), 1))
@@ -230,7 +255,7 @@ class EdgeOnlyRunner:
                  min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
                  collector_max_positions: int = 0, collector_max_entries: int = 0,
                  exclude_funds: bool = True, no_reentry_after_sl: bool = True, log_only: bool = False, nxt: bool = False,
-                 tp_pct: float = 0.0, sl_pct: float = 0.0, horizon_min: float = 0.0):
+                 tp_pct: float = 0.0, sl_pct: float = 0.0, horizon_min: float = 0.0, close_only: bool = False):
         self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir))
         self.data_root = Path(data_root)
         self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
@@ -238,6 +263,8 @@ class EdgeOnlyRunner:
         self.log = log
         self.config = config
         self.min_prob = float(min_prob or 0.0)
+        # [2026-11-25] paper trading switched off with positions still open: close them only (no new buys / candidates)
+        self.close_only = bool(close_only)
         # [2026-11-25] exit overrides of new paper buys (% / % / minutes); 0 or less = the model's label
         self.exit_override = {"tp": _pos_or_zero(tp_pct), "sl": _pos_or_zero(sl_pct), "horizon": _pos_or_zero(horizon_min)}
         self.max_positions = int(max_positions)
@@ -306,7 +333,10 @@ class EdgeOnlyRunner:
             return
         try:
             for line in self.out_path.read_text(encoding="utf-8").splitlines():
-                rec = json.loads(line)
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue      # [2026-11-25] a torn line is skipped, the rest of the day is kept (same as open_codes_in)
                 code = str(rec.get("code") or "")
                 if rec.get("event") == "ENTRY":
                     group = rec.get("group") if rec.get("group") in GROUPS else "watch"
@@ -423,6 +453,8 @@ class EdgeOnlyRunner:
             self.log(f"{TAG} collector list error: {type(exc).__name__}: {exc}")
             return 0
         held = [c for c, p in self.positions.items() if p.get("group") == "collector" and c not in exclude]
+        if self.close_only:
+            codes = []                # [2026-11-25] closing the open positions only
         for code in dict.fromkeys(codes + held):
             try:
                 frame, price = feed.poll(code, now)
@@ -629,6 +661,10 @@ class EdgeOnlyRunner:
             self._check_exit(code, now, price)
             if code not in self.positions:
                 self._stage(code, "sold")
+        if self.close_only:
+            if code in self.positions:
+                self._stage(code, "held", self.positions[code].get("prob"))
+            return
         if frame_1m is None or len(frame_1m) == 0:
             return
         sess = nxt_session_of(now.time()) if self.nxt else None
@@ -1032,6 +1068,7 @@ def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
         meta = {}
     payload = {
         "asof": now.isoformat(timespec="seconds"), "date": runner.date_str, "log_only": bool(getattr(runner, "log_only", False)),
+        "close_only": bool(getattr(runner, "close_only", False)),
         "model_id": meta.get("model_id"), "threshold": runner._threshold(), "label": runner._label(),
         "model_label": runner._model_label(),
         "entry_window": [ENTRY_START.strftime("%H:%M"), ENTRY_END.strftime("%H:%M")], "force_exit": FORCE_EXIT.strftime("%H:%M"),

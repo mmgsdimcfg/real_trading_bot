@@ -1,5 +1,8 @@
 /*
  * Update log
+ * - [2026-11-25] type=feat - trading kinds combined in the control tab (user 2026-11-25, Codex review): 규칙 매매 (server r001
+ *   RULE_BUY_ENABLED) / Edge AI 가상 매매 (EDGE_ONLY_MODE) / 반등 알림 (AutoBotHtsH app setting): RULE_BUY_KEY, parseRuleBuy, TRADE_KIND_KO,
+ *   comboLabel, comboChanges (never touches TRADING_STRATEGY_MODE)
  * - [2026-11-25] type=feat - session close reasons close_regular (15:20 auction) / close_nxt (NXT 19:59:50) and the estimated flag
  *   (server r022: paper positions follow the trading hours and the symbol's NXT eligibility)
  * - [2026-11-25] type=feat - paper exits set by the user (server r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN,
@@ -429,6 +432,41 @@ export const AUTO_SELL_SCOPE_KO: Record<AutoSellScope, string> = {
 export const parseAutoSellScope = (data: unknown): PaperModeState | null => modeOf(data, AUTO_SELL_SCOPE_KEY);
 /** a server value as one of the two choices (anything but 'all' = the bot's fallback 'bot_only') */
 export const autoSellScopeOf = (v: string | null | undefined): AutoSellScope => (v === 'all' ? 'all' : 'bot_only');
+
+/** [2026-11-25] r001 RULE_BUY_ENABLED: 규칙 매매 (rule-based new buys) on / off - a server without it: null */
+export const RULE_BUY_KEY = 'RULE_BUY_ENABLED';
+export function parseRuleBuy(data: unknown): PaperModeState | null {
+  const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[RULE_BUY_KEY];
+  if (!v || typeof v.effective !== 'boolean') return null;
+  return { effective: String(v.effective), running: typeof v.running === 'boolean' ? String(v.running) : null, pending: !!v.pending };
+}
+
+/** [2026-11-25] the three trading kinds the control tab combines (user 2026-11-25): any of them on or off */
+export type TradeKind = 'rules' | 'paper' | 'rebound';
+export const TRADE_KINDS: TradeKind[] = ['rules', 'paper', 'rebound'];
+export const TRADE_KIND_KO: Record<TradeKind, string> = { rules: '규칙 매매', paper: 'Edge AI 가상 매매', rebound: '반등 알림' };
+
+/** "규칙 매매 + 반등 알림" for the kinds that are on (only the kinds this app has); "모두 꺼짐" when none */
+export function comboLabel(on: Partial<Record<TradeKind, boolean>>, kinds: TradeKind[] = TRADE_KINDS): string {
+  const names = kinds.filter((k) => on[k]).map((k) => TRADE_KIND_KO[k]);
+  return names.length ? names.join(' + ') : '모두 꺼짐';
+}
+
+/** server keys for a change of the rule / paper checkboxes (TRADING_STRATEGY_MODE is never touched); null = nothing to change
+ *  or the server lacks RULE_BUY_ENABLED for a rules change */
+export function comboChanges(
+  next: { rules: boolean; paper: boolean },
+  cur: { rules: boolean; paper: boolean },
+  ruleKeyKnown: boolean,
+): Record<string, string | boolean> | null {
+  const out: Record<string, string | boolean> = {};
+  if (next.rules !== cur.rules) {
+    if (!ruleKeyKnown) return null;
+    out[RULE_BUY_KEY] = next.rules;
+  }
+  if (next.paper !== cur.paper) out[PAPER_KEY] = next.paper ? 'paper' : 'off';
+  return Object.keys(out).length ? out : null;
+}
 
 export const TRADE_MODE_KO: Record<TradeMode, string> = {
   rules: '현재 방식 (규칙 기반)',

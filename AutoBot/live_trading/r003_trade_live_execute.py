@@ -21,6 +21,13 @@ Update log format (append only):
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 사용자 결정(매매 방식 조합, Codex 검토) - (1) r001 RULE_BUY_ENABLED=False 면 규칙 매수 조건이 통과해도 place_buy_order 를
+      부르지 않는다(규칙 기반 전략 normal / basic 만 - edge 는 무관): _025 의 traded_today 예약을 되돌리고 [RULE BUY OFF] 로그만(signal_buy_bar 는 남겨 같은 봉 반복 로그 방지).
+      보유 매도·미체결 매수 정리·회계는 그대로. (2) 가상 매매를 끈 뒤(EDGE_ONLY_MODE off / edge 방식)에도 오늘 기록에 열린 가상 보유가
+      있으면 close_only 러너를 만들어 그 보유만 마감까지 청산한다(신규 가상 매수·후보 기록 없음).
+    impact: live (RULE_BUY_ENABLED=False 일 때 신규 매수 없음), paper
+    compatibility: backward-compatible (기본 True / paper 그대로면 종전과 동일)
+- [2026-11-25] type=feat owner=claude
     summary: 사용자 결정(가상 매매 청산을 운용 시간·종목 NXT 여부에 맞춤, Codex 검토 권고안) - r022 가상 매매의 NXT 운용 여부 =
       nxt_trading_enabled()(자동매매 시간, EDGE_ONLY_NXT 는 쓰지 않음). on_symbol 에 nxt_tradeable 전달. 매 턴 예약 청산 뒤에
       edge_only.session_close(now)(15:20 단일가 / NXT 19:59:50 청산 - 종목 순회가 건너뛰는 구간에도 돈다), 루프 종료 직전
@@ -984,6 +991,7 @@ from r001_define_config import (
     SELL_ORDER_REPRICE_MAX_ATTEMPTS,
     SELL_UNKNOWN_RECONCILE_SECONDS,
     TRADING_STRATEGY_MODE,
+    RULE_BUY_ENABLED,
     PENDING_STATUS_BACKOFF_MAX_SECONDS,
     SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
     WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS,
@@ -2479,11 +2487,21 @@ def _make_v2_shadow_runner(date_str: str):
 
 def _make_edge_only_runner(date_str: str):
     """[2026-11-12] Edge-AI-only paper runner (r022) or None. Lazy import: EDGE_ONLY_MODE="off" adds nothing."""
-    if str(EDGE_ONLY_MODE).lower() != "paper":
-        return None
-    if str(TRADING_STRATEGY_MODE).lower() == "edge":
-        log("  [EDGE ONLY   ] paper mode skipped - TRADING_STRATEGY_MODE=edge trades the same policy with real orders")
-        return None
+    close_only = False
+    if str(EDGE_ONLY_MODE).lower() != "paper" or str(TRADING_STRATEGY_MODE).lower() == "edge":
+        # [2026-11-25] paper trading off (or the edge strategy): still close today's open paper positions, nothing new
+        try:
+            from r022_edge_only import open_codes_in
+            still_open = open_codes_in(Path(LIVE_RUNTIME_DIR) / f"edge_only_{date_str}.jsonl")
+        except Exception as exc:
+            log(f"  [EDGE ONLY   ] open paper positions check failed: {exc}")
+            still_open = set()
+        if not still_open:
+            if str(TRADING_STRATEGY_MODE).lower() == "edge" and str(EDGE_ONLY_MODE).lower() == "paper":
+                log("  [EDGE ONLY   ] paper mode skipped - TRADING_STRATEGY_MODE=edge trades the same policy with real orders")
+            return None
+        log(f"  [EDGE ONLY   ] paper trading off - closing today's {len(still_open)} open paper position(s) only")
+        close_only = True
     try:
         import r001_define_config as _cfg_mod
         from r022_edge_only import CollectorTickFeed, EdgeOnlyRunner
@@ -2500,6 +2518,7 @@ def _make_edge_only_runner(date_str: str):
                                 log_only=bool(getattr(_cfg_mod, "EDGE_ONLY_LOG_ONLY", False)),
                                 # [2026-11-25] paper NXT follows the trading hours (nxt_trading_enabled), not EDGE_ONLY_NXT
                                 nxt=bool(nxt_trading_enabled()),
+                                close_only=close_only,
                                 # [2026-11-25] user-set exits of new paper buys (0 = the model's label)
                                 tp_pct=getattr(_cfg_mod, "EDGE_ONLY_TP_PCT", 0.0),
                                 sl_pct=getattr(_cfg_mod, "EDGE_ONLY_SL_PCT", 0.0),
@@ -5801,6 +5820,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     atexit.register(_remove_running_snapshot)
     log("R003 START | initializing live executor")
     log(f"  [R003 MODE   ] TRADING_STRATEGY_MODE={TRADING_STRATEGY_MODE}")
+    log(f"  [R003 MODE   ] RULE_BUY_ENABLED={RULE_BUY_ENABLED}" + ("" if RULE_BUY_ENABLED else " (규칙 매매 꺼짐 - 신규 매수 주문 없음)"))
 
     try:
         print("[R003 AUTH   ] starting ka.auth()", flush=True)
@@ -6525,6 +6545,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             )
                             log(f"  {_shadow_msg}")
                             log_trade(_shadow_msg)
+                            continue
+                        if not RULE_BUY_ENABLED and str(TRADING_STRATEGY_MODE).lower() != "edge":
+                            # [2026-11-25] 규칙 매매 꺼짐(사용자 매매 방식 선택): 주문 없음 - 규칙 기반 전략(normal / basic)만, Edge AI
+                            # 실주문(edge)은 이 스위치와 무관(Codex 검토). _025 의 traded_today 예약을 되돌리고
+                            # signal_buy_bar 는 남겨 같은 봉에서 반복 기록하지 않는다.
+                            traded_today.discard(norm_code)
+                            api.live_state["traded_today"] = traded_today
+                            log(f"  [RULE BUY OFF] {symbol_label} | would BUY qty={qty} price={price:,.0f} session={session} | reason={buy_reason}")
                             continue
                         if api.place_buy_order(code, price, qty, current_dt, nxt_tradeable, session, buy_detail=buy_detail, code_name=name):
                             log(

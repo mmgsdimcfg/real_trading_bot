@@ -382,3 +382,13 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - `edge_only_status_<날짜>.json`: `"close_regular": "15:20"`, `"close_nxt": "19:59:50" | null`, `nxt_sessions.*.force_exit` = `"19:59:50"`,
   보유 행 `position.nxt`, `position.close`(그 보유의 청산 시각). `force_exit` 는 "15:20".
 - 앱: 청산 사유 "정규장 종가 청산" / "NXT 마감 청산", estimated 면 "(추정)".
+
+## 매매 방식 조합 (2026-11-25, trade_modes_plan_20261125.md 2단계)
+- 앱 제어 탭 "매매 방식" = 체크박스 규칙 매매 / Edge AI 가상 매매 / 반등 알림(AutoBotHtsH 만, 앱 설정 - 바로 적용). 어떤 조합도 가능.
+- 규칙 매매 = 신규 r001 `RULE_BUY_ENABLED`(bool, 기본 true). false = 규칙 기반 전략(normal / basic)의 신규 매수 주문 없음
+  (`[RULE BUY OFF]` 로그). 보유 매도·미체결 정리·회계는 그대로. edge 전략에는 적용 안 함. 앱은 `get` 에 함께 묻고, 키를 모르는 서버면
+  체크박스를 잠근다.
+- Edge AI 가상 매매 = `EDGE_ONLY_MODE` paper / off (예전과 같음). 체크박스는 `TRADING_STRATEGY_MODE` 를 바꾸지 않는다. 서버가 edge / basic
+  이면 체크박스 대신 "서버 설정" 표시 + "규칙 매매 방식으로 전환"(normal + paper off, 확인 후).
+- 가상 매매를 꺼도(off / edge) 오늘 `edge_only_<날짜>.jsonl` 에 열린 가상 보유가 있으면 r003 이 close_only 러너로 그 보유만 마감까지
+  청산한다. 상태 파일에 `"close_only"`(bool).

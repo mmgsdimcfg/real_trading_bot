@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-25] type=feat - v2.3.40_001: 제어 탭 매매 방식을 체크박스 조합으로 - 규칙 매매(서버 RULE_BUY_ENABLED) / Edge AI 가상 매매(EDGE_ONLY_MODE). 서버가 edge / basic 이면 표시 + 규칙 매매 방식으로 전환 버튼",
     "[2026-11-25] type=feat - v2.3.39_001: 가상 매매 청산 사유 정규장 종가 청산 / NXT 마감 청산 표시, 마지막 가격으로 계산한 청산은 (추정) 표시 (서버 r022: 정규장 종목 15:20 종가 단일가, NXT 종목 19:59:50 청산)",
     "[2026-11-25] type=feat - v2.3.38_001: 제어 탭에서 가상 매매 익절 / 손절 / 보유 시간 설정 (가상 매수 실행 옆 입력칸, 빈칸 = 모델 값, 서버 r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN, r003 재시작 후 새 가상 매수부터). 가상 매매 탭 목표/손절 줄에 직접 설정이면 모델 값도 표시",
     "[2026-11-24] type=fix - v2.3.37_005: 타입 검사 오류 (PriceChart 그리기 도구 addDrawing 인자 타입) 수정 - drawings.ts 를 AutoBotHtsH 사본과 같게 (동작 변화 없음)",
@@ -129,7 +130,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.39",
+  "version": "2.3.40",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",

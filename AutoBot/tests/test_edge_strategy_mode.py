@@ -211,15 +211,46 @@ class SellRulesTest(unittest.TestCase):
 
 
 class PaperSkipTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
     def test_paper_runner_is_not_started_while_the_real_mode_is_edge(self):
         import r003_trade_live_execute as r003
         logs: list[str] = []
         with mock.patch.object(r003, "EDGE_ONLY_MODE", "paper"), mock.patch.object(r003, "TRADING_STRATEGY_MODE", "edge"), \
-                mock.patch.object(r003, "log", logs.append):
+                mock.patch.object(r003, "log", logs.append), mock.patch.object(r003, "LIVE_RUNTIME_DIR", self.out):
             self.assertIsNone(r003._make_edge_only_runner("20261112"))
         self.assertIn("paper mode skipped", logs[-1])
-        with mock.patch.object(r003, "EDGE_ONLY_MODE", "off"):
+        with mock.patch.object(r003, "EDGE_ONLY_MODE", "off"), mock.patch.object(r003, "LIVE_RUNTIME_DIR", self.out):
             self.assertIsNone(r003._make_edge_only_runner("20261112"))
+
+    def test_paper_off_with_open_positions_starts_a_close_only_runner(self):
+        # [2026-11-25] switching paper trading off must not strand today's open paper positions
+        import json
+        import r003_trade_live_execute as r003
+        import r022_edge_only as r022
+        f = self.out / "edge_only_20261112.jsonl"
+        rows = [
+            {"event": "ENTRY", "code": "010060", "ts": "2026-11-12T09:30:05", "entry": 10310, "tp_px": 10516, "sl_px": 10135, "horizon": 60},
+            {"event": "ENTRY", "code": "010061", "ts": "2026-11-12T09:31:05", "entry": 10310, "tp_px": 10516, "sl_px": 10135, "horizon": 60},
+            {"event": "EXIT", "code": "010061", "ts": "2026-11-12T09:40:05", "reason": "tp", "net_pct": 1.7},
+        ]
+        f.write_text("\n".join(json.dumps(x) for x in rows) + "\n", encoding="utf-8")
+        self.assertEqual(r022.open_codes_in(f), {"010060"})
+        self.assertEqual(r022.open_codes_in(self.out / "none.jsonl"), set())
+        logs: list[str] = []
+        with mock.patch.object(r003, "EDGE_ONLY_MODE", "off"), mock.patch.object(r003, "LIVE_RUNTIME_DIR", self.out), \
+                mock.patch.object(r003, "log", logs.append), mock.patch.object(r022.r011, "EdgeAIModel", mock.Mock()):
+            runner = r003._make_edge_only_runner("20261112")
+        self.assertIsNotNone(runner)
+        self.assertTrue(runner.close_only)
+        self.assertEqual(sorted(runner.positions), ["010060"])
+        self.assertTrue(any("closing today's 1 open paper position" in x for x in logs))
 
 
 if __name__ == "__main__":

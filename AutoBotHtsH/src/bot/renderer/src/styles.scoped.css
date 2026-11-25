@@ -460,6 +460,7 @@
 .bot-root .grid td.wrap { white-space: normal; word-break: break-all; }
 .bot-root button.mini { padding: 1px 7px; font-size: var(--fs); }
 /* [2026-11-25] control tab: paper exits (익절 / 손절 / 보유 시간) */
+.bot-root .trade-kinds { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } /* [2026-11-25] 매매 방식 checkboxes */
 .bot-root .paper-exit { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .bot-root .paper-exit-in { width: 4.2em; text-align: right; }
 .bot-root .paper-exit-in[aria-invalid='true'] { border-color: var(--st-hold); }
