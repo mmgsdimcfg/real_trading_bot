@@ -452,7 +452,8 @@ class SessionCloseTest(Base):
         r.sleep = calls.append
         r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
         self.assertEqual(r.session_close(self.at("15:31", 58), final=True, wait_s=150.0), 1)
-        self.assertEqual(calls, [2.0])                                           # 2 s left until 15:32
+        self.assertEqual(len(calls), 1)                                          # 2 s left until 15:32 (less the real time
+        self.assertAlmostEqual(calls[0], 2.0, delta=0.5)                         # the test itself took)
         self.assertTrue(self.records()[-1]["estimated"])
 
     def test_final_close_retries_a_failed_write(self):

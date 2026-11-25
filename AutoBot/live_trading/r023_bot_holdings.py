@@ -24,6 +24,10 @@ Limits (shown to the user in the app / docs)
   whole account quantity; everything else is manual.
 
 Update log:
+- [2026-11-25] type=feat owner=claude
+    summary: update_ledger(buy_caps, sell_caps) - r003 주문 보류(과제 A2)로만 아는 종목은 그 주문 수량까지만 봇 수량으로 귀속(초과분은 직접 매매).
+    impact: live (r003 재시작 직후 보류 종목의 장부)
+    compatibility: backward-compatible (caps 없으면 종전과 동일)
 - [2026-11-13] type=feat owner=claude
     summary: new module (user request: show bot-bought and hand-bought holdings separately, sell only the bot's part).
     impact: live (r003 account sync / place_sell_order, r016 holdings)
@@ -92,9 +96,14 @@ def save_ledger(live_runtime_dir: Path, ledger: dict[str, dict], now: datetime |
 
 
 def update_ledger(ledger: dict[str, dict], account_qty: dict[str, int],
-                  bot_buy_codes=frozenset(), bot_sell_codes=frozenset()) -> dict[str, dict]:
+                  bot_buy_codes=frozenset(), bot_sell_codes=frozenset(),
+                  buy_caps: dict[str, int] | None = None, sell_caps: dict[str, int] | None = None) -> dict[str, dict]:
     """New ledger after one account sync (pure). account_qty: {code: quantity now in the account} (only held symbols).
-    bot_buy_codes / bot_sell_codes: symbols for which the bot had a buy / sell order working since the previous sync."""
+    bot_buy_codes / bot_sell_codes: symbols for which the bot had a buy / sell order working since the previous sync.
+    [2026-11-25] buy_caps / sell_caps: {code: most shares a working bot order can still explain} for symbols whose order is only
+    known from an r003 order hold (r003 restarted while it was open) - a change beyond it is manual (bought / sold by hand)."""
+    buy_caps = {_norm(c): max(0, int(v)) for c, v in (buy_caps or {}).items()}
+    sell_caps = {_norm(c): max(0, int(v)) for c, v in (sell_caps or {}).items()}
     old = normalize_ledger(ledger)
     buys = {_norm(c) for c in bot_buy_codes}
     sells = {_norm(c) for c in bot_sell_codes}
@@ -112,11 +121,14 @@ def update_ledger(ledger: dict[str, dict], account_qty: dict[str, int],
         delta = new_qty - int(prev["acct_qty"])
         if delta > 0:
             if code in buys:
-                bot += delta
+                bot += min(delta, buy_caps[code]) if code in buy_caps else delta
         elif delta < 0:
             drop = -delta
             if code in sells:
-                bot = max(0, bot - drop)                 # the bot sold: its part shrinks first
+                botpart = min(drop, sell_caps[code]) if code in sell_caps else drop
+                manual = int(prev["acct_qty"]) - bot
+                rest = drop - botpart                    # [2026-11-25] beyond the held order's size: sold by hand
+                bot = max(0, bot - botpart - max(0, rest - manual))   # the bot sold: its part shrinks first
             else:
                 manual = int(prev["acct_qty"]) - bot      # sold by hand: the manual part shrinks first
                 bot -= max(0, drop - manual)

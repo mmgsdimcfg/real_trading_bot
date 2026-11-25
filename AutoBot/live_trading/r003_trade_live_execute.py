@@ -21,6 +21,48 @@ Update log format (append only):
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 남은 과제 A (사용자 결정 A1+A2, Codex 검토: 미체결 저장-복원은 실계좌 보류) -
+      A1 정상 종료 정리: r003.stop / Ctrl+C / SIGTERM 으로 끝날 때 close_orders_for_stop(): 신규·재주문 차단(stopping), 봇 미체결 주문
+          취소 요청, 기존 refresh_pending_orders 로 체결·취소를 최대 STOP_ORDER_SETTLE_SECONDS(40초) 마무리, 계좌 동기화.
+      A2 주문 보류: 끝까지 남은 봇 주문(정리 못 한 것, 비정상 종료 대비로 매 턴 pending 이 바뀌면 저장)을 order_holds_<날짜>.json 에
+          기록. 같은 날 다음 r003 은 첫 계좌 동기화 전에 읽어 그 종목을 "대기 주문 있음"으로 취급(신규 매수·매도 주문 없음, 수량 변화는
+          r023 봇 장부로 귀속). 브로커 미체결 목록(정정취소가능주문조회, 모의는 당일 주문)이 정상 조회되고 그 종목·방향의 열린 주문이
+          없을 때만 해제. 그 사이 체결은 계좌 동기화로만 반영(주문 단위 확정 없음 - 이중 반영 없음).
+      주문 제출 4곳(_submit_buy_order_cash / 매수·매도 재주문 / place_sell_order)은 self._order_cash 를 거쳐 stopping 이거나 보류 종목이면
+      실패 응답(rt_cd 1)을 돌려 기존 실패 처리로 정리된다.
+      Codex 코드 검토 반영: 브로커 조회는 출력이 하나라도 있으면 실패(HTTP 오류 포함) - 해제 안 함. 주문 제출 직전 의도를 기록
+      (접수 직후 종료 대비), 보류 파일을 못 읽으면 전 종목 보류 후 브로커 미체결 목록으로 대체. 제출 직전에도 r003.stop 확인, SIGTERM
+      / 종료 시 즉시 stopping + 기록. 해제는 다음 계좌 동기화(장부 반영) 뒤에 파일에서 삭제, 보류로 귀속하는 수량은 그 주문 수량까지
+      (r023 caps). 종료 정리 중 주문 상태는 주문번호가 정확히 맞는 행만. 40초는 취소 요청부터, 시작하자마자 기록. 전날 보류 종목은
+      다음 날 첫 동기화에서 봇 귀속(주문은 만료라 보류 안 함).
+      Codex 재검토 반영: 의도 기록에 실패하면 주문하지 않음, 브로커 호출 직전 r003.stop 재확인, 손상 상태(holds_all)는 파일에도 남겨
+      재시작해도 유지, 같은 종목 양방향 미체결은 side "both", 장부 저장 뒤에 보류·귀속 창 제거, 종료 중 주문번호/odno 가 없으면 미확인,
+      정리 대기는 남은 시간 안에서만, 조회 결과에 필요한 열이 없거나 None 이면 실패. 쓰기·보류는 __init__ 으로 만든 TradingAPI 에서만
+      (테스트용 빈 객체는 파일을 쓰지 않음).
+      Codex 3차 반영: side "both" 를 다시 읽어도 유지, 장부 디스크 저장이 실패하면(_ledger_dirty) 다음 동기화에서 다시 쓰고 저장된 뒤에만
+      보류 해제, 종료 정리 중 주문 상태를 못 얻으면 수량으로 확정하지 않음(접수 불명 매도·주문번호 없는 leg 포함 - 보류로 남김),
+      턴 사이 대기 중 Ctrl+C / SIGTERM 도 종료 정리.
+      Codex 4차 반영: 주문 응답이 없거나(예외 / None / 빈 응답) 불분명하면 그 의도를 즉시 보류로 바꿔 브로커 확인 전까지 유지(접수됐을
+      수 있음), 같은 종목·방향의 의도는 수량을 누적(분할 매수의 두 번째 주문이 첫 번째 기록을 덮지 않음).
+      Codex 5차 반영: 보류·의도·대기 주문 기록은 같은 종목이면 합침(수량 합, 방향 다르면 both, 주문번호 합집합), 귀속 상한은 그 보류
+      방향의 변화만 차감.
+      Codex 6차 반영: 보류 수량을 방향별(qty_by_side)로 보관하고 상한도 방향별 적용(both 포함). 크기를 모르는 보류(손상 파일을 브로커
+      목록으로 대체한 것)는 상한 0 - 봇 수량으로 잡지 않는다(자동매도가 사용자 주식을 팔지 않는 쪽).
+      Codex 7차 반영: 시작 시 오늘·전날 보류의 귀속 창도 both 면 양방향 등록.
+      Codex 8차 반영: 보류 파일 값의 형식을 읽을 때 정규화(주문번호 문자열, 수량 정수), 형식이 틀리면 holds_all(전 종목 보류)로.
+      Codex 9차 반영: orders 가 객체가 아니거나, side 가 buy/sell/both 가 아니거나, qty_by_side 의 방향이 side 와 맞지 않으면 holds_all.
+      Codex 10차 반영: 종료 정리 중 매도는 주문의 종료 상태로만 정리(수량 감소만으로 정리 안 함), 접수돼 대기 주문이 된 의도는 다시 세지
+      않음, orders 누락/null 도 holds_all.
+      Codex 11차 반영: 제출 의도를 제출 1건 단위로 기록(접수되면 주문번호, 거부면 삭제, 응답 불명이면 그 수량만 보류로, 대기 주문에 그
+      주문번호가 있으면 제외, 턴 끝에 대기 주문에 없는 접수분은 보류로). 대기 주문의 보류 수량은 마지막으로 본 체결분을 뺀 수량.
+      종료 정리 중 주문량이 확인되지 않는 상태 응답은 종료로 보지 않음.
+      Codex 12차 후 설계 단순화(Claude, 실무 원칙 "확실하지 않은 수량은 봇 몫으로 잡지 않는다"): 수량 상한(caps) 대신 보류 종목(이 r003 의
+      대기 주문이 없는 것, 전날 보류는 첫 동기화만)의 계좌 증가는 봇 몫이 아님(직접 보유, 로그로 확인 요청), 감소는 봇 몫에서 먼저 -
+      bot_only 자동매도가 직접 산 주식을 팔 일이 없다(봇 체결분이 직접 보유로 잡힐 수는 있음 - 로그 확인). 종료 중 주문량 0 인 상태
+      응답은 _fetch_today_order_status 에서 None(모든 종료 판정 경로에 같은 규칙).
+    impact: live (실주문 종료·재시작 경로)
+    compatibility: 정상 운용 중 동작 불변. 재시작 직후 보류 종목은 브로커 확인 전까지 주문 없음.
+- [2026-11-25] type=feat owner=claude
     summary: 남은 과제 B - _make_edge_only_runner 가 먼저 r022.close_missed_days() 로 지난 날짜에 남은 가상 보유를 정리(가상 매매가 꺼져
       있어도). 날짜가 바뀌어 러너를 새로 만들 때도 같음.
     impact: paper only
@@ -1590,6 +1632,182 @@ def _is_today_buy_position(code: str, pos: dict, date_str: str, today_buy_codes:
 # ---------------------------------------------------------------------------
 # 주문 결과 파싱
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# [2026-11-25] order holds (task A2, Codex review): bot orders that may still be open at the broker when r003 ends (a stop that
+# could not settle them in time, a crash) are written to order_holds_<date>.json. The next r003 of the same day loads them before
+# its first account sync and treats those symbols like symbols with a pending order: no new buy / sell orders, and their quantity
+# changes are attributed to the bot (r023). A hold is released only when the broker's open-order list (inquire_psbl_rvsecncl, or
+# today's orders on a non-real environment) was read successfully and shows no open order of that symbol and side. Fills that
+# happened in between are taken from the account sync (no order-level confirm - nothing is counted twice).
+ORDER_HOLD_CHECK_SECONDS = 10.0
+ORDER_HOLD_WARN_SECONDS = 300.0
+STOP_ORDER_SETTLE_SECONDS = 40.0   # r003 stop: cancel the bot's open orders and wait for them (r020 / systemd kill after 90 s)
+_ORDER_BLOCKED = {"rt_cd": "1", "msg_cd": "R003HOLD", "msg1": "r003 order blocked (stopping / unresolved order of this symbol)"}
+
+
+def _order_holds_path(date_str: str) -> Path:
+    return LIVE_RUNTIME_DIR / f"order_holds_{date_str}.json"
+
+
+def _hold_entries_from_pending(pending_orders: dict) -> dict[str, dict]:
+    """the identifying fields of open bot orders (all order numbers of a split buy)"""
+    out: dict[str, dict] = {}
+    for code, p in (pending_orders or {}).items():
+        try:
+            legs = [leg for leg in (p.get("legs") or []) if not leg.get("done")]
+            nos = [str(leg.get("order_no") or "") for leg in legs]
+            if p.get("legs"):
+                # [2026-11-25] the unfilled part of the open legs (a fill already seen is in the ledger)
+                qty = sum(max(0, int(leg.get("quantity", 0) or 0) - int((leg.get("last_status") or {}).get("filled_qty", 0) or 0))
+                          for leg in legs)
+            else:
+                nos = [str(p.get("order_no") or "")]
+                qty = max(0, int(p.get("quantity", 0) or 0) - int(p.get("last_filled_qty", 0) or 0))
+            sub = p.get("submitted_at")
+            out[str(code).zfill(6)] = {
+                "side": "sell" if p.get("side") == "sell" else "buy",
+                "order_nos": [n for n in nos if n],
+                "quantity": qty,
+                "exchange": str(p.get("exchange") or ""),
+                "submitted_at": sub.isoformat(timespec="seconds") if isinstance(sub, datetime) else str(sub or ""),
+                "submission_unknown": bool(p.get("submission_unknown")),
+            }
+            out[str(code).zfill(6)]["qty_by_side"] = {out[str(code).zfill(6)]["side"]: out[str(code).zfill(6)]["quantity"]}
+        except Exception:
+            out[str(code).zfill(6)] = {"side": "buy" if p.get("side") != "sell" else "sell", "order_nos": [], "quantity": 0}
+    return out
+
+
+def hold_side_qty(e: dict) -> dict[str, int]:
+    """[2026-11-25] the held quantity per side of a hold entry ({"buy": n} / {"sell": n} / both); an unknown size is 0"""
+    qs = e.get("qty_by_side")
+    if isinstance(qs, dict) and qs:
+        return {k: max(0, int(v or 0)) for k, v in qs.items() if k in ("buy", "sell")}
+    q = max(0, int(e.get("quantity", 0) or 0))
+    side = e.get("side")
+    if side == "both":
+        return {"buy": 0, "sell": 0}             # sizes per side unknown: nothing may be attributed (cap 0)
+    return {"sell" if side == "sell" else "buy": q}
+
+
+def _pending_order_nos(pending_orders: dict) -> dict[str, set[str]]:
+    """[2026-11-25] every order number a pending entry knows (done legs too), leading zeros dropped"""
+    out: dict[str, set[str]] = {}
+    for code, p in (pending_orders or {}).items():
+        nos = {str(p.get("order_no") or "")} | {str(leg.get("order_no") or "") for leg in (p.get("legs") or [])}
+        out[str(code).zfill(6)] = {n.strip().lstrip("0") for n in nos if n and n.strip().lstrip("0")}
+    return out
+
+
+def _intent_entries(intents: dict[str, dict], pending_orders: dict) -> dict[str, dict]:
+    """[2026-11-25] per-code hold entries of the submissions not yet covered by pending_orders (one record per submission)"""
+    covered = _pending_order_nos(pending_orders)
+    out: dict[str, dict] = {}
+    for it in (intents or {}).values():
+        code = it["code"]
+        no = str(it.get("order_no") or "").strip().lstrip("0")
+        if no and no in covered.get(code, set()):
+            continue                              # the accepted order is tracked by pending_orders (counted there)
+        e = {"side": it["side"], "order_nos": [it["order_no"]] if it.get("order_no") else [], "quantity": int(it["quantity"]),
+             "qty_by_side": {it["side"]: int(it["quantity"])}, "submitted_at": it.get("submitted_at", ""),
+             "submission_unknown": it.get("state") != "accepted"}
+        out = _merge_hold_entries(out, {code: e})
+    return out
+
+
+def _merge_hold_entries(*sources: dict[str, dict]) -> dict[str, dict]:
+    """[2026-11-25] one entry per symbol from several sources (holds / intents / pending): quantities add up, different sides
+    make "both", order numbers are joined - nothing is overwritten"""
+    out: dict[str, dict] = {}
+    for src in sources:
+        for code, e in (src or {}).items():
+            cur = out.get(code)
+            if cur is None:
+                out[code] = {**e, "order_nos": list(e.get("order_nos") or []), "qty_by_side": hold_side_qty(e)}
+                continue
+            if cur.get("side") != e.get("side"):
+                cur["side"] = "both"
+            qs = dict(cur.get("qty_by_side") or {})
+            for side, q in hold_side_qty(e).items():
+                qs[side] = int(qs.get(side, 0) or 0) + int(q)
+            cur["qty_by_side"] = qs
+            cur["quantity"] = int(cur.get("quantity", 0) or 0) + int(e.get("quantity", 0) or 0)
+            cur["order_nos"] = sorted(set(cur.get("order_nos") or []) | set(e.get("order_nos") or []))
+            cur["submission_unknown"] = bool(cur.get("submission_unknown") or e.get("submission_unknown"))
+    return out
+
+
+def save_order_holds(date_str: str, entries: dict[str, dict], holds_all: bool = False) -> bool:
+    """atomic write of the unresolved bot orders of the day (an empty dict clears it). holds_all: the state is not known (an
+    unreadable file not yet replaced by the broker list) - kept on disk so a restart holds everything too. False on a failed write."""
+    try:
+        path = _order_holds_path(date_str)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"date": date_str, "written_at": datetime.now().isoformat(timespec="seconds"),
+                                   "holds_all": bool(holds_all), "orders": entries}, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except Exception as exc:
+        log(f"  [ORDER HOLD  ] write failed: {exc}")
+        return False
+
+
+def load_order_holds(date_str: str) -> dict[str, dict]:
+    """the day's unresolved bot orders (another day's file: none - orders do not carry over). A broken file holds nothing but is
+    reported loudly (it is kept for inspection)."""
+    path = _order_holds_path(date_str)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if str(data.get("date")) != date_str:
+            return {}
+        if data.get("holds_all"):
+            log(f"  [ORDER HOLD  ] {path.name}: 미확인 상태(holds_all) - 브로커 미체결 목록을 읽을 때까지 전 종목 보류")
+            return None
+        out = {}
+        orders = data.get("orders")
+        if not isinstance(orders, dict):         # missing / null / not an object: our writer always writes an object
+            raise ValueError("orders is missing or not an object")
+        for code, e in orders.items():
+            if not isinstance(e, dict):
+                raise ValueError(f"entry {code} is not an object")
+            side = e.get("side")
+            if side not in ("buy", "sell", "both"):
+                raise ValueError(f"entry {code}: side {side!r}")
+            nos = e.get("order_nos") or []
+            if not isinstance(nos, list):
+                raise ValueError(f"entry {code}: order_nos is not a list")
+            qs = e.get("qty_by_side")
+            allowed = {"buy", "sell"} if side == "both" else {side}
+            if qs is not None and (not isinstance(qs, dict) or not set(qs) <= allowed):
+                raise ValueError(f"entry {code}: qty_by_side {qs!r} does not match side {side}")
+            out[str(code).zfill(6)] = {
+                **e, "side": side, "order_nos": [str(n) for n in nos],
+                "quantity": int(e.get("quantity", 0) or 0),
+                **({"qty_by_side": {str(k): int(v or 0) for k, v in qs.items()}} if isinstance(qs, dict) else {})}
+        return out
+    except Exception as exc:
+        log(f"  [ORDER HOLD  ] {path.name} unreadable ({exc}) - every symbol held until the broker's open orders are read")
+        return None
+
+
+def load_prev_order_holds(date_str: str, lookback_days: int = 7) -> dict[str, dict]:
+    """the newest earlier day's holds (orders expired - used only to attribute that day's late fills to the bot)"""
+    try:
+        t0 = datetime.strptime(date_str, "%Y%m%d")
+        for back in range(1, lookback_days + 1):
+            d = (t0 - timedelta(days=back)).strftime("%Y%m%d")
+            if _order_holds_path(d).is_file():
+                return load_order_holds(d) or {}
+    except Exception:
+        pass
+    return {}
+
+
 
 def _order_succeeded(result) -> bool:
     if result is None:
@@ -3765,6 +3983,13 @@ class TradingAPI:
         self.bot_ledger: dict[str, dict] | None = r023.load_ledger(LIVE_RUNTIME_DIR)
         self._bot_order_window: dict[str, dict[str, int]] = {"buy": {}, "sell": {}}
         self._bot_ledger_empty_syncs = 0
+        # [2026-11-25] A1/A2: stopping blocks every new order; holds = unresolved bot orders of an earlier r003 of the day, loaded
+        # BEFORE the first account sync so a fill that happened while r003 was down is attributed to the bot (r023)
+        self.stopping = False
+        self._holds_signature = None
+        self._holds_next_check: datetime | None = None
+        self._holds_warned_at: dict[str, datetime] = {}
+        self._load_startup_holds(datetime.now().strftime("%Y%m%d"))
         self.sync_positions_from_account(force=True)
         self._apply_persisted_position_meta()
         for code, pos in self.positions.items():
@@ -3775,6 +4000,27 @@ class TradingAPI:
         log(
             f"TradingAPI (MA5-BB multi-indicator) initialized | env_dv={self.env_dv} | dry_run={self.dry_run}"
         )
+
+    def _load_startup_holds(self, _today: str) -> None:
+        """[2026-11-25] A2: today's order holds (or holds_all for an unreadable file) and an earlier day's holds (attribution only),
+        registered in the r023 windows before the first account sync"""
+        _loaded = {} if self.dry_run else load_order_holds(_today)
+        self.holds_all = _loaded is None          # unreadable holds file: every symbol held until the broker list is read
+        self.order_holds: dict[str, dict] = _loaded or {}
+        self._submit_intents: dict[str, dict] = {}
+        for _hc, _h in self.order_holds.items():
+            for _side in (("buy", "sell") if _h.get("side") == "both" else ("sell" if _h.get("side") == "sell" else "buy",)):
+                self._bot_order_window[_side][_hc] = 2
+            log(f"  [ORDER HOLD  ] {_sym_label(_hc)} | side={_h.get('side')} order_no={','.join(_h.get('order_nos') or []) or 'UNKNOWN'} "
+                f"| 이전 r003 의 미확인 주문 - 브로커에서 종료가 확인될 때까지 이 종목 주문 보류")
+        # an earlier day's holds: those orders expired, but fills after that r003 ended belong to the bot (first sync only)
+        self._prev_hold_caps: dict[str, dict] = {}
+        for _hc, _h in ({} if self.dry_run else load_prev_order_holds(_today)).items():
+            if _hc not in self.order_holds:
+                for _side in (("buy", "sell") if _h.get("side") == "both" else ("sell" if _h.get("side") == "sell" else "buy",)):
+                    self._bot_order_window[_side][_hc] = 1
+                self._prev_hold_caps[_hc] = _h
+                log(f"  [ORDER HOLD  ] {_sym_label(_hc)} | side={_h.get('side')} - 전날 미확인 주문(만료) - 첫 계좌 동기화의 변화만 봇 귀속")
 
     def _apply_persisted_position_meta(self) -> None:
         meta_map = self.live_state.get("positions_meta") or {}
@@ -3937,6 +4183,9 @@ class TradingAPI:
             return
         for code, pending in self.pending_orders.items():
             win["buy" if pending.get("side") == "buy" else "sell"][str(code).zfill(6)] = 2
+        for code, hold in (getattr(self, "order_holds", None) or {}).items():   # [2026-11-25] A2
+            for side in (("buy", "sell") if hold.get("side") == "both" else ("sell" if hold.get("side") == "sell" else "buy",)):
+                win[side][str(code).zfill(6)] = 2
 
     def _update_bot_ledger(self, positions: dict[str, dict]) -> None:
         """[2026-11-13] r023 장부 갱신 + 보유 스냅샷(holdings.json) 기록. 계좌 동기화가 성공한 직후에만 호출한다.
@@ -3954,7 +4203,18 @@ class TradingAPI:
                     f"{c}:bot={r['bot_qty']}/{r['acct_qty']}" for c, r in sorted(ledger.items())) or "no holdings"))
             else:
                 account_qty = {str(c).zfill(6): int(p.get("quantity", 0) or 0) for c, p in positions.items()}
-                ledger = r023.update_ledger(self.bot_ledger, account_qty, set(win["buy"]), set(win["sell"]))
+                # [2026-11-25] A2, conservative attribution: a symbol with an order hold (today's, or an earlier day's on the first sync)
+                # and no pending order of this r003: an increase is NOT the bot's, a decrease comes off the bot part first. The bot
+                # never counts shares it cannot prove, so bot_only auto-sell never sells shares bought by hand
+                held = {c for c in {**getattr(self, "_prev_hold_caps", {}), **(getattr(self, "order_holds", None) or {})}
+                        if c not in self.pending_orders}
+                ledger = r023.update_ledger(self.bot_ledger, account_qty, set(win["buy"]) - held, set(win["sell"]) | held)
+                for _c in sorted(held):
+                    _old = int((self.bot_ledger.get(_c) or {}).get("acct_qty", 0))
+                    if int(account_qty.get(_c, 0)) > _old:
+                        log(f"  [ORDER HOLD  ] {_sym_label(_c)} | 보류 중 계좌 수량 {_old}->{account_qty.get(_c, 0)} - 봇 주문 체결일 수 있으나 "
+                            f"안전을 위해 직접 보유로 분류 (확인 후 필요하면 직접 매도)")
+                self._prev_hold_caps = {}          # an earlier day's holds count for the first sync only
             changed = ledger != self.bot_ledger
             if changed and self.bot_ledger is not None:
                 for code in sorted(set(ledger) | set(self.bot_ledger)):
@@ -3971,9 +4231,23 @@ class TradingAPI:
                     win[side][code] -= 1
                     if win[side][code] <= 0:
                         del win[side][code]
-            if changed:
+            if changed or getattr(self, "_ledger_dirty", False):
+                self._ledger_dirty = True         # [2026-11-25] cleared only by a successful write (A2 releases wait for it)
                 r023.save_ledger(LIVE_RUNTIME_DIR, ledger, now)
+                self._ledger_dirty = False
             r023.save_snapshot(LIVE_RUNTIME_DIR, r023.build_snapshot(positions, ledger, _SYMBOL_NAME_MAP, date_str, AUTO_SELL_SCOPE, now))
+            # [2026-11-25] A2: holds the broker showed closed leave only now - the ledger with their last fill is on disk. Their
+            # attribution windows go too (a later trade of the symbol is not explained by that order any more)
+            _done = ([] if getattr(self, "_ledger_dirty", False) else
+                     [c for c, h in (getattr(self, "order_holds", None) or {}).items() if h.get("release_after_sync")])
+            for _c in _done:
+                _h = self.order_holds.pop(_c, None) or {}
+                for _side in (("buy", "sell") if _h.get("side") == "both" else ("sell" if _h.get("side") == "sell" else "buy",)):
+                    if _c not in self.pending_orders:
+                        win[_side].pop(_c, None)
+                log(f"  [ORDER HOLD  ] {_sym_label(_c)} | 보류 해제")
+            if _done:
+                self.save_order_holds_if_changed(now.strftime("%Y%m%d"), force=True)
         except Exception as exc:
             log(f"  [WARN        ] bot holdings ledger update failed: {exc}")
 
@@ -3990,7 +4264,251 @@ class TradingAPI:
         return self.positions
 
     def has_pending_order(self, code: str) -> bool:
-        return str(code).zfill(6) in self.pending_orders
+        # [2026-11-25] A2: an unresolved order of an earlier r003 counts as pending (no new buy / sell of the symbol)
+        norm = str(code).zfill(6)
+        return (norm in self.pending_orders or norm in (getattr(self, "order_holds", None) or {})
+                or bool(getattr(self, "holds_all", False)))
+
+    def _order_cash(self, **kwargs):
+        """[2026-11-25] every order submission goes through here: stopping (A1) or a held symbol (A2) -> a failure response
+        (rt_cd 1) that the callers' existing failure handling cleans up; otherwise dsf.order_cash"""
+        code = str(kwargs.get("pdno") or "").zfill(6)
+        if not getattr(self, "stopping", False) and _stop_requested():
+            self.stopping = True                  # a stop that arrived during the turn: no further order (A1)
+        if (getattr(self, "stopping", False) or getattr(self, "holds_all", False)
+                or code in (getattr(self, "order_holds", None) or {})):
+            log(f"  [ORDER BLOCK ] {_sym_label(code)} | {kwargs.get('ord_dv')} qty={kwargs.get('ord_qty')} | "
+                + ("r003 종료 중" if getattr(self, "stopping", False) else "이전 r003 의 미확인 주문 보류 중"))
+            return dict(_ORDER_BLOCKED)
+        if not self.dry_run and "_submit_intents" in self.__dict__:   # a TradingAPI made by __init__ (not a bare test object)
+            # write-ahead: an order the broker may accept is on disk before it is sent (a stop right after it is covered, A2).
+            # No record -> no order (Codex review)
+            side = "sell" if kwargs.get("ord_dv") == "sell" else "buy"
+            self._intent_seq = getattr(self, "_intent_seq", 0) + 1
+            iid = f"{code}:{self._intent_seq}"
+            # one record per submission (a split buy's legs and a reprice are separate records)
+            self._submit_intents[iid] = {"code": code, "side": side, "quantity": self._to_int(kwargs.get("ord_qty"), 0),
+                                         "order_no": "", "state": "sent",
+                                         "submitted_at": datetime.now().isoformat(timespec="seconds")}
+            if not self.save_order_holds_if_changed(datetime.now().strftime("%Y%m%d")):
+                self._submit_intents.pop(iid, None)
+                log(f"  [ORDER BLOCK ] {_sym_label(code)} | 주문 기록(order_holds) 저장 실패 - 주문하지 않음")
+                return dict(_ORDER_BLOCKED)
+            if _stop_requested():                 # a stop that arrived while the record was written
+                self.stopping = True
+                self._submit_intents.pop(iid, None)
+                log(f"  [ORDER BLOCK ] {_sym_label(code)} | r003 종료 요청 - 주문하지 않음")
+                return dict(_ORDER_BLOCKED)
+            try:
+                res = dsf.order_cash(**kwargs)
+            except Exception:
+                self._hold_unresolved_submit(iid)
+                raise
+            if res is None or (hasattr(res, "empty") and bool(res.empty)):
+                self._hold_unresolved_submit(iid)    # no usable answer: the broker may have taken the order
+            elif _order_succeeded(res):
+                self._submit_intents[iid].update(state="accepted", order_no=_extract_order_number(res))
+            else:
+                self._submit_intents.pop(iid, None)  # a definite rejection: nothing at the broker
+            return res
+        return dsf.order_cash(**kwargs)
+
+    def _hold_unresolved_submit(self, iid: str) -> None:
+        """[2026-11-25] A2 (Codex review): a submission without a usable answer (or accepted but not tracked) may be at the
+        broker - only ITS quantity becomes a hold at once (kept over the turn end), the symbol waits for the broker's list"""
+        intent = self._submit_intents.pop(iid, None)
+        if not intent:
+            return
+        code = intent["code"]
+        e = {"side": intent["side"], "order_nos": [intent["order_no"]] if intent.get("order_no") else [],
+             "quantity": int(intent["quantity"]), "qty_by_side": {intent["side"]: int(intent["quantity"])},
+             "submitted_at": intent.get("submitted_at", ""), "submission_unknown": intent.get("state") != "accepted"}
+        self.order_holds[code] = _merge_hold_entries({code: self.order_holds[code]} if code in self.order_holds else {},
+                                                     {code: e})[code]
+        win = getattr(self, "_bot_order_window", None)
+        if win is not None:
+            for side in (("buy", "sell") if self.order_holds[code].get("side") == "both" else (self.order_holds[code]["side"],)):
+                win[side][code] = 2
+        log(f"  [ORDER HOLD  ] {_sym_label(code)} | 주문 응답 없음 - 접수됐을 수 있어 브로커 확인 전까지 이 종목 주문 보류")
+        self.save_order_holds_if_changed(datetime.now().strftime("%Y%m%d"), force=True)
+
+    # ---- [2026-11-25] A1 / A2 ------------------------------------------------------------------------------------------
+    def _open_orders_at_broker(self) -> set[tuple[str, str]] | None:
+        """(code, side) of the account's open orders, None when the list could not be read (then nothing is released)"""
+        try:
+            if self.env_dv == "real" and callable(getattr(dsf, "inquire_psbl_rvsecncl", None)):
+                df, text = _call_kis_capturing(dsf.inquire_psbl_rvsecncl, cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
+                                               inqr_dvsn_1="0", inqr_dvsn_2="0")
+                if text:   # the SDK prints only on errors (rt_cd / HTTP "Error Code"): anything printed = not a usable list
+                    log(f"  [ORDER HOLD  ] open-order query failed: {text[:200]}")
+                    return None
+                if df is None or not hasattr(df, "empty"):
+                    return None
+                out: set[tuple[str, str]] = set()
+                if not df.empty and not {"pdno", "psbl_qty", "sll_buy_dvsn_cd"} <= set(df.columns):
+                    log("  [ORDER HOLD  ] open-order list without its columns - not used")
+                    return None
+                if not df.empty:
+                    for _, r in df.iterrows():
+                        if self._to_int(r.get("psbl_qty"), 0) > 0:
+                            side = "sell" if str(r.get("sll_buy_dvsn_cd", "")).strip() == "01" else "buy"
+                            out.add((str(r.get("pdno", "")).strip().zfill(6), side))
+                return out
+            # non-real environment: today's orders with a remaining quantity that are not cancelled
+            ccld_fn = getattr(dsf, "inquire_daily_ccld", None)
+            if not callable(ccld_fn):
+                return None
+            today = datetime.now().strftime("%Y%m%d")
+            res, text = _call_kis_capturing(ccld_fn, env_dv=self.env_dv, pd_dv="inner", cano=self.cano,
+                                            acnt_prdt_cd=self.acnt_prdt_cd, inqr_strt_dt=today, inqr_end_dt=today,
+                                            sll_buy_dvsn_cd="00", ccld_dvsn="00", inqr_dvsn="00", inqr_dvsn_3="00", pdno="",
+                                            odno="", excg_id_dvsn_cd="ALL")
+            if text:
+                log(f"  [ORDER HOLD  ] open-order query failed: {text[:200]}")
+                return None
+            df = res[0] if isinstance(res, tuple) else res
+            if df is None or not hasattr(df, "empty"):
+                return None
+            if not df.empty and not {"pdno", "rmn_qty", "sll_buy_dvsn_cd"} <= set(df.columns):
+                return None
+            out = set()
+            if not df.empty:
+                for _, r in df.iterrows():
+                    if self._to_int(r.get("rmn_qty"), 0) > 0 and str(r.get("cncl_yn", "")).strip().upper() != "Y":
+                        side = "sell" if str(r.get("sll_buy_dvsn_cd", "")).strip() == "01" else "buy"
+                        out.add((str(r.get("pdno", "")).strip().zfill(6), side))
+            return out
+        except Exception as exc:
+            log(f"  [ORDER HOLD  ] open-order query error: {exc}")
+            return None
+
+    def check_order_holds(self, now: datetime) -> None:
+        """A2: release the holds whose symbol / side has no open order at the broker (every ORDER_HOLD_CHECK_SECONDS)"""
+        if not (self.order_holds or getattr(self, "holds_all", False)) or (
+                self._holds_next_check is not None and now < self._holds_next_check):
+            return
+        self._holds_next_check = now + timedelta(seconds=ORDER_HOLD_CHECK_SECONDS)
+        open_ = self._open_orders_at_broker()
+        if open_ is None:
+            return
+        if getattr(self, "holds_all", False):
+            # unreadable holds file: every order open at the broker now is treated as an unresolved bot order
+            for code, side in open_:          # a buy and a sell open: "both", released only when both are closed
+                self.order_holds[code] = _merge_hold_entries(
+                    {code: self.order_holds[code]} if code in self.order_holds else {},
+                    {code: {"side": side, "order_nos": [], "quantity": 0, "qty_by_side": {side: 0}, "from_broker": True}})[code]
+            self.holds_all = False
+            log(f"  [ORDER HOLD  ] 보류 파일을 못 읽어 브로커 미체결 {len(open_)}건으로 대체: "
+                + (", ".join(f"{c}({s})" for c, s in sorted(open_)) or "없음"))
+        for code, hold in list(self.order_holds.items()):
+            if hold.get("release_after_sync"):
+                continue
+            sides = ("buy", "sell") if hold.get("side") == "both" else (hold.get("side"),)
+            if any((code, s) in open_ for s in sides):
+                last = self._holds_warned_at.get(code)
+                if last is None or (now - last).total_seconds() >= ORDER_HOLD_WARN_SECONDS:
+                    self._holds_warned_at[code] = now
+                    log(f"  [ORDER HOLD  ] {_sym_label(code)} | side={hold.get('side')} - 브로커에 아직 열린 주문, 이 종목 주문 보류 유지 "
+                        f"(직접 취소하거나 체결되면 해제)")
+                continue
+            # closed at the broker: released after the next account sync, so a last fill is in the r023 ledger first
+            hold["release_after_sync"] = True
+            self._holds_warned_at.pop(code, None)
+            log(f"  [ORDER HOLD  ] {_sym_label(code)} | side={hold.get('side')} - 브로커에 열린 주문 없음, 다음 계좌 동기화 뒤 보류 해제 "
+                f"(그 사이 체결은 계좌 동기화로 반영)")
+        self.save_order_holds_if_changed(now.strftime("%Y%m%d"))
+
+    def save_order_holds_if_changed(self, date_str: str, force: bool = False, turn_end: bool = False) -> bool:
+        """A2: the unresolved bot orders (holds not released yet + submit intents + this r003's pending orders) when they
+        changed. turn_end: the turn's submissions are in pending_orders (or failed) - their intents are dropped first"""
+        if self.dry_run:
+            return True
+        if "_submit_intents" not in self.__dict__:
+            return True                          # a bare test object: nothing on disk
+        if turn_end:
+            covered = _pending_order_nos(self.pending_orders)
+            for iid, it in list(self._submit_intents.items()):
+                no = str(it.get("order_no") or "").strip().lstrip("0")
+                if no and no in covered.get(it["code"], set()):
+                    self._submit_intents.pop(iid, None)          # tracked by pending_orders
+                else:
+                    self._hold_unresolved_submit(iid)            # accepted (or unknown) but not tracked: a hold
+        entries = _merge_hold_entries(self.order_holds, _intent_entries(self._submit_intents, self.pending_orders),
+                                      _hold_entries_from_pending(self.pending_orders))
+        holds_all = bool(getattr(self, "holds_all", False))
+        sig = json.dumps([holds_all, entries], sort_keys=True, default=str)
+        if not force and sig == self._holds_signature:
+            return True
+        if save_order_holds(date_str, entries, holds_all=holds_all):
+            self._holds_signature = sig
+            return True
+        return False
+
+    def _cancel_for_stop(self, code: str, pending: dict) -> None:
+        """A1: cancel request for a bot order (the existing cancel flags: confirmed -> closed without a resubmit)"""
+        targets = [leg for leg in (pending.get("legs") or []) if not leg.get("done")] if pending.get("legs") else [pending]
+        for t in targets:
+            order_no, org_no = str(t.get("order_no") or ""), str(t.get("order_org_no") or "")
+            t["reprice_pending"] = False
+            if not order_no or not org_no or t.get("is_market_order"):
+                continue                      # no identifiers (submission unknown) / market: left to the status check and A2
+            try:
+                res = dsf.order_rvsecncl(
+                    env_dv=self.env_dv, cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd, krx_fwdg_ord_orgno=org_no,
+                    orgn_odno=order_no, ord_dvsn="00", rvse_cncl_dvsn_cd="02",
+                    ord_qty=str(int(t.get("quantity", 0) or pending.get("quantity", 0) or 0)), ord_unpr="0", qty_all_ord_yn="Y",
+                    excg_id_dvsn_cd=str(t.get("exchange") or pending.get("exchange") or "KRX"),
+                )
+            except Exception as exc:
+                log(f"  [STOP CANCEL ] {_sym_label(code)} | order_no={order_no} cancel error: {exc}")
+                continue
+            if _order_succeeded(res):
+                t["cancel_inflight"] = True
+                log(f"  [STOP CANCEL ] {_sym_label(code)} | side={pending.get('side')} order_no={order_no} - 종료 전 취소 요청")
+            else:
+                log(f"  [STOP CANCEL ] {_sym_label(code)} | order_no={order_no} cancel rejected (이미 체결/종료 가능): "
+                    f"{_extract_order_error_detail(res)}")
+
+    def close_orders_for_stop(self, budget_s: float = STOP_ORDER_SETTLE_SECONDS) -> None:
+        """A1: on a normal stop - no new orders, cancel the bot's open orders, let the existing status checks settle them for at
+        most budget_s, sync the account. Whatever is left becomes an A2 hold. Never raises."""
+        self.stopping = True
+        try:
+            if self.dry_run or not self.pending_orders:
+                return
+            import time as _time
+            end = _time.monotonic() + max(0.0, float(budget_s))      # one deadline from the start (cancels included)
+            self.save_order_holds_if_changed(datetime.now().strftime("%Y%m%d"), force=True)   # on disk before anything slow
+            log(f"  [STOP ORDERS ] 미체결 봇 주문 {len(self.pending_orders)}건 - 취소 후 최대 {budget_s:.0f}초 정리")
+            for code, pending in list(self.pending_orders.items()):
+                if _time.monotonic() >= end:
+                    break
+                self._cancel_for_stop(code, pending)
+            while self.pending_orders and _time.monotonic() < end:
+                _time.sleep(max(0.0, min(2.0, end - _time.monotonic())))
+                if _time.monotonic() >= end:
+                    break
+                self._last_pending_poll_at = None
+                for p in self.pending_orders.values():
+                    p.pop("next_status_poll_at", None)
+                try:
+                    self.refresh_pending_orders(datetime.now())
+                except Exception as exc:
+                    log(f"  [STOP ORDERS ] status check error: {exc}")
+                    break
+            if _time.monotonic() < end:
+                with contextlib.suppress(Exception):
+                    self.sync_positions_from_account(force=True)
+            if self.pending_orders:
+                log(f"  [STOP ORDERS ] 정리 못 한 주문 {len(self.pending_orders)}건 - order_holds 에 기록, 다음 r003 이 확인 전까지 보류: "
+                    + ", ".join(f"{c}({p.get('side')})" for c, p in self.pending_orders.items()))
+            else:
+                log("  [STOP ORDERS ] 봇 미체결 주문 정리 완료")
+        except Exception as exc:
+            log(f"  [STOP ORDERS ] error: {exc}")
+        finally:
+            with contextlib.suppress(Exception):
+                self.save_order_holds_if_changed(datetime.now().strftime("%Y%m%d"), force=True)
 
     def has_buy_exposure(self, code: str) -> bool:
         norm = str(code).zfill(6)
@@ -4086,8 +4604,15 @@ class TradingAPI:
         orders = df_orders.copy()
         if "pdno" in orders.columns:
             orders = orders[orders["pdno"].astype(str).str.zfill(6) == code]
+        if getattr(self, "stopping", False) and (not order_no or "odno" not in orders.columns):
+            return None                           # [2026-11-25] stop settling: no order number -> not this order's status
         if order_no and "odno" in orders.columns:
             matched = orders[orders["odno"].astype(str).str.strip() == order_no]
+            if getattr(self, "stopping", False):
+                # [2026-11-25] stop settling (A1, Codex review): only the row of this very order (leading zeros ignored)
+                matched = orders[orders["odno"].astype(str).str.strip().str.lstrip("0") == str(order_no).strip().lstrip("0")]
+                if matched.empty:
+                    return None
             if not matched.empty:
                 orders = matched
         if orders.empty:
@@ -4099,6 +4624,8 @@ class TradingAPI:
 
         row = orders.iloc[-1].to_dict()
         order_qty = self._to_int(row.get("ord_qty"), 0)
+        if getattr(self, "stopping", False) and order_qty <= 0:
+            return None                           # [2026-11-25] stop settling: a row without its order quantity proves nothing
         filled_qty = self._to_int(row.get("tot_ccld_qty"), 0)
         remaining_qty = self._to_int(row.get("rmn_qty"), max(0, order_qty - filled_qty))
         rejected_qty = self._to_int(row.get("rjct_qty"), 0)
@@ -4294,6 +4821,8 @@ class TradingAPI:
                 continue
 
             if side == "sell" and pending.get("submission_unknown"):
+                if getattr(self, "stopping", False):
+                    continue                      # [2026-11-25] stop settling: left as an A2 hold (no guess)
                 self._reconcile_unknown_sell(code, pending, now)
                 continue
 
@@ -4307,6 +4836,9 @@ class TradingAPI:
             else:
                 pending["status_fail_count"] = 0
                 pending.pop("next_status_poll_at", None)
+                pending["last_filled_qty"] = int(status.get("filled_qty", 0) or 0)   # [2026-11-25] A2 hold size
+            if status is None and getattr(self, "stopping", False):
+                continue                          # [2026-11-25] stop settling: no confirm from account quantities alone
 
             if side == "buy":
                 if bool(pending.get("pyramid")):
@@ -4463,6 +4995,14 @@ class TradingAPI:
                     self._confirm_pending_sell(code, pending, status, position_remaining_qty)
                     continue
 
+            if getattr(self, "stopping", False):
+                # [2026-11-25] stop settling (Codex review): only the order's own closed status removes it - a lower account
+                # quantity can be a sale by hand while this order is still open (it stays an A2 hold)
+                _closed = status is not None and int(status.get("order_qty", 0) or 0) > 0 and (
+                    int(status.get("remaining_qty", 0)) <= 0 or str(status.get("cancel_yn", "")) == "Y"
+                    or int(status.get("rejected_qty", 0)) >= int(status.get("order_qty", pending.get("quantity", 0))))
+                if not _closed:
+                    continue
             if current_qty <= expected_remaining_qty:
                 self._confirm_pending_sell(code, pending, status, current_qty)
                 continue
@@ -4584,6 +5124,8 @@ class TradingAPI:
                 continue
             order_no = str(leg.get("order_no", ""))
             if not order_no:
+                if getattr(self, "stopping", False):
+                    continue                      # [2026-11-25] stop settling: unknown leg stays (A2 hold)
                 leg["done"] = True
                 continue
 
@@ -4979,7 +5521,7 @@ class TradingAPI:
             }
         else:
             try:
-                order_result = dsf.order_cash(
+                order_result = self._order_cash(
                     env_dv=self.env_dv,
                     ord_dv="buy",
                     cano=self.cano,
@@ -5160,7 +5702,7 @@ class TradingAPI:
             order_result = {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": ord_unpr, "krx_fwdg_ord_orgno": "DRYRUN"}
         else:
             try:
-                order_result = dsf.order_cash(
+                order_result = self._order_cash(
                     env_dv=self.env_dv,
                     ord_dv="sell",
                     cano=self.cano,
@@ -5230,7 +5772,7 @@ class TradingAPI:
             return {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": str(int(round(log_price)))}
         try:
             result, kis_text = _call_kis_capturing(
-                dsf.order_cash,
+                self._order_cash,
                 env_dv=self.env_dv,
                 ord_dv="buy",
                 cano=self.cano,
@@ -5436,7 +5978,7 @@ class TradingAPI:
             order_result = {"rt_cd": "0", "odno": "DRYRUN", "avg_pric": str(int(round(current_price)))}
         else:
             try:
-                order_result = dsf.order_cash(
+                order_result = self._order_cash(
                     env_dv=self.env_dv,
                     ord_dv="sell",
                     cano=self.cano,
@@ -5662,10 +6204,15 @@ def _install_shutdown_handlers(api: TradingAPI) -> None:
     def _atexit_shutdown() -> None:
         _log_pending_orders_on_shutdown(_SHUTDOWN_API)
         _shutdown_save_live_state(_SHUTDOWN_API)
+        with contextlib.suppress(Exception):   # [2026-11-25] A2: whatever is still open is on disk
+            _SHUTDOWN_API.save_order_holds_if_changed(datetime.now().strftime("%Y%m%d"), force=True)
 
     atexit.register(_atexit_shutdown)
 
     def _handler(signum, frame):  # noqa: ARG001
+        with contextlib.suppress(Exception):   # [2026-11-25] A1/A2: no order after the signal, open orders on disk at once
+            api.stopping = True
+            api.save_order_holds_if_changed(datetime.now().strftime("%Y%m%d"), force=True)
         _log_pending_orders_on_shutdown(api)
         _shutdown_save_live_state(api)
         raise KeyboardInterrupt
@@ -6082,6 +6629,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         _ensure_log_date_for(current_dt)
         if _stop_requested():
             # [2026-11-10] r016 stop (Windows r020 supervisor / any host): same exit as Ctrl+C
+            # [2026-11-25] A1: settle the bot's open orders first (A2 hold for what is left)
+            api.close_orders_for_stop()
             _log_pending_orders_on_shutdown(api)
             with contextlib.suppress(Exception):
                 api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
@@ -6169,7 +6718,15 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             break
 
         if not is_regular_session(current_dt) and not is_nxt_session(current_dt):
-            served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)
+            try:
+                served_tick = _sleep_until_next_tick(served_tick, LIVE_PRICE_POLL_INTERVAL_SECONDS)
+            except KeyboardInterrupt:             # [2026-11-25] A1 also when the signal lands in the wait
+                api.close_orders_for_stop()
+                _log_pending_orders_on_shutdown(api)
+                with contextlib.suppress(Exception):
+                    api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
+                log("MAIN LOOP STOP | reason=keyboard_interrupt")
+                break
             continue
 
         try:
@@ -6182,6 +6739,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 last_watchlist_mismatch_log_at = current_dt
             api.sync_positions_from_account(force=False)
             api.refresh_pending_orders(current_dt)
+            api.check_order_holds(current_dt)   # [2026-11-25] A2: release holds the broker shows closed
             traded_today = {str(c).zfill(6) for c in (api.live_state.get("traded_today") or [])}
             api.live_state["traded_today"] = traded_today
             run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
@@ -6654,8 +7212,10 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             _write_active_watchlist_txt(current_dt, watch_map, active_set, first_active_at)
 
             api.maybe_persist_live_state_interval(current_dt, current_dt.strftime("%Y%m%d"))
+            api.save_order_holds_if_changed(current_dt.strftime("%Y%m%d"), turn_end=True)   # [2026-11-25] A2 crash cover
             loop_consecutive_errors = 0
         except KeyboardInterrupt:
+            api.close_orders_for_stop()   # [2026-11-25] A1 (Ctrl+C / SIGTERM)
             _log_pending_orders_on_shutdown(api)
             try:
                 api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
@@ -6668,6 +7228,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             log(f"MAIN LOOP ERROR ({loop_consecutive_errors}/{MAIN_LOOP_MAX_CONSECUTIVE_ERRORS}): {exc}")
             if loop_consecutive_errors >= MAIN_LOOP_MAX_CONSECUTIVE_ERRORS:
                 _log_pending_orders_on_shutdown(api)
+                with contextlib.suppress(Exception):   # [2026-11-25] A2: no settling (the API is failing) - hold what is open
+                    api.save_order_holds_if_changed(current_dt.strftime("%Y%m%d"), force=True)
                 try:
                     api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
                 except Exception:
@@ -6682,7 +7244,15 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         # 않도록 최소 간격(MAIN_LOOP_MIN_CYCLE_SECONDS)만 바닥으로 보장.
         turn_elapsed_seconds = (datetime.now() - current_dt).total_seconds()
         if turn_elapsed_seconds < MAIN_LOOP_MIN_CYCLE_SECONDS:
-            time.sleep(MAIN_LOOP_MIN_CYCLE_SECONDS - turn_elapsed_seconds)
+            try:
+                time.sleep(MAIN_LOOP_MIN_CYCLE_SECONDS - turn_elapsed_seconds)
+            except KeyboardInterrupt:             # [2026-11-25] A1 also when the signal lands in the wait
+                api.close_orders_for_stop()
+                _log_pending_orders_on_shutdown(api)
+                with contextlib.suppress(Exception):
+                    api.persist_live_state(date_str=current_dt.strftime("%Y%m%d"))
+                log("MAIN LOOP STOP | reason=keyboard_interrupt")
+                break
 
     # [2026-11-15] every loop exit (stop request / market end / Ctrl+C / max errors) lands here: checkpoint the adaptive
     # exit shadow (open copies are kept for a restart; the session-end finalize already ran inside the worker at 15:30)

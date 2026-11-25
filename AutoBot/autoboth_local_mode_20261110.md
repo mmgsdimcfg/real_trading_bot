@@ -405,3 +405,12 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   가상 보유를 그 날짜 파일에 EXIT 로 정리: `reason` `close_missed`, `ts` = 그날 예정 청산(15:20 / NXT 19:59:50), `price_at` (쓴 체결의 HHMMSS),
   `recorded_at`, `fill` `auction` | `last` | `entry_record`, 신선한 가격이 아니면 `estimated`. 앱 표시 "미청산 정리".
 - `data_simulation/g050_paper_session_report.py`: 가상 매매 세션별 성과 보고서(`runtime/research/paper_session/`). 앱은 읽지 않음.
+
+## r003 종료·재시작 시 봇 미체결 주문 (2026-11-25, trade_modes_plan_20261125.md 9절 A1+A2)
+- 앱 계약 변경 없음(앱은 새 파일을 읽지 않음). r016 stop / restart(r003.stop), Ctrl+C, SIGTERM 으로 끝날 때 r003 이 봇 미체결 주문을 취소하고
+  최대 40초 정리(A1). 남은 주문·응답 불명 주문은 `runtime/data/live_runtime/order_holds_<날짜>.json`
+  (`{"date", "written_at", "holds_all", "orders": {code: {side buy|sell|both, order_nos, quantity, qty_by_side, ...}}}`)에 남고, 같은 날 다음
+  r003 은 그 종목 주문을 보류(A2) - 브로커 미체결 목록(정정취소가능주문조회)이 정상 조회되고 열린 주문이 없을 때 다음 계좌 동기화 뒤 해제.
+  파일을 못 읽으면 전 종목 보류 후 브로커 목록으로 대체. 로그 태그 `[STOP ORDERS ]` `[STOP CANCEL ]` `[ORDER HOLD  ]` `[ORDER BLOCK ]`.
+- 보류 종목의 계좌 수량 증가는 봇 몫으로 잡지 않는다(직접 보유, 로그로 확인 요청), 감소는 봇 몫에서 먼저(r023). 재시작은 가능하면
+  미체결이 없을 때 / 장 마감 후.
