@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-25] type=feat - v1.0.25_001: 제어 탭 정리 - dry-run 을 프로파일 ! 바로 옆(안내를 펼쳐도 그대로), 매매 방식을 기능별 블록(규칙 매매 / Edge AI 매매 / 반등 알림)과 들여쓴 하위 선택(가상 매수, 신호 후보만 기록, 청산 기준)으로, 매도 설정(자동 매도, 자동 매도 대상)은 별도 묶음. 가상 매수 해제(실제 주문)는 준비 중",
     "[2026-11-25] type=feat - v1.0.24_003: 가상 매매 청산 사유 미청산 정리 표시 (r003 이 마감 전에 멈춘 날의 가상 보유를 다음 실행 때 그날 마감 기준으로 정리 - 서버 r022 close_missed)",
     "[2026-11-25] type=feat - v1.0.24_002: 제어 탭 청산 칸 이름을 Edge AI 청산으로 - 가상 매매와 Edge AI 실주문(edge) 공통 (서버 r006 도 같은 값 사용), edge 방식에서도 표시, 빈칸 의미(가상 = 모델 값, 실주문 = 서버 기본) 안내",
     "[2026-11-25] type=feat - v1.0.24_001: 제어 탭 매매 방식을 체크박스 조합으로 - 규칙 매매(서버 RULE_BUY_ENABLED) / Edge AI 가상 매매(EDGE_ONLY_MODE) / 반등 알림(이 앱, 바로 적용). 반등 감시를 순회 중 끄면 그 순회의 알림도 보내지 않음. 서버가 edge / basic 이면 표시 + 규칙 매매 방식으로 전환 버튼",
@@ -80,7 +81,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.0.24",
+  "version": "1.0.25",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -134,7 +135,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

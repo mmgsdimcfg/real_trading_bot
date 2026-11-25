@@ -461,6 +461,16 @@
 .bot-root button.mini { padding: 1px 7px; font-size: var(--fs); }
 /* [2026-11-25] control tab: paper exits (익절 / 손절 / 보유 시간) */
 .bot-root .trade-kinds { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } /* [2026-11-25] 매매 방식 checkboxes */
+/* [2026-11-25] 매매 방식 box: one block per feature, its options indented under it */
+.bot-root .trade-box { margin: 0 22px 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.bot-root .trade-box .tk-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bot-root .trade-box .tk-head.tk-gap { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.bot-root .trade-box .tk { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; padding: 6px 0 6px 4px; }
+.bot-root .trade-box .tk + .tk { border-top: 1px dashed var(--border); }
+.bot-root .trade-box .tk.tk-row { gap: 8px 16px; border-top: none; }
+.bot-root .trade-box .tk-main { font-weight: 600; min-width: 130px; }
+.bot-root .trade-box .tk-sub { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; margin: 4px 0 0 22px; padding-left: 12px; border-left: 2px solid var(--border); }
+.bot-root .trade-box .tk-opt { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
 .bot-root .paper-exit { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .bot-root .paper-exit-in { width: 4.2em; text-align: right; }
 .bot-root .paper-exit-in[aria-invalid='true'] { border-color: var(--st-hold); }
