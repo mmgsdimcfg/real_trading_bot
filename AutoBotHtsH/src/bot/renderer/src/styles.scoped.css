@@ -466,13 +466,16 @@
 .bot-root .control.cards .card-head > div:first-child { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
 .bot-root .control.cards .card-head .sub, .bot-root .control.cards .card-head .count { margin-left: 0; }
 .bot-root .c-ico { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text-2); }
-.bot-root .tm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 14px; padding: 16px 22px 0; align-items: start; }
-.bot-root .tm-grid.tm-grid-low { padding-bottom: 18px; }
+/* [2026-11-25] user: the tiles of a row have one height (stretch); 반등 알림 is the narrow tile, 매도 설정 the wide one */
+.bot-root .tm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 14px; padding: 16px 22px 0; align-items: stretch; }
+.bot-root .tm-grid.tm-grid-low { padding-bottom: 18px; grid-template-columns: minmax(0, 1fr); }
+.bot-root .tm-grid.tm-grid-low.two { grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr); }
+@media (max-width: 980px) { .bot-root .tm-grid.tm-grid-low.two { grid-template-columns: minmax(0, 1fr); } }
 .bot-root .tm-card { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); }
 .bot-root .tm-card.on::before { content: ''; position: absolute; left: -1px; top: 18px; bottom: 18px; width: 3px; border-radius: 3px; background: var(--text); }
 .bot-root .tm-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .bot-root .tm-name { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.35; }
-.bot-root .tm-name b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs); font-weight: 700; }
+.bot-root .tm-name b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 1.07em; font-weight: 700; }
 .bot-root .tm-name > span { color: var(--text-3); font-size: var(--fs); }
 .bot-root .tm-apply { color: var(--text-3); font-size: var(--fs); white-space: nowrap; }
 .bot-root .tm-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -516,9 +519,9 @@
 .bot-root .xf-lab { display: flex; align-items: center; gap: 6px; font-size: var(--fs); color: var(--text-3); }
 .bot-root .xf-lab i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); }
 .bot-root .xf-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
-.bot-root .xf-row em { font-style: normal; font-weight: 700; font-size: var(--fs); color: var(--text-3); }
+.bot-root .xf-row em { font-style: normal; font-weight: 700; font-size: 1.2em; color: var(--text-3); }
 .bot-root .xf-row u { text-decoration: none; margin-left: auto; font-size: var(--fs); color: var(--text-3); }
-.bot-root .xf input { flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: var(--fs); font-weight: 700; line-height: 1.3; outline: none; }
+.bot-root .xf input { flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 1.36em; font-weight: 700; line-height: 1.3; outline: none; }
 .bot-root .xf input::placeholder { color: var(--text-3); font-weight: 500; opacity: 0.7; }
 .bot-root .xf-tp .xf-lab i { background: var(--gain); }
 .bot-root .xf-sl .xf-lab i { background: var(--loss); }
@@ -528,7 +531,7 @@
 .bot-root .xf-sl.has { border-color: color-mix(in srgb, var(--loss) 35%, var(--border)); background: color-mix(in srgb, var(--loss) 7%, var(--surface)); }
 .bot-root .xf-sl.has input, .bot-root .xf-sl.has em { color: var(--loss); }
 .bot-root .xf.bad { border-color: var(--st-hold); box-shadow: 0 0 0 1px var(--st-hold) inset; }
-.bot-root .xf-set.four .xf input { font-size: var(--fs); }
+.bot-root .xf-set.four .xf input { font-size: 1.1em; }
 .bot-root button.xf-apply { border-radius: 12px; font-weight: 700; font-size: var(--fs); background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }
 .bot-root button.xf-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); border-color: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); }
 .bot-root button.xf-apply:disabled { opacity: 1; background: var(--surface-2); border-color: var(--border); color: var(--text-3); }
@@ -541,9 +544,9 @@
 .bot-root .opt-card.dis { cursor: default; }
 .bot-root .opt-card.dis:not(.on) { opacity: 0.6; }
 .bot-root .opt-card input[type='checkbox'] { margin: 3px 0 0; width: 15px; height: 15px; accent-color: var(--primary-bg); flex: none; }
-.bot-root .opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.bot-root .opt-text b { display: flex; align-items: center; gap: 6px; font-size: calc(var(--fs) - 2px); }
-.bot-root .opt-text > span { color: var(--text-3); font-size: calc(var(--fs) - 2px); line-height: 1.45; }
+.bot-root .opt-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bot-root .opt-txt b { display: flex; align-items: center; gap: 6px; font-size: var(--fs); }
+.bot-root .opt-txt > span { color: var(--text-3); font-size: var(--fs); line-height: 1.45; }
 /* 매도 설정 selects */
 .bot-root .sel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
 .bot-root .sel-field { display: flex; flex-direction: column; min-width: 0; padding: 8px 10px 6px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }

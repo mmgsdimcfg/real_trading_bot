@@ -52,6 +52,7 @@
  * - [2026-11-25] type=feat - design (user mock): 매매 방식 is its own card with one tile per kind (icon, name, Switch, exits as
  *   labelled fields ExitField, the rule engine as chips RULE_EXIT_CHIPS, 실행 대상 as option cards), 반등 알림 / 매도 설정 tiles;
  *   line icons (Ico) in every card head, stat tiles and rounded host rows in the rest of the tab (styles.css)
+ * - [2026-11-25] type=fix - the tiles of a row have the same height; 반등 알림 narrow / 매도 설정 wide like the mock (user)
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -1008,7 +1009,7 @@ export function ControlView() {
                         }
                       >
                         <input type="checkbox" checked={liveOn} disabled={busy || !connected || modeBusy || !edgeLive} onChange={(e) => void setEdgeLive(e.target.checked)} />
-                        <span className="opt-text">
+                        <span className="opt-txt">
                           <b>
                             실제 매매 <span className="tag live">LIVE</span>
                           </b>
@@ -1025,7 +1026,7 @@ export function ControlView() {
                           disabled={busy || !connected || modeBusy || !logOnly || liveOn}
                           onChange={(e) => void setPaperBuys(e.target.checked)}
                         />
-                        <span className="opt-text">
+                        <span className="opt-txt">
                           <b>가상 매매</b>
                           <span>
                             {liveOn
@@ -1083,7 +1084,7 @@ export function ControlView() {
             )}
           </div>
         )}
-        <div className="tm-grid tm-grid-low">
+        <div className={`tm-grid tm-grid-low${rb ? ' two' : ''}`}>
           {rb && (
             <div className={`tm-card${reboundOn ? ' on' : ''}`}>
               <div className="tm-top">
