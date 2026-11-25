@@ -1,6 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
 
 # Update log
+# - [2026-11-25] type=change owner=claude
+#     summary: EDGE_ONLY_NXT 사용 안 함 - r022 가상 매매의 NXT 운용 = nxt_trading_enabled() (r003). 상수는 예전 override 호환용으로 남김.
+#     impact: live paper only
+#     compatibility: ENABLE_NXT_TRADING=False 에 EDGE_ONLY_NXT=True 였던 조합(실주문 정규장만 + 가상 NXT)은 없어짐
 # - [2026-11-25] type=feat owner=claude
 #     summary: 사용자 요청(가상 매매 익절/손절을 앱에서 설정) - EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT (%) / EDGE_ONLY_HORIZON_MIN (분)
 #       신설, 기본 0 = 모델 라벨 그대로. 0 보다 크면 r022 가 새 가상 매수의 목표/손절/보유 시간 상한으로 쓴다. r016 set 으로 편집.
@@ -2117,6 +2121,8 @@ EDGE_ONLY_LOG_ONLY = True
 # [2026-11-23] 가상 매매를 NXT 세션에도 (ENABLE_NXT_SESSION=True 일 때만): 감시 종목 중 NXT 가능 종목을 장전 08:05~08:35 /
 # 장후 15:35~19:30 에 같은 정책으로 평가하고 08:45 / 19:50 에 가상 청산. 기록에 session 구분. 수집기 종목(틱 파일)은 정규장만.
 # 모델은 정규장 데이터로만 학습됐으므로 NXT 세션 성과는 따로 봐야 한다. 롤백: False.
+# [2026-11-25] 사용 안 함 (사용자 결정, Codex 검토): 가상 매매의 NXT 운용은 자동매매 시간(nxt_trading_enabled = ENABLE_NXT_SESSION and
+# ENABLE_NXT_TRADING)을 따른다. 예전 live_overrides 에 남아 있어도 오류가 나지 않게 상수만 남긴다.
 EDGE_ONLY_NXT = True
 # [2026-11-25] 가상 매매 익절 / 손절 / 보유 시간 상한 (사용자 요청: AutoBotH 제어 화면에서 설정). 0 = 모델 라벨(current_meta.json
 # label, 현재 +2.0% / -1.77% / 400분 같은 값) 그대로. 0 보다 크면 그 값으로 새 가상 매수의 목표/손절/시간을 정한다(이미 있는 가상

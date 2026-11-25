@@ -34,6 +34,30 @@ post-close job from that host's data folder).
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 사용자 결정(가상 매매 청산을 운용 시간·종목의 NXT 가능 여부에 맞춤, Codex 검토 권고안) -
+      (1) 청산 시각: 정규장 종목(또는 정규장만 운용) = 15:20 종가 단일가 청산, 가상 체결가 = 15:30 단일가 체결가(틱 파일 close_auction),
+          15:32 까지 없으면 마지막 정규장 가격 - 1틱 + estimated. NXT 가능 종목(NXT 포함 운용) = 19:59:50, NXT 현재가 - 1틱
+          (3분 넘게 묵은 가격이면 estimated). 장전 / 장후 / 정규장 사이를 넘어 보유(08:45 / 15:15 / 19:50 강제 청산 없앰).
+          reason close_regular / close_nxt (예전 eod 기록은 그대로).
+      (6) Codex 코드 검토 반영: 단일가 체결가는 15:30 부터만 읽음(15:20 실주문 청산 앞에서 파일 읽기 없음), 정규장만 운용의 15:30 루프
+          종료는 15:32 까지 기다림, 폴백 가격 = 틱 파일 마지막 정규장 체결 -> 마지막 본 가격 -> 매수 기록 가격(재시작 후에도 청산),
+          고아 처리는 틱 파일 체결 시각이 3분 이내일 때만(메모리 가격 재사용 없음), EXIT 기록이 실패하면 보유 유지 후 다음 턴 재시도,
+          종목별 예외 격리, 1틱 차감은 호가 단위 경계 반영(marketable_sell_limit).
+      (7) Codex 재검토 반영: 15:30 종료 대기는 실제 경과 시간(monotonic)과 요청한 대기 중 큰 값으로 15:32 를 넘기지 않음, 15:30 전에는
+          단일가 파일을 읽지 않음. NXT 고아 보유는 NXT 틱 파일(ticks/<날짜>/nxt, nxt_feed)의 3분 이내 체결로 tp/sl/time 판정.
+          수집기 종목·고아 모두 같은 읽기의 체결 시각으로 0~180초 신선도 확인(미래 시각 거부). 최종 청산 기록 실패는 1초 뒤 2번 재시도.
+          NXT 19:59:50 청산가 = NXT 틱 파일의 3분 이내 체결 -> r003 이 넘긴 3분 이내 시세 -> 마지막 가격(estimated).
+          (15:32 이후의 단일가 파일 조회는 유지 - 15:32 는 가상 체결가 기준일 뿐 실주문과 무관하고, 늦게 보인 체결가가 더 정확하다)
+      (2) session_close(now, final): r003 이 매 턴 종목 순회 전(15:20~15:30 단일가 구간, NXT 청산 대기 구간 포함)과 루프 종료 직전에 부른다
+          - 종목 순회로는 마감 청산이 불리지 않던 문제(Codex 검토).
+      (3) on_symbol(nxt_tradeable): 종목별 NXT 가능 여부(r003 nxt_map). ENTRY / 보유 상태에 "nxt" 저장(재시작 복원, 없는 예전 기록 =
+          정규장 종목). 수집기 종목은 NXT 여부를 모름 -> 정규장 종목.
+      (4) poll_orphans: 틱 파일은 지금이 정규장일 때만 쓰고, 마지막 가격은 3분 이내 것만 쓴다(지난 세션 가격으로 tp/sl 판정 방지).
+          _eval_at 은 평가가 끝난 뒤 기록.
+      (5) nxt 인자는 r003 이 nxt_trading_enabled()(자동매매 시간) 로 준다 - r001 EDGE_ONLY_NXT 는 쓰지 않음.
+    impact: live paper only (주문 없음)
+    compatibility: 기록 형식 추가(nxt, fill, estimated, close_regular / close_nxt). 예전 기록은 그대로 읽힌다.
+- [2026-11-25] type=feat owner=claude
     summary: 사용자 요청(가상 매매 익절/손절을 앱에서 설정) - EdgeOnlyRunner(tp_pct, sl_pct, horizon_min): 0 보다 크면 모델 라벨
       (current_meta.json label) 대신 그 값으로 새 가상 매수의 목표/손절/보유 시간을 정한다(r001 EDGE_ONLY_TP_PCT /
       EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN, 0 = 모델 라벨). 이미 있는 가상 보유는 매수 때 정한 값 그대로. 상태 파일 label =
@@ -99,13 +123,21 @@ from typing import Callable
 import pandas as pd
 
 import r011_edge_ai as r011
-from r002_strategy_core_shared import krx_tick_size
+from r002_strategy_core_shared import krx_tick_size, marketable_sell_limit
 
 ENTRY_START = dt_time(9, 5)
 ENTRY_END = dt_time(14, 50)
-FORCE_EXIT = dt_time(15, 15)
+# [2026-11-25] session close of the paper positions (user decision, Codex review): a regular-only holding (or every holding when
+# the runner does not trade NXT) is closed into the KRX closing auction at 15:20 and filled at the 15:30 auction print; an NXT
+# holding is closed at 19:59:50 (the same time as r003 AFTERNOON_NXT_FORCE_EXIT). The old 15:15 / 08:45 / 19:50 exits are gone.
+REGULAR_CLOSE = dt_time(15, 20)
+AUCTION_WAIT_UNTIL = dt_time(15, 32)   # no auction print by then -> the last regular price - 1 tick, marked estimated
+AUCTION_PRINT_FROM = dt_time(15, 30)   # the auction fill prints at the close: the tick file is not read for it before
+NXT_CLOSE = dt_time(19, 59, 50)
+FORCE_EXIT = REGULAR_CLOSE             # kept for the status file / older callers
+PRICE_FRESH_S = 180.0                  # a remembered price older than this is not used for tp / sl (session gaps are >= 10 min)
 # [2026-11-23] NXT sessions of the paper runner: bars with lo < label <= hi belong to the session; buys between entry_start and
-# entry_end; every position of the session is closed at force_exit (before the session ends)
+# entry_end. [2026-11-25] force_exit is no longer used: NXT holdings are kept across the sessions until NXT_CLOSE
 NXT_SESSIONS = {
     "nxt_pre": {"lo": dt_time(8, 0), "hi": dt_time(8, 50), "entry_start": dt_time(8, 5), "entry_end": dt_time(8, 35),
                 "force_exit": dt_time(8, 45)},
@@ -125,8 +157,14 @@ def nxt_session_of(t: dt_time) -> str | None:
 
 
 def force_exit_of(session: str | None) -> dt_time:
+    """[2026-11-23] kept for older callers; [2026-11-25] the close of a position is close_time_of()"""
     w = NXT_SESSIONS.get(str(session or "regular"))
     return w["force_exit"] if w else FORCE_EXIT
+
+
+def close_time_of(pos: dict, runner_nxt: bool) -> dt_time:
+    """[2026-11-25] when a paper position is closed: NXT_CLOSE for an NXT holding of a runner that trades NXT, else REGULAR_CLOSE"""
+    return NXT_CLOSE if (runner_nxt and pos.get("nxt")) else REGULAR_CLOSE
 
 
 def nxt_raw_1min(frame_1min: pd.DataFrame | None, trade_date, session: str) -> pd.DataFrame | None:
@@ -164,6 +202,23 @@ def _pos_or_zero(v) -> float:
     return f if math.isfinite(f) and f > 0 else 0.0
 
 
+def tick_down(price: float) -> float:
+    """[2026-11-25] one price step below (tick table across bands: 2,000 -> 1,999, 5,000 -> 4,995)"""
+    return float(marketable_sell_limit(None, float(price), 1))
+
+
+def _fresh_print(feed, code: str, now: datetime, read: bool = False) -> bool:
+    """[2026-11-25] the feed's last print of the symbol is 0..PRICE_FRESH_S old (a feed without last_print: True)"""
+    last_print = getattr(feed, "last_print", None)
+    if not callable(last_print):
+        return True
+    lp = last_print(code, read=read)
+    if not lp:
+        return False
+    age = (pd.Timestamp(now) - pd.Timestamp(lp[1])).total_seconds()
+    return 0 <= age <= PRICE_FRESH_S
+
+
 def net_pct(entry: float, exit_px: float) -> float:
     """Net % of a round trip after commission (both sides) and sell tax."""
     cost = entry * FEE_RATE + exit_px * (FEE_RATE + SELL_TAX_RATE)
@@ -194,6 +249,9 @@ class EdgeOnlyRunner:
         # [2026-11-23] NXT sessions too (r001 EDGE_ONLY_NXT and ENABLE_NXT_SESSION): their bars are kept apart from the regular store
         self.nxt = bool(nxt)
         self.xbars: dict[tuple[str, str], pd.DataFrame] = {}
+        # [2026-11-25] per-symbol NXT eligibility as r003 reports it (nxt_map); unknown = regular only
+        self.nxt_ok: dict[str, bool] = {}
+        self.sleep = __import__("time").sleep      # session_close(final) waits for the auction print (tests replace it)
         self.last_bar: dict[str, pd.Timestamp] = {}
         self.positions: dict[str, dict] = {}
         self.entries = {g: 0 for g in GROUPS}
@@ -232,13 +290,15 @@ class EdgeOnlyRunner:
         return self.entries["watch"]
 
     # ---- persistence ------------------------------------------------------------------------
-    def _emit(self, rec: dict) -> None:
+    def _emit(self, rec: dict) -> bool:
+        """append one record; [2026-11-25] False when it could not be written"""
         try:
             self.out_path.parent.mkdir(parents=True, exist_ok=True)
             with self.out_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+            return True
         except Exception:
-            pass
+            return False
 
     def _restore(self) -> None:
         """Positions still open and the day's counters, from the day's file (an r003 restart must not forget them)."""
@@ -254,7 +314,10 @@ class EdgeOnlyRunner:
                     self.positions[code] = {"name": rec.get("name"), "entry": float(rec["entry"]), "ts": pd.Timestamp(rec["ts"]),
                                             "tp": float(rec["tp_px"]), "sl": float(rec["sl_px"]), "horizon": float(rec["horizon"]),
                                             "prob": rec.get("prob"), "group": group,
-                                            "session": rec.get("session") if rec.get("session") in SESSIONS else "regular"}
+                                            "session": rec.get("session") if rec.get("session") in SESSIONS else "regular",
+                                            "nxt": rec.get("nxt") is True,   # [2026-11-25] older records: regular only
+                                            # [2026-11-25] the last known price after a restart (session close fallback)
+                                            "last_px": float(rec.get("price") or rec["entry"])}
                 elif rec.get("event") == "EXIT":
                     self.positions.pop(code, None)
                     self.closed.append(float(rec.get("net_pct") or 0.0))
@@ -320,10 +383,13 @@ class EdgeOnlyRunner:
 
     # ---- main entry point -------------------------------------------------------------------
     def on_symbol(self, code: str, name: str, now: datetime, frame_1m: pd.DataFrame | None, live_price: float,
-                  group: str = "watch") -> None:
+                  group: str = "watch", nxt_tradeable: bool | None = None) -> None:
         try:
-            self._eval_at[str(code).zfill(6)] = datetime.now()
-            self._on_symbol(str(code).zfill(6), name, now, frame_1m, float(live_price), group if group in GROUPS else "watch")
+            code = str(code).zfill(6)
+            if nxt_tradeable is not None:
+                self.nxt_ok[code] = bool(nxt_tradeable)
+            self._on_symbol(code, name, now, frame_1m, float(live_price), group if group in GROUPS else "watch")
+            self._eval_at[code] = datetime.now()   # [2026-11-25] after the evaluation (a failed one leaves it to poll_orphans)
         except Exception as exc:  # never break the live loop
             self.log(f"{TAG} {code} error: {type(exc).__name__}: {exc}")
 
@@ -360,8 +426,10 @@ class EdgeOnlyRunner:
         for code in dict.fromkeys(codes + held):
             try:
                 frame, price = feed.poll(code, now)
+                if not _fresh_print(feed, code, now):     # [2026-11-25] no new print for 3 min: nothing to evaluate
+                    continue
             except Exception as exc:
-                self.log(f"{TAG} {code} collector feed error: {type(exc).__name__}: {exc}")
+                self._safe_log(f"{TAG} {code} collector feed error: {type(exc).__name__}: {exc}")
                 continue
             if price is None or not price > 0:
                 continue
@@ -371,29 +439,175 @@ class EdgeOnlyRunner:
 
     def poll_orphans(self, feed: "CollectorTickFeed | None", now: datetime, since: datetime) -> int:
         """[2026-11-20] Open paper positions that r003 did not hand to on_symbol this turn (the symbol left the watchlist, was
-        bought by hand -> [HOLD SKIP], or r003 restarted without it): exits (tp / sl / 15:15 / time) from the day's KRX tick file,
-        else from the last price seen. Bug 20261120: 443060 bought by hand at 14:41 kept its paper position past its target and
-        15:15. `since` = start of r003's turn: a position looked at after it (symbol loop or poll_collector) is skipped.
-        Returns how many were checked."""
+        bought by hand -> [HOLD SKIP], or r003 restarted without it): exits (tp / sl / time) from the day's tick files.
+        Bug 20261120: 443060 bought by hand at 14:41 kept its paper position past its target.
+        `since` = start of r003's turn: a position looked at after it (symbol loop or poll_collector) is skipped.
+        [2026-11-25] (Codex review) regular session: the KRX tick file (`feed`); NXT sessions: an NXT holding from the NXT tick file
+        (self.nxt_feed, ticks/<date>/nxt), exits only (no bars). A print is used only when it is 0..PRICE_FRESH_S old; the
+        remembered last price is not re-used. The session close is session_close()'s job. Returns how many were checked."""
         n = 0
+        t = now.time()
+        regular = dt_time(9, 0) <= t < REGULAR_CLOSE
+        nxt_now = self.nxt and nxt_session_of(t) is not None
+        if not regular and not nxt_now:
+            return 0
+        src = feed if regular else getattr(self, "nxt_feed", None)
+        if src is None:
+            return 0
         for code in [c for c in list(self.positions) if not (self._eval_at.get(c) and self._eval_at[c] > since)]:
             pos = self.positions.get(code)
-            if pos is None:
+            if pos is None or (nxt_now and not regular and not pos.get("nxt")):
                 continue
-            frame, price = None, None
-            # [2026-11-23] the tick file holds regular-session prints only: it must not price a position of an NXT session
-            if feed is not None and pos.get("session", "regular") == "regular":
-                try:
-                    frame, price = feed.poll(code, now)
-                except Exception as exc:
-                    self.log(f"{TAG} {code} orphan feed error: {type(exc).__name__}: {exc}")
-            if price is None or not price > 0:
-                price = (self.sym_state.get(code) or {}).get("price")
+            try:
+                frame, price = src.poll(code, now)
+                if not _fresh_print(src, code, now):
+                    continue
+            except Exception as exc:
+                self._safe_log(f"{TAG} {code} orphan feed error: {type(exc).__name__}: {exc}")
+                continue
             if price is None or not float(price) > 0:
                 continue
             n += 1
-            self.on_symbol(code, pos.get("name") or self.name_of(code), now, frame, float(price), group=pos.get("group", "watch"))
+            self.on_symbol(code, pos.get("name") or self.name_of(code), now, frame if regular else None, float(price),
+                           group=pos.get("group", "watch"))
         return n
+
+    def _fresh_price(self, code: str, now: datetime, max_age_s: float = PRICE_FRESH_S) -> float | None:
+        """[2026-11-25] the last price seen for the symbol when it is at most max_age_s old (None otherwise)"""
+        st = self.sym_state.get(code) or {}
+        price, at = st.get("price"), st.get("at")
+        if price is None or not at:
+            return None
+        try:
+            age = (pd.Timestamp(now) - pd.Timestamp(at)).total_seconds()
+        except Exception:
+            return None
+        return float(price) if 0 <= age <= max_age_s and float(price) > 0 else None
+
+    def _auction_price(self, code: str) -> float | None:
+        feed = getattr(self, "tick_feed", None)
+        if feed is None:
+            return None
+        try:
+            return feed.auction_price(code)
+        except Exception as exc:
+            self._safe_log(f"{TAG} {code} auction price error: {type(exc).__name__}: {exc}")
+            return None
+
+    def _safe_log(self, msg: str) -> None:
+        try:
+            self.log(msg)
+        except Exception:
+            pass
+
+    def _last_regular_print(self, code: str) -> float | None:
+        """the day's last regular-session print of the tick file (None without the file / feed)"""
+        feed = getattr(self, "tick_feed", None)
+        last_print = getattr(feed, "last_print", None) if feed is not None else None
+        if not callable(last_print):
+            return None
+        try:
+            lp = last_print(code)
+            return float(lp[0]) if lp and float(lp[0]) > 0 else None
+        except Exception:
+            return None
+
+    def _known_price(self, code: str, pos: dict) -> float | None:
+        """the last price seen for the symbol, else the buy record's price (after a restart)"""
+        px = (self.sym_state.get(code) or {}).get("price") or pos.get("last_px")
+        try:
+            return float(px) if px and float(px) > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def session_close(self, now: datetime, final: bool = False, wait_s: float = 0.0, codes: list[str] | None = None) -> int:
+        """[2026-11-25] Close the paper positions whose session close has come (r003 calls it every turn after its own scheduled
+        liquidations, also in the 15:20~15:30 auction and the NXT close wait, and once more with final=True when its market loop
+        ends). `codes` limits it to those symbols (an exit check of one symbol).
+        - regular close (15:20): filled at the closing auction print (read from 15:30 on). Until AUCTION_WAIT_UNTIL the position
+          waits for it (final: waits up to wait_s, not past AUCTION_WAIT_UNTIL, polling every 5 s); after that it is closed at the
+          day's last regular print, else the last price seen / the buy record's price - 1 tick, marked estimated
+        - NXT close (19:59:50): the NXT price seen in the last PRICE_FRESH_S - 1 tick, else the last known price (estimated)
+        final=True closes every open position. A failed EXIT write keeps the position (retried next turn). Returns how many were
+        closed. Never raises."""
+        n = 0
+        try:
+            t = now.time()
+            pool = [c for c in (codes if codes is not None else list(self.positions)) if c in self.positions]
+            due = [c for c in pool if final or t >= close_time_of(self.positions[c], self.nxt)]
+            if not due:
+                return 0
+            regular_due = [c for c in due if close_time_of(self.positions[c], self.nxt) == REGULAR_CLOSE]
+            if final and wait_s > 0 and regular_due and t < AUCTION_WAIT_UNTIL:
+                # wait for the auction print, at most wait_s and never past AUCTION_WAIT_UNTIL. Elapsed = the larger of the real
+                # (monotonic) time and the requested sleeps, so slow file reads count; the file is read only from 15:30 on
+                import time as _time
+                limit = min(float(wait_s), (datetime.combine(now.date(), AUCTION_WAIT_UNTIL) - now).total_seconds())
+                start, slept = _time.monotonic(), 0.0
+
+                def elapsed() -> float:
+                    return max(_time.monotonic() - start, slept)
+
+                def missing() -> bool:
+                    if (now + timedelta(seconds=elapsed())).time() < AUCTION_PRINT_FROM:
+                        return True
+                    return any(self._auction_price(c) is None for c in regular_due if c in self.positions)
+
+                while elapsed() < limit and missing():
+                    step = min(5.0, limit - elapsed())
+                    if step <= 0:
+                        break
+                    self.sleep(step)
+                    slept += step
+                now = now + timedelta(seconds=min(elapsed(), max(limit, 0.0)))
+                t = now.time()
+            for attempt in range(3 if final else 1):
+                for code in [c for c in due if c in self.positions]:
+                    try:
+                        if self._close_due(code, now, t, final):
+                            n += 1
+                    except Exception as exc:
+                        self._safe_log(f"{TAG} {code} session close error: {type(exc).__name__}: {exc}")
+                if not final or attempt == 2 or not any(c in self.positions for c in due):
+                    break
+                self.sleep(1.0)          # [2026-11-25] the last chance of the day: retry a failed EXIT write
+        except Exception as exc:
+            self._safe_log(f"{TAG} session close error: {type(exc).__name__}: {exc}")
+        return n
+
+    def _close_due(self, code: str, now: datetime, t: dt_time, final: bool) -> bool:
+        pos = self.positions.get(code)
+        if pos is None:
+            return False
+        if close_time_of(pos, self.nxt) == REGULAR_CLOSE:
+            px = self._auction_price(code) if t >= AUCTION_PRINT_FROM else None
+            if px:
+                return self._close(code, now, "close_regular", float(px), fill="auction")
+            if not final and t < AUCTION_WAIT_UNTIL:
+                return False                      # the auction print comes at 15:30
+            last = self._last_regular_print(code) or self._known_price(code, pos)
+            if last is None:
+                self._safe_log(f"{TAG} {code} close_regular: no price - position kept")
+                return False
+            return self._close(code, now, "close_regular", tick_down(last), fill="last", estimated=True)
+        # [2026-11-25] the NXT tick file's print when it is 0..PRICE_FRESH_S old (time of the trade), else the live quote r003
+        # handed over in the last PRICE_FRESH_S, else the last known price (estimated)
+        fresh = None
+        nf = getattr(self, "nxt_feed", None)
+        if nf is not None:
+            try:
+                lp = nf.last_print(code)
+                if lp and 0 <= (pd.Timestamp(now) - pd.Timestamp(lp[1])).total_seconds() <= PRICE_FRESH_S and float(lp[0]) > 0:
+                    fresh = float(lp[0])
+            except Exception as exc:
+                self._safe_log(f"{TAG} {code} NXT tick read error: {type(exc).__name__}: {exc}")
+        if fresh is None:
+            fresh = self._fresh_price(code, now)
+        last = fresh if fresh is not None else self._known_price(code, pos)
+        if last is None:
+            self._safe_log(f"{TAG} {code} close_nxt: no price - position kept")
+            return False
+        return self._close(code, now, "close_nxt", tick_down(last), fill="last", estimated=fresh is None)
 
     def write_status(self, now: datetime, force: bool = False) -> bool:
         """[2026-11-19] edge_only_status_<date>.json for the app, at most every STATUS_EVERY_S (force: now). Never raises."""
@@ -599,44 +813,65 @@ class EdgeOnlyRunner:
         entry = price + krx_tick_size(price)
         pos = {"name": name, "entry": entry, "ts": pd.Timestamp(now), "tp": entry * (1 + label["tp"] / 100.0),
                "sl": entry * (1 - label["sl"] / 100.0), "horizon": label["horizon"], "prob": float(prob), "group": group,
-               "session": session}
+               "session": session,
+               # [2026-11-25] an NXT holding (kept until NXT_CLOSE): the runner trades NXT and r003 says the symbol is NXT-tradable
+               "nxt": bool(self.nxt and (session != "regular" or (group == "watch" and self.nxt_ok.get(code, False))))}
         self.positions[code] = pos
         self.entries[group] += 1
         self._emit({"event": "ENTRY", "ts": now.isoformat(timespec="seconds"), "code": code, "name": name, "entry": entry,
                     "price": price, "prob": float(prob), "threshold": threshold, "trigger": reason, "tp_px": pos["tp"],
                     "sl_px": pos["sl"], "horizon": label["horizon"], "model_id": (meta or {}).get("model_id"), "group": group,
-                    "session": session})
+                    "session": session, "nxt": pos["nxt"]})
         self.log(f"{TAG} {code}_{name}{GROUP_KO[group]}{'' if session == 'regular' else f' [{session}]'} | PAPER BUY {entry:,.0f} p={prob:.3f} thr={threshold:.3f} {reason} "
                  f"| tp {pos['tp']:,.0f} sl {pos['sl']:,.0f} {label['horizon']:.0f}min | open={self._open_count(group)} "
                  f"entries={self.entries[group]}/{self.limits[group][1]}")
 
     def _check_exit(self, code: str, now: datetime, price: float) -> None:
         pos = self.positions[code]
+        if now.time() >= close_time_of(pos, self.nxt):
+            # [2026-11-25] the session close has come: session_close() fills it (auction print / NXT close), no tp / sl now
+            self.session_close(now, codes=[code])
+            return
         held_min = (pd.Timestamp(now) - pos["ts"]).total_seconds() / 60.0
         reason, exit_px = None, None
         if price >= pos["tp"]:
             reason, exit_px = "tp", pos["tp"]                      # a resting sell at the target
         elif price <= pos["sl"]:
-            reason, exit_px = "sl", price - krx_tick_size(price)
-        elif now.time() >= force_exit_of(pos.get("session")):   # [2026-11-23] 15:15, or the NXT session's own time
-            reason, exit_px = "eod", price - krx_tick_size(price)
+            reason, exit_px = "sl", tick_down(price)
         elif held_min >= pos["horizon"]:
-            reason, exit_px = "time", price - krx_tick_size(price)
+            reason, exit_px = "time", tick_down(price)
         if reason is None:
             return
+        self._close(code, now, reason, exit_px)
+
+    def _close(self, code: str, now: datetime, reason: str, exit_px: float, fill: str | None = None,
+               estimated: bool = False) -> bool:
+        """EXIT record + log line. [2026-11-25] fill = how a session close was priced (auction / last), estimated = no fresh
+        price. The position is dropped only after the record was written (a failed write is retried next turn)."""
+        pos = self.positions[code]
+        held_min = (pd.Timestamp(now) - pos["ts"]).total_seconds() / 60.0
         net = net_pct(pos["entry"], exit_px)
+        group = pos.get("group", "watch")
+        rec = {"event": "EXIT", "ts": now.isoformat(timespec="seconds"), "code": code, "name": pos.get("name"),
+               "reason": reason, "entry": pos["entry"], "exit": exit_px, "net_pct": net, "held_min": round(held_min, 1),
+               "prob": pos.get("prob"), "group": group, "session": pos.get("session", "regular"), "nxt": bool(pos.get("nxt"))}
+        if fill:
+            rec["fill"] = fill
+        if estimated:
+            rec["estimated"] = True
+        if not self._emit(rec):
+            self._safe_log(f"{TAG} {code} EXIT record could not be written - position kept, retried next turn")
+            return False
         self.positions.pop(code, None)
         if reason == "sl":
             self.sl_today.add(code)
         self.closed.append(net)
         wins = sum(1 for x in self.closed if x > 0)
-        group = pos.get("group", "watch")
-        self._emit({"event": "EXIT", "ts": now.isoformat(timespec="seconds"), "code": code, "name": pos.get("name"),
-                    "reason": reason, "entry": pos["entry"], "exit": exit_px, "net_pct": net, "held_min": round(held_min, 1),
-                    "prob": pos.get("prob"), "group": group, "session": pos.get("session", "regular")})
-        self.log(f"{TAG} {code}_{pos.get('name')}{GROUP_KO.get(group, '')} | PAPER SELL {exit_px:,.0f} {reason} net={net:+.2f}% held={held_min:.0f}min "
-                 f"| day: {len(self.closed)} trades {wins} wins sum={sum(self.closed):+.2f}%")
-
+        self._stage(code, "sold")
+        self._safe_log(f"{TAG} {code}_{pos.get('name')}{GROUP_KO.get(group, '')} | PAPER SELL {exit_px:,.0f} {reason}"
+                       f"{' (' + fill + (', estimated' if estimated else '') + ')' if fill else ''} net={net:+.2f}% held={held_min:.0f}min "
+                       f"| day: {len(self.closed)} trades {wins} wins sum={sum(self.closed):+.2f}%")
+        return True
 
 class CollectorTickFeed:
     """[2026-11-19] Confirmed 1m bars + the last price of a symbol from the day's KRX tick file of the collector (g011).
@@ -649,11 +884,14 @@ class CollectorTickFeed:
       (None otherwise - the runner then checks exits with the price)
     """
 
-    def __init__(self, ticks_dir: Path, date_str: str, confirm_delay_s: float = 2.0):
+    def __init__(self, ticks_dir: Path, date_str: str, confirm_delay_s: float = 2.0, sessions: tuple[str, ...] = ("regular",)):
         self.dir = Path(ticks_dir)
         self.date_str = date_str
         self.confirm_delay_s = float(confirm_delay_s)
         self.state: dict[str, dict] = {}
+        # [2026-11-25] which session column values count as prints: KRX file "regular"; the NXT file (ticks/<date>/nxt) is read
+        # with ("pre", "regular", "post") for NXT orphan exits
+        self.sessions = tuple(sessions)
 
     def codes(self) -> list[str]:
         if not self.dir.is_dir():
@@ -662,7 +900,8 @@ class CollectorTickFeed:
 
     @staticmethod
     def _new() -> dict:
-        return {"off": 0, "rest": b"", "cols": None, "acml": -1.0, "buckets": {}, "price": None, "done": None}
+        return {"off": 0, "rest": b"", "cols": None, "acml": -1.0, "buckets": {}, "price": None, "done": None, "auction": None,
+                "price_t": None}
 
     def _read(self, code: str, st: dict) -> None:
         path = self.dir / f"{code}.csv"
@@ -711,12 +950,16 @@ class CollectorTickFeed:
         if day != self.date_str or not price > 0 or not t.isdigit():
             return
         sess = fields[cols["session"]].strip() if "session" in cols else ("regular" if "090000" <= t < "152000" else "")
-        if sess != "regular":
+        if sess == "close_auction" and st.get("auction") is None:
+            st["auction"] = price     # [2026-11-25] the 15:30 closing auction fill (paper regular close)
+            return
+        if sess not in self.sessions:
             return
         if acml <= st["acml"]:
             return            # replayed print after a reconnect
         st["acml"] = acml
         st["price"] = price
+        st["price_t"] = t      # [2026-11-25] HHMMSS of the last regular print (freshness of the orphan price)
         start = t[:4]         # HHMM of the minute the print falls in
         b = st["buckets"].get(start)
         if b is None:
@@ -726,6 +969,24 @@ class CollectorTickFeed:
             b[2] = min(b[2], price)
             b[3] = price
             b[4] += qty
+
+    def last_print(self, code: str, read: bool = True) -> tuple[float, datetime] | None:
+        """[2026-11-25] (price, time) of the day's last print read so far (None before the first one). read=False: as of the
+        last poll() (the price and the time come from the same read)"""
+        st = self.state.setdefault(code, self._new())
+        if read:
+            self._read(code, st)
+        if st.get("price") is None or not st.get("price_t"):
+            return None
+        t = st["price_t"]
+        base = datetime.strptime(self.date_str, "%Y%m%d")
+        return float(st["price"]), base.replace(hour=int(t[:2]), minute=int(t[2:4]), second=int(t[4:6]))
+
+    def auction_price(self, code: str) -> float | None:
+        """[2026-11-25] the day's closing auction price of the symbol (the first close_auction print), None before it"""
+        st = self.state.setdefault(code, self._new())
+        self._read(code, st)
+        return st.get("auction")
 
     def poll(self, code: str, now: datetime) -> tuple[pd.DataFrame | None, float | None]:
         st = self.state.setdefault(code, self._new())
@@ -761,7 +1022,8 @@ def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
                "at": st.get("at")}
         if pos is not None:
             row["position"] = {"entry": pos["entry"], "tp": pos["tp"], "sl": pos["sl"], "ts": pd.Timestamp(pos["ts"]).isoformat(),
-                               "prob": pos.get("prob"), "session": pos.get("session", "regular")}
+                               "prob": pos.get("prob"), "session": pos.get("session", "regular"), "nxt": bool(pos.get("nxt")),
+                               "close": close_time_of(pos, runner.nxt).strftime("%H:%M:%S")}
         symbols.append(row)
     meta = {}
     try:
@@ -773,10 +1035,13 @@ def _write_status_file(runner: "EdgeOnlyRunner", now: datetime) -> None:
         "model_id": meta.get("model_id"), "threshold": runner._threshold(), "label": runner._label(),
         "model_label": runner._model_label(),
         "entry_window": [ENTRY_START.strftime("%H:%M"), ENTRY_END.strftime("%H:%M")], "force_exit": FORCE_EXIT.strftime("%H:%M"),
+        # [2026-11-25] session closes: regular-only holdings / NXT holdings (null when the runner does not trade NXT)
+        "close_regular": REGULAR_CLOSE.strftime("%H:%M"),
+        "close_nxt": NXT_CLOSE.strftime("%H:%M:%S") if getattr(runner, "nxt", False) else None,
         # [2026-11-23] NXT sessions the runner also trades on paper (empty when off)
         "nxt": bool(getattr(runner, "nxt", False)),
         "nxt_sessions": ({k: {"entry_window": [w["entry_start"].strftime("%H:%M"), w["entry_end"].strftime("%H:%M")],
-                              "force_exit": w["force_exit"].strftime("%H:%M")} for k, w in NXT_SESSIONS.items()}
+                              "force_exit": NXT_CLOSE.strftime("%H:%M:%S")} for k, w in NXT_SESSIONS.items()}
                          if getattr(runner, "nxt", False) else {}),
         "groups": {g: {"open": runner._open_count(g), "max_positions": runner.limits[g][0], "entries": runner.entries[g],
                        "max_entries": runner.limits[g][1], "enabled": runner.limits[g][1] > 0} for g in GROUPS},

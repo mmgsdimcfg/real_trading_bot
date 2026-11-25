@@ -35,6 +35,20 @@ class FeedTest(Base):
         with p.open("a", encoding="utf-8", newline="") as fh:
             fh.write(("" if not header else HEADER + "\n") + "\n".join(lines) + end)
 
+    def test_closing_auction_print_is_the_auction_price_not_a_regular_price(self):
+        # [2026-11-25] paper regular close: filled at the 15:30 closing auction print (session close_auction)
+        self.write("010060", [row("010060", "151959", 10000, 3, 3)])
+        feed = r022.CollectorTickFeed(self.ticks, DAY, 2.0)
+        self.assertIsNone(feed.auction_price("010060"))
+        self.write("010060", [row("010060", "153001", 10150, 900, 903, "close_auction"),
+                              row("010060", "153001", 10150, 100, 1003, "close_auction"),
+                              row("010060", "154000", 10200, 5, 1008, "post")], header=False)
+        self.assertEqual(feed.auction_price("010060"), 10150)
+        _, price = feed.poll("010060", datetime(2026, 11, 12, 15, 41))
+        self.assertEqual(price, 10000)                                        # the last regular price is unchanged
+        self.assertEqual(feed.last_print("010060"), (10000, datetime(2026, 11, 12, 15, 19, 59)))
+        self.assertIsNone(feed.auction_price("000000"))                       # no file
+
     def test_bars_are_confirmed_end_labeled_and_handed_out_once(self):
         self.write("010060", [row("010060", "085959", 9990, 5, 5, "pre"), row("010060", "090001", 10000, 3, 8),
                               row("010060", "090030", 10050, 2, 10), row("010060", "090100", 10020, 4, 14)])

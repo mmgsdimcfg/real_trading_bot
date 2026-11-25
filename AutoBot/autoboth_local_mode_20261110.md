@@ -370,3 +370,15 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   rc 2 + `unknown` 으로 답하고 나머지 값은 그대로 오므로 앱은 입력칸만 숨긴다.
 - `edge_only_status_<날짜>.json`: `label` = 실제 쓰는 값(설정이 반영된 값), 신규 `model_label` = 모델 값(옛 서버에는 없음).
   `edge_only_candidates_<날짜>.jsonl` 의 CANDIDATE `label` 은 모델 값 그대로(연구용, 학습 정의와 맞춤).
+
+## 가상 매매 세션 마감 청산 (2026-11-25, trade_modes_plan_20261125.md 1단계)
+- 가상 매매의 NXT 운용 = 자동매매 시간(nxt_trading_enabled()). r001 `EDGE_ONLY_NXT` 는 쓰지 않는다(상수만 남김).
+- 청산: 정규장 종목(NXT 불가, 수집기 종목, NXT 안 하는 운용) = 15:20 종가 단일가, 가상 체결가 = 15:30 단일가 체결(틱 파일 session
+  close_auction), 15:32 까지 없으면 틱 파일 마지막 정규장 체결 -> 마지막 가격 -> 매수 기록 가격 - 1틱(`estimated`). NXT 가능 종목(NXT 운용)
+  = 19:59:50, NXT 틱 파일 3분 이내 체결 -> r003 시세 3분 이내 -> 마지막 가격 - 1틱(`estimated`). 장전/정규장/장후를 넘어 보유
+  (예전 08:45 / 15:15 / 19:50 청산 없음).
+- `edge_only_<날짜>.jsonl`: ENTRY 에 `"nxt"`(bool, 없는 예전 기록 = false). EXIT `reason` 에 `close_regular` / `close_nxt`(예전 `eod`
+  그대로 읽음), `"fill": "auction" | "last"`, `"estimated": true`(신선한 가격 없음), `"nxt"`.
+- `edge_only_status_<날짜>.json`: `"close_regular": "15:20"`, `"close_nxt": "19:59:50" | null`, `nxt_sessions.*.force_exit` = `"19:59:50"`,
+  보유 행 `position.nxt`, `position.close`(그 보유의 청산 시각). `force_exit` 는 "15:20".
+- 앱: 청산 사유 "정규장 종가 청산" / "NXT 마감 청산", estimated 면 "(추정)".

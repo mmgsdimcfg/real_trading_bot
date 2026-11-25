@@ -21,6 +21,16 @@ Update log format (append only):
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 사용자 결정(가상 매매 청산을 운용 시간·종목 NXT 여부에 맞춤, Codex 검토 권고안) - r022 가상 매매의 NXT 운용 여부 =
+      nxt_trading_enabled()(자동매매 시간, EDGE_ONLY_NXT 는 쓰지 않음). on_symbol 에 nxt_tradeable 전달. 매 턴 예약 청산 뒤에
+      edge_only.session_close(now)(15:20 단일가 / NXT 19:59:50 청산 - 종목 순회가 건너뛰는 구간에도 돈다), 루프 종료 직전
+      session_close(final=True, wait_s) (정규장만 운용이면 15:30 단일가 체결 틱을 15:32 까지 기다림).
+      Codex 코드 검토 반영: 매 턴 훅은 실주문 예약 청산(run_scheduled_liquidations) 뒤로, 두 훅 모두 예외 격리. NXT 세션에 KRX(J)
+      시세로 폴백한 가격은 가상 매매에 넘기지 않음(_LAST_QUOTE_MKT).
+      Codex 재검토 반영: runner.nxt_feed(ticks/<날짜>/nxt) - 감시목록 밖 NXT 가상 보유의 장후 tp/sl 판정용.
+    impact: live paper only (주문 없음)
+    compatibility: 실주문 경로 무변경
+- [2026-11-25] type=feat owner=claude
     summary: 사용자 요청(가상 매매 익절/손절을 앱에서 설정) - EdgeOnlyRunner 에 r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT /
       EDGE_ONLY_HORIZON_MIN 을 넘긴다(0 = 모델 라벨).
     impact: live paper only (주문 없음)
@@ -2237,6 +2247,11 @@ def fetch_1min_frame(code: str, now: datetime, nxt_tradeable: bool) -> pd.DataFr
     return None
 
 
+# [2026-11-25] the market a symbol's last live quote came from (NX / UN / J): r022 paper trading does not evaluate an NXT-session
+# price that fell back to the KRX quote (J = the 15:30 close then, Codex review)
+_LAST_QUOTE_MKT: dict[str, str] = {}
+
+
 def fetch_live_price(code: str, now: datetime, nxt_tradeable: bool) -> float | None:
     candidates = ["NX", "UN", "J"] if (is_nxt_session(now) and nxt_tradeable) else ["J", "UN"]
 
@@ -2264,6 +2279,7 @@ def fetch_live_price(code: str, now: datetime, nxt_tradeable: bool) -> float | N
                 _record_quote_status(code, row)
                 if ENABLE_LIVE_QUOTE_LOG:
                     record_live_quote(code, market_div, row)
+                _LAST_QUOTE_MKT[str(code).zfill(6)] = market_div
                 return value
 
     return None
@@ -2482,13 +2498,17 @@ def _make_edge_only_runner(date_str: str):
                                 exclude_funds=bool(getattr(_cfg_mod, "EDGE_ONLY_EXCLUDE_FUNDS", True)),
                                 no_reentry_after_sl=bool(getattr(_cfg_mod, "EDGE_ONLY_NO_REENTRY_AFTER_SL", True)),
                                 log_only=bool(getattr(_cfg_mod, "EDGE_ONLY_LOG_ONLY", False)),
-                                nxt=bool(ENABLE_NXT_SESSION and getattr(_cfg_mod, "EDGE_ONLY_NXT", False)),
+                                # [2026-11-25] paper NXT follows the trading hours (nxt_trading_enabled), not EDGE_ONLY_NXT
+                                nxt=bool(nxt_trading_enabled()),
                                 # [2026-11-25] user-set exits of new paper buys (0 = the model's label)
                                 tp_pct=getattr(_cfg_mod, "EDGE_ONLY_TP_PCT", 0.0),
                                 sl_pct=getattr(_cfg_mod, "EDGE_ONLY_SL_PCT", 0.0),
                                 horizon_min=getattr(_cfg_mod, "EDGE_ONLY_HORIZON_MIN", 0))
         # [2026-11-20] the day's KRX tick files also price the paper positions r003 did not evaluate (poll_orphans)
         runner.tick_feed = CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
+        # [2026-11-25] NXT tick files (g011: ticks/<date>/nxt) price the NXT holdings r003 did not evaluate (poll_orphans)
+        runner.nxt_feed = (CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str / "nxt", date_str, CANDLE_CONFIRM_DELAY_SECONDS,
+                                             sessions=("pre", "regular", "post")) if runner.nxt else None)
         runner.collector_feed = runner.tick_feed if collector else None
         runner.collector_poll_s = float(getattr(_cfg_mod, "EDGE_ONLY_COLLECTOR_POLL_SECONDS", 5) or 0)
         log(f"  [EDGE ONLY   ] paper mode enabled (no orders) | min_prob={EDGE_ONLY_MIN_PROB} "
@@ -6103,6 +6123,16 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         market_end_time = AFTERNOON_NXT_END if ENABLE_NXT_SESSION else REGULAR_END
         if current_dt.time() >= market_end_time:
             run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
+            # [2026-11-25] paper positions still open are closed now (r022); a 15:30 end waits for the auction print
+            if edge_only is not None:
+                try:
+                    # the 15:30 end (regular hours only) waits for the auction print - r022 never waits past 15:32
+                    edge_only.session_close(datetime.now(), final=True, wait_s=150.0 if market_end_time == REGULAR_END else 0.0)
+                    _ws = getattr(edge_only, "write_status", None)
+                    if callable(_ws):
+                        _ws(datetime.now(), force=True)
+                except Exception as exc:
+                    log(f"  [EDGE ONLY   ] final session close error: {exc}")
             log(f"{market_end_time:%H:%M} reached. Stopping.")
             break
 
@@ -6123,6 +6153,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             traded_today = {str(c).zfill(6) for c in (api.live_state.get("traded_today") or [])}
             api.live_state["traded_today"] = traded_today
             run_scheduled_liquidations(current_dt, api, nxt_map, watch_map, liquidation_state, date_str, traded_today)
+            # [2026-11-25] paper session closes (r022: 15:20 auction / NXT 19:59:50) - after the real scheduled liquidations, before
+            # the branches below that skip the symbol loop (15:20~15:30 auction, NXT close wait)
+            if edge_only is not None:
+                try:
+                    edge_only.session_close(datetime.now())
+                except Exception as exc:
+                    log(f"  [EDGE ONLY   ] session close error: {exc}")
 
             # [2026-10-05] NXT 당일 청산 직전: 종목별 감시를 멈추고, 계좌/미체결 동기화는 청산 시각
             # PRESYNC초 전에 미리 끝낸 뒤(Codex 2차: 2초 안에 동기화까지 하면 주문이 마감 후 접수될 수 있음)
@@ -6316,12 +6353,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                          or (getattr(edge_only, "nxt", False) and nxt_tradeable and is_nxt_session(current_dt)))   # [2026-11-23]
                     and price_source in ("live", "cached_live")
                     and price is not None and price > 0
+                    # [2026-11-25] an NXT-session quote that fell back to KRX (J) is the 15:30 close: not a paper price
+                    and not (is_nxt_session(current_dt) and _LAST_QUOTE_MKT.get(str(code).zfill(6)) == "J")
                 ):
                     try:
                         _eo_frame_1m = _get_or_refresh_1min_frame(
                             code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
                         )
-                        edge_only.on_symbol(code, name, current_dt, _eo_frame_1m, float(price))
+                        edge_only.on_symbol(code, name, current_dt, _eo_frame_1m, float(price), nxt_tradeable=bool(nxt_tradeable))
                     except Exception as exc:
                         log(f"  [EDGE ONLY   ] {symbol_label} error: {exc}")
 

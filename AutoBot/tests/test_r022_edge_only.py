@@ -177,8 +177,14 @@ class ExitTest(Base):
         r2 = self.runner()
         r2.on_symbol("000002", "x", self.at("14:40"), frame(100, start="13:01"), 10300.0)     # history window complete
         self.assertIn("000002", r2.positions)
+        # [2026-11-25] no 15:15 exit any more: the regular close is the 15:20 auction (session_close), filled at 15:30
         r2.on_symbol("000002", "x", self.at("15:15"), frame(135, start="13:01"), 10320.0)
-        self.assertEqual(self.records()[-1]["reason"], "eod")
+        self.assertIn("000002", r2.positions)
+        r2.on_symbol("000002", "x", self.at("15:20"), frame(140, start="13:01"), 10320.0)   # waits for the auction print
+        self.assertIn("000002", r2.positions)
+        self.assertEqual(r2.session_close(self.at("15:32")), 1)                             # no print by 15:32: estimated
+        last = self.records()[-1]
+        self.assertEqual((last["reason"], last["fill"], last["estimated"], last["exit"]), ("close_regular", "last", True, 10310.0))
 
     def test_exit_works_without_a_new_bar_or_frame(self):
         r = self.runner()
@@ -307,15 +313,195 @@ class PaperReviewRulesTest(Base):
         self.assertNotIn("443060", r.positions)
         self.assertEqual(self.records()[-1]["reason"], "tp")
 
-    def test_orphan_skips_positions_seen_this_turn_and_closes_at_1515(self):
+    def test_orphan_skips_positions_seen_this_turn_and_uses_only_a_fresh_last_price(self):
         r = self.runner()
         r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
         turn = datetime(2000, 1, 1)                                                     # everything was seen after it
-        self.assertEqual(r.poll_orphans(None, self.at("15:15"), turn), 0)
+        self.assertEqual(r.poll_orphans(None, self.at("09:31"), turn), 0)
         self.assertIn("010060", r.positions)
-        # no feed: the last price seen; 15:15 -> eod
-        self.assertEqual(r.poll_orphans(None, self.at("15:15"), datetime.now()), 1)
-        self.assertEqual(self.records()[-1]["reason"], "eod")
+        # [2026-11-25] no feed: nothing (the remembered price is not re-used - it would re-stamp itself as fresh)
+        self.assertEqual(r.poll_orphans(None, self.at("09:31"), datetime.now()), 0)
+        self.assertIn("010060", r.positions)
+        # the session close still comes (r003 calls session_close every turn)
+        self.assertEqual(r.session_close(self.at("15:33")), 1)
+        self.assertEqual(self.records()[-1]["reason"], "close_regular")
+
+
+class SessionCloseTest(Base):
+    """[2026-11-25] user decision (Codex review): regular-only holdings close into the 15:20 auction (15:30 print), NXT holdings
+    of an NXT runner at 19:59:50; positions are kept across the sessions"""
+
+    def feed(self, auction=None):
+        f = mock.Mock()
+        f.auction_price.return_value = auction
+        f.poll.return_value = (None, None)
+        f.last_print.return_value = None
+        return f
+
+    def test_regular_holding_is_filled_at_the_auction_print(self):
+        r = self.runner()
+        r.tick_feed = self.feed()
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual(r.session_close(self.at("15:19")), 0)
+        self.assertEqual(r.session_close(self.at("15:25")), 0)                      # before the 15:30 print
+        self.assertIn("010060", r.positions)
+        r.tick_feed.auction_price.return_value = 10450.0
+        self.assertEqual(r.session_close(self.at("15:30")), 1)
+        last = self.records()[-1]
+        self.assertEqual((last["reason"], last["exit"], last["fill"], last.get("estimated"), last["nxt"]),
+                         ("close_regular", 10450.0, "auction", None, False))
+
+    def test_nxt_runner_keeps_an_nxt_symbol_until_1959_and_closes_a_regular_only_symbol_at_1520(self):
+        r = self.runner(nxt=True, model=FakeModel(0.6, label={"tp": 2.0, "sl": 1.7, "horizon": 9999}))
+        r.tick_feed = self.feed(auction=10200.0)
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=True)
+        r.on_symbol("010061", "y", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=False)
+        self.assertEqual((r.positions["010060"]["nxt"], r.positions["010061"]["nxt"]), (True, False))
+        self.assertEqual(r.session_close(self.at("15:31")), 1)                       # only the regular-only one
+        self.assertEqual(self.records()[-1]["code"], "010061")
+        self.assertIn("010060", r.positions)
+        r.on_symbol("010060", "x", self.at("19:59", 40), None, 10300.0, nxt_tradeable=True)
+        self.assertIn("010060", r.positions)
+        r.on_symbol("010060", "x", self.at("19:59", 50), None, 10300.0, nxt_tradeable=True)
+        last = self.records()[-1]
+        self.assertEqual((last["code"], last["reason"], last["exit"], last.get("estimated")), ("010060", "close_nxt", 10290.0, None))
+
+    def test_nxt_close_with_a_stale_price_is_estimated_and_final_closes_everything(self):
+        r = self.runner(nxt=True)
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=True)
+        self.assertEqual(r.session_close(self.at("19:59", 55)), 1)                    # last price from 09:30: estimated
+        self.assertTrue(self.records()[-1]["estimated"])
+        r2 = self.runner()
+        r2.on_symbol("010061", "y", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual(r2.session_close(self.at("12:00"), final=True), 1)           # r003 loop ended (e.g. stopped)
+        self.assertEqual(self.records()[-1]["reason"], "close_regular")
+
+    def test_final_close_waits_for_the_auction_print(self):
+        r = self.runner()
+        r.tick_feed = self.feed()
+        calls = []
+
+        def sleep(s):
+            calls.append(s)
+            r.tick_feed.auction_price.return_value = 10400.0     # the print arrives while waiting
+        r.sleep = sleep
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual(r.session_close(self.at("15:30", 0), final=True, wait_s=90.0), 1)
+        self.assertEqual(calls, [5.0])
+        self.assertEqual((self.records()[-1]["exit"], self.records()[-1]["fill"]), (10400.0, "auction"))
+
+    def test_collector_symbols_and_runners_without_nxt_close_at_1520(self):
+        r = self.runner(nxt=False)
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=True)
+        self.assertFalse(r.positions["010060"]["nxt"])
+        r2 = self.runner(nxt=True, collector_max_positions=3, collector_max_entries=10)
+        r2.on_symbol("010061", "y", self.at("09:30"), frame(30), 10300.0, group="collector", nxt_tradeable=True)
+        self.assertFalse(r2.positions["010061"]["nxt"])
+
+    def test_orphan_uses_the_tick_file_only_when_its_last_print_is_fresh(self):
+        r = self.runner()
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        feed = mock.Mock()
+        feed.poll.return_value = (None, 9000.0)                                  # far below the stop
+        feed.last_print.return_value = (9000.0, self.at("09:40", 0))
+        self.assertEqual(r.poll_orphans(feed, self.at("09:44"), datetime.now()), 0)   # 4 min old print: not used
+        self.assertIn("010060", r.positions)
+        self.assertEqual(r.poll_orphans(feed, self.at("09:42"), datetime.now()), 1)
+        self.assertEqual(self.records()[-1]["reason"], "sl")
+        self.assertEqual(r.poll_orphans(feed, self.at("15:25"), datetime.now()), 0)   # not after the regular close
+
+    def test_restart_after_the_close_still_closes_with_the_buy_records_price(self):
+        r = self.runner()
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        r2 = self.runner()                                                        # restarted: no price seen yet
+        self.assertEqual(r2.session_close(self.at("19:00"), final=True), 1)
+        last = self.records()[-1]
+        self.assertEqual((last["reason"], last["exit"], last["estimated"]), ("close_regular", 10290.0, True))
+
+    def test_regular_close_prefers_the_last_regular_print_of_the_tick_file(self):
+        r = self.runner()
+        r.tick_feed = self.feed()
+        r.tick_feed.last_print.return_value = (10500.0, self.at("15:19", 58))
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual(r.session_close(self.at("15:32")), 1)
+        self.assertEqual((self.records()[-1]["exit"], self.records()[-1]["estimated"]), (10490.0, True))
+
+    def test_auction_is_not_read_before_1530(self):
+        r = self.runner()
+        r.tick_feed = self.feed(auction=10450.0)
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual(r.session_close(self.at("15:20", 1)), 0)
+        r.tick_feed.auction_price.assert_not_called()                           # no file read in front of the real 15:20 close
+        self.assertEqual(r.session_close(self.at("15:30", 2)), 1)
+
+    def test_a_failed_exit_write_keeps_the_position(self):
+        r = self.runner()
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        with mock.patch.object(r, "_emit", return_value=False):
+            self.assertEqual(r.session_close(self.at("15:33")), 0)
+        self.assertIn("010060", r.positions)
+        self.assertEqual(r.session_close(self.at("15:34")), 1)
+
+    def test_one_tick_down_follows_the_tick_bands(self):
+        self.assertEqual([r022.tick_down(p) for p in (2000.0, 5000.0, 10300.0, 50000.0)], [1999.0, 4995.0, 10290.0, 49950.0])
+
+    def test_final_wait_never_passes_1532(self):
+        r = self.runner()
+        r.tick_feed = self.feed()
+        calls = []
+        r.sleep = calls.append
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        self.assertEqual(r.session_close(self.at("15:31", 58), final=True, wait_s=150.0), 1)
+        self.assertEqual(calls, [2.0])                                           # 2 s left until 15:32
+        self.assertTrue(self.records()[-1]["estimated"])
+
+    def test_final_close_retries_a_failed_write(self):
+        r = self.runner()
+        r.sleep = lambda s: None
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        real = r._emit
+        results = iter([False, True])
+        with mock.patch.object(r, "_emit", side_effect=lambda rec: next(results) and real(rec)):
+            self.assertEqual(r.session_close(self.at("16:00"), final=True), 1)
+        self.assertNotIn("010060", r.positions)
+
+    def test_nxt_orphan_is_priced_from_the_nxt_tick_file(self):
+        r = self.runner(nxt=True, model=FakeModel(0.6, label={"tp": 2.0, "sl": 1.7, "horizon": 9999}))
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=True)
+        r.nxt_feed = self.feed()
+        r.nxt_feed.poll.return_value = (None, 9000.0)                           # below the stop
+        r.nxt_feed.last_print.return_value = (9000.0, self.at("17:00", 0))
+        krx = self.feed()
+        self.assertEqual(r.poll_orphans(krx, self.at("17:01"), datetime.now()), 1)
+        krx.poll.assert_not_called()
+        self.assertEqual((self.records()[-1]["reason"], self.records()[-1]["exit"]), ("sl", 8990.0))
+
+    def test_nxt_close_uses_a_fresh_print_of_the_nxt_tick_file(self):
+        r = self.runner(nxt=True, model=FakeModel(0.6, label={"tp": 2.0, "sl": 1.7, "horizon": 9999}))
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=True)
+        r.nxt_feed = self.feed()
+        r.nxt_feed.last_print.return_value = (10500.0, self.at("19:59", 30))
+        self.assertEqual(r.session_close(self.at("19:59", 50)), 1)
+        last = self.records()[-1]
+        self.assertEqual((last["reason"], last["exit"], last.get("estimated")), ("close_nxt", 10490.0, None))
+
+    def test_future_or_stale_prints_are_not_used(self):
+        r = self.runner()
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0)
+        feed = self.feed()
+        feed.poll.return_value = (None, 9000.0)
+        feed.last_print.return_value = (9000.0, self.at("09:45", 0))           # after `now`
+        self.assertEqual(r.poll_orphans(feed, self.at("09:40"), datetime.now()), 0)
+        r2 = self.runner(collector_max_positions=3, collector_max_entries=10)
+        feed.codes.return_value = ["010061"]
+        feed.last_print.return_value = (9000.0, self.at("09:00", 0))           # 40 min old
+        self.assertEqual(r2.poll_collector(feed, self.at("09:40"), set()), 0)
+
+    def test_restart_restores_the_nxt_flag(self):
+        r = self.runner(nxt=True)
+        r.on_symbol("010060", "x", self.at("09:30"), frame(30), 10300.0, nxt_tradeable=True)
+        self.assertTrue(self.runner(nxt=True).positions["010060"]["nxt"])
+        self.assertTrue(self.records()[-1]["nxt"])
 
 
 class LogOnlyTest(Base):

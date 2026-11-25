@@ -30,6 +30,7 @@
  *   -170,670원 of 10.8 M bought); now the KRW sum over the bought amount, so % and 원 agree. The 거래당 평균 card is gone (its simple mean
  *   is in the tooltip). The 매수 / 매도 line stays on one line
  * - [2026-11-20] type=feat - 'new paper buys off (candidates only)' badge when the server runs log-only (EDGE_ONLY_LOG_ONLY)
+ * - [2026-11-25] type=feat - 청산 사유 정규장 종가 청산 / NXT 마감 청산, (추정) when the close used the last price seen
  * - [2026-11-25] type=feat - the exits line says when they were set by hand (server model_label differs) and shows the model's
  */
 
@@ -466,7 +467,15 @@ export function PaperView() {
                 <td className="num">{fmtInt(t.entry)}</td>
                 <BuySize entry={t.entry} budget={orderKrw} />
                 <td className="num">{fmtInt(t.exit)}</td>
-                <td>{PAPER_EXIT_KO[t.reason || ''] || t.reason}</td>
+                <td>
+                  {PAPER_EXIT_KO[t.reason || ''] || t.reason}
+                  {t.estimated && (
+                    <span className="muted small" title="마감 시각에 새 체결가가 없어 마지막으로 본 가격으로 계산했습니다">
+                      {' '}
+                      (추정)
+                    </span>
+                  )}
+                </td>
                 <td className="num">{t.heldMin !== undefined ? Math.round(t.heldMin) : '-'}</td>
                 <td className="num">{t.prob !== undefined ? t.prob.toFixed(3) : '-'}</td>
                 <td className={`num ${pnlClass(t.netPct)}`}>{fmtPct(t.netPct)}</td>

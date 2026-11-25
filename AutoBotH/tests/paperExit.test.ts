@@ -45,3 +45,16 @@ describe('paper exits', () => {
     expect(st?.modelLabel).toEqual({ tp: 2, sl: 1.77, horizon: 400 });
   });
 });
+
+describe('[2026-11-25] session close reasons', () => {
+  it('close_regular / close_nxt labels and the estimated flag', async () => {
+    const { PAPER_EXIT_KO, parsePaperLines } = await import('../src/shared/paper');
+    expect([PAPER_EXIT_KO.close_regular, PAPER_EXIT_KO.close_nxt, PAPER_EXIT_KO.eod]).toEqual(['정규장 종가 청산', 'NXT 마감 청산', '장 마감']);
+    const lines = [
+      JSON.stringify({ event: 'ENTRY', ts: '2026-11-25T09:30:05', code: '010060', name: 'x', entry: 10310, prob: 0.6 }),
+      JSON.stringify({ event: 'EXIT', ts: '2026-11-25T19:59:51', code: '010060', reason: 'close_nxt', exit: 10290, net_pct: -0.4, estimated: true }),
+    ].join('\n');
+    const t = parsePaperLines(lines)[0];
+    expect([t.reason, t.estimated]).toEqual(['close_nxt', true]);
+  });
+});

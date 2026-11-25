@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-25] type=feat - session close reasons close_regular (15:20 auction) / close_nxt (NXT 19:59:50) and the estimated flag
+ *   (server r022: paper positions follow the trading hours and the symbol's NXT eligibility)
  * - [2026-11-25] type=feat - paper exits set by the user (server r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN,
  *   0 = the model's label): PAPER_EXIT_KEYS, parsePaperExit, paperExitInput, paperExitChanges; status model_label
  * - [2026-11-23] type=feat - PaperTrade.session / position.session ('regular' | 'nxt_pre' | 'nxt_after', server r022 nxt=True;
@@ -48,14 +50,24 @@ export interface PaperTrade {
   horizon?: number;
   exitTs?: number;
   exit?: number;
-  /** tp | sl | time | eod */
+  /** tp | sl | time | eod (before 2026-11-25) | close_regular (15:20 auction) | close_nxt (NXT 19:59:50) */
   reason?: string;
+  /** [2026-11-25] session close priced with the last price seen (no auction print / no fresh NXT price) */
+  estimated?: boolean;
   /** net % after commission and sell tax */
   netPct?: number;
   heldMin?: number;
 }
 
-export const PAPER_EXIT_KO: Record<string, string> = { tp: '익절 (목표가)', sl: '손절', time: '시간 경과', eod: '장 마감' };
+export const PAPER_EXIT_KO: Record<string, string> = {
+  tp: '익절 (목표가)',
+  sl: '손절',
+  time: '시간 경과',
+  eod: '장 마감',
+  // [2026-11-25] session closes (server r022): regular-only holdings into the 15:20 closing auction, NXT holdings at 19:59:50
+  close_regular: '정규장 종가 청산',
+  close_nxt: 'NXT 마감 청산',
+};
 
 const tsToEpoch = (s: unknown): number => {
   // "2026-11-12T09:30:05" is KST wall time
@@ -104,6 +116,7 @@ export function parsePaperLines(text: string): PaperTrade[] {
       t.exitTs = ts;
       t.exit = num(r.exit);
       t.reason = typeof r.reason === 'string' ? r.reason : undefined;
+      if (r.estimated === true) t.estimated = true;
       t.netPct = num(r.net_pct);
       t.heldMin = num(r.held_min);
       open.delete(code);

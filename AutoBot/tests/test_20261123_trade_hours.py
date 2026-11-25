@@ -158,8 +158,10 @@ class PaperNxtTest(Base):
     def test_sessions_by_time(self):
         self.assertEqual([r022.nxt_session_of(datetime(2026, 1, 1, h, m).time()) for h, m in ((7, 59), (8, 0), (8, 50), (8, 51), (9, 30), (15, 30), (15, 31), (20, 0), (20, 1))],
                          [None, "nxt_pre", "nxt_pre", None, None, None, "nxt_after", "nxt_after", None])
-        self.assertEqual(r022.force_exit_of(None).strftime("%H:%M"), "15:15")
-        self.assertEqual(r022.force_exit_of("nxt_after").strftime("%H:%M"), "19:50")
+        # [2026-11-25] closes: regular-only holdings 15:20 (auction), NXT holdings of an NXT runner 19:59:50
+        self.assertEqual(r022.close_time_of({"nxt": False}, True).strftime("%H:%M:%S"), "15:20:00")
+        self.assertEqual(r022.close_time_of({"nxt": True}, True).strftime("%H:%M:%S"), "19:59:50")
+        self.assertEqual(r022.close_time_of({"nxt": True}, False).strftime("%H:%M:%S"), "15:20:00")
 
     def test_off_by_default_nothing_happens_in_the_nxt_hours(self):
         r = self.runner()
@@ -170,25 +172,26 @@ class PaperNxtTest(Base):
         r = self.runner(nxt=True)
         r.on_symbol("010060", "x", self.at("09:10"), frame(10), 10100.0)             # regular store from 09:01 (also buys: regular)
         self.assertEqual([x.get("session") for x in self.records()], ["regular"])
-        r._check_exit("010060", self.at("15:15"), 10100.0)                            # closed at the regular end of day
+        r.session_close(self.at("15:33"))                                             # regular-only symbol: 15:20 close
         r.on_symbol("010060", "x", self.at("16:00"), nxt_frame(30, "15:31"), 10300.0)
         rec = self.records()
         self.assertEqual([(x["event"], x.get("session")) for x in rec], [("ENTRY", "regular"), ("EXIT", "regular"), ("ENTRY", "nxt_after")])
         self.assertEqual(r.positions["010060"]["session"], "nxt_after")
         self.assertIn("[nxt_after]", self.logs[-1])
 
-    def test_after_session_position_is_not_closed_by_the_1515_rule_but_at_1950(self):
+    def test_after_session_position_is_kept_until_the_nxt_close(self):
+        # [2026-11-25] no 19:50 exit any more: an NXT holding is closed at 19:59:50
         r = self.runner(nxt=True)
         r.on_symbol("010060", "x", self.at("09:10"), frame(10), 10100.0)
-        r._check_exit("010060", self.at("15:15"), 10100.0)
+        r.session_close(self.at("15:33"))
         r.on_symbol("010060", "x", self.at("19:20"), nxt_frame(229, "15:31"), 10300.0)
         self.assertIn("010060", r.positions)
-        r.on_symbol("010060", "x", self.at("19:40"), nxt_frame(249, "15:31"), 10300.0)
-        self.assertIn("010060", r.positions)                                          # 20 min held, before 19:50
         r.on_symbol("010060", "x", self.at("19:50"), nxt_frame(259, "15:31"), 10300.0)
+        self.assertIn("010060", r.positions)
+        r.on_symbol("010060", "x", self.at("19:59", 50), nxt_frame(268, "15:31"), 10300.0)
         self.assertNotIn("010060", r.positions)
         last = self.records()[-1]
-        self.assertEqual((last["event"], last["reason"], last["session"]), ("EXIT", "eod", "nxt_after"))
+        self.assertEqual((last["event"], last["reason"], last["session"], last["nxt"]), ("EXIT", "close_nxt", "nxt_after", True))
 
     def test_after_session_entry_window_and_history(self):
         r = self.runner(nxt=True)
@@ -205,7 +208,11 @@ class PaperNxtTest(Base):
         rec = self.records()
         self.assertEqual([(x["event"], x["session"]) for x in rec], [("ENTRY", "nxt_pre")])
         r.on_symbol("010060", "x", self.at("08:45"), nxt_frame(45, "08:01"), 10300.0)
-        self.assertEqual(self.records()[-1]["reason"], "eod")                          # closed at 08:45, before the session ends
+        self.assertIn("010060", r.positions)                                           # [2026-11-25] kept past 08:45
+        self.assertTrue(r.positions["010060"]["nxt"])
+        r.on_symbol("010060", "x", self.at("09:10"), frame(10), 10300.0)               # into the regular session
+        self.assertIn("010060", r.positions)
+        self.assertEqual(r.session_close(self.at("15:33")), 0)                         # not a regular-only holding
         r2 = self.runner(nxt=True)
         r2.on_symbol("010061", "x", self.at("08:30"), nxt_frame(10, "08:21"), 10300.0)  # first bar after 08:10: no prediction
         self.assertEqual(r2.sym_state["010061"]["stage"], "no_history")
@@ -223,7 +230,7 @@ class PaperNxtTest(Base):
     def test_restart_restores_the_session_and_old_records_are_regular(self):
         r = self.runner(nxt=True)
         r.on_symbol("010060", "x", self.at("09:10"), frame(10), 10100.0)
-        r._check_exit("010060", self.at("15:15"), 10100.0)
+        r.session_close(self.at("15:33"))
         r.on_symbol("010060", "x", self.at("16:00"), nxt_frame(30, "15:31"), 10300.0)
         r2 = self.runner(nxt=True)
         self.assertEqual(r2.positions["010060"]["session"], "nxt_after")
@@ -236,11 +243,12 @@ class PaperNxtTest(Base):
     def test_orphan_of_an_nxt_session_is_not_priced_from_the_regular_tick_file(self):
         r = self.runner(nxt=True)
         r.on_symbol("010060", "x", self.at("09:10"), frame(10), 10100.0)
-        r._check_exit("010060", self.at("15:15"), 10100.0)
+        r.session_close(self.at("15:33"))
         r.on_symbol("010060", "x", self.at("16:00"), nxt_frame(30, "15:31"), 10300.0)
         feed = mock.Mock()
         feed.poll.return_value = (None, 5000.0)                                       # a stale regular price far below the stop
-        self.assertEqual(r.poll_orphans(feed, self.at("16:05"), datetime(2030, 1, 1)), 1)
+        # [2026-11-25] no orphan pricing outside the regular session (the NXT close is session_close's job)
+        self.assertEqual(r.poll_orphans(feed, self.at("16:02"), datetime(2030, 1, 1)), 0)
         feed.poll.assert_not_called()
         self.assertIn("010060", r.positions)
 
@@ -253,7 +261,8 @@ class PaperNxtTest(Base):
         self.assertTrue(r.write_status(self.at("08:20"), force=True))
         st = json.loads((self.out / f"edge_only_status_{DAY}.json").read_text(encoding="utf-8"))
         self.assertTrue(st["nxt"])
-        self.assertEqual(st["nxt_sessions"]["nxt_after"], {"entry_window": ["15:35", "19:30"], "force_exit": "19:50"})
+        self.assertEqual(st["nxt_sessions"]["nxt_after"], {"entry_window": ["15:35", "19:30"], "force_exit": "19:59:50"})
+        self.assertEqual((st["close_regular"], st["close_nxt"]), ("15:20", "19:59:50"))
         off = self.runner()
         off.write_status(self.at("09:20"), force=True)
         st = json.loads((self.out / f"edge_only_status_{DAY}.json").read_text(encoding="utf-8"))
