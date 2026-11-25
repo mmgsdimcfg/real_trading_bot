@@ -177,7 +177,7 @@ export function HistoryTab() {
             </p>
             {cur.res.setups && (
               <>
-                <h4>추가 유형{cur.res.setup ? ` - ${SETUP_LABEL[cur.res.setup]} 로 감지` : ''}</h4>
+                <h4>추가 유형{cur.res.setup ? ` - 감지: ${SETUP_LABEL[cur.res.setup]}` : ''}</h4>
                 <ul>
                   {SETUP_KEYS.map((k) => (
                     <li key={k} className={cur.res.setups![k].ok ? 'ok' : 'no'}>

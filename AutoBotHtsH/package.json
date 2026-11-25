@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.0.28_002 (2026-11-25): 반등 알림 팝업·히스토리의 추가 유형 제목 문구 정리 (\"V자 반전 로 감지\" -> \"감지: V자 반전\")",
     "v1.0.28_001 (2026-11-25): 반등 감시에 추가 유형 3종 - V자 반전 / 눌림목 반등 / VWAP 지지 반등 (377300 카카오페이 11-25 09:15, 09:41, 12:07 기준). 정규장만 판정, 유형별 쿨다운, 설정에서 유형별 on/off, 팝업·히스토리·감지 CSV(kind, setup_note)에 유형 표시",
     "[2026-11-25] type=feat - v1.0.27_002: 제어 탭 - 매매 방식과 그 청산 방식을 짝으로 배치(규칙 매매 아래 기본 청산 안내 + 추가 기준, Edge AI 매매 아래 청산 방식), 규칙 매매 기본 청산 방식 안내(자동 매도 설정별), 값을 바꾸고 저장하지 않았으면 적용 버튼 빨간 테두리 + 변경됨 표시(청산 기준, 실제 매매 한도)",
     "[2026-11-25] type=feat - v1.0.27_001: 제어 탭 청산 기준을 매매 방식별로 분리 - 규칙 매매 줄(서버 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN, 빈칸 = 미적용, 기존 규칙 청산에 더해 먼저 닿으면 전량 매도)과 Edge AI 매매 줄(EDGE_ONLY_*)을 따로 입력. 구형 서버에서는 규칙 매매 줄 숨김",
@@ -140,7 +141,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "001",
+    "buildNumber": "002",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

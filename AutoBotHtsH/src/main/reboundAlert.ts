@@ -121,7 +121,7 @@ footer{padding:3px 8px;color:#737985;font-size:11px;border-top:1px solid #2c3038
 <main>
 <h1>${esc(a.name)} <small>(${esc(a.code)})</small></h1>
 <div class="px ${up ? 'up' : 'dn'}">${num(price, 0)}${a.changePct === undefined ? '' : ` &nbsp;${up ? '+' : ''}${num(a.changePct, 2)}%`}</div>
-${a.res.setups ? `<h2>추가 유형${a.res.setup ? ` - ${esc(SETUP_LABEL[a.res.setup])} 로 감지` : ''}</h2><ul>${SETUP_KEYS.map((k) => `<li class="wrap ${a.res.setups![k].ok ? 'ok' : 'no'}" title="${esc(a.res.setups![k].note)}"><b>${a.res.setups![k].ok ? '✓' : '·'}</b> ${esc(SETUP_LABEL[k])}<i>${esc(a.res.setups![k].note)}</i></li>`).join('')}</ul>` : ''}
+${a.res.setups ? `<h2>추가 유형${a.res.setup ? ` - 감지: ${esc(SETUP_LABEL[a.res.setup])}` : ''}</h2><ul>${SETUP_KEYS.map((k) => `<li class="wrap ${a.res.setups![k].ok ? 'ok' : 'no'}" title="${esc(a.res.setups![k].note)}"><b>${a.res.setups![k].ok ? '✓' : '·'}</b> ${esc(SETUP_LABEL[k])}<i>${esc(a.res.setups![k].note)}</i></li>`).join('')}</ul>` : ''}
 <h2>필수 조건${a.res.setup ? ' (바닥 반등 초입 - 참고)' : ''}</h2><ul>${COND_KEYS.map((k) => li(a.res.conds[k].ok, COND_LABEL[k], a.res.conds[k].note)).join('')}</ul>
 <h2>가점 ${a.res.score}점 (기준 ${minScore}점)</h2><ul>${BONUS_KEYS.map((k) => li(a.res.bonus[k].ok, BONUS_LABEL[k], a.res.bonus[k].note)).join('')}</ul>
 ${a.res.lowerHigh ? `<h2>추세 구조</h2><ul><li class="wrap ${a.res.lowerHigh.state === 'lh' ? 'warn' : a.res.lowerHigh.state === 'no' ? 'ok' : 'no'}" title="${esc(a.res.lowerHigh.note)}"><b>${a.res.lowerHigh.state === 'lh' ? '!' : a.res.lowerHigh.state === 'no' ? '✓' : '·'}</b> ${esc(lowerHighLabel(a.res.lowerHigh))}<i>${esc(a.res.lowerHigh.note)}</i></li></ul>` : ''}
