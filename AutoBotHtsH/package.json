@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.0.29_001 (2026-11-25): 반등 감시 VWAP 지지 반등 기준 강화 - 당일 종가의 85% 이상이 VWAP 위(sessionAboveMin), 회복 봉 거래량이 앞 봉 평균의 1.5배 이상(trigVolMult), 설정 창에서 조정·0 이면 끔. 제어 창 디자인 변경(매매 방식 카드형, 스위치, 라벨 입력칸, 칩) 및 Edge AI 청산 입력칸을 일반 입력칸처럼 지울 수 있게 수정(빈칸은 저장 안 됨 + 안내)",
     "v1.0.28_003 (2026-11-25): 반등 감시 눌림목 반등 기준 강화 - 상승폭 3% 이상, 되돌림 50% 이하, 눌림 구간 거래량 감소(상승 구간의 0.8배 이하), 회복 봉 거래량(평균 이상). 캐시 재생 기준 종목당 하루 0.56 -> 0.08회",
     "v1.0.28_002 (2026-11-25): 반등 알림 팝업·히스토리의 추가 유형 제목 문구 정리 (\"V자 반전 로 감지\" -> \"감지: V자 반전\")",
     "v1.0.28_001 (2026-11-25): 반등 감시에 추가 유형 3종 - V자 반전 / 눌림목 반등 / VWAP 지지 반등 (377300 카카오페이 11-25 09:15, 09:41, 12:07 기준). 정규장만 판정, 유형별 쿨다운, 설정에서 유형별 on/off, 팝업·히스토리·감지 CSV(kind, setup_note)에 유형 표시",
@@ -88,7 +89,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -142,7 +143,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

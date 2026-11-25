@@ -110,6 +110,8 @@ const SECTIONS: { title: string; note?: string; fields: Field[] }[] = [
       { path: 'setups.vwapHold.dipBars', label: 'VWAP: 건드린 뒤 회복 기한', unit: '봉 안' },
       { path: 'setups.vwapHold.maxUnderPct', label: 'VWAP: 아래로 이탈 허용', unit: '% 이하' },
       { path: 'setups.vwapHold.volMult', label: 'VWAP: 거래량 배수', unit: '배 이상' },
+      { path: 'setups.vwapHold.sessionAboveMin', label: 'VWAP: 당일 종가 중 VWAP 위 비율', unit: '이상 (0~1)', hint: '장 시작부터 건드리기 전까지, 0 = 끔' },
+      { path: 'setups.vwapHold.trigVolMult', label: 'VWAP: 회복 봉 거래량', unit: '배 이상', hint: '앞 봉 평균 대비, 0 = 끔' },
     ],
   },
   {

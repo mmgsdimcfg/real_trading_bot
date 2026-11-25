@@ -461,24 +461,103 @@
 .bot-root button.mini { padding: 1px 7px; font-size: var(--fs); }
 /* [2026-11-25] control tab: paper exits (익절 / 손절 / 보유 시간) */
 .bot-root .trade-kinds { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } /* [2026-11-25] 매매 방식 checkboxes */
-/* [2026-11-25] 매매 방식 box: one block per feature, its options indented under it */
-.bot-root .trade-box { margin: 0 22px 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
-.bot-root .trade-box .tk-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.bot-root .trade-box .tk-head.tk-gap { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.bot-root .trade-box .tk { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; padding: 6px 0 6px 4px; }
-.bot-root .trade-box .tk + .tk { border-top: 1px dashed var(--border); }
-.bot-root .trade-box .tk.tk-row { gap: 8px 16px; border-top: none; }
-.bot-root .trade-box .tk-main { font-weight: 600; min-width: 130px; }
-.bot-root .trade-box .tk-sub { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; margin: 4px 0 0 22px; padding-left: 12px; border-left: 2px solid var(--border); }
-.bot-root .trade-box .tk-opt { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
-.bot-root .paper-exit { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.bot-root .paper-exit-in { width: 4.2em; text-align: right; }
-.bot-root .paper-exit-in[aria-invalid='true'] { border-color: var(--st-hold); }
-.bot-root .paper-exit-in.edge-live-in { width: 6.5em; }
-.bot-root .tk-opt.tk-opt-in { padding-left: 22px; }
-.bot-root .tk-lab { display: inline-block; min-width: 4.6em; font-weight: 600; font-size: var(--fs); color: var(--text-2); }
-.bot-root button.mini.dirty:not(:disabled) { border-color: #d93025; color: #d93025; box-shadow: 0 0 0 1px #d93025 inset; font-weight: 600; }
-.bot-root .dirty-note { font-size: var(--fs); color: #d93025; font-weight: 600; white-space: nowrap; }
+/* [2026-11-25] 매매 방식 card (user design mock): tiles per trading kind, switches, labelled fields, chips, option cards */
+.bot-root .control.cards section.card { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); }
+.bot-root .control.cards .card-head > div:first-child { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.bot-root .control.cards .card-head .sub, .bot-root .control.cards .card-head .count { margin-left: 0; }
+.bot-root .c-ico { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text-2); }
+.bot-root .tm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 14px; padding: 16px 22px 0; align-items: start; }
+.bot-root .tm-grid.tm-grid-low { padding-bottom: 18px; }
+.bot-root .tm-card { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); }
+.bot-root .tm-card.on::before { content: ''; position: absolute; left: -1px; top: 18px; bottom: 18px; width: 3px; border-radius: 3px; background: var(--text); }
+.bot-root .tm-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.bot-root .tm-name { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.35; }
+.bot-root .tm-name b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs); font-weight: 700; }
+.bot-root .tm-name > span { color: var(--text-3); font-size: var(--fs); }
+.bot-root .tm-apply { color: var(--text-3); font-size: var(--fs); white-space: nowrap; }
+.bot-root .tm-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bot-root .tm-lab { font-size: var(--fs); font-weight: 600; color: var(--text-2); }
+.bot-root .tm-lab i { font-style: normal; font-weight: 400; color: var(--text-3); margin-left: 6px; }
+.bot-root .tm-lab.tm-lab-gap { margin-top: 6px; }
+.bot-root .tm-inset { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.bot-root .tm-inset-t { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: var(--fs); margin-bottom: 10px; }
+.bot-root .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-idle); flex: none; }
+.bot-root .sdot.ok { background: var(--st-pass); }
+.bot-root .sdot.warn { background: var(--st-hold); }
+.bot-root .tm-notes { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; font-size: var(--fs); }
+.bot-root .tm-notes:empty { display: none; }
+.bot-root .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.bot-root .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: var(--fs); font-weight: 500; line-height: 1.5; white-space: nowrap; }
+.bot-root .chip b { font-weight: 700; color: var(--text); }
+.bot-root .chip b.up { color: var(--gain); }
+.bot-root .chip b.dn { color: var(--loss); }
+.bot-root .chip.mono { font-family: Consolas, 'D2Coding', monospace; font-size: var(--fs); background: var(--surface-2); }
+.bot-root button.chip.link { cursor: pointer; color: var(--text); }
+.bot-root button.chip.link:hover { border-color: var(--text-3); }
+.bot-root .tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 6px; font-size: calc(var(--fs) - 3px); font-weight: 700; line-height: 17px; letter-spacing: 0.02em; }
+.bot-root .tag.live { color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 12%, transparent); }
+.bot-root .tag.ok { color: var(--st-pass); background: color-mix(in srgb, var(--st-pass) 13%, transparent); }
+.bot-root .tag.ok::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+/* switch */
+.bot-root .sw { position: relative; display: inline-flex; flex: none; width: 40px; height: 22px; cursor: pointer; }
+.bot-root .sw.dis { cursor: default; opacity: 0.5; }
+.bot-root .sw input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; opacity: 0; cursor: inherit; }
+.bot-root .sw i { width: 100%; height: 100%; border-radius: 11px; background: color-mix(in srgb, var(--text-3) 45%, var(--surface-2)); transition: background 0.15s; }
+.bot-root .sw i::after { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s; }
+.bot-root .sw input:checked + i { background: var(--primary-bg); }
+.bot-root .sw input:checked + i::after { transform: translateX(18px); background: var(--primary-fg); }
+.bot-root .sw input:focus-visible + i { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
+/* labelled value fields (익절 / 손절 / 보유, live limits) */
+.bot-root .xf-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bot-root .xf-set { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 84px; gap: 8px; }
+.bot-root .xf-set.four { grid-template-columns: 1.4fr 1fr 1fr 1.4fr 84px; }
+.bot-root .xf { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 12px 7px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: text; }
+.bot-root .xf:focus-within { border-color: var(--text-3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 7%, transparent); }
+.bot-root .xf-lab { display: flex; align-items: center; gap: 6px; font-size: var(--fs); color: var(--text-3); }
+.bot-root .xf-lab i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); }
+.bot-root .xf-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.bot-root .xf-row em { font-style: normal; font-weight: 700; font-size: var(--fs); color: var(--text-3); }
+.bot-root .xf-row u { text-decoration: none; margin-left: auto; font-size: var(--fs); color: var(--text-3); }
+.bot-root .xf input { flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: var(--fs); font-weight: 700; line-height: 1.3; outline: none; }
+.bot-root .xf input::placeholder { color: var(--text-3); font-weight: 500; opacity: 0.7; }
+.bot-root .xf-tp .xf-lab i { background: var(--gain); }
+.bot-root .xf-sl .xf-lab i { background: var(--loss); }
+.bot-root .xf-horizon .xf-lab i { background: var(--text); }
+.bot-root .xf-tp.has { border-color: color-mix(in srgb, var(--gain) 35%, var(--border)); background: color-mix(in srgb, var(--gain) 7%, var(--surface)); }
+.bot-root .xf-tp.has input, .bot-root .xf-tp.has em { color: var(--gain); }
+.bot-root .xf-sl.has { border-color: color-mix(in srgb, var(--loss) 35%, var(--border)); background: color-mix(in srgb, var(--loss) 7%, var(--surface)); }
+.bot-root .xf-sl.has input, .bot-root .xf-sl.has em { color: var(--loss); }
+.bot-root .xf.bad { border-color: var(--st-hold); box-shadow: 0 0 0 1px var(--st-hold) inset; }
+.bot-root .xf-set.four .xf input { font-size: var(--fs); }
+.bot-root button.xf-apply { border-radius: 12px; font-weight: 700; font-size: var(--fs); background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }
+.bot-root button.xf-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); border-color: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); }
+.bot-root button.xf-apply:disabled { opacity: 1; background: var(--surface-2); border-color: var(--border); color: var(--text-3); }
+.bot-root .dirty-note { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs); color: var(--st-hold); font-weight: 600; white-space: nowrap; }
+.bot-root .dirty-note::before { content: ''; width: 9px; height: 9px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; }
+/* 실행 대상 option cards */
+.bot-root .opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.bot-root .opt-card { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: pointer; min-width: 0; }
+.bot-root .opt-card.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; }
+.bot-root .opt-card.dis { cursor: default; }
+.bot-root .opt-card.dis:not(.on) { opacity: 0.6; }
+.bot-root .opt-card input[type='checkbox'] { margin: 3px 0 0; width: 15px; height: 15px; accent-color: var(--primary-bg); flex: none; }
+.bot-root .opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bot-root .opt-text b { display: flex; align-items: center; gap: 6px; font-size: calc(var(--fs) - 2px); }
+.bot-root .opt-text > span { color: var(--text-3); font-size: calc(var(--fs) - 2px); line-height: 1.45; }
+/* 매도 설정 selects */
+.bot-root .sel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.bot-root .sel-field { display: flex; flex-direction: column; min-width: 0; padding: 8px 10px 6px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.bot-root .sel-field:focus-within { border-color: var(--text-3); }
+.bot-root .sel-field > span { font-size: var(--fs); color: var(--text-3); }
+.bot-root .sel-field select { width: 100%; margin-left: -4px; padding: 2px 0; border: 0; border-radius: 0; background: transparent; font-weight: 700; font-size: var(--fs); outline: none; cursor: pointer; }
+/* the rest of the control tab in the same language: stat tiles, rounded host rows */
+.bot-root .control.cards .stats > div { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.bot-root .control.cards .stats .k { font-size: var(--fs); margin-bottom: 4px; }
+.bot-root .control.cards .host-rows { gap: 8px; padding: 14px 22px; }
+.bot-root .control.cards .host-row { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; }
+.bot-root .control.cards .host-row:last-child { border-bottom: 1px solid var(--border); }
+.bot-root .control.cards .host-row.sel { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; background: var(--surface); }
+.bot-root .control.cards .card-actions button:not(.mini) { border-radius: 10px; }
 .bot-root .push-right { margin-left: auto; }
 .bot-root details.adv { margin-top: 10px; }
 .bot-root details.adv > summary { cursor: pointer; color: var(--text-2); font-size: var(--fs); }

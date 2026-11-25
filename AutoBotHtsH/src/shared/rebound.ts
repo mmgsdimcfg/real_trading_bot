@@ -45,6 +45,10 @@
  *   legMinPct 2 -> 3, retraceMax 0.62 -> 0.5, and two volume tests - volDryMax (mean volume of the pullback bars at most 0.8 x that
  *   of the leg bars: the pullback is quieter than the rise) and trigVolMult (the recovery bar's volume at least 1 x the mean of the
  *   plunge.volWindow bars before it). 0 switches either off. The same replay gives 0.07 per symbol-day; 377300 09:41 still passes
+ * - [2026-11-25] type=feat - vwapHold made stricter (user 2026-11-25; 0.37 per symbol-day, the most frequent kind): sessionAboveMin
+ *   (of the session's closes before the dip at least 85 % above VWAP - VWAP was support all day, not a line the price keeps
+ *   crossing) and trigVolMult (the recovery bar's volume at least 1.5 x the mean of the plunge.volWindow bars before it). 0 switches
+ *   either off. The same replay gives 0.07 per symbol-day; 377300 12:07 still passes (92 %, 3.4 x)
  */
 
 import { adx, bollinger, ichimoku, macd, normalizeParams, rsi, sma, vwap, HTS_PARAMS, type CalcMethod, type IndicatorParams, type Series } from './indicators';
@@ -196,6 +200,10 @@ export interface ReboundConfig {
       maxUnderPct: number;
       /** a dip bar's volume >= volMult x the mean of plunge.volWindow bars before the dip */
       volMult: number;
+      /** of all the session's closes before the dip at least this fraction was above VWAP (0 = off) */
+      sessionAboveMin: number;
+      /** the judged bar's volume >= this x the mean of plunge.volWindow bars before it (0 = off) */
+      trigVolMult: number;
     };
   };
   /** KST "HH:MM" windows; outside all of them (and on weekends) the watcher rests */
@@ -250,7 +258,7 @@ export const REBOUND_DEFAULTS: ReboundConfig = {
     openSkipMin: 5,
     vTurn: { on: true, bars: 4, volMult: 4, peakBars: 20, lowWindow: 60, fallWindow: 30, minFallPct: 1.5, minBouncePct: 0.6 },
     pullback: { on: true, legWindow: 40, legMinPct: 3, retraceMin: 0.2, retraceMax: 0.5, minBars: 5, vwapTolPct: 0.2, volDryMax: 0.8, trigVolMult: 1 },
-    vwapHold: { on: true, aboveWindow: 30, aboveMin: 0.8, dipBars: 6, maxUnderPct: 0.6, volMult: 3 },
+    vwapHold: { on: true, aboveWindow: 30, aboveMin: 0.8, dipBars: 6, maxUnderPct: 0.6, volMult: 3, sessionAboveMin: 0.85, trigVolMult: 1.5 },
   },
   sessions: { krx: ['09:00', '15:30'], nxtPre: ['08:00', '08:50'], nxtAfter: ['15:40', '20:00'] },
   alert: { cooldownMin: 30, sound: true, autoCloseSec: 60, kakao: false, maxPopups: 6 },
@@ -807,13 +815,21 @@ export function detectSetups(bars: Bar[], cfg: ReboundConfig, ma5: Series, ma20:
         vmax = Math.max(vmax, bars[k].v);
       }
       const avg = volAvg(d0);
+      // [2026-11-25] stricter: VWAP held for the whole session so far, and the recovery bar itself has volume
+      let sesAbove = 0;
+      let sesN = 0;
+      for (let k = s0; k < d0; k++) if (isNum(V[k])) (sesN++, bars[k].c > V[k] && sesAbove++);
+      const sesRatio = sesN ? sesAbove / sesN : 0;
+      const trig = b.v / volAvg(i);
       const head = `VWAP ${f1(V[i])}, 저점 ${dk >= 0 ? `${hhmm(bars[dk].t)} ${won(bars[dk].l)}` : '-'} (VWAP 대비 ${f2(-under)}%), 거래량 최대 ${vmax} (평균의 ${f1(vmax / avg)}배)`;
       if (!(ratio >= c.aboveMin)) out.vwapHold = no(`${head} - 직전 ${c.aboveWindow}봉 중 ${above}봉만 VWAP 위`);
       else if (!(under >= 0)) out.vwapHold = no(`${head} - VWAP 까지 내려오지 않음`);
       else if (!(under <= c.maxUnderPct)) out.vwapHold = no(`${head} - VWAP 이탈 과대 (기준 ${c.maxUnderPct}%)`);
       else if (!(avg > 0 && vmax >= c.volMult * avg)) out.vwapHold = no(`${head} - 거래량 부족 (기준 ${c.volMult}배)`);
+      else if (c.sessionAboveMin > 0 && !(sesRatio >= c.sessionAboveMin)) out.vwapHold = no(`${head} - 당일 종가의 ${Math.round(sesRatio * 100)}%만 VWAP 위 (기준 ${Math.round(c.sessionAboveMin * 100)}%)`);
+      else if (c.trigVolMult > 0 && !(trig >= c.trigVolMult)) out.vwapHold = no(`${head} - 회복 봉 거래량 부족 (평균의 ${f2(trig)}배, 기준 ${c.trigVolMult}배)`);
       else if (!(b.c > V[i] && b.c > ma5[i] && b.c >= b.o && b.c > bars[i - 1].c)) out.vwapHold = no(`${head} - 회복 봉 아님 (종가 ${won(b.c)} / MA5 ${f1(ma5[i])})`);
-      else out.vwapHold = { ok: true, note: `${head} → 종가 ${won(b.c)} 가 VWAP·MA5 회복` };
+      else out.vwapHold = { ok: true, note: `${head}, 당일 VWAP 위 ${Math.round(sesRatio * 100)}% → 종가 ${won(b.c)} 가 VWAP·MA5 회복` };
     }
   }
   return out;

@@ -62,6 +62,14 @@ describe('rebound setups - 377300 2026-11-25', () => {
     expect(detectRebound(upTo('12:06')).hit).toBe(false);
   });
 
+  it('the stricter VWAP hold tests (2026-11-25): VWAP held all session, the recovery bar has volume', () => {
+    expect(detectRebound(upTo('12:07')).setups!.vwapHold.note).toContain('당일 VWAP 위 9');
+    expect(detectRebound(upTo('12:07'), applySets(REBOUND_DEFAULTS, ['setups.vwapHold.sessionAboveMin=0.99'])).setups!.vwapHold.note).toContain('만 VWAP 위 (기준 99%)');
+    expect(detectRebound(upTo('12:07'), applySets(REBOUND_DEFAULTS, ['setups.vwapHold.trigVolMult=9'])).setups!.vwapHold.note).toContain('회복 봉 거래량 부족');
+    const off = applySets(REBOUND_DEFAULTS, ['setups.vwapHold.sessionAboveMin=0', 'setups.vwapHold.trigVolMult=0']);
+    expect(detectRebound(upTo('12:07'), off).setup).toBe('vwapHold');
+  });
+
   it('switches: setups.enabled off gives the classic detector only; each kind has its own switch', () => {
     const off = day(applySets(REBOUND_DEFAULTS, ['setups.enabled=false']));
     expect(off.some((r) => r.res.hit)).toBe(false);

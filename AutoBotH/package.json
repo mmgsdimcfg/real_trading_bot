@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-25] type=feat - v2.3.44_001: 제어 탭 디자인 변경 - 매매 방식을 카드형(규칙 매매 / Edge AI 매매 / 반등 알림 / 매도 설정)으로, 켜고 끄기는 스위치, 익절·손절·보유는 라벨이 붙은 입력칸, 기본 청산 엔진은 칩으로 표시. 다른 카드에도 아이콘·상태 타일·둥근 행 적용. Edge AI 청산 입력칸: 흐린 숫자(모델 값 안내)라 백스페이스로 지워지지 않던 것을 실제 값으로 채워 일반 입력칸처럼 지울 수 있게 함. 빈칸은 저장되지 않고 안내 문구 표시 (0 = 모델 값 / 서버 기본값)",
     "[2026-11-25] type=feat - v2.3.43_002: 제어 탭 - 매매 방식과 그 청산 방식을 짝으로 배치(규칙 매매 아래 기본 청산 안내 + 추가 기준, Edge AI 매매 아래 청산 방식), 규칙 매매 기본 청산 방식 안내(자동 매도 설정별), 값을 바꾸고 저장하지 않았으면 적용 버튼 빨간 테두리 + 변경됨 표시(청산 기준, 실제 매매 한도)",
     "[2026-11-25] type=feat - v2.3.43_001: 제어 탭 청산 기준을 매매 방식별로 분리 - 규칙 매매 줄(서버 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN, 빈칸 = 미적용, 기존 규칙 청산에 더해 먼저 닿으면 전량 매도)과 Edge AI 매매 줄(EDGE_ONLY_*)을 따로 입력. 구형 서버에서는 규칙 매매 줄 숨김",
     "[2026-11-25] type=feat - v2.3.42_002: 제어 탭 청산 기준 안내 - 규칙 매매에도 적용됨을 표시 (값을 넣은 항목만, 기존 규칙 청산에 더해 먼저 닿으면 전량 매도, 정규장 / 자동 매도 전체일 때 - 서버 r006 공통 청산 기준). 청산 기준 저장 확인창에도 같은 안내",
@@ -137,7 +138,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.43",
+  "version": "2.3.44",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -185,7 +186,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

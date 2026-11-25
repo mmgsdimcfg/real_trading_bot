@@ -468,24 +468,103 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.6; }
 button.mini { padding: 1px 7px; font-size: 11.5px; }
 /* [2026-11-25] control tab: paper exits (익절 / 손절 / 보유 시간) */
 .trade-kinds { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } /* [2026-11-25] 매매 방식 checkboxes */
-/* [2026-11-25] 매매 방식 box: one block per feature, its options indented under it */
-.trade-box { margin: 0 22px 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
-.trade-box .tk-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.trade-box .tk-head.tk-gap { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.trade-box .tk { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; padding: 6px 0 6px 4px; }
-.trade-box .tk + .tk { border-top: 1px dashed var(--border); }
-.trade-box .tk.tk-row { gap: 8px 16px; border-top: none; }
-.trade-box .tk-main { font-weight: 600; min-width: 130px; }
-.trade-box .tk-sub { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; margin: 4px 0 0 22px; padding-left: 12px; border-left: 2px solid var(--border); }
-.trade-box .tk-opt { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
-.paper-exit { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.paper-exit-in { width: 4.2em; text-align: right; }
-.paper-exit-in[aria-invalid='true'] { border-color: var(--st-hold); }
-.paper-exit-in.edge-live-in { width: 6.5em; }
-.tk-opt.tk-opt-in { padding-left: 22px; }
-.tk-lab { display: inline-block; min-width: 4.6em; font-weight: 600; font-size: 12.5px; color: var(--text-2); }
-button.mini.dirty:not(:disabled) { border-color: #d93025; color: #d93025; box-shadow: 0 0 0 1px #d93025 inset; font-weight: 600; }
-.dirty-note { font-size: 11.5px; color: #d93025; font-weight: 600; white-space: nowrap; }
+/* [2026-11-25] 매매 방식 card (user design mock): tiles per trading kind, switches, labelled fields, chips, option cards */
+.control.cards section.card { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); }
+.control.cards .card-head > div:first-child { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.control.cards .card-head .sub, .control.cards .card-head .count { margin-left: 0; }
+.c-ico { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text-2); }
+.tm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 14px; padding: 16px 22px 0; align-items: start; }
+.tm-grid.tm-grid-low { padding-bottom: 18px; }
+.tm-card { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); }
+.tm-card.on::before { content: ''; position: absolute; left: -1px; top: 18px; bottom: 18px; width: 3px; border-radius: 3px; background: var(--text); }
+.tm-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.tm-name { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.35; }
+.tm-name b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; font-weight: 700; }
+.tm-name > span { color: var(--text-3); font-size: 12.5px; }
+.tm-apply { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.tm-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.tm-lab { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.tm-lab i { font-style: normal; font-weight: 400; color: var(--text-3); margin-left: 6px; }
+.tm-lab.tm-lab-gap { margin-top: 6px; }
+.tm-inset { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.tm-inset-t { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; margin-bottom: 10px; }
+.sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-idle); flex: none; }
+.sdot.ok { background: var(--st-pass); }
+.sdot.warn { background: var(--st-hold); }
+.tm-notes { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; font-size: 12.5px; }
+.tm-notes:empty { display: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 12px; font-weight: 500; line-height: 1.5; white-space: nowrap; }
+.chip b { font-weight: 700; color: var(--text); }
+.chip b.up { color: var(--gain); }
+.chip b.dn { color: var(--loss); }
+.chip.mono { font-family: Consolas, 'D2Coding', monospace; font-size: 11.5px; background: var(--surface-2); }
+button.chip.link { cursor: pointer; color: var(--text); }
+button.chip.link:hover { border-color: var(--text-3); }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 6px; font-size: 10.5px; font-weight: 700; line-height: 17px; letter-spacing: 0.02em; }
+.tag.live { color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 12%, transparent); }
+.tag.ok { color: var(--st-pass); background: color-mix(in srgb, var(--st-pass) 13%, transparent); }
+.tag.ok::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+/* switch */
+.sw { position: relative; display: inline-flex; flex: none; width: 40px; height: 22px; cursor: pointer; }
+.sw.dis { cursor: default; opacity: 0.5; }
+.sw input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; opacity: 0; cursor: inherit; }
+.sw i { width: 100%; height: 100%; border-radius: 11px; background: color-mix(in srgb, var(--text-3) 45%, var(--surface-2)); transition: background 0.15s; }
+.sw i::after { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s; }
+.sw input:checked + i { background: var(--primary-bg); }
+.sw input:checked + i::after { transform: translateX(18px); background: var(--primary-fg); }
+.sw input:focus-visible + i { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
+/* labelled value fields (익절 / 손절 / 보유, live limits) */
+.xf-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.xf-set { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 84px; gap: 8px; }
+.xf-set.four { grid-template-columns: 1.4fr 1fr 1fr 1.4fr 84px; }
+.xf { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 12px 7px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: text; }
+.xf:focus-within { border-color: var(--text-3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 7%, transparent); }
+.xf-lab { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-3); }
+.xf-lab i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); }
+.xf-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.xf-row em { font-style: normal; font-weight: 700; font-size: 17px; color: var(--text-3); }
+.xf-row u { text-decoration: none; margin-left: auto; font-size: 12px; color: var(--text-3); }
+.xf input { flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 19px; font-weight: 700; line-height: 1.3; outline: none; }
+.xf input::placeholder { color: var(--text-3); font-weight: 500; opacity: 0.7; }
+.xf-tp .xf-lab i { background: var(--gain); }
+.xf-sl .xf-lab i { background: var(--loss); }
+.xf-horizon .xf-lab i { background: var(--text); }
+.xf-tp.has { border-color: color-mix(in srgb, var(--gain) 35%, var(--border)); background: color-mix(in srgb, var(--gain) 7%, var(--surface)); }
+.xf-tp.has input, .xf-tp.has em { color: var(--gain); }
+.xf-sl.has { border-color: color-mix(in srgb, var(--loss) 35%, var(--border)); background: color-mix(in srgb, var(--loss) 7%, var(--surface)); }
+.xf-sl.has input, .xf-sl.has em { color: var(--loss); }
+.xf.bad { border-color: var(--st-hold); box-shadow: 0 0 0 1px var(--st-hold) inset; }
+.xf-set.four .xf input { font-size: 15.5px; }
+button.xf-apply { border-radius: 12px; font-weight: 700; font-size: 13.5px; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }
+button.xf-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); border-color: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); }
+button.xf-apply:disabled { opacity: 1; background: var(--surface-2); border-color: var(--border); color: var(--text-3); }
+.dirty-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--st-hold); font-weight: 600; white-space: nowrap; }
+.dirty-note::before { content: ''; width: 9px; height: 9px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; }
+/* 실행 대상 option cards */
+.opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.opt-card { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: pointer; min-width: 0; }
+.opt-card.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; }
+.opt-card.dis { cursor: default; }
+.opt-card.dis:not(.on) { opacity: 0.6; }
+.opt-card input[type='checkbox'] { margin: 3px 0 0; width: 15px; height: 15px; accent-color: var(--primary-bg); flex: none; }
+.opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.opt-text b { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
+.opt-text > span { color: var(--text-3); font-size: 12px; line-height: 1.45; }
+/* 매도 설정 selects */
+.sel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.sel-field { display: flex; flex-direction: column; min-width: 0; padding: 8px 10px 6px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.sel-field:focus-within { border-color: var(--text-3); }
+.sel-field > span { font-size: 11.5px; color: var(--text-3); }
+.sel-field select { width: 100%; margin-left: -4px; padding: 2px 0; border: 0; border-radius: 0; background: transparent; font-weight: 700; font-size: 14px; outline: none; cursor: pointer; }
+/* the rest of the control tab in the same language: stat tiles, rounded host rows */
+.control.cards .stats > div { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.control.cards .stats .k { font-size: 12px; margin-bottom: 4px; }
+.control.cards .host-rows { gap: 8px; padding: 14px 22px; }
+.control.cards .host-row { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; }
+.control.cards .host-row:last-child { border-bottom: 1px solid var(--border); }
+.control.cards .host-row.sel { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; background: var(--surface); }
+.control.cards .card-actions button:not(.mini) { border-radius: 10px; }
 .push-right { margin-left: auto; }
 details.adv { margin-top: 10px; }
 details.adv > summary { cursor: pointer; color: var(--text-2); font-size: 12.5px; }
