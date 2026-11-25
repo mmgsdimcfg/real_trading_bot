@@ -36,7 +36,7 @@
  */
 
 import { shellPath, shellQuote } from './shell';
-import type { PaperExitState, PaperModeState } from './paper';
+import type { EdgeLiveLimits, PaperExitState, PaperModeState } from './paper';
 
 // ---- response types --------------------------------------------------------------------------
 
@@ -222,6 +222,10 @@ export interface ControlState {
   ruleBuy?: PaperModeState;
   /** [2026-11-25] server EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN (paper exits, 0 = the model's label) - undefined until read / older server */
   paperExit?: PaperExitState;
+  /** [2026-11-25] server EDGE_LIVE_ORDERS ('true' = Edge AI live orders beside the rule strategy) - undefined until read / older server */
+  edgeLive?: PaperModeState;
+  /** [2026-11-25] server EDGE_LIVE_ORDER_KRW / MAX_POSITIONS / MAX_ENTRIES_PER_DAY / DAILY_LOSS_KRW - undefined until read / older server */
+  edgeLiveLimits?: EdgeLiveLimits;
 }
 
 /** [2026-11-13] one account holding as r016 `holdings` reports it (r023 snapshot): the bot's and the hand-bought quantity */

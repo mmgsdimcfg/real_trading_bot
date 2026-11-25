@@ -27,6 +27,13 @@
  * - [2026-11-25] type=feat - layout (user 2026-11-25): dry-run right beside the profile's "!" (the description opens below); 매매 방식 as
  *   a box with one block per feature - 규칙 매매 / Edge AI 매매 (sub-options indented: 가상 매수 (locked on - real orders are a later
  *   server feature), 신호 후보만 기록, 청산 기준) / 반등 알림 - and a separate 매도 설정 group (자동 매도, 자동 매도 대상)
+ * - [2026-11-25] type=feat - layout (user): 청산 기준 on top (not under Edge AI), 매매 방식 = 규칙 매매 / Edge AI 매매 with the sub
+ *   checkboxes 실제 매매 (EDGE_LIVE_ORDERS) / 가상 매매 (the opposite of EDGE_ONLY_LOG_ONLY; "신호 후보만 기록" is gone - both
+ *   unchecked = candidates only), 반등 알림 as its own group
+ * - [2026-11-25] type=feat - Edge AI 매매 > "가상 매수" can be unchecked (server EDGE_LIVE_ORDERS): Edge AI live orders beside the
+ *   rule strategy. Its limits (1회 금액 / 동시 보유 / 하루 횟수 / 하루 손실 한도, EdgeLiveLimitsEdit) and today's edge summary
+ *   (r016 status edge_live) appear below; needs 자동 매도 = 전체 (the server refuses the other combinations); an older server
+ *   keeps the checkbox locked
  * - [2026-11-25] type=feat - 매매 방식 = checkboxes 규칙 매매 (server RULE_BUY_ENABLED) / Edge AI 가상 매매 (EDGE_ONLY_MODE) / 반등 알림
  *   (AutoBotHtsH only, found through window.api.reboundStatus / reboundEnable) in any combination (user 2026-11-25, Codex review).
  *   The checkboxes never change TRADING_STRATEGY_MODE; a server on edge / basic shows it with a 규칙 매매 방식으로 전환 button
@@ -37,7 +44,7 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, TRADE_KINDS, type TradeKind } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -450,7 +457,7 @@ export function ControlView() {
       window.clearInterval(id);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const kinds: TradeKind[] = rb ? TRADE_KINDS : ['rules', 'paper'];
+  const kinds: TradeKind[] = ['rules', 'paper']; // [2026-11-25] 매매 방식 = these two; 반등 알림 is its own group
   const comboNow = { rules: rulesOn, paper: paperOn, rebound: !!reboundOn };
   const comboRunning = { rules: rulesRunning, paper: paperRunning, rebound: !!reboundOn };
   const setKind = async (kind: TradeKind, on: boolean) => {
@@ -463,6 +470,9 @@ export function ControlView() {
     const next = { rules: kind === 'rules' ? on : rulesOn, paper: kind === 'paper' ? on : paperOn };
     const changes = comboChanges(next, { rules: rulesOn, paper: paperOn }, !!ruleBuy);
     if (!changes) return;
+    // [2026-11-25] Edge AI 매매 off: its live orders go off with it (stored too - nothing stays on out of sight)
+    // ... and on: it starts with the live orders off too - they are switched on by their own checkbox and its warning only
+    if (kind === 'paper' && control.edgeLive?.effective === 'true') changes[EDGE_LIVE_KEY] = false;
     const sellMode = autoSellOf(control.autoSell?.effective);
     const text =
       kind === 'rules'
@@ -472,8 +482,12 @@ export function ControlView() {
             `이미 보유한 종목의 매도는 자동 매도 설정(${AUTO_SELL_KO[sellMode]})대로 계속됩니다.` +
             (sellMode === 'all' ? '' : '\n자동 매도가 전체가 아니므로 보유 종목이 남을 수 있습니다 - 직접 매도해야 합니다.')
         : on
-          ? 'Edge AI 신호로 가상 매매를 합니다 (실제 주문 없음, 가상 매매 탭).'
-          : '신규 가상 매수를 멈춥니다. 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다.';
+          ? 'Edge AI 신호로 가상 매매를 합니다 (실제 주문 없음, 가상 매매 탭).' +
+            (control.edgeLive?.effective === 'true' ? '\n저장돼 있던 Edge AI 실제 매매 설정은 끈 상태로 시작합니다 (켜려면 "실제 매매" 체크).' : '')
+          : '신규 가상 매수를 멈춥니다. 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다.' +
+            (control.edgeLive?.effective === 'true'
+              ? '\nEdge AI 실제 매매도 함께 끕니다 (이미 산 Edge 수량의 청산은 계속됩니다).'
+              : '');
     const restart = 'r003 재시작 후부터 적용됩니다. 미체결 주문이 있으면 정리된 뒤(또는 장 마감 후) 재시작하세요 - 재시작하면 미체결 주문 추적이 끊깁니다.';
     if (!window.confirm(`${TRADE_KIND_KO[kind]}: ${on ? '켬' : '끔'}\n\n${text}\n\n${restart}\n\n바꿀까요?`)) return;
     setModeBusy(true);
@@ -519,13 +533,19 @@ export function ControlView() {
   const autoSellPending = !!autoSell && autoSell.running !== null && (autoSell.pending || autoSellRunning !== autoSellMode);
   const setAutoSell = async (next: AutoSellMode) => {
     if (next === autoSellMode) return;
+    // [2026-11-25] Edge AI live orders need the full automatic sells (the server refuses it too)
+    if (next !== 'all' && control.edgeLive?.effective === 'true') {
+      window.alert('Edge AI 실제 매매가 켜져 있어 자동 매도를 바꿀 수 없습니다.\n먼저 Edge AI 매매의 "실제 매매"를 끈 뒤 바꾸세요.');
+      return;
+    }
     const text =
       next === 'all'
         ? '봇이 익절·트레일링·손절·당일 청산(15:20 / NXT 19:59)을 모두 자동으로 합니다.\n서버 EXIT_ENGINE_MODE=live(기본)이면 적응형 청산 엔진(분할 익절·고점 되돌림·손절·15:15 청산)이 매도를 판정합니다.'
         : next === 'stop_only'
           ? '봇은 수수료+거래세 포함 순손익 -2% 손절만 자동으로 매도합니다.\n익절·트레일링·당일 청산은 하지 않으므로 직접 매도해야 하고, 팔지 않으면 다음 날로 넘어갑니다.'
           : '봇은 어떤 매도도 하지 않습니다(손절 포함). 모든 매도를 직접 해야 하고, 팔지 않으면 다음 날로 넘어갑니다.';
-    if (!window.confirm(`자동 매도: ${AUTO_SELL_KO[next]}\n\n${text}\n\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
+    const edgeNote = control.edgeLive ? `\n\n단, ${EDGE_LIVE_EXIT_NOTE}` : '';
+    if (!window.confirm(`자동 매도: ${AUTO_SELL_KO[next]}\n\n${text}${edgeNote}\n\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
     setModeBusy(true);
     try {
       const r = await window.api.ctlSet({ [AUTO_SELL_KEY]: next });
@@ -549,6 +569,42 @@ export function ControlView() {
     try {
       const r = await window.api.ctlSet({ [PAPER_LOG_ONLY_KEY]: !on });
       if (!r.ok) window.alert(`가상 매수 설정을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setModeBusy(false);
+    }
+  };
+  // [2026-11-25] EDGE_LIVE_ORDERS: "가상 매수" unchecked = Edge AI live orders beside the rule strategy (real orders, small limits).
+  // A server without the key keeps the checkbox locked on 가상 매수
+  const edgeLive = control.edgeLive;
+  const liveOn = edgeLive ? edgeLive.effective === 'true' : false;
+  const liveRunning = edgeLive?.running === 'true'; // the running r003's value only (stopped / unknown: not running)
+  const livePending = !!edgeLive && edgeLive.running !== null && (edgeLive.pending || liveRunning !== liveOn);
+  const liveLimits = control.edgeLiveLimits;
+  const liveSummary = parseEdgeLiveSummary(st);
+  const liveHeld = !!liveSummary && (liveSummary.held.length > 0 || liveSummary.openBuys.length > 0);
+  const setEdgeLive = async (on: boolean) => {
+    if (on && autoSellMode !== 'all') {
+      window.alert('Edge AI 실제 매매는 자동 매도가 "전체 자동"일 때만 켤 수 있습니다 (신규 Edge 매수의 조건).');
+      return;
+    }
+    const lim = liveLimits;
+    const limText = lim
+      ? `1회 ${lim.order.effective.toLocaleString('ko-KR')}원 · 동시 ${lim.positions.effective}종목 · 하루 ${lim.entries.effective}회 · 하루 손실 ${lim.loss.effective.toLocaleString('ko-KR')}원에서 중단`
+      : '서버 기본 한도';
+    const text = on
+      ? `${EDGE_LIVE_ON_WARNING.replace(/\n\n켤까요\?$/, '')}\n\n` +
+        `한도: ${limText}\n` +
+        '주문: 정규장 14:50 까지, 매도1호가 지정가 1회 (재주문 없음). 청산: 아래 청산 기준 / 15:20.\n' +
+        'Edge 가 산 수량은 Edge 규칙으로만 팔고, 같은 종목의 직접 매수분은 팔지 않습니다.\n' +
+        '켜져 있는 동안 가상 매매는 후보만 기록합니다.'
+      : 'Edge AI 실제 매매를 끕니다 (가상 매매는 아래 체크대로).\n이미 Edge 가 산 수량이 있으면 그 청산(손절 / 익절 / 시간 / 15:20)은 계속됩니다.';
+    const restart = 'r003 재시작 후부터 적용됩니다. 미체결 주문이 있으면 정리된 뒤(또는 장 마감 후) 재시작하세요.';
+    if (!window.confirm(`Edge AI 실제 매매: ${on ? '켬' : '끔'}\n\n${text}\n\n${restart}\n\n바꿀까요?`)) return;
+    if (on && !window.confirm('한 번 더 확인합니다.\n\n실제 계좌로 Edge AI 매수 주문이 나갑니다. 켤까요?')) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet({ [EDGE_LIVE_KEY]: on });
+      if (!r.ok) window.alert(`Edge AI 실제 주문 설정을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
     } finally {
       setModeBusy(false);
     }
@@ -743,7 +799,19 @@ export function ControlView() {
         {/* [2026-11-25] 매매 방식 (user 2026-11-25): one block per feature - 규칙 매매 / Edge AI 매매 / 반등 알림 - with its own options
             indented under it; the sell settings are their own group */}
         <div className="trade-box">
-          <div className="tk-head">
+          {/* [2026-11-25] user: the exits stand above the trading kinds (not under Edge AI); 반등 알림 is its own group */}
+          {control.paperExit && (
+            <>
+              <div className="tk-head">
+                <b>청산 기준</b>
+                <span className="muted small">Edge AI 매매(실제·가상)의 익절 / 손절 / 보유 시간 · 규칙 매매는 아래 매도 설정의 자동 매도 규칙으로 청산</span>
+              </div>
+              <div className="tk">
+                <PaperExitEdit st={control.paperExit} model={edgeModel || null} real={liveOn || liveRunning || liveHeld || tradeMode === 'edge'} disabled={busy || !connected || modeBusy} />
+              </div>
+            </>
+          )}
+          <div className={control.paperExit ? 'tk-head tk-gap' : 'tk-head'}>
             <b>매매 방식</b>
             {strategy && normalMode && (
               <span className={comboLabel(comboNow, kinds) === '모두 꺼짐' ? 'badge-warn' : 'muted small'}>
@@ -752,7 +820,7 @@ export function ControlView() {
                       strategy.running && strategy.running !== 'normal' ? `서버 설정 ${strategy.running}` : comboLabel(comboRunning, kinds)
                     })`
                   : comboLabel(comboNow, kinds) === '모두 꺼짐'
-                    ? '모두 꺼짐 - 신규 매수·알림 없음 (보유 매도는 자동 매도 설정대로)'
+                    ? '모두 꺼짐 - 신규 매수 없음 (보유 매도는 자동 매도 설정대로)'
                     : ''}
               </span>
             )}
@@ -784,39 +852,75 @@ export function ControlView() {
                 Edge AI 매매
               </label>
               <span className="muted small">{paper ? '모델 신호로 매수 / 청산 · r003 재시작 후 적용' : '서버 코드 갱신 후 선택할 수 있습니다'}</span>
+              {!paperOn && (liveHeld || liveRunning) && (
+                <div className="tk-sub">
+                  <div className="tk-opt">
+                    <span className="badge-warn" title="Edge AI 매매는 꺼져 있지만 Edge 가 산 수량은 Edge 규칙으로 청산됩니다">
+                      {liveRunning ? '실행 중인 r003 은 재시작 전까지 Edge AI 실제 매매 설정으로 동작합니다. ' : ''}
+                      {liveSummary ? `실제 매매 현황: ${edgeLiveSummaryText(liveSummary, null)}` : '실제 매매 현황을 읽을 수 없습니다 (체결 장부 없음)'}
+                    </span>
+                  </div>
+                </div>
+              )}
               {paperOn && (
                 <div className="tk-sub">
                   <div className="tk-opt">
-                    <label className="check" title="체크: 실제 주문 없이 가상 매수 / 청산을 기록 (가상 매매 탭). 해제(실제 주문)는 서버 기능 준비 중">
-                      <input type="checkbox" checked disabled /> 가상 매수
+                    <label
+                      className="check"
+                      title={
+                        edgeLive
+                          ? 'Edge AI 신호로 실제 주문 (서버 EDGE_LIVE_ORDERS, 규칙 매매와 병행, 작은 한도). r003 재시작 후 적용'
+                          : '실제 매매는 서버 코드 갱신 후 쓸 수 있습니다'
+                      }
+                    >
+                      <input type="checkbox" checked={liveOn} disabled={busy || !connected || modeBusy || !edgeLive} onChange={(e) => void setEdgeLive(e.target.checked)} /> 실제 매매
                     </label>
-                    <span className="muted small">실제 주문 없이 가상 매매 탭에 기록 · 해제(실제 주문)는 준비 중</span>
+                    {liveOn ? (
+                      <span className="badge-warn">Edge AI 신호로 실제 주문 (규칙 매매와 병행)</span>
+                    ) : (
+                      <span className="muted small">{edgeLive ? '실제 계좌로 주문 · 작은 한도 · 자동 매도가 전체일 때만' : '서버 코드 갱신 후 쓸 수 있습니다'}</span>
+                    )}
+                    {livePending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {liveRunning ? '실제 매매' : '꺼짐'})</span>}
                   </div>
-                  {logOnly && (
-                    <div className="tk-opt">
-                      <label className="check" title="체크: 가상 매수도 하지 않고 신호가 뜬 봉을 후보로만 기록 (서버 EDGE_ONLY_LOG_ONLY). r003 재시작 후 적용">
-                        <input type="checkbox" checked={!paperBuys} disabled={busy || !connected || modeBusy} onChange={(e) => void setPaperBuys(!e.target.checked)} /> 신호 후보만 기록
-                      </label>
-                      <span className="muted small">가상 매수 없이 후보만 남김 (연구용)</span>
-                      {paperBuysPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {paperBuysRunning ? '가상 매수' : '후보만'})</span>}
+                  {(liveOn || liveRunning) && liveLimits && (
+                    <div className="tk-opt tk-opt-in">
+                      <EdgeLiveLimitsEdit st={liveLimits} disabled={busy || !connected || modeBusy} />
                     </div>
                   )}
-                  {control.paperExit && (
-                    <div className="tk-opt">
-                      <PaperExitEdit st={control.paperExit} model={edgeModel || null} real={false} disabled={busy || !connected || modeBusy} />
+                  {liveSummary && (liveOn || liveRunning || liveSummary.held.length > 0 || liveSummary.openBuys.length > 0) && (
+                    <div className="tk-opt tk-opt-in">
+                      <span className={liveSummary.unpricedSells > 0 ? 'badge-warn' : 'muted small'} title="Edge AI 실제 매매의 오늘 현황 (서버 체결 장부 기준, 상태 조회 때마다 갱신)">
+                        현황: {edgeLiveSummaryText(liveSummary, liveLimits ? liveLimits.entries.running ?? liveLimits.entries.effective : null)}
+                      </span>
                     </div>
                   )}
+                  <div className="tk-opt">
+                    <label className="check" title="실제 주문 없이 가상 매수 / 청산을 기록 (가상 매매 탭, 서버 EDGE_ONLY_LOG_ONLY 의 반대). r003 재시작 후 적용">
+                      <input
+                        type="checkbox"
+                        checked={!liveOn && paperBuys}
+                        disabled={busy || !connected || modeBusy || !logOnly || liveOn}
+                        onChange={(e) => void setPaperBuys(e.target.checked)}
+                      />{' '}
+                      가상 매매
+                    </label>
+                    <span className="muted small">
+                      {liveOn
+                        ? '실제 매매 중에는 가상 매수 없이 신호 후보만 기록합니다'
+                        : paperBuys
+                          ? '실제 주문 없이 가상 매매 탭에 기록'
+                          : '꺼짐 - 신호가 뜬 봉을 후보로만 기록'}
+                      {livePending ? ` (r003 재시작 전까지는 실행 중 설정: ${liveRunning ? '실제 매매 - 후보만 기록' : '가상 매매 설정대로'})` : ''}
+                    </span>
+                    {!liveOn && paperBuysPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {paperBuysRunning ? '가상 매매' : '후보만'})</span>}
+                  </div>
                 </div>
               )}
             </div>
           )}
-          {tradeMode === 'edge' && control.paperExit && (
-            <div className="tk">
-              <div className="tk-sub">
-                <div className="tk-opt">
-                  <PaperExitEdit st={control.paperExit} model={edgeModel || null} real disabled={busy || !connected || modeBusy} />
-                </div>
-              </div>
+          {rb && (
+            <div className="tk-head tk-gap">
+              <b>반등 알림</b>
             </div>
           )}
           {rb && (
@@ -1058,7 +1162,7 @@ function PaperExitEdit({ st, model, real, disabled }: { st: PaperExitState; mode
     if (
       !window.confirm(
         real
-          ? `Edge AI 청산 기준 (실제 주문)\n\n${lines}${note}\n\nEdge AI 실주문 방식의 실제 매도 기준이 바뀝니다. r003 재시작 후부터 이미 보유한 종목에도 적용됩니다 (자동 매도가 전체일 때). 바꿀까요?`
+          ? `Edge AI 청산 기준 (실제 주문)\n\n${lines}${note}\n\nEdge AI 실제 매도 기준이 바뀝니다. r003 재시작 후부터 이미 보유한 종목에도 적용됩니다.\n${EDGE_LIVE_EXIT_NOTE}\n(Edge AI 단독 방식 edge 는 자동 매도가 전체일 때만 적용) 바꿀까요?`
           : `Edge AI 청산 기준 (가상 매매)\n\n${lines}${note}\n\n실제 주문은 없습니다. r003 재시작 후 새 가상 매수부터 적용되고, 이미 있는 가상 보유는 매수 때 정한 기준 그대로입니다. 가상 매매와 Edge AI 실주문 방식이 같은 값을 씁니다. 바꿀까요?`,
       )
     )
@@ -1097,6 +1201,67 @@ function PaperExitEdit({ st, model, real, disabled }: { st: PaperExitState; mode
       {pending && (
         <span className="badge-warn">
           → r003 재시작 후 적용 (실행 중: {PAPER_EXIT_KINDS.map((k) => meaning(k, st[k].running ?? st[k].effective)).join(' / ')})
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** [2026-11-25] the limits of the Edge AI live orders (server r001 EDGE_LIVE_ORDER_KRW / EDGE_LIVE_MAX_POSITIONS /
+ *  EDGE_LIVE_MAX_ENTRIES_PER_DAY / EDGE_LIVE_DAILY_LOSS_KRW; r016 checks the same ranges). Whole numbers, applied after the next
+ *  r003 start. At a limit the server stops new edge buys for the day - what the edge strategy holds is still closed */
+function EdgeLiveLimitsEdit({ st, disabled }: { st: EdgeLiveLimits; disabled: boolean }) {
+  const fromState = (): Record<EdgeLiveLimitKind, string> => ({
+    order: String(st.order.effective),
+    positions: String(st.positions.effective),
+    entries: String(st.entries.effective),
+    loss: String(st.loss.effective),
+  });
+  const [text, setText] = useState(fromState);
+  const [saving, setSaving] = useState(false);
+  const stKey = EDGE_LIVE_LIMIT_KINDS.map((k) => st[k].effective).join(',');
+  useEffect(() => setText(fromState()), [stKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vals = Object.fromEntries(EDGE_LIVE_LIMIT_KINDS.map((k) => [k, edgeLiveLimitInput(k, text[k])])) as Record<EdgeLiveLimitKind, number | null>;
+  const bad = EDGE_LIVE_LIMIT_KINDS.filter((k) => vals[k] === null);
+  const changed = !bad.length && EDGE_LIVE_LIMIT_KINDS.some((k) => vals[k] !== st[k].effective);
+  const pending = EDGE_LIVE_LIMIT_KINDS.some((k) => st[k].running !== null && (st[k].pending || st[k].running !== st[k].effective));
+  const show = (k: EdgeLiveLimitKind, v: number) => `${EDGE_LIVE_LIMIT_KO[k]} ${v.toLocaleString('ko-KR')}${EDGE_LIVE_LIMIT_UNIT[k]}`;
+  const save = async () => {
+    if (!changed) return;
+    const v = vals as Record<EdgeLiveLimitKind, number>;
+    const lines = EDGE_LIVE_LIMIT_KINDS.map((k) => show(k, v[k])).join('\n');
+    if (!window.confirm(`Edge AI 실제 주문 한도\n\n${lines}\n\n한도에 닿으면 그날 Edge 신규 매수를 멈춥니다(보유분 청산은 계속).\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
+    setSaving(true);
+    try {
+      const r = await window.api.ctlSet(edgeLiveLimitChanges(v));
+      if (!r.ok) window.alert(`Edge AI 실제 주문 한도를 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const box = (k: EdgeLiveLimitKind) => (
+    <input
+      className={k === 'order' || k === 'loss' ? 'paper-exit-in edge-live-in' : 'paper-exit-in'}
+      type="text"
+      inputMode="numeric"
+      value={text[k]}
+      disabled={disabled || saving}
+      aria-invalid={vals[k] === null}
+      title={`${EDGE_LIVE_LIMIT_RANGE[k][0].toLocaleString('ko-KR')} ~ ${EDGE_LIVE_LIMIT_RANGE[k][1].toLocaleString('ko-KR')}${EDGE_LIVE_LIMIT_UNIT[k]}`}
+      onChange={(e) => setText((t) => ({ ...t, [k]: e.target.value }))}
+      onKeyDown={(e) => e.key === 'Enter' && void save()}
+    />
+  );
+  return (
+    <span className="paper-exit" title="Edge AI 실제 주문 한도 (서버 EDGE_LIVE_*). 한도에 닿으면 그날 Edge 신규 매수 중단. r003 재시작 후 적용">
+      실제 주문 한도 1회 {box('order')}원 동시 {box('positions')}종목 하루 {box('entries')}회 손실 {box('loss')}원
+      <button className="mini" disabled={disabled || saving || !changed} onClick={() => void save()}>
+        적용
+      </button>
+      {bad.length > 0 && <span className="badge-warn">{bad.map((k) => EDGE_LIVE_LIMIT_KO[k]).join(', ')} 값 확인</span>}
+      {pending && (
+        <span className="badge-warn">
+          → r003 재시작 후 적용 (실행 중: {EDGE_LIVE_LIMIT_KINDS.map((k) => show(k, st[k].running ?? st[k].effective)).join(' / ')})
         </span>
       )}
     </span>

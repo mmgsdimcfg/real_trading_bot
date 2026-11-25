@@ -157,6 +157,8 @@ class EdgeLiveTest(unittest.TestCase):
                         mock.patch.object(r003, "_stop_requested", return_value=False),
                         mock.patch.object(r003, "log_trade"), mock.patch.object(r003, "_entry_note"),
                         mock.patch.object(r003, "_log_trade_event_banner"),
+                        mock.patch.object(r003, "EDGE_ONLY_MODE", "paper"),
+                        mock.patch.object(r003, "TRADING_STRATEGY_MODE", "normal"),
                         mock.patch.object(r003, "EDGE_LIVE_ORDERS", True), mock.patch.object(r003, "EDGE_LIVE_ORDER_KRW", 100_000),
                         mock.patch.object(r003, "EDGE_LIVE_MAX_POSITIONS", 1),
                         mock.patch.object(r003, "EDGE_LIVE_MAX_ENTRIES_PER_DAY", 1),
@@ -239,9 +241,12 @@ class EdgeLiveTest(unittest.TestCase):
         self.assertEqual(r003._edge_live_config_ok(), (True, ""))
         with mock.patch.object(r003, "EDGE_LIVE_ORDERS", False):
             self.assertFalse(r003._edge_live_config_ok()[0])
-        with mock.patch.object(r003, "TRADING_STRATEGY_MODE", "edge"):
-            self.assertFalse(r003._edge_live_config_ok()[0])
+        for other in ("edge", "basic"):
+            with mock.patch.object(r003, "TRADING_STRATEGY_MODE", other):
+                self.assertFalse(r003._edge_live_config_ok()[0])
         with mock.patch.object(r003, "auto_sell_mode", return_value="stop_only"):
+            self.assertFalse(r003._edge_live_config_ok()[0])
+        with mock.patch.object(r003, "EDGE_ONLY_MODE", "off"):                               # "Edge AI 매매" unchecked
             self.assertFalse(r003._edge_live_config_ok()[0])
         with mock.patch.object(r003, "EDGE_LIVE_MAX_ENTRIES_PER_DAY", 0):
             self.assertFalse(r003._edge_live_config_ok()[0])
@@ -375,9 +380,11 @@ class EdgeLiveTest(unittest.TestCase):
         api.order_holds = {"005930": {"side": "sell"}}
         self.assertEqual(self._manage(api, 9_000.0).call_count, 0)                            # order state unknown: no order
         api = _api(edge_state(), dict(pos))
-        self.assertEqual(self._manage(api, 9_000.0, mode="off").call_count, 0)
-        self.assertEqual(self._manage(api, 10_500.0, mode="stop_only").call_count, 0)         # no take profit there
-        self.assertEqual(self._manage(api, 9_000.0, mode="stop_only").call_args[0][3], "EDGE_SL_1.70PCT")
+        # stage 4 review: what the edge strategy bought is closed by edge rules whatever AUTO_SELL_MODE says (set, unset, reset)
+        self.assertEqual(self._manage(api, 9_000.0, mode="off").call_args[0][3], "EDGE_SL_1.70PCT")
+        self.assertEqual(self._manage(api, 10_500.0, mode="stop_only").call_args[0][3], "EDGE_TP_2.00PCT")
+        self.assertEqual(self._manage(api, 10_050.0, datetime.combine(NOW.date(), dt_time(15, 20, 5)), mode="off").call_args[0][3],
+                         "EDGE_CLOSE_1520")
         api = _api(edge_state(), dict(pos))
         self.assertEqual(self._manage(api, None).call_args[0][3], "EDGE_SL_1.70PCT")          # no live price: the account's (9,000)
         self.assertEqual(self._manage(api, 9_000.0, now=datetime.combine(NOW.date(), dt_time(15, 40))).call_count, 0)  # closed

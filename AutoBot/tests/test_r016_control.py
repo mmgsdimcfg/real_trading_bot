@@ -453,6 +453,92 @@ class ChartDispatchTests(Base):
             i.assert_called_once_with("20261105", "005930", "1m", 5)
 
 
+class EdgeLiveTests(Base):
+    """[2026-11-25] Edge AI live orders (r001 EDGE_LIVE_ORDERS): `set` refuses the combinations that leave edge positions without
+    their exits, the limits have ranges, `status` reports what the edge strategy holds"""
+
+    def _ledger(self, **edge):
+        import r023_bot_holdings as r023
+        st = r023.new_fill_state()
+        today = datetime.now().strftime("%Y%m%d")
+        if edge:
+            st["codes"]["005930"] = {"bot_qty": 9, "manual_qty": 0}
+            st["applied"][r023.fill_key(today, "1")] = 9
+            st["edge"] = {"005930": {"qty": 9, "lots": {r023.fill_key(today, "1"): {"qty": 9, "avg": 10000.0, "avg_at": 9}},
+                                     "entry_at": "2026-11-25T10:00:00"}}
+            st["edge_day"] = {"date": today, "entries": 1, "realized": -1200.0, "sl_codes": ["000660"]}
+        d = self.paths.runtime_root / "data" / "live_runtime"
+        d.mkdir(parents=True, exist_ok=True)
+        r023.save_fill_state(d, st)
+
+    def test_live_orders_need_the_full_auto_sell_and_the_rule_strategy(self):
+        rc, out = self.run_cli("set", "EDGE_LIVE_ORDERS=true", "AUTO_SELL_MODE=all", "TRADING_STRATEGY_MODE=normal")
+        self.assertEqual((rc, out["rejected"]), (0, {}), out)
+        rc, out = self.run_cli("set", "AUTO_SELL_MODE=stop_only")                             # live orders are on
+        self.assertEqual((rc, list(out["rejected"]), out["accepted"]), (2, ["AUTO_SELL_MODE"], {}))
+        rc, out = self.run_cli("set", "TRADING_STRATEGY_MODE=edge")
+        self.assertEqual((rc, list(out["rejected"])), (2, ["TRADING_STRATEGY_MODE"]))
+        rc, out = self.run_cli("set", "EDGE_LIVE_ORDERS=false", "AUTO_SELL_MODE=stop_only")   # off first: allowed together
+        self.assertEqual((rc, out["rejected"]), (0, {}), out)
+        rc, out = self.run_cli("set", "EDGE_LIVE_ORDERS=true")                                # stop_only is stored now
+        self.assertEqual((rc, list(out["rejected"])), (2, ["EDGE_LIVE_ORDERS"]))
+        self.assertFalse(json.loads(self.paths.overrides.read_text(encoding="utf-8"))["overrides"]["EDGE_LIVE_ORDERS"])
+
+    def test_a_changed_gate_key_switches_the_live_orders_off(self):
+        # stage 4 review: armed only by `set EDGE_LIVE_ORDERS=true`; it never comes back when a gate key is changed back
+        def stored():
+            return json.loads(self.paths.overrides.read_text(encoding="utf-8"))["overrides"].get("EDGE_LIVE_ORDERS")
+        on = ("set", "EDGE_LIVE_ORDERS=true", "AUTO_SELL_MODE=all", "TRADING_STRATEGY_MODE=normal", "EDGE_ONLY_MODE=paper")
+        rc, out = self.run_cli(*on)
+        self.assertEqual((rc, out["edge_live_disarmed"], stored()), (0, False, True))
+        rc, out = self.run_cli("set", "EDGE_ONLY_MODE=off")
+        self.assertEqual((out["edge_live_disarmed"], stored()), (True, False))
+        rc, out = self.run_cli("set", "EDGE_ONLY_MODE=paper")                                # back: still off
+        self.assertEqual((out["edge_live_disarmed"], stored()), (False, False))
+        self.run_cli(*on)
+        rc, out = self.run_cli("unset", "EDGE_ONLY_MODE")                                    # "기본값으로"
+        self.assertEqual((out["edge_live_disarmed"], stored()), (True, False))
+        self.run_cli(*on)
+        rc, out = self.run_cli("unset", "AUTO_SELL_MODE")
+        self.assertEqual((out["edge_live_disarmed"], stored()), (True, False))
+        self.run_cli(*on)
+        rc, out = self.run_cli("set", "MAX_OPEN_POSITIONS=7")                                 # not a gate key: stays on
+        self.assertEqual((out["edge_live_disarmed"], stored()), (False, True))
+        rc, out = self.run_cli("reset")
+        self.assertIsNone(json.loads(self.paths.overrides.read_text(encoding="utf-8"))["overrides"].get("EDGE_LIVE_ORDERS"))
+        rc, out = self.run_cli("set", "EDGE_LIVE_ORDERS=true", "AUTO_SELL_MODE=all", "TRADING_STRATEGY_MODE=basic")
+        self.assertEqual((rc, sorted(out["rejected"])), (2, ["EDGE_LIVE_ORDERS", "TRADING_STRATEGY_MODE"]))   # normal only
+
+    def test_the_limits_have_ranges(self):
+        rc, out = self.run_cli("set", "EDGE_LIVE_ORDER_KRW=5", "EDGE_LIVE_MAX_POSITIONS=9", "EDGE_LIVE_MAX_ENTRIES_PER_DAY=0",
+                               "EDGE_LIVE_DAILY_LOSS_KRW=0", "MAX_OPEN_POSITIONS=7")
+        self.assertEqual(rc, 2)
+        self.assertEqual(sorted(out["rejected"]), ["EDGE_LIVE_DAILY_LOSS_KRW", "EDGE_LIVE_MAX_ENTRIES_PER_DAY",
+                                                   "EDGE_LIVE_MAX_POSITIONS", "EDGE_LIVE_ORDER_KRW"])
+        self.assertEqual(out["accepted"], {"MAX_OPEN_POSITIONS": 7})                         # the other key is still stored
+        rc, out = self.run_cli("set", "EDGE_LIVE_ORDER_KRW=200000", "EDGE_LIVE_MAX_POSITIONS=2", "EDGE_LIVE_MAX_ENTRIES_PER_DAY=3",
+                               "EDGE_LIVE_DAILY_LOSS_KRW=20000")
+        self.assertEqual((rc, out["rejected"]), (0, {}), out)
+
+    def test_status_reports_the_edge_holdings_and_they_block_a_narrower_auto_sell(self):
+        rc, out = self.run_cli("status")
+        self.assertIsNone(out["edge_live"])                                                  # no fill ledger yet
+        self._ledger()
+        rc, out = self.run_cli("status")
+        self.assertEqual(out["edge_live"], {"held": [], "open_buys": [],
+                                            "today": {"entries": 0, "realized": 0.0, "sl_codes": [], "unpriced_sells": 0}})
+        rc, out = self.run_cli("set", "AUTO_SELL_MODE=stop_only")
+        self.assertEqual(rc, 0, out)
+        self.run_cli("set", "AUTO_SELL_MODE=all")
+        self._ledger(held=True)
+        rc, out = self.run_cli("status")
+        self.assertEqual(out["edge_live"]["held"], [{"code": "005930", "qty": 9, "avg_price": 10000.0, "entry_at": "2026-11-25T10:00:00"}])
+        self.assertEqual(out["edge_live"]["today"], {"entries": 1, "realized": -1200.0, "sl_codes": ["000660"], "unpriced_sells": 0})
+        # edge holdings do not lock the rule strategy's sell mode (r003 closes them by edge rules whatever it is)
+        rc, out = self.run_cli("set", "AUTO_SELL_MODE=off")
+        self.assertEqual((rc, out["rejected"]), (0, {}), out)
+
+
 class ProcScanTests(unittest.TestCase):
     def test_find_r003_processes_from_fake_proc(self):
         with tempfile.TemporaryDirectory() as td:

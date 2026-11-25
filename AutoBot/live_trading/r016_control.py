@@ -354,6 +354,84 @@ def validate_assignments(assignments: dict) -> tuple[dict, dict]:
     return accepted, rejected
 
 
+# [2026-11-25] Edge AI live orders (r001 EDGE_LIVE_ORDERS, plan edge_live_parallel_plan_20261125.md): `set` checks the ranges of
+# the limits and the combinations that would leave edge positions without their exits; `status` reports what the edge strategy holds
+EDGE_LIVE_RANGES = {
+    "EDGE_LIVE_ORDER_KRW": (10_000, 1_000_000),
+    "EDGE_LIVE_MAX_POSITIONS": (1, 5),
+    "EDGE_LIVE_MAX_ENTRIES_PER_DAY": (1, 20),
+    "EDGE_LIVE_DAILY_LOSS_KRW": (1_000, 1_000_000),
+    "EDGE_LIVE_UNFILLED_CANCEL_SECONDS": (5, 300),
+}
+
+
+def edge_live_summary(paths: ControlPaths) -> dict | None:
+    """what the edge strategy holds and did today, from r003's fill ledger (read only, no KIS call). None: no readable ledger"""
+    import r023_bot_holdings as r023  # noqa: E402  (stdlib only)
+    try:
+        st, _status = r023.load_fill_state(paths.runtime_root / "data" / "live_runtime")
+    except Exception:
+        return None
+    if st is None:
+        return None
+    day = st.get("edge_day") or {}
+    if day.get("date") != datetime.now().strftime("%Y%m%d"):
+        day = {}
+    return {
+        "held": [{"code": c, "qty": int(b.get("qty", 0)), "avg_price": r023.edge_avg_price(st, c), "entry_at": str(b.get("entry_at", ""))}
+                 for c, b in sorted((st.get("edge") or {}).items())],
+        "open_buys": sorted(r023.edge_open_buy_codes(st)),
+        "today": {"entries": int(day.get("entries", 0)), "realized": float(day.get("realized", 0.0)),
+                  "sl_codes": list(day.get("sl_codes") or []), "unpriced_sells": int(day.get("unpriced_sells", 0))},
+    }
+
+
+EDGE_LIVE_GATE_KEYS = ("EDGE_ONLY_MODE", "AUTO_SELL_MODE", "TRADING_STRATEGY_MODE")
+
+
+def disarm_edge_live(overrides: dict, changed: set, explicit_on: bool) -> bool:
+    """[2026-11-25] Edge AI live orders are armed by one explicit act only: `set EDGE_LIVE_ORDERS=true` (the apps warn there).
+    Any other change of the keys its new buys depend on (set, unset or reset of EDGE_ONLY_MODE / AUTO_SELL_MODE /
+    TRADING_STRATEGY_MODE) switches a stored EDGE_LIVE_ORDERS=true off - it never comes back by itself when such a key is
+    changed back later. Returns True when the override was switched off (edits `overrides`)."""
+    if not hasattr(r001, "EDGE_LIVE_ORDERS") or explicit_on or not (set(changed) & set(EDGE_LIVE_GATE_KEYS)):
+        return False
+    if overrides.get("EDGE_LIVE_ORDERS", base_value("EDGE_LIVE_ORDERS")) is not True:
+        return False
+    overrides["EDGE_LIVE_ORDERS"] = False
+    return True
+
+
+def validate_edge_live(accepted: dict, overrides: dict, paths: ControlPaths) -> dict:
+    """{key: reason} of the accepted assignments that the Edge AI live rules refuse (a server without the keys: nothing)"""
+    if not hasattr(r001, "EDGE_LIVE_ORDERS"):
+        return {}
+
+    def eff(key: str):
+        return accepted[key] if key in accepted else overrides.get(key, base_value(key))
+
+    rejected: dict = {}
+    for key, (lo, hi) in EDGE_LIVE_RANGES.items():
+        v = accepted.get(key)
+        if key in accepted and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi):
+            rejected[key] = f"out of range ({lo:,}..{hi:,})"
+    touched = {"EDGE_LIVE_ORDERS", "AUTO_SELL_MODE", "TRADING_STRATEGY_MODE"} & set(accepted)
+    if not touched:
+        return rejected
+    live = bool(eff("EDGE_LIVE_ORDERS"))
+    sell = str(eff("AUTO_SELL_MODE")).strip().lower()
+    strategy = str(eff("TRADING_STRATEGY_MODE")).strip().lower()
+    if live and sell != "all":
+        for key in touched & {"EDGE_LIVE_ORDERS", "AUTO_SELL_MODE"}:
+            rejected[key] = "new Edge AI live buys need AUTO_SELL_MODE=all - switch EDGE_LIVE_ORDERS off first"
+    if live and strategy != "normal":
+        for key in touched & {"EDGE_LIVE_ORDERS", "TRADING_STRATEGY_MODE"}:
+            rejected[key] = "EDGE_LIVE_ORDERS runs beside the rule strategy - TRADING_STRATEGY_MODE=normal only"
+    # (what the edge strategy already holds is closed by edge rules whatever AUTO_SELL_MODE is - r003 _edge_live_manage - so the
+    # sell mode of the rule strategy is not locked by edge holdings)
+    return rejected
+
+
 def parse_assignment(text: str) -> tuple[str, object]:
     if "=" not in text:
         raise ValueError(f"expected KEY=VALUE, got {text!r}")
@@ -1090,6 +1168,8 @@ def status(paths: ControlPaths, runner: Runner = _run) -> dict:
         "watchlist_codes": len(wl["codes"]),
         "collector": collector_status(paths, [c["code"] for c in wl["codes"]]),
         "host": host_info(paths),
+        # [2026-11-25] Edge AI live orders: what the edge strategy holds / did today (null: no fill ledger yet)
+        "edge_live": edge_live_summary(paths),
     }
 
 
@@ -1680,15 +1760,25 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
         except ValueError as exc:
             return _emit({"ok": False, "error": str(exc)}, 2)
         accepted, rejected = validate_assignments(assignments)
+        disarmed = False
         if accepted:
             with write_lock(paths):
                 overrides = read_overrides(paths)
+                for _k, _why in validate_edge_live(accepted, overrides, paths).items():   # [2026-11-25] Edge AI live rules
+                    rejected[_k] = _why
+                    accepted.pop(_k, None)
                 before = {k: overrides.get(k) for k in accepted}
-                overrides.update(accepted)
-                write_overrides(paths, overrides, args.by)
-                append_history(paths, "set", {k: {"from": _jsonable(before[k]), "to": _jsonable(v)} for k, v in accepted.items()}, args.by)
+                if accepted:
+                    overrides.update(accepted)
+                    disarmed = disarm_edge_live(overrides, set(accepted), accepted.get("EDGE_LIVE_ORDERS") is True)
+                    write_overrides(paths, overrides, args.by)
+                    append_history(paths, "set", {k: {"from": _jsonable(before[k]), "to": _jsonable(v)} for k, v in accepted.items()},
+                                   args.by)
+                    if disarmed:
+                        append_history(paths, "set", {"EDGE_LIVE_ORDERS": {"from": True, "to": False}}, args.by + " (auto: gate changed)")
         return _emit({"ok": not rejected, "accepted": {k: _jsonable(v) for k, v in accepted.items()}, "rejected": rejected,
-                      "restart_required": bool(accepted)}, 2 if rejected else 0)
+                      "restart_required": bool(accepted), "edge_live_disarmed": bool(accepted) and disarmed},
+                     2 if rejected else 0)
 
     if args.cmd in ("unset", "reset"):
         with write_lock(paths):
@@ -1696,10 +1786,15 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
             keys = list(overrides) if args.cmd == "reset" else args.keys
             removed = {k: _jsonable(overrides.pop(k)) for k in keys if k in overrides}
             missing = [k for k in keys if k not in removed]
+            disarmed = False
             if removed:
+                disarmed = disarm_edge_live(overrides, set(removed), False)   # [2026-11-25] a gate key went back to its default
                 write_overrides(paths, overrides, args.by)
                 append_history(paths, args.cmd, removed, args.by)
-        return _emit({"ok": True, "removed": removed, "not_set": missing, "restart_required": bool(removed)})
+                if disarmed:
+                    append_history(paths, "set", {"EDGE_LIVE_ORDERS": {"from": True, "to": False}}, args.by + " (auto: gate changed)")
+        return _emit({"ok": True, "removed": removed, "not_set": missing, "restart_required": bool(removed),
+                      "edge_live_disarmed": disarmed})
 
     if args.cmd == "history":
         rows = []

@@ -2105,7 +2105,8 @@ EDGE_AI_MIN_PROB_OVERRIDE = 0.0  # >0이면 모델 메타의 임계값 대신 �
 #   모든 확률 기준에서 거래당 -0.44 ~ -0.62% 였다(analysis_20261111_timing_study.md 9절). 그래서 실주문 경로는 만들지 않았다.
 # - 켜기: r016 set EDGE_ONLY_MODE=paper 후 r003 재시작. 롤백: off.
 # =============================================================================
-EDGE_ONLY_MODE = "off"              # "off" | "paper"
+# [2026-11-25] 기본값 off -> paper (사용자 결정: 제어 탭 "Edge AI 매매" 기본 체크). 주문 없는 가상 매매다. 롤백: r016 set EDGE_ONLY_MODE=off
+EDGE_ONLY_MODE = "paper"            # "off" | "paper"
 # [2026-11-12] 0.45 -> 0.0: 모델 라벨이 "손절 전에 +2% 도달"(g013 y_tp, 기준 달성률 약 21%)로 바뀌어 확률의 뜻이 달라졌다.
 # 고정값 대신 모델과 함께 배포되는 기준(메타 threshold = 검증 구간 상위 약 20%)을 쓴다. 0보다 크면 그 값으로 덮어쓴다.
 EDGE_ONLY_MIN_PROB = 0.0            # 매수 확률 기준 (0 = 모델 메타의 threshold)
@@ -2127,7 +2128,8 @@ EDGE_ONLY_NO_REENTRY_AFTER_SL = True
 # [2026-11-20] 가상 매매 검토 3차(Codex 합의) - 기록 전용. 65일 OOS 재생·회귀·상대강도/평균회귀 실험 모두 왕복 비용(약 0.5%)을 넘지
 # 못했다(모델은 방향이 아니라 변동폭을 순위화). True = 신규 가상 매수 없이 트리거 봉마다 후보(피처·점수·막힌 사유·가격)를
 # edge_only_candidates_<날짜>.jsonl 에 기록하고, 이미 있는 가상 보유는 그대로 청산. 롤백(가상 매수 재개): False.
-EDGE_ONLY_LOG_ONLY = True
+# [2026-11-25] 기본값 True -> False (사용자 결정: 제어 탭 "가상 매매" 기본 체크 = 가상 매수 실행). 롤백: r016 set EDGE_ONLY_LOG_ONLY=true
+EDGE_ONLY_LOG_ONLY = False
 # [2026-11-23] 가상 매매를 NXT 세션에도 (ENABLE_NXT_SESSION=True 일 때만): 감시 종목 중 NXT 가능 종목을 장전 08:05~08:35 /
 # 장후 15:35~19:30 에 같은 정책으로 평가하고 08:45 / 19:50 에 가상 청산. 기록에 session 구분. 수집기 종목(틱 파일)은 정규장만.
 # 모델은 정규장 데이터로만 학습됐으므로 NXT 세션 성과는 따로 봐야 한다. 롤백: False.
@@ -2152,7 +2154,8 @@ EDGE_ONLY_HORIZON_MIN = 0
 #   작은 금액으로 확인하는 단계다 - 아래 한도에 닿으면 그날 Edge 신규 매수를 멈춘다.
 # - 조건: AUTO_SELL_MODE="all" 이고 dry-run 이 아니고 체결 장부(r023)가 정상일 때만 신규 매수. TRADING_STRATEGY_MODE="edge"(단독)면 무시.
 # - Edge 가 산 수량은 체결 장부에 주문 단위로 기록되고(계좌 평균단가와 무관한 Edge 원가), Edge 규칙(EDGE_ONLY_TP_PCT / SL_PCT /
-#   HORIZON_MIN, 0 = EDGE_TP_PCT 등)과 15:20 청산으로만 판다. False 로 바꿔도 이미 산 Edge 수량의 청산은 계속된다.
+#   HORIZON_MIN, 0 = EDGE_TP_PCT 등)과 15:20 청산으로만 판다. False 로 바꿔도, AUTO_SELL_MODE 를 바꿔도 이미 산 Edge 수량의
+#   청산은 계속된다(전략이 연 포지션은 그 전략이 닫는다). 신규 매수는 EDGE_ONLY_MODE=paper("Edge AI 매매" 체크)일 때만.
 # - 켜져 있는 동안 가상 매매(r022)는 후보 기록만 한다(같은 신호를 두 번 세지 않게). r003 재시작 후 적용.
 # =============================================================================
 EDGE_LIVE_ORDERS = False

@@ -443,6 +443,117 @@ export function parseRuleBuy(data: unknown): PaperModeState | null {
   return { effective: String(v.effective), running: typeof v.running === 'boolean' ? String(v.running) : null, pending: !!v.pending };
 }
 
+/** [2026-11-25] r001 EDGE_LIVE_ORDERS: Edge AI live orders beside the rule strategy (the control tab's "가상 매수" unchecked).
+ *  A server without the key: null (the checkbox stays locked) */
+export const EDGE_LIVE_KEY = 'EDGE_LIVE_ORDERS';
+export function parseEdgeLive(data: unknown): PaperModeState | null {
+  const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[EDGE_LIVE_KEY];
+  if (!v || typeof v.effective !== 'boolean') return null;
+  return { effective: String(v.effective), running: typeof v.running === 'boolean' ? String(v.running) : null, pending: !!v.pending };
+}
+
+/** [2026-11-25] the warning every editor shows before EDGE_LIVE_ORDERS is switched on (the control tab adds the limits) */
+export const EDGE_LIVE_ON_WARNING =
+  'Edge AI 실제 매매를 켭니다 - 실제 계좌로 Edge AI 매수 주문이 나갑니다 (규칙 매매와 병행).\n\n' +
+  '주의: 이 방식의 과거 검증은 모두 손실이었습니다 (58일 재생 거래당 -0.44 ~ -0.62%, 가상 매매도 손절이 대부분).\n' +
+  '수익 기대가 아니라 실제 체결·슬리피지를 작은 금액으로 확인하는 단계입니다.\n\n' +
+  '조건: Edge AI 매매가 켜져 있고 자동 매도가 전체일 때만 새로 삽니다. r003 재시작 후 적용.\n\n켤까요?';
+
+/** the server keys that together decide whether new Edge AI live buys can start (r003 _edge_live_config_ok) */
+export const EDGE_LIVE_GATE_KEYS: string[] = [EDGE_LIVE_KEY, 'EDGE_ONLY_MODE', 'AUTO_SELL_MODE'];
+/** what is true for shares the edge strategy bought, whatever the sell settings say */
+export const EDGE_LIVE_EXIT_NOTE =
+  'Edge AI 실제 매매로 산 수량은 자동 매도 설정과 무관하게 Edge 청산 기준(손절 / 익절 / 보유 시간 / 15:20)으로 자동 매도됩니다.';
+
+/** [2026-11-25] the limits of the Edge AI live orders (r001 EDGE_LIVE_*; the ranges are r016's EDGE_LIVE_RANGES) */
+export const EDGE_LIVE_LIMIT_KEYS = {
+  order: 'EDGE_LIVE_ORDER_KRW',
+  positions: 'EDGE_LIVE_MAX_POSITIONS',
+  entries: 'EDGE_LIVE_MAX_ENTRIES_PER_DAY',
+  loss: 'EDGE_LIVE_DAILY_LOSS_KRW',
+} as const;
+export type EdgeLiveLimitKind = keyof typeof EDGE_LIVE_LIMIT_KEYS;
+export const EDGE_LIVE_LIMIT_KINDS: EdgeLiveLimitKind[] = ['order', 'positions', 'entries', 'loss'];
+export const EDGE_LIVE_LIMIT_RANGE: Record<EdgeLiveLimitKind, [number, number]> = {
+  order: [10_000, 1_000_000],
+  positions: [1, 5],
+  entries: [1, 20],
+  loss: [1_000, 1_000_000],
+};
+export const EDGE_LIVE_LIMIT_KO: Record<EdgeLiveLimitKind, string> = { order: '1회 금액', positions: '동시 보유', entries: '하루 횟수', loss: '하루 손실 한도' };
+export const EDGE_LIVE_LIMIT_UNIT: Record<EdgeLiveLimitKind, string> = { order: '원', positions: '종목', entries: '회', loss: '원' };
+export type EdgeLiveLimits = Record<EdgeLiveLimitKind, PaperExitValue>;
+
+/** `get EDGE_LIVE_ORDER_KRW ...` data -> state; null on a server without the keys */
+export function parseEdgeLiveLimits(data: unknown): EdgeLiveLimits | null {
+  const vals = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values;
+  const out: Partial<EdgeLiveLimits> = {};
+  for (const k of EDGE_LIVE_LIMIT_KINDS) {
+    const v = vals?.[EDGE_LIVE_LIMIT_KEYS[k]];
+    if (!v || typeof v.effective !== 'number' || !Number.isFinite(v.effective)) return null;
+    out[k] = { effective: v.effective, running: typeof v.running === 'number' && Number.isFinite(v.running) ? v.running : null, pending: !!v.pending };
+  }
+  return out as EdgeLiveLimits;
+}
+
+/** an input box's text -> the whole number to store ("100,000" is read too); null = not a number / out of range */
+export function edgeLiveLimitInput(kind: EdgeLiveLimitKind, text: string): number | null {
+  const t = text.trim().replace(/,/g, '');
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  const [lo, hi] = EDGE_LIVE_LIMIT_RANGE[kind];
+  return Number.isSafeInteger(n) && n >= lo && n <= hi ? n : null;
+}
+
+/** the r016 set changes of the limits (all four are integers on the server) */
+export function edgeLiveLimitChanges(v: Record<EdgeLiveLimitKind, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k of EDGE_LIVE_LIMIT_KINDS) out[EDGE_LIVE_LIMIT_KEYS[k]] = Math.round(v[k]);
+  return out;
+}
+
+/** [2026-11-25] what the edge strategy holds and did today (r016 status `edge_live`, from r003's fill ledger) */
+export interface EdgeLiveSummary {
+  held: { code: string; qty: number; avgPrice: number }[];
+  openBuys: string[];
+  entries: number;
+  realized: number;
+  slCodes: string[];
+  /** sells whose price is not known: the day's result is not certain (the server stops new edge buys) */
+  unpricedSells: number;
+}
+
+/** r016 status -> the summary; null on a server without it / before the fill ledger exists */
+export function parseEdgeLiveSummary(status: unknown): EdgeLiveSummary | null {
+  const e = (status as { edge_live?: unknown } | null)?.edge_live as
+    | { held?: unknown; open_buys?: unknown; today?: Record<string, unknown> }
+    | null
+    | undefined;
+  if (!e || typeof e !== 'object' || !Array.isArray(e.held)) return null;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const t = e.today || {};
+  return {
+    held: (e.held as Record<string, unknown>[])
+      .filter((h) => h && typeof h.code === 'string')
+      .map((h) => ({ code: String(h.code), qty: num(h.qty), avgPrice: num(h.avg_price) })),
+    openBuys: Array.isArray(e.open_buys) ? (e.open_buys as unknown[]).map(String) : [],
+    entries: num(t.entries),
+    realized: num(t.realized),
+    slCodes: Array.isArray(t.sl_codes) ? (t.sl_codes as unknown[]).map(String) : [],
+    unpricedSells: num(t.unpriced_sells),
+  };
+}
+
+/** "오늘 매수 1/1회 · 실현 -1,200원 · 보유 005930 9주" */
+export function edgeLiveSummaryText(s: EdgeLiveSummary, maxEntries: number | null): string {
+  const parts = [`오늘 매수 ${s.entries}${maxEntries ? `/${maxEntries}` : ''}회`, `실현 ${s.realized >= 0 ? '+' : ''}${Math.round(s.realized).toLocaleString('ko-KR')}원`];
+  if (s.held.length) parts.push(`보유 ${s.held.map((h) => `${h.code} ${h.qty}주`).join(', ')}`);
+  if (s.openBuys.length) parts.push(`매수 주문 중 ${s.openBuys.join(', ')}`);
+  if (s.slCodes.length) parts.push(`오늘 손절 ${s.slCodes.join(', ')}`);
+  if (s.unpricedSells > 0) parts.push('손익 미상 (신규 매수 중단)');
+  return parts.join(' · ');
+}
+
 /** [2026-11-25] the three trading kinds the control tab combines (user 2026-11-25): any of them on or off */
 export type TradeKind = 'rules' | 'paper' | 'rebound';
 export const TRADE_KINDS: TradeKind[] = ['rules', 'paper', 'rebound'];

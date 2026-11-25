@@ -8,6 +8,7 @@
 
 import { Fragment, useMemo, useState } from 'react';
 import { collectChanges, fmtValue, initialDraft, parseDraft, pctHint, type Draft, type ValueType } from '../../../shared/control';
+import { EDGE_LIVE_GATE_KEYS, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING } from '../../../shared/paper';
 import { useStore } from '../store';
 
 export interface EditItem {
@@ -49,6 +50,22 @@ export function useValueEditing(items: EditItem[]) {
     }
     const changes = collected.changes;
     if (!Object.keys(changes).length) return;
+    // [2026-11-25] Edge AI live orders: the same warning as the control tab's own checkbox, whichever editor switches it on
+    if (changes[EDGE_LIVE_KEY] === true && !window.confirm(EDGE_LIVE_ON_WARNING)) {
+      setMsg('저장하지 않았습니다.');
+      return;
+    }
+    // ... and the Edge-AI-only strategy (real orders by the model signal alone), like the control tab's own switch
+    if (
+      String(changes.TRADING_STRATEGY_MODE ?? '').toLowerCase() === 'edge' &&
+      !window.confirm(
+        'TRADING_STRATEGY_MODE=edge: Edge AI 신호만으로 실제 매수 / 매도 주문을 냅니다 (규칙 매매 없음).\n' +
+          '과거 검증은 모두 손실이었습니다. r003 재시작 후 적용됩니다.\n\n바꿀까요?',
+      )
+    ) {
+      setMsg('저장하지 않았습니다.');
+      return;
+    }
     setSaving(true);
     setMsg('저장 중…');
     try {
@@ -70,6 +87,16 @@ export function useValueEditing(items: EditItem[]) {
     }
   };
   const unset = async (key: string) => {
+    // [2026-11-25] these decide whether Edge AI live buys can start (their defaults: Edge AI 매매 on, 자동 매도 손절만, 실제 매매 off)
+    if (
+      EDGE_LIVE_GATE_KEYS.includes(key) &&
+      !window.confirm(
+        `${key} 를 기본값으로 되돌립니다.\n\n이 값은 Edge AI 실제 매매(EDGE_LIVE_ORDERS)가 새로 살 수 있는 조건에 들어갑니다 ` +
+          '(Edge AI 매매 켜짐 + 실제 매매 켜짐 + 자동 매도 전체). 저장된 실제 매매 설정이 켜져 있으면 되돌린 뒤 r003 재시작 때 ' +
+          '실제 매수가 시작될 수 있습니다. 제어 탭에서 확인하세요.\n\n되돌릴까요?',
+      )
+    )
+      return;
     setMsg('기본값으로 되돌리는 중…');
     const r = await window.api.ctlUnset([key]);
     if (r.ok) {

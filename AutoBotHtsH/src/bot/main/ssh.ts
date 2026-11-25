@@ -10,10 +10,11 @@
  *   still has no file-write method: all server changes go through r016_control.py (main/control.ts)
  * - [2026-11-10] type=feat - implements FileHost (host.ts) next to the local host: listPrefix (the `ls <code>_*` the price reader
  *   used), readSmallFile + home() for the one-time KIS config import into the local mode. Still no write method
+ * - [2026-11-25] type=fix - key login: a key path that names the public key (…​.pub) uses the private key beside it (privateKeyPath)
  */
 
 import { Client, type SFTPWrapper, type ConnectConfig } from 'ssh2';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import type { Duplex } from 'node:stream';
 import { openProxySocket, type ProxyConfig } from './proxy';
@@ -22,6 +23,12 @@ import { shellQuote } from '../shared/shell';
 
 export type { RemoteEntry } from './host';
 export { shellQuote, shellPath } from '../shared/shell';
+
+/** [2026-11-25] the key file to log in with: a path to the PUBLIC key (id_ed25519.pub) means the private key beside it */
+export function privateKeyPath(keyPath: string, exists: (p: string) => boolean = existsSync): string {
+  const priv = keyPath.replace(/\.pub$/i, '');
+  return priv !== keyPath && exists(priv) ? priv : keyPath;
+}
 
 export interface SshParams {
   host: string;
@@ -67,7 +74,7 @@ export class SshConnection extends EventEmitter implements FileHost {
     if (p.authMethod === 'password') cfg.password = p.secret || '';
     else {
       if (!p.keyPath) throw new Error('개인키 파일이 설정되지 않았습니다.');
-      cfg.privateKey = readFileSync(p.keyPath);
+      cfg.privateKey = readFileSync(privateKeyPath(p.keyPath));
       if (p.secret) cfg.passphrase = p.secret;
     }
     if (p.proxy) {

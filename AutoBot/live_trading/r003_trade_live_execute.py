@@ -87,6 +87,9 @@ Update log:
       6차 검토 반영: Edge 매도는 마지막 계좌 응답에 그 종목의 금일 매수·매도 수량이 있어야 제출(없으면 체결 조회와 대조할 수 없음).
       계좌 응답에 그 필드가 아예 없는 환경(_acct_fields_ok=False)이면 대조 없이 진행하고 시작 때 알림.
       9차 검토 반영: Edge 신규 매수 마감 EDGE_LIVE_ENTRY_END(14:50)를 실제 시계로 확인 - 판정 전, 주문 직전(횟수 기록 뒤) 두 번.
+      4단계 검토 반영: Edge 가 산 수량의 청산(손절 / 익절 / 시간 상한 / 15:20)은 AUTO_SELL_MODE 와 무관하게 항상 한다 - 전략이 연
+      포지션은 그 전략이 닫는다(설정 변경·기본값 복원·초기화로 청산 규칙 없이 남지 않게). AUTO_SELL_MODE=all 조건은 신규 Edge
+      매수에만. 신규 Edge 매수는 EDGE_ONLY_MODE=paper(앱 "Edge AI 매매" 체크)일 때만.
     impact: live (AUTO_SELL_SCOPE=bot_only 의 자동매도 수량)
     compatibility: 새 파일 bot_fill_ledger.json. 기존 bot_holdings.json 은 백업만(갱신 중단)
 - [2026-11-25] type=feat owner=claude
@@ -6875,10 +6878,12 @@ def _edge_live_config_ok() -> tuple[bool, str]:
     """(new Edge AI live buys allowed by the settings, why not)"""
     if not EDGE_LIVE_ORDERS:
         return False, "EDGE_LIVE_ORDERS=False"
-    if str(TRADING_STRATEGY_MODE).lower() == "edge":
-        return False, "TRADING_STRATEGY_MODE=edge (단독 방식 - 병행 설정은 쓰지 않음)"
+    if str(TRADING_STRATEGY_MODE).lower() != "normal":
+        return False, f"TRADING_STRATEGY_MODE={TRADING_STRATEGY_MODE} (병행은 normal 에서만)"
+    if str(EDGE_ONLY_MODE).lower() != "paper":
+        return False, f"EDGE_ONLY_MODE={EDGE_ONLY_MODE} (Edge AI 매매가 꺼져 있음)"
     if auto_sell_mode() != "all":
-        return False, f"AUTO_SELL_MODE={AUTO_SELL_MODE} (all 일 때만 - 익절·시간 청산이 없으면 사지 않음)"
+        return False, f"AUTO_SELL_MODE={AUTO_SELL_MODE} (all 일 때만 새로 산다)"
     if min(float(EDGE_LIVE_ORDER_KRW), float(EDGE_LIVE_MAX_POSITIONS), float(EDGE_LIVE_MAX_ENTRIES_PER_DAY),
            float(EDGE_LIVE_DAILY_LOSS_KRW)) <= 0:
         return False, "EDGE_LIVE_* 한도 값이 0 이하"
@@ -6939,10 +6944,12 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
     if pending is None and api.has_pending_order(norm):
         _edge_note(api, norm, "hold", f"  [EDGE LIVE   ] {label} | 주문 보류(A2) 중 - 브로커 확인 뒤 청산 판정")
         return
-    mode = auto_sell_mode()
-    if mode == "off":
-        _edge_note(api, norm, "off", f"  [EDGE LIVE   ] {label} | AUTO_SELL_MODE=off - Edge 보유 {qty_e}주 자동 청산 안 함 (직접 매도)", 300.0)
-        return
+    # [stage 4 review] the exits of what the edge strategy bought do not depend on AUTO_SELL_MODE: a position this strategy
+    # opened is closed by this strategy, whatever was set, unset or reset since (that setting is for the rule strategy's sells)
+    mode = "all"
+    if auto_sell_mode() != "all":
+        _edge_note(api, norm, "mode", f"  [EDGE LIVE   ] {label} | AUTO_SELL_MODE={AUTO_SELL_MODE} 이지만 Edge 보유 {qty_e}주는 "
+                                      f"Edge 규칙(손절 / 익절 / 시간 / 15:20)으로 청산", 600.0)
     if not is_regular_session(now):
         return
     pos = api.positions.get(norm) or {}

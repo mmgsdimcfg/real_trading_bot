@@ -420,3 +420,25 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   파일을 못 읽으면 전 종목 보류 후 브로커 목록으로 대체. 로그 태그 `[STOP ORDERS ]` `[STOP CANCEL ]` `[ORDER HOLD  ]` `[ORDER BLOCK ]`.
 - 보류 종목의 계좌 수량 증가는 봇 몫으로 잡지 않는다(직접 보유, 로그로 확인 요청), 감소는 봇 몫에서 먼저(r023). 재시작은 가능하면
   미체결이 없을 때 / 장 마감 후.
+
+## Edge AI 실주문 병행 (2026-11-25, edge_live_parallel_plan_20261125.md)
+- r001 `EDGE_LIVE_ORDERS`(bool, 기본 false): true = 규칙 매매와 함께 Edge AI 신호로 실제 주문. `TRADING_STRATEGY_MODE=edge`(단독)와는 별개.
+  한도 키(정수): `EDGE_LIVE_ORDER_KRW`(1회 금액, 기본 100000) / `EDGE_LIVE_MAX_POSITIONS`(1) / `EDGE_LIVE_MAX_ENTRIES_PER_DAY`(1) /
+  `EDGE_LIVE_DAILY_LOSS_KRW`(10000). 모두 r003 재시작 후 적용. 신규 매수 마감 14:50(`EDGE_LIVE_ENTRY_END`, 앱에서 바꾸지 않음).
+- r016 `set` 추가 검증(거부 사유는 `rejected`에):
+  - 한도 범위: ORDER_KRW 10,000~1,000,000 / MAX_POSITIONS 1~5 / MAX_ENTRIES_PER_DAY 1~20 / DAILY_LOSS_KRW 1,000~1,000,000.
+  - `EDGE_LIVE_ORDERS=true` 는 `AUTO_SELL_MODE=all` 이고 `TRADING_STRATEGY_MODE=normal` 일 때만. 켜져 있는 동안 `AUTO_SELL_MODE` 를
+    stop_only / off 로, `TRADING_STRATEGY_MODE` 를 다른 값으로 바꾸는 것도 거부.
+  - 자동 해제: `EDGE_ONLY_MODE` / `AUTO_SELL_MODE` / `TRADING_STRATEGY_MODE` 가 `set` / `unset` / `reset` 으로 바뀌면 저장된
+    `EDGE_LIVE_ORDERS=true` 를 false 로 바꾼다(응답 `edge_live_disarmed: true`, 같은 명령에 `EDGE_LIVE_ORDERS=true` 가 있으면 제외).
+    실제 매매는 `set EDGE_LIVE_ORDERS=true` 로만 켜지고, 조건 키를 되돌려도 저절로 살아나지 않는다.
+- r003: Edge 가 이미 산 수량의 청산(손절 / 익절 / 시간 상한 / 15:20)은 `AUTO_SELL_MODE` 와 무관하게 항상 한다(unset / reset 으로도 남지 않음).
+  신규 Edge 매수는 `EDGE_LIVE_ORDERS=true` + `EDGE_ONLY_MODE=paper` + `AUTO_SELL_MODE=all` 일 때만. 앱은 "Edge AI 매매"를 끄면 `EDGE_LIVE_ORDERS=false` 도 함께 저장하고,
+  고급 설정에서 `EDGE_LIVE_ORDERS` 를 켤 때도 같은 경고 확인을 거친다.
+- r016 `status` 에 `edge_live` 추가(체결 장부가 없으면 null):
+  `{"held": [{"code", "qty", "avg_price", "entry_at"}], "open_buys": ["종목코드"], "today": {"entries", "realized", "sl_codes", "unpriced_sells"}}`.
+  realized = 그날 Edge 매도의 비용 포함 실현 손익(원). unpriced_sells > 0 이면 손익 미상으로 그날 신규 Edge 매수 중단.
+- 앱 제어 탭(2026-11-25 구조): 청산 기준(맨 위, `EDGE_ONLY_TP_PCT` 등 - Edge AI 실제·가상 공통) / 매매 방식 = 규칙 매매(`RULE_BUY_ENABLED`),
+  Edge AI 매매(`EDGE_ONLY_MODE`) 와 그 아래 실제 매매(`EDGE_LIVE_ORDERS`) · 가상 매매(`EDGE_ONLY_LOG_ONLY` 의 반대) / 반등 알림(별도 묶음,
+  AutoBotHtsH). 실제 매매가 켜져 있으면 가상 매매는 후보만 기록. 서버에 키가 없으면(구형) 실제 매매 체크는 잠김.
+- r001 기본값 변경(2026-11-25 사용자 결정): `EDGE_ONLY_MODE` off -> paper, `EDGE_ONLY_LOG_ONLY` True -> False (주문 없는 가상 매매가 기본으로 켜짐).
