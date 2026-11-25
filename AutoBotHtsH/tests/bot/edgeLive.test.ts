@@ -9,9 +9,26 @@ import {
   parseEdgeLive,
   parseEdgeLiveLimits,
   parseEdgeLiveSummary,
+  parsePaperExit,
+  parseRuleExit,
+  ruleExitChanges,
 } from '../../src/bot/shared/paper';
 
 const val = (effective: unknown, running: unknown = effective, pending = false) => ({ effective, running, pending });
+
+describe('RULE_EXIT_* (the rule strategy has its own exits row)', () => {
+  it('reads the three values under their own keys, apart from the Edge AI ones', () => {
+    const values = {
+      RULE_EXIT_TP_PCT: val(0), RULE_EXIT_SL_PCT: val(1.5, 0, true), RULE_EXIT_HORIZON_MIN: val(0),
+      EDGE_ONLY_TP_PCT: val(2), EDGE_ONLY_SL_PCT: val(1.77), EDGE_ONLY_HORIZON_MIN: val(400),
+    };
+    expect(parseRuleExit({ values })?.sl).toEqual({ effective: 1.5, running: 0, pending: true });
+    expect(parseRuleExit({ values })?.tp.effective).toBe(0);
+    expect(parsePaperExit({ values })?.tp.effective).toBe(2);
+    expect(parseRuleExit({ values: { EDGE_ONLY_TP_PCT: val(2) } })).toBeNull(); // an older server: no rule row
+    expect(ruleExitChanges({ tp: 0, sl: 1.5, horizon: 90.4 })).toEqual({ RULE_EXIT_TP_PCT: 0, RULE_EXIT_SL_PCT: 1.5, RULE_EXIT_HORIZON_MIN: 90 });
+  });
+});
 
 describe('EDGE_LIVE_ORDERS', () => {
   it('reads the switch, null on a server without the key', () => {

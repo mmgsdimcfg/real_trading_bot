@@ -349,10 +349,15 @@ export type PaperExitState = Record<PaperExitKind, PaperExitValue>;
 
 /** `get EDGE_ONLY_TP_PCT EDGE_ONLY_SL_PCT EDGE_ONLY_HORIZON_MIN` data -> state; null on a server without the keys */
 export function parsePaperExit(data: unknown): PaperExitState | null {
+  return parseExitKeys(data, PAPER_EXIT_KEYS);
+}
+
+/** the three exit values under the given server keys (all three or null) */
+function parseExitKeys(data: unknown, keys: Record<PaperExitKind, string>): PaperExitState | null {
   const vals = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values;
   const out: Partial<PaperExitState> = {};
   for (const k of PAPER_EXIT_KINDS) {
-    const v = vals?.[PAPER_EXIT_KEYS[k]];
+    const v = vals?.[keys[k]];
     if (!v || typeof v.effective !== 'number' || !Number.isFinite(v.effective)) return null;
     out[k] = { effective: v.effective, running: typeof v.running === 'number' && Number.isFinite(v.running) ? v.running : null, pending: !!v.pending };
   }
@@ -465,9 +470,17 @@ export const EDGE_LIVE_GATE_KEYS: string[] = [EDGE_LIVE_KEY, 'EDGE_ONLY_MODE', '
 export const EDGE_LIVE_EXIT_NOTE =
   'Edge AI 실제 매매로 산 수량은 자동 매도 설정과 무관하게 Edge 청산 기준(손절 / 익절 / 보유 시간 / 15:20)으로 자동 매도됩니다.';
 
-/** [2026-11-25] how the control tab's 청산 기준 acts on rule-strategy positions (server r006 _c03_common_exit_bounds) */
+/** [2026-11-25] the rule strategy's own exits (server r001 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT (%) / RULE_EXIT_HORIZON_MIN,
+ *  r006 _c03_common_exit_bounds) - apart from the Edge AI ones (user: two input rows). Same kinds, ranges and value types */
+export const RULE_EXIT_KEYS: Record<PaperExitKind, string> = { tp: 'RULE_EXIT_TP_PCT', sl: 'RULE_EXIT_SL_PCT', horizon: 'RULE_EXIT_HORIZON_MIN' };
+/** `get RULE_EXIT_TP_PCT ...` data -> state; null on a server without the keys */
+export const parseRuleExit = (data: unknown): PaperExitState | null => parseExitKeys(data, RULE_EXIT_KEYS);
+export function ruleExitChanges(v: Record<PaperExitKind, number>): Record<string, number> {
+  return { [RULE_EXIT_KEYS.tp]: v.tp, [RULE_EXIT_KEYS.sl]: v.sl, [RULE_EXIT_KEYS.horizon]: Math.round(v.horizon) };
+}
+/** how the rule strategy's exits act on its positions */
 export const COMMON_EXIT_NOTE =
-  '값을 넣은 항목만 규칙 매매 보유분에도 적용됩니다 (빈칸은 미적용). 기존 규칙 청산(분할 익절·트레일링·적응형 엔진·15:20)은 그대로 두고, ' +
+  '값을 넣은 항목만 규칙 매매 보유분에 적용됩니다 (빈칸은 미적용). 기존 규칙 청산(분할 익절·트레일링·적응형 엔진·15:20)은 그대로 두고, ' +
   '익절 % 도달 / 손절 % 도달 / 보유 시간 경과 중 먼저 닿으면 잔량 전부를 매도합니다. 정규장에서만, 자동 매도가 전체일 때만 판정합니다. r003 재시작 후 적용.';
 
 /** [2026-11-25] the limits of the Edge AI live orders (r001 EDGE_LIVE_*; the ranges are r016's EDGE_LIVE_RANGES) */

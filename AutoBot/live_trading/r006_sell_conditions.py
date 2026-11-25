@@ -150,6 +150,9 @@ from r001_define_config import (
     EDGE_ONLY_TP_PCT,
     EDGE_ONLY_SL_PCT,
     EDGE_ONLY_HORIZON_MIN,
+    RULE_EXIT_TP_PCT,
+    RULE_EXIT_SL_PCT,
+    RULE_EXIT_HORIZON_MIN,
     BASIC_TP1_PCT,
     BASIC_TP1_RATIO,
     BASIC_TP2_PCT,
@@ -1262,9 +1265,9 @@ def _e12_edge_time_exit(ctx: SellContext) -> bool:
 
 
 # =============================================================================================
-# [2026-11-25] 공통 청산 기준 (사용자 결정: 앱 제어 탭 맨 위 "청산 기준"을 규칙 매매에도 - 상한·하한으로 추가).
-# r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT (%) / EDGE_ONLY_HORIZON_MIN (분) 중 0 보다 크게 정한 값만 규칙 매매 보유분에 적용한다
-# (빈칸 = 0 = 그 항목은 적용 안 함 - Edge 쪽 기본값 EDGE_TP_PCT 등으로 대체하지 않는다). 기존 규칙 청산(분할 익절 / 트레일링 /
+# [2026-11-25] 규칙 매매 청산 기준 (사용자 결정: 앱 제어 탭 맨 위 "청산 기준"을 규칙 매매에도 - 상한·하한으로 추가, 입력칸은
+# Edge AI 와 따로). r001 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT (%) / RULE_EXIT_HORIZON_MIN (분) 중 0 보다 크게 정한 값만 규칙 매매
+# 보유분에 적용한다 (빈칸 = 0 = 그 항목은 적용 안 함). 기존 규칙 청산(분할 익절 / 트레일링 /
 # 적응형 엔진 / 하드 손절 / 15:20)은 그대로 두고, 이 기준에 먼저 닿으면 잔량 전부를 판다. 손익은 가격 기준(비용 제외).
 # AUTO_SELL_MODE=all 일 때의 규칙 목록에만 들어간다(stop_only / off 는 그 설정대로). 현재가가 stale 이면 판정하지 않는다.
 # Codex 검토 반영: 정규장에서만 판정(NXT 시간에는 시세가 KRX 종가로 대체될 수 있다 - 그 값으로 전량 매도하지 않는다),
@@ -1273,7 +1276,7 @@ def _e12_edge_time_exit(ctx: SellContext) -> bool:
 
 def common_exit_values() -> tuple[float, float, float]:
     """(take profit ratio, stop ratio, max hold minutes) set for the rule strategy's positions; 0 = that bound is not set"""
-    return _pos_num(EDGE_ONLY_TP_PCT) / 100.0, _pos_num(EDGE_ONLY_SL_PCT) / 100.0, _pos_num(EDGE_ONLY_HORIZON_MIN)
+    return _pos_num(RULE_EXIT_TP_PCT) / 100.0, _pos_num(RULE_EXIT_SL_PCT) / 100.0, _pos_num(RULE_EXIT_HORIZON_MIN)
 
 
 def _c03_common_exit_bounds(ctx: SellContext) -> bool:
@@ -1309,10 +1312,10 @@ def _c03_common_exit_bounds(ctx: SellContext) -> bool:
 
 
 _COND_COMMON_EXIT = SellCondition(
-    30, "_c03_common_exit_bounds", "EXIT", "[공통] 청산 기준 상한·하한",
-    "앱 제어 탭 청산 기준(EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN) 중 정한 값(> 0)에 먼저 닿으면 잔량 전부 매도 "
-    "(익절 도달 / 손절 도달 / 보유 시간 경과). 기존 규칙 청산은 그대로",
-    ("EDGE_ONLY_TP_PCT", "EDGE_ONLY_SL_PCT", "EDGE_ONLY_HORIZON_MIN"), _c03_common_exit_bounds)
+    30, "_c03_common_exit_bounds", "EXIT", "[규칙] 청산 기준 상한·하한",
+    "앱 제어 탭 청산 기준의 규칙 매매 칸(RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN) 중 정한 값(> 0)에 먼저 닿으면 "
+    "잔량 전부 매도 (익절 도달 / 손절 도달 / 보유 시간 경과). 기존 규칙 청산은 그대로",
+    ("RULE_EXIT_TP_PCT", "RULE_EXIT_SL_PCT", "RULE_EXIT_HORIZON_MIN"), _c03_common_exit_bounds)
 _COMMON_LISTS: dict[int, tuple[SellCondition, ...]] = {}
 
 

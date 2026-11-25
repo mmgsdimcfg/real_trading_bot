@@ -30,8 +30,11 @@ def ctx(pnl, stale=False, qty=10, regular=True, accepted=True, marked=None):
 
 class CommonExitTest(unittest.TestCase):
     def run_it(self, c, tp=0.0, sl=0.0, hold=0, held_min=5.0):
-        with mock.patch.object(r006, "EDGE_ONLY_TP_PCT", tp), mock.patch.object(r006, "EDGE_ONLY_SL_PCT", sl), \
-                mock.patch.object(r006, "EDGE_ONLY_HORIZON_MIN", hold), \
+        # the rule strategy's own values; the Edge AI ones (set here to other numbers) are not used for rule positions
+        with mock.patch.object(r006, "RULE_EXIT_TP_PCT", tp), mock.patch.object(r006, "RULE_EXIT_SL_PCT", sl), \
+                mock.patch.object(r006, "RULE_EXIT_HORIZON_MIN", hold), \
+                mock.patch.object(r006, "EDGE_ONLY_TP_PCT", 0.5), mock.patch.object(r006, "EDGE_ONLY_SL_PCT", 0.5), \
+                mock.patch.object(r006, "EDGE_ONLY_HORIZON_MIN", 1), \
                 mock.patch.object(r006, "_hold_info", return_value=(NOW, None, held_min * 60.0)):
             done = r006._c03_common_exit_bounds(c)
         reason = c.api.place_sell_order.call_args[0][3] if c.api.place_sell_order.called else None

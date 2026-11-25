@@ -441,8 +441,10 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - 앱 제어 탭(2026-11-25 구조): 청산 기준(맨 위, `EDGE_ONLY_TP_PCT` 등 - Edge AI 실제·가상 공통) / 매매 방식 = 규칙 매매(`RULE_BUY_ENABLED`),
   Edge AI 매매(`EDGE_ONLY_MODE`) 와 그 아래 실제 매매(`EDGE_LIVE_ORDERS`) · 가상 매매(`EDGE_ONLY_LOG_ONLY` 의 반대) / 반등 알림(별도 묶음,
   AutoBotHtsH). 실제 매매가 켜져 있으면 가상 매매는 후보만 기록. 서버에 키가 없으면(구형) 실제 매매 체크는 잠김.
-- 청산 기준의 규칙 매매 적용(2026-11-25 사용자 결정, r006 `_c03_common_exit_bounds`): `EDGE_ONLY_TP_PCT` / `EDGE_ONLY_SL_PCT` /
-  `EDGE_ONLY_HORIZON_MIN` 중 0 보다 큰 값은 규칙 매매 보유분에도 상한·하한으로 적용 - 기존 규칙 청산은 그대로, 먼저 닿으면 잔량 전부 매도
-  (사유 `COMMON_TP_*` / `COMMON_SL_*` / `COMMON_TIME_*`). 정규장에서만, `AUTO_SELL_MODE=all` 일 때만. 0 인 항목은 규칙 매매에 미적용
-  (Edge AI 쪽은 종전대로 0 = 모델 값 / 서버 기본). 키와 타입은 그대로라 앱 계약 변경 없음. r016 `conditions` 매도 목록에 조건 30 으로 표시.
+- 규칙 매매 청산 기준(2026-11-25 사용자 결정, r006 `_c03_common_exit_bounds`): 새 키 `RULE_EXIT_TP_PCT`(float, %) /
+  `RULE_EXIT_SL_PCT`(float, %) / `RULE_EXIT_HORIZON_MIN`(int, 분), 기본 0. 0 보다 큰 값은 규칙 매매 보유분에 상한·하한으로 적용 -
+  기존 규칙 청산은 그대로, 먼저 닿으면 잔량 전부 매도(사유 `COMMON_TP_*` / `COMMON_SL_*` / `COMMON_TIME_*`). 정규장에서만,
+  `AUTO_SELL_MODE=all` 일 때만. 0 인 항목은 미적용. Edge AI 쪽 `EDGE_ONLY_TP_PCT` 등과는 별개 값(Edge 는 종전대로 0 = 모델 값 / 서버 기본).
+  앱 제어 탭 "청산 기준"에 규칙 매매 줄과 Edge AI 매매 줄이 따로 있다. 서버에 키가 없으면(구형) 규칙 매매 줄은 표시하지 않는다.
+  r016 `conditions` 매도 목록에 조건 30 으로 표시.
 - r001 기본값 변경(2026-11-25 사용자 결정): `EDGE_ONLY_MODE` off -> paper, `EDGE_ONLY_LOG_ONLY` True -> False (주문 없는 가상 매매가 기본으로 켜짐).

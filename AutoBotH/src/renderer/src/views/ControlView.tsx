@@ -27,6 +27,8 @@
  * - [2026-11-25] type=feat - layout (user 2026-11-25): dry-run right beside the profile's "!" (the description opens below); 매매 방식 as
  *   a box with one block per feature - 규칙 매매 / Edge AI 매매 (sub-options indented: 가상 매수 (locked on - real orders are a later
  *   server feature), 신호 후보만 기록, 청산 기준) / 반등 알림 - and a separate 매도 설정 group (자동 매도, 자동 매도 대상)
+ * - [2026-11-25] type=feat - 청산 기준 has one row per trading kind (user): 규칙 매매 (server RULE_EXIT_*, RuleExitEdit - empty = not
+ *   applied) and Edge AI 매매 (EDGE_ONLY_*, PaperExitEdit)
  * - [2026-11-25] type=feat - layout (user): 청산 기준 on top (not under Edge AI), 매매 방식 = 규칙 매매 / Edge AI 매매 with the sub
  *   checkboxes 실제 매매 (EDGE_LIVE_ORDERS) / 가상 매매 (the opposite of EDGE_ONLY_LOG_ONLY; "신호 후보만 기록" is gone - both
  *   unchecked = candidates only), 반등 알림 as its own group
@@ -44,7 +46,7 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -800,20 +802,27 @@ export function ControlView() {
             indented under it; the sell settings are their own group */}
         <div className="trade-box">
           {/* [2026-11-25] user: the exits stand above the trading kinds (not under Edge AI); 반등 알림 is its own group */}
-          {control.paperExit && (
+          {(control.paperExit || control.ruleExit) && (
             <>
               <div className="tk-head">
                 <b>청산 기준</b>
-                <span className="muted small" title={COMMON_EXIT_NOTE}>
-                  규칙 매매 · Edge AI 매매 공통 (익절 / 손절 / 보유 시간) · 규칙 매매는 기존 청산 규칙에 더해, 먼저 닿으면 전량 매도
-                </span>
+                <span className="muted small">매매 방식별로 따로 정합니다 (익절 / 손절 / 보유 시간) · r003 재시작 후 적용</span>
               </div>
-              <div className="tk">
-                <PaperExitEdit st={control.paperExit} model={edgeModel || null} real={liveOn || liveRunning || liveHeld || tradeMode === 'edge'} disabled={busy || !connected || modeBusy} />
-              </div>
+              {control.ruleExit && (
+                <div className="tk">
+                  <span className="tk-main">규칙 매매</span>
+                  <RuleExitEdit st={control.ruleExit} disabled={busy || !connected || modeBusy} />
+                </div>
+              )}
+              {control.paperExit && (
+                <div className="tk">
+                  <span className="tk-main">Edge AI 매매</span>
+                  <PaperExitEdit st={control.paperExit} model={edgeModel || null} real={liveOn || liveRunning || liveHeld || tradeMode === 'edge'} disabled={busy || !connected || modeBusy} />
+                </div>
+              )}
             </>
           )}
-          <div className={control.paperExit ? 'tk-head tk-gap' : 'tk-head'}>
+          <div className={control.paperExit || control.ruleExit ? 'tk-head tk-gap' : 'tk-head'}>
             <b>매매 방식</b>
             {strategy && normalMode && (
               <span className={comboLabel(comboNow, kinds) === '모두 꺼짐' ? 'badge-warn' : 'muted small'}>
@@ -1161,7 +1170,7 @@ function PaperExitEdit({ st, model, real, disabled }: { st: PaperExitState; mode
     const lines = PAPER_EXIT_KINDS.map((k) => `${EXIT_KO[k]}: ${meaning(k, v[k])}`).join('\n');
     const custom = PAPER_EXIT_KINDS.some((k) => v[k] > 0);
     const note =
-      (custom ? '\n\n모델 확률은 모델 라벨 기준(익절/손절/시간)으로 학습된 값이라, 기준을 바꾸면 확률의 뜻과 어긋납니다.' : '') + `\n\n규칙 매매: ${COMMON_EXIT_NOTE}`;
+      custom ? '\n\n모델 확률은 모델 라벨 기준(익절/손절/시간)으로 학습된 값이라, 기준을 바꾸면 확률의 뜻과 어긋납니다.' : '';
     if (
       !window.confirm(
         real
@@ -1194,12 +1203,72 @@ function PaperExitEdit({ st, model, real, disabled }: { st: PaperExitState; mode
   return (
     <span
       className="paper-exit"
-      title={`Edge AI 청산 기준 - 가상 매매와 Edge AI 실주문 공통 (서버 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN). 가격 기준(수수료 제외). 빈칸 = 가상: 모델 값(흐린 숫자), 실주문: 서버 기본(+2.0% / -1.7% / 60분). 규칙 매매에는 쓰지 않습니다. 익절·손절 0~30%, 보유 시간 0~720분. r003 재시작 후 적용`}
+      title={`Edge AI 청산 기준 - 가상 매매와 Edge AI 실주문 공통 (서버 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN). 가격 기준(수수료 제외). 빈칸 = 가상: 모델 값(흐린 숫자), 실주문: 서버 기본(+2.0% / -1.7% / 60분). 규칙 매매는 위의 규칙 매매 줄을 씁니다. 익절·손절 0~30%, 보유 시간 0~720분. r003 재시작 후 적용`}
     >
-      청산 기준 익절 +{box('tp')}% 손절 -{box('sl')}% 보유 {box('horizon')}분
+      익절 +{box('tp')}% 손절 -{box('sl')}% 보유 {box('horizon')}분
       <button className="mini" disabled={disabled || saving || !changed} onClick={() => void save()}>
         적용
       </button>
+      {bad.length > 0 && <span className="badge-warn">{bad.map((k) => EXIT_KO[k]).join(', ')} 값 확인</span>}
+      {pending && (
+        <span className="badge-warn">
+          → r003 재시작 후 적용 (실행 중: {PAPER_EXIT_KINDS.map((k) => meaning(k, st[k].running ?? st[k].effective)).join(' / ')})
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** [2026-11-25] the rule strategy's own exit bounds (server r001 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN, r006
+ *  _c03_common_exit_bounds): an empty box = 0 = that bound is not applied. The rule exits stay; a set bound reached first sells all */
+function RuleExitEdit({ st, disabled }: { st: PaperExitState; disabled: boolean }) {
+  const fromState = (): Record<PaperExitKind, string> => ({
+    tp: st.tp.effective > 0 ? String(st.tp.effective) : '',
+    sl: st.sl.effective > 0 ? String(st.sl.effective) : '',
+    horizon: st.horizon.effective > 0 ? String(st.horizon.effective) : '',
+  });
+  const [text, setText] = useState(fromState);
+  const [saving, setSaving] = useState(false);
+  const stKey = PAPER_EXIT_KINDS.map((k) => st[k].effective).join(',');
+  useEffect(() => setText(fromState()), [stKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vals = { tp: paperExitInput('tp', text.tp), sl: paperExitInput('sl', text.sl), horizon: paperExitInput('horizon', text.horizon) };
+  const bad = PAPER_EXIT_KINDS.filter((k) => vals[k] === null);
+  const changed = !bad.length && PAPER_EXIT_KINDS.some((k) => vals[k] !== st[k].effective);
+  const pending = PAPER_EXIT_KINDS.some((k) => st[k].running !== null && (st[k].pending || st[k].running !== st[k].effective));
+  const meaning = (k: PaperExitKind, v: number) => (v > 0 ? exitText(k, v) : '미적용');
+  const save = async () => {
+    if (!changed) return;
+    const v = vals as Record<PaperExitKind, number>;
+    const lines = PAPER_EXIT_KINDS.map((k) => `${EXIT_KO[k]}: ${meaning(k, v[k])}`).join('\n');
+    if (!window.confirm(`규칙 매매 청산 기준 (실제 주문)\n\n${lines}\n\n${COMMON_EXIT_NOTE}\n이미 보유한 규칙 매매 종목에도 적용됩니다. 바꿀까요?`)) return;
+    setSaving(true);
+    try {
+      const r = await window.api.ctlSet(ruleExitChanges(v));
+      if (!r.ok) window.alert(`규칙 매매 청산 기준을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const box = (k: PaperExitKind) => (
+    <input
+      className="paper-exit-in"
+      type="text"
+      inputMode="decimal"
+      value={text[k]}
+      placeholder="없음"
+      disabled={disabled || saving}
+      aria-invalid={vals[k] === null}
+      onChange={(e) => setText((t) => ({ ...t, [k]: e.target.value }))}
+      onKeyDown={(e) => e.key === 'Enter' && void save()}
+    />
+  );
+  return (
+    <span className="paper-exit" title={`규칙 매매 청산 기준 (서버 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN). ${COMMON_EXIT_NOTE} 가격 기준(수수료 제외). 익절·손절 0~30%, 보유 시간 0~720분`}>
+      익절 +{box('tp')}% 손절 -{box('sl')}% 보유 {box('horizon')}분
+      <button className="mini" disabled={disabled || saving || !changed} onClick={() => void save()}>
+        적용
+      </button>
+      <span className="muted small">빈칸 = 미적용 · 기존 규칙 청산에 더해, 먼저 닿으면 전량 매도</span>
       {bad.length > 0 && <span className="badge-warn">{bad.map((k) => EXIT_KO[k]).join(', ')} 값 확인</span>}
       {pending && (
         <span className="badge-warn">

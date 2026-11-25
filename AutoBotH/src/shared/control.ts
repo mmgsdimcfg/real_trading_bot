@@ -222,6 +222,8 @@ export interface ControlState {
   ruleBuy?: PaperModeState;
   /** [2026-11-25] server EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN (paper exits, 0 = the model's label) - undefined until read / older server */
   paperExit?: PaperExitState;
+  /** [2026-11-25] server RULE_EXIT_TP_PCT / SL_PCT / HORIZON_MIN (the rule strategy's own exit bounds, 0 = not applied) - older server: undefined */
+  ruleExit?: PaperExitState;
   /** [2026-11-25] server EDGE_LIVE_ORDERS ('true' = Edge AI live orders beside the rule strategy) - undefined until read / older server */
   edgeLive?: PaperModeState;
   /** [2026-11-25] server EDGE_LIVE_ORDER_KRW / MAX_POSITIONS / MAX_ENTRIES_PER_DAY / DAILY_LOSS_KRW - undefined until read / older server */
