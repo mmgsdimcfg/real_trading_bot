@@ -204,6 +204,12 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   - 장부 파일이 없는 첫 실행: 오늘 또는 최근 10일 live state 에 봇 매수 흔적(traded_today / buy_session != synced / reentry.bot)이
     있는 보유 종목은 계좌 수량 전부를 봇, 나머지는 직접으로 seed (`[BOT LEDGER  ] seeded ...` 로그).
   - 한계: 봇 매수 주문이 걸려 있는 동안 같은 종목을 직접 사면 둘 다 봇 수량으로 잡힌다(계좌는 합계만 알려 준다).
+  - [2026-11-25] 위 세 규칙(계좌 수량 증감으로 추정)은 체결 내역 기준으로 바뀌었다. `bot_holdings.json` 의 모양(acct_qty / bot_qty)은
+    그대로이고 앱 변경은 없다. bot_qty 는 r003 의 `bot_fill_ledger.json`(주문일+주문번호별 체결, KIS 주식일별주문체결조회)에서 나온다:
+    봇 주문의 체결만 봇 수량, 직접 주문의 체결은 직접 수량. 직접 매도는 직접 수량부터 줄인다. 체결 순서를 알 수 없으면 봇 수량이
+    작아지는 쪽으로 잡는다. 첫 실행은 기존 `bot_holdings.json` 의 bot_qty 를 이어받고 `bot_holdings.pre_fill_<날짜>.json` 으로 백업한다.
+    bot_only 매도는 주문 직전에 계좌와 체결을 다시 읽고, 체결 조회가 실패하면 그 매도를 하지 않는다.
+    상세·잔여 위험: `r023_fill_ledger_plan_20261125.md`.
 - r001 `AUTO_SELL_SCOPE` (r016 `set AUTO_SELL_SCOPE=<값>`, r003 재시작 후 적용. 앱 제어 탭 "자동 매도 대상"):
 
   | 선택 | AUTO_SELL_SCOPE | 자동 매도 수량 |

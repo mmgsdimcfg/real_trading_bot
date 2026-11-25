@@ -21,6 +21,49 @@ Update log format (append only):
 
 Update log:
 - [2026-11-25] type=feat owner=claude
+    summary: 사용자 결정(r023 체결 내역 기준 장부, Codex 계획 검토, r023_fill_ledger_plan_20261125.md) - 봇 몫은 봇 주문의 체결로만:
+      _order_cash 가 접수 주문번호를 체결 장부 등록부에 즉시 기록, _refresh_bot_fills 가 당일(미종결 주문의 주문일부터) 주문체결
+      조회(자체 페이지 조회 - SDK 다음 페이지 호출이 인자 순서 오류로 실패)를 마지막 페이지까지 성공했을 때만 반영, 계좌 동기화는
+      상한(직접 매도는 직접 몫 먼저, 봇 주문 진행·정착 중인 종목은 자르지 않음). 매도 주문 수량(place_sell_order, 매도 재주문)은
+      sellable_bot_quantity = min(봇 몫, 계좌) - 반영 안 된 봇 매도 주문 잔량 - 응답 대기 중인 매도 제출. 재주문 전에는 체결을 강제 조회하고
+      실패하면 재주문 안 함. 첫 전환 때 기존 bot_holdings.json 백업 후 봇 수량 이어받음(사용자 결정), 체결 장부가 손상되면 bot_only 매도
+      수량 0(자동매도 안 함, 로그). 시작 때 당일 주문 보류 파일의 주문번호도 등록부에 넣음. dry-run 은 종전 방식.
+      Codex 코드 검토 반영: 보류 기록에 주문별 상세(order_detail: 주문일·방향·원수량), 전날 보류 주문도 등록부로; 보류 해제는 그 주문들이
+      등록부에서 종결로 확인(강제 체결 조회 성공)된 뒤, 주문번호 없는 매도 보류는 해제 때 그 수량을 봇 몫에서 뺌(체결됐다고 봄 - 덜 파는 쪽);
+      첫 전환 때 되살린 주문은 기준점(baseline) - 첫 완전 조회까지 그 종목 매도 수량 0; 계좌 상한은 최근 봇 매수 체결량만 여유
+      (settle_allowance); 접수 주문번호를 장부에 못 쓰면 그 종목 보류 + 주문번호를 보류 파일에; 종결·정리만 바뀌어도 저장.
+      Codex 재검토 반영: 주문번호 없는 매도 차감은 장부 저장이 성공해야 보류 해제(실패면 되돌리고 다음에 다시), 전환 중 표시(migrating)를
+      장부 파일에 남겼다가 보류 주문 등록까지 끝난 뒤 지움(그 사이 재시작해도 기준점 적용).
+      Codex 3차 반영: 기준점은 되살린 매수 주문에만(매도 체결은 모두 반영 - 두 번 빠져도 덜 파는 쪽), 계좌 상한 여유에 반영 안 된 봇 매도
+      잔량 포함(reconcile_room), 주문번호 없는 매도 차감은 키로 한 번만(재시작·저장 순서와 무관), 전날 보류의 주문번호 없는 매도도 다음
+      날 시작 때 한 번 차감.
+      Codex 4차 반영: 보류 주문 키는 보류 파일의 날짜 기준(옛 형식 전날 보류도 그날 주문으로), 해제 전 종결 확인도 같은 키.
+      Codex 5차 후 단순화: 계좌 동기화 직후의 체결 조회에서 새로 본 봇 매수량만 그 순간 계좌 상한 여유(fresh_buy_room), 그 밖의 계좌
+      감소는 즉시 봇 몫에서(두 번 빠지면 덜 파는 쪽), 번호를 구분할 수 없는 양방향 보류(상세 없음)의 매도 수량은 체결된 것으로 한 번 차감.
+      Codex 6차 후 재설계(v3): 주문체결 조회의 직접(MTS) 주문 체결로 직접 몫도 추적(r023), 계좌 수량이 봇+직접 몫과 다르거나 봇 주문이
+      진행 중이면 조회, 계좌 비교는 이번 차례에 조회가 실제로 돌았고 그 종목에 진행 중 주문(봇·직접)과 이번 체결 변화가 없을 때만.
+      Codex 7차 반영: bot_only 매도 주문 직전에는 체결 조회를 강제하고 실패하면 그 매도를 하지 않음(계좌가 그대로인 직접 매도·재매수도
+      반영된 뒤에 판다).
+      Codex 9차 반영: 체결 조회 범위는 마지막으로 다 읽은 날(listed_through)부터 - 날짜가 바뀐 뒤 첫 조회에 전날 마감 무렵의 직접
+      체결도 포함. 매도 재주문(NXT 호가 조회 뒤)도 주문 직전에 한 번 더 조회해 봇 몫으로 제한.
+      Codex 10차 반영: 전날(마지막 조회일) 체결은 오늘 하루 동안 계속 조회 범위에 포함(listed_prev), pending_up 은 날짜가 조회
+      범위 밖이 되면 만료.
+      Codex 12차 반영: 그날 첫 조회 직전 장부를 기준점으로 저장하고 조회마다 r023.clamp_to_day_bound 로 봇 몫을 순서와 무관한
+      상한(그날 체결 전체를 매도 먼저 적용)까지 낮춤.
+      Codex 13차 반영: 날짜가 바뀐 첫 조회는 전날 체결을 먼저 반영한 뒤 기준점을 저장, 직접 몫을 모르는 종목은 조회를 돌려
+      FILL_INIT_CONFIRM_SECONDS 간격으로 두 번 확인한 뒤 초기화.
+      Codex 15차 반영: 날짜가 바뀐 첫 조회에서 전날 기준점으로 전날 상한을 한 번 더 적용. bot_only 매도/재주문 직전에 계좌 잔고의
+      금일 매수/매도 수량(thdt_buyqty/thdt_sll_qty)과 체결 조회의 오늘 합계를 대조 - 다르면 계좌·체결을 다시 읽고, 그래도 다르면
+      그 매도를 보류(같은 차이가 FILL_GAP_MAX_HOLD_SECONDS 넘게 이어지면 보류하지 않음 - 매도가 계속 막히지 않게).
+      Codex 16차 반영(위 보류 방식 교체): bot_only 매도/재주문 직전 _late_bot_sell_qty - 계좌를 강제로 다시 읽고(못 읽으면 보류,
+      FILL_GAP_MAX_HOLD_SECONDS 넘게 못 읽으면 마지막 값으로 진행) 체결을 강제 조회한 뒤, 수량 = min(요청, 계좌, 봇 몫 - 계좌엔
+      있고 조회엔 없는 오늘 매도 수량). 계좌와 조회의 오늘 체결 합계가 다른 종목은 계좌 대사(직접 몫 확정 포함)도 하지 않음.
+      Codex 17·18차 반영: 유효한 계좌 응답이 오면 "계좌 못 읽음" 대기도 끝냄. 체결 조회의 오늘 매수/매도가 계좌보다 많으면(두
+      응답의 시점이 다름 - 합계가 같아도 서로 다른 주문일 수 있음) 계좌·체결을 한 번 더 읽고, 그래도 그러면 계좌의 오늘 매도
+      전량을 조회에 없는 것으로 보고 뺌.
+    impact: live (AUTO_SELL_SCOPE=bot_only 의 자동매도 수량)
+    compatibility: 새 파일 bot_fill_ledger.json. 기존 bot_holdings.json 은 백업만(갱신 중단)
+- [2026-11-25] type=feat owner=claude
     summary: 남은 과제 A (사용자 결정 A1+A2, Codex 검토: 미체결 저장-복원은 실계좌 보류) -
       A1 정상 종료 정리: r003.stop / Ctrl+C / SIGTERM 으로 끝날 때 close_orders_for_stop(): 신규·재주문 차단(stopping), 봇 미체결 주문
           취소 요청, 기존 refresh_pending_orders 로 체결·취소를 최대 STOP_ORDER_SETTLE_SECONDS(40초) 마무리, 계좌 동기화.
@@ -1646,6 +1689,46 @@ STOP_ORDER_SETTLE_SECONDS = 40.0   # r003 stop: cancel the bot's open orders and
 _ORDER_BLOCKED = {"rt_cd": "1", "msg_cd": "R003HOLD", "msg1": "r003 order blocked (stopping / unresolved order of this symbol)"}
 
 
+CCLD_URL = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+CCLD_MAX_PAGES = 30
+
+
+FILL_INIT_CONFIRM_SECONDS = 60   # [2026-11-25] r023: an unknown manual part is set after two stable looks this far apart
+FILL_GAP_MAX_HOLD_SECONDS = 30   # [2026-11-25] a bot_only sell waits at most this long for a fresh account read
+
+
+def _fetch_ccld_rows(env_dv: str, cano: str, prod: str, start: str, end: str) -> list[dict] | None:
+    """[2026-11-25] every row of the account's daily order/fill listing (TTTC0081R / VTTC0081R, all symbols, both sides, all
+    exchanges) between start and end, or None unless every page was read (an error, or more than CCLD_MAX_PAGES pages).
+    Own pager: the SDK's next-page call passes its arguments in the wrong order (inquire_daily_ccld recursion)."""
+    tr_id = "TTTC0081R" if env_dv == "real" else "VTTC0081R"
+    rows: list[dict] = []
+    fk = nk = tr_cont = ""
+    for _page in range(CCLD_MAX_PAGES):
+        params = {"CANO": cano, "ACNT_PRDT_CD": prod, "INQR_STRT_DT": start, "INQR_END_DT": end, "SLL_BUY_DVSN_CD": "00",
+                  "PDNO": "", "CCLD_DVSN": "00", "INQR_DVSN": "00", "INQR_DVSN_3": "00", "ORD_GNO_BRNO": "", "ODNO": "",
+                  "INQR_DVSN_1": "", "CTX_AREA_FK100": fk, "CTX_AREA_NK100": nk, "EXCG_ID_DVSN_CD": "ALL"}
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                res = ka._url_fetch(CCLD_URL, tr_id, tr_cont, params)
+        except Exception as exc:
+            log(f"  [BOT FILLS   ] order/fill query error: {exc}")
+            return None
+        if not res.isOK():
+            log(f"  [BOT FILLS   ] order/fill query failed: {' '.join(buf.getvalue().split())[:200]}")
+            return None
+        body = res.getBody()
+        rows += [dict(r) for r in (getattr(body, "output1", None) or [])]
+        if res.getHeader().tr_cont in ("M", "F"):
+            fk, nk, tr_cont = body.ctx_area_fk100, body.ctx_area_nk100, "N"
+            ka.smart_sleep()
+            continue
+        return rows
+    log(f"  [BOT FILLS   ] order/fill listing longer than {CCLD_MAX_PAGES} pages - not used")
+    return None
+
+
 def _order_holds_path(date_str: str) -> Path:
     return LIVE_RUNTIME_DIR / f"order_holds_{date_str}.json"
 
@@ -1665,9 +1748,20 @@ def _hold_entries_from_pending(pending_orders: dict) -> dict[str, dict]:
                 nos = [str(p.get("order_no") or "")]
                 qty = max(0, int(p.get("quantity", 0) or 0) - int(p.get("last_filled_qty", 0) or 0))
             sub = p.get("submitted_at")
+            side = "sell" if p.get("side") == "sell" else "buy"
+            day = sub.strftime("%Y%m%d") if isinstance(sub, datetime) else datetime.now().strftime("%Y%m%d")
+            if p.get("legs"):
+                detail = {str(leg.get("order_no")): {"date": (leg["submitted_at"].strftime("%Y%m%d")
+                                                              if isinstance(leg.get("submitted_at"), datetime) else day),
+                                                     "side": side, "qty": int(leg.get("quantity", 0) or 0)}
+                          for leg in legs if leg.get("order_no")}
+            else:
+                detail = ({str(p.get("order_no")): {"date": day, "side": side, "qty": int(p.get("quantity", 0) or 0)}}
+                          if p.get("order_no") else {})
             out[str(code).zfill(6)] = {
-                "side": "sell" if p.get("side") == "sell" else "buy",
+                "side": side,
                 "order_nos": [n for n in nos if n],
+                "order_detail": detail,
                 "quantity": qty,
                 "exchange": str(p.get("exchange") or ""),
                 "submitted_at": sub.isoformat(timespec="seconds") if isinstance(sub, datetime) else str(sub or ""),
@@ -1700,6 +1794,14 @@ def _pending_order_nos(pending_orders: dict) -> dict[str, set[str]]:
     return out
 
 
+def _intent_detail(it: dict) -> dict[str, dict]:
+    """{order_no: {date, side, qty}} of an accepted submission ({} without an order number)"""
+    if not it.get("order_no"):
+        return {}
+    day = str(it.get("submitted_at") or "")[:10].replace("-", "") or datetime.now().strftime("%Y%m%d")
+    return {str(it["order_no"]): {"date": day, "side": it["side"], "qty": int(it.get("quantity", 0) or 0)}}
+
+
 def _intent_entries(intents: dict[str, dict], pending_orders: dict) -> dict[str, dict]:
     """[2026-11-25] per-code hold entries of the submissions not yet covered by pending_orders (one record per submission)"""
     covered = _pending_order_nos(pending_orders)
@@ -1711,7 +1813,8 @@ def _intent_entries(intents: dict[str, dict], pending_orders: dict) -> dict[str,
             continue                              # the accepted order is tracked by pending_orders (counted there)
         e = {"side": it["side"], "order_nos": [it["order_no"]] if it.get("order_no") else [], "quantity": int(it["quantity"]),
              "qty_by_side": {it["side"]: int(it["quantity"])}, "submitted_at": it.get("submitted_at", ""),
-             "submission_unknown": it.get("state") != "accepted"}
+             "submission_unknown": it.get("state") != "accepted",
+             "order_detail": _intent_detail(it)}
         out = _merge_hold_entries(out, {code: e})
     return out
 
@@ -1734,6 +1837,7 @@ def _merge_hold_entries(*sources: dict[str, dict]) -> dict[str, dict]:
             cur["qty_by_side"] = qs
             cur["quantity"] = int(cur.get("quantity", 0) or 0) + int(e.get("quantity", 0) or 0)
             cur["order_nos"] = sorted(set(cur.get("order_nos") or []) | set(e.get("order_nos") or []))
+            cur["order_detail"] = {**(cur.get("order_detail") or {}), **(e.get("order_detail") or {})}
             cur["submission_unknown"] = bool(cur.get("submission_unknown") or e.get("submission_unknown"))
     return out
 
@@ -1785,9 +1889,15 @@ def load_order_holds(date_str: str) -> dict[str, dict]:
             allowed = {"buy", "sell"} if side == "both" else {side}
             if qs is not None and (not isinstance(qs, dict) or not set(qs) <= allowed):
                 raise ValueError(f"entry {code}: qty_by_side {qs!r} does not match side {side}")
+            det = e.get("order_detail") or {}
+            if not isinstance(det, dict) or any(
+                    not isinstance(d, dict) or d.get("side") not in ("buy", "sell") or not str(d.get("date", "")).isdigit()
+                    for d in det.values()):
+                raise ValueError(f"entry {code}: order_detail")
+            det = {str(n): {"date": str(d["date"]), "side": d["side"], "qty": int(d.get("qty", 0) or 0)} for n, d in det.items()}
             out[str(code).zfill(6)] = {
                 **e, "side": side, "order_nos": [str(n) for n in nos],
-                "quantity": int(e.get("quantity", 0) or 0),
+                "quantity": int(e.get("quantity", 0) or 0), "order_detail": det,
                 **({"qty_by_side": {str(k): int(v or 0) for k, v in qs.items()}} if isinstance(qs, dict) else {})}
         return out
     except Exception as exc:
@@ -1802,7 +1912,7 @@ def load_prev_order_holds(date_str: str, lookback_days: int = 7) -> dict[str, di
         for back in range(1, lookback_days + 1):
             d = (t0 - timedelta(days=back)).strftime("%Y%m%d")
             if _order_holds_path(d).is_file():
-                return load_order_holds(d) or {}
+                return {c: {**h, "_date": d} for c, h in (load_order_holds(d) or {}).items()}
     except Exception:
         pass
     return {}
@@ -3989,7 +4099,9 @@ class TradingAPI:
         self._holds_signature = None
         self._holds_next_check: datetime | None = None
         self._holds_warned_at: dict[str, datetime] = {}
+        self._load_fill_ledger(datetime.now().strftime("%Y%m%d"))
         self._load_startup_holds(datetime.now().strftime("%Y%m%d"))
+        self._finish_fill_switch()
         self.sync_positions_from_account(force=True)
         self._apply_persisted_position_meta()
         for code, pos in self.positions.items():
@@ -4000,6 +4112,232 @@ class TradingAPI:
         log(
             f"TradingAPI (MA5-BB multi-indicator) initialized | env_dv={self.env_dv} | dry_run={self.dry_run}"
         )
+
+    def _load_fill_ledger(self, today: str) -> None:
+        """[2026-11-25] the fill-based r023 ledger (dry-run: None -> the quantity-difference ledger as before). First switch: the old
+        bot_holdings.json is copied to bot_holdings.pre_fill_<date>.json and its bot quantities are the starting values. A corrupt fill
+        ledger: _fills_broken - nothing is sold under bot_only until it is fixed (logged)"""
+        self._fills = None
+        self._fills_broken = False
+        self._fills_dirty = False
+        self._fills_migrated = False
+        self._fills_next_query: datetime | None = None
+        if self.dry_run:
+            return
+        state, status = r023.load_fill_state(LIVE_RUNTIME_DIR)
+        if status == "ok":
+            self._fills = state
+            self._fills_migrated = bool(state.get("migrating"))   # a switch interrupted before its orders were registered
+            return
+        if status == "corrupt":
+            self._fills_broken = True
+            self._fills = r023.new_fill_state()
+            log(f"  [BOT FILLS   ] {r023.FILL_LEDGER_FILENAME} 손상 - bot_only 자동매도 수량 0 (파일 확인 필요, 직접 매도 가능)")
+            return
+        old = self.bot_ledger
+        with contextlib.suppress(Exception):
+            src = LIVE_RUNTIME_DIR / r023.LEDGER_FILENAME
+            if src.is_file():
+                (LIVE_RUNTIME_DIR / f"bot_holdings.pre_fill_{today}.json").write_bytes(src.read_bytes())
+        self._fills = r023.migrate_from_ledger(old)
+        self._fills_migrated = True               # orders recovered from holds now: baseline (their fills so far are inherited)
+        self._fills["migrating"] = True           # cleared once the recovered orders are registered (_finish_fill_switch)
+        log("  [BOT FILLS   ] 체결 기준 장부로 전환 - 시작값(기존 장부 봇 수량): " + (", ".join(
+            f"{c}:{r['bot_qty']}" for c, r in sorted(self._fills["codes"].items())) or "없음"))
+        self._save_fills(datetime.now())
+
+    def _finish_fill_switch(self) -> None:
+        """[2026-11-25] the switch from the old ledger is complete once the recovered orders (with their baselines) are saved"""
+        if getattr(self, "_fills", None) is not None and self._fills.get("migrating"):
+            self._fills.pop("migrating", None)
+            if not self._save_fills(datetime.now()):
+                self._fills["migrating"] = True   # not on disk: the next start repeats the switch steps
+
+    def _save_fills(self, now: datetime) -> bool:
+        if getattr(self, "_fills", None) is None or getattr(self, "_fills_broken", False):
+            return True
+        try:
+            r023.save_fill_state(LIVE_RUNTIME_DIR, self._fills, now)
+            self._fills_dirty = False
+            return True
+        except Exception as exc:
+            self._fills_dirty = True
+            log(f"  [BOT FILLS   ] ledger write failed: {exc}")
+            return False
+
+    def _register_bot_order(self, code: str, side: str, qty: int, order_no: str) -> None:
+        """[2026-11-25] a bot order the broker accepted goes into the fill ledger's registry at once (its fills are the bot's)"""
+        if getattr(self, "_fills", None) is None or not order_no:
+            return
+        today = datetime.now().strftime("%Y%m%d")
+        if r023.register_order(self._fills, today, order_no, code, side, qty, datetime.now().isoformat(timespec="seconds")):
+            self._fills_next_query = None         # look at its fills on the next chance
+            if not self._save_fills(datetime.now()):
+                # the order number is only in memory: hold the symbol and keep the number in the holds file (A2)
+                e = {"side": side, "order_nos": [order_no], "quantity": int(qty), "qty_by_side": {side: int(qty)},
+                     "order_detail": {str(order_no): {"date": today, "side": side, "qty": int(qty)}}}
+                self.order_holds[code] = _merge_hold_entries({code: self.order_holds[code]} if code in self.order_holds else {},
+                                                             {code: e})[code]
+                log(f"  [ORDER HOLD  ] {_sym_label(code)} | 체결 장부 저장 실패 - 주문번호 {order_no} 보류 기록, 이 종목 주문 보류")
+                self.save_order_holds_if_changed(today, force=True)
+
+    def _refresh_bot_fills(self, now: datetime, force: bool = False, want: bool = False) -> bool:
+        """[2026-11-25] apply the day's fills (the bot's orders and, v3, the orders by hand) - while bot orders are unfinished or
+        `want` (the account differs from bot + manual), at most every ORDER_HOLD_CHECK_SECONDS unless force. False when the listing
+        could not be read completely (nothing applied). self._fills_ran: a listing was read and applied in this call."""
+        self._fills_ran = False
+        state = getattr(self, "_fills", None)
+        if state is None or getattr(self, "_fills_broken", False):
+            return True
+        dates = r023.open_order_dates(state)
+        today = now.strftime("%Y%m%d")
+        # [Codex 9th] fills by hand after the last listing of an earlier day (account total unchanged) - read from that day on
+        last = str(state.get("listed_through") or "")
+        stale = bool(last) and last < today
+        if not dates and not force and not want and not stale:
+            return True
+        if not force and self._fills_next_query is not None and now < self._fills_next_query:
+            return True
+        self._fills_next_query = now + timedelta(seconds=ORDER_HOLD_CHECK_SECONDS)
+        prev = str(state.get("listed_prev") or "")
+        start = min(dates + [today] + ([last] if stale else []) + ([prev] if prev and prev < today else []))
+        rows = _fetch_ccld_rows(self.env_dv, self.cano, self.acnt_prdt_cd, start, today)
+        if rows is None:
+            return False
+        before = json.dumps(state, sort_keys=True, default=str)
+        early: list = []
+        if (state.get("day_anchor") or {}).get("date") != today:   # [Codex 12th] the ledger before today's fills
+            # [Codex 13th] fills of earlier days first (yesterday's late ones) - the anchor is the ledger after them
+            old_rows = [r for r in rows if str(r.get("ord_dt", "")).strip() < today]
+            if old_rows:
+                early = r023.apply_fill_rows(state, old_rows, now)
+                # [Codex 15th] that day's bound once more with its final fills, before today's anchor replaces it
+                prev_day = str((state.get("day_anchor") or {}).get("date") or "")
+                for code, old, new in (r023.clamp_to_day_bound(state, rows, prev_day) if prev_day else []):
+                    log(f"  [BOT LEDGER  ] {_sym_label(code)} | {prev_day} 체결 순서를 알 수 없어 봇 몫 {old}->{new}주 (차이는 직접 몫으로)")
+            r023.set_day_anchor(state, today, {str(c).zfill(6) for c, p in (self.positions or {}).items()
+                                               if int((p or {}).get("quantity", 0) or 0) > 0})
+        changes = early + r023.apply_fill_rows(state, rows, now)
+        self._fill_rows = rows                  # [Codex 14th] this round's listing, for the anchor of a manual part set now
+        self._listed_today = r023.day_fill_totals(rows, today)   # [Codex 15th] compared with the account's counts of today
+        for code, old, new in r023.clamp_to_day_bound(state, rows, today):
+            log(f"  [BOT LEDGER  ] {_sym_label(code)} | 오늘 체결 순서를 알 수 없어 봇 몫 {old}->{new}주 (차이는 직접 몫으로, "
+                f"자동 매도 대상에서 빠짐)")
+        if stale:
+            state["listed_prev"] = last         # [Codex 10th] late rows of that day are still read for the rest of today
+        state["listed_through"] = today
+        r023.expire_pending(state, start)
+        self._last_fill_changes = changes
+        self._busy_codes = r023.busy_codes(rows)
+        self._fills_ran = True
+        for code, side, delta, key in changes:
+            if key.endswith(":mismatch"):
+                log(f"  [BOT FILLS   ] {_sym_label(code)} | {key[:-9]} 조회 행의 종목/방향이 등록과 다름 - 반영 안 함")
+            elif key.endswith(":dropped"):
+                log(f"  [BOT FILLS   ] {key[:-8]} 지난 날짜 주문이 조회되지 않음 - 등록 삭제")
+            elif key.endswith(":baseline"):
+                log(f"  [BOT FILLS   ] {_sym_label(code)} | {key[:-9]} 기준점 설정 (전환 전 체결은 이어받은 봇 수량에 포함)")
+            elif side.startswith("manual"):
+                log(f"  [BOT FILLS   ] {_sym_label(code)} | 직접 {'매수' if side == 'manual_buy' else '매도'} {delta}주 (order {key}) -> "
+                    f"봇 몫 {r023.fill_bot_quantity(state, code)}")
+            else:
+                log(f"  [BOT FILLS   ] {_sym_label(code)} | {side} {delta}주 체결 반영 (order {key}) -> 봇 몫 "
+                    f"{r023.fill_bot_quantity(state, code)}")
+        if self._fills_dirty or json.dumps(state, sort_keys=True, default=str) != before:
+            self._save_fills(now)
+        return True
+
+    def _unlisted_sell_qty(self, code: str) -> int:
+        """[Codex 16th] shares the account counts as sold today that the listing does not show yet (0 when the account row has no
+        such count). Whose they were is not known until the listing shows them: a bot_only sell leaves that many out."""
+        acct = (getattr(self, "_acct_today", None) or {}).get(code)
+        if acct is None:
+            return 0
+        listed = (getattr(self, "_listed_today", None) or {}).get(code, (0, 0))
+        return max(0, int(acct[1]) - int(listed[1]))
+
+    def _late_bot_sell_qty(self, code: str, qty: int, tag: str, reason: str = "") -> int | None:
+        """[Codex 15th/16th] the last look before a bot_only sell goes out (after the price lookups): the account read again, then
+        the listing; quantity = min(asked, account, bot part - sells the account counts that the listing does not show).
+        None: no order now (no listing; no fresh account for less than FILL_GAP_MAX_HOLD_SECONDS)."""
+        now = datetime.now()
+        seq = getattr(self, "_acct_seq", 0)
+        self.sync_positions_from_account(force=True)
+        if getattr(self, "_acct_seq", 0) == seq:        # the read failed or came back empty: the counts are old
+            since = self.__dict__.setdefault("_acct_stale_since", now)
+            if (now - since).total_seconds() < FILL_GAP_MAX_HOLD_SECONDS:
+                log(f"  [{tag}] {_sym_label(code)} | 계좌 재조회 실패 - 주문 직전 확인 불가, 이번 매도 보류 | reason={reason}")
+                return None
+            log(f"  [{tag}] {_sym_label(code)} | 계좌 재조회가 {FILL_GAP_MAX_HOLD_SECONDS}초 넘게 실패 - 마지막 계좌 값으로 진행")
+        else:
+            self.__dict__.pop("_acct_stale_since", None)
+        if not self._refresh_bot_fills(datetime.now(), force=True):
+            log(f"  [{tag}] {_sym_label(code)} | 체결 조회 실패 - 주문 직전 봇 몫 확인 불가, 이번 매도 보류 | reason={reason}")
+            return None
+        # [Codex 18th] the listing counts more of today than the account read does (a fill between the two reads): they do not
+        # describe the same moment, equal sums can hide different orders - both once more
+        if self._listing_ahead_of_account(code):
+            self.sync_positions_from_account(force=True)
+            if not self._refresh_bot_fills(datetime.now(), force=True):
+                log(f"  [{tag}] {_sym_label(code)} | 체결 조회 실패 - 주문 직전 봇 몫 확인 불가, 이번 매도 보류 | reason={reason}")
+                return None
+        held = int((self.positions.get(code) or {}).get("quantity", 0) or 0)
+        if self._listing_ahead_of_account(code):
+            # still not the same moment: every sale the account counts today may be missing from the listing
+            unlisted = int(((getattr(self, "_acct_today", None) or {}).get(code) or (0, 0))[1])
+        else:
+            unlisted = self._unlisted_sell_qty(code)
+        out = max(0, min(int(qty), held, self.sellable_bot_quantity(code) - unlisted))
+        if unlisted:
+            log(f"  [{tag}] {_sym_label(code)} | 계좌의 오늘 매도 {unlisted}주가 체결 조회에서 확인되지 않음 - 그만큼 빼고 {out}주 "
+                f"| reason={reason}")
+        return out
+
+    def _listing_ahead_of_account(self, code: str) -> bool:
+        """[Codex 18th] the listing shows more bought or more sold today than the last account read counts"""
+        acct = (getattr(self, "_acct_today", None) or {}).get(code)
+        if acct is None:
+            return False
+        listed = (getattr(self, "_listed_today", None) or {}).get(code, (0, 0))
+        return int(listed[0]) > int(acct[0]) or int(listed[1]) > int(acct[1])
+
+    def sellable_bot_quantity(self, code: str) -> int:
+        """[2026-11-25] what a bot_only sell may sell now: min(the bot's part, the account) - unfinished bot sell orders not yet in
+        the ledger - sell submissions still waiting for an answer. Fill ledger broken: 0. dry-run / no fill ledger: bot_quantity."""
+        norm = str(code).zfill(6)
+        state = getattr(self, "_fills", None)
+        if state is None:
+            return self.bot_quantity(norm)
+        if getattr(self, "_fills_broken", False) or norm in r023.baseline_codes(state):
+            return 0
+        acct = int((self.positions.get(norm) or {}).get("quantity", 0) or 0)
+        inflight = sum(int(it.get("quantity", 0) or 0) for it in (getattr(self, "_submit_intents", None) or {}).values()
+                       if it.get("code") == norm and it.get("side") == "sell" and it.get("state") == "sent")
+        return max(0, min(r023.fill_bot_quantity(state, norm), acct) - r023.reserved_sell(state, norm) - inflight)
+
+    def _register_hold_orders(self, code: str, hold: dict, today: str) -> None:
+        """[2026-11-25] a hold's orders into the fill ledger's registry (their fills are the bot's) - per order date, side and
+        original quantity; older files without the detail: today's date and the hold's side (not for "both"). When switching
+        from the old ledger they get a baseline (their fills so far are already in the inherited quantity)"""
+        if getattr(self, "_fills", None) is None:
+            return
+        # [2026-11-25] the baseline only for buys (absorbing their fills can only make the bot part smaller); a sell applies all its
+        # fills (if the old ledger had taken them off already, the bot part is taken off twice - it sells less, never more)
+        base = bool(getattr(self, "_fills_migrated", False))
+        for day, no, side, qty in self._hold_orders(hold, today):
+            r023.register_order(self._fills, day, no, code, side, qty, "", baseline=base and side == "buy")
+
+    @staticmethod
+    def _hold_orders(hold: dict, today: str) -> list[tuple[str, str, str, int]]:
+        """[2026-11-25] (order date, number, side, original qty) of a hold's orders - from order_detail, else (older files) the
+        hold file's date and the hold's side ("both" without detail: none - its numbers cannot be told apart)"""
+        detail = hold.get("order_detail") or {}
+        if detail:
+            return [(d["date"], no, d["side"], int(d.get("qty", 0) or 0)) for no, d in detail.items()]
+        if hold.get("side") in ("buy", "sell"):
+            return [(str(hold.get("_date") or today), no, hold["side"], int(hold.get("quantity", 0) or 0))
+                    for no in hold.get("order_nos") or []]
+        return []
 
     def _load_startup_holds(self, _today: str) -> None:
         """[2026-11-25] A2: today's order holds (or holds_all for an unreadable file) and an earlier day's holds (attribution only),
@@ -4013,6 +4351,7 @@ class TradingAPI:
                 self._bot_order_window[_side][_hc] = 2
             log(f"  [ORDER HOLD  ] {_sym_label(_hc)} | side={_h.get('side')} order_no={','.join(_h.get('order_nos') or []) or 'UNKNOWN'} "
                 f"| 이전 r003 의 미확인 주문 - 브로커에서 종료가 확인될 때까지 이 종목 주문 보류")
+            self._register_hold_orders(_hc, _h, _today)
         # an earlier day's holds: those orders expired, but fills after that r003 ended belong to the bot (first sync only)
         self._prev_hold_caps: dict[str, dict] = {}
         for _hc, _h in ({} if self.dry_run else load_prev_order_holds(_today)).items():
@@ -4020,6 +4359,14 @@ class TradingAPI:
                 for _side in (("buy", "sell") if _h.get("side") == "both" else ("sell" if _h.get("side") == "sell" else "buy",)):
                     self._bot_order_window[_side][_hc] = 1
                 self._prev_hold_caps[_hc] = _h
+                self._register_hold_orders(_hc, _h, _today)   # [2026-11-25] an earlier day's order: its late fills too
+                # an earlier day's sell without an order number: assumed filled, taken off the bot part once
+                _u = self._unknown_sell_qty(_h)
+                if _u > 0 and getattr(self, "_fills", None) is not None and not getattr(self, "_fills_broken", False):
+                    _r = r023.deduct_once(self._fills, f"{_h.get('_date', '')}:{_hc}:{_h.get('submitted_at', '')}:{_u}", _hc, _u)
+                    if _r is not None:
+                        log(f"  [BOT LEDGER  ] {_sym_label(_hc)} | 전날 주문번호 없는 봇 매도 {_u}주 - 체결된 것으로 보고 봇 몫 {_r[0]}->{_r[1]}")
+                        self._fills_dirty = True
                 log(f"  [ORDER HOLD  ] {_sym_label(_hc)} | side={_h.get('side')} - 전날 미확인 주문(만료) - 첫 계좌 동기화의 변화만 봇 귀속")
 
     def _apply_persisted_position_meta(self) -> None:
@@ -4124,8 +4471,13 @@ class TradingAPI:
             return
 
         updated: dict[str, dict] = {}
+        acct_today: dict[str, tuple[int, int]] = {}
         for _, row in df_holdings.iterrows():
             code = str(row.get("pdno", "")).zfill(6)
+            try:    # [Codex 15th] bought / sold today per symbol - compared with the listing before a bot_only sell
+                acct_today[code] = (int(float(row["thdt_buyqty"])), int(float(row["thdt_sll_qty"])))
+            except (KeyError, TypeError, ValueError):
+                pass
             try:
                 qty = int(float(row.get("hldg_qty", 0)))
                 avg_price = float(row.get("pchs_avg_pric", 0))
@@ -4171,6 +4523,9 @@ class TradingAPI:
             self._record_position_meta(code, updated[code])
 
         self.positions = updated
+        self._acct_today = acct_today
+        self._acct_seq = int(getattr(self, "_acct_seq", 0)) + 1   # [Codex 16th] a fresh account read (not a failed / empty one)
+        self.__dict__.pop("_acct_stale_since", None)              # [Codex 17th] any fresh read ends the "no account" wait
         self._apply_persisted_position_meta()
         self._reconcile_pending_positions()
         self._bot_ledger_empty_syncs = 0
@@ -4196,6 +4551,9 @@ class TradingAPI:
         try:
             now = datetime.now()
             date_str = now.strftime("%Y%m%d")
+            if getattr(self, "_fills", None) is not None:
+                self._update_fill_ledger(positions, now, date_str)
+                return
             self._mark_bot_order_windows()
             if self.bot_ledger is None:
                 ledger = r023.seed_ledger(positions, self.live_state, LIVE_RUNTIME_DIR, date_str)
@@ -4250,6 +4608,93 @@ class TradingAPI:
                 self.save_order_holds_if_changed(now.strftime("%Y%m%d"), force=True)
         except Exception as exc:
             log(f"  [WARN        ] bot holdings ledger update failed: {exc}")
+
+    def _update_fill_ledger(self, positions: dict[str, dict], now: datetime, date_str: str) -> None:
+        """[2026-11-25] fill ledger after an account sync: new fills, the account as the upper bound (not for settling symbols),
+        the view (bot_ledger) and the holdings snapshot, then the A2 holds that may leave"""
+        releasing = any(h.get("release_after_sync") for h in (getattr(self, "order_holds", None) or {}).values())
+        self._last_fill_changes = []
+        account_qty = {str(c).zfill(6): int(p.get("quantity", 0) or 0) for c, p in positions.items() if int(p.get("quantity", 0) or 0) > 0}
+        rows = (self._fills or {}).get("codes") or {}
+        mismatch = any(account_qty.get(c, 0) != r["bot_qty"] + (r["manual_qty"] or 0)
+                       for c, r in rows.items() if r.get("manual_qty") is not None) or any(c not in rows for c in account_qty) \
+            or any(r.get("manual_qty") is None for r in rows.values())   # [Codex 13th] unknown manual part: listings to confirm it
+        fills_ok = self._refresh_bot_fills(now, force=releasing, want=mismatch)   # a release needs the latest fills of its orders
+        # v3: compare with the account only where nothing is moving - the listing ran in this call (it is newer than the account read),
+        # no open order (bot or by hand) and no fill change of the symbol in it
+        stable: set[str] = set()
+        if getattr(self, "_fills_ran", False):
+            moving = ({e["code"] for e in self._fills["registry"].values() if not e.get("terminal")}
+                      | set(getattr(self, "_busy_codes", set()))
+                      | {c for c, _s, d, _k in self._last_fill_changes if d > 0})
+            # [Codex 16th] the account and the listing do not agree on today's fills of the symbol: one of them is behind
+            listed = getattr(self, "_listed_today", None) or {}
+            moving |= {c for c, v in (getattr(self, "_acct_today", None) or {}).items() if tuple(v) != tuple(listed.get(c, (0, 0)))}
+            stable = (set(rows) | set(account_qty)) - moving
+        before = json.dumps(self._fills, sort_keys=True, default=str)
+        if not getattr(self, "_fills_broken", False):
+            for code, old, new in r023.reconcile_account(
+                    self._fills, account_qty, stable, date_str, now, FILL_INIT_CONFIRM_SECONDS,
+                    getattr(self, "_fill_rows", None) if getattr(self, "_fills_ran", False) else None):
+                log(f"  [BOT LEDGER  ] {_sym_label(code)} | 계좌 {account_qty.get(code, 0)}주와 맞춤 - 봇 몫 {old}->{new}주 "
+                    f"(직접 몫 먼저)")
+                self._fills_dirty = True
+            r023.prune_fill_state(self._fills, date_str)
+            if json.dumps(self._fills, sort_keys=True, default=str) != before:
+                self._fills_dirty = True
+        view = {c: {"acct_qty": q, "bot_qty": (0 if self._fills_broken else min(q, r023.fill_bot_quantity(self._fills, c)))}
+                for c, q in account_qty.items() if q > 0}
+        if self.bot_ledger is not None:
+            for code in sorted(set(view) | set(self.bot_ledger)):
+                old, new = self.bot_ledger.get(code), view.get(code)
+                if old != new:
+                    log(f"  [BOT LEDGER  ] {_sym_label(code)} | account={(old or {}).get('acct_qty', 0)}->{(new or {}).get('acct_qty', 0)} "
+                        f"bot={(old or {}).get('bot_qty', 0)}->{(new or {}).get('bot_qty', 0)}")
+        self.bot_ledger = view
+        if self._fills_dirty:
+            self._save_fills(now)
+        self._ledger_dirty = bool(self._fills_dirty)   # A2 releases wait for a saved ledger
+        r023.save_snapshot(LIVE_RUNTIME_DIR, r023.build_snapshot(positions, view, _SYMBOL_NAME_MAP, date_str, AUTO_SELL_SCOPE, now))
+        _done = ([] if (self._ledger_dirty or not fills_ok) else
+                 [c for c, h in (getattr(self, "order_holds", None) or {}).items()
+                  if h.get("release_after_sync") and self._hold_orders_finished(h)])
+        for _c in _done:
+            _h = self.order_holds.pop(_c, None) or {}
+            # a sell sent without a usable answer and no order number: assume it filled (the bot part shrinks - it sells less)
+            unknown_sell = self._unknown_sell_qty(_h)
+            if unknown_sell > 0 and not self._fills_broken:
+                key = f"{date_str}:{_c}:{_h.get('submitted_at', '')}:{unknown_sell}"
+                snapshot = json.dumps(self._fills, default=str)
+                r = r023.deduct_once(self._fills, key, _c, unknown_sell)   # once per key, also across restarts
+                if r is not None and not self._save_fills(now):
+                    self._fills = json.loads(snapshot)            # not on disk: undo, keep the hold, try again next sync
+                    self.order_holds[_c] = _h
+                    continue
+                if r is not None:
+                    log(f"  [BOT LEDGER  ] {_sym_label(_c)} | 주문번호 없는 봇 매도 {unknown_sell}주 - 체결된 것으로 보고 봇 몫 {r[0]}->{r[1]}")
+            log(f"  [ORDER HOLD  ] {_sym_label(_c)} | 보류 해제")
+        if _done:
+            self.save_order_holds_if_changed(date_str, force=True)
+
+    @staticmethod
+    def _unknown_sell_qty(hold: dict) -> int:
+        """[2026-11-25] the sell quantity of a hold that has no order number (sent without a usable answer)"""
+        if hold.get("side") == "both" and hold.get("order_nos") and not hold.get("order_detail"):
+            return int(hold_side_qty(hold).get("sell", 0))   # numbers that cannot be told apart: its sells assumed filled
+        if not hold.get("submission_unknown"):
+            return 0
+        known = sum(int(d.get("qty", 0) or 0) for d in (hold.get("order_detail") or {}).values() if d.get("side") == "sell")
+        return max(0, int(hold_side_qty(hold).get("sell", 0)) - known)
+
+    def _hold_orders_finished(self, hold: dict) -> bool:
+        """[2026-11-25] every registered order of the hold is finished in the fill ledger (its last fills are applied)"""
+        for day, no, _side, _qty in self._hold_orders(hold, datetime.now().strftime("%Y%m%d")):
+            e = self._fills["registry"].get(r023.fill_key(day, no))
+            if e is not None and (not e.get("terminal") or e.get("baseline")):
+                return False
+        if hold.get("side") == "both" and hold.get("order_nos") and not hold.get("order_detail"):
+            return False                          # numbers that cannot be checked: the broker list alone is not enough
+        return True
 
     def bot_quantity(self, code: str) -> int:
         """[2026-11-13] 이 종목 보유 수량 중 봇이 매수한 수량(r023 장부). 장부가 없으면 0."""
@@ -4308,6 +4753,8 @@ class TradingAPI:
                 self._hold_unresolved_submit(iid)    # no usable answer: the broker may have taken the order
             elif _order_succeeded(res):
                 self._submit_intents[iid].update(state="accepted", order_no=_extract_order_number(res))
+                _it = self._submit_intents[iid]
+                self._register_bot_order(code, _it["side"], int(_it["quantity"]), _it["order_no"])   # [2026-11-25] fill ledger
             else:
                 self._submit_intents.pop(iid, None)  # a definite rejection: nothing at the broker
             return res
@@ -4322,7 +4769,8 @@ class TradingAPI:
         code = intent["code"]
         e = {"side": intent["side"], "order_nos": [intent["order_no"]] if intent.get("order_no") else [],
              "quantity": int(intent["quantity"]), "qty_by_side": {intent["side"]: int(intent["quantity"])},
-             "submitted_at": intent.get("submitted_at", ""), "submission_unknown": intent.get("state") != "accepted"}
+             "submitted_at": intent.get("submitted_at", ""), "submission_unknown": intent.get("state") != "accepted",
+             "order_detail": _intent_detail(intent)}
         self.order_holds[code] = _merge_hold_entries({code: self.order_holds[code]} if code in self.order_holds else {},
                                                      {code: e})[code]
         win = getattr(self, "_bot_order_window", None)
@@ -5673,6 +6121,13 @@ class TradingAPI:
         pos = self.positions.get(norm_code)
         held_qty = int(pos.get("quantity", 0)) if pos else 0
         qty = min(int(pending.get("quantity", 0)), held_qty)
+        if self.sells_bot_quantity_only() and getattr(self, "_fills", None) is not None:
+            # [2026-11-25] the cancelled order's last fills must be in the ledger before the bot part is sold again
+            if not self._refresh_bot_fills(now, force=True):
+                log(f"  [SEL RP ABORT] {_sym_label(code)} | 봇 체결 조회 실패 - 재주문 생략 (매도 조건이 다시 판단)")
+                self.pending_orders.pop(norm_code, None)
+                return
+            qty = min(qty, self.sellable_bot_quantity(norm_code))
         if qty <= 0:
             log(f"  [SEL RP ABORT] {_sym_label(code)} | 보유 수량 없음 - 재주문 생략")
             self.pending_orders.pop(norm_code, None)
@@ -5696,6 +6151,14 @@ class TradingAPI:
         candidate = float(bid_price or pending.get("requested_price", 0.0) or 0.0)  # KRX 시장가는 로그용
         ord_dvsn, ord_unpr = ("00", str(int(round(candidate)))) if exchange == "NXT" else ("01", "0")
         price_mode = "bid" if exchange == "NXT" else "market"
+        # [Codex 9th/16th] the quote lookup takes time - account and fills once more right before the order goes out
+        if self.sells_bot_quantity_only() and getattr(self, "_fills", None) is not None:
+            late = self._late_bot_sell_qty(norm_code, qty, "SEL RP ABORT", "reprice")
+            if not late:
+                log(f"  [SEL RP ABORT] {_sym_label(code)} | 주문 직전 봇 몫 확인 불가 또는 0 - 재주문 생략 (매도 조건이 다시 판단)")
+                self.pending_orders.pop(norm_code, None)
+                return
+            qty = late
 
         if self.dry_run:
             log(f"DRY_RUN SELL REPRICE | {code} | qty={qty} | price={candidate:,.0f}")
@@ -5939,7 +6402,11 @@ class TradingAPI:
         qty = min(int(qty), int(pos["quantity"]))
         # [2026-11-13] AUTO_SELL_SCOPE="bot_only": 봇이 매수한 수량까지만 판다 - 직접(MTS) 매수분은 남긴다 (r023 장부)
         if self.sells_bot_quantity_only():
-            bot_left = self.bot_quantity(norm_code)
+            # [2026-11-25] the latest fills (the bot's and those by hand) right before a bot_only sell - no listing, no sell
+            if getattr(self, "_fills", None) is not None and not self._refresh_bot_fills(now, force=True):
+                log(f"  [SELL HOLD   ] {_sym_label(code)} | 체결 조회 실패 - 봇 몫을 확인할 수 없어 이번 매도 보류 | reason={reason}")
+                return False
+            bot_left = self.sellable_bot_quantity(norm_code)
             if bot_left < qty:
                 log(f"  [SELL LIMIT  ] {_sym_label(code)} | AUTO_SELL_SCOPE=bot_only | requested={qty} bot={bot_left} "
                     f"account={int(pos['quantity'])} | reason={reason}")
@@ -5972,6 +6439,15 @@ class TradingAPI:
                 ord_limit = int(round(ask_price)) if (ask_price and ask_price > 0) else int(round(current_price))
             ord_dvsn = "00"  # 지정가
             ord_unpr = str(ord_limit)
+
+        # [2026-11-25] Codex review: the price lookups above take time - account and fills once more right before the order goes out
+        if self.sells_bot_quantity_only() and getattr(self, "_fills", None) is not None:
+            late = self._late_bot_sell_qty(norm_code, qty, "SELL HOLD   ", reason)
+            if not late:
+                if late == 0:
+                    log(f"  [SELL LIMIT  ] {_sym_label(code)} | 주문 직전 봇 몫 0 - 매도 안 함 | reason={reason}")
+                return False
+            qty = late
 
         if self.dry_run:
             log(f"DRY_RUN SELL | {code} | qty={qty} | reason={reason} | exch={order_spec['exchange']}")
