@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.1.6_001 (2026-11-26): 봇 우선 - 이 PC에서 봇의 틱 수집기가 돌고 있으면 앱이 KIS 실시간 접속을 열지 않고(열려 있으면 내려놓고) 주기 조회로 표시, 수집기가 끝나면 다시 연결. 앱이 실시간 접속을 차지해 틱 수집기가 연결하지 못하던 문제 해결",
     "v1.1.5_003 (2026-11-26): 제어 창 매매 방식 카드가 카드 폭에 맞춰 배치 - 입력칸 라벨 한 줄 고정, Edge AI 실제 주문 한도 4칸(좁으면 2x2)과 적용 버튼 위치 조정, 1회 금액 / 하루 손실 한도 천 단위 쉼표",
     "v1.1.5_002 (2026-11-26): 주문 창 잔고에 '제세금 포함' 체크박스 추가 - 보유 현황과 같은 설정, 체크하면 평가손익 / 수익률 / 합계에서 예상 수수료와 거래세를 뺌",
     "v1.1.5_001 (2026-11-26): 지수 창에 나스닥100 선물 카드 추가 - KIS 해외지수의 E-Mini Nasdaq 100 지수선물 시세(약 10분 지연), 5 / 15 / 30분 등락률, 1분 차트, 최근 봉 시각 표시. 나스닥100 (ETF) 카드는 실시간 대용으로 유지, 카드가 많으면 줄바꿈",
@@ -99,7 +100,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -153,7 +154,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

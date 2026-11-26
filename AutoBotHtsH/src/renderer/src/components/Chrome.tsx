@@ -17,6 +17,7 @@
 //   buttons; OpenWinList - the open windows as buttons in the strip under the toolbar (click = bring to front / restore, again on
 //   the front one = minimize))
 
+import { RT_YIELD_MSG } from '../../../shared/collectorLock';
 import { useEffect, useRef, useState } from 'react';
 import { BOT_GROUPS, BOT_TITLE, botWinOf, SYMBOL_WINS, useStore, WIN_TITLE, type Win, type WinType, type ArrangeMode, type Theme } from '../store';
 import { SymbolSearch } from './SymbolSearch';
@@ -175,7 +176,7 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
               </b>
             )}
             <span className={`rt rt-${rt?.status || 'off'}`} title={rt?.msg || ''}>
-              <i /> 실시간 {rt?.status === 'on' ? '연결' : rt?.status === 'connecting' ? '연결 중' : rt?.status === 'error' ? '오류' : '대기'}
+              <i /> 실시간 {rt?.status === 'off' && rt?.msg === RT_YIELD_MSG ? '꺼짐 (봇 우선)' : rt?.status === 'on' ? '연결' : rt?.status === 'connecting' ? '연결 중' : rt?.status === 'error' ? '오류' : '대기'}
             </span>
             <ReboundChip />
             <ReboundUnread />

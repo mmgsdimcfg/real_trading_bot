@@ -47,6 +47,8 @@ import type { MarketBackend, Res } from '../shared/market';
 import { isCode, toKrxRecord, WS_COMBINED, type KisEnv, type WsTr } from '../shared/kis';
 import { KIS_SPEC_COMMIT } from '../shared/kisSpec.generated';
 import { attachBotWindow, botQuit } from '../bot/main/botMain';
+import { localCollectorPid } from './collectorGuard';
+import { RT_YIELD_MSG } from '../shared/collectorLock';
 import { ReboundWatcher, sampleAlert } from './reboundPoller';
 import { AlertPopups, reboundDir, type AlertInfo } from './reboundAlert';
 import { ReboundHistory } from './reboundHistory';
@@ -113,7 +115,35 @@ function onRt(raw: RtData) {
       send('rt:data', b);
     }, 100);
 }
+// ---- [2026-11-26] bot first (user 2026-11-26): KIS allows one realtime session per app key. While the bot's tick collector runs
+// on this PC the app does not open (and gives up) its own session - quotes fall back to polling - and reconnects when the
+// collector has ended. Real server only: the paper server is another session.
+let yieldTimer: NodeJS.Timeout | null = null;
+function yieldCheck(): void {
+  const f = feed;
+  if (!(f instanceof KisFeed) || client?.env !== 'real') return;
+  const pid = localCollectorPid();
+  if (pid !== null && !f.isPaused) {
+    log(`[rt] 틱 수집기(pid ${pid}) 실행 중 - 앱 실시간을 끄고 주기 조회로 표시`);
+    f.pause(RT_YIELD_MSG);
+  } else if (pid === null && f.isPaused) {
+    log('[rt] 틱 수집기 종료 - 앱 실시간 다시 연결');
+    f.resume();
+  }
+}
+function startYieldWatch(): void {
+  stopYieldWatch();
+  yieldCheck(); // before the first subscription can open a socket
+  yieldTimer = setInterval(yieldCheck, 10_000);
+}
+function stopYieldWatch(): void {
+  if (yieldTimer) clearInterval(yieldTimer);
+  yieldTimer = null;
+}
+
 function onRtStatus(status: RtStatus, msg?: string) {
+  // the yield reason stays on screen for as long as the feed is paused (a plain 'off' would drop it)
+  if (!msg && status === 'off' && feed instanceof KisFeed && feed.isPaused) msg = RT_YIELD_MSG;
   rtStatus = { status, msg };
   if (msg) log(`[rt] ${msg}`);
   send('rt:status', rtStatus);
@@ -122,6 +152,7 @@ function onRtStatus(status: RtStatus, msg?: string) {
 function closeSession() {
   demoTrader = null;
   rtRoutes.clear();
+  stopYieldWatch();
   feed?.close();
   feed = null;
   backend = null;
@@ -149,6 +180,7 @@ async function login(req: { env: KisEnv; appKey?: string; appSecret?: string; re
   backend = new KisMarket(c, (code) => (master.nxtKnown ? !!master.get(code)?.nxt : undefined), chartDisk());
   rememberCreds(creds, req.remember);
   feed = new KisFeed(creds.env, () => c.approvalKey(), onRt, onRtStatus);
+  startYieldWatch();
   log(`[auth] 로그인 (${creds.env === 'real' ? '실전' : '모의'} 서버)`);
   void master.ensure().then(() => send('auth:state', authState()));
   return authState();

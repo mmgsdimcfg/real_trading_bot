@@ -45,6 +45,8 @@ export class KisFeed implements Feed {
   private quickDrops = 0;
   status: RtStatus = 'off';
   lastError = '';
+  /** [2026-11-26] bot first: while set, no socket is opened (subscriptions are kept for the resume) */
+  private paused = '';
 
   constructor(
     private env: KisEnv,
@@ -59,8 +61,39 @@ export class KisFeed implements Feed {
     this.onStatus(s, msg);
   }
 
+  /** [2026-11-26] give the realtime session up (another program on this PC needs the app key's one session): the socket is closed,
+   *  nothing reconnects, the status is 'off' with `why`. The subscriptions stay and are sent again by resume() */
+  pause(why: string): void {
+    if (this.closed || this.paused) return;
+    this.paused = why;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    const ws = this.ws;
+    this.ws = null; // the close handler sees another socket and does not retry
+    try {
+      ws?.close();
+    } catch {
+      /* already gone */
+    }
+    this.openedAt = 0;
+    this.quickDrops = 0;
+    this.backoff = 2000;
+    this.setStatus('off', why);
+  }
+
+  resume(): void {
+    if (this.closed || !this.paused) return;
+    this.paused = '';
+    this.setStatus('off');
+    if (this.subs.size) void this.connect();
+  }
+
+  get isPaused(): boolean {
+    return !!this.paused;
+  }
+
   private async connect(): Promise<void> {
-    if (this.closed || this.ws || this.connecting) return;
+    if (this.closed || this.paused || this.ws || this.connecting) return;
     this.connecting = true;
     this.setStatus('connecting');
     let key: string;
@@ -73,7 +106,7 @@ export class KisFeed implements Feed {
       return;
     }
     this.connecting = false;
-    if (this.closed || this.ws) return;
+    if (this.closed || this.paused || this.ws) return;
     const ws = new WebSocket(`${KIS_DOMAINS[this.env].ws}/tryitout/H0STCNT0`);
     this.ws = ws;
     ws.on('open', () => {
@@ -123,7 +156,7 @@ export class KisFeed implements Feed {
   }
 
   private retry(): void {
-    if (this.closed || this.timer) return;
+    if (this.closed || this.paused || this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.connect();
