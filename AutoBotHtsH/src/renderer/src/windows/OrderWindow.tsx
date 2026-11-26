@@ -1,4 +1,6 @@
 // Update log
+// - [2026-11-26] type=feat (잔고: "제세금 포함" checkbox, the same switch as the bot's 보유 현황 / 매매 결과 (store feesIncluded, user
+//   2026-11-26) - 평가손익 / 수익률 of the rows, the total and the form's 평가손익 minus the estimated commission x 2 + sell tax (bot/shared/fees))
 // - [2026-11-26] type=feat (Symbol box in the header, the same as every other symbol window (user 2026-11-26))
 // - [2026-11-26] type=feat (Order window 주문 (user 2026-11-26): opened from the current price window (click a price of the order book ->
 //   매수 / 매도) or the toolbar. Left: the order book (a click puts that price into the form). Right: 매수 / 매도, 지정가 / 시장가,
@@ -18,6 +20,8 @@ import { useStore, type Win } from '../store';
 import { useCall, useRealtime, useSymbol } from '../hooks';
 import { OrderBookView } from './QuoteWindow';
 import { NxtMark } from '../components/NxtTag';
+import { useStore as useBotStore } from '../../../bot/renderer/src/store';
+import { feeLabel, tradeCosts } from '../../../bot/shared/fees';
 import { SymbolSearch } from '../components/SymbolSearch';
 import type { OrderBook, Quote } from '../../../shared/kis';
 import { orderProblem, reviseProblem, stepPrice, tickSize, type Balance, type Buyable, type Fill, type OpenOrder, type OrderSide, type OrderState, type OrderType } from '../../../shared/order';
@@ -131,7 +135,15 @@ export function OrderWindow({ win }: { win: Win }) {
   }, [ready, side, type, priceNum, loadBuyable]);
 
   const holding = useMemo(() => bal?.holdings.find((h) => h.code === code) || null, [bal, code]);
-  const pnlSum = useMemo(() => (bal?.holdings || []).reduce((s, h) => s + h.pnl, 0), [bal]);
+  // [2026-11-26] "제세금 포함": KIS's 평가손익 minus the estimated costs of selling the holding now (shared with the bot's 보유 현황)
+  const net = useBotStore((s) => s.feesIncluded);
+  const setNet = useBotStore((s) => s.setFeesIncluded);
+  const pnlOf = useCallback((h: { pnl: number; avgPrice: number; price: number; qty: number }) => (net ? h.pnl - tradeCosts(h.avgPrice, h.price, h.qty) : h.pnl), [net]);
+  const pctOf = useCallback(
+    (h: { pnl: number; pnlPct: number; avgPrice: number; price: number; qty: number }) => (net && h.avgPrice > 0 && h.qty > 0 ? (pnlOf(h) / (h.avgPrice * h.qty)) * 100 : h.pnlPct),
+    [net, pnlOf],
+  );
+  const pnlSum = useMemo(() => (bal?.holdings || []).reduce((s, h) => s + pnlOf(h), 0), [bal, pnlOf]);
   const fillSum = useMemo(() => (fills || []).reduce((s, f) => ({ ...s, [f.side]: s[f.side] + f.amount }), { buy: 0, sell: 0 }), [fills]);
   const costSum = useMemo(() => (bal?.holdings || []).reduce((s, h) => s + h.avgPrice * h.qty, 0), [bal]);
   const maxQty = edit ? edit.remain : side === 'buy' ? buyable?.qty ?? 0 : holding?.sellable ?? 0;
@@ -356,8 +368,8 @@ export function OrderWindow({ win }: { win: Win }) {
                 <b>{bal ? `${fmtInt(holding?.sellable ?? 0)}주` : '-'}</b>
                 <span>평균단가</span>
                 <b>{holding ? `${fmtInt(holding.avgPrice)}원` : '-'}</b>
-                <span>평가손익</span>
-                <b className={holding ? upDown(Math.sign(holding.pnl)) : ''}>{holding ? `${fmtInt(holding.pnl)}원 (${fmtPct(holding.pnlPct)})` : '-'}</b>
+                <span>평가손익{net ? ' (순)' : ''}</span>
+                <b className={holding ? upDown(Math.sign(pnlOf(holding))) : ''}>{holding ? `${fmtInt(pnlOf(holding))}원 (${fmtPct(pctOf(holding))})` : '-'}</b>
               </>
             )}
           </div>
@@ -389,10 +401,13 @@ export function OrderWindow({ win }: { win: Win }) {
         )}
         {tab === 'hold' && bal && (
           <span className="ord-sum">
-            <span className="muted">총평가</span> <b>{fmtInt(bal.total)}원</b> <span className="muted">평가손익</span>{' '}
+            <span className="muted">총평가</span> <b>{fmtInt(bal.total)}원</b> <span className="muted">평가손익{net ? ' (제세금 포함)' : ''}</span>{' '}
             <b className={upDown(Math.sign(pnlSum))}>
               {fmtInt(pnlSum)}원{costSum > 0 ? ` (${fmtPct((pnlSum / costSum) * 100)})` : ''}
             </b>
+            <label className="check" title={`평가손익에서 지금 팔 때의 예상 거래 비용을 뺍니다: ${feeLabel()} (보유 현황 / 매매 결과와 같은 설정)`}>
+              <input type="checkbox" checked={net} onChange={(e) => setNet(e.target.checked)} /> 제세금 포함
+            </label>
           </span>
         )}
         <span>
@@ -452,7 +467,7 @@ export function OrderWindow({ win }: { win: Win }) {
                 <th className="num">평균단가</th>
                 <th className="num">현재가</th>
                 <th className="num">평가금액</th>
-                <th className="num">평가손익</th>
+                <th className="num">평가손익{net ? ' (순)' : ''}</th>
                 <th className="num">수익률</th>
                 <th />
               </tr>
@@ -468,8 +483,8 @@ export function OrderWindow({ win }: { win: Win }) {
                   <td className="num">{fmtInt(h.avgPrice)}</td>
                   <td className={`num ${upDown(Math.sign(h.price - h.avgPrice))}`}>{fmtInt(h.price)}</td>
                   <td className="num">{fmtInt(h.price * h.qty)}</td>
-                  <td className={`num ${upDown(Math.sign(h.pnl))}`}>{fmtInt(h.pnl)}</td>
-                  <td className={`num ${upDown(Math.sign(h.pnl))}`}>{fmtPct(h.pnlPct)}</td>
+                  <td className={`num ${upDown(Math.sign(pnlOf(h)))}`}>{fmtInt(pnlOf(h))}</td>
+                  <td className={`num ${upDown(Math.sign(pnlOf(h)))}`}>{fmtPct(pctOf(h))}</td>
                   <td className="ord-act">
                     <button
                       className="mini"
