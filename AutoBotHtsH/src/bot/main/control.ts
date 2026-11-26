@@ -287,6 +287,9 @@ export function createControl(deps: ControlDeps) {
         ) {
           void deps.reloadConditions();
           void refreshNxt();
+          // [2026-11-26] + the mode states (paper / strategy / Edge live ...): their "running" side changes with the service too -
+          // a start by the scheduler or the other app left "봇이 실행 중이 아닙니다" in the paper window
+          void refreshPaper();
         }
         return s;
       } catch (e) {

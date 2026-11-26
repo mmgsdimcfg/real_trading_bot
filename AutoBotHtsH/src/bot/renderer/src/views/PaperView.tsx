@@ -197,6 +197,8 @@ export function PaperView() {
   const strategy = useStore((s) => s.control.strategy);
   const realEdge = (strategy?.running ?? strategy?.effective) === 'edge';
   const running = mode?.running ?? null;
+  // [2026-11-26] Edge AI live orders beside the rule strategy (EDGE_LIVE_ORDERS in the running r003): its trades are real ones, not listed here
+  const liveEdge = useStore((s) => s.control.edgeLive?.running) === 'true';
   const modeText = !mode
     ? '서버가 가상 매매 설정을 모릅니다 (서버 코드 갱신 필요)'
     : running === 'paper'
@@ -216,6 +218,7 @@ export function PaperView() {
         )}
         {mode?.pending && <span className="badge-warn">⚠ 설정이 바뀌었습니다 → r003 재시작 후 적용</span>}
         {realEdge && <span className="badge-warn">매매 방식이 Edge AI(실제 주문)입니다 - 가상 매매는 돌지 않고, 실제 내역은 매매 결과 탭에 있습니다</span>}
+        {liveEdge && !realEdge && <span className="badge-warn">Edge AI 실제 매매 중 - 실제 주문 내역은 이 창이 아니라 매매 결과 탭에 있습니다</span>}
         <span className="muted">Edge AI 확률만으로 판단한 가상 매수/매도 기록입니다. 실제 주문·계좌와 무관합니다. 켜고 끄기는 제어 탭.</span>
       </div>
       <div className="toolbar">
