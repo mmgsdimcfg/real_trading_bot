@@ -879,6 +879,25 @@ class EdgeLiveTest(unittest.TestCase):
             self.assertFalse(run())
             self.assertEqual(len(seen), 2)                                                   # switched off: nothing judged
 
+    def test_the_reject_line_of_a_bar(self):
+        """[2026-11-26] no trigger: silent; a trigger that did not buy: every bar; conditions before the trigger: once in 10 min"""
+        note = r003._edge_live_reject_note
+        e09 = mock.Mock(no=9, func_name="_e09_edge_ai_signal")
+        rej = "  [REJECT      ] 005930_삼성전자 | EDGE_SIGNAL_"
+        self.assertIsNone(note(e09, [rej + "NO_TRIGGER | NO_CROSS"]))
+        self.assertIsNone(note(e09, [rej + "NO_TRIGGER_BELOW_1MIN_MID | close=1 mid=2"]))
+        self.assertIsNone(note(e09, [rej + "REGULAR_SESSION_ONLY"]))
+        self.assertEqual(note(e09, ["x", rej + "LOW_PROB_p=0.330_LT_0.336 | CROSS"]),
+                         ("_e09_edge_ai_signal | EDGE_SIGNAL_LOW_PROB_p=0.330_LT_0.336 | CROSS", 0.0))
+        self.assertEqual(note(e09, [rej + "NO_PROB_no_history"])[1], 0.0)
+        self.assertEqual(note(e09, [rej + "LIVE_BELOW_1MIN_MID | live=1 mid=2"])[1], 0.0)
+        self.assertEqual(note(e09, [rej + "INSUFFICIENT_BARS"])[1], 600.0)
+        self.assertEqual(note(e09, [rej + "1MIN_FRAME_STALE_last=09:58_expected=09:59"])[1], 600.0)
+        self.assertEqual(note(mock.Mock(no=8, func_name="_008_max_open_positions"), ["  [BUY SKIP    ] 005930 | MAX_OPEN_POSITIONS open=6 max=6"]),
+                         ("_008_max_open_positions | MAX_OPEN_POSITIONS open=6 max=6", 600.0))
+        self.assertEqual(note(mock.Mock(no=24, func_name="_024_x"), []), ("_024_x", 0.0))
+        self.assertEqual(note(None, []), ("cond_0", 600.0))
+
 
 if __name__ == "__main__":
     unittest.main()

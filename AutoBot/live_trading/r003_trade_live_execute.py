@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-26] type=feat owner=claude
+    summary: 사용자 요청 - Edge AI 실주문(_edge_live_try_buy)이 사지 않은 이유를 로그에 남김(`[EDGE LIVE] <종목> | 매수 안 함 | ...`).
+      1분 트리거가 없는 봉은 종전처럼 기록하지 않고, 트리거가 뜬 봉의 탈락(확률 미달 / 확률 없음 / 오류 / 수량·호가 조건)은 봉마다,
+      트리거 전 조건(_001~_008)과 1분봉 이력 문제는 종목·조건별 10분에 한 번. 판정·주문은 그대로(_edge_live_reject_note).
+    impact: live (로그만)
+    compatibility: backward-compatible
 - [2026-11-25] type=feat owner=claude
     summary: 사용자 결정(r023 체결 내역 기준 장부, Codex 계획 검토, r023_fill_ledger_plan_20261125.md) - 봇 몫은 봇 주문의 체결로만:
       _order_cash 가 접수 주문번호를 체결 장부 등록부에 즉시 기록, _refresh_bot_fills 가 당일(미종결 주문의 주문일부터) 주문체결
@@ -7005,6 +7011,35 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
             api._save_fills(now)
 
 
+_EDGE_REJECT_SILENT = ("EDGE_SIGNAL_NO_TRIGGER", "EDGE_SIGNAL_REGULAR_SESSION_ONLY")      # no 1-minute trigger on this bar: nothing to explain
+_EDGE_REJECT_RARE = ("EDGE_SIGNAL_1MIN_FRAME", "EDGE_SIGNAL_INSUFFICIENT_BARS")       # the same every bar until the frame is there
+
+
+def _edge_live_reject_note(failed, msgs: list) -> tuple[str, float] | None:
+    """[2026-11-26] Why the edge live buy of a bar was not made: (text, seconds between two lines of this kind), None = not logged.
+    msgs = what the conditions wrote while they were judged (the last line is the failed condition's). A bar without the
+    1-minute trigger stays silent; a bar with the trigger is explained every time (low probability, no probability, error,
+    quantity / price / order book); the conditions before the trigger (_001.._008) and a missing 1-minute history repeat on
+    every bar, so those are written once in 10 minutes per symbol and condition."""
+    no = int(getattr(failed, "no", 0) or 0)
+    func = str(getattr(failed, "func_name", "") or f"cond_{no}")
+    detail = ""
+    if msgs:
+        detail = str(msgs[-1]).strip()
+        if detail.startswith("[") and " | " in detail:        # "[REJECT      ] 005930_삼성전자 | <detail>"
+            detail = detail.split(" | ", 1)[1].strip()
+    text = f"{func} | {detail}" if detail else func
+    if no == 9:
+        if detail.startswith(_EDGE_REJECT_SILENT):
+            return None
+        if detail.startswith(_EDGE_REJECT_RARE):
+            return text, 600.0
+        return text, 0.0
+    if no < 9:
+        return text, 600.0
+    return text, 0.0
+
+
 def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, symbol_label: str, current_dt: datetime,
                        nxt_tradeable: bool, price, price_source: str, bar_time, buy_frame, cross_info, traded_today: set,
                        hard_stop_today_codes: set, gap_blocked_codes: set, tick_nofile_logged: set, risk, buy_services,
@@ -7038,6 +7073,7 @@ def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, s
         return False                              # this bar was judged already
     edge_live["bar_seen"][norm] = last_bar
     import dataclasses as _dc
+    _msgs: list = []
     ctx = BuyContext(
         code=code, symbol_label=symbol_label, current_dt=current_dt, nxt_tradeable=nxt_tradeable,
         price=price, price_source=price_source, bar_time=bar_time, buy_frame=buy_frame,
@@ -7048,9 +7084,20 @@ def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, s
             hard_stop_today_codes=hard_stop_today_codes, gap_blocked_codes=gap_blocked_codes,
             traded_today=traded_today, tick_nofile_logged=tick_nofile_logged,
         ),
-        risk=risk, services=_dc.replace(buy_services, log=lambda _msg: None),   # rejects of every bar are not logged
+        risk=risk, services=_dc.replace(buy_services, log=_msgs.append),   # kept for the one reject line below, not written as they are
     )
-    if not check_buy_conditions(ctx, EDGE_BUY_CONDITIONS).approved:
+    _decision = check_buy_conditions(ctx, EDGE_BUY_CONDITIONS)
+    if not _decision.approved:
+        try:                                      # [2026-11-26] why not (a log line only - never changes the decision)
+            _note = _edge_live_reject_note(_decision.failed, _msgs)
+            if _note is not None:
+                _line = f"  [EDGE LIVE   ] {symbol_label} | 매수 안 함 | {_note[0]}"
+                if _note[1] > 0:
+                    _edge_note(api, norm, f"reject_{getattr(_decision.failed, 'no', 0)}", _line, _note[1])
+                else:
+                    log(_line)
+        except Exception:
+            pass
         return False
     log(f"  [EDGE LIVE   ] {symbol_label} | 매수 신호 | {ctx.buy_reason} | live={float(price):,.0f} qty<={ctx.qty}")
     if api.place_buy_order(code, price, ctx.qty, current_dt, nxt_tradeable, ctx.session,
