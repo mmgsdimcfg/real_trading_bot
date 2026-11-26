@@ -211,7 +211,8 @@ export function PaperView() {
     <div className="paper-view">
       <div className="toolbar">
         <span className={`badge-mode ${running === 'paper' ? 'on' : ''}`}>{modeText}</span>
-        {pst?.logOnly && (
+        {/* [2026-11-26] not from a stale status file: after a restart with other settings the old file said "꺼짐" until the new r003 wrote its own */}
+        {pst?.logOnly && !stale && (
           <span className="badge-warn" title="서버 r001 EDGE_ONLY_LOG_ONLY - 트리거가 뜬 봉은 edge_only_candidates_<날짜>.jsonl 에 후보로만 기록, 이미 있는 가상 보유는 그대로 청산">
             신규 가상 매수 꺼짐 (후보 기록만)
           </span>
