@@ -21,6 +21,7 @@ import { IndexWindow } from '../windows/IndexWindow';
 import { NewsWindow } from '../windows/NewsWindow';
 import { BotWindow } from '../windows/BotWindow';
 import { ReboundWindow } from './ReboundSettings';
+import { RuleSettingsWindow } from '../windows/BotWindow';
 import { useOutsideClose, useSymbol } from '../hooks';
 import { NxtMark } from './NxtTag';
 
@@ -36,6 +37,7 @@ const BODY: Record<string, (p: { win: Win }) => ReactNode> = {
   index: IndexWindow,
   news: NewsWindow,
   rebound: ReboundWindow,
+  rules: RuleSettingsWindow,
 };
 /** [2026-11-20] bot-<tab> windows -> BotWindow */
 const bodyOf = (t: Win['type']) => BODY[t] || (t.startsWith('bot-') ? BotWindow : null);
@@ -111,7 +113,7 @@ function Frame({ win, active }: { win: Win; active: boolean }) {
   return (
     <div className={`mdi-win ${active ? 'active' : ''} ${win.max ? 'max' : ''}`} style={style} onMouseDown={() => focus(win.id)}>
       <div className="mdi-title" onMouseDown={start('move')} onDoubleClick={() => toggleMax(win.id)} style={{ borderTopColor: LINK_COLORS[win.link] || undefined }}>
-        {!isBotWin(win.type) && win.type !== 'rebound' && <LinkPicker win={win} />}
+        {!isBotWin(win.type) && win.type !== 'rebound' && win.type !== 'rules' && <LinkPicker win={win} />}
         <b>{WIN_TITLE[win.type]}</b>
         {hasSym && (
           <span className="mdi-sym">

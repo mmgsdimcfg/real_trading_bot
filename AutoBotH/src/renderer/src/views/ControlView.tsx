@@ -444,8 +444,7 @@ export function ControlView() {
   const isLocal = useStore((s) => s.status.mode === 'local');
   const historyRev = useStore((s) => s.historyRev);
   const bumpHistory = useStore((s) => s.bumpHistory);
-  // [2026-11-27] rule-trade card "세부 설정": the pipeline tab holds the buy / sell conditions and their values
-  const setTab = useStore((s) => s.setTab);
+  // [2026-11-27] rule-trade card "세부 설정": its own window (window event 'rule-settings' - a dialog here, an MDI window in AutoBotHtsH)
   const condDoc = useStore((s) => s.conditions);
   const st = control.status;
   const [mode, setMode] = useState<{ dryRun: boolean; profile: RiskProfile } | null>(null);
@@ -973,11 +972,11 @@ export function ControlView() {
                     <RuleExitEdit st={control.ruleExit} disabled={busy || !connected || modeBusy} />
                   </div>
                 )}
-                {/* [2026-11-27] like the rebound card's "세부 설정": opens the pipeline (buy / sell conditions, thresholds, on / off per condition) */}
+                {/* [2026-11-27] like the rebound card's "세부 설정": opens the rule settings window (conditions, thresholds, on / off per condition) */}
                 <div className="chips">
                   {condDoc?.buy?.length ? <span className="chip">매수 조건 {condDoc.buy.length}개</span> : null}
                   {condDoc?.sell?.length ? <span className="chip">매도 조건 {condDoc.sell.length}개</span> : null}
-                  <button type="button" className="chip link" title="파이프라인 열기 (매수 / 매도 조건 · 기준값 · 조건별 켜기 / 끄기). 노드를 누르면 설정값을 바꿀 수 있습니다" onClick={() => setTab('pipeline')}>
+                  <button type="button" className="chip link" title="규칙 매매 세부 설정 창 열기 (매수 / 매도 조건 · 기준값 · 조건별 켜기 / 끄기)" onClick={() => window.dispatchEvent(new Event('rule-settings'))}>
                     세부 설정 →
                   </button>
                 </div>

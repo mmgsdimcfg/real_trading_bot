@@ -226,6 +226,26 @@
 }
 .bot-root .replay-time { min-width: 110px; color: var(--text); font-weight: 600; }
 .bot-root .replay-jump { width: 72px; padding: 1px 6px; font-size: var(--fs); }
+/* [2026-11-27] rule-trade settings window (RuleSettings: AutoBotH dialog / AutoBotHtsH MDI window) */
+.bot-root .modal.rule-set-modal { width: min(1180px, 94vw); height: min(780px, 88vh); padding: 8px 16px 12px; }
+.bot-root .rule-set { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; gap: 8px; }
+.bot-root .rule-set-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.bot-root .rule-set-body { display: flex; flex: 1; min-height: 0; gap: 12px; }
+.bot-root .rule-set-list { list-style: none; margin: 0; padding: 0; width: 320px; flex: none; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.bot-root .rule-set-list li + li { border-top: 1px solid var(--border); }
+.bot-root .rule-set-list button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 8px; border: none; border-radius: 0; background: none; text-align: left; font-size: var(--fs); }
+.bot-root .rule-set-list button:hover { background: var(--surface-2, rgba(127, 127, 127, 0.12)); }
+.bot-root .rule-set-list button.on { background: var(--primary-bg); color: var(--primary-fg); }
+.bot-root .rule-set-list .rs-no { color: var(--text-3); flex: none; }
+.bot-root .rule-set-list button.on .rs-no { color: inherit; }
+.bot-root .rule-set-list .rs-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-root .rule-set-list .rs-dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--st-hold); flex: none; }
+.bot-root .rule-set-list .tag.off { color: var(--text-3); border-color: var(--border); }
+.bot-root .rule-set-detail { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; }
+.bot-root .rule-set-detail h3 { font-size: var(--fs); margin: 2px 0 6px; }
+.bot-root .rule-set-detail .rs-desc { font-size: var(--fs); color: var(--text-2); margin: 0 0 10px; line-height: 1.5; white-space: pre-wrap; }
+.bot-root .rule-set-foot { border-top: 1px solid var(--border); padding-top: 6px; }
+.bot-root .view.rule-set-view { padding: 10px 14px; display: flex; flex-direction: column; }
 /* [2026-11-27] replay-by-date menu at the start of the bar */
 .bot-root .replay-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
 .bot-root .replaybar .datepicker .dp-field { padding: 1px 6px; font-size: var(--fs); }

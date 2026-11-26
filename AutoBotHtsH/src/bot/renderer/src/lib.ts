@@ -78,6 +78,14 @@ export function editItemsFor(cond: Condition | undefined): EditItem[] {
   return [...items.filter(isEnableItem), ...items.filter((i) => !isEnableItem(i))];
 }
 
+/** [2026-11-27] every value of these conditions once (a key shared by several conditions keeps its first row) - the rule
+ *  settings window edits all conditions with one editing state */
+export function unionEditItems(conds: Condition[]): EditItem[] {
+  const seen = new Map<string, EditItem>();
+  for (const c of conds) for (const it of editItemsFor(c)) if (!seen.has(it.key) || (!seen.get(it.key)!.editable && it.editable)) seen.set(it.key, it);
+  return [...seen.values()];
+}
+
 /** The ENABLE_* key mirrored on the node header (first editable one). */
 export function nodeEnableKey(cond: Condition | undefined): EditItem | undefined {
   return editItemsFor(cond).find((i) => isEnableItem(i) && i.editable);

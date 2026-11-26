@@ -28,6 +28,7 @@ import { TradesView } from '../../../bot/renderer/src/views/TradesView';
 import { PositionsView } from '../../../bot/renderer/src/views/PositionsView';
 import { PaperView } from '../../../bot/renderer/src/views/PaperView';
 import { SettingsView } from '../../../bot/renderer/src/views/SettingsView';
+import { RuleSettingsPanel } from '../../../bot/renderer/src/components/RuleSettings';
 
 const VIEW: Record<BotTab, () => ReactNode> = {
   control: ControlView,
@@ -76,6 +77,19 @@ export function BotWindow({ win }: { win: Win }) {
         {!NO_REPLAY.includes(tab) && <ReplayBar />}
         <main className="view">
           <View />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+/** [2026-11-27] MDI window 'rules': the rule-trade settings (control > 규칙 매매 > 세부 설정, window event 'rule-settings') */
+export function RuleSettingsWindow() {
+  return (
+    <div className="bot-root bot-win">
+      <div className="app-main">
+        <main className="view rule-set-view">
+          <RuleSettingsPanel />
         </main>
       </div>
     </div>

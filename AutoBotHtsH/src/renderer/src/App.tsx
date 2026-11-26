@@ -33,8 +33,14 @@ export function App() {
       const id = st.open('rebound');
       if ((e as CustomEvent).detail === 'history') st.setOpts(id, { tab: 'history' });
     };
+    // [2026-11-27] the rule-trade settings window (bot control > 규칙 매매 > 세부 설정)
+    const openRules = () => void useStore.getState().open('rules');
     window.addEventListener('rebound-settings', open);
-    return () => window.removeEventListener('rebound-settings', open);
+    window.addEventListener('rule-settings', openRules);
+    return () => {
+      window.removeEventListener('rebound-settings', open);
+      window.removeEventListener('rule-settings', openRules);
+    };
   }, []);
   const loggedIn = auth?.status === 'in';
 

@@ -159,3 +159,18 @@ describe('replay date menu', () => {
     expect(neighborDate([], '20261126', 1)).toBeUndefined();
   });
 });
+
+// [2026-11-27] rule settings window: one editing state over every condition
+describe('unionEditItems', () => {
+  it('keeps each key once and prefers the editable row', async () => {
+    const { unionEditItems } = await import('../src/renderer/src/lib');
+    const meta = (base: unknown) => ({ editable: true, type: 'float' as const, base, override: null, has_override: false, pending: false });
+    const cond = (no: number, values: Record<string, unknown>, values_meta?: Record<string, ReturnType<typeof meta>>) =>
+      ({ order: no, no, func: `_0${no}`, stage: 'STATE', title: 't', description: '', values, values_meta }) as never;
+    const items = unionEditItems([cond(1, { A: 1, B: 2 }), cond(2, { B: 2, C: 3 }, { B: meta(2), C: meta(3) })]);
+    expect(items.map((i) => i.key).sort()).toEqual(['A', 'B', 'C']);
+    expect(items.find((i) => i.key === 'B')!.editable).toBe(true);
+    expect(items.find((i) => i.key === 'A')!.editable).toBe(false);
+    expect(unionEditItems([])).toEqual([]);
+  });
+});

@@ -13,10 +13,12 @@
  * - [2026-11-11] type=feat - 보유 현황 tab (PositionsView) between 차트 and 매매 결과
  */
 
+import { useEffect, useState } from 'react';
 import { useStore, type Tab } from './store';
 import { StatusBar } from './components/StatusBar';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ReplayBar } from './components/ReplayBar';
+import { RuleSettingsModal } from './components/RuleSettings';
 import { PipelineView } from './views/PipelineView';
 import { ControlView } from './views/ControlView';
 import { JobsView } from './views/JobsView';
@@ -99,9 +101,17 @@ const NAV: { group: string; tabs: [Tab, string][] }[] = [
 export function App() {
   const tab = useStore((s) => s.tab);
   const setTab = useStore((s) => s.setTab);
+  // [2026-11-27] rule-trade settings window (control tab > 규칙 매매 > 세부 설정)
+  const [ruleSettings, setRuleSettings] = useState(false);
+  useEffect(() => {
+    const open = () => setRuleSettings(true);
+    window.addEventListener('rule-settings', open);
+    return () => window.removeEventListener('rule-settings', open);
+  }, []);
   return (
     <div className="app">
       <ConfirmDialog />
+      {ruleSettings && <RuleSettingsModal onClose={() => setRuleSettings(false)} />}
       <StatusBar />
       <div className="app-body">
         {/* sidebar: group captions, then one row per tab (icon + label); the current tab sits on a rounded highlight */}
