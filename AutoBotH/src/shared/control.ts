@@ -220,6 +220,11 @@ export interface ControlState {
   paperLogOnly?: PaperModeState;
   /** [2026-11-25] server RULE_BUY_ENABLED ('true' = rule-based new buys on) - undefined until read / older server */
   ruleBuy?: PaperModeState;
+  /** [2026-11-27] server VWAP_TRADE_MODE ('off' / 'paper') and its exits - undefined until read / older server */
+  vwapMode?: PaperModeState;
+  vwapExit?: PaperExitState;
+  /** [2026-11-27] server RULE_TRADE_VARIANT ('normal' / 'extended') - undefined until read / older server */
+  ruleVariant?: PaperModeState;
   /** [2026-11-25] server EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN (paper exits, 0 = the model's label) - undefined until read / older server */
   paperExit?: PaperExitState;
   /** [2026-11-25] server RULE_EXIT_TP_PCT / SL_PCT / HORIZON_MIN (the rule strategy's own exit bounds, 0 = not applied) - older server: undefined */

@@ -226,6 +226,13 @@
 }
 .bot-root .replay-time { min-width: 110px; color: var(--text); font-weight: 600; }
 .bot-root .replay-jump { width: 72px; padding: 1px 6px; font-size: var(--fs); }
+.bot-root .vwap-step { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs); padding: 2px 0; }
+.bot-root .vwap-step > .mono { color: var(--text-3); width: 12px; }
+.bot-root .vwap-step > b { min-width: 62px; }
+.bot-root .vwap-step > span:last-child { color: var(--text-2); }
+.bot-root .seg.rule-variant { align-items: center; gap: 0; }
+.bot-root .seg.rule-variant .badge-warn { margin-left: 10px; }
+.bot-root .rule-variant-note { margin-top: 6px; line-height: 1.5; }
 /* [2026-11-27] rule-trade settings window (RuleSettings: AutoBotH dialog / AutoBotHtsH MDI window) */
 .bot-root .modal.rule-set-modal { width: min(1180px, 94vw); height: min(780px, 88vh); padding: 8px 16px 12px; }
 .bot-root .rule-set { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; gap: 8px; }

@@ -335,6 +335,13 @@ def editable_keys() -> list[str]:
     return sorted(out)
 
 
+# [2026-11-27] keys with a fixed list of values (`set` rejects anything else instead of letting r001 fall back silently)
+CHOICE_KEYS = {
+    "RULE_TRADE_VARIANT": ("normal", "extended"),
+    "VWAP_TRADE_MODE": ("off", "paper"),
+}
+
+
 def validate_assignments(assignments: dict) -> tuple[dict, dict]:
     """Returns (accepted {key: value}, rejected {key: reason}) using the same rules as r001."""
     accepted: dict = {}
@@ -349,6 +356,10 @@ def validate_assignments(assignments: dict) -> tuple[dict, dict]:
             continue
         if not r001.live_override_value_compatible(current, value):
             rejected[key] = f"type mismatch (expected {_type_name(current)}, got {_type_name(value)}; elements must match, no NaN/inf)"
+            continue
+        choices = CHOICE_KEYS.get(key)
+        if choices and str(value).strip().lower() not in choices:   # [2026-11-27] a key with a fixed list of values
+            rejected[key] = f"must be one of {' / '.join(choices)}"
             continue
         accepted[key] = value
     return accepted, rejected

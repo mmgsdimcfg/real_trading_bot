@@ -1544,6 +1544,64 @@ TRADING_STRATEGY_MODE = "normal"   # "normal" | "basic" | "edge"
 # 주문을 내지 않는다([RULE BUY OFF] 로그만). 규칙 기반 전략(TRADING_STRATEGY_MODE normal / basic)에만 적용 - edge 는 무관. 보유분 매도(AUTO_SELL_MODE / 엔진 / 당일 청산), 미체결 매수 정리, 일일 손실·재진입 회계,
 # 가상 매매(EDGE_ONLY_MODE), 수집은 그대로. AUTO_SELL_MODE 가 stop_only / off 면 보유가 남을 수 있다. r003 재시작 후 적용.
 RULE_BUY_ENABLED = True
+# [2026-11-27] 규칙 매매 변형 (사용자 결정: 규칙 매매를 normal / extended 두 가지로, 둘 중 하나 선택. 앱 제어 탭 규칙 매매 카드).
+# "normal" = 지금까지의 조건값(아래 상수와 앱에서 저장한 값) 그대로.
+# "extended" = "상승 초입 매수"용 조건값 묶음 RULE_EXTENDED_VALUES 를 라이브 오버라이드 적용 뒤에 덮어쓴다(같은 키를 앱에서 따로 저장해
+#   두었어도 extended 값이 이긴다 - RULE_VARIANT_APPLIED 에 덮어쓴 키와 값이 남는다). 조건 함수와 조건 목록은 normal 과 같고 값만 다르다.
+#   범위로 제안된 값은 느슨한 쪽 끝을 골랐다(백테스트 초기값 - 수익성이 검증된 값이 아님):
+#     1분 트리거 룩백 12 -> 4봉, 트리거 유효 300 -> 120초, 1분 크로스 유효 240 -> 120초, 틱 크로스 유효 -> 60초,
+#     틱 피드 최신성 120 -> 15초, 1분 above 최대 나이 900 -> 300초, 틱봉 60 만(120 제외), MA 5 / 15,
+#     체결 밀도 15 -> 60건/분(최근 3분), 추격 0.5% / BB 갭 0.8% 유지, BB 갭 동적 완화 끔(DECAY 0, CEILING = 0.8),
+#     1분 "아래에서 전환" 예외 진입 끔(TRIPLE_1MIN_BELOW_TURN_PASS False).
+#   r003 재시작 후 적용. 롤백: "normal".
+RULE_TRADE_VARIANT = "normal"      # "normal" | "extended"
+RULE_EXTENDED_VALUES = {
+	"HYBRID_1MIN_TRIGGER_LOOKBACK_BARS": 4,
+	"HYBRID_1MIN_TRIGGER_MAX_AGE_SECONDS": 120.0,
+	"HYBRID_1MIN_TRIGGER_CROSS_MAX_AGE_SECONDS": 120.0,
+	"TICK_TRIGGER_CROSS_MAX_AGE_SECONDS": 60.0,
+	"TICK_TRIGGER_FEED_STALE_SECONDS": 15.0,
+	"TRIPLE_1MIN_ABOVE_MAX_AGE_SECONDS": 300.0,
+	"TICK_TRIGGER_MA_FAST": 5,
+	"TICK_TRIGGER_MA_SLOW": 15,
+	"TICK_TRIGGER_BAR_SIZES": (60,),
+	"TICK_MIN_PRINTS_PER_MIN": 60.0,
+	"TICK_MIN_PRINTS_WINDOW_MINUTES": 3,
+	"TRIPLE_CHASE_FROM_CROSS_MAX_PCT": 0.5,
+	"HYBRID_1MIN_TRIGGER_BB_GAP_MAX_PCT": 0.8,
+	"HYBRID_1MIN_TRIGGER_BB_GAP_DECAY_PCT_PER_BAR": 0.0,
+	"HYBRID_1MIN_TRIGGER_BB_GAP_CEILING_PCT": 0.8,
+	"TRIPLE_1MIN_BELOW_TURN_PASS": False,
+}
+RULE_VARIANT_APPLIED: dict[str, object] = {}   # key -> extended value written over the constant (empty for "normal")
+# =============================================================================
+# [2026-11-27] VWAP 매매 (사용자 요청, r029_vwap_trade.py) - 규칙 매매 / Edge AI 매매 / 반등 알림과 나란한 네 번째 방식.
+#   매수: (1) 1분 종가와 현재가가 당일 VWAP 위 (2) 1분 MA5 상승 또는 BB 중심선 상승 (3) 60틱봉 MA5 > MA15 골든크로스가
+#         VWAP_TRADE_TICK_CROSS_MAX_AGE_SECONDS 이내 + 최근 체결 밀도 (4) 추격 제한 / 실시간 급락 방지 / 데이터 최신성.
+#   매도: +VWAP_TRADE_TP_PCT % / -VWAP_TRADE_SL_PCT % / VWAP_TRADE_HORIZON_MIN 분 / 15:20 장 마감 청산 중 먼저 닿는 것.
+#   "off"(기본) | "paper" = 가상 매매(주문 없음, runtime/data/live_runtime/vwap_paper_<날짜>.jsonl, 로그 [VWAP PAPER  ]).
+#   정규장 감시 종목만. 앞선 검증(vwap_indicator_review_20261126.md 3)에서 VWAP 위치의 예측력은 확인되지 않았다 - 가상으로 먼저 본다.
+#   r003 재시작 후 적용. 롤백: "off".
+# =============================================================================
+VWAP_TRADE_MODE = "off"                       # "off" | "paper"
+VWAP_TRADE_TP_PCT = 3.0                       # 익절 % (가상 매수가 기준)
+VWAP_TRADE_SL_PCT = 1.27                      # 손절 %
+VWAP_TRADE_HORIZON_MIN = 300                  # 보유 시간 상한 (분)
+VWAP_TRADE_MAX_POSITIONS = 3                  # 동시 가상 보유 종목 수
+VWAP_TRADE_MAX_ENTRIES_PER_DAY = 20           # 하루 가상 매수 횟수 상한
+VWAP_TRADE_TICK_BAR_SIZE = 60                 # 매수 트리거 틱봉 크기
+VWAP_TRADE_TICK_MA_FAST = 5
+VWAP_TRADE_TICK_MA_SLOW = 15
+VWAP_TRADE_TICK_CROSS_MAX_AGE_SECONDS = 60.0  # 골든크로스 발생 후 이 시간 안에서만 매수 (사진: 30 ~ 60초)
+VWAP_TRADE_TICK_FEED_STALE_SECONDS = 15.0     # 마지막 체결이 이보다 오래됐으면 틱 신호 기권
+VWAP_TRADE_MIN_PRINTS_PER_MIN = 30.0          # 최근 체결 밀도 하한 (건/분, 0 이하 = 미적용)
+VWAP_TRADE_MIN_PRINTS_WINDOW_MINUTES = 3
+VWAP_TRADE_CHASE_MAX_PCT = 0.5                # 현재가가 틱 크로스 봉 종가보다 이 % 넘게 위면 추격으로 보고 매수 안 함
+VWAP_TRADE_MAX_VWAP_GAP_PCT = 2.0             # 현재가가 VWAP 보다 이 % 넘게 위면 매수 안 함
+VWAP_TRADE_LIVE_DROP_MAX_PCT = 0.4            # 현재가가 직전 1분 종가보다 이 % 넘게 아래면 매수 안 함 (신호 후 급락)
+VWAP_TRADE_BAR_STALE_SECONDS = 90.0           # 마지막 확정 1분봉이 이보다 오래됐으면 매수 안 함
+VWAP_TRADE_EXCLUDE_FUNDS = True               # ETF / ETN 제외
+VWAP_TRADE_NO_REENTRY_AFTER_SL = True         # 당일 손절된 종목은 그날 다시 사지 않음
 EDGE_TP_PCT = 0.020             # edge 모드 익절 (라벨 tp 2.0%)
 EDGE_SL_PCT = 0.017             # edge 모드 손절 (라벨 sl 1.7%)
 EDGE_MAX_HOLD_MINUTES = 60      # edge 모드 보유 시간 상한 (라벨 horizon 60분)
@@ -2359,6 +2417,8 @@ def live_override_key_allowed(key: str, current) -> bool:
 		return False
 	if key.startswith("LIVE_OVERRIDES"):
 		return False
+	if key in ("RULE_EXTENDED_VALUES", "RULE_VARIANT_APPLIED"):   # [2026-11-27] the extended bundle is code, not a setting
+		return False
 	if any(tok in key.split("_") for tok in LIVE_OVERRIDES_DENY_TOKENS):
 		return False
 	if isinstance(current, Path) or callable(current):
@@ -2493,4 +2553,28 @@ def _apply_live_overrides(path: Path | None = None, namespace: dict | None = Non
 	return applied
 
 
+
+def _apply_rule_variant(namespace: dict | None = None) -> dict[str, object]:
+	"""[2026-11-27] RULE_TRADE_VARIANT == "extended": write RULE_EXTENDED_VALUES over the constants (after the live overrides, so
+	the variant itself can be chosen there). Returns what was written; an unknown variant is treated as "normal" with a [WARN]."""
+	ns = globals() if namespace is None else namespace
+	applied: dict[str, object] = {}
+	ns["RULE_VARIANT_APPLIED"] = applied
+	variant = str(ns.get("RULE_TRADE_VARIANT", "normal")).strip().lower()
+	if variant == "normal":
+		return applied
+	if variant != "extended":
+		print(f"[WARN        ] unknown RULE_TRADE_VARIANT '{variant}' - using normal")
+		return applied
+	for key, value in dict(ns.get("RULE_EXTENDED_VALUES") or {}).items():
+		if key not in ns:
+			print(f"[WARN        ] RULE_EXTENDED_VALUES: unknown constant {key}")
+			continue
+		ns[key] = value
+		applied[key] = value
+	print(f"[INFO] Applied rule trade variant 'extended' ({len(applied)} keys)")
+	return applied
+
+
 _apply_live_overrides()
+_apply_rule_variant()

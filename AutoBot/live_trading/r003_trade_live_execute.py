@@ -2872,6 +2872,18 @@ def _make_v2_shadow_runner(date_str: str):
         return None
 
 
+def _make_vwap_paper_runner(date_str: str):
+    """[2026-11-27] VWAP trade paper runner (r029) - None unless r001 VWAP_TRADE_MODE == "paper" (or today's VWAP paper positions are
+    still open: close-only). No orders; a failure only disables it."""
+    try:
+        import r001_define_config as _cfg_vw
+        from r029_vwap_trade import make_runner
+        return make_runner(_cfg_vw, Path(LIVE_RUNTIME_DIR), date_str, log, CANDLE_CONFIRM_DELAY_SECONDS)
+    except Exception as exc:
+        log(f"  [VWAP PAPER  ] init failed: {exc}")
+        return None
+
+
 def _make_edge_only_runner(date_str: str):
     """[2026-11-12] Edge-AI-only paper runner (r022) or None. Lazy import: EDGE_ONLY_MODE="off" adds nothing."""
     # [2026-11-25] paper positions left open on earlier days (r003 stopped before that day's close): closed in their day's file
@@ -7674,6 +7686,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         buy_services.tick_trigger = tick_feed.evaluate
     v2_shadow = _make_v2_shadow_runner(date_str)
     edge_only = _make_edge_only_runner(date_str)
+    vwap_paper = _make_vwap_paper_runner(date_str)   # [2026-11-27] VWAP trade, paper (r029) - None unless VWAP_TRADE_MODE == "paper"
     edge_live = _edge_live_setup(api)             # [2026-11-25] Edge AI live orders beside the rule strategy
     exit_shadow = _make_exit_shadow_runner(date_str)
     sell_services.exit_live = _make_exit_live_manager(date_str)   # [2026-11-15] None unless EXIT_ENGINE_MODE="live"
@@ -7735,6 +7748,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
             reentry_state = api.live_state.setdefault("reentry", {})  # 새 날짜 live_state 기준으로 재바인딩
             v2_shadow = _make_v2_shadow_runner(date_str)  # [2026-10-23] V2 shadow state is per day
             edge_only = _make_edge_only_runner(date_str)  # [2026-11-12] Edge-AI-only paper state is per day
+            vwap_paper = _make_vwap_paper_runner(date_str)   # [2026-11-27] VWAP paper state is per day
             if exit_shadow is not None:  # [2026-11-15] previous day's open virtual copies end as INCOMPLETE
                 try:
                     exit_shadow.close(finalize_reason="DATE_CHANGE", timeout_s=0)  # never blocks the loop
@@ -7790,6 +7804,12 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         _ws(datetime.now(), force=True)
                 except Exception as exc:
                     log(f"  [EDGE ONLY   ] final session close error: {exc}")
+            if vwap_paper is not None:               # [2026-11-27] the VWAP paper positions too
+                try:
+                    vwap_paper.session_close(datetime.now(), final=True, wait_s=0.0)
+                    vwap_paper.write_status(datetime.now(), force=True)
+                except Exception as exc:
+                    log(f"  [VWAP PAPER  ] final session close error: {exc}")
             log(f"{market_end_time:%H:%M} reached. Stopping.")
             break
 
@@ -7829,6 +7849,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     edge_only.session_close(datetime.now())
                 except Exception as exc:
                     log(f"  [EDGE ONLY   ] session close error: {exc}")
+            if vwap_paper is not None:
+                try:
+                    vwap_paper.session_close(datetime.now())
+                except Exception as exc:
+                    log(f"  [VWAP PAPER  ] session close error: {exc}")
             # [2026-11-25] Edge AI live: from 15:20 on the symbol loop below is skipped (closing auction) - what the edge
             # strategy still holds is closed here, every turn until nothing is left; after 15:30 a rest is reported
             if current_dt.time() >= REGULAR_FORCE_EXIT:
@@ -8053,6 +8078,19 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         edge_only.on_symbol(code, name, current_dt, _eo_frame_1m, float(price), nxt_tradeable=bool(nxt_tradeable))
                     except Exception as exc:
                         log(f"  [EDGE ONLY   ] {symbol_label} error: {exc}")
+
+                # [2026-11-27] VWAP trade, paper (r029, no orders) - regular session, live price only
+                if (
+                    vwap_paper is not None and is_regular_session(current_dt)
+                    and price_source in ("live", "cached_live") and price is not None and price > 0
+                ):
+                    try:
+                        _vw_frame_1m = _get_or_refresh_1min_frame(
+                            code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min,
+                        )
+                        vwap_paper.on_symbol(code, name, current_dt, _vw_frame_1m, float(price), nxt_tradeable=False)
+                    except Exception as exc:
+                        log(f"  [VWAP PAPER  ] {symbol_label} error: {exc}")
 
                 # [2026-11-15] Adaptive exit SHADOW (r026, no orders) - held bot positions, real-time price only
                 if (
@@ -8293,6 +8331,14 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                 write_status = getattr(edge_only, "write_status", None)
                 if callable(write_status):
                     write_status(datetime.now())
+
+            # [2026-11-27] VWAP paper: positions not evaluated this turn get their exits from the tick files; status file for the app
+            if vwap_paper is not None and is_regular_session(current_dt):
+                try:
+                    vwap_paper.poll_orphans(getattr(vwap_paper, "tick_feed", None), datetime.now(), eo_turn_at)
+                except Exception as exc:
+                    log(f"  [VWAP PAPER  ] orphan poll error: {exc}")
+                vwap_paper.write_status(datetime.now())
 
             # [2026-09-02] 정규장 시작(REGULAR_START) 도달 시 active_set의 TIME_LIMIT
             # 카운트다운을 리셋 - 리셋 전에는 first_active_at이 장전 NXT 세션(08:00~08:50)

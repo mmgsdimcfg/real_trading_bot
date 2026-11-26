@@ -146,6 +146,13 @@ export const PAPER_STAGE_KO: Record<string, string> = {
   fund: 'ETF·ETN 제외',
   sl_today: '오늘 손절한 종목 (재매수 안 함)',
   candidate: '후보 기록 (신규 매수 꺼짐)',
+  // [2026-11-27] VWAP trade (server r029 vwap_signal)
+  below_vwap: 'VWAP 아래',
+  no_trend: '1분 MA5 · BB 중심선 상승 아님',
+  no_tick_cross: '60틱 골든크로스 없음 / 만료',
+  chase: '추격 제한 (크로스·VWAP 대비 이격)',
+  price_drop: '신호 후 급락',
+  stale: '분봉 데이터 지연',
 };
 
 export interface PaperStatusSymbol {
@@ -447,6 +454,44 @@ export function parseRuleBuy(data: unknown): PaperModeState | null {
   if (!v || typeof v.effective !== 'boolean') return null;
   return { effective: String(v.effective), running: typeof v.running === 'boolean' ? String(v.running) : null, pending: !!v.pending };
 }
+
+/** [2026-11-27] VWAP trade (server r029): r001 VWAP_TRADE_MODE 'off' | 'paper' and its exits VWAP_TRADE_TP_PCT / SL_PCT (%) /
+ *  HORIZON_MIN (minutes, all > 0). A server without the keys: null (the card is not shown) */
+export const VWAP_MODE_KEY = 'VWAP_TRADE_MODE';
+export const VWAP_EXIT_KEYS: Record<PaperExitKind, string> = { tp: 'VWAP_TRADE_TP_PCT', sl: 'VWAP_TRADE_SL_PCT', horizon: 'VWAP_TRADE_HORIZON_MIN' };
+export const parseVwapMode = (data: unknown): PaperModeState | null => modeOf(data, VWAP_MODE_KEY);
+export const parseVwapExit = (data: unknown): PaperExitState | null => parseExitKeys(data, VWAP_EXIT_KEYS);
+export function vwapExitChanges(v: Record<PaperExitKind, number>): Record<string, number> {
+  return { [VWAP_EXIT_KEYS.tp]: v.tp, [VWAP_EXIT_KEYS.sl]: v.sl, [VWAP_EXIT_KEYS.horizon]: Math.round(v.horizon) };
+}
+/** the four buy steps of the VWAP trade, as the control card lists them */
+export const VWAP_STEPS: [string, string][] = [
+  ['VWAP', '1분 종가 · 현재가 > 당일 VWAP'],
+  ['1분봉', 'MA5 상승 또는 BB 중심선 상승'],
+  ['60틱봉', 'MA5/MA15 골든크로스 60초 이내 + 체결 밀도'],
+  ['안전장치', '추격 제한 · 급락 방지 · 데이터 최신성'],
+];
+export const VWAP_EXIT_NOTE = 'VWAP 매매로 산 종목은 익절 % / 손절 % / 보유 시간 중 먼저 닿는 것으로 팔고, 남으면 15:20 장 마감에 청산합니다. 세 값 모두 0보다 커야 합니다. r003 재시작 후 새 매수부터 적용됩니다.';
+/** which paper book the 가상 매매 tab shows: the Edge AI trade (edge_only_* files) or the VWAP trade (vwap_paper_* files) */
+export type PaperBook = 'edge' | 'vwap';
+export const PAPER_BOOKS: PaperBook[] = ['edge', 'vwap'];
+export const PAPER_BOOK_KO: Record<PaperBook, string> = { edge: 'Edge AI 매매', vwap: 'VWAP 매매' };
+export const PAPER_BOOK_PREFIX: Record<PaperBook, string> = { edge: 'edge_only', vwap: 'vwap_paper' };
+export const paperBookOf = (v: unknown): PaperBook => (v === 'vwap' ? 'vwap' : 'edge');
+
+/** [2026-11-27] r001 RULE_TRADE_VARIANT: the rule strategy's condition values - 'normal' (as before) or 'extended' (the "early rise"
+ *  bundle RULE_EXTENDED_VALUES written over the constants). A server without the key: null (the choice is not shown) */
+export const RULE_VARIANT_KEY = 'RULE_TRADE_VARIANT';
+export type RuleVariant = 'normal' | 'extended';
+export const RULE_VARIANTS: RuleVariant[] = ['normal', 'extended'];
+export const RULE_VARIANT_KO: Record<RuleVariant, string> = { normal: 'Normal', extended: 'Extended' };
+export const RULE_VARIANT_NOTE: Record<RuleVariant, string> = {
+  normal: '지금까지의 조건값 (세부 설정에서 저장한 값 포함)',
+  extended:
+    '상승 초입 매수용 조건값 묶음: 1분 트리거 룩백 4봉 · 신호 유효 120초 · 틱 크로스 유효 60초 · 틱 피드 15초 이내 · 1분 above 최대 300초 · 60틱봉만 · MA 5/15 · 체결 밀도 60건/분(3분) · BB 갭 0.8% 고정 · "아래에서 전환" 예외 진입 끔. 같은 키를 세부 설정에서 저장해 두었어도 이 값이 우선합니다',
+};
+export const parseRuleVariant = (data: unknown): PaperModeState | null => modeOf(data, RULE_VARIANT_KEY);
+export const ruleVariantOf = (v: string | null | undefined): RuleVariant => (v === 'extended' ? 'extended' : 'normal');
 
 /** [2026-11-25] r001 EDGE_LIVE_ORDERS: Edge AI live orders beside the rule strategy (the control tab's "가상 매수" unchecked).
  *  A server without the key: null (the checkbox stays locked) */

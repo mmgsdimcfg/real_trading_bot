@@ -243,10 +243,11 @@ export class PriceService {
   }
 
   /** [2026-11-12] text of the day's Edge-AI-only paper trade file (null = no file: the mode was off or nothing was bought) */
-  paperLog(date: string): Promise<string | null> {
+  paperLog(date: string, prefix = 'edge_only'): Promise<string | null> {
     const job = this.tail.then(async () => {
-      if (!/^\d{8}$/.test(date)) return null;
-      const path = `${this.root()}/runtime/data/live_runtime/edge_only_${date}.jsonl`;
+      if (!/^\d{8}$/.test(date) || !/^[a-z_]+$/.test(prefix)) return null;
+      // [2026-11-27] prefix: 'edge_only' (Edge AI trade, r022) or 'vwap_paper' (VWAP trade, r029)
+      const path = `${this.root()}/runtime/data/live_runtime/${prefix}_${date}.jsonl`;
       const st = await this.host.stat(path);
       if (!st || !st.size) return null;
       return (await this.host.readRange(path, 0, st.size)).toString('utf8');
@@ -256,10 +257,10 @@ export class PriceService {
   }
 
   /** [2026-11-19] text of the day's paper status file (server r022 write_status; null = none: paper mode off / bot not run) */
-  paperStatus(date: string): Promise<string | null> {
+  paperStatus(date: string, prefix = 'edge_only'): Promise<string | null> {
     const job = this.tail.then(async () => {
-      if (!/^\d{8}$/.test(date)) return null;
-      const path = `${this.root()}/runtime/data/live_runtime/edge_only_status_${date}.json`;
+      if (!/^\d{8}$/.test(date) || !/^[a-z_]+$/.test(prefix)) return null;
+      const path = `${this.root()}/runtime/data/live_runtime/${prefix}_status_${date}.json`;
       const st = await this.host.stat(path);
       if (!st || !st.size || st.size > 4_000_000) return null;
       return (await this.host.readRange(path, 0, st.size)).toString('utf8');

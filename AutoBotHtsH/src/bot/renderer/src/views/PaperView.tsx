@@ -51,6 +51,9 @@ import {
   type PaperStatus,
   type PaperTrade,
   edgeCutText,
+  PAPER_BOOKS,
+  PAPER_BOOK_KO,
+  type PaperBook,
 } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
 import { showCode } from '../showCode';
@@ -104,43 +107,63 @@ const STATUS_STALE_MS = 60000;
 export function PaperView() {
   const snap = useStore((s) => s.snapshot);
   const status = useStore((s) => s.status);
-  const mode = useStore((s) => s.control.paper);
+  // [2026-11-27] which paper book: the Edge AI trade or the VWAP trade (their own files on the server)
+  const [book, setBook] = useState<PaperBook>(() => {
+    try {
+      return localStorage.getItem('autoboth.paperBook') === 'vwap' ? 'vwap' : 'edge';
+    } catch {
+      return 'edge';
+    }
+  });
+  const pickBook = (b: PaperBook) => {
+    setBook(b);
+    try {
+      localStorage.setItem('autoboth.paperBook', b);
+    } catch {
+      /* not kept */
+    }
+  };
+  const edgeMode = useStore((s) => s.control.paper);
+  const vwapMode = useStore((s) => s.control.vwapMode);
+  const mode = book === 'vwap' ? vwapMode : edgeMode;
   const quotes = useStore((s) => s.quotes);
   const select = useStore((s) => s.select);
   const setTab = useStore((s) => s.setTab);
   const day = snap?.date || status.date;
   const tick = status.live ? snap?.generatedAt : 0;
-  const [res, setRes] = useState<PaperRes | null>(() => (day ? peek<PaperRes>(`paper:${day}`) || null : null));
+  const pKey = `paper:${book}:${day}`;
+  const [res, setRes] = useState<PaperRes | null>(() => (day ? peek<PaperRes>(pKey) || null : null));
 
   useEffect(() => {
     if (!day) return;
     let alive = true;
-    const kept = peek<PaperRes>(`paper:${day}`);
-    if (kept) setRes(kept);
-    void window.api.getPaper(day).then((r) => {
-      if (r.ok) put(`paper:${day}`, { day, ...r });
+    const kept = peek<PaperRes>(pKey);
+    setRes(kept || null);
+    void window.api.getPaper(day, book).then((r) => {
+      if (r.ok) put(pKey, { day, ...r });
       if (alive && (r.ok || !kept)) setRes({ day, ...r });
     });
     return () => {
       alive = false;
     };
-  }, [day, tick, status.conn]);
+  }, [day, tick, status.conn, book]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // [2026-11-19] status of the paper-traded symbols (server r022 edge_only_status_<date>.json)
-  const [stRes, setStRes] = useState<StatusRes | null>(() => (day ? peek<StatusRes>(`paperStatus:${day}`) || null : null));
+  const sKey = `paperStatus:${book}:${day}`;
+  const [stRes, setStRes] = useState<StatusRes | null>(() => (day ? peek<StatusRes>(sKey) || null : null));
   useEffect(() => {
     if (!day) return;
     let alive = true;
-    const kept = peek<StatusRes>(`paperStatus:${day}`);
-    if (kept) setStRes(kept);
-    void window.api.getPaperStatus(day).then((r) => {
-      if (r.ok) put(`paperStatus:${day}`, { day, ...r });
+    const kept = peek<StatusRes>(sKey);
+    setStRes(kept || null);
+    void window.api.getPaperStatus(day, book).then((r) => {
+      if (r.ok) put(sKey, { day, ...r });
       if (alive && (r.ok || !kept)) setStRes({ day, ...r });
     });
     return () => {
       alive = false;
     };
-  }, [day, tick, status.conn]);
+  }, [day, tick, status.conn, book]); // eslint-disable-line react-hooks/exhaustive-deps
   const pst = stRes && stRes.day === day ? stRes.status : null;
   const statusPrice = useMemo(() => new Map((pst?.symbols || []).map((x) => [x.code, x.price])), [pst]);
 
@@ -211,6 +234,13 @@ export function PaperView() {
   return (
     <div className="paper-view">
       <div className="toolbar">
+        <div className="seg" title="가상 매매 장부: Edge AI 매매 / VWAP 매매 (서버에 따로 기록됩니다)">
+          {PAPER_BOOKS.map((b) => (
+            <button key={b} type="button" className={book === b ? 'on' : ''} onClick={() => pickBook(b)}>
+              {PAPER_BOOK_KO[b]}
+            </button>
+          ))}
+        </div>
         <span className={`badge-mode ${running === 'paper' ? 'on' : ''}`}>{modeText}</span>
         {/* [2026-11-26] not from a stale status file: after a restart with other settings the old file said "꺼짐" until the new r003 wrote its own */}
         {pst?.logOnly && !stale && (
@@ -219,8 +249,8 @@ export function PaperView() {
           </span>
         )}
         {mode?.pending && <span className="badge-warn">⚠ 설정이 바뀌었습니다 → r003 재시작 후 적용</span>}
-        {realEdge && <span className="badge-warn">매매 방식이 Edge AI(실제 주문)입니다 - 가상 매매는 돌지 않고, 실제 내역은 매매 결과 탭에 있습니다</span>}
-        {liveEdge && !realEdge && <span className="badge-warn">Edge AI 실제 매매 중 - 실제 주문 내역은 이 창이 아니라 매매 결과 탭에 있습니다</span>}
+        {book === 'edge' && realEdge && <span className="badge-warn">매매 방식이 Edge AI(실제 주문)입니다 - 가상 매매는 돌지 않고, 실제 내역은 매매 결과 탭에 있습니다</span>}
+        {book === 'edge' && liveEdge && !realEdge && <span className="badge-warn">Edge AI 실제 매매 중 - 실제 주문 내역은 이 창이 아니라 매매 결과 탭에 있습니다</span>}
         <span className="muted">Edge AI 확률만으로 판단한 가상 매수/매도 기록입니다. 실제 주문·계좌와 무관합니다. 켜고 끄기는 제어 탭.</span>
       </div>
       <div className="toolbar">

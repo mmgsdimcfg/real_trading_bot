@@ -223,3 +223,31 @@ describe('paper status file (server r022 edge_only_status_<date>.json)', () => {
     expect(parsePaperStatus('{"symbols": 1}')).toBeNull();
   });
 });
+
+// [2026-11-27] rule trade variant, VWAP trade keys and the paper books
+describe('rule variant / VWAP trade / paper books', () => {
+  it('parses the variant and the VWAP keys from an r016 get answer', async () => {
+    const p = await import('../src/shared/paper');
+    const v = (effective: unknown, running: unknown = effective) => ({ effective, running, pending: effective !== running });
+    const data = { values: { RULE_TRADE_VARIANT: v('extended', 'normal'), VWAP_TRADE_MODE: v('paper'), VWAP_TRADE_TP_PCT: v(3.0), VWAP_TRADE_SL_PCT: v(1.27), VWAP_TRADE_HORIZON_MIN: v(300) } };
+    expect(p.parseRuleVariant(data)).toEqual({ effective: 'extended', running: 'normal', pending: true });
+    expect(p.ruleVariantOf('extended')).toBe('extended');
+    expect(p.ruleVariantOf('weird')).toBe('normal');
+    expect(p.parseVwapMode(data)!.effective).toBe('paper');
+    const ex = p.parseVwapExit(data)!;
+    expect([ex.tp.effective, ex.sl.effective, ex.horizon.effective]).toEqual([3, 1.27, 300]);
+    expect(p.vwapExitChanges({ tp: 2.5, sl: 1, horizon: 120.4 })).toEqual({ VWAP_TRADE_TP_PCT: 2.5, VWAP_TRADE_SL_PCT: 1, VWAP_TRADE_HORIZON_MIN: 120 });
+    // an older server without the keys
+    expect([p.parseRuleVariant({ values: {} }), p.parseVwapMode({ values: {} }), p.parseVwapExit({ values: {} })]).toEqual([null, null, null]);
+  });
+
+  it('maps the paper books to their file prefixes and knows the VWAP stages', async () => {
+    const p = await import('../src/shared/paper');
+    expect([p.paperBookOf('vwap'), p.paperBookOf(undefined), p.paperBookOf('x')]).toEqual(['vwap', 'edge', 'edge']);
+    expect(p.PAPER_BOOK_PREFIX).toEqual({ edge: 'edge_only', vwap: 'vwap_paper' });
+    for (const s of ['below_vwap', 'no_trend', 'no_tick_cross', 'chase', 'price_drop', 'stale']) expect(p.PAPER_STAGE_KO[s]).toBeTruthy();
+    // a VWAP ENTRY has no probability
+    const t = p.parsePaperLines('{"event":"ENTRY","ts":"2026-11-27T09:30:30","code":"005930","name":"삼성전자","entry":103.2,"prob":null,"threshold":null,"trigger":"VWAP_gap=+1.50%_MA5_UP_TICK60_MA5_MA15@09:30:20","tp_px":106.3,"sl_px":101.9,"horizon":300,"group":"watch"}');
+    expect([t.length, t[0].prob, t[0].tpPx]).toEqual([1, undefined, 106.3]);
+  });
+});

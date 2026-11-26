@@ -225,6 +225,13 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 }
 .replay-time { min-width: 110px; color: var(--text); font-weight: 600; }
 .replay-jump { width: 72px; padding: 1px 6px; font-size: 12px; }
+.vwap-step { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; padding: 2px 0; }
+.vwap-step > .mono { color: var(--text-3); width: 12px; }
+.vwap-step > b { min-width: 62px; }
+.vwap-step > span:last-child { color: var(--text-2); }
+.seg.rule-variant { align-items: center; gap: 0; }
+.seg.rule-variant .badge-warn { margin-left: 10px; }
+.rule-variant-note { margin-top: 6px; line-height: 1.5; }
 /* [2026-11-27] rule-trade settings window (RuleSettings: AutoBotH dialog / AutoBotHtsH MDI window) */
 .modal.rule-set-modal { width: min(1180px, 94vw); height: min(780px, 88vh); padding: 8px 16px 12px; }
 .rule-set { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; gap: 8px; }

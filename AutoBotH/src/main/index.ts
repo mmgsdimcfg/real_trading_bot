@@ -49,7 +49,7 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell } from 'electron';
-import { parseEdgeMeta, parsePaperLines, parsePaperStatus } from '../shared/paper';
+import { parseEdgeMeta, parsePaperLines, parsePaperStatus, PAPER_BOOK_PREFIX, paperBookOf } from '../shared/paper';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -589,11 +589,11 @@ ipcMain.handle('price:get', (_e, req: PriceRequest): Promise<PriceResponse> | Pr
   return p;
 });
 // [2026-11-12] Edge-AI-only paper trades of a day (server r022 file runtime/data/live_runtime/edge_only_<date>.jsonl)
-ipcMain.handle('paper:get', async (_e, date: string) => {
+ipcMain.handle('paper:get', async (_e, date: string, book?: string) => {
   if (!files.connected) return { ok: false, trades: [], error: `${hostLabel()}에 연결되어 있지 않습니다.` };
   const g = hostGen;
   try {
-    const text = await pricesFor(mode).paperLog(String(date));
+    const text = await pricesFor(mode).paperLog(String(date), PAPER_BOOK_PREFIX[paperBookOf(book)]);
     if (g !== hostGen) return { ok: false, trades: [], error: '실행 위치가 바뀌었습니다.' };
     return { ok: true, trades: text ? parsePaperLines(text) : [] };
   } catch (e) {
@@ -601,11 +601,11 @@ ipcMain.handle('paper:get', async (_e, date: string) => {
   }
 });
 // [2026-11-19] status of every paper-traded symbol (server r022 file runtime/data/live_runtime/edge_only_status_<date>.json)
-ipcMain.handle('paper:status', async (_e, date: string) => {
+ipcMain.handle('paper:status', async (_e, date: string, book?: string) => {
   if (!files.connected) return { ok: false, status: null, error: `${hostLabel()}에 연결되어 있지 않습니다.` };
   const g = hostGen;
   try {
-    const text = await pricesFor(mode).paperStatus(String(date));
+    const text = await pricesFor(mode).paperStatus(String(date), PAPER_BOOK_PREFIX[paperBookOf(book)]);
     if (g !== hostGen) return { ok: false, status: null, error: '실행 위치가 바뀌었습니다.' };
     return { ok: true, status: text ? parsePaperStatus(text) : null };
   } catch (e) {

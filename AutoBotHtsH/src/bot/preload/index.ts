@@ -82,9 +82,9 @@ export const api = {
   setReplayCursor: (ts: number | null): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('replay:cursor', ts),
   getPrice: (req: PriceRequest): Promise<PriceResponse> => ipcRenderer.invoke('price:get', req),
   /** Edge-AI-only paper trades of a day (server r022) */
-  getPaper: (date: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date),
+  getPaper: (date: string, book?: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date, book),
   /** [2026-11-19] status of every paper-traded symbol of a day (server r022; null = no status file) */
-  getPaperStatus: (date: string): Promise<{ ok: boolean; status: PaperStatus | null; error?: string }> => ipcRenderer.invoke('paper:status', date),
+  getPaperStatus: (date: string, book?: string): Promise<{ ok: boolean; status: PaperStatus | null; error?: string }> => ipcRenderer.invoke('paper:status', date, book),
   /** the Edge AI model the bot uses now (null = none published) */
   getEdgeModel: (): Promise<{ ok: boolean; model: EdgeModelInfo | null; error?: string }> => ipcRenderer.invoke('edge:model'),
   /** current price per watched symbol (r003 quote log); upTo = replay cursor of a past day */

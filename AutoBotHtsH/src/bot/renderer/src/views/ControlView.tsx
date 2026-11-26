@@ -60,7 +60,7 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, edgeCutText, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, edgeCutText, VWAP_MODE_KEY, VWAP_STEPS, VWAP_EXIT_NOTE, vwapExitChanges, RULE_VARIANT_KEY, RULE_VARIANTS, RULE_VARIANT_KO, RULE_VARIANT_NOTE, ruleVariantOf, type RuleVariant, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -487,6 +487,45 @@ export function ControlView() {
   const ruleBuy = control.ruleBuy;
   const normalMode = !strategy || tradeMode === 'rules' || tradeMode === 'rules+paper'; // not read yet: the (disabled) checkboxes
   const rulesOn = ruleBuy ? ruleBuy.effective === 'true' : true;
+  // [2026-11-27] VWAP trade (server VWAP_TRADE_MODE off / paper, r029) - the fourth kind beside rules / Edge AI / rebound
+  const vwapMode = control.vwapMode;
+  const vwapOn = vwapMode?.effective === 'paper';
+  const vwapPending = !!vwapMode && vwapMode.running !== null && (vwapMode.pending || vwapMode.running !== vwapMode.effective);
+  const setVwap = async (on: boolean) => {
+    if (!vwapMode || on === vwapOn) return;
+    const text = on
+      ? 'VWAP 매매를 켭니다 - 가상 매매입니다 (실제 주문 없음, 가상 매매 탭의 "VWAP 매매" 장부).\n\n' +
+        VWAP_STEPS.map(([a, b], i) => `${i + 1}. ${a}: ${b}`).join('\n') +
+        '\n\n앞선 검증에서 VWAP 위치의 예측력은 확인되지 않았습니다. r003 재시작 후 적용됩니다. 켤까요?'
+      : 'VWAP 매매를 끕니다. 신규 가상 매수를 멈추고, 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다. r003 재시작 후 적용됩니다. 끌까요?';
+    if (!window.confirm(text)) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet({ [VWAP_MODE_KEY]: on ? 'paper' : 'off' });
+      const rej = r.data?.rejected?.[VWAP_MODE_KEY];
+      if (!r.ok || rej) window.alert(`VWAP 매매 설정을 바꾸지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
+      else bumpHistory();
+    } finally {
+      setModeBusy(false);
+    }
+  };
+  // [2026-11-27] rule strategy variant: normal / extended (server RULE_TRADE_VARIANT, applied after an r003 restart)
+  const ruleVariant = control.ruleVariant;
+  const variantNow = ruleVariantOf(ruleVariant?.effective);
+  const variantPending = !!ruleVariant && ruleVariant.running !== null && (ruleVariant.pending || ruleVariantOf(ruleVariant.running) !== variantNow);
+  const setVariant = async (next: RuleVariant) => {
+    if (next === variantNow || !ruleVariant) return;
+    if (next === 'extended' && !window.confirm(`규칙 매매를 Extended 로 바꿉니다.\n\n${RULE_VARIANT_NOTE.extended}.\n\n백테스트 초기값이며 수익성이 검증된 값이 아닙니다. r003 재시작 후 적용됩니다. 바꿀까요?`)) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet({ [RULE_VARIANT_KEY]: next });
+      const rej = r.data?.rejected?.[RULE_VARIANT_KEY];
+      if (!r.ok || rej) window.alert(`규칙 매매 변형을 바꾸지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
+      else bumpHistory();
+    } finally {
+      setModeBusy(false);
+    }
+  };
   const rulesRunning = ruleBuy ? (ruleBuy.running ?? ruleBuy.effective) === 'true' : true;
   const rulesPending = !!ruleBuy && ruleBuy.running !== null && (ruleBuy.pending || rulesRunning !== rulesOn);
   const paperOn = tradeMode === 'rules+paper';
@@ -945,6 +984,22 @@ export function ControlView() {
                     onChange={(v) => void setKind('rules', v)}
                   />
                 </div>
+                {ruleVariant && (
+                  <div className="tm-sec">
+                    <div className="tm-lab">
+                      매수 조건값 <i>둘 중 하나 · r003 재시작 후 적용</i>
+                    </div>
+                    <div className="seg rule-variant">
+                      {RULE_VARIANTS.map((v) => (
+                        <button key={v} type="button" className={variantNow === v ? 'on' : ''} disabled={busy || !connected || modeBusy} title={RULE_VARIANT_NOTE[v]} onClick={() => void setVariant(v)}>
+                          {RULE_VARIANT_KO[v]}
+                        </button>
+                      ))}
+                      {variantPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {RULE_VARIANT_KO[ruleVariantOf(ruleVariant.running)]})</span>}
+                    </div>
+                    {variantNow === 'extended' && <div className="muted small rule-variant-note">{RULE_VARIANT_NOTE.extended}</div>}
+                  </div>
+                )}
                 <div className="tm-sec">
                   <div className="tm-lab">
                     청산 방식 <i>기본 엔진 · 자동 매도 설정에 따름</i>
@@ -1110,6 +1165,56 @@ export function ControlView() {
                     )}
                   </div>
                 )}
+              </div>
+            )}
+            {normalMode && vwapMode && (
+              <div className={`tm-card${vwapOn ? ' on' : ''}`}>
+                <div className="tm-top">
+                  <Ico n="rules" />
+                  <div className="tm-name">
+                    <b>VWAP 매매</b>
+                    <span>VWAP 위 + 60틱 골든크로스로 매수 / 청산</span>
+                  </div>
+                  <span className="tm-apply">↻ 재시작 후 적용</span>
+                  <Switch
+                    checked={vwapOn}
+                    disabled={busy || !connected || modeBusy}
+                    title="VWAP 매매 (서버 VWAP_TRADE_MODE off / paper, r029). 지금은 가상 매매로만 동작합니다 (실제 주문 없음)"
+                    onChange={(v) => void setVwap(v)}
+                  />
+                </div>
+                <div className="tm-sec">
+                  <div className="tm-lab">
+                    매수 조건 <i>네 단계 모두 충족 시</i>
+                  </div>
+                  <div className="tm-inset">
+                    {VWAP_STEPS.map(([a, b], i) => (
+                      <div key={a} className="vwap-step">
+                        <span className="mono">{i + 1}</span>
+                        <b>{a}</b>
+                        <span>{b}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {control.vwapExit && (
+                  <div className="tm-sec">
+                    <div className="tm-lab">
+                      청산 방식 <i>먼저 닿는 것 · 남으면 15:20 청산</i>
+                    </div>
+                    <RuleExitEdit st={control.vwapExit} vwap disabled={busy || !connected || modeBusy} />
+                  </div>
+                )}
+                <div className="tm-sec">
+                  <div className="tm-lab">실행 대상</div>
+                  <div className="chips">
+                    <span className="chip">가상 매매 (주문 없음)</span>
+                    <span className="chip" title="실제 주문은 가상 매매 결과를 본 뒤 추가합니다">
+                      실제 매매 준비 중
+                    </span>
+                    {vwapPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {vwapMode.running === 'paper' ? '가상 매매' : '꺼짐'})</span>}
+                  </div>
+                </div>
               </div>
             )}
             {tradeMode === 'edge' && control.paperExit && (
@@ -1495,7 +1600,8 @@ const RULE_EXIT_DEFAULT_TITLE =
 
 /** [2026-11-25] the rule strategy's own exit bounds (server r001 RULE_EXIT_TP_PCT / RULE_EXIT_SL_PCT / RULE_EXIT_HORIZON_MIN, r006
  *  _c03_common_exit_bounds): an empty box = 0 = that bound is not applied. The rule exits stay; a set bound reached first sells all */
-function RuleExitEdit({ st, disabled }: { st: PaperExitState; disabled: boolean }) {
+/** [2026-11-27] `vwap`: the VWAP trade's exits (server VWAP_TRADE_TP_PCT / SL_PCT / HORIZON_MIN) - all three required (> 0) */
+function RuleExitEdit({ st, disabled, vwap = false }: { st: PaperExitState; disabled: boolean; vwap?: boolean }) {
   const fromState = (): Record<PaperExitKind, string> => ({
     tp: st.tp.effective > 0 ? String(st.tp.effective) : '',
     sl: st.sl.effective > 0 ? String(st.sl.effective) : '',
@@ -1506,19 +1612,23 @@ function RuleExitEdit({ st, disabled }: { st: PaperExitState; disabled: boolean 
   const stKey = PAPER_EXIT_KINDS.map((k) => st[k].effective).join(',');
   useEffect(() => setText(fromState()), [stKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const vals = { tp: paperExitInput('tp', text.tp), sl: paperExitInput('sl', text.sl), horizon: paperExitInput('horizon', text.horizon) };
-  const bad = PAPER_EXIT_KINDS.filter((k) => vals[k] === null);
+  const bad = PAPER_EXIT_KINDS.filter((k) => vals[k] === null || (vwap && vals[k] === 0));
   const changed = !bad.length && PAPER_EXIT_KINDS.some((k) => vals[k] !== st[k].effective);
   const pending = PAPER_EXIT_KINDS.some((k) => st[k].running !== null && (st[k].pending || st[k].running !== st[k].effective));
   const meaning = (k: PaperExitKind, v: number) => (v > 0 ? exitText(k, v) : '미적용');
+  const what = vwap ? 'VWAP 매매 청산 기준' : '규칙 매매 청산 기준';
   const save = async () => {
     if (!changed) return;
     const v = vals as Record<PaperExitKind, number>;
     const lines = PAPER_EXIT_KINDS.map((k) => `${EXIT_KO[k]}: ${meaning(k, v[k])}`).join('\n');
-    if (!window.confirm(`규칙 매매 청산 기준 (실제 주문)\n\n${lines}\n\n${COMMON_EXIT_NOTE}\n이미 보유한 규칙 매매 종목에도 적용됩니다. 바꿀까요?`)) return;
+    const ask = vwap
+      ? `${what}\n\n${lines}\n\n${VWAP_EXIT_NOTE}\n바꿀까요?`
+      : `규칙 매매 청산 기준 (실제 주문)\n\n${lines}\n\n${COMMON_EXIT_NOTE}\n이미 보유한 규칙 매매 종목에도 적용됩니다. 바꿀까요?`;
+    if (!window.confirm(ask)) return;
     setSaving(true);
     try {
-      const r = await window.api.ctlSet(ruleExitChanges(v));
-      if (!r.ok) window.alert(`규칙 매매 청산 기준을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+      const r = await window.api.ctlSet(vwap ? vwapExitChanges(v) : ruleExitChanges(v));
+      if (!r.ok) window.alert(`${what}을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
     } finally {
       setSaving(false);
     }
@@ -1529,9 +1639,9 @@ function RuleExitEdit({ st, disabled }: { st: PaperExitState; disabled: boolean 
         type="text"
         inputMode="decimal"
         value={text[k]}
-        placeholder="없음"
+        placeholder={vwap ? '필수' : '없음'}
         disabled={disabled || saving}
-        aria-invalid={vals[k] === null}
+        aria-invalid={vals[k] === null || (vwap && vals[k] === 0)}
         onChange={(e) => setText((t) => ({ ...t, [k]: e.target.value }))}
         onKeyDown={(e) => e.key === 'Enter' && void save()}
       />

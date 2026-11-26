@@ -273,7 +273,7 @@ def last_print_until(path: Path, date_str: str, until_hhmmss: str, sessions: tup
 
 
 def close_missed_days(out_dir: Path, ticks_root: Path, today: str, log: Callable[[str], None], lookback_days: int = 7,
-                      now: datetime | None = None) -> int:
+                      now: datetime | None = None, prefix: str = "edge_only") -> int:
     """[2026-11-25] Paper positions still open in an earlier day's edge_only_<date>.jsonl (r003 stopped before that day's session
     close) get an EXIT in that day's file: reason close_missed, at that day's scheduled close (15:20 regular / 19:59:50 NXT holding).
     Price: regular -> the closing auction print, else the last regular print up to 15:20 (estimated), else the buy record (estimated);
@@ -287,8 +287,8 @@ def close_missed_days(out_dir: Path, ticks_root: Path, today: str, log: Callable
         ticks_root = Path(ticks_root)
         t0 = datetime.strptime(today, "%Y%m%d")
         older = 0
-        for path in sorted(out_dir.glob("edge_only_*.jsonl")):
-            day = path.stem[len("edge_only_"):]
+        for path in sorted(out_dir.glob(f"{prefix}_*.jsonl")):   # [2026-11-27] prefix: the VWAP paper files (r029) too
+            day = path.stem[len(prefix) + 1:]
             if not (len(day) == 8 and day.isdigit()) or day >= today:
                 continue
             open_ = _open_entries(path)
@@ -406,6 +406,9 @@ def net_pct(entry: float, exit_px: float) -> float:
 
 
 class EdgeOnlyRunner:
+    # [2026-11-27] file name prefix of the day's records / status / candidates (r029 VwapPaperRunner: "vwap_paper")
+    FILE_PREFIX = "edge_only"
+
     def __init__(self, model_dir: Path, data_root: Path, out_dir: Path, date_str: str, log: Callable[[str], None], config,
                  min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
                  collector_max_positions: int = 0, collector_max_entries: int = 0,
@@ -414,7 +417,7 @@ class EdgeOnlyRunner:
         # [2026-11-27] the trade model (edge_ai/trade, g014 --role trade) when there is one, else the filter model as before
         self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir), prefer_subdir=r011.TRADE_MODEL_SUBDIR)
         self.data_root = Path(data_root)
-        self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
+        self.out_path = Path(out_dir) / f"{self.FILE_PREFIX}_{date_str}.jsonl"
         self.date_str = date_str
         self.log = log
         self.config = config
@@ -443,7 +446,7 @@ class EdgeOnlyRunner:
         self._collector_next: datetime | None = None
         # [2026-11-19] per-symbol status for the app (write_status)
         self.sym_state: dict[str, dict] = {}
-        self.status_path = Path(out_dir) / f"edge_only_status_{date_str}.json"
+        self.status_path = Path(out_dir) / f"{self.FILE_PREFIX}_status_{date_str}.json"
         self._status_next: datetime | None = None
         self._daily: dict[str, dict] = {}
         self._prev_close: dict[str, float] = {}
@@ -457,7 +460,7 @@ class EdgeOnlyRunner:
         # CANDIDATE row (features, score, cut, block reason, price) to edge_only_candidates_<date>.jsonl for later studies.
         # Open positions keep their exits (tp / sl / 15:15 / time, poll_orphans).
         self.log_only = bool(log_only)
-        self.cand_path = Path(out_dir) / f"edge_only_candidates_{date_str}.jsonl"
+        self.cand_path = Path(out_dir) / f"{self.FILE_PREFIX}_candidates_{date_str}.jsonl"
         self._cand_ids: set[str] = set()
         if self.log_only and self.cand_path.is_file():
             try:
@@ -1000,21 +1003,28 @@ class EdgeOnlyRunner:
         if prob is None or not r011.valid_prob(prob) or prob < threshold:
             self._stage(code, "no_model" if prob is None else "below_threshold", prob if r011.valid_prob(prob) else None)
             return
+        self._open_position(code, name, now, price, group, session, prob=float(prob), threshold=threshold, reason=reason,
+                            model_id=(meta or {}).get("model_id"))
+
+    def _open_position(self, code: str, name: str, now: datetime, price: float, group: str, session: str, prob: float | None,
+                       threshold: float | None, reason: str, model_id=None) -> None:
+        """[2026-11-27] the paper buy itself (book, ENTRY record, log line) - split from _check_entry so another signal (r029 VWAP
+        trade, prob None) opens positions the same way"""
         self._stage(code, "bought", prob)
         label = self._label()
         entry = price + krx_tick_size(price)
         pos = {"name": name, "entry": entry, "ts": pd.Timestamp(now), "tp": entry * (1 + label["tp"] / 100.0),
-               "sl": entry * (1 - label["sl"] / 100.0), "horizon": label["horizon"], "prob": float(prob), "group": group,
+               "sl": entry * (1 - label["sl"] / 100.0), "horizon": label["horizon"], "prob": prob, "group": group,
                "session": session,
                # [2026-11-25] an NXT holding (kept until NXT_CLOSE): the runner trades NXT and r003 says the symbol is NXT-tradable
                "nxt": bool(self.nxt and (session != "regular" or (group == "watch" and self.nxt_ok.get(code, False))))}
         self.positions[code] = pos
         self.entries[group] += 1
         self._emit({"event": "ENTRY", "ts": now.isoformat(timespec="seconds"), "code": code, "name": name, "entry": entry,
-                    "price": price, "prob": float(prob), "threshold": threshold, "trigger": reason, "tp_px": pos["tp"],
-                    "sl_px": pos["sl"], "horizon": label["horizon"], "model_id": (meta or {}).get("model_id"), "group": group,
+                    "price": price, "prob": prob, "threshold": threshold, "trigger": reason, "tp_px": pos["tp"],
+                    "sl_px": pos["sl"], "horizon": label["horizon"], "model_id": model_id, "group": group,
                     "session": session, "nxt": pos["nxt"]})
-        self.log(f"{TAG} {code}_{name}{GROUP_KO[group]}{'' if session == 'regular' else f' [{session}]'} | PAPER BUY {entry:,.0f} p={prob:.3f} thr={threshold:.3f} {reason} "
+        self.log(f"{TAG} {code}_{name}{GROUP_KO[group]}{'' if session == 'regular' else f' [{session}]'} | PAPER BUY {entry:,.0f} {f'p={prob:.3f} thr={threshold:.3f} ' if prob is not None and threshold is not None else ''}{reason} "
                  f"| tp {pos['tp']:,.0f} sl {pos['sl']:,.0f} {label['horizon']:.0f}min | open={self._open_count(group)} "
                  f"entries={self.entries[group]}/{self.limits[group][1]}")
 

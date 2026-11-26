@@ -485,3 +485,19 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   주석 자리에 `_COND_020,` 을 다시 넣는다.
 - r016 `conditions` 의 `buy` 목록에 번호 20 이 없다(1 ~ 19, 21 ~ 25, 번호는 다시 매기지 않음). 앱은 서버 목록을 그대로 그린다.
 - 규칙 매매 신호의 `runtime/edge_ai/live/edge_ai_<날짜>.jsonl` 기록(필터가 남기던 것)은 더 쌓이지 않는다. r003 재시작 후 적용.
+
+## 매매 방식 4가지: 규칙 매매(normal / extended) · Edge AI 매매 · VWAP 매매 · 반등 알림 (2026-11-27)
+- 기본값: 규칙 매매 ON(`RULE_BUY_ENABLED` true, 변형 normal), Edge AI 매매 = 가상 매매 ON(`EDGE_ONLY_MODE` paper, `EDGE_LIVE_ORDERS` false),
+  VWAP 매매 OFF(`VWAP_TRADE_MODE` off), 반등 알림 ON(AutoBotHtsH 앱 설정).
+- 규칙 매매 변형 `RULE_TRADE_VARIANT`(str, `normal` | `extended`, r016 `set` 이 다른 값은 `must be one of normal / extended` 로 거부).
+  extended = r001 `RULE_EXTENDED_VALUES` 묶음을 라이브 오버라이드 뒤에 덮어쓴다(같은 키의 저장값보다 우선, `RULE_VARIANT_APPLIED` 에 기록).
+  조건 목록과 함수는 같고 값만 다르다: 1분 트리거 룩백 4봉, 트리거 유효 120초, 1분 크로스 유효 120초, 틱 크로스 유효 60초, 틱 피드 15초,
+  1분 above 최대 300초, 틱봉 60 만, MA 5/15, 체결 밀도 60건/분(3분), 추격 0.5% / BB 갭 0.8%(동적 완화 끔), `TRIPLE_1MIN_BELOW_TURN_PASS` false.
+  `RULE_EXTENDED_VALUES` / `RULE_VARIANT_APPLIED` 는 `set` 대상이 아니다. r016 `conditions` 의 값은 변형 적용 뒤의 값이다. r003 재시작 후 적용.
+- VWAP 매매(r029_vwap_trade.py): `VWAP_TRADE_MODE`(str, `off` | `paper`, 다른 값은 거부). paper = 가상 매매(주문 없음) -
+  `runtime/data/live_runtime/vwap_paper_<날짜>.jsonl`(ENTRY / EXIT, r022 의 edge_only 파일과 같은 형식, prob / threshold 는 null,
+  model_id `vwap_rule_v1`) 과 `vwap_paper_status_<날짜>.json`(같은 형식, 새 stage: `below_vwap`, `no_trend`, `no_tick_cross`, `chase`,
+  `price_drop`, `stale`). 로그 `[VWAP PAPER  ]`. 정규장 감시 종목만. 매수 4단계와 설정 키(`VWAP_TRADE_*`)는 r001 / r029 머리말.
+  청산 `VWAP_TRADE_TP_PCT` / `VWAP_TRADE_SL_PCT`(%) / `VWAP_TRADE_HORIZON_MIN`(분), 남으면 15:20 청산. 실제 주문 경로는 아직 없다.
+- 앱: 제어 탭 규칙 매매 카드에 Normal / Extended 선택, VWAP 매매 카드(스위치, 매수 4단계, 청산 기준 입력). 가상 매매 탭에 장부 선택
+  (Edge AI 매매 / VWAP 매매) - IPC `paper:get` / `paper:status` 의 두 번째 인자 `book`(`edge` | `vwap`).
