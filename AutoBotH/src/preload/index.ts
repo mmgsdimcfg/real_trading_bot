@@ -69,7 +69,8 @@ const api = {
   /** connect, then open `ymd` (past date) or the server's today */
   connect: (ymd?: string) => ipcRenderer.invoke('conn:connect', ymd),
   disconnect: () => ipcRenderer.invoke('conn:disconnect'),
-  openDay: (ymd: string) => ipcRenderer.invoke('day:open', ymd),
+  /** replay = true: open today like a past day (read once), so the replay bar works on it */
+  openDay: (ymd: string, replay?: boolean) => ipcRenderer.invoke('day:open', ymd, replay),
   openLocal: (dir: string) => ipcRenderer.invoke('day:openLocal', dir),
   listDates: () => ipcRenderer.invoke('day:listDates'),
   getConditions: () => ipcRenderer.invoke('conditions:get'),

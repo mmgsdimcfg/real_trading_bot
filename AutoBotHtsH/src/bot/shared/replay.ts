@@ -5,6 +5,7 @@
  *   DayEngine fed only with the lines logged at or before ts: moving forward feeds just the new lines, moving back rebuilds from
  *   the first line. Lines without a time prefix (continuations) take the time of the line before them. Pure TypeScript (worker +
  *   vitest); the server is not involved - it works on the bytes the session already read
+ * - [2026-11-27] type=feat - replayDates / neighborDate for the replay bar's date menu (which days can be loaded, previous / next)
  * - [2026-11-07] type=feat - ReplayInfo.gaps: stretches of at least GAP_MIN_MS without a main-log line (r003 stopped, e.g.
  *   2026-11-06 11:05-13:45) so the replay bar can shade them and playback can skip them
  */
@@ -13,6 +14,18 @@ import { DayEngine, type EngineOptions } from './engine';
 import { kstToEpoch } from './time';
 import type { ConditionsDoc, EvalEvent, ReplayInfo, Snapshot, Trade } from './types';
 import type { Bar } from './price';
+
+/** [2026-11-27] days that can be replayed (log folders on the host + cached days), oldest first, without duplicates */
+export function replayDates(lists: { remote?: string[]; cached?: string[] } | null | undefined): string[] {
+  const all = [...(lists?.remote || []), ...(lists?.cached || [])].filter((d) => /^\d{8}$/.test(d));
+  return [...new Set(all)].sort();
+}
+
+/** [2026-11-27] the replayable day before (step -1) / after (step +1) `cur`; undefined at the end. `cur` need not be in the list */
+export function neighborDate(dates: string[], cur: string, step: -1 | 1): string | undefined {
+  if (step < 0) return [...dates].reverse().find((d) => d < cur);
+  return dates.find((d) => d > cur);
+}
 
 /** Replay: intraday (tick / minute) bars that started after the cursor are not shown yet. Daily bars stay as they are. */
 export function barsUpTo<T extends Pick<Bar, 't'>>(bars: T[], cursor: number | null | undefined, intraday: boolean): T[] {

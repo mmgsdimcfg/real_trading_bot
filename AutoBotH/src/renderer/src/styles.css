@@ -225,6 +225,9 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 }
 .replay-time { min-width: 110px; color: var(--text); font-weight: 600; }
 .replay-jump { width: 72px; padding: 1px 6px; font-size: 12px; }
+/* [2026-11-27] replay-by-date menu at the start of the bar */
+.replay-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+.replaybar .datepicker .dp-field { padding: 1px 6px; font-size: 12px; }
 
 .toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; flex-wrap: wrap; }
 .toolbar label { display: inline-flex; align-items: center; gap: 6px; }

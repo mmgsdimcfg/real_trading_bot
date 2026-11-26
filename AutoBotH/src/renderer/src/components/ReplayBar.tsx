@@ -5,6 +5,10 @@
  *   "전체" (whole day). Every tab (pipeline, board, timeline, chart markers, trades) shows the state cut at the cursor because
  *   the main process re-sends the snapshot after each move. Cursor calls are coalesced: while one is running only the latest
  *   requested time is kept and sent next, so dragging or fast playback never queues work in the engine worker
+ * - [2026-11-27] type=feat - Replay-by-date menu (user request: replay the rule-trade history of any day): the bar is now always
+ *   there and starts with "리플레이 날짜" - a calendar marking the days that have logs, ◀ 전날 / 다음날 ▶ over those days, and
+ *   "불러오기" which reads the WHOLE day again from the start (also today: opened once like a past day so it can be replayed).
+ *   "실시간으로" goes back to today's live view. While the live day is shown only this date menu is drawn
  * - [2026-11-07] type=feat - Log gaps (r003 not running, ReplayInfo.gaps) are shaded on the slider, the time shows "r003 로그 없음"
  *   inside one, and playback jumps over them
  */
@@ -12,6 +16,75 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { fmtKstTime, kstToEpoch, ymdDash } from '../../../shared/time';
+import { neighborDate, replayDates } from '../../../shared/replay';
+import { DatePicker, type DayMark } from './DatePicker';
+
+/** [2026-11-27] date menu: pick a day with logs and load the whole day for replay */
+function ReplayDateMenu({ date, live, onLoaded }: { date: string; live: boolean; onLoaded: () => void }) {
+  const serverDate = useStore((s) => s.status.serverDate);
+  const conn = useStore((s) => s.status.conn);
+  const [dates, setDates] = useState<string[]>([]);
+  const [pick, setPick] = useState(date);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  useEffect(() => setPick(date), [date]);
+  useEffect(() => {
+    let alive = true;
+    void window.api
+      .listDates()
+      .then((l: { remote?: string[]; cached?: string[] }) => alive && setDates(replayDates(l)))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [conn, serverDate, date]);
+  const today = serverDate || dates[dates.length - 1] || date;
+  const marks: Record<string, DayMark> = {};
+  for (const d of dates) marks[d] = 'data';
+  const load = async (ymd: string, replay: boolean) => {
+    if (!/^\d{8}$/.test(ymd) || busy) return;
+    setBusy(true);
+    setMsg('');
+    try {
+      const r = await window.api.openDay(ymd, replay);
+      if (!r.ok) setMsg(r.error || '불러오지 못했습니다');
+      else onLoaded();
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const prev = neighborDate(dates, pick || date, -1);
+  const next = neighborDate(dates, pick || date, 1);
+  return (
+    <>
+      <b className={live ? 'pill live' : 'pill replay-pill'}>{live ? '리플레이' : '재현'}</b>
+      <span className="muted">날짜</span>
+      <DatePicker value={pick} onChange={setPick} today={today} max={today} marks={marks} dataLabel="로그 있음" title="리플레이할 날짜 (점 = 로그가 있는 날)" />
+      <button className="mini" title="로그가 있는 이전 날을 불러옵니다" disabled={busy || !prev} onClick={() => prev && void load(prev, true)}>
+        ◀ 전날
+      </button>
+      <button className="mini" title="로그가 있는 다음 날을 불러옵니다" disabled={busy || !next} onClick={() => next && void load(next, true)}>
+        다음날 ▶
+      </button>
+      <button
+        className="mini primary"
+        disabled={busy || !pick}
+        title="이 날의 로그 전체를 처음부터 다시 읽어 리플레이합니다 (오늘도 가능 - 불러온 시점까지)"
+        onClick={() => void load(pick, true)}
+      >
+        {busy ? '불러오는 중…' : '불러오기'}
+      </button>
+      {!live && serverDate && (
+        <button className="mini" disabled={busy} title="오늘의 실시간 화면으로 돌아갑니다" onClick={() => void load(serverDate, false)}>
+          실시간으로
+        </button>
+      )}
+      {msg && <span className="err-text small">{msg}</span>}
+    </>
+  );
+}
 
 const SPEEDS = [1, 10, 60, 300, 600];
 const TICK_MS = 500;
@@ -87,7 +160,8 @@ export function ReplayBar() {
     return () => clearInterval(id);
   }, [playing, speed, first, last]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (live || !replay || !last) return null;
+  const dateMenu = <ReplayDateMenu date={date || ''} live={!!live} onLoaded={() => setPlaying(false)} />;
+  if (live || !replay || !last) return <div className="replaybar">{dateMenu}</div>;
 
   const shown = pos ?? last;
   const trades = replay.trades || [];
@@ -104,7 +178,8 @@ export function ReplayBar() {
 
   return (
     <div className="replaybar">
-      <b className="pill replay-pill">재현</b>
+      {dateMenu}
+      <span className="replay-sep" />
       <button className="mini" title="처음" onClick={() => moveTo(first)}>
         ⏮
       </button>

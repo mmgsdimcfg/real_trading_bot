@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-27] type=feat - v2.3.46_001: 날짜별 리플레이 메뉴 - 재현 막대가 항상 표시되고 맨 앞에 '날짜' 달력(로그가 있는 날 표시) / ◀ 전날 / 다음날 ▶ / 불러오기(그날 로그 전체를 처음부터 다시 읽음, 오늘도 가능) / 실시간으로 버튼 추가. 설정 탭에 가지 않고 파이프라인·종목 보드·타임라인·차트·매매 결과에서 바로 지난 날의 규칙 매매를 재생",
     "[2026-11-27] type=feat - v2.3.45_002: Edge AI 매매 전용 모델(runtime/edge_ai/trade) 표시 - 제어 탭 모델 줄이 매매 모델을 보여 주고, 기대 순손익이 +인 기준이 없으면 '매수 기준 없음 (매수 안 함)' 표시(가상 매매 탭 확률 기준도 같은 문구). 규칙 매매 필터(_020)는 예전 모델 그대로. 작업 탭에 'Edge AI 매매 모델 데이터셋 / 학습' 단계 라벨",
     "[2026-11-27] type=feat - v2.3.45_001: Edge AI 실제 매매는 승격된 모델에서만 - 모델이 미승격이면 제어 탭 '실제 매매' 카드에 '모델 미승격' 표시, 켜려 하면 안내 후 중단(서버 r001 EDGE_LIVE_REQUIRE_PROMOTED: r016 이 켜기를 거부, r003 이 신호마다 EDGE_SIGNAL_MODEL_NOT_PROMOTED 로 거부). 장 마감 파이프라인에 'VWAP 재돌파 기록(g055)' 단계 추가(급락 후 VWAP 재돌파·30분 유지 전진 기록, 주문 없음)",
     "[2026-11-26] type=fix - v2.3.44_005: 가상 매매 탭의 '신규 가상 매수 꺼짐' 표시가 봇 재시작 중 이전 실행의 오래된 상태 파일 값으로 남던 문제 수정(오래된 상태면 표시하지 않음)",
@@ -144,7 +145,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.45",
+  "version": "2.3.46",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -192,7 +193,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

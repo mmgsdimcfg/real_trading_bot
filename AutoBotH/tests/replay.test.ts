@@ -138,3 +138,24 @@ describe('barsUpTo', () => {
     expect(barsUpTo(bars, 1, false)).toBe(bars);
   });
 });
+
+// [2026-11-27] replay bar date menu
+describe('replay date menu', () => {
+  it('lists the days once, oldest first, and skips other names', async () => {
+    const { replayDates } = await import('../src/shared/replay');
+    expect(replayDates({ remote: ['20261126', '20261124', 'tmp'], cached: ['20261124', '20261120'] })).toEqual(['20261120', '20261124', '20261126']);
+    expect(replayDates(null)).toEqual([]);
+    expect(replayDates({})).toEqual([]);
+  });
+
+  it('finds the day before / after, also from a day without logs', async () => {
+    const { neighborDate } = await import('../src/shared/replay');
+    const days = ['20261120', '20261124', '20261126'];
+    expect(neighborDate(days, '20261124', -1)).toBe('20261120');
+    expect(neighborDate(days, '20261124', 1)).toBe('20261126');
+    expect(neighborDate(days, '20261125', -1)).toBe('20261124'); // a holiday / no-log day picked in the calendar
+    expect(neighborDate(days, '20261120', -1)).toBeUndefined();
+    expect(neighborDate(days, '20261126', 1)).toBeUndefined();
+    expect(neighborDate([], '20261126', 1)).toBeUndefined();
+  });
+});

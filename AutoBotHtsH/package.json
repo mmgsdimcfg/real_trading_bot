@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.1.8_001 (2026-11-27): 날짜별 리플레이 메뉴 - 봇 창(파이프라인·종목 보드·타임라인·차트·매매 결과)의 재현 막대가 항상 표시되고 맨 앞에 '날짜' 달력(로그가 있는 날 표시) / ◀ 전날 / 다음날 ▶ / 불러오기(그날 로그 전체를 처음부터 다시 읽음, 오늘도 가능) / 실시간으로 버튼 추가",
     "v1.1.7_002 (2026-11-27): Edge AI 매매 전용 모델(runtime/edge_ai/trade) 표시 - 제어 창 모델 줄이 매매 모델을 보여 주고, 기대 순손익이 +인 기준이 없으면 '매수 기준 없음 (매수 안 함)' 표시(가상 매매 창 확률 기준도 같은 문구). 규칙 매매 필터는 예전 모델 그대로. 작업 창에 'Edge AI 매매 모델 데이터셋 / 학습' 단계 라벨",
     "v1.1.7_001 (2026-11-27): 반등 알림에 VWAP 유지 시간 표시(알림 창 / 이력 / 카카오톡 요약 '위 23분째' · CSV vwap_hold_bars 열 추가 - 정보 표시만, 감지 조건은 그대로). Edge AI 실제 매매는 승격된 모델에서만(미승격이면 '실제 매매' 카드에 표시, 켜기 차단). 장 마감 파이프라인에 'VWAP 재돌파 기록(g055)' 단계 표시",
     "v1.1.6_002 (2026-11-26): 가상 매매 창의 '신규 가상 매수 꺼짐' 표시가 봇 재시작 중 이전 실행의 오래된 상태 파일 값으로 남던 문제 수정",
@@ -103,7 +104,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -157,7 +158,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

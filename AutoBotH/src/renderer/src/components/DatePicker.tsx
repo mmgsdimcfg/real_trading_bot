@@ -3,6 +3,7 @@
  * - [2026-11-10] type=feat - Small calendar date field (YYYYMMDD value): the field shows YYYY-MM-DD, a click opens a month
  *   calendar under it (일~토, ‹ › months, today / selected marked, days after `max` disabled, 오늘 button); outside click or Esc
  *   closes it. Drawn in the app (not the native <input type="date">, whose text follows the OS locale - 11/10/2026)
+ * - [2026-11-27] type=feat - `dataLabel`: the caller's meaning of a 'data' mark (replay bar: "로그 있음"); the legend then shows only it
  * - [2026-11-17] type=feat - `marks` (YYYYMMDD -> 'picks' | 'data' | 'partial'): days that already hold data are bold with a dot
  *   under the number (accent = picks too, muted = files without the collected marker), a tooltip says what is saved, and a legend
  *   sits in the footer
@@ -23,6 +24,8 @@ interface Props {
   title?: string;
   /** [2026-11-17] saved days: 'picks' = collected + picks, 'data' = collected, 'partial' = some files, no collected marker */
   marks?: Record<string, DayMark>;
+  /** [2026-11-27] what a 'data' mark means here (tooltip + legend); default = collected data */
+  dataLabel?: string;
 }
 
 export type DayMark = 'picks' | 'data' | 'partial';
@@ -32,7 +35,7 @@ const MARK_TITLE: Record<DayMark, string> = {
   partial: '일부 파일만 있음 (수집 완료 표시 없음)',
 };
 
-export function DatePicker({ value, onChange, max, today, title, marks }: Props) {
+export function DatePicker({ value, onChange, max, today, title, marks, dataLabel }: Props) {
   const [open, setOpen] = useState(false);
   const base = /^\d{8}$/.test(value) ? value : today;
   const [view, setView] = useState({ y: Number(base.slice(0, 4)), m: Number(base.slice(4, 6)) - 1 });
@@ -103,7 +106,7 @@ export function DatePicker({ value, onChange, max, today, title, marks }: Props)
                 .filter(Boolean)
                 .join(' ');
               return (
-                <button key={v} type="button" className={cls} disabled={!!max && v > max} onClick={() => pick(v)} title={mark ? MARK_TITLE[mark] : undefined}>
+                <button key={v} type="button" className={cls} disabled={!!max && v > max} onClick={() => pick(v)} title={mark ? (mark === 'data' && dataLabel) || MARK_TITLE[mark] : undefined}>
                   {d}
                 </button>
               );
@@ -112,8 +115,8 @@ export function DatePicker({ value, onChange, max, today, title, marks }: Props)
           <div className="dp-foot">
             {marks && (
               <span className="dp-legend">
-                <span className="dp-day mark-data">저장</span>
-                <span className="dp-day mark-picks">선별까지</span>
+                <span className="dp-day mark-data">{dataLabel || '저장'}</span>
+                {!dataLabel && <span className="dp-day mark-picks">선별까지</span>}
               </span>
             )}
             <button type="button" className="mini" onClick={() => pick(today)}>

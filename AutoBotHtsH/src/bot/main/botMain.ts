@@ -506,7 +506,7 @@ ipcMain.handle('conn:disconnect', () => {
   setStatus({ conn: 'idle', live: false, message: '연결 해제 (표시 중인 데이터는 유지)' });
   return { ok: true };
 });
-ipcMain.handle('day:open', async (_e, ymd: string) => {
+ipcMain.handle('day:open', async (_e, ymd: string, replay?: boolean) => {
   if (!/^\d{8}$/.test(ymd)) return { ok: false, error: '날짜 형식 오류' };
   // [2026-11-12] today is asked again here: with a stale host date the new day opened as a past day (no polling)
   if (files.connected) {
@@ -518,7 +518,8 @@ ipcMain.handle('day:open', async (_e, ymd: string) => {
       /* keep the last known date */
     }
   }
-  const live = files.connected && ymd === (status.serverDate || '');
+  // [2026-11-27] replay = true: today is opened like a past day (read once, whole day -> the replay bar works on it)
+  const live = files.connected && ymd === (status.serverDate || '') && !replay;
   if (!files.connected && !existsSync(cacheDirFor(ymd))) return { ok: false, error: '연결되어 있지 않고 로컬 캐시도 없습니다.' };
   openDay(ymd, live);
   return { ok: true };
