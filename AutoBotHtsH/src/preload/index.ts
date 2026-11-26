@@ -12,6 +12,7 @@ import { api as botApi } from '../bot/preload/index';
 import { contextBridge, ipcRenderer, webFrame } from 'electron';
 import type { MasterItem, KisEnv } from '../shared/kis';
 import type { Res } from '../shared/market';
+import type { Balance, Buyable, OpenOrder, OrderReq, OrderResult, OrderState, OrderType, ReviseReq } from '../shared/order';
 import type { PickGroup, PicksEntry } from '../shared/watchPicks';
 import type { ReboundConfig } from '../shared/rebound';
 import type { HistoryItem } from '../main/reboundHistory';
@@ -123,6 +124,14 @@ const hts = {
   reboundOpenDir: (): Promise<string> => ipcRenderer.invoke('rebound:openDir'),
   onReboundStatus: (cb: (s: ReboundStatus) => void) => on('rebound:status', cb),
   onReboundOpen: (cb: (code: string) => void) => on('rebound:open', cb),
+  // [2026-11-26] order window: the main process confirms every order in a native dialog; the account number comes back masked
+  orderState: (): Promise<OrderState> => ipcRenderer.invoke('ord:state'),
+  orderSetAccount: (text: string | null): Promise<Res<OrderState>> => ipcRenderer.invoke('ord:setAccount', text),
+  orderBuyable: (code: string, type: OrderType, price: number): Promise<Res<Buyable>> => ipcRenderer.invoke('ord:buyable', code, type, price),
+  orderBalance: (): Promise<Res<Balance>> => ipcRenderer.invoke('ord:balance'),
+  orderOpen: (): Promise<Res<OpenOrder[]>> => ipcRenderer.invoke('ord:open'),
+  orderPlace: (o: OrderReq): Promise<Res<OrderResult>> => ipcRenderer.invoke('ord:place', o),
+  orderRevise: (r: ReviseReq & { code: string; side: string }): Promise<Res<OrderResult>> => ipcRenderer.invoke('ord:revise', r),
 };
 
 export type Hts = typeof hts;

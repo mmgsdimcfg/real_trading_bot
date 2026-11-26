@@ -1,4 +1,6 @@
 // Update log
+// - [2026-11-26] type=feat (Order book: a click on a price shows 매수 / 매도 buttons on that row (onTrade) - they open the order window
+//   on that price (user 2026-11-26); the order window uses the same table with onPick (the price goes straight into its form))
 // - [2026-11-24] type=feat (가중평균가 (VWAP, wghn_avrg_stck_prc) row with its distance from the current price (user 2026-11-24))
 // - [2026-11-06] type=fix (Trades showed twice (realtime + REST copy): the REST list now comes from 'ticks' (accumulated volume = exact
 //   match with realtime) instead of inquire_ccnl, whose strength differs from the realtime CTTR)
@@ -16,7 +18,7 @@
 import { useMemo, useState } from 'react';
 import { useStore, type Win } from '../store';
 import { mergeTrades } from '../../../shared/live';
-import { useCall, useRealtime, useSymbol } from '../hooks';
+import { useCall, useOutsideClose, useRealtime, useSymbol } from '../hooks';
 import { WatchStar } from './ListWindows';
 import { NxtMark } from '../components/NxtTag';
 import type { OrderBook, Quote, TradeTick } from '../../../shared/kis';
@@ -33,7 +35,24 @@ export function cls(v: number | undefined, base?: number) {
   return v > base ? 'up' : v < base ? 'down' : '';
 }
 
-export function OrderBookView({ ob, price, prevClose }: { ob: OrderBook; price?: number; prevClose?: number }) {
+export function OrderBookView({
+  ob,
+  price,
+  prevClose,
+  onPick,
+  onTrade,
+}: {
+  ob: OrderBook;
+  price?: number;
+  prevClose?: number;
+  /** a price click reports the price */
+  onPick?: (price: number) => void;
+  /** a price click shows 매수 / 매도 on that row; a button reports the side and the price */
+  onTrade?: (side: 'buy' | 'sell', price: number) => void;
+}) {
+  const [sel, setSel] = useState<number | null>(null);
+  const ref = useOutsideClose<HTMLTableElement>(sel !== null, () => setSel(null));
+  const click = onPick ? (p: number) => onPick(p) : onTrade ? (p: number) => setSel((v) => (v === p ? null : p)) : null;
   const asks = ob.asks.slice(0, 10).reverse();
   const bids = ob.bids.slice(0, 10);
   const max = Math.max(1, ...ob.asks.map((a) => a[1]), ...ob.bids.map((b) => b[1]));
@@ -49,9 +68,23 @@ export function OrderBookView({ ob, price, prevClose }: { ob: OrderBook; price?:
         )}
       </td>
       <td className="ob-d">{side === 'a' && d ? <small className={d > 0 ? 'up' : 'down'}>{d > 0 ? '+' : ''}{fmtInt(d)}</small> : null}</td>
-      <td className={`ob-p ${cls(p, prevClose)}`}>
+      <td
+        className={`ob-p ${cls(p, prevClose)}${click ? ' pick' : ''}${sel === p ? ' sel' : ''}`}
+        title={onTrade ? '누르면 매수 / 매도 버튼이 나옵니다' : onPick ? '이 가격으로 주문 가격 입력' : undefined}
+        onClick={click ? () => click(p) : undefined}
+      >
         {fmtInt(p)}
         {pct(p) !== undefined && <small> {fmtPct(pct(p), 2)}</small>}
+        {onTrade && sel === p && (
+          <span className="ob-pop" onClick={(e) => e.stopPropagation()}>
+            <button className="buy" title={`${fmtInt(p)}원에 매수 주문창 열기`} onClick={() => (setSel(null), onTrade('buy', p))}>
+              매수
+            </button>
+            <button className="sell" title={`${fmtInt(p)}원에 매도 주문창 열기`} onClick={() => (setSel(null), onTrade('sell', p))}>
+              매도
+            </button>
+          </span>
+        )}
       </td>
       <td className="ob-d">{side === 'b' && d ? <small className={d > 0 ? 'up' : 'down'}>{d > 0 ? '+' : ''}{fmtInt(d)}</small> : null}</td>
       <td className="ob-q bid">
@@ -65,7 +98,7 @@ export function OrderBookView({ ob, price, prevClose }: { ob: OrderBook; price?:
     </tr>
   );
   return (
-    <table className="ob">
+    <table className="ob" ref={ref}>
       <tbody>
         {asks.map(([p, q, d], i) => row(p, q, d, 'a', `a${i}`))}
         {bids.map(([p, q, d], i) => row(p, q, d, 'b', `b${i}`))}
@@ -188,7 +221,7 @@ export function QuoteWindow({ win }: { win: Win }) {
           ) : null}
         </div>
         <div className="q-book">
-          {book ? <OrderBookView ob={book} price={live.price} prevClose={prev} /> : <div className="empty small">{ob.error || '호가 불러오는 중…'}</div>}
+          {book ? <OrderBookView ob={book} price={live.price} prevClose={prev} onTrade={(side, p) => useStore.getState().openOrder(code, side, p)} /> : <div className="empty small">{ob.error || '호가 불러오는 중…'}</div>}
         </div>
       </div>
       <div className="q-tabs">

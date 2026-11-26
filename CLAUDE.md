@@ -15,7 +15,11 @@ Rules
 1. One KIS account, two hosts: r003 may trade on only one host at a time. The host role file (`runtime/config/host_role.json`,
    `r016 role`) marks the other one standby; r003 refuses to start on a standby host. Never add a start path that skips this
    (AutoBotH `peer.ts` guardStart, r003 `_host_role_refusal`).
-2. The app never calls KIS order APIs and never re-implements trading decisions. Every change of bot state goes through `r016_control.py`
+2. The app never re-implements trading decisions and never sends an order by itself. Its only KIS order code is the AutoBotHtsH order
+   window (2026-11-26, user): manual orders the user enters, each confirmed in a native dialog of the main process, through the
+   six trading TRs of `AutoBotHtsH/src/shared/order.ts` (`KisClient.trade`, `main/kisOrder.ts`) - nothing else may call them (no
+   automatic / scheduled / signal-driven orders, not reachable by guests; the market-data allowlist of `shared/kis.ts` still
+   rejects every account TR). AutoBotH has no order code. Every change of bot state goes through `r016_control.py`
    (both hosts) - the app writes no bot files itself, except the one-time KIS config import into the notebook's own `%USERPROFILE%\KIS\config`.
 3. AutoBot code must stay runnable on Linux and Windows: file locks / process checks / detached starts go through
    `live_trading/r019_platform.py` (no direct `fcntl`, `/proc`, `systemctl` outside the systemd backend of r016).

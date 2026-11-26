@@ -28,18 +28,20 @@
 //   no realtime feed - the windows poll); guest:host* lets a KIS-logged-in PC relay its market calls to guests (GuestHost, off by
 //   default, port + password). Both the renderer and the guests go through callMarket() - the fixed list of inquiry methods)
 import './importOnce';
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KisClient, KisError } from './kisClient';
 import { KisMarket } from './kisMarket';
+import { DemoTrader, KisTrader, type Trader } from './kisOrder';
+import { maskAccount, orderProblem, orderText, parseAccount, reviseProblem, type OrderReq, type OrderState, type ReviseReq } from '../shared/order';
 import { DemoMarket, DEMO_MASTER } from './demoMarket';
 import { Master } from './master';
 import { DemoFeed, KisFeed, type Feed, type RtData, type RtStatus } from './realtime';
 import { ChartDiskCache } from './chartCache';
 import { loadWatchFile, saveWatchFile, scanPicks, watchDir, type WatchFile } from './watchlist';
-import { forgetCreds, guestHostCfg, loginDefaults, rememberCreds, rememberGuest, saveGuestHostCfg, savedCreds, savedGuest, tokenStore, maskKey, type Creds } from './settings';
+import { forgetCreds, guestHostCfg, loginDefaults, rememberCreds, rememberGuest, saveGuestHostCfg, savedCreds, savedGuest, tokenStore, maskKey, saveAccount, savedAccount, type Creds } from './settings';
 import { GUEST_PASS_MIN, GUEST_PORT_DEFAULT, GuestHost, lanAddresses, normalizeHostUrl, RemoteMarket } from './guest';
 import type { MarketBackend, Res } from '../shared/market';
 import { isCode, toKrxRecord, WS_COMBINED, type KisEnv, type WsTr } from '../shared/kis';
@@ -118,6 +120,7 @@ function onRtStatus(status: RtStatus, msg?: string) {
 }
 
 function closeSession() {
+  demoTrader = null;
   rtRoutes.clear();
   feed?.close();
   feed = null;
@@ -146,7 +149,7 @@ async function login(req: { env: KisEnv; appKey?: string; appSecret?: string; re
   backend = new KisMarket(c, (code) => (master.nxtKnown ? !!master.get(code)?.nxt : undefined), chartDisk());
   rememberCreds(creds, req.remember);
   feed = new KisFeed(creds.env, () => c.approvalKey(), onRt, onRtStatus);
-  log(`[auth] 로그인 (${creds.env === 'real' ? '실전' : '모의'} 서버, 조회 전용)`);
+  log(`[auth] 로그인 (${creds.env === 'real' ? '실전' : '모의'} 서버)`);
   void master.ensure().then(() => send('auth:state', authState()));
   return authState();
 }
@@ -180,6 +183,162 @@ ipcMain.handle('auth:logout', (_e, forget: boolean) => {
   if (forget) forgetCreds();
   return authState();
 });
+
+// ---- [2026-11-26] order window (user 2026-11-26): the only code that sends orders. It is not part of callMarket, so a guest of this
+// PC can never reach it; every order / revise / cancel is confirmed in a native dialog here in the main process and written to
+// %APPDATA%\autobothtsh\orders\orders_YYYYMMDD.log ----
+let demoTrader: DemoTrader | null = null;
+function trader(): Trader | null {
+  if (backend?.kind === 'demo') {
+    const b = backend;
+    return (demoTrader ??= new DemoTrader(
+      (code) => b.quote(code).then((q) => q.price),
+      (code) => master.get(code)?.name || DEMO_MASTER.find((m) => m.code === code)?.name || code,
+    ));
+  }
+  if (backend?.kind === 'kis' && client) {
+    const a = savedAccount(client.env);
+    return a ? new KisTrader(client, a) : null;
+  }
+  return null;
+}
+function orderState(): OrderState {
+  const mode = backend?.kind || null;
+  const env = client?.env || guestEnv || loginDefaults().env;
+  if (mode === 'demo') return { ready: true, mode, env, account: '데모 계좌', reason: '' };
+  if (mode === 'kis' && client) {
+    const a = savedAccount(client.env);
+    return { ready: !!a, mode, env, account: a ? maskAccount(a) : '', reason: a ? '' : '계좌번호를 입력하면 주문할 수 있습니다.' };
+  }
+  return { ready: false, mode, env, account: '', reason: mode === 'guest' ? '게스트 모드에서는 주문할 수 없습니다.' : 'KIS 로그인 후 주문할 수 있습니다.' };
+}
+function orderLog(line: string): void {
+  log(`[order] ${line}`);
+  try {
+    const now = new Date(Date.now() + 9 * 3600000).toISOString();
+    const dir = join(app.getPath('userData'), 'orders');
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, `orders_${now.slice(0, 10).replace(/-/g, '')}.log`), `${now.slice(0, 19).replace('T', ' ')} ${line}\n`, 'utf8');
+  } catch {
+    /* the log file is a convenience - an order is never blocked by it */
+  }
+}
+/** native confirmation of one order; the demo account of a screen test may skip it (HTSH_ORDER_NOCONFIRM=1) */
+async function confirmOrder(title: string, text: string): Promise<boolean> {
+  if (backend?.kind === 'demo' && process.env.HTSH_ORDER_NOCONFIRM === '1') return true;
+  if (!win || win.isDestroyed()) return false;
+  const st = orderState();
+  const where = st.mode === 'demo' ? '데모 계좌 (실제 주문 아님)' : `${st.env === 'real' ? '실전' : '모의'} 계좌 ${st.account}`;
+  const r = await dialog.showMessageBox(win, {
+    type: st.mode === 'kis' && st.env === 'real' ? 'warning' : 'question',
+    title,
+    message: text,
+    detail: `${where}\n\n주문을 전송할까요?`,
+    buttons: ['주문 전송', '취소'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  return r.response === 0;
+}
+const ordRes = async <T>(f: () => Promise<T>): Promise<Res<T>> => {
+  try {
+    return { ok: true, data: await f() };
+  } catch (e) {
+    return { ok: false, error: errMsg(e), code: (e as KisError).code };
+  }
+};
+const noTrader = '주문할 수 없는 상태입니다 (로그인 / 계좌번호 확인).';
+const nameOf = (code: string) => master.get(code)?.name || DEMO_MASTER.find((m) => m.code === code)?.name;
+
+ipcMain.handle('ord:state', () => orderState());
+ipcMain.handle('ord:setAccount', (_e, text: string | null) =>
+  ordRes(async () => {
+    if (backend?.kind !== 'kis' || !client) throw new Error('KIS 로그인 후 계좌번호를 저장할 수 있습니다.');
+    if (text === null) saveAccount(client.env, null);
+    else {
+      const a = parseAccount(String(text));
+      if (!a) throw new Error('계좌번호는 숫자 10자리(종합계좌번호 8자리 + 상품코드 2자리)로 입력하세요. 예: 12345678-01');
+      saveAccount(client.env, a);
+      orderLog(`계좌 저장 ${maskAccount(a)} (${client.env === 'real' ? '실전' : '모의'})`);
+    }
+    return orderState();
+  }),
+);
+ipcMain.handle('ord:buyable', (_e, code: string, type: string, price: number) =>
+  ordRes(async () => {
+    const t = trader();
+    if (!t) throw new Error(noTrader);
+    if (!isCode(String(code))) throw new Error('종목 코드 형식 오류');
+    return t.buyable(String(code), type === 'market' ? 'market' : 'limit', Math.max(0, Math.round(Number(price)) || 0));
+  }),
+);
+ipcMain.handle('ord:balance', () =>
+  ordRes(async () => {
+    const t = trader();
+    if (!t) throw new Error(noTrader);
+    return t.balance();
+  }),
+);
+ipcMain.handle('ord:open', () =>
+  ordRes(async () => {
+    const t = trader();
+    if (!t) throw new Error(noTrader);
+    return t.openOrders();
+  }),
+);
+ipcMain.handle('ord:place', (_e, raw: Partial<OrderReq>) =>
+  ordRes(async () => {
+    const t = trader();
+    if (!t) throw new Error(noTrader);
+    if (raw?.side !== 'buy' && raw?.side !== 'sell') throw new Error('매수 / 매도를 고르세요.');
+    const o: OrderReq = { code: String(raw.code || ''), side: raw.side, type: raw.type === 'market' ? 'market' : 'limit', qty: Number(raw.qty), price: Number(raw.price) || 0 };
+    const bad = orderProblem(o);
+    if (bad) throw new Error(bad);
+    const text = orderText(o, nameOf(o.code));
+    if (!(await confirmOrder(o.side === 'buy' ? '매수 주문 확인' : '매도 주문 확인', text))) throw new Error('주문을 취소했습니다 (전송하지 않음).');
+    try {
+      const r = await t.place(o);
+      orderLog(`${t.kind} ${text} -> 접수 주문번호 ${r.no}`);
+      return r;
+    } catch (e) {
+      orderLog(`${t.kind} ${text} -> 실패 ${errMsg(e)}`);
+      throw e;
+    }
+  }),
+);
+ipcMain.handle('ord:revise', (_e, raw: Partial<ReviseReq> & { code?: string; side?: string }) =>
+  ordRes(async () => {
+    const t = trader();
+    if (!t) throw new Error(noTrader);
+    if (raw?.kind !== 'cancel' && raw?.kind !== 'revise') throw new Error('정정 / 취소를 고르세요.');
+    const r: ReviseReq = {
+      no: String(raw.no || ''),
+      branch: String(raw.branch || ''),
+      kind: raw.kind,
+      type: raw.type === 'market' ? 'market' : 'limit',
+      price: Number(raw.price) || 0,
+      qty: Number(raw.qty),
+      venue: raw.venue ? String(raw.venue) : undefined,
+    };
+    const bad = reviseProblem(r);
+    if (bad) throw new Error(bad);
+    const code = String(raw.code || '');
+    const name = nameOf(code) || code;
+    const won = (n: number) => n.toLocaleString('ko-KR');
+    const side = raw.side === 'sell' ? '매도' : '매수';
+    const text = r.kind === 'cancel' ? `취소 ${name} ${side} 주문 ${r.no} 잔량 ${won(r.qty)}주` : `정정 ${name} ${side} 주문 ${r.no} 잔량 ${won(r.qty)}주 -> ${won(r.price)}원`;
+    if (!(await confirmOrder(r.kind === 'cancel' ? '주문 취소 확인' : '주문 정정 확인', text))) throw new Error('전송하지 않았습니다.');
+    try {
+      const res = await t.revise(r);
+      orderLog(`${t.kind} ${text} -> 접수 주문번호 ${res.no}`);
+      return res;
+    } catch (e) {
+      orderLog(`${t.kind} ${text} -> 실패 ${errMsg(e)}`);
+      throw e;
+    }
+  }),
+);
 
 ipcMain.handle('mkt:call', (_e, method: Method, ...args: unknown[]) => callMarket(method, args));
 /** one market call - the renderer's (mkt:call) and a guest's (GuestHost): only the METHODS above, arguments checked */

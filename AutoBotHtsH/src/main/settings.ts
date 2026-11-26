@@ -2,6 +2,8 @@
 // - [2026-11-06] type=feat (HtsH settings in %APPDATA%/HtsH/htsh-settings.json (electron-store). The KIS app key / app secret and the
 //   issued access token are stored only encrypted with safeStorage (DPAPI, tied to the Windows user) and never sent to the renderer.
 //   No account number is asked for or stored - HtsH is inquiry-only)
+// - [2026-11-26] type=feat (Order window (user 2026-11-26): the account number (종합계좌번호 8 + 상품코드 2) per server, only encrypted
+//   with safeStorage like the keys; the renderer sees it masked. No account saved = the order window cannot send anything)
 
 // - [2026-11-23] type=feat (Guest mode: the host's relay setting {enabled, port, password} and the guest's saved host {url, password}
 //   - the passwords only encrypted with safeStorage like the KIS keys, never sent to the renderer)
@@ -9,6 +11,7 @@
 import Store from 'electron-store';
 import { safeStorage } from 'electron';
 import type { KisEnv } from '../shared/kis';
+import type { Account } from '../shared/order';
 
 interface Stored {
   env: KisEnv;
@@ -23,11 +26,13 @@ interface Stored {
   guestHostEnc: string;
   /** [2026-11-23] encrypted JSON {url, password} - the host this PC connects to as a guest */
   guestEnc: string;
+  /** [2026-11-26] encrypted JSON {real?: {cano, prod}, paper?: {cano, prod}} - the order window's account per server */
+  acctEnc: string;
 }
 
 const store = new Store<Stored>({
   name: 'htsh-settings',
-  defaults: { env: 'real', remember: true, credEnc: '', tokenEnc: '', keyHint: '', guestHostEnc: '', guestEnc: '' },
+  defaults: { env: 'real', remember: true, credEnc: '', tokenEnc: '', keyHint: '', guestHostEnc: '', guestEnc: '', acctEnc: '' },
 });
 
 const enc = (s: string) => {
@@ -141,4 +146,26 @@ export function savedGuest(): GuestCreds | null {
 }
 export function rememberGuest(c: GuestCreds | null): void {
   store.set('guestEnc', c ? enc(JSON.stringify(c)) : '');
+}
+
+// ---- [2026-11-26] order window: the account per server ----
+function accounts(): Partial<Record<KisEnv, Account>> {
+  const raw = dec(store.get('acctEnc'));
+  if (!raw) return {};
+  try {
+    return (JSON.parse(raw) as Partial<Record<KisEnv, Account>>) || {};
+  } catch {
+    return {};
+  }
+}
+export function savedAccount(env: KisEnv): Account | null {
+  const a = accounts()[env];
+  return a && /^\d{8}$/.test(a.cano) && /^\d{2}$/.test(a.prod) ? { cano: a.cano, prod: a.prod } : null;
+}
+/** null removes the account of that server */
+export function saveAccount(env: KisEnv, a: Account | null): void {
+  const all = accounts();
+  if (a) all[env] = { cano: a.cano, prod: a.prod };
+  else delete all[env];
+  store.set('acctEnc', Object.keys(all).length ? enc(JSON.stringify(all)) : '');
 }

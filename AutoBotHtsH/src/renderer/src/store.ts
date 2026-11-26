@@ -42,7 +42,7 @@ import { wsToOrderBook, wsToTrade } from '../../shared/kis';
 export const BOT_TABS = ['control', 'jobs', 'collector', 'pipeline', 'board', 'timeline', 'chart', 'positions', 'trades', 'paper', 'settings'] as const;
 export type BotTab = (typeof BOT_TABS)[number];
 export type BotWinType = `bot-${BotTab}`;
-export type WinType = 'chart' | 'quote' | 'info' | 'watch' | 'watchtile' | 'watchsum' | 'rank' | 'index' | 'news' | 'rebound' | BotWinType;
+export type WinType = 'chart' | 'quote' | 'order' | 'info' | 'watch' | 'watchtile' | 'watchsum' | 'rank' | 'index' | 'news' | 'rebound' | BotWinType;
 export const isBotWin = (t: WinType): t is BotWinType => t.startsWith('bot-');
 export const botWinOf = (tab: BotTab): BotWinType => `bot-${tab}`;
 
@@ -69,6 +69,7 @@ export const BOT_GROUPS: { group: string; tabs: BotTab[] }[] = [
 export const WIN_TITLE: Record<WinType, string> = {
   chart: '차트',
   quote: '현재가',
+  order: '주문', // [2026-11-26] order window (user 2026-11-26)
   info: '종목정보',
   watch: '관심(목록)', // [2026-11-24] 관심종목 -> 관심(목록) (user 2026-11-24)
   watchtile: '관심(타일)', // [2026-11-24] shorter titles (user 2026-11-24): 관심종목(타일) -> 관심(타일)
@@ -81,11 +82,12 @@ export const WIN_TITLE: Record<WinType, string> = {
 };
 
 /** windows that follow a symbol (others ignore setCode) */
-export const SYMBOL_WINS: WinType[] = ['chart', 'quote', 'info', 'news'];
+export const SYMBOL_WINS: WinType[] = ['chart', 'quote', 'order', 'info', 'news'];
 
 const DEFAULT_SIZE: Record<WinType, [number, number]> = {
   chart: [760, 520],
   quote: [520, 560],
+  order: [720, 780],
   info: [960, 700],
   watch: [560, 380],
   watchtile: [720, 480],
@@ -155,6 +157,8 @@ interface State {
   open: (type: WinType, init?: Partial<Pick<Win, 'code' | 'link' | 'opts'>>) => string;
   /** [2026-11-20] the window of a bot tab: focus the open one, else open it */
   openBot: (tab: BotTab) => string;
+  /** [2026-11-26] the order window on a symbol, side and price (order book click of the current price window) */
+  openOrder: (code: string, side: 'buy' | 'sell', price?: number) => string;
   close: (id: string) => void;
   focus: (id: string) => void;
   move: (id: string, x: number, y: number) => void;
@@ -333,6 +337,11 @@ export const useStore = create<State>()((set, get) => {
       const z = s.zTop + 1;
       const win = clampWin({ id, type, x, y, w, h, z, min: false, max: false, link: init?.link ?? (SYMBOL_WINS.includes(type) ? 1 : 0), code: init?.code || s.lastCode, opts: init?.opts || {} }, s.area);
       commit({ wins: [...s.wins, win], active: id, zTop: z });
+      return id;
+    },
+    openOrder: (code, side, price) => {
+      const id = get().open('order', { code });
+      get().setOpts(id, { side, price: price || 0, at: Date.now() });
       return id;
     },
     openBot: (tab) => {

@@ -153,9 +153,10 @@ export function Login({ onClose }: { onClose?: () => void }) {
         <label className="check">
           <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> 이 PC에 저장 (Windows 계정으로 암호화)
         </label>
-        <label className="check locked" title="HtsH에는 주문 기능이 없습니다. 계좌번호를 받지 않고, 시세 조회 TR만 호출합니다.">
-          <input type="checkbox" checked readOnly disabled /> 조회 전용 (매매 불가 - 변경할 수 없음)
-        </label>
+        {/* [2026-11-26] the order window (user 2026-11-26): orders need an account number saved there and a confirmation each time */}
+        <p className="muted small" title="로그인만으로는 주문할 수 없습니다. 주문 창에서 계좌번호를 저장해야 하고, 주문마다 확인 창이 뜹니다.">
+          로그인은 시세 조회용입니다. 주문은 주문 창에 계좌번호를 저장한 뒤에만, 매번 확인 창을 거쳐 전송됩니다.
+        </p>
         <button className="primary wide" disabled={busy || !key || !secret} onClick={() => void go(false)}>
           접속
         </button>

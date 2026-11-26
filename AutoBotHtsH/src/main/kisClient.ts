@@ -4,10 +4,15 @@
 //   restEndpoint()/assertInquiry() (inquiry-only allowlist) and a client-side rate limit (real 8/s, paper 2/s - the app key may be shared
 //   with other programs), EGW00201 (too many calls) waits and retries once, an expired token is reissued once. POST is used only for the
 //   two oauth endpoints; there is no code path that posts to /uapi)
+// - [2026-11-26] type=feat (Order window (user 2026-11-26): trade() - the account calls of shared/order.ts (its own allowlist of six
+//   trading TRs; get() and the market-data allowlist are unchanged). An order POST is sent once: it is repeated only when the
+//   gateway itself refused it before it reached the order system (rate limit EGW00201, expired token) - never after a network
+//   error or a timeout, where the order may have been accepted)
 
 import { createHash } from 'node:crypto';
 import { KIS_DOMAINS, RATE_PER_SEC, restEndpoint, type KisEnv, type RestApi } from '../shared/kis';
 import type { Creds, TokenCache } from './settings';
+import { tradeEndpoint, type TradeApi } from '../shared/order';
 
 export class KisError extends Error {
   constructor(
@@ -26,6 +31,8 @@ export interface KisResponse {
   /** tr_cont header of the response: 'F'/'M' = more pages, 'D'/'E' = last */
   trCont: string;
   msg?: string;
+  /** [2026-11-26] continuation keys of a paged account inquiry (ctx_area_fk100 / ctx_area_nk100) */
+  ctx?: { fk: string; nk: string };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -147,5 +154,51 @@ export class KisClient {
       throw new KisError(`${String(j.msg1 || `HTTP ${res.status}`).trim()}${code ? ` (${code})` : ''}`, code, res.status);
     }
     return { output: j.output, output1: j.output1, output2: j.output2, trCont: res.headers.get('tr_cont') || '', msg: String(j.msg1 || '') };
+  }
+
+  /**
+   * [2026-11-26] one account call of the order window (shared/order.ts allowlist). GET: params as the query; POST: params as the JSON
+   * body. A refused call throws KisError with KIS's message; see the update log for when a call is repeated
+   */
+  async trade(api: TradeApi, params: Record<string, string>, trCont = '', retry = true): Promise<KisResponse> {
+    const ep = tradeEndpoint(api, this.creds.env);
+    const token = await this.accessToken();
+    await this.slot();
+    this.calls++;
+    const headers = {
+      'content-type': 'application/json; charset=utf-8',
+      authorization: `Bearer ${token}`,
+      appkey: this.creds.appKey,
+      appsecret: this.creds.appSecret,
+      tr_id: ep.trId,
+      tr_cont: trCont,
+      custtype: 'P',
+    };
+    const res =
+      ep.method === 'GET'
+        ? await fetch(`${this.base}${ep.path}?${new URLSearchParams(params).toString()}`, { method: 'GET', headers })
+        : await fetch(`${this.base}${ep.path}`, { method: 'POST', headers, body: JSON.stringify(params) });
+    const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const code = String(j.msg_cd || '');
+    if (j.rt_cd !== '0') {
+      // both are refusals of the gateway: the call never reached the order system, so sending it again cannot double an order
+      if (retry && code === 'EGW00201') {
+        await sleep(1100);
+        return this.trade(api, params, trCont, false);
+      }
+      if (retry && (code === 'EGW00123' || code === 'EGW00121')) {
+        await this.accessToken(true);
+        return this.trade(api, params, trCont, false);
+      }
+      throw new KisError(`${String(j.msg1 || `HTTP ${res.status}`).trim()}${code ? ` (${code})` : ''}`, code, res.status);
+    }
+    return {
+      output: j.output,
+      output1: j.output1,
+      output2: j.output2,
+      trCont: res.headers.get('tr_cont') || '',
+      msg: String(j.msg1 || ''),
+      ctx: { fk: String(j.ctx_area_fk100 || ''), nk: String(j.ctx_area_nk100 || '') },
+    };
   }
 }

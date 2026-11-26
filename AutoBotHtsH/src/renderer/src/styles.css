@@ -650,3 +650,44 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .grid th .sortable:hover { color: var(--text); }
 .grid th .th-sub { margin-left: 10px; font-weight: 400; color: var(--text-3); }
 .pc-bell { font-size: calc(var(--fs) + 2px); cursor: pointer; user-select: none; -webkit-user-select: none; }
+
+/* ---- [2026-11-26] order window + 매수 / 매도 on an order book price (user 2026-11-26) ---- */
+.ob-p.pick { cursor: pointer; position: relative; }
+.ob-p.pick:hover, .ob-p.sel { background: var(--surface-3); }
+.ob-pop { position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%); display: inline-flex; gap: 3px; padding: 2px; border-radius: 6px; background: var(--surface); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); }
+.ob-pop button { padding: 1px 9px; border: 0; border-radius: 4px; color: #fff; font-weight: 700; }
+.ob-pop button.buy, .ord-side button.on.buy, button.ord-go.buy { background: var(--up); border-color: var(--up); color: #fff; }
+.ob-pop button.sell, .ord-side button.on.sell, button.ord-go.sell { background: var(--down); border-color: var(--down); color: #fff; }
+.ord-win { display: flex; flex-direction: column; height: 100%; overflow: auto; }
+.ord-win .q-tab-body { min-height: 96px; }
+.ord-main { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(280px, 1.15fr); gap: 10px; padding: 6px 8px; flex-shrink: 0; }
+.ord-form { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.ord-side { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.ord-side button { padding: 5px 0; font-weight: 700; }
+.ord-side button.buy:not(.on) { color: var(--up); }
+.ord-side button.sell:not(.on) { color: var(--down); }
+.ord-acct { display: flex; align-items: center; gap: 8px; }
+.ord-acct b { font-variant-numeric: tabular-nums; }
+.ord-acct-form { display: flex; flex-wrap: wrap; gap: 4px; }
+.ord-acct-form input { flex: 1; min-width: 150px; }
+.ord-acct-form p { flex-basis: 100%; margin: 0; }
+.ord-note { margin: 0; padding: 5px 8px; border-radius: 5px; background: var(--surface-2); color: var(--text-2); }
+.ord-note.edit { border-left: 3px solid var(--st-hold); }
+.ord-rows { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: center; }
+.ord-rows > span:nth-child(odd) { color: var(--text-3); white-space: nowrap; }
+.ord-rows b.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ord-step { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.ord-step input { flex: 1; min-width: 0; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; padding: 4px 8px; }
+.ord-step button { width: 26px; padding: 3px 0; font-weight: 700; }
+.ord-step u { text-decoration: none; color: var(--text-3); width: 1.2em; }
+.ord-pct { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
+.ord-info { padding: 6px 8px; border: 1px solid var(--grid); border-radius: 6px; }
+.ord-msg { margin: 0; min-height: 1.5em; color: var(--text-3); }
+.ord-msg.ok { color: var(--st-pass); font-weight: 600; }
+.ord-msg.bad { color: var(--st-fail); font-weight: 600; }
+button.ord-go { padding: 8px 0; font-weight: 700; border-radius: 6px; }
+button.ord-go.edit { background: var(--st-hold); border-color: var(--st-hold); color: #111; }
+button.ord-go:disabled { opacity: 0.45; }
+.ord-act { white-space: nowrap; text-align: right; }
+.ord-act button + button { margin-left: 3px; }
+.ord-win tr.sel td { background: var(--surface-3); }

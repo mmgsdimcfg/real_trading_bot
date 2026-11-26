@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { isBotWin, LINK_COLORS, WIN_TITLE, SYMBOL_WINS, useStore, type Win } from '../store';
 import { ChartWindow } from '../windows/ChartWindow';
 import { QuoteWindow } from '../windows/QuoteWindow';
+import { OrderWindow } from '../windows/OrderWindow';
 import { InfoWindow } from '../windows/InfoWindow';
 import { WatchWindow } from '../windows/WatchWindow';
 import { WatchTileWindow } from '../windows/WatchTileWindow';
@@ -26,6 +27,7 @@ import { NxtMark } from './NxtTag';
 const BODY: Record<string, (p: { win: Win }) => ReactNode> = {
   chart: ChartWindow,
   quote: QuoteWindow,
+  order: OrderWindow,
   info: InfoWindow,
   watch: WatchWindow,
   watchtile: WatchTileWindow,

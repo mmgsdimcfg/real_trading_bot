@@ -136,8 +136,8 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
       icon: './icon.png',
       tagline: { en: 'Personal HTS (KIS quotes) + r003 trading bot viewer and control', ko: '개인 HTS(KIS 조회) + r003 자동매매 봇 뷰어·제어' },
       description: {
-        en: 'HtsH windows (charts, current price, stock information, watchlist, rankings, indices, news - KIS OpenAPI, inquiry only) together with the AutoBotH windows (bot control, data jobs, tick collector, condition pipeline, symbol board, timeline, bot chart, holdings, trade results, paper trading, bot connection settings). Bot actions go through the server control script; the app itself never places orders.',
-        ko: 'HtsH 창(차트, 현재가, 종목정보, 관심종목, 순위, 지수, 뉴스 - KIS OpenAPI 조회 전용)과 AutoBotH 창(봇 제어, 데이터 작업, 수집기, 조건 파이프라인, 종목 보드, 타임라인, 봇 차트, 보유 현황, 매매 결과, 가상 매매, 봇 설정·연결)을 한 화면에서 씁니다. 봇 조작은 서버 제어 스크립트를 거치며 앱이 직접 주문하지 않습니다.',
+        en: 'HtsH windows (charts, current price, stock information, watchlist, rankings, indices, news - KIS OpenAPI market data; the order window sends manual orders the user confirms) together with the AutoBotH windows (bot control, data jobs, tick collector, condition pipeline, symbol board, timeline, bot chart, holdings, trade results, paper trading, bot connection settings). Bot actions go through the server control script; the app itself never places orders.',
+        ko: 'HtsH 창(차트, 현재가, 종목정보, 관심종목, 순위, 지수, 뉴스 - KIS OpenAPI 시세 조회, 주문 창은 사용자가 직접 넣는 수동 주문만)과 AutoBotH 창(봇 제어, 데이터 작업, 수집기, 조건 파이프라인, 종목 보드, 타임라인, 봇 차트, 보유 현황, 매매 결과, 가상 매매, 봇 설정·연결)을 한 화면에서 씁니다. 봇 조작은 서버 제어 스크립트를 거치며 앱이 직접 주문하지 않습니다.',
       },
       onSettings,
       items: [
@@ -168,7 +168,12 @@ export function TitleBar({ onSettings }: { onSettings: () => void }) {
                 게스트
               </b>
             )}
-            <b className="badge ro" title="주문·계좌 기능이 없습니다. 시세 조회 TR만 허용합니다.">조회 전용</b>
+            {/* [2026-11-26] the order window exists now: "조회 전용" only where nothing can be ordered (guest) */}
+            {mode === 'guest' && (
+              <b className="badge ro" title="게스트 모드는 시세 조회만 합니다. 주문은 KIS 로그인한 PC 의 주문 창에서만 됩니다.">
+                조회 전용
+              </b>
+            )}
             <span className={`rt rt-${rt?.status || 'off'}`} title={rt?.msg || ''}>
               <i /> 실시간 {rt?.status === 'on' ? '연결' : rt?.status === 'connecting' ? '연결 중' : rt?.status === 'error' ? '오류' : '대기'}
             </span>
@@ -215,7 +220,7 @@ export function OpenWinList() {
   );
 }
 
-const OPEN: WinType[] = ['chart', 'quote', 'info', 'watch', 'watchtile', 'watchsum', 'rank', 'index', 'news'];
+const OPEN: WinType[] = ['chart', 'quote', 'order', 'info', 'watch', 'watchtile', 'watchsum', 'rank', 'index', 'news'];
 const ARR: [ArrangeMode | 'min' | 'restore' | 'close', string][] = [
   ['cascade', '계단식'],
   ['tile', '바둑판식'],
@@ -240,7 +245,7 @@ export function Toolbar() {
       <SymbolSearch
         value={active?.code || lastCode}
         onPick={(code) => {
-          if (active && ['chart', 'quote', 'info', 'news'].includes(active.type)) setCode(active.id, code);
+          if (active && ['chart', 'quote', 'order', 'info', 'news'].includes(active.type)) setCode(active.id, code);
           else open('chart', { code });
         }}
       />

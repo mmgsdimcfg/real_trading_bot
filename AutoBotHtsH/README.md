@@ -5,7 +5,7 @@ Update log
 -->
 # AutoBotHtsH
 
-HtsH(한국투자증권 OpenAPI 조회 전용 개인 HTS)의 화면에 AutoBotH(r003 자동매매 봇 뷰어·원격 제어)의 기능을 합친 Windows 앱입니다.
+HtsH(한국투자증권 OpenAPI 개인 HTS - 시세 조회와 수동 주문 창)의 화면에 AutoBotH(r003 자동매매 봇 뷰어·원격 제어)의 기능을 합친 Windows 앱입니다.
 
 ## 화면
 
