@@ -478,7 +478,8 @@ button.mini { padding: 1px 7px; font-size: 11.5px; }
 .tm-grid.tm-grid-low { padding-bottom: 18px; grid-template-columns: minmax(0, 1fr); }
 .tm-grid.tm-grid-low.two { grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr); }
 @media (max-width: 980px) { .tm-grid.tm-grid-low.two { grid-template-columns: minmax(0, 1fr); } }
-.tm-card { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); }
+/* [2026-11-26] the tile is a size container: its rows (exit fields, 실행 대상, 한도) lay themselves out by the TILE's width, not the window's */
+.tm-card { container-type: inline-size; container-name: tm; position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); }
 .tm-card.on::before { content: ''; position: absolute; left: -1px; top: 18px; bottom: 18px; width: 3px; border-radius: 3px; background: var(--text); }
 .tm-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .tm-name { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.35; }
@@ -519,16 +520,37 @@ button.chip.link:hover { border-color: var(--text-3); }
 .sw input:focus-visible + i { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
 /* labelled value fields (익절 / 손절 / 보유, live limits) */
 .xf-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.xf-set { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 84px; gap: 8px; }
-.xf-set.four { grid-template-columns: 1.4fr 1fr 1fr 1.4fr 84px; }
+.xf-set { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 8px; }
+.xf-set > .xf-apply { min-width: 84px; }
+/* [2026-11-26] Edge AI 실제 주문 한도: 4 equal columns, 2 x 2 in a narrow tile; 적용 on the line under them (with the 현황 text), beside them in a wide tile */
+.lim { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.lim-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.lim-fields .xf input { font-size: 1.1em; }
+.lim-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.lim-status { min-width: 0; font-size: 12.5px; }
+.lim-foot .xf-apply { flex: none; min-width: 84px; padding: 8px 18px; }
+@container tm (max-width: 719px) {
+  .lim-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container tm (min-width: 900px) {
+  .lim { display: grid; grid-template-columns: minmax(0, 1fr) 84px; }
+  .lim-foot { display: contents; }
+  .lim-foot .xf-apply { grid-column: 2; grid-row: 1; padding: 0; }
+  .lim-status { grid-column: 1 / -1; grid-row: 2; }
+}
+@container tm (max-width: 619px) {
+  .xf-set { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .xf-set > .xf-apply { grid-column: 1 / -1; min-height: 38px; }
+}
 .xf { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 12px 7px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: text; }
 .xf:focus-within { border-color: var(--text-3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 7%, transparent); }
-.xf-lab { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-3); }
+.xf-lab { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.xf-lab i { flex: none; }
 .xf-lab i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); }
 .xf-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
 .xf-row em { font-style: normal; font-weight: 700; font-size: 1.2em; color: var(--text-3); }
 .xf-row u { text-decoration: none; margin-left: auto; font-size: 12px; color: var(--text-3); }
-.xf input { flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 1.36em; font-weight: 700; line-height: 1.3; outline: none; }
+.xf input { font-variant-numeric: tabular-nums; flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 1.36em; font-weight: 700; line-height: 1.3; outline: none; }
 .xf input::placeholder { color: var(--text-3); font-weight: 500; opacity: 0.7; }
 .xf-tp .xf-lab i { background: var(--gain); }
 .xf-sl .xf-lab i { background: var(--loss); }
@@ -538,7 +560,6 @@ button.chip.link:hover { border-color: var(--text-3); }
 .xf-sl.has { border-color: color-mix(in srgb, var(--loss) 35%, var(--border)); background: color-mix(in srgb, var(--loss) 7%, var(--surface)); }
 .xf-sl.has input, .xf-sl.has em { color: var(--loss); }
 .xf.bad { border-color: var(--st-hold); box-shadow: 0 0 0 1px var(--st-hold) inset; }
-.xf-set.four .xf input { font-size: 1.1em; }
 button.xf-apply { border-radius: 12px; font-weight: 700; font-size: 13.5px; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }
 button.xf-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); border-color: color-mix(in srgb, var(--primary-bg) 86%, var(--bg)); }
 button.xf-apply:disabled { opacity: 1; background: var(--surface-2); border-color: var(--border); color: var(--text-3); }
@@ -546,6 +567,9 @@ button.xf-apply:disabled { opacity: 1; background: var(--surface-2); border-colo
 .dirty-note::before { content: ''; width: 9px; height: 9px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; }
 /* 실행 대상 option cards */
 .opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+@container tm (max-width: 619px) {
+  .opt-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .opt-card { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: pointer; min-width: 0; }
 .opt-card.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; }
 .opt-card.dis { cursor: default; }

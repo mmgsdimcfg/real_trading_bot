@@ -35,6 +35,10 @@
  * - [2026-11-25] type=feat - layout (user): 청산 기준 on top (not under Edge AI), 매매 방식 = 규칙 매매 / Edge AI 매매 with the sub
  *   checkboxes 실제 매매 (EDGE_LIVE_ORDERS) / 가상 매매 (the opposite of EDGE_ONLY_LOG_ONLY; "신호 후보만 기록" is gone - both
  *   unchecked = candidates only), 반등 알림 as its own group
+ * - [2026-11-26] type=feat - 매매 방식 tiles follow their own width (user 2026-11-26, design mock): field labels stay on one line, the
+ *   Edge AI limits are a 4-column grid that becomes 2 x 2 in a narrow tile with 적용 on the line of the 현황 text (beside the fields
+ *   again in a wide tile), the exit row's 적용 drops under the fields and the 실행 대상 cards stack in a narrow tile (container
+ *   queries on .tm-card); 1회 금액 / 하루 손실 한도 show thousands separators (sent without them)
  * - [2026-11-25] type=feat - Edge AI 매매 > "가상 매수" can be unchecked (server EDGE_LIVE_ORDERS): Edge AI live orders beside the
  *   rule strategy. Its limits (1회 금액 / 동시 보유 / 하루 횟수 / 하루 손실 한도, EdgeLiveLimitsEdit) and today's edge summary
  *   (r016 status edge_live) appear below; needs 자동 매도 = 전체 (the server refuses the other combinations); an older server
@@ -1053,10 +1057,20 @@ export function ControlView() {
                         <div className="tm-lab tm-lab-gap">
                           실제 주문 한도 <i>한도에 닿으면 그날 Edge 신규 매수 중단</i>
                         </div>
-                        <EdgeLiveLimitsEdit st={liveLimits} disabled={busy || !connected || modeBusy} />
+                        <EdgeLiveLimitsEdit
+                          st={liveLimits}
+                          disabled={busy || !connected || modeBusy}
+                          status={
+                            liveSummary && (
+                              <span className={liveSummary.unpricedSells > 0 ? 'badge-warn' : 'muted small'} title="Edge AI 실제 매매의 오늘 현황 (서버 체결 장부 기준, 상태 조회 때마다 갱신)">
+                                현황: {edgeLiveSummaryText(liveSummary, liveLimits.entries.running ?? liveLimits.entries.effective)}
+                              </span>
+                            )
+                          }
+                        />
                       </>
                     )}
-                    {liveSummary && (liveOn || liveRunning || liveSummary.held.length > 0 || liveSummary.openBuys.length > 0) && (
+                    {liveSummary && !((liveOn || liveRunning) && liveLimits) && (liveSummary.held.length > 0 || liveSummary.openBuys.length > 0) && (
                       <div className="tm-notes">
                         <span className={liveSummary.unpricedSells > 0 ? 'badge-warn' : 'muted small'} title="Edge AI 실제 매매의 오늘 현황 (서버 체결 장부 기준, 상태 조회 때마다 갱신)">
                           현황: {edgeLiveSummaryText(liveSummary, liveLimits ? liveLimits.entries.running ?? liveLimits.entries.effective : null)}
@@ -1510,12 +1524,20 @@ function RuleExitEdit({ st, disabled }: { st: PaperExitState; disabled: boolean 
 /** [2026-11-25] the limits of the Edge AI live orders (server r001 EDGE_LIVE_ORDER_KRW / EDGE_LIVE_MAX_POSITIONS /
  *  EDGE_LIVE_MAX_ENTRIES_PER_DAY / EDGE_LIVE_DAILY_LOSS_KRW; r016 checks the same ranges). Whole numbers, applied after the next
  *  r003 start. At a limit the server stops new edge buys for the day - what the edge strategy holds is still closed */
-function EdgeLiveLimitsEdit({ st, disabled }: { st: EdgeLiveLimits; disabled: boolean }) {
+/** [2026-11-26] the KRW boxes (1회 금액, 하루 손실 한도) show thousands separators; edgeLiveLimitInput drops them again */
+const LIMIT_MONEY: Record<EdgeLiveLimitKind, boolean> = { order: true, positions: false, entries: false, loss: true };
+const limitText = (k: EdgeLiveLimitKind, raw: string): string => {
+  if (!LIMIT_MONEY[k]) return raw;
+  const digits = raw.replace(/[^\d]/g, '');
+  return digits ? Number(digits.slice(0, 15)).toLocaleString('ko-KR') : '';
+};
+
+function EdgeLiveLimitsEdit({ st, disabled, status }: { st: EdgeLiveLimits; disabled: boolean; status?: ReactNode }) {
   const fromState = (): Record<EdgeLiveLimitKind, string> => ({
-    order: String(st.order.effective),
+    order: limitText('order', String(st.order.effective)),
     positions: String(st.positions.effective),
     entries: String(st.entries.effective),
-    loss: String(st.loss.effective),
+    loss: limitText('loss', String(st.loss.effective)),
   });
   const [text, setText] = useState(fromState);
   const [saving, setSaving] = useState(false);
@@ -1548,21 +1570,26 @@ function EdgeLiveLimitsEdit({ st, disabled }: { st: EdgeLiveLimits; disabled: bo
         disabled={disabled || saving}
         aria-invalid={vals[k] === null}
         title={`${EDGE_LIVE_LIMIT_RANGE[k][0].toLocaleString('ko-KR')} ~ ${EDGE_LIVE_LIMIT_RANGE[k][1].toLocaleString('ko-KR')}${EDGE_LIVE_LIMIT_UNIT[k]}`}
-        onChange={(e) => setText((t) => ({ ...t, [k]: e.target.value }))}
+        onChange={(e) => setText((t) => ({ ...t, [k]: limitText(k, e.target.value) }))}
         onKeyDown={(e) => e.key === 'Enter' && void save()}
       />
     </ExitField>
   );
   return (
     <div className="xf-wrap" title="Edge AI 실제 주문 한도 (서버 EDGE_LIVE_*). 한도에 닿으면 그날 Edge 신규 매수 중단. r003 재시작 후 적용">
-      <div className="xf-set four">
-        {box('order')}
-        {box('positions')}
-        {box('entries')}
-        {box('loss')}
-        <button className="xf-apply" disabled={disabled || saving || !changed} onClick={() => void save()}>
-          적용
-        </button>
+      <div className="lim">
+        <div className="lim-fields">
+          {box('order')}
+          {box('positions')}
+          {box('entries')}
+          {box('loss')}
+        </div>
+        <div className="lim-foot">
+          <span className="lim-status">{status}</span>
+          <button className="xf-apply" disabled={disabled || saving || !changed} onClick={() => void save()}>
+            적용
+          </button>
+        </div>
       </div>
       <div className="tm-notes">
       {changed && <span className="dirty-note">변경 사항이 있습니다 · 적용을 눌러 저장</span>}
