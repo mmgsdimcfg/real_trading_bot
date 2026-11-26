@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-26] type=feat (Symbol box in the header, the same as every other symbol window (user 2026-11-26))
 // - [2026-11-06] type=feat (Stock info window: KIS search_stock_info fields with the official Korean labels (listing date, shares, capital,
 //   par value, sector classes, KOSPI200 membership, halt / administrative flags, NXT tradability ...), valuation from the current quote
 //   (market cap, PER / PBR / EPS / BPS, foreign ownership, 52-week range position) and investor net buying for the last days)
@@ -13,6 +14,7 @@ import { useEffect, useRef } from 'react';
 import { useStore, type Win } from '../store';
 import { useCall, useSymbol } from '../hooks';
 import { NxtMark } from '../components/NxtTag';
+import { SymbolSearch } from '../components/SymbolSearch';
 import type { Quote } from '../../../shared/kis';
 import type { InfoField } from '../../../shared/market';
 import { InvestorPanel } from '../components/InvestorPanel';
@@ -54,7 +56,8 @@ export function InfoWindow({ win }: { win: Win }) {
 
   return (
     <div className="info-win">
-      <h3>
+      <h3 className="q-id">
+        <SymbolSearch compact value={win.code} onPick={(c) => useStore.getState().setCode(win.id, c)} />
         {sym?.name || win.code} <span className="mono muted">{win.code}</span> {sym?.nxt && <NxtMark />} <span className="muted small">{sym ? `${sym.market}` : ''}</span>
       </h3>
       <div className="info-cols">

@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-26] type=feat (News window: symbol box + name in a header row, the same as every other symbol window (user 2026-11-26))
 // - [2026-11-06] type=feat (List windows: watchlist (add with the symbol search, remove, move up / down, up to 60 codes polled every 3 s with
 //   the multi-symbol price TR - 30 codes per call), rankings (volume / amount / rise / fall / market cap, all / KOSPI / KOSDAQ, every 10 s),
 //   indices (KOSPI / KOSDAQ / KOSPI200 with advancers / decliners and a daily chart), news titles of the symbol (every 60 s). A click on a
@@ -31,7 +32,7 @@
 //   a rebound alert today - a click shows that alert again (components/AlarmMark))
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LINK_COLORS, newGroupId, useStore, WATCH_MAX, type Win } from '../store';
-import { useCall, useOutsideClose } from '../hooks';
+import { useCall, useOutsideClose, useSymbol } from '../hooks';
 import { AUTO_MAX_SEC, AUTO_MIN_SEC, autoViewMayResume, autoViewStarted, clampSec, nextCode, onAutoViewStarted } from '../../../bot/renderer/src/components/AutoView';
 
 const WATCH_AUTO_KEY = 'autobothtsh.watchAuto';
@@ -525,8 +526,13 @@ export function IndexWindow({ win }: { win: Win }) {
 
 export function NewsWindow({ win }: { win: Win }) {
   const r = useCall<NewsRow[]>('news', [win.code], 60000);
+  const sym = useSymbol(win.code);
   return (
     <div className="list-win">
+      <div className="win-tb">
+        <SymbolSearch compact value={win.code} onPick={(c) => useStore.getState().setCode(win.id, c)} />
+        <b>{sym?.name || win.code}</b> <span className="mono muted">{win.code}</span>
+      </div>
       {r.error && <p className="err">{r.error}</p>}
       <div className="tab-scroll">
         <table className="grid">

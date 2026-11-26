@@ -1,4 +1,5 @@
 // Update log
+// - [2026-11-26] type=feat (Symbol box in the header, the same as every other symbol window (user 2026-11-26))
 // - [2026-11-26] type=feat (Order window 주문 (user 2026-11-26): opened from the current price window (click a price of the order book ->
 //   매수 / 매도) or the toolbar. Left: the order book (a click puts that price into the form). Right: 매수 / 매도, 지정가 / 시장가,
 //   price and quantity with tick / share steppers and 10 / 25 / 50 / 100 % of the possible quantity, order amount, 예수금 / 주문가능금액
@@ -17,6 +18,7 @@ import { useStore, type Win } from '../store';
 import { useCall, useRealtime, useSymbol } from '../hooks';
 import { OrderBookView } from './QuoteWindow';
 import { NxtMark } from '../components/NxtTag';
+import { SymbolSearch } from '../components/SymbolSearch';
 import type { OrderBook, Quote } from '../../../shared/kis';
 import { orderProblem, reviseProblem, stepPrice, tickSize, type Balance, type Buyable, type Fill, type OpenOrder, type OrderSide, type OrderState, type OrderType } from '../../../shared/order';
 import { arrow, fmtInt, fmtPct, signOf, upDown } from '../lib';
@@ -203,7 +205,8 @@ export function OrderWindow({ win }: { win: Win }) {
   return (
     <div className={`ord-win ord-${side}`}>
       <div className="q-head">
-        <div>
+        <div className="q-id">
+          <SymbolSearch compact value={code} onPick={(c) => setCode(win.id, c)} />
           <b className="q-name">{sym?.name || code}</b> <span className="mono muted">{code}</span> {sym?.nxt && <NxtMark />}
           {st?.mode === 'demo' ? <b className="flag">데모</b> : st?.mode === 'kis' ? <b className={`flag${st.env === 'real' ? ' warn' : ''}`}>{st.env === 'real' ? '실전' : '모의'}</b> : null}
         </div>

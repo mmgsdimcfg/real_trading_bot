@@ -1,4 +1,6 @@
 // Update log
+// - [2026-11-26] type=feat (Symbol box in the header as in the chart window (user 2026-11-26) - also on the loading / error screen,
+//   so a code without a quote can be changed)
 // - [2026-11-26] type=feat (Order book: a click on a price shows 매수 / 매도 buttons on that row (onTrade) - they open the order window
 //   on that price (user 2026-11-26); the order window uses the same table with onPick (the price goes straight into its form))
 // - [2026-11-24] type=feat (가중평균가 (VWAP, wghn_avrg_stck_prc) row with its distance from the current price (user 2026-11-24))
@@ -21,6 +23,7 @@ import { mergeTrades } from '../../../shared/live';
 import { useCall, useOutsideClose, useRealtime, useSymbol } from '../hooks';
 import { WatchStar } from './ListWindows';
 import { NxtMark } from '../components/NxtTag';
+import { SymbolSearch } from '../components/SymbolSearch';
 import type { OrderBook, Quote, TradeTick } from '../../../shared/kis';
 import type { DailyRow, TicksRes } from '../../../shared/market';
 import { InvestorPanel } from '../components/InvestorPanel';
@@ -139,12 +142,22 @@ export function QuoteWindow({ win }: { win: Win }) {
   const strength = trades.find((t) => t.strength !== undefined)?.strength;
 
   // loading / error screens only before the first quote of this code (later errors keep the last data on screen)
-  if (!live) return <div className="empty">{q.error || '불러오는 중…'}</div>;
+  const setCode = useStore.getState().setCode;
+  if (!live)
+    return (
+      <div className="quote-win">
+        <div className="q-head">
+          <SymbolSearch compact value={code} onPick={(c) => setCode(win.id, c)} />
+        </div>
+        <div className="empty">{q.error || '불러오는 중…'}</div>
+      </div>
+    );
   const prev = live.prevClose;
   return (
     <div className="quote-win">
       <div className="q-head">
-        <div>
+        <div className="q-id">
+          <SymbolSearch compact value={code} onPick={(c) => setCode(win.id, c)} />
           <b className="q-name">{sym?.name || live.raw?.hts_kor_isnm || code}</b> <span className="mono muted">{code}</span> {sym?.nxt && <NxtMark />} <WatchStar code={code} />{' '}
           <span className="muted small">
             {live.market} {live.sector}

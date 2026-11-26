@@ -28,6 +28,7 @@
 // - [2026-11-20] type=feat (One window per kind (user 2026-11-20): open() focuses the open window of that kind instead of adding another
 //   (a symbol window then shows the asked code); a saved layout with several windows of one kind keeps the front one)
 
+import { rememberSymbol } from './symHistory';
 import { create } from 'zustand';
 import type { AuthState } from '../../preload/index';
 import type { OrderBook, Quote, TradeTick } from '../../shared/kis';
@@ -374,6 +375,7 @@ export const useStore = create<State>()((set, get) => {
     },
     toggleMax: (id) => upd(id, (w) => ({ ...w, max: !w.max, min: false })),
     setCode: (id, code) => {
+      rememberSymbol(code); // [2026-11-26] symbol input history
       const s = get();
       const src = id ? s.wins.find((w) => w.id === id) : null;
       const wins = s.wins.map((w) => {
@@ -473,6 +475,7 @@ export const useStore = create<State>()((set, get) => {
       commit({ wins: s.wins.map((w) => (SYMBOL_WINS.includes(w.type) ? { ...w, code } : w)), lastCode: code });
     },
     setCodeAll: (code) => {
+      rememberSymbol(code);
       const s = get();
       if (!s.wins.some((w) => SYMBOL_WINS.includes(w.type))) {
         commit({ lastCode: code });
