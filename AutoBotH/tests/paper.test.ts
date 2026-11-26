@@ -251,3 +251,24 @@ describe('rule variant / VWAP trade / paper books', () => {
     expect([t.length, t[0].prob, t[0].tpPx]).toEqual([1, undefined, 106.3]);
   });
 });
+
+// [2026-11-27] VWAP trade live orders
+describe('VWAP live keys', () => {
+  it('parses the switch, the limits and the day summary', async () => {
+    const p = await import('../src/shared/paper');
+    const v = (effective: unknown, running: unknown = effective) => ({ effective, running, pending: effective !== running });
+    const data = { values: { VWAP_TRADE_LIVE_ORDERS: v(true, false), VWAP_LIVE_ORDER_KRW: v(100000), VWAP_LIVE_MAX_POSITIONS: v(1), VWAP_LIVE_MAX_ENTRIES_PER_DAY: v(2), VWAP_LIVE_DAILY_LOSS_KRW: v(10000) } };
+    expect(p.parseVwapLive(data)).toEqual({ effective: 'true', running: 'false', pending: true });
+    const lim = p.parseVwapLiveLimits(data)!;
+    expect([lim.order.effective, lim.positions.effective, lim.entries.effective, lim.loss.effective]).toEqual([100000, 1, 2, 10000]);
+    expect(p.parseEdgeLiveLimits(data)).toBeNull(); // the edge keys are not in this answer
+    expect(p.vwapLiveLimitChanges({ order: 150000, positions: 2, entries: 3, loss: 20000 })).toEqual({
+      VWAP_LIVE_ORDER_KRW: 150000, VWAP_LIVE_MAX_POSITIONS: 2, VWAP_LIVE_MAX_ENTRIES_PER_DAY: 3, VWAP_LIVE_DAILY_LOSS_KRW: 20000,
+    });
+    const status = { edge_live: { held: [], open_buys: [], today: { entries: 0 } }, vwap_live: { held: [{ code: '005930', qty: 9, avg_price: 10050 }], open_buys: [], today: { entries: 1, realized: -1200 } } };
+    const s = p.parseVwapLiveSummary(status)!;
+    expect([s.held[0].code, s.held[0].qty, s.entries, s.realized]).toEqual(['005930', 9, 1, -1200]);
+    expect(p.parseEdgeLiveSummary(status)!.held).toEqual([]);
+    expect([p.parseVwapLive({ values: {} }), p.parseVwapLiveLimits({ values: {} }), p.parseVwapLiveSummary({})]).toEqual([null, null, null]);
+  });
+});

@@ -376,8 +376,9 @@ EDGE_LIVE_RANGES = {
 }
 
 
-def edge_live_summary(paths: ControlPaths) -> dict | None:
-    """what the edge strategy holds and did today, from r003's fill ledger (read only, no KIS call). None: no readable ledger"""
+def edge_live_summary(paths: ControlPaths, strategy: str = "edge") -> dict | None:
+    """what a side strategy (edge / [2026-11-27] vwap) holds and did today, from r003's fill ledger (read only, no KIS call).
+    None: no readable ledger"""
     import r023_bot_holdings as r023  # noqa: E402  (stdlib only)
     try:
         st, _status = r023.load_fill_state(paths.runtime_root / "data" / "live_runtime")
@@ -385,13 +386,13 @@ def edge_live_summary(paths: ControlPaths) -> dict | None:
         return None
     if st is None:
         return None
-    day = st.get("edge_day") or {}
+    day = st.get(f"{strategy}_day") or {}
     if day.get("date") != datetime.now().strftime("%Y%m%d"):
         day = {}
     return {
-        "held": [{"code": c, "qty": int(b.get("qty", 0)), "avg_price": r023.edge_avg_price(st, c), "entry_at": str(b.get("entry_at", ""))}
-                 for c, b in sorted((st.get("edge") or {}).items())],
-        "open_buys": sorted(r023.edge_open_buy_codes(st)),
+        "held": [{"code": c, "qty": int(b.get("qty", 0)), "avg_price": r023.edge_avg_price(st, c, strategy),
+                  "entry_at": str(b.get("entry_at", ""))} for c, b in sorted((st.get(strategy) or {}).items())],
+        "open_buys": sorted(r023.edge_open_buy_codes(st, strategy)),
         "today": {"entries": int(day.get("entries", 0)), "realized": float(day.get("realized", 0.0)),
                   "sl_codes": list(day.get("sl_codes") or []), "unpriced_sells": int(day.get("unpriced_sells", 0))},
     }
@@ -456,6 +457,47 @@ def validate_edge_live(accepted: dict, overrides: dict, paths: ControlPaths) -> 
             rejected[key] = "EDGE_LIVE_ORDERS runs beside the rule strategy - TRADING_STRATEGY_MODE=normal only"
     # (what the edge strategy already holds is closed by edge rules whatever AUTO_SELL_MODE is - r003 _edge_live_manage - so the
     # sell mode of the rule strategy is not locked by edge holdings)
+    return rejected
+
+
+# [2026-11-27] VWAP trade live orders (r001 VWAP_TRADE_LIVE_ORDERS): the ranges of its limits / exits and what switching it on needs
+VWAP_LIVE_RANGES = {
+    "VWAP_LIVE_ORDER_KRW": (10_000, 1_000_000),
+    "VWAP_LIVE_MAX_POSITIONS": (1, 5),
+    "VWAP_LIVE_MAX_ENTRIES_PER_DAY": (1, 20),
+    "VWAP_LIVE_DAILY_LOSS_KRW": (1_000, 1_000_000),
+    "VWAP_LIVE_UNFILLED_CANCEL_SECONDS": (5, 300),
+    "VWAP_TRADE_TP_PCT": (0.1, 30.0),
+    "VWAP_TRADE_SL_PCT": (0.1, 30.0),
+    "VWAP_TRADE_HORIZON_MIN": (1, 400),
+}
+
+
+def validate_vwap_live(accepted: dict, overrides: dict) -> dict:
+    """{key: reason} of the accepted assignments that the VWAP trade rules refuse (a server without the keys: nothing)"""
+    if not hasattr(r001, "VWAP_TRADE_LIVE_ORDERS"):
+        return {}
+
+    def eff(key: str):
+        return accepted[key] if key in accepted else overrides.get(key, base_value(key))
+
+    rejected: dict = {}
+    for key, (lo, hi) in VWAP_LIVE_RANGES.items():
+        v = accepted.get(key)
+        if key in accepted and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi):
+            rejected[key] = f"out of range ({lo:,}..{hi:,})"
+    touched = {"VWAP_TRADE_LIVE_ORDERS", "VWAP_TRADE_MODE", "AUTO_SELL_MODE", "TRADING_STRATEGY_MODE"} & set(accepted)
+    if not touched or not bool(eff("VWAP_TRADE_LIVE_ORDERS")):
+        return rejected
+    if str(eff("VWAP_TRADE_MODE")).strip().lower() != "paper":
+        for key in touched & {"VWAP_TRADE_LIVE_ORDERS", "VWAP_TRADE_MODE"}:
+            rejected[key] = "VWAP live orders need VWAP_TRADE_MODE=paper (the VWAP trade on) - switch VWAP_TRADE_LIVE_ORDERS off first"
+    if str(eff("AUTO_SELL_MODE")).strip().lower() != "all":
+        for key in touched & {"VWAP_TRADE_LIVE_ORDERS", "AUTO_SELL_MODE"}:
+            rejected[key] = "new VWAP live buys need AUTO_SELL_MODE=all - switch VWAP_TRADE_LIVE_ORDERS off first"
+    if str(eff("TRADING_STRATEGY_MODE")).strip().lower() != "normal":
+        for key in touched & {"VWAP_TRADE_LIVE_ORDERS", "TRADING_STRATEGY_MODE"}:
+            rejected[key] = "VWAP_TRADE_LIVE_ORDERS runs beside the rule strategy - TRADING_STRATEGY_MODE=normal only"
     return rejected
 
 
@@ -1197,6 +1239,7 @@ def status(paths: ControlPaths, runner: Runner = _run) -> dict:
         "host": host_info(paths),
         # [2026-11-25] Edge AI live orders: what the edge strategy holds / did today (null: no fill ledger yet)
         "edge_live": edge_live_summary(paths),
+        "vwap_live": edge_live_summary(paths, "vwap"),   # [2026-11-27] VWAP trade live orders, the same shape
     }
 
 
@@ -1792,6 +1835,9 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
             with write_lock(paths):
                 overrides = read_overrides(paths)
                 for _k, _why in validate_edge_live(accepted, overrides, paths).items():   # [2026-11-25] Edge AI live rules
+                    rejected[_k] = _why
+                    accepted.pop(_k, None)
+                for _k, _why in validate_vwap_live(accepted, overrides).items():          # [2026-11-27] VWAP trade live rules
                     rejected[_k] = _why
                     accepted.pop(_k, None)
                 before = {k: overrides.get(k) for k in accepted}

@@ -223,6 +223,9 @@ export interface ControlState {
   /** [2026-11-27] server VWAP_TRADE_MODE ('off' / 'paper') and its exits - undefined until read / older server */
   vwapMode?: PaperModeState;
   vwapExit?: PaperExitState;
+  /** [2026-11-27] server VWAP_TRADE_LIVE_ORDERS and its limits VWAP_LIVE_* - undefined until read / older server */
+  vwapLive?: PaperModeState;
+  vwapLiveLimits?: EdgeLiveLimits;
   /** [2026-11-27] server RULE_TRADE_VARIANT ('normal' / 'extended') - undefined until read / older server */
   ruleVariant?: PaperModeState;
   /** [2026-11-25] server EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN (paper exits, 0 = the model's label) - undefined until read / older server */

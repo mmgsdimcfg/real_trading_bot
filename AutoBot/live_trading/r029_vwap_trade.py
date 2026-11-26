@@ -72,12 +72,15 @@ def session_vwap(raw: pd.DataFrame) -> float:
     return float((raw["close"].astype(float) * vol).sum() / total) if total > 0 else float("nan")
 
 
-def vwap_signal(raw: pd.DataFrame, price: float, now: datetime, tick, p: VwapParams) -> tuple[bool, str, dict]:
+def vwap_signal(raw: pd.DataFrame, price: float, now: datetime, tick, p: VwapParams,
+                vwap: float | None = None) -> tuple[bool, str, dict]:
     """(buy?, stage or reason, info). `raw` = the day's regular 1-minute bars up to the last completed one (index = bar end),
     `tick` = r013 TickTriggerResult of the symbol (None = no tick feed). The stage names are what the app shows:
-    no_history / below_vwap / no_trend / no_tick_cross / chase / price_drop / stale / signal."""
+    no_history / below_vwap / no_trend / no_tick_cross / chase / price_drop / stale / signal.
+    `vwap`: the day's VWAP when the caller has it from elsewhere (r003's 1-minute cache holds 200 bars, so the live path passes
+    the day reference price) - then `raw` need not start at the open."""
     info: dict = {}
-    if raw is None or len(raw) < MIN_BARS or pd.Timestamp(raw.index[0]).time() > FULL_SESSION_FIRST_BAR:
+    if raw is None or len(raw) < MIN_BARS or (vwap is None and pd.Timestamp(raw.index[0]).time() > FULL_SESSION_FIRST_BAR):
         return False, "no_history", info
     close = raw["close"].astype(float)
     last = float(close.iloc[-1])
@@ -85,7 +88,7 @@ def vwap_signal(raw: pd.DataFrame, price: float, now: datetime, tick, p: VwapPar
     info.update(bar=str(raw.index[-1]), bar_age_s=round(age, 1))
     if age < -5 or age > p.bar_stale_s:
         return False, "stale", info
-    vwap = session_vwap(raw)
+    vwap = session_vwap(raw) if vwap is None else float(vwap)
     info.update(vwap=vwap, vwap_gap_pct=(price / vwap - 1) * 100 if vwap == vwap and vwap > 0 else None)
     if not (vwap == vwap and vwap > 0) or not (last > vwap and price > vwap):
         return False, "below_vwap", info
@@ -178,6 +181,9 @@ def make_runner(cfg, out_dir: Path, date_str: str, log: Callable[[str], None], c
         r022.close_missed_days(out_dir, Path(cfg.TICK_DATA_DIR), date_str, lambda m: log(str(m).replace(r022.TAG, TAG)),
                                prefix=FILE_PREFIX)
         close_only = False
+        if mode == "paper" and bool(getattr(cfg, "VWAP_TRADE_LIVE_ORDERS", False)):
+            mode = "live"                       # [2026-11-27] live orders on: no new paper buys (the same signal is not counted twice)
+            log(f"{TAG} VWAP live orders on - no new paper buys")
         if mode != "paper":
             if not r022.open_codes_in(out_dir / f"{FILE_PREFIX}_{date_str}.jsonl"):
                 return None

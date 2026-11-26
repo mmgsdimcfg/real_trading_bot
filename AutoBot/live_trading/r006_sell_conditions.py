@@ -1239,6 +1239,14 @@ def edge_exit_values() -> tuple[float, float, float]:
     return tp, sl, hold
 
 
+def vwap_exit_values() -> tuple[float, float, float]:
+    """[2026-11-27] (take profit ratio, stop ratio, max hold minutes) of the VWAP trade's live sells: r001 VWAP_TRADE_TP_PCT /
+    VWAP_TRADE_SL_PCT (%) / VWAP_TRADE_HORIZON_MIN - read when called, the same values the paper runner uses"""
+    import r001_define_config as _cfg
+    return (float(getattr(_cfg, "VWAP_TRADE_TP_PCT", 3.0)) / 100.0, float(getattr(_cfg, "VWAP_TRADE_SL_PCT", 1.27)) / 100.0,
+            float(getattr(_cfg, "VWAP_TRADE_HORIZON_MIN", 300)))
+
+
 def _e10_edge_take_profit(ctx: SellContext) -> bool:
     tp, _, _ = edge_exit_values()
     if ctx.pnl_pct < tp - _BASIC_EPS:

@@ -1546,6 +1546,61 @@ def _e09_edge_ai_signal(ctx: BuyContext) -> bool:
     return True
 
 
+_VWAP_TICK_FEED = None
+
+
+def _vwap_tick_eval(code: str, now):
+    """the VWAP trade's own tick feed (60-tick MA5 / MA15, its own age / freshness / density settings - r029)"""
+    global _VWAP_TICK_FEED
+    if _VWAP_TICK_FEED is None:
+        import r001_define_config as _cfg
+        from r029_vwap_trade import tick_feed_from_config
+        _VWAP_TICK_FEED = tick_feed_from_config(_cfg)
+    return _VWAP_TICK_FEED.evaluate(code, now)
+
+
+def _v09_vwap_signal(ctx: BuyContext) -> bool:
+    """[2026-11-27] VWAP trade live buy signal (user request): the same four steps as the paper runner (r029.vwap_signal) on the
+    latest confirmed 1-minute bar of the regular session - above the day's VWAP, 1-minute MA5 or Bollinger middle rising, a
+    60-tick MA5 / MA15 golden cross within its window with enough prints, chase / drop / freshness guards. Any error or
+    missing data: no buy (fail-closed)."""
+    ctx.trigger_flag = "-"
+    ctx.steps_text = "vwap"
+
+    def reject(reason: str) -> bool:
+        ctx.log(f"  [REJECT      ] {ctx.symbol_label} | VWAP_SIGNAL_{reason}")
+        return False
+
+    if ctx.services.classify_buy_session(ctx.current_dt) != "regular":
+        return reject("REGULAR_SESSION_ONLY")
+    frame_1min = ctx.services.get_frame_1min(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+    if frame_1min is None or len(frame_1min) < 2:
+        return reject("1MIN_FRAME_UNAVAILABLE")
+    try:
+        import r001_define_config as _cfg
+        import r011_edge_ai as r011
+        import r029_vwap_trade as r029
+        raw = r011.session_raw_1min(frame_1min, ctx.current_dt.date())
+        if raw is None or len(raw) < r029.MIN_BARS:
+            return reject("INSUFFICIENT_BARS")
+        if ctx.day_open is None or ctx.day_vwap is None:
+            ctx.day_open, ctx.day_vwap = ctx.services.fetch_day_ref_prices(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+        vwap = float(ctx.day_vwap) if ctx.day_vwap is not None and float(ctx.day_vwap) > 0 else None
+        if vwap is None:
+            return reject("NO_DAY_VWAP")
+        tick = _vwap_tick_eval(str(ctx.code).zfill(6), ctx.current_dt)
+        ok, stage, info = r029.vwap_signal(raw, float(ctx.price), ctx.current_dt, tick, r029.VwapParams.from_config(_cfg), vwap=vwap)
+    except Exception as exc:
+        return reject(f"ERROR_{type(exc).__name__}: {exc}")
+    if not ok:
+        return reject(f"{stage.upper()} | {info.get('tick') or ''}".rstrip(" |"))
+    ctx.trigger_flag = "P"
+    ctx.trigger_reason = "VWAP_SIGNAL"
+    ctx.buy_reason = (f"VWAP_SIGNAL_gap={float(info.get('vwap_gap_pct') or 0.0):+.2f}%_"
+                      f"{'MA5' if info.get('ma5_up') else 'BBMID'}_UP_{info.get('tick')}")
+    return True
+
+
 _GATES_BY_NAME = {gate.name: gate for gate in DECISION_CONTEXT_GATES}
 
 # [2026-10-23] Portfolio guards - tuple position (not number) decides evaluation order.
@@ -1781,5 +1836,16 @@ EDGE_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
                     "정규장 + 최신 확정 1분봉의 1분 하이브리드 트리거 + Edge AI 모델 확률 >= EDGE_ONLY_MIN_PROB "
                     "(0이면 모델 임계값). 모델 없음/이력 부족/오류는 매수 안 함",
                     ("TRADING_STRATEGY_MODE", "EDGE_ONLY_MIN_PROB", "ENTRY_1MIN_FRAME_REQUIRE_LATEST"), _e09_edge_ai_signal)]
+    + [_NORMAL_BY_NO[n] for n in (23, 24, 25)]
+)
+
+# [2026-11-27] VWAP trade live orders (r003 side strategy "vwap"): the shared state conditions, the VWAP signal, quantity / price / book
+VWAP_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
+    [_NORMAL_BY_NO[n] for n in range(1, 9)]
+    + [BuyCondition(9, "_v09_vwap_signal", "TRIGGER", "[vwap] VWAP 매매 신호",
+                    "정규장 + 최신 확정 1분봉: 현재가·1분 종가 > 당일 VWAP, 1분 MA5 또는 BB 중심선 상승, 60틱 MA5/MA15 골든크로스 "
+                    "(VWAP_TRADE_TICK_CROSS_MAX_AGE_SECONDS 이내, 체결 밀도), 추격 / 급락 / 최신성 가드. 데이터 없음/오류는 매수 안 함",
+                    ("VWAP_TRADE_LIVE_ORDERS", "VWAP_TRADE_TICK_CROSS_MAX_AGE_SECONDS", "VWAP_TRADE_CHASE_MAX_PCT",
+                     "VWAP_TRADE_MAX_VWAP_GAP_PCT", "VWAP_TRADE_LIVE_DROP_MAX_PCT", "VWAP_TRADE_MIN_PRINTS_PER_MIN"), _v09_vwap_signal)]
     + [_NORMAL_BY_NO[n] for n in (23, 24, 25)]
 )

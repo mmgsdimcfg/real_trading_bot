@@ -156,6 +156,21 @@ class FactoryTest(unittest.TestCase):
             self.assertFalse(run.close_only)
             self.assertTrue(any("paper mode enabled" in m for m in logs))
 
+    def test_live_orders_on_means_no_new_paper_buys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, ticks = Path(tmp) / "live", Path(tmp) / "ticks"
+            out.mkdir()
+            ticks.mkdir()
+            cfg = SimpleNamespace(VWAP_TRADE_MODE="paper", VWAP_TRADE_LIVE_ORDERS=True, TICK_DATA_DIR=ticks)
+            self.assertIsNone(r029.make_runner(cfg, out, "20261127", lambda m: None))
+
+    def test_the_live_path_passes_the_days_vwap(self):
+        late = bars(RISING, start="2026-11-27 12:31")                       # r003's cache no longer starts at the open
+        now = datetime(2026, 11, 27, 13, 0, 30)
+        self.assertEqual(r029.vwap_signal(late, 103.1, now, tick(), P)[1], "no_history")
+        self.assertEqual(r029.vwap_signal(late, 103.1, now, tick(), P, vwap=102.0)[:2], (True, "signal"))
+        self.assertEqual(r029.vwap_signal(late, 103.1, now, tick(), P, vwap=104.0)[1], "below_vwap")
+
     def test_defaults(self):
         self.assertEqual(r001.VWAP_TRADE_MODE, "off")
         self.assertEqual((r001.VWAP_TRADE_TP_PCT, r001.VWAP_TRADE_SL_PCT, r001.VWAP_TRADE_HORIZON_MIN), (3.0, 1.27, 300))

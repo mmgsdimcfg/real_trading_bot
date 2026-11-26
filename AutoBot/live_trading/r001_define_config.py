@@ -1602,6 +1602,19 @@ VWAP_TRADE_LIVE_DROP_MAX_PCT = 0.4            # 현재가가 직전 1분 종가�
 VWAP_TRADE_BAR_STALE_SECONDS = 90.0           # 마지막 확정 1분봉이 이보다 오래됐으면 매수 안 함
 VWAP_TRADE_EXCLUDE_FUNDS = True               # ETF / ETN 제외
 VWAP_TRADE_NO_REENTRY_AFTER_SL = True         # 당일 손절된 종목은 그날 다시 사지 않음
+# [2026-11-27] VWAP 매매 실제 주문 (사용자 결정: 가상 + 실제 선택, Edge AI 실제 매매와 같은 구조 - r003 보조 전략 경로, 장부 r023 "vwap").
+#   True 이고 VWAP_TRADE_MODE="paper", TRADING_STRATEGY_MODE="normal", AUTO_SELL_MODE="all" 일 때만 새로 산다. 켜져 있는 동안 가상
+#   매매는 새로 사지 않는다(같은 신호를 두 번 세지 않음). 매수: 정규장(KRX) 매도1호가 지정가 1건(분할·재주문 없음),
+#   VWAP_LIVE_UNFILLED_CANCEL_SECONDS 안에 다 체결되지 않으면 잔량 취소. 매도: VWAP_TRADE_TP_PCT / SL_PCT / HORIZON_MIN / 15:20.
+#   한도에 닿으면 그날 VWAP 신규 매수 중단(이미 산 수량의 청산은 계속). 규칙 매매와 동시 보유 종목 수(MAX_OPEN_POSITIONS)는 함께 센다.
+#   앞선 검증에서 VWAP 위치의 예측력은 확인되지 않았다. r003 재시작 후 적용. 롤백: False.
+VWAP_TRADE_LIVE_ORDERS = False
+VWAP_LIVE_ORDER_KRW = 100_000          # 1회 매수 금액 상한 (실제 주문가 기준)
+VWAP_LIVE_MAX_POSITIONS = 1            # VWAP 동시 보유 종목 수 (미체결·접수 불명 포함)
+VWAP_LIVE_MAX_ENTRIES_PER_DAY = 1      # 하루 매수 횟수
+VWAP_LIVE_DAILY_LOSS_KRW = 10_000      # 그날 VWAP 실현 손실(비용 포함)이 이 금액에 닿으면 신규 매수 중단
+VWAP_LIVE_UNFILLED_CANCEL_SECONDS = 20  # 매수 주문이 이 시간 안에 다 체결되지 않으면 잔량 취소
+VWAP_LIVE_ENTRY_END = dt_time(14, 50)
 EDGE_TP_PCT = 0.020             # edge 모드 익절 (라벨 tp 2.0%)
 EDGE_SL_PCT = 0.017             # edge 모드 손절 (라벨 sl 1.7%)
 EDGE_MAX_HOLD_MINUTES = 60      # edge 모드 보유 시간 상한 (라벨 horizon 60분)

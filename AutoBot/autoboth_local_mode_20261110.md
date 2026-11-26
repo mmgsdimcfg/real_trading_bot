@@ -501,3 +501,19 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   청산 `VWAP_TRADE_TP_PCT` / `VWAP_TRADE_SL_PCT`(%) / `VWAP_TRADE_HORIZON_MIN`(분), 남으면 15:20 청산. 실제 주문 경로는 아직 없다.
 - 앱: 제어 탭 규칙 매매 카드에 Normal / Extended 선택, VWAP 매매 카드(스위치, 매수 4단계, 청산 기준 입력). 가상 매매 탭에 장부 선택
   (Edge AI 매매 / VWAP 매매) - IPC `paper:get` / `paper:status` 의 두 번째 인자 `book`(`edge` | `vwap`).
+
+## VWAP 매매 실제 주문 (2026-11-27)
+- r001 `VWAP_TRADE_LIVE_ORDERS`(bool, 기본 false). true 이고 `VWAP_TRADE_MODE=paper`, `TRADING_STRATEGY_MODE=normal`, `AUTO_SELL_MODE=all` 일 때만
+  새로 산다(r003 로그 `[VWAP LIVE   ] 신규 매수 켜짐/꺼짐 (사유)`). 켜져 있는 동안 VWAP 가상 매매는 새로 사지 않는다.
+  한도: `VWAP_LIVE_ORDER_KRW`(10,000..1,000,000) / `VWAP_LIVE_MAX_POSITIONS`(1..5) / `VWAP_LIVE_MAX_ENTRIES_PER_DAY`(1..20) /
+  `VWAP_LIVE_DAILY_LOSS_KRW`(1,000..1,000,000) / `VWAP_LIVE_UNFILLED_CANCEL_SECONDS`(5..300). 청산값 `VWAP_TRADE_TP_PCT` / `VWAP_TRADE_SL_PCT`
+  (0.1..30) / `VWAP_TRADE_HORIZON_MIN`(1..400). 범위를 벗어난 `set` 은 `out of range (lo..hi)` 로 거부.
+- r016 `set` 거부 사유(`rejected`): 실제 주문이 켜진 채 `VWAP_TRADE_MODE` 를 끄거나 `AUTO_SELL_MODE` / `TRADING_STRATEGY_MODE` 를 바꾸면
+  `... switch VWAP_TRADE_LIVE_ORDERS off first` (같은 `set` 에 `VWAP_TRADE_LIVE_ORDERS=false` 를 함께 보내면 통과 - 앱이 그렇게 보낸다).
+- r016 `status` 에 `vwap_live`(= `edge_live` 와 같은 형식: held / open_buys / today{entries, realized, sl_codes, unpriced_sells}).
+- 주문 / 장부: Edge AI 실제 매매와 같은 경로(r003 보조 전략). 체결 장부 `bot_fill_ledger.json` 에 `"vwap"`(종목별 수량·원가) 와
+  `"vwap_day"`(그날 매수 횟수·실현 손익·손절 종목) 키가 추가된다. 주문 기록의 `strategy` 는 `"vwap"`. 매수는 정규장 KRX 매도1호가 지정가 1건,
+  매도 사유 `VWAP_TP_x.xxPCT` / `VWAP_SL_x.xxPCT` / `VWAP_TIME_nMIN` / `VWAP_CLOSE_1520`. 한 종목은 한 전략만 보유한다(규칙 / Edge / VWAP).
+- 매수 조건 `VWAP_BUY_CONDITIONS`(r005): 공통 상태 조건 1~8, `_v09_vwap_signal`(가상 매매와 같은 r029.vwap_signal, 당일 VWAP 은 일중 기준가
+  조회값), 23~25.
+- 앱: 제어 탭 VWAP 매매 카드 "실행 대상"에 실제 매매 체크(경고 2회) / 가상 매매 표시, 실제 주문 한도 입력과 오늘 현황.

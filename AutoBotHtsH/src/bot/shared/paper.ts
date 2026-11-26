@@ -464,6 +464,31 @@ export const parseVwapExit = (data: unknown): PaperExitState | null => parseExit
 export function vwapExitChanges(v: Record<PaperExitKind, number>): Record<string, number> {
   return { [VWAP_EXIT_KEYS.tp]: v.tp, [VWAP_EXIT_KEYS.sl]: v.sl, [VWAP_EXIT_KEYS.horizon]: Math.round(v.horizon) };
 }
+/** [2026-11-27] VWAP trade live orders (server VWAP_TRADE_LIVE_ORDERS and its limits VWAP_LIVE_*; r016 checks the same ranges
+ *  as the Edge AI live limits). The summary of the day is r016 status `vwap_live` (same shape as `edge_live`) */
+export const VWAP_LIVE_KEY = 'VWAP_TRADE_LIVE_ORDERS';
+export const VWAP_LIVE_LIMIT_KEYS: Record<EdgeLiveLimitKind, string> = {
+  order: 'VWAP_LIVE_ORDER_KRW',
+  positions: 'VWAP_LIVE_MAX_POSITIONS',
+  entries: 'VWAP_LIVE_MAX_ENTRIES_PER_DAY',
+  loss: 'VWAP_LIVE_DAILY_LOSS_KRW',
+};
+export function parseVwapLive(data: unknown): PaperModeState | null {
+  const v = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values?.[VWAP_LIVE_KEY];
+  if (!v || typeof v.effective !== 'boolean') return null;
+  return { effective: String(v.effective), running: typeof v.running === 'boolean' ? String(v.running) : null, pending: !!v.pending };
+}
+export const parseVwapLiveLimits = (data: unknown): EdgeLiveLimits | null => parseEdgeLiveLimits(data, VWAP_LIVE_LIMIT_KEYS);
+export function vwapLiveLimitChanges(v: Record<EdgeLiveLimitKind, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k of EDGE_LIVE_LIMIT_KINDS) out[VWAP_LIVE_LIMIT_KEYS[k]] = Math.round(v[k]);
+  return out;
+}
+export const parseVwapLiveSummary = (status: unknown): EdgeLiveSummary | null => parseEdgeLiveSummary(status, 'vwap_live');
+export const VWAP_LIVE_ON_WARNING =
+  'VWAP 매매 실제 매매를 켭니다 - 실제 계좌로 VWAP 매매 매수 주문이 나갑니다 (규칙 매매와 병행).\n\n' +
+  '앞선 검증에서 VWAP 위치의 예측력은 확인되지 않았고, 이 매매법은 아직 가상 매매 결과도 없습니다.';
+
 /** the four buy steps of the VWAP trade, as the control card lists them */
 export const VWAP_STEPS: [string, string][] = [
   ['VWAP', '1분 종가 · 현재가 > 당일 VWAP'],
@@ -548,11 +573,11 @@ export const EDGE_LIVE_LIMIT_UNIT: Record<EdgeLiveLimitKind, string> = { order: 
 export type EdgeLiveLimits = Record<EdgeLiveLimitKind, PaperExitValue>;
 
 /** `get EDGE_LIVE_ORDER_KRW ...` data -> state; null on a server without the keys */
-export function parseEdgeLiveLimits(data: unknown): EdgeLiveLimits | null {
+export function parseEdgeLiveLimits(data: unknown, keys: Record<EdgeLiveLimitKind, string> = EDGE_LIVE_LIMIT_KEYS): EdgeLiveLimits | null {
   const vals = (data as { values?: Record<string, Record<string, unknown>> } | null)?.values;
   const out: Partial<EdgeLiveLimits> = {};
   for (const k of EDGE_LIVE_LIMIT_KINDS) {
-    const v = vals?.[EDGE_LIVE_LIMIT_KEYS[k]];
+    const v = vals?.[keys[k]];
     if (!v || typeof v.effective !== 'number' || !Number.isFinite(v.effective)) return null;
     out[k] = { effective: v.effective, running: typeof v.running === 'number' && Number.isFinite(v.running) ? v.running : null, pending: !!v.pending };
   }
@@ -587,8 +612,8 @@ export interface EdgeLiveSummary {
 }
 
 /** r016 status -> the summary; null on a server without it / before the fill ledger exists */
-export function parseEdgeLiveSummary(status: unknown): EdgeLiveSummary | null {
-  const e = (status as { edge_live?: unknown } | null)?.edge_live as
+export function parseEdgeLiveSummary(status: unknown, field: 'edge_live' | 'vwap_live' = 'edge_live'): EdgeLiveSummary | null {
+  const e = (status as Record<string, unknown> | null)?.[field] as
     | { held?: unknown; open_buys?: unknown; today?: Record<string, unknown> }
     | null
     | undefined;

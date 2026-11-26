@@ -71,6 +71,10 @@ Update log:
       조회가 계좌보다 늦으면 bot_only 매도를 보류).
       Codex 17차 반영: 다 빼지 못한 매도량(debt)을 장부에 저장해 다음 조회의 매수(봇 매수부터)에서도 갚음 - 그 종목이 계좌와
       안정적으로 맞춰지면(reconcile 의 stable) 지움. 기준점에도 그때의 debt 를 함께 저장.
+    - [2026-11-27] type=feat - VWAP 매매 실주문(사용자 요청): Edge 장부를 "보조 전략" 장부로 일반화. 전략마다 장부 하나(state["edge"],
+      state["vwap"])와 그날 누계(state["edge_day"], state["vwap_day"]). SIDE = (EDGE, VWAP), side_of(state, code) = 그 종목을 가진 전략.
+      edge_quantity / edge_avg_price / edge_entry_at / edge_open_buy_codes / edge_codes 는 strategy 인자가 없으면 "어느 보조 전략이든",
+      있으면 그 전략만. edge_day(state, today, strategy) 는 전략별. 한 종목은 한 전략만 가진다(r003 이 보장). 파일 형식은 키 추가뿐.
     - [2026-11-25] type=feat - Edge AI 실주문 병행(edge_live_parallel_plan_20261125.md): 등록 주문에 strategy("edge") 표시(정정 주문도
       이어받음), Edge 주문의 체결로만 바뀌는 Edge 장부(state["edge"] 종목별 수량·원가·진입 시각 - 계좌 평균단가와 무관)와 그날
       누계(state["edge_day"] 매수 횟수·실현 손익·손절 종목). Edge 수량은 봇 몫을 넘지 않게 맞춘다(edge_cap).
@@ -355,24 +359,25 @@ def load_fill_state(live_runtime_dir: Path) -> tuple[dict | None, str]:
             if lt:
                 datetime.strptime(str(lt), "%Y%m%d")
                 state[name] = str(lt)
-        book = raw.get("edge") or {}
-        if not isinstance(book, dict):
-            raise ValueError("edge")
-        state["edge"] = {}
-        for c, b in book.items():
-            lots = {str(k): {"qty": int(v["qty"]), "avg": float(v.get("avg", 0.0)), "avg_at": int(v.get("avg_at", -1))}
-                    for k, v in (b.get("lots") or {}).items() if int(v.get("qty", 0)) > 0}
-            if lots:
-                state["edge"][_norm(c)] = {"qty": sum(x["qty"] for x in lots.values()), "lots": lots,
-                                           "entry_at": str(b.get("entry_at", ""))}
-        ed = raw.get("edge_day")
-        if ed:
-            if not isinstance(ed, dict):
-                raise ValueError("edge_day")
-            state["edge_day"] = {"date": str(ed.get("date", "")), "entries": int(ed.get("entries", 0)),
-                                 "realized": float(ed.get("realized", 0.0)),
-                                 "sl_codes": [_norm(c) for c in (ed.get("sl_codes") or [])],
-                                 **({"unpriced_sells": int(ed["unpriced_sells"])} if ed.get("unpriced_sells") else {})}
+        for side in SIDE:                         # [2026-11-27] one book + one day record per side strategy (edge, vwap)
+            book = raw.get(side) or {}
+            if not isinstance(book, dict):
+                raise ValueError(side)
+            state[side] = {}
+            for c, b in book.items():
+                lots = {str(k): {"qty": int(v["qty"]), "avg": float(v.get("avg", 0.0)), "avg_at": int(v.get("avg_at", -1))}
+                        for k, v in (b.get("lots") or {}).items() if int(v.get("qty", 0)) > 0}
+                if lots:
+                    state[side][_norm(c)] = {"qty": sum(x["qty"] for x in lots.values()), "lots": lots,
+                                             "entry_at": str(b.get("entry_at", ""))}
+            ed = raw.get(f"{side}_day")
+            if ed:
+                if not isinstance(ed, dict):
+                    raise ValueError(f"{side}_day")
+                state[f"{side}_day"] = {"date": str(ed.get("date", "")), "entries": int(ed.get("entries", 0)),
+                                        "realized": float(ed.get("realized", 0.0)),
+                                        "sl_codes": [_norm(c) for c in (ed.get("sl_codes") or [])],
+                                        **({"unpriced_sells": int(ed["unpriced_sells"])} if ed.get("unpriced_sells") else {})}
         amts = raw.get("applied_amt") or {}
         if not isinstance(amts, dict):
             raise ValueError("applied_amt")
@@ -420,7 +425,7 @@ def register_order(state: dict, ord_dt: str, odno: str, code: str, side: str, qt
         return False
     state["registry"][key] = {"code": _norm(code), "side": "sell" if side == "sell" else "buy", "qty": int(qty), "at": at,
                               "terminal": False, "last_change": "", **({"baseline": True} if baseline else {}),
-                              **({"strategy": EDGE} if strategy == EDGE else {})}
+                              **({"strategy": strategy} if strategy in SIDE else {})}
     return True
 
 
@@ -576,6 +581,31 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None,
 
 # ---- [2026-11-25] Edge AI live orders: the edge book (fills of orders registered with strategy "edge") -----------------------
 EDGE = "edge"
+VWAP = "vwap"                 # [2026-11-27] VWAP trade live orders (r029 signal) - its own book state["vwap"] / state["vwap_day"]
+SIDE = (EDGE, VWAP)           # the strategies that trade beside the rule strategy, each with its own book
+
+
+def side_of(state: dict | None, code) -> str:
+    """the side strategy that holds or is buying the symbol ("" = none). One symbol belongs to at most one of them."""
+    norm = _norm(code)
+    for side in SIDE:
+        b = ((state or {}).get(side) or {}).get(norm)
+        if isinstance(b, dict) and int(b.get("qty", 0)) > 0:
+            return side
+    for e in ((state or {}).get("registry") or {}).values():
+        if e.get("code") == norm and e.get("strategy") in SIDE and e.get("side") == "buy" and not e.get("terminal"):
+            return str(e["strategy"])
+    return ""
+
+
+def _side_book(state: dict | None, code, strategy: str | None) -> dict | None:
+    """the position of the symbol in the given side book, or in whichever side book has it (strategy None)"""
+    norm = _norm(code)
+    for side in ((strategy,) if strategy else SIDE):
+        b = ((state or {}).get(side) or {}).get(norm)
+        if isinstance(b, dict):
+            return b
+    return None
 
 
 def _row_price(r: dict | None) -> float:
@@ -597,11 +627,12 @@ def _row_price(r: dict | None) -> float:
         return 0.0
 
 
-def edge_day(state: dict, today: str) -> dict:
-    """the day's edge counters {date, entries, realized, sl_codes} (a new day starts from zero)"""
-    d = state.get("edge_day")
+def edge_day(state: dict, today: str, strategy: str = EDGE) -> dict:
+    """the day's counters of a side strategy {date, entries, realized, sl_codes} (a new day starts from zero)"""
+    key = f"{strategy if strategy in SIDE else EDGE}_day"
+    d = state.get(key)
     if not isinstance(d, dict) or d.get("date") != today:
-        d = state["edge_day"] = {"date": today, "entries": 0, "realized": 0.0, "sl_codes": []}
+        d = state[key] = {"date": today, "entries": 0, "realized": 0.0, "sl_codes": []}
     return d
 
 
@@ -648,9 +679,10 @@ def _edge_fill(state: dict, entry: dict | None, r: dict | None, code: str, side:
     """a fill of a bot order that went into (buy) / came out of (sell) the bot part: when the order is an edge order it moves the
     edge book too. The book holds one lot per buy order; a lot's cost is that order's cumulative average price (the account's
     average price mixes in shares bought by hand)."""
-    if not entry or entry.get("strategy") != EDGE:
+    side_s = entry.get("strategy") if entry else None
+    if side_s not in SIDE:
         return
-    book = state.setdefault("edge", {})
+    book = state.setdefault(side_s, {})
     b = book.get(code)
     if side == "buy":
         if qty <= 0:
@@ -668,7 +700,7 @@ def _edge_fill(state: dict, entry: dict | None, r: dict | None, code: str, side:
     if qty <= 0 or not b or int(b["qty"]) <= 0:
         return
     sold, cost, known = _edge_take(b, int(qty), state["applied"])
-    day = edge_day(state, now_s[:10].replace("-", ""))
+    day = edge_day(state, now_s[:10].replace("-", ""), side_s)
     if sold > 0 and px > 0 and known:
         commission, sell_tax = costs
         day["realized"] = float(day.get("realized", 0.0)) + sold * px - cost - (
@@ -682,7 +714,7 @@ def _edge_fill(state: dict, entry: dict | None, r: dict | None, code: str, side:
 def _edge_reprice(state: dict, by_key: dict[str, dict]) -> None:
     """a lot's cost follows its order's cumulative average whenever a row of that order shows it (also without new quantity -
     an order status booked the fills before their price was known)"""
-    for b in (state.get("edge") or {}).values():
+    for b in (b_ for side in SIDE for b_ in (state.get(side) or {}).values()):
         for key, lot in b["lots"].items():
             r = by_key.get(key)
             # [Codex 4th] only a row that shows exactly the quantity applied of this order (an older row came late: ignored)
@@ -712,25 +744,27 @@ def apply_order_status(state: dict, ord_dt: str, odno: str, code: str, side: str
 
 def edge_cap(state: dict) -> None:
     """the edge quantity never exceeds the bot part (a hand sale, the day bound or the account comparison took it down)"""
-    book = state.get("edge") or {}
-    for code in list(book):
-        b = book[code]
-        over = int(b["qty"]) - fill_bot_quantity(state, code)
-        if over > 0:
-            _edge_take(b, over)
-        if int(b["qty"]) <= 0:
-            book.pop(code, None)
+    for side in SIDE:
+        book = state.get(side) or {}
+        for code in list(book):
+            b = book[code]
+            over = int(b["qty"]) - fill_bot_quantity(state, code)
+            if over > 0:
+                _edge_take(b, over)
+            if int(b["qty"]) <= 0:
+                book.pop(code, None)
 
 
-def edge_quantity(state: dict | None, code) -> int:
-    b = ((state or {}).get("edge") or {}).get(_norm(code))
+def edge_quantity(state: dict | None, code, strategy: str | None = None) -> int:
+    """shares a side strategy holds of the symbol (strategy None: whichever side strategy has it)"""
+    b = _side_book(state, code, strategy)
     return int(b.get("qty", 0)) if isinstance(b, dict) else 0
 
 
-def edge_avg_price(state: dict | None, code) -> float:
+def edge_avg_price(state: dict | None, code, strategy: str | None = None) -> float:
     """the edge position's own average cost; 0 while the price of one of its lots is not known - a lot's average counts only
     when it is the average of exactly the quantity applied of its order ([Codex 5th] a fill added without a price: unknown)"""
-    b = ((state or {}).get("edge") or {}).get(_norm(code))
+    b = _side_book(state, code, strategy)
     if not isinstance(b, dict) or int(b.get("qty", 0)) <= 0:
         return 0.0
     lots = b.get("lots") or {}
@@ -741,20 +775,23 @@ def edge_avg_price(state: dict | None, code) -> float:
     return sum(int(lot["qty"]) * float(lot["avg"]) for lot in lots.values()) / int(b["qty"])
 
 
-def edge_entry_at(state: dict | None, code) -> str:
-    b = ((state or {}).get("edge") or {}).get(_norm(code))
+def edge_entry_at(state: dict | None, code, strategy: str | None = None) -> str:
+    b = _side_book(state, code, strategy)
     return str(b.get("entry_at", "")) if isinstance(b, dict) else ""
 
 
-def edge_open_buy_codes(state: dict | None) -> set[str]:
-    """symbols with an edge buy order that is not finished (its fills may still come)"""
+def edge_open_buy_codes(state: dict | None, strategy: str | None = None) -> set[str]:
+    """symbols with a side-strategy buy order that is not finished (its fills may still come); strategy None: any of them"""
+    sides = (strategy,) if strategy else SIDE
     return {e["code"] for e in ((state or {}).get("registry") or {}).values()
-            if e.get("strategy") == EDGE and e.get("side") == "buy" and not e.get("terminal")}
+            if e.get("strategy") in sides and e.get("side") == "buy" and not e.get("terminal")}
 
 
-def edge_codes(state: dict | None) -> set[str]:
-    """symbols the edge strategy holds or is buying"""
-    return {c for c, b in ((state or {}).get("edge") or {}).items() if int(b.get("qty", 0)) > 0} | edge_open_buy_codes(state)
+def edge_codes(state: dict | None, strategy: str | None = None) -> set[str]:
+    """symbols a side strategy holds or is buying (strategy None: any of them)"""
+    sides = (strategy,) if strategy else SIDE
+    held = {c for side in sides for c, b in ((state or {}).get(side) or {}).items() if int(b.get("qty", 0)) > 0}
+    return held | edge_open_buy_codes(state, strategy)
 
 
 def _code_row(state: dict, code: str) -> dict:
@@ -990,7 +1027,7 @@ def prune_fill_state(state: dict, today: str, keep_days: int = FILL_KEEP_DAYS) -
         return
     # [Codex 6th, Edge AI live] the buy orders of lots the edge strategy still holds keep their counts (the lot's cost is
     # checked against them), however old
-    held_lots = {k for b in (state.get("edge") or {}).values() for k in (b.get("lots") or {})}
+    held_lots = {k for side in SIDE for b in (state.get(side) or {}).values() for k in (b.get("lots") or {})}
     for key in list(state["registry"]):
         day = key.split(":", 1)[0]
         try:

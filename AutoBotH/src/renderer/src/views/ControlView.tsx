@@ -60,7 +60,7 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, edgeCutText, VWAP_MODE_KEY, VWAP_STEPS, VWAP_EXIT_NOTE, vwapExitChanges, RULE_VARIANT_KEY, RULE_VARIANTS, RULE_VARIANT_KO, RULE_VARIANT_NOTE, ruleVariantOf, type RuleVariant, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, edgeCutText, VWAP_MODE_KEY, VWAP_STEPS, VWAP_EXIT_NOTE, vwapExitChanges, VWAP_LIVE_KEY, VWAP_LIVE_ON_WARNING, vwapLiveLimitChanges, parseVwapLiveSummary, RULE_VARIANT_KEY, RULE_VARIANTS, RULE_VARIANT_KO, RULE_VARIANT_NOTE, ruleVariantOf, type RuleVariant, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -491,17 +491,56 @@ export function ControlView() {
   const vwapMode = control.vwapMode;
   const vwapOn = vwapMode?.effective === 'paper';
   const vwapPending = !!vwapMode && vwapMode.running !== null && (vwapMode.pending || vwapMode.running !== vwapMode.effective);
+  // [2026-11-27] VWAP trade live orders (server VWAP_TRADE_LIVE_ORDERS; off with the VWAP trade itself)
+  const vwapLive = control.vwapLive;
+  const vwapLiveOn = vwapOn && vwapLive?.effective === 'true';
+  const vwapLiveRunning = (vwapLive?.running ?? vwapLive?.effective) === 'true';
+  const vwapLivePending = !!vwapLive && vwapLive.running !== null && (vwapLive.pending || vwapLive.running !== vwapLive.effective);
+  const vwapLimits = control.vwapLiveLimits;
+  const vwapSummary = parseVwapLiveSummary(st);
+  const setVwapLive = async (on: boolean) => {
+    if (!vwapLive) return;
+    if (on && autoSellMode !== 'all') {
+      window.alert('VWAP 매매 실제 매매는 자동 매도가 "전체 자동"일 때만 켤 수 있습니다 (신규 VWAP 매수의 조건).');
+      return;
+    }
+    const lim = vwapLimits;
+    const limText = lim
+      ? `1회 ${lim.order.effective.toLocaleString('ko-KR')}원 · 동시 ${lim.positions.effective}종목 · 하루 ${lim.entries.effective}회 · 하루 손실 ${lim.loss.effective.toLocaleString('ko-KR')}원`
+      : '서버 기본 한도';
+    const text = on
+      ? `${VWAP_LIVE_ON_WARNING}\n\n한도: ${limText}\n` +
+        '주문: 정규장 14:50 까지, 매도1호가 지정가 1회 (재주문 없음). 청산: 위 청산 기준 / 15:20.\n' +
+        'VWAP 매매가 산 수량은 VWAP 매매 규칙으로만 팔고, 같은 종목의 직접 매수분은 팔지 않습니다.\n' +
+        '켜져 있는 동안 VWAP 가상 매매는 새로 사지 않습니다.'
+      : 'VWAP 매매 실제 매매를 끕니다 (가상 매매로 돌아갑니다).\n이미 VWAP 매매가 산 수량이 있으면 그 청산(손절 / 익절 / 시간 / 15:20)은 계속됩니다.';
+    const restart = 'r003 재시작 후부터 적용됩니다. 미체결 주문이 있으면 정리된 뒤(또는 장 마감 후) 재시작하세요.';
+    if (!window.confirm(`VWAP 매매 실제 매매: ${on ? '켬' : '끔'}\n\n${text}\n\n${restart}\n\n바꿀까요?`)) return;
+    if (on && !window.confirm('한 번 더 확인합니다.\n\n실제 계좌로 VWAP 매매 매수 주문이 나갑니다. 켤까요?')) return;
+    setModeBusy(true);
+    try {
+      const r = await window.api.ctlSet({ [VWAP_LIVE_KEY]: on });
+      const rej = r.data?.rejected?.[VWAP_LIVE_KEY];
+      if (!r.ok || rej) window.alert(`VWAP 매매 실제 주문 설정을 바꾸지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
+      else bumpHistory();
+    } finally {
+      setModeBusy(false);
+    }
+  };
   const setVwap = async (on: boolean) => {
     if (!vwapMode || on === vwapOn) return;
     const text = on
-      ? 'VWAP 매매를 켭니다 - 가상 매매입니다 (실제 주문 없음, 가상 매매 탭의 "VWAP 매매" 장부).\n\n' +
+      ? 'VWAP 매매를 켭니다 - 가상 매매로 시작합니다 (실제 주문 없음, 가상 매매 탭의 "VWAP 매매" 장부). 실제 주문은 "실제 매매"를 따로 켜야 나갑니다.\n\n' +
         VWAP_STEPS.map(([a, b], i) => `${i + 1}. ${a}: ${b}`).join('\n') +
         '\n\n앞선 검증에서 VWAP 위치의 예측력은 확인되지 않았습니다. r003 재시작 후 적용됩니다. 켤까요?'
-      : 'VWAP 매매를 끕니다. 신규 가상 매수를 멈추고, 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다. r003 재시작 후 적용됩니다. 끌까요?';
+      : 'VWAP 매매를 끕니다. 신규 매수를 멈추고, 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다.' +
+        (vwapLive?.effective === 'true' ? '\nVWAP 실제 매매도 함께 끕니다 (이미 산 수량의 청산은 계속됩니다).' : '') +
+        ' r003 재시작 후 적용됩니다. 끌까요?';
     if (!window.confirm(text)) return;
     setModeBusy(true);
     try {
-      const r = await window.api.ctlSet({ [VWAP_MODE_KEY]: on ? 'paper' : 'off' });
+      // the live orders go off with the trade itself (and it starts with them off): nothing stays on out of sight
+      const r = await window.api.ctlSet({ ...(vwapLive?.effective === 'true' ? { [VWAP_LIVE_KEY]: false } : {}), [VWAP_MODE_KEY]: on ? 'paper' : 'off' });
       const rej = r.data?.rejected?.[VWAP_MODE_KEY];
       if (!r.ok || rej) window.alert(`VWAP 매매 설정을 바꾸지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
       else bumpHistory();
@@ -1179,7 +1218,7 @@ export function ControlView() {
                   <Switch
                     checked={vwapOn}
                     disabled={busy || !connected || modeBusy}
-                    title="VWAP 매매 (서버 VWAP_TRADE_MODE off / paper, r029). 지금은 가상 매매로만 동작합니다 (실제 주문 없음)"
+                    title="VWAP 매매 (서버 VWAP_TRADE_MODE off / paper, r029). 켜면 가상 매매로 시작하고, 실제 주문은 아래 '실제 매매'를 따로 켜야 나갑니다"
                     onChange={(v) => void setVwap(v)}
                   />
                 </div>
@@ -1205,16 +1244,74 @@ export function ControlView() {
                     <RuleExitEdit st={control.vwapExit} vwap disabled={busy || !connected || modeBusy} />
                   </div>
                 )}
-                <div className="tm-sec">
-                  <div className="tm-lab">실행 대상</div>
-                  <div className="chips">
-                    <span className="chip">가상 매매 (주문 없음)</span>
-                    <span className="chip" title="실제 주문은 가상 매매 결과를 본 뒤 추가합니다">
-                      실제 매매 준비 중
-                    </span>
-                    {vwapPending && <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {vwapMode.running === 'paper' ? '가상 매매' : '꺼짐'})</span>}
+                {vwapOn && (
+                  <div className="tm-sec">
+                    <div className="tm-lab">
+                      실행 대상 <i>실제 매매 중에는 가상 매수 없음</i>
+                    </div>
+                    <div className="opt-cards">
+                      <label
+                        className={`opt-card danger${vwapLiveOn ? ' on' : ''}${busy || !connected || modeBusy || !vwapLive ? ' dis' : ''}`}
+                        title={
+                          vwapLive
+                            ? '실제 계좌로 VWAP 매매 주문 (서버 VWAP_TRADE_LIVE_ORDERS). 작은 한도 안에서 규칙 매매와 병행, 켜려면 자동 매도가 전체여야 합니다. r003 재시작 후 적용'
+                            : '서버 코드 갱신 후 사용할 수 있습니다'
+                        }
+                      >
+                        <input type="checkbox" checked={vwapLiveOn} disabled={busy || !connected || modeBusy || !vwapLive} onChange={(e) => void setVwapLive(e.target.checked)} />
+                        <span className="opt-txt">
+                          <b>
+                            실제 매매 <span className="tag danger">LIVE</span>
+                          </b>
+                          <span>{vwapLiveOn ? '켜짐 · 실제 계좌로 주문 중' : '실제 계좌로 주문 · 작은 한도 · 자동 매도가 전체일 때만'}</span>
+                        </span>
+                      </label>
+                      <label className={`opt-card${!vwapLiveOn ? ' on' : ''} dis`} title="실제 주문 없이 가상 매수 / 청산을 기록 (가상 매매 탭의 VWAP 매매 장부)">
+                        <input type="checkbox" checked={!vwapLiveOn} disabled readOnly />
+                        <span className="opt-txt">
+                          <b>가상 매매</b>
+                          <span>{vwapLiveOn ? '실제 매매 중에는 가상 매수를 하지 않습니다' : '실제 주문 없이 가상 매매 탭에 기록'}</span>
+                        </span>
+                      </label>
+                    </div>
+                    {vwapLivePending && (
+                      <div className="tm-notes">
+                        <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {vwapLiveRunning ? '실제 매매' : '실제 매매 꺼짐'})</span>
+                      </div>
+                    )}
+                    {(vwapLiveOn || vwapLiveRunning) && vwapLimits && (
+                      <>
+                        <div className="tm-lab tm-lab-gap">
+                          실제 주문 한도 <i>한도에 닿으면 그날 VWAP 신규 매수 중단</i>
+                        </div>
+                        <EdgeLiveLimitsEdit
+                          st={vwapLimits}
+                          vwap
+                          disabled={busy || !connected || modeBusy}
+                          status={
+                            vwapSummary && (
+                              <span className={vwapSummary.unpricedSells > 0 ? 'badge-warn' : 'muted small'} title="VWAP 매매 실제 매매의 오늘 현황 (서버 체결 장부 기준)">
+                                현황: {edgeLiveSummaryText(vwapSummary, vwapLimits.entries.running ?? vwapLimits.entries.effective)}
+                              </span>
+                            )
+                          }
+                        />
+                      </>
+                    )}
                   </div>
-                </div>
+                )}
+                {vwapPending && (
+                  <div className="tm-notes">
+                    <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {vwapMode.running === 'paper' ? '켜짐' : '꺼짐'})</span>
+                  </div>
+                )}
+                {vwapSummary && !((vwapLiveOn || vwapLiveRunning) && vwapLimits) && (vwapSummary.held.length > 0 || vwapSummary.openBuys.length > 0) && (
+                  <div className="tm-notes">
+                    <span className={vwapSummary.unpricedSells > 0 ? 'badge-warn' : 'muted small'} title="VWAP 매매 실제 매매의 오늘 현황 (서버 체결 장부 기준)">
+                      현황: {edgeLiveSummaryText(vwapSummary, vwapLimits ? vwapLimits.entries.running ?? vwapLimits.entries.effective : null)}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
             {tradeMode === 'edge' && control.paperExit && (
@@ -1681,7 +1778,9 @@ const limitText = (k: EdgeLiveLimitKind, raw: string): string => {
   return digits ? Number(digits.slice(0, 15)).toLocaleString('ko-KR') : '';
 };
 
-function EdgeLiveLimitsEdit({ st, disabled, status }: { st: EdgeLiveLimits; disabled: boolean; status?: ReactNode }) {
+/** [2026-11-27] `vwap`: the same four limits of the VWAP trade's live orders (server VWAP_LIVE_*) */
+function EdgeLiveLimitsEdit({ st, disabled, status, vwap = false }: { st: EdgeLiveLimits; disabled: boolean; status?: ReactNode; vwap?: boolean }) {
+  const who = vwap ? 'VWAP 매매' : 'Edge AI';
   const fromState = (): Record<EdgeLiveLimitKind, string> => ({
     order: limitText('order', String(st.order.effective)),
     positions: String(st.positions.effective),
@@ -1701,11 +1800,11 @@ function EdgeLiveLimitsEdit({ st, disabled, status }: { st: EdgeLiveLimits; disa
     if (!changed) return;
     const v = vals as Record<EdgeLiveLimitKind, number>;
     const lines = EDGE_LIVE_LIMIT_KINDS.map((k) => show(k, v[k])).join('\n');
-    if (!window.confirm(`Edge AI 실제 주문 한도\n\n${lines}\n\n한도에 닿으면 그날 Edge 신규 매수를 멈춥니다(보유분 청산은 계속).\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
+    if (!window.confirm(`${who} 실제 주문 한도\n\n${lines}\n\n한도에 닿으면 그날 ${vwap ? 'VWAP' : 'Edge'} 신규 매수를 멈춥니다(보유분 청산은 계속).\nr003 재시작 후부터 적용됩니다. 바꿀까요?`)) return;
     setSaving(true);
     try {
-      const r = await window.api.ctlSet(edgeLiveLimitChanges(v));
-      if (!r.ok) window.alert(`Edge AI 실제 주문 한도를 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
+      const r = await window.api.ctlSet(vwap ? vwapLiveLimitChanges(v) : edgeLiveLimitChanges(v));
+      if (!r.ok) window.alert(`${who} 실제 주문 한도를 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
     } finally {
       setSaving(false);
     }

@@ -1173,10 +1173,10 @@ from r002_strategy_core_shared import (
 )
 
 from r005_buy_conditions import (
-    BuyContext, BuyServices, BuyState, RiskState, check_buy_conditions, evaluate_entry_time_shadow, EDGE_BUY_CONDITIONS,
+    BuyContext, BuyServices, BuyState, RiskState, check_buy_conditions, evaluate_entry_time_shadow, EDGE_BUY_CONDITIONS, VWAP_BUY_CONDITIONS,
 )
 from r006_sell_conditions import (
-    SellContext, SellServices, SellState, evaluate_sell_conditions, auto_sell_mode, edge_exit_values,
+    SellContext, SellServices, SellState, evaluate_sell_conditions, auto_sell_mode, edge_exit_values, vwap_exit_values,
 )
 
 BUY_SCORE_MAX = sum(rule.max_score for rule in BUY_SCORE_RULES)
@@ -4830,37 +4830,38 @@ class TradingAPI:
     def is_edge_symbol(self, code: str) -> bool:
         return str(code).zfill(6) in self.edge_codes()
 
-    def edge_live_block_reason(self, code: str, now: datetime | None = None) -> str:
+    def edge_live_block_reason(self, code: str, now: datetime | None = None, strategy: str = r023.EDGE) -> str:
         """why no new Edge AI live buy may go out now ("" = allowed): the limits of the day and every state in which what the
         edge strategy holds is not certain. Checked before the signal and again right before the order."""
+        _sp = _side_spec(strategy)                # [2026-11-27] the limits of that side strategy (edge / vwap)
         st = getattr(self, "_fills", None)
         if st is None or getattr(self, "_fills_broken", False):
             return "NO_FILL_LEDGER"
         if getattr(self, "stopping", False):
             return "STOPPING"
         # [Codex 9th] the wall clock, not the turn's start time: no edge buy after the entry window, however long the turn takes
-        if max(now or _wall_now(), _wall_now()).time() >= EDGE_LIVE_ENTRY_END:
-            return f"ENTRY_WINDOW_CLOSED_{EDGE_LIVE_ENTRY_END:%H:%M}"
+        if max(now or _wall_now(), _wall_now()).time() >= _sp.entry_end:
+            return f"ENTRY_WINDOW_CLOSED_{_sp.entry_end:%H:%M}"
         if getattr(self, "holds_all", False) or (getattr(self, "order_holds", None) or {}):
             return "UNRESOLVED_ORDER_HOLD"
         if r023.baseline_codes(st):
             return "LEDGER_BASELINE_PENDING"
         norm = str(code).zfill(6)
-        day = r023.edge_day(st, (now or datetime.now()).strftime("%Y%m%d"))
-        if int(day.get("entries", 0)) >= int(EDGE_LIVE_MAX_ENTRIES_PER_DAY):
-            return f"MAX_ENTRIES_PER_DAY_{int(day.get('entries', 0))}/{int(EDGE_LIVE_MAX_ENTRIES_PER_DAY)}"
+        day = r023.edge_day(st, (now or datetime.now()).strftime("%Y%m%d"), strategy)
+        if int(day.get("entries", 0)) >= _sp.max_entries:
+            return f"MAX_ENTRIES_PER_DAY_{int(day.get('entries', 0))}/{_sp.max_entries}"
         if int(day.get("unpriced_sells", 0)) > 0:
             return "REALIZED_PNL_UNKNOWN"         # a sell whose price was not known: the day's loss cannot be checked
-        if float(EDGE_LIVE_DAILY_LOSS_KRW) <= 0 or float(day.get("realized", 0.0)) <= -float(EDGE_LIVE_DAILY_LOSS_KRW):
-            return f"DAILY_LOSS_{float(day.get('realized', 0.0)):,.0f}/-{float(EDGE_LIVE_DAILY_LOSS_KRW):,.0f}"
-        held = r023.edge_codes(st) | {it["code"] for it in (getattr(self, "_submit_intents", None) or {}).values()
-                                      if it.get("strategy") == r023.EDGE and it.get("side") == "buy"}
-        if len(held) >= int(EDGE_LIVE_MAX_POSITIONS):
-            return f"MAX_POSITIONS_{len(held)}/{int(EDGE_LIVE_MAX_POSITIONS)}"
+        if _sp.daily_loss <= 0 or float(day.get("realized", 0.0)) <= -_sp.daily_loss:
+            return f"DAILY_LOSS_{float(day.get('realized', 0.0)):,.0f}/-{_sp.daily_loss:,.0f}"
+        held = r023.edge_codes(st, strategy) | {it["code"] for it in (getattr(self, "_submit_intents", None) or {}).values()
+                                      if it.get("strategy") == strategy and it.get("side") == "buy"}
+        if len(held) >= _sp.max_positions:
+            return f"MAX_POSITIONS_{len(held)}/{_sp.max_positions}"
         if norm in (day.get("sl_codes") or []):
             return "STOPPED_OUT_TODAY"
-        for c in r023.edge_codes(st):             # shares bought by hand on a symbol the edge strategy holds: stop and tell
-            if r023.edge_quantity(st, c) > 0 and int(((st.get("codes") or {}).get(c) or {}).get("manual_qty") or 0) > 0:
+        for c in r023.edge_codes(st, strategy):   # shares bought by hand on a symbol the edge strategy holds: stop and tell
+            if r023.edge_quantity(st, c, strategy) > 0 and int(((st.get("codes") or {}).get(c) or {}).get("manual_qty") or 0) > 0:
                 return f"MIXED_HOLDING_{c}"
         return ""
 
@@ -4904,7 +4905,7 @@ class TradingAPI:
         _tracked = _pending_order_nos(self.pending_orders)
         for code, hold in list((getattr(self, "order_holds", None) or {}).items()):
             for no, d in (hold.get("order_detail") or {}).items():
-                if d.get("strategy") != r023.EDGE or d.get("side") != "buy" or str(d.get("date", "")) != today:
+                if d.get("strategy") not in r023.SIDE or d.get("side") != "buy" or str(d.get("date", "")) != today:
                     continue
                 if str(no).strip().lstrip("0") in _tracked.get(code, set()):
                     continue                      # this run tracks the order itself (_edge_cancel_buy)
@@ -4932,7 +4933,7 @@ class TradingAPI:
             return
         for code, pending in list(self.pending_orders.items()):
             no = str(pending.get("order_no", "")).strip()
-            if pending.get("strategy") != r023.EDGE or not no:
+            if pending.get("strategy") not in r023.SIDE or not no:
                 continue
             sub = pending.get("submitted_at")
             key = r023.fill_key((sub if isinstance(sub, datetime) else now).strftime("%Y%m%d"), no)
@@ -4961,14 +4962,16 @@ class TradingAPI:
     def _edge_entry_back(self, pending: dict) -> None:
         """an edge buy that closed without a single fill gives the day's entry back (nothing was bought)"""
         st = getattr(self, "_fills", None)
-        if st is None or str(pending.get("strategy", "")) != r023.EDGE or pending.get("entry_back"):
+        _side = str(pending.get("strategy", ""))
+        if st is None or _side not in r023.SIDE or pending.get("entry_back"):
             return
+        _sp = _side_spec(_side)
         pending["entry_back"] = True
         sub = pending.get("submitted_at")
-        day = r023.edge_day(st, (sub if isinstance(sub, datetime) else datetime.now()).strftime("%Y%m%d"))
+        day = r023.edge_day(st, (sub if isinstance(sub, datetime) else datetime.now()).strftime("%Y%m%d"), _side)
         day["entries"] = max(0, int(day.get("entries", 0)) - 1)
         self._save_fills(datetime.now())
-        log(f"  [EDGE LIVE   ] 체결 없이 끝난 Edge 매수 - 오늘 매수 횟수 되돌림 ({int(day['entries'])}/{int(EDGE_LIVE_MAX_ENTRIES_PER_DAY)})")
+        log(f"{_sp.tag} 체결 없이 끝난 {_sp.ko} 매수 - 오늘 매수 횟수 되돌림 ({int(day['entries'])}/{_sp.max_entries})")
 
     def get_open_positions(self) -> dict[str, dict]:
         return self.positions
@@ -4999,7 +5002,7 @@ class TradingAPI:
             # strategy holds - the order's fills move the edge book
             strategy = _strategy
             if side == "sell" and not strategy and r023.edge_quantity(getattr(self, "_fills", None), code) > 0:
-                strategy = r023.EDGE
+                strategy = r023.side_of(getattr(self, "_fills", None), code) or r023.EDGE   # [2026-11-27] the book that holds it
             self._intent_seq = getattr(self, "_intent_seq", 0) + 1
             iid = f"{code}:{self._intent_seq}"
             # one record per submission (a split buy's legs and a reprice are separate records)
@@ -5030,7 +5033,7 @@ class TradingAPI:
                 _it = self._submit_intents[iid]
                 self._register_bot_order(code, _it["side"], int(_it["quantity"]), _it["order_no"],
                                          str(_it.get("strategy", "")))   # [2026-11-25] fill ledger
-                if _it.get("strategy") == r023.EDGE and _it["side"] == "buy":
+                if _it.get("strategy") in r023.SIDE and _it["side"] == "buy":
                     # [Codex 4th] what a cancel of this order needs is on disk now (a kill before the turn end is covered)
                     if not self.save_order_holds_if_changed(datetime.now().strftime("%Y%m%d"), force=True):
                         log(f"  [ORDER HOLD  ] {_sym_label(code)} | Edge 주문 {_it['order_no']} 기록 저장 실패 - 이 종목 주문 보류")
@@ -5505,7 +5508,7 @@ class TradingAPI:
             self.live_state["realized_pnl_krw"] = float(self.live_state.get("realized_pnl_krw", 0.0) or 0.0) + profit_amount - est_costs
         # [2026-11-04] 재진입 한도용 포지션 순실현손익(분할매도 합산) - 봇이 산(reentry_state에 있는) 종목만 기록
         _re_st = (self.live_state.get("reentry") or {}).get(str(code).zfill(6))
-        if isinstance(_re_st, dict) and str(pending.get("strategy", "")) != r023.EDGE:   # [2026-11-25] not for Edge AI live sells
+        if isinstance(_re_st, dict) and str(pending.get("strategy", "")) not in r023.SIDE:   # [2026-11-25] not for Edge AI live sells
             if pd.notna(profit_amount):
                 _re_st["pos_net_krw"] = float(_re_st.get("pos_net_krw", 0.0) or 0.0) + profit_amount - est_costs
             if remaining_qty <= 0:
@@ -5539,8 +5542,8 @@ class TradingAPI:
             # [Codex code review] Edge AI live: the time limit of an edge buy is checked whatever the status polling does
             # (a failing status backs off) - the rest of the order is cancelled, the pending stays until its end is known
             _e_sub = pending.get("submitted_at")
-            if (pending.get("strategy") == r023.EDGE and pending.get("side") == "buy" and isinstance(_e_sub, datetime)
-                    and (now - _e_sub).total_seconds() >= float(EDGE_LIVE_UNFILLED_CANCEL_SECONDS)):
+            if (pending.get("strategy") in r023.SIDE and pending.get("side") == "buy" and isinstance(_e_sub, datetime)
+                    and (now - _e_sub).total_seconds() >= _side_spec(pending.get("strategy")).cancel_s):
                 self._edge_cancel_buy(code, pending, now)
 
             next_poll_at = pending.get("next_status_poll_at")
@@ -5564,7 +5567,7 @@ class TradingAPI:
 
             pos = self.positions.get(code)
             status = self._fetch_today_order_status(code, side, now, str(pending.get("order_no", "")))
-            if status is not None and pending.get("strategy") == r023.EDGE:
+            if status is not None and pending.get("strategy") in r023.SIDE:
                 # [2026-11-25] Edge AI live: only the row of exactly this order counts (the lookup falls back to the symbol's
                 # latest row); its fills go to the edge book now - the stop loss does not wait for the complete listing
                 if (str(status.get("order_no", "")).strip().lstrip("0")
@@ -5626,7 +5629,7 @@ class TradingAPI:
                         )
                     continue
 
-                if status is None and pending.get("strategy") == r023.EDGE:
+                if status is None and pending.get("strategy") in r023.SIDE:
                     # [2026-11-25] Edge AI live: an edge buy is closed by its own order row (or by the fill ledger, see
                     # settle_edge_pending_by_ledger) - never by the account quantity alone (the order may still be open).
                     # (its time limit is checked at the top of the loop, with or without a status)
@@ -5636,7 +5639,7 @@ class TradingAPI:
                         # [2026-11-04 Codex #15] 부분체결 잔량이 PARTIAL_BUY_CANCEL_AFTER_SECONDS 이상 남아 있으면 취소
                         _sub_at = pending.get("submitted_at")
                         # [2026-11-25] Edge AI live: its own time limit, checked at the top of the loop (_edge_cancel_buy)
-                        _cxl_after = 0.0 if pending.get("strategy") == r023.EDGE else float(PARTIAL_BUY_CANCEL_AFTER_SECONDS)
+                        _cxl_after = 0.0 if pending.get("strategy") in r023.SIDE else float(PARTIAL_BUY_CANCEL_AFTER_SECONDS)
                         if (
                             _cxl_after > 0
                             and isinstance(_sub_at, datetime)
@@ -5698,7 +5701,7 @@ class TradingAPI:
                     # 요청이 진행중이면 확인될 때까지 중복 취소하지 않음). 재시도 소진 후에는
                     # 기존과 동일하게 경고만 남긴다.
                     _sub_at = pending.get("submitted_at")
-                    if pending.get("strategy") == r023.EDGE:
+                    if pending.get("strategy") in r023.SIDE:
                         pass   # [2026-11-25] Edge AI live: one limit order, never repriced (cancelled at the top of the loop)
                     elif (
                         isinstance(_sub_at, datetime)
@@ -5760,7 +5763,7 @@ class TradingAPI:
                     continue
             # [2026-11-25] Edge AI live: an edge sell is closed by its own order row or the fill ledger only - a lower account
             # quantity can be a sale by hand while the edge sell is still open (a second sell would follow)
-            if current_qty <= expected_remaining_qty and pending.get("strategy") != r023.EDGE:
+            if current_qty <= expected_remaining_qty and pending.get("strategy") not in r023.SIDE:
                 self._confirm_pending_sell(code, pending, status, current_qty)
                 continue
 
@@ -6572,11 +6575,12 @@ class TradingAPI:
         """strategy "edge" ([2026-11-25] Edge AI live): one limit order at the best ask on KRX, at most EDGE_LIVE_ORDER_KRW at that
         price, no split and no reprice; the limits are checked once more here and the day's entry is on disk before the order."""
         norm_code = str(code).zfill(6)
-        edge = strategy == r023.EDGE
+        edge = strategy in r023.SIDE              # [2026-11-27] a side strategy's order (edge / vwap): same order form, own limits
+        _sp = _side_spec(strategy) if edge else None
         if edge:
-            why = self.edge_live_block_reason(norm_code, now)
+            why = self.edge_live_block_reason(norm_code, now, strategy)
             if why or pyramid or self.dry_run:
-                log(f"  [EDGE LIVE   ] {_sym_label(code)} | 매수 안 함 | {why or 'dry-run / pyramid'}")
+                log(f"{_sp.tag} {_sym_label(code)} | 매수 안 함 | {why or 'dry-run / pyramid'}")
                 return False
         if not pyramid and self.has_buy_exposure(norm_code):
             log(f"  [BUY SKIP    ] {_sym_label(code)} | BUY_EXPOSURE_ACTIVE")
@@ -6607,26 +6611,26 @@ class TradingAPI:
         # 시장가 1건으로 즉시 매수. 피라미딩은 기존과 동일하게 매수1호가 지정가 단일 주문.
         if edge:
             if exchange != "KRX":
-                log(f"  [EDGE LIVE   ] {_sym_label(code)} | 매수 안 함 | 정규장(KRX) 주문만")
+                log(f"{_sp.tag} {_sym_label(code)} | 매수 안 함 | 정규장(KRX) 주문만")
                 return False
             if not (ask_price and ask_price > 0):
-                log(f"  [EDGE LIVE   ] {_sym_label(code)} | 매수 안 함 | 매도1호가 없음")
+                log(f"{_sp.tag} {_sym_label(code)} | 매수 안 함 | 매도1호가 없음")
                 return False
             # the amount limits at the price the order really carries (the smaller of the edge and the general limit)
-            qty = min(int(qty), int(min(float(EDGE_LIVE_ORDER_KRW), float(MAX_ORDER_AMOUNT_KRW)) // max(1, cross_price)))
+            qty = min(int(qty), int(min(_sp.order_krw, float(MAX_ORDER_AMOUNT_KRW)) // max(1, cross_price)))
             if qty <= 0:
-                log(f"  [EDGE LIVE   ] {_sym_label(code)} | 매수 안 함 | 1주 가격 {cross_price:,.0f} > 상한 {float(EDGE_LIVE_ORDER_KRW):,.0f}")
+                log(f"{_sp.tag} {_sym_label(code)} | 매수 안 함 | 1주 가격 {cross_price:,.0f} > 상한 {_sp.order_krw:,.0f}")
                 return False
-            _eday = r023.edge_day(self._fills, now.strftime("%Y%m%d"))
+            _eday = r023.edge_day(self._fills, now.strftime("%Y%m%d"), strategy)
             _eday["entries"] = int(_eday.get("entries", 0)) + 1     # counted before the order: an unknown answer keeps the slot
             if not self._save_fills(now):
                 _eday["entries"] -= 1
-                log(f"  [EDGE LIVE   ] {_sym_label(code)} | 매수 안 함 | 체결 장부 저장 실패")
+                log(f"{_sp.tag} {_sym_label(code)} | 매수 안 함 | 체결 장부 저장 실패")
                 return False
-            if _wall_now().time() >= EDGE_LIVE_ENTRY_END:   # [Codex 9th] the lookups / the save ran past the entry window
+            if _wall_now().time() >= _sp.entry_end:   # [Codex 9th] the lookups / the save ran past the entry window
                 _eday["entries"] = max(0, int(_eday.get("entries", 0)) - 1)
                 self._save_fills(now)
-                log(f"  [EDGE LIVE   ] {_sym_label(code)} | 매수 안 함 | 신규 매수 마감 {EDGE_LIVE_ENTRY_END:%H:%M} 지남")
+                log(f"{_sp.tag} {_sym_label(code)} | 매수 안 함 | 신규 매수 마감 {_sp.entry_end:%H:%M} 지남")
                 return False
             legs_spec = [("edge", qty)]
         elif pyramid or not ENABLE_BUY_SPLIT_MARKET_LIMIT or qty < 2:
@@ -6756,7 +6760,7 @@ class TradingAPI:
 
         norm_code = str(code).zfill(6)
         qty = min(int(qty), int(pos["quantity"]))
-        if strategy == r023.EDGE:                 # [2026-11-25] never more than the edge strategy holds, whatever the scope
+        if strategy in r023.SIDE:                 # [2026-11-25] never more than the side strategy holds, whatever the scope
             qty = min(qty, self.edge_quantity(norm_code))
         # [2026-11-13] AUTO_SELL_SCOPE="bot_only": 봇이 매수한 수량까지만 판다 - 직접(MTS) 매수분은 남긴다 (r023 장부)
         if self.sells_bot_quantity_only():
@@ -6799,21 +6803,21 @@ class TradingAPI:
             ord_unpr = str(ord_limit)
 
         # [2026-11-25] Codex review: the price lookups above take time - account and fills once more right before the order goes out
-        if (self.sells_bot_quantity_only() or strategy == r023.EDGE) and getattr(self, "_fills", None) is not None:
-            late = self._late_bot_sell_qty(norm_code, qty, "SELL HOLD   ", reason, need_account=strategy == r023.EDGE)
+        if (self.sells_bot_quantity_only() or strategy in r023.SIDE) and getattr(self, "_fills", None) is not None:
+            late = self._late_bot_sell_qty(norm_code, qty, "SELL HOLD   ", reason, need_account=strategy in r023.SIDE)
             if not late:
                 if late == 0:
                     log(f"  [SELL LIMIT  ] {_sym_label(code)} | 주문 직전 봇 몫 0 - 매도 안 함 | reason={reason}")
                 return False
             qty = late
-            if strategy == r023.EDGE:             # [2026-11-25] the edge book after the last account / fill read
+            if strategy in r023.SIDE:             # [2026-11-25] the side book after the last account / fill read
                 qty = min(qty, self.edge_quantity(norm_code))
                 if qty <= 0:
                     log(f"  [SELL LIMIT  ] {_sym_label(code)} | 주문 직전 Edge 수량 0 - 매도 안 함 | reason={reason}")
                     return False
         self._order_strategy = "" if self.dry_run else strategy   # taken by the _order_cash call below
         # [Codex 4th] an edge sell's result is booked against the edge cost (the account's average mixes in shares by hand)
-        _cost = self.edge_cost(norm_code) if strategy == r023.EDGE else float(pos.get("buy_price", 0.0))
+        _cost = self.edge_cost(norm_code) if strategy in r023.SIDE else float(pos.get("buy_price", 0.0))
 
         if self.dry_run:
             log(f"DRY_RUN SELL | {code} | qty={qty} | reason={reason} | exch={order_spec['exchange']}")
@@ -6908,6 +6912,58 @@ def _edge_live_config_ok() -> tuple[bool, str]:
     return True, ""
 
 
+def _side_spec(strategy):
+    """[2026-11-27] what differs between the side strategies (edge / vwap): log tag, limits, entry end, exits. Read when called."""
+    from types import SimpleNamespace
+    if strategy == r023.VWAP:
+        import r001_define_config as _c
+        return SimpleNamespace(
+            key=r023.VWAP, tag="  [VWAP LIVE   ]", ko="VWAP", prefix="VWAP", order_krw=float(_c.VWAP_LIVE_ORDER_KRW),
+            max_positions=int(_c.VWAP_LIVE_MAX_POSITIONS), max_entries=int(_c.VWAP_LIVE_MAX_ENTRIES_PER_DAY),
+            daily_loss=float(_c.VWAP_LIVE_DAILY_LOSS_KRW), cancel_s=float(_c.VWAP_LIVE_UNFILLED_CANCEL_SECONDS),
+            entry_end=_c.VWAP_LIVE_ENTRY_END, exits=vwap_exit_values, exclude_funds=bool(getattr(_c, "VWAP_TRADE_EXCLUDE_FUNDS", True)))
+    import r001_define_config as _c
+    return SimpleNamespace(
+        key=r023.EDGE, tag="  [EDGE LIVE   ]", ko="Edge", prefix="EDGE", order_krw=float(EDGE_LIVE_ORDER_KRW),
+        max_positions=int(EDGE_LIVE_MAX_POSITIONS), max_entries=int(EDGE_LIVE_MAX_ENTRIES_PER_DAY),
+        daily_loss=float(EDGE_LIVE_DAILY_LOSS_KRW), cancel_s=float(EDGE_LIVE_UNFILLED_CANCEL_SECONDS),
+        entry_end=EDGE_LIVE_ENTRY_END, exits=edge_exit_values, exclude_funds=bool(getattr(_c, "EDGE_ONLY_EXCLUDE_FUNDS", True)))
+
+
+def _vwap_live_config_ok() -> tuple[bool, str]:
+    """[2026-11-27] (new VWAP live buys allowed by the settings, why not)"""
+    import r001_define_config as _c
+    if not bool(getattr(_c, "VWAP_TRADE_LIVE_ORDERS", False)):
+        return False, "VWAP_TRADE_LIVE_ORDERS=False"
+    if str(TRADING_STRATEGY_MODE).lower() != "normal":
+        return False, f"TRADING_STRATEGY_MODE={TRADING_STRATEGY_MODE} (병행은 normal 에서만)"
+    if str(getattr(_c, "VWAP_TRADE_MODE", "off")).lower() != "paper":
+        return False, f"VWAP_TRADE_MODE={getattr(_c, 'VWAP_TRADE_MODE', 'off')} (VWAP 매매가 꺼져 있음)"
+    if auto_sell_mode() != "all":
+        return False, f"AUTO_SELL_MODE={AUTO_SELL_MODE} (all 일 때만 새로 산다)"
+    sp = _side_spec(r023.VWAP)
+    tp, sl, hold = sp.exits()
+    if min(sp.order_krw, sp.max_positions, sp.max_entries, sp.daily_loss, tp, sl, hold) <= 0:
+        return False, "VWAP_LIVE_* 한도 / VWAP_TRADE_* 청산 값이 0 이하"
+    return True, ""
+
+
+def _vwap_live_setup(api: TradingAPI) -> dict:
+    """[2026-11-27] the run's VWAP live state (the same shape as _edge_live_setup): on / off and its own signal state"""
+    ok, why = _vwap_live_config_ok()
+    if ok and api.dry_run:
+        ok, why = False, "dry-run"
+    if ok and (getattr(api, "_fills", None) is None or getattr(api, "_fills_broken", False)):
+        ok, why = False, "체결 장부 없음 / 손상"
+    sp = _side_spec(r023.VWAP)
+    held = sorted(r023.edge_codes(getattr(api, "_fills", None), r023.VWAP))
+    if ok or held:
+        log(f"{sp.tag} 신규 매수 {'켜짐' if ok else '꺼짐'}" + (f" ({why})" if why else "")
+            + (f" | 1회 {sp.order_krw:,.0f}원 동시 {sp.max_positions} 하루 {sp.max_entries}회 손실 한도 {sp.daily_loss:,.0f}원" if ok else "")
+            + (f" | VWAP 보유·주문 중: {', '.join(held)} (청산은 계속)" if held else ""))
+    return {"enabled": ok, "bar_seen": {}, "confirm": {}, "age": {}, "signal_bar": {}}
+
+
 def _edge_live_setup(api: TradingAPI) -> dict:
     """the run's Edge AI live state: whether new buys are on, and the edge strategy's own signal state (never the rule's)"""
     ok, why = _edge_live_config_ok()
@@ -6915,7 +6971,7 @@ def _edge_live_setup(api: TradingAPI) -> dict:
         ok, why = False, "dry-run"
     if ok and (getattr(api, "_fills", None) is None or getattr(api, "_fills_broken", False)):
         ok, why = False, "체결 장부 없음 / 손상"
-    held = sorted(api.edge_codes())
+    held = sorted(r023.edge_codes(getattr(api, "_fills", None), r023.EDGE))
     if getattr(api, "_acct_fields_ok", True) is False:
         log("  [EDGE LIVE   ] 계좌 응답에 금일 매수·매도 수량(thdt_buyqty / thdt_sll_qty)이 없음 - Edge 매도 직전 대조를 할 수 없음 (확인 필요)")
     log(f"  [EDGE LIVE   ] 신규 매수 {'켜짐' if ok else '꺼짐'}" + (f" ({why})" if why else "")
@@ -6945,11 +7001,14 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
     st = getattr(api, "_fills", None)
     if st is None:
         return
+    # [2026-11-27] which side strategy holds / buys it (edge or vwap): its tag, exits and day record
+    _side = r023.side_of(st, norm) or str((api.pending_orders.get(norm) or {}).get("strategy") or "") or r023.EDGE
+    _sp = _side_spec(_side if _side in r023.SIDE else r023.EDGE)
     if norm in r023.edge_open_buy_codes(st):
         api._refresh_bot_fills(now)               # throttled: the fills of the open edge buy reach the edge book
     qty_e = api.edge_quantity(norm)
     pending = api.pending_orders.get(norm)
-    if pending is not None and pending.get("strategy") == r023.EDGE:
+    if pending is not None and pending.get("strategy") in r023.SIDE:
         api.settle_edge_pending_by_ledger(now)    # an order the ledger shows finished is closed even without its status
         pending = api.pending_orders.get(norm)
     closing = now.time() >= REGULAR_FORCE_EXIT
@@ -6960,13 +7019,13 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
     if pending is not None and pending.get("side") == "sell":
         return                                    # its sell is out: refresh_pending_orders follows it
     if pending is None and api.has_pending_order(norm):
-        _edge_note(api, norm, "hold", f"  [EDGE LIVE   ] {label} | 주문 보류(A2) 중 - 브로커 확인 뒤 청산 판정")
+        _edge_note(api, norm, "hold", f"{_sp.tag} {label} | 주문 보류(A2) 중 - 브로커 확인 뒤 청산 판정")
         return
     # [stage 4 review] the exits of what the edge strategy bought do not depend on AUTO_SELL_MODE: a position this strategy
     # opened is closed by this strategy, whatever was set, unset or reset since (that setting is for the rule strategy's sells)
     mode = "all"
     if auto_sell_mode() != "all":
-        _edge_note(api, norm, "mode", f"  [EDGE LIVE   ] {label} | AUTO_SELL_MODE={AUTO_SELL_MODE} 이지만 Edge 보유 {qty_e}주는 "
+        _edge_note(api, norm, "mode", f"{_sp.tag} {label} | AUTO_SELL_MODE={AUTO_SELL_MODE} 이지만 {_sp.ko} 보유 {qty_e}주는 "
                                       f"Edge 규칙(손절 / 익절 / 시간 / 15:20)으로 청산", 600.0)
     if not is_regular_session(now):
         return
@@ -6975,7 +7034,7 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
     try:
         px = fetch_live_price(norm, now, False)
     except Exception as exc:
-        log(f"  [EDGE LIVE   ] {label} | 현재가 조회 오류: {exc}")
+        log(f"{_sp.tag} {label} | 현재가 조회 오류: {exc}")
     if px is None or px <= 0:
         px, src = float(pos.get("current_price") or 0.0), "account"
     avg = api.edge_cost(norm)
@@ -6983,24 +7042,24 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
     if not priced:
         # [Codex code review] no take profit / stop loss without a price and the edge cost (a wrong cost would sell at a loss) -
         # the time limit and the 15:20 close do not need them (market order)
-        _edge_note(api, norm, "noprice", f"  [EDGE LIVE   ] {label} | 가격 미상(현재가 {px:,.0f} / Edge 원가 {avg:,.0f}) - "
+        _edge_note(api, norm, "noprice", f"{_sp.tag} {label} | 가격 미상(현재가 {px:,.0f} / Edge 원가 {avg:,.0f}) - "
                                          f"익절·손절 판정 보류, 시간 상한·15:20 청산은 그대로")
     pnl = px / avg - 1.0 if priced else 0.0
-    tp, sl, hold = edge_exit_values()
+    tp, sl, hold = _sp.exits()
     try:
         held_min = (now - datetime.fromisoformat(r023.edge_entry_at(st, norm))).total_seconds() / 60.0
     except (TypeError, ValueError):
         held_min = 0.0
     reason = None
     if closing and mode == "all":
-        reason = "EDGE_CLOSE_1520"
+        reason = f"{_sp.prefix}_CLOSE_1520"
     elif priced and pnl <= -sl:
-        reason = f"EDGE_SL_{sl * 100:.2f}PCT"
+        reason = f"{_sp.prefix}_SL_{sl * 100:.2f}PCT"
     elif priced and mode == "all" and pnl >= tp:
-        reason = f"EDGE_TP_{tp * 100:.2f}PCT"
+        reason = f"{_sp.prefix}_TP_{tp * 100:.2f}PCT"
     elif mode == "all" and held_min >= hold:
-        reason = f"EDGE_TIME_{int(hold)}MIN"
-    _edge_note(api, norm, "check", f"  [EDGE LIVE   ] {label} | qty={qty_e} 원가={avg:,.0f} 현재가={px:,.0f}({src}) "
+        reason = f"{_sp.prefix}_TIME_{int(hold)}MIN"
+    _edge_note(api, norm, "check", f"{_sp.tag} {label} | qty={qty_e} 원가={avg:,.0f} 현재가={px:,.0f}({src}) "
                                    f"손익={pnl * 100:+.2f}% 보유={held_min:.0f}분 | tp=+{tp * 100:.2f}% sl=-{sl * 100:.2f}% {int(hold)}분"
                                    + (f" | 계좌 {int(pos.get('quantity', 0) or 0)}주 (직접 보유분은 팔지 않음)"
                                       if int(pos.get("quantity", 0) or 0) > qty_e else ""))
@@ -7010,14 +7069,14 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
         # [Codex code review] the edge buy is still open: its rest is cancelled first and the sell goes out when the buy is closed
         # (one order of a symbol is tracked at a time - a sell now would lose track of the open buy)
         api._edge_cancel_buy(norm, pending, now)
-        _edge_note(api, norm, "wait_buy", f"  [EDGE LIVE   ] {label} | 청산 {reason} 대기 - 매수 잔량 취소 확인 뒤 매도", 10.0)
+        _edge_note(api, norm, "wait_buy", f"{_sp.tag} {label} | 청산 {reason} 대기 - 매수 잔량 취소 확인 뒤 매도", 10.0)
         return
     api.trade_lock_until.pop(norm, None)          # the buy's cooldown never delays an exit
-    log(f"  [EDGE LIVE   ] {label} | 청산 {reason} | qty={qty_e} 원가={avg:,.0f} 현재가={px:,.0f}({src}) 손익={pnl * 100:+.2f}%")
+    log(f"{_sp.tag} {label} | 청산 {reason} | qty={qty_e} 원가={avg:,.0f} 현재가={px:,.0f}({src}) 손익={pnl * 100:+.2f}%")
     if api.place_sell_order(norm, qty_e, now, reason, False, price=px if px > 0 else None, code_name=name,
-                            strategy=r023.EDGE):
-        if reason.startswith("EDGE_SL"):
-            day = r023.edge_day(st, now.strftime("%Y%m%d"))
+                            strategy=_sp.key):
+        if reason.startswith(f"{_sp.prefix}_SL"):
+            day = r023.edge_day(st, now.strftime("%Y%m%d"), _sp.key)
             if norm not in day["sl_codes"]:
                 day["sl_codes"].append(norm)
             api._save_fills(now)
@@ -7056,28 +7115,32 @@ def _edge_live_reject_note(failed, msgs: list) -> tuple[str, float] | None:
 def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, symbol_label: str, current_dt: datetime,
                        nxt_tradeable: bool, price, price_source: str, bar_time, buy_frame, cross_info, traded_today: set,
                        hard_stop_today_codes: set, gap_blocked_codes: set, tick_nofile_logged: set, risk, buy_services,
-                       frame_cache_1min: dict, frame_last_refresh_at_1min: dict) -> bool:
+                       frame_cache_1min: dict, frame_last_refresh_at_1min: dict, strategy: str = r023.EDGE) -> bool:
     """[2026-11-25] The Edge AI live buy of a symbol the rule strategy did not order this turn. Once per confirmed 1-minute bar:
     the day's limits, then EDGE_BUY_CONDITIONS (the shared safety conditions, the model signal, quantity / price / order book)
     on the edge strategy's own signal state - the rule strategy's confirm / dedup state is not touched. The position slot
     (traded_today) is shared, so the total MAX_OPEN_POSITIONS counts both."""
     if not edge_live.get("enabled") or not is_regular_session(current_dt):
         return False
+    # [2026-11-27] strategy "vwap": the same path with the VWAP signal (VWAP_BUY_CONDITIONS), its limits and its book
+    _sp = _side_spec(strategy)
+    _conds = VWAP_BUY_CONDITIONS if strategy == r023.VWAP else EDGE_BUY_CONDITIONS
+    if api.is_edge_symbol(code) or api.has_pending_order(str(code).zfill(6)):
+        return False                              # another strategy holds / is ordering the symbol
     if price is None or price <= 0 or price_source not in ("live", "cached_live"):
         return False
     norm = str(code).zfill(6)
-    why = api.edge_live_block_reason(norm, current_dt)
+    why = api.edge_live_block_reason(norm, current_dt, strategy)
     if why:
-        _edge_note(api, "*", "block", f"  [EDGE LIVE   ] 신규 매수 중단 | {why}", 600.0)
+        _edge_note(api, "*", "block", f"{_sp.tag} 신규 매수 중단 | {why}", 600.0)
         return False
     try:
-        import r001_define_config as _cfg_e
         from r011_edge_ai import is_fund_product
-        if bool(getattr(_cfg_e, "EDGE_ONLY_EXCLUDE_FUNDS", True)) and is_fund_product(name):
+        if _sp.exclude_funds and is_fund_product(name):
             return False
         frame_1m = _get_or_refresh_1min_frame(code, current_dt, nxt_tradeable, frame_cache_1min, frame_last_refresh_at_1min)
     except Exception as exc:
-        log(f"  [EDGE LIVE   ] {symbol_label} | 1분봉 조회 오류: {exc}")
+        log(f"{_sp.tag} {symbol_label} | 1분봉 조회 오류: {exc}")
         return False
     if frame_1m is None or frame_1m.empty:
         return False
@@ -7099,12 +7162,14 @@ def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, s
         ),
         risk=risk, services=_dc.replace(buy_services, log=_msgs.append),   # kept for the one reject line below, not written as they are
     )
-    _decision = check_buy_conditions(ctx, EDGE_BUY_CONDITIONS)
+    _decision = check_buy_conditions(ctx, _conds)
     if not _decision.approved:
         try:                                      # [2026-11-26] why not (a log line only - never changes the decision)
             _note = _edge_live_reject_note(_decision.failed, _msgs)
+            if strategy == r023.VWAP and _note is not None and int(getattr(_decision.failed, 'no', 0) or 0) == 9:
+                _note = None                  # the VWAP signal fails on most bars: not a log line each
             if _note is not None:
-                _line = f"  [EDGE LIVE   ] {symbol_label} | 매수 안 함 | {_note[0]}"
+                _line = f"{_sp.tag} {symbol_label} | 매수 안 함 | {_note[0]}"
                 if _note[1] > 0:
                     _edge_note(api, norm, f"reject_{getattr(_decision.failed, 'no', 0)}", _line, _note[1])
                 else:
@@ -7112,10 +7177,10 @@ def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, s
         except Exception:
             pass
         return False
-    log(f"  [EDGE LIVE   ] {symbol_label} | 매수 신호 | {ctx.buy_reason} | live={float(price):,.0f} qty<={ctx.qty}")
+    log(f"{_sp.tag} {symbol_label} | 매수 신호 | {ctx.buy_reason} | live={float(price):,.0f} qty<={ctx.qty}")
     if api.place_buy_order(code, price, ctx.qty, current_dt, nxt_tradeable, ctx.session,
-                           buy_detail=f"EDGE_LIVE {ctx.buy_reason}", code_name=name, strategy=r023.EDGE):
-        log(f"  [EDGE LIVE   ] {symbol_label} | 매수 주문 접수 | 상한 {float(EDGE_LIVE_ORDER_KRW):,.0f}원")
+                           buy_detail=f"{_sp.prefix}_LIVE {ctx.buy_reason}", code_name=name, strategy=strategy):
+        log(f"{_sp.tag} {symbol_label} | 매수 주문 접수 | 상한 {_sp.order_krw:,.0f}원")
         return True
     traded_today.discard(norm)                    # the reservation of _025 is released, the bar stays judged
     api.live_state["traded_today"] = traded_today
@@ -7688,6 +7753,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     edge_only = _make_edge_only_runner(date_str)
     vwap_paper = _make_vwap_paper_runner(date_str)   # [2026-11-27] VWAP trade, paper (r029) - None unless VWAP_TRADE_MODE == "paper"
     edge_live = _edge_live_setup(api)             # [2026-11-25] Edge AI live orders beside the rule strategy
+    vwap_live = _vwap_live_setup(api)             # [2026-11-27] VWAP trade live orders beside the rule strategy
     exit_shadow = _make_exit_shadow_runner(date_str)
     sell_services.exit_live = _make_exit_live_manager(date_str)   # [2026-11-15] None unless EXIT_ENGINE_MODE="live"
     global _ENTRY_SHADOW
@@ -8232,6 +8298,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                             api, edge_live, code, name, symbol_label, current_dt, nxt_tradeable, price, price_source, bar_time,
                             buy_frame, cross_info, traded_today, hard_stop_today_codes, gap_blocked_codes, tick_nofile_logged,
                             risk, buy_services, frame_cache_1min, frame_last_refresh_at_1min)
+                            # [2026-11-27] VWAP trade live: the same turn, its own signal / limits / book
+                            _edge_live_try_buy(
+                            api, vwap_live, code, name, symbol_label, current_dt, nxt_tradeable, price, price_source, bar_time,
+                            buy_frame, cross_info, traded_today, hard_stop_today_codes, gap_blocked_codes, tick_nofile_logged,
+                            risk, buy_services, frame_cache_1min, frame_last_refresh_at_1min, strategy=r023.VWAP)
                         except Exception as exc:
                             log(f"  [EDGE LIVE   ] {symbol_label} buy error: {exc}")
                     if _buy_decision.approved:
@@ -8275,6 +8346,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                                 api, edge_live, code, name, symbol_label, current_dt, nxt_tradeable, price, price_source, bar_time,
                                 buy_frame, cross_info, traded_today, hard_stop_today_codes, gap_blocked_codes, tick_nofile_logged,
                                 risk, buy_services, frame_cache_1min, frame_last_refresh_at_1min)
+                                # [2026-11-27] VWAP trade live: the same turn, its own signal / limits / book
+                                _edge_live_try_buy(
+                                api, vwap_live, code, name, symbol_label, current_dt, nxt_tradeable, price, price_source, bar_time,
+                                buy_frame, cross_info, traded_today, hard_stop_today_codes, gap_blocked_codes, tick_nofile_logged,
+                                risk, buy_services, frame_cache_1min, frame_last_refresh_at_1min, strategy=r023.VWAP)
                             except Exception as exc:
                                 log(f"  [EDGE LIVE   ] {symbol_label} buy error: {exc}")
                             continue
