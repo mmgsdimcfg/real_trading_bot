@@ -8,6 +8,9 @@
 // - [2026-11-26] type=feat (잔고 tab beside 미체결 (user 2026-11-26): every holding - 보유 / 매도가능 / 평균단가 / 현재가 / 평가금액 /
 //   평가손익 / 수익률 - with the account's 총평가 and summed 평가손익; a row click shows that symbol, 매도 prepares a sell at the current
 //   price (nothing is sent before the order button and its confirmation). The tab shown is kept in win.opts.tab)
+// - [2026-11-26] type=feat (체결 tab (user 2026-11-26): today's filled orders of the account - 주문시각 / 종목 / 구분 / 체결가(평균) /
+//   체결량 / 체결금액 / 주문가 / 주문량 with the day's buy and sell amounts; asked only while the tab is shown. The bot's orders of the
+//   same account are in it too)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, type Win } from '../store';
@@ -15,7 +18,7 @@ import { useCall, useRealtime, useSymbol } from '../hooks';
 import { OrderBookView } from './QuoteWindow';
 import { NxtMark } from '../components/NxtTag';
 import type { OrderBook, Quote } from '../../../shared/kis';
-import { orderProblem, reviseProblem, stepPrice, tickSize, type Balance, type Buyable, type OpenOrder, type OrderSide, type OrderState, type OrderType } from '../../../shared/order';
+import { orderProblem, reviseProblem, stepPrice, tickSize, type Balance, type Buyable, type Fill, type OpenOrder, type OrderSide, type OrderState, type OrderType } from '../../../shared/order';
 import { arrow, fmtInt, fmtPct, signOf, upDown } from '../lib';
 
 const digits = (s: string) => s.replace(/[^\d]/g, '');
@@ -32,8 +35,9 @@ export function OrderWindow({ win }: { win: Win }) {
   const setOpts = useStore((s) => s.setOpts);
   const setCode = useStore((s) => s.setCode);
   const openOrder = useStore((s) => s.openOrder);
-  const tab: 'open' | 'hold' = win.opts.tab === 'hold' ? 'hold' : 'open';
-  const setTab = (t: 'open' | 'hold') => setOpts(win.id, { tab: t });
+  type Tab = 'open' | 'fills' | 'hold';
+  const tab: Tab = win.opts.tab === 'hold' ? 'hold' : win.opts.tab === 'fills' ? 'fills' : 'open';
+  const setTab = (t: Tab) => setOpts(win.id, { tab: t });
   useRealtime(code, { trades: true, book: true });
   const rq = useStore((s) => s.rt.quotes[code]);
   const rbook = useStore((s) => s.rt.books[code]);
@@ -50,6 +54,7 @@ export function OrderWindow({ win }: { win: Win }) {
   const [bal, setBal] = useState<Balance | null>(null);
   const [buyable, setBuyable] = useState<Buyable | null>(null);
   const [open, setOpen] = useState<OpenOrder[]>([]);
+  const [fills, setFills] = useState<Fill[] | null>(null);
   const [loadErr, setLoadErr] = useState('');
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -100,11 +105,13 @@ export function OrderWindow({ win }: { win: Win }) {
 
   // ---- account data: balance / open orders polled while the window is shown, the buyable amount on every price change ----
   const loadAccount = useCallback(async () => {
-    const [b, o] = await Promise.all([window.hts.orderBalance(), window.hts.orderOpen()]);
+    // today's fills only while their tab is shown (one more account call)
+    const [b, o, f] = await Promise.all([window.hts.orderBalance(), window.hts.orderOpen(), tab === 'fills' ? window.hts.orderFills() : null]);
     if (b.ok) setBal(b.data);
     if (o.ok) setOpen(o.data);
-    setLoadErr(b.ok ? (o.ok ? '' : o.error) : b.error);
-  }, []);
+    if (f?.ok) setFills(f.data);
+    setLoadErr(b.ok ? (o.ok ? (f && !f.ok ? f.error : '') : o.error) : b.error);
+  }, [tab]);
   useEffect(() => {
     if (!ready || win.min) return;
     void loadAccount();
@@ -123,6 +130,7 @@ export function OrderWindow({ win }: { win: Win }) {
 
   const holding = useMemo(() => bal?.holdings.find((h) => h.code === code) || null, [bal, code]);
   const pnlSum = useMemo(() => (bal?.holdings || []).reduce((s, h) => s + h.pnl, 0), [bal]);
+  const fillSum = useMemo(() => (fills || []).reduce((s, f) => ({ ...s, [f.side]: s[f.side] + f.amount }), { buy: 0, sell: 0 }), [fills]);
   const costSum = useMemo(() => (bal?.holdings || []).reduce((s, h) => s + h.avgPrice * h.qty, 0), [bal]);
   const maxQty = edit ? edit.remain : side === 'buy' ? buyable?.qty ?? 0 : holding?.sellable ?? 0;
   const unit = type === 'market' ? live?.price || 0 : priceNum;
@@ -364,10 +372,18 @@ export function OrderWindow({ win }: { win: Win }) {
           <button className={tab === 'open' ? 'on' : ''} onClick={() => setTab('open')}>
             미체결 {open.length}
           </button>
+          <button className={tab === 'fills' ? 'on' : ''} onClick={() => setTab('fills')} title="오늘 체결된 주문 (같은 계좌의 봇 주문 포함)">
+            체결{fills ? ` ${fills.length}` : ''}
+          </button>
           <button className={tab === 'hold' ? 'on' : ''} onClick={() => setTab('hold')}>
             잔고 {bal ? bal.holdings.length : 0}
           </button>
         </span>
+        {tab === 'fills' && fills && (
+          <span className="ord-sum">
+            <span className="muted">매수</span> <b className="up">{fmtInt(fillSum.buy)}원</b> <span className="muted">매도</span> <b className="down">{fmtInt(fillSum.sell)}원</b>
+          </span>
+        )}
         {tab === 'hold' && bal && (
           <span className="ord-sum">
             <span className="muted">총평가</span> <b>{fmtInt(bal.total)}원</b> <span className="muted">평가손익</span>{' '}
@@ -384,6 +400,45 @@ export function OrderWindow({ win }: { win: Win }) {
         </span>
       </div>
       <div className="q-tab-body">
+        {tab === 'fills' && (
+          <table className="grid">
+            <thead>
+              <tr>
+                <th title="주문 시각 (한 주문의 체결은 합쳐서 한 줄)">주문시각</th>
+                <th>종목</th>
+                <th>구분</th>
+                <th className="num">체결가</th>
+                <th className="num">체결량</th>
+                <th className="num">체결금액</th>
+                <th className="num">주문가</th>
+                <th className="num">주문량</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(fills || []).map((f) => (
+                <tr key={f.no + f.side} className={f.code === code ? 'sel' : ''} onClick={() => setCode(win.id, f.code)} title="누르면 이 종목으로 바꿉니다">
+                  <td className="mono">{hms(f.time)}</td>
+                  <td>
+                    {f.name || f.code} <span className="mono muted">{f.code}</span>
+                  </td>
+                  <td className={f.side === 'buy' ? 'up' : 'down'}>{f.side === 'buy' ? '매수' : '매도'}</td>
+                  <td className="num">{fmtInt(f.price)}</td>
+                  <td className="num">{fmtInt(f.qty)}</td>
+                  <td className="num">{fmtInt(f.amount)}</td>
+                  <td className="num">{f.ordPrice > 0 ? fmtInt(f.ordPrice) : '시장가'}</td>
+                  <td className="num">{fmtInt(f.ordQty)}</td>
+                </tr>
+              ))}
+              {!(fills || []).length && (
+                <tr>
+                  <td colSpan={8} className="center muted">
+                    {ready ? (fills ? '오늘 체결된 주문이 없습니다' : '체결 내역 불러오는 중…') : st?.reason || ''}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
         {tab === 'hold' && (
           <table className="grid">
             <thead>

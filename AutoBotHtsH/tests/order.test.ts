@@ -16,6 +16,8 @@ import {
   tickSize,
   toBalance,
   toBuyable,
+  toFills,
+  dailyParams,
   toOpenOrders,
   toOrderResult,
   tradeEndpoint,
@@ -159,6 +161,19 @@ describe('answers', () => {
     expect(toOpenOrders([{ odno: '9', pdno: '005930', sll_buy_dvsn_cd: '02', ord_qty: '10', tot_ccld_qty: '4', rmn_qty: '6', ord_tmd: '120000' }])[0].remain).toBe(6);
   });
 
+  it('당일 체결: orders with a filled quantity only, newest first; every exchange on the real server', () => {
+    const f = toFills([
+      { odno: '0000000011', pdno: '005930', prdt_name: '삼성전자', sll_buy_dvsn_cd: '02', ord_tmd: '091500', ord_qty: '10', ord_unpr: '70000', tot_ccld_qty: '10', avg_prvs: '69950', tot_ccld_amt: '699500' },
+      { odno: '0000000012', pdno: '000660', prdt_name: 'SK하이닉스', sll_buy_dvsn_cd: '01', ord_tmd: '101010', ord_qty: '5', ord_unpr: '0', tot_ccld_qty: '3', avg_prvs: '0', tot_ccld_amt: '546000' },
+      { odno: '0000000013', pdno: '035720', sll_buy_dvsn_cd: '02', ord_tmd: '111111', ord_qty: '5', tot_ccld_qty: '0' },
+    ]);
+    expect(f.map((x) => x.no)).toEqual(['0000000012', '0000000011']);
+    expect(f[1]).toEqual({ no: '0000000011', code: '005930', name: '삼성전자', side: 'buy', time: '091500', qty: 10, price: 69950, amount: 699500, ordQty: 10, ordPrice: 70000 });
+    // no average price in the row: amount / quantity
+    expect(f[0]).toMatchObject({ side: 'sell', qty: 3, price: 182000, ordPrice: 0 });
+    expect(dailyParams(acct, '20261126', '01', 'ALL')).toMatchObject({ INQR_STRT_DT: '20261126', INQR_END_DT: '20261126', CCLD_DVSN: '01', EXCG_ID_DVSN_CD: 'ALL', SLL_BUY_DVSN_CD: '00' });
+  });
+
   it('주문 접수 결과 (upper-case keys of 현금주문, lower-case of 정정취소)', () => {
     expect(toOrderResult({ KRX_FWDG_ORD_ORGNO: '91252', ODNO: '0000117057', ORD_TMD: '121052' })).toEqual({ no: '0000117057', branch: '91252', time: '121052' });
     expect(toOrderResult({ krx_fwdg_ord_orgno: '91252', odno: '0000117058', ord_tmd: '121100' })).toEqual({ no: '0000117058', branch: '91252', time: '121100' });
@@ -194,6 +209,13 @@ describe('KisTrader', () => {
     await new KisTrader(fake('paper'), acct).openOrders();
     expect(calls.map((c) => c.api)).toEqual(['psbl_rvsecncl', 'daily_ccld']);
     expect(calls[1].params.CCLD_DVSN).toBe('02');
+    calls.length = 0;
+    await new KisTrader(fake('real'), acct).fills();
+    await new KisTrader(fake('paper'), acct).fills();
+    expect(calls.map((c) => [c.api, c.params.CCLD_DVSN, c.params.EXCG_ID_DVSN_CD])).toEqual([
+      ['daily_ccld', '01', 'ALL'],
+      ['daily_ccld', '01', 'KRX'],
+    ]);
   });
 });
 
@@ -231,6 +253,11 @@ describe('DemoTrader', () => {
     const sell = (await t.openOrders()).find((o) => o.side === 'sell')!;
     await t.revise({ no: sell.no, branch: sell.branch, kind: 'cancel', type: 'limit', price: 0, qty: sell.remain });
     expect(await t.openOrders()).toHaveLength(0);
+    // two fills so far: the market buy and the revised buy; the cancelled sell never filled
+    expect((await t.fills()).map((f) => [f.side, f.qty, f.price])).toEqual([
+      ['buy', 10, 70000],
+      ['buy', 10, 70000],
+    ]);
     await expect(t.place({ code: '005930', side: 'buy', type: 'limit', qty: 1000, price: 70000 })).rejects.toThrow('주문가능금액');
   });
 });

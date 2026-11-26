@@ -3,11 +3,14 @@
 //   balance, open orders, place / revise / cancel. KisTrader sends them through KisClient.trade() (shared/order.ts allowlist);
 //   DemoTrader keeps a made-up account in memory for the demo mode and the screen tests - it never touches the network.
 //   The main process (index.ts) asks the user to confirm every order in a native dialog before it calls place / revise / cancel)
+// - [2026-11-26] type=feat (fills(): today's filled orders - 일별주문체결조회 CCLD_DVSN 01 (every exchange on the real server);
+//   the demo account records its own fills)
 
 import type { KisClient } from './kisClient';
 import {
   balanceParams,
   dailyOpenParams,
+  dailyParams,
   openOrderParams,
   orderBody,
   orderProblem,
@@ -16,12 +19,14 @@ import {
   reviseProblem,
   toBalance,
   toBuyable,
+  toFills,
   toHoldings,
   toOpenOrders,
   toOrderResult,
   type Account,
   type Balance,
   type Buyable,
+  type Fill,
   type Holding,
   type OpenOrder,
   type OrderReq,
@@ -35,6 +40,7 @@ export interface Trader {
   buyable(code: string, type: OrderType, price: number): Promise<Buyable>;
   balance(): Promise<Balance>;
   openOrders(): Promise<OpenOrder[]>;
+  fills(): Promise<Fill[]>;
   place(o: OrderReq): Promise<OrderResult>;
   revise(r: ReviseReq): Promise<OrderResult>;
 }
@@ -87,6 +93,24 @@ export class KisTrader implements Trader {
     return toOpenOrders(r.output);
   }
 
+  async fills(): Promise<Fill[]> {
+    const venue = this.client.env === 'real' ? 'ALL' : 'KRX';
+    const out: Fill[] = [];
+    let fk = '';
+    let nk = '';
+    let cont = '';
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const r = await this.client.trade('daily_ccld', dailyParams(this.acct, kstYmd(), '01', venue, fk, nk), cont);
+      out.push(...toFills(r.output1));
+      if (r.trCont !== 'F' && r.trCont !== 'M') break;
+      fk = r.ctx?.fk || '';
+      nk = r.ctx?.nk || '';
+      if (!nk.trim()) break;
+      cont = 'N';
+    }
+    return out.sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
+  }
+
   async place(o: OrderReq): Promise<OrderResult> {
     const bad = orderProblem(o);
     if (bad) throw new Error(bad);
@@ -109,6 +133,7 @@ export class DemoTrader implements Trader {
   private cash = 10_000_000;
   private held = new Map<string, { qty: number; cost: number }>();
   private open: OpenOrder[] = [];
+  private done: Fill[] = [];
   private seq = 1000;
 
   constructor(
@@ -148,7 +173,12 @@ export class DemoTrader implements Trader {
     return [...this.open].reverse();
   }
 
-  private fill(code: string, side: 'buy' | 'sell', qty: number, price: number): void {
+  async fills(): Promise<Fill[]> {
+    return [...this.done].reverse();
+  }
+
+  private fill(code: string, side: 'buy' | 'sell', qty: number, price: number, no: string, ordPrice: number): void {
+    this.done.push({ no, code, name: this.nameOf(code), side, time: kstHms(), qty, price, amount: price * qty, ordQty: qty, ordPrice });
     const h = this.held.get(code) || { qty: 0, cost: 0 };
     if (side === 'buy') {
       this.cash -= price * qty;
@@ -170,7 +200,7 @@ export class DemoTrader implements Trader {
     const no = String(++this.seq).padStart(10, '0');
     const time = kstHms();
     const crosses = o.type === 'market' || (o.side === 'buy' ? o.price >= now : o.price <= now);
-    if (crosses) this.fill(o.code, o.side, o.qty, now);
+    if (crosses) this.fill(o.code, o.side, o.qty, now, no, o.type === 'market' ? 0 : o.price);
     else this.open.push({ no, branch: '00950', code: o.code, name: this.nameOf(o.code), side: o.side, type: o.type, price, qty: o.qty, filled: 0, remain: o.qty, time, venue: 'KRX' });
     return { no, branch: '00950', time };
   }

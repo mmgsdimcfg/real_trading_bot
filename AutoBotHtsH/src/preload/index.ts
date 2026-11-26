@@ -12,7 +12,7 @@ import { api as botApi } from '../bot/preload/index';
 import { contextBridge, ipcRenderer, webFrame } from 'electron';
 import type { MasterItem, KisEnv } from '../shared/kis';
 import type { Res } from '../shared/market';
-import type { Balance, Buyable, OpenOrder, OrderReq, OrderResult, OrderState, OrderType, ReviseReq } from '../shared/order';
+import type { Balance, Buyable, Fill, OpenOrder, OrderReq, OrderResult, OrderState, OrderType, ReviseReq } from '../shared/order';
 import type { PickGroup, PicksEntry } from '../shared/watchPicks';
 import type { ReboundConfig } from '../shared/rebound';
 import type { HistoryItem } from '../main/reboundHistory';
@@ -130,6 +130,7 @@ const hts = {
   orderBuyable: (code: string, type: OrderType, price: number): Promise<Res<Buyable>> => ipcRenderer.invoke('ord:buyable', code, type, price),
   orderBalance: (): Promise<Res<Balance>> => ipcRenderer.invoke('ord:balance'),
   orderOpen: (): Promise<Res<OpenOrder[]>> => ipcRenderer.invoke('ord:open'),
+  orderFills: (): Promise<Res<Fill[]>> => ipcRenderer.invoke('ord:fills'),
   orderPlace: (o: OrderReq): Promise<Res<OrderResult>> => ipcRenderer.invoke('ord:place', o),
   orderRevise: (r: ReviseReq & { code: string; side: string }): Promise<Res<OrderResult>> => ipcRenderer.invoke('ord:revise', r),
 };

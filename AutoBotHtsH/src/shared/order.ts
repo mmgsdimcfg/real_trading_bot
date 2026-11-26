@@ -4,6 +4,9 @@
 //   official examples_llm/domestic_stock/{order_cash,order_rvsecncl,inquire_psbl_order,inquire_balance,inquire_psbl_rvsecncl,
 //   inquire_daily_ccld}); the market-data allowlist of kis.ts is untouched and still rejects every one of them -, account number
 //   parsing / masking, KRX tick sizes, order validation, the request bodies and the normalizers of the answers)
+// - [2026-11-26] type=feat (Today's fills (user 2026-11-26): Fill + toFills() from 주식일별주문체결조회 with CCLD_DVSN 01 - one row per
+//   order that has a filled quantity (the TR sums an order's fills: quantity, average price, amount; the time is the order's).
+//   dailyParams() is the one builder of that TR's query (01 체결 / 02 미체결; every exchange on the real server, KRX on the paper one))
 
 import type { KisEnv } from './kis';
 
@@ -77,6 +80,23 @@ export interface Buyable {
   /** 최대 매수 금액 / 수량 (with margin) - shown, not used for the % buttons */
   maxAmount: number;
   maxQty: number;
+}
+
+/** one order of today with a filled quantity (the TR reports an order's fills summed) */
+export interface Fill {
+  no: string;
+  code: string;
+  name: string;
+  side: OrderSide;
+  /** order time, HHMMSS */
+  time: string;
+  /** filled quantity, average fill price and filled amount */
+  qty: number;
+  price: number;
+  amount: number;
+  /** ordered quantity and price (0 = market) */
+  ordQty: number;
+  ordPrice: number;
 }
 
 export interface OrderResult {
@@ -275,15 +295,15 @@ export const openOrderParams = (a: Account, fk = '', nk = ''): Record<string, st
   CTX_AREA_NK100: nk,
 });
 
-/** paper server: today's unfilled orders through 주식일별주문체결조회 (CCLD_DVSN 02) */
-export const dailyOpenParams = (a: Account, ymd: string, fk = '', nk = ''): Record<string, string> => ({
+/** 주식일별주문체결조회 of one day: ccld '01' = filled orders, '02' = unfilled ones; venue KRX / NXT / SOR / ALL */
+export const dailyParams = (a: Account, ymd: string, ccld: '01' | '02', venue = 'KRX', fk = '', nk = ''): Record<string, string> => ({
   CANO: a.cano,
   ACNT_PRDT_CD: a.prod,
   INQR_STRT_DT: ymd,
   INQR_END_DT: ymd,
   SLL_BUY_DVSN_CD: '00',
   PDNO: '',
-  CCLD_DVSN: '02',
+  CCLD_DVSN: ccld,
   INQR_DVSN: '00',
   INQR_DVSN_3: '00',
   ORD_GNO_BRNO: '',
@@ -291,7 +311,10 @@ export const dailyOpenParams = (a: Account, ymd: string, fk = '', nk = ''): Reco
   INQR_DVSN_1: '',
   CTX_AREA_FK100: fk,
   CTX_AREA_NK100: nk,
+  EXCG_ID_DVSN_CD: venue,
 });
+/** paper server: today's unfilled orders through 주식일별주문체결조회 (CCLD_DVSN 02) */
+export const dailyOpenParams = (a: Account, ymd: string, fk = '', nk = ''): Record<string, string> => dailyParams(a, ymd, '02', 'KRX', fk, nk);
 
 // ---- answers ----
 
@@ -350,6 +373,29 @@ export function toOpenOrders(output: unknown): OpenOrder[] {
       };
     })
     .filter((o) => o.no && o.remain > 0)
+    .sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
+}
+
+/** rows of 일별주문체결조회 -> orders with a filled quantity, newest first (cancelled / unfilled rows dropped) */
+export function toFills(output: unknown): Fill[] {
+  return rows(output)
+    .map((r) => {
+      const qty = num(r.tot_ccld_qty);
+      const amount = num(r.tot_ccld_amt);
+      return {
+        no: str(r.odno),
+        code: str(r.pdno),
+        name: str(r.prdt_name),
+        side: (str(r.sll_buy_dvsn_cd) === '01' ? 'sell' : 'buy') as OrderSide,
+        time: str(r.ord_tmd),
+        qty,
+        price: num(r.avg_prvs) || (qty > 0 ? Math.round(amount / qty) : 0),
+        amount,
+        ordQty: num(r.ord_qty),
+        ordPrice: num(r.ord_unpr),
+      };
+    })
+    .filter((f) => f.no && f.qty > 0)
     .sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
 }
 

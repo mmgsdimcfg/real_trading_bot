@@ -287,6 +287,13 @@ ipcMain.handle('ord:open', () =>
     return t.openOrders();
   }),
 );
+ipcMain.handle('ord:fills', () =>
+  ordRes(async () => {
+    const t = trader();
+    if (!t) throw new Error(noTrader);
+    return t.fills();
+  }),
+);
 ipcMain.handle('ord:place', (_e, raw: Partial<OrderReq>) =>
   ordRes(async () => {
     const t = trader();
