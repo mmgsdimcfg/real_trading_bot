@@ -478,8 +478,8 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 }
 .range-bar { position: relative; display: inline-block; width: 80px; height: 6px; margin-left: 8px; background: linear-gradient(90deg, var(--down), var(--up)); border-radius: 3px; vertical-align: middle; opacity: 0.8; }
 .range-bar i { position: absolute; top: -3px; width: 3px; height: 12px; background: var(--text); border-radius: 1px; transform: translateX(-1px); }
-.idx-row { display: flex; gap: 6px; padding: 6px; }
-.idx-card { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 9px; text-align: left; background: var(--surface-2); }
+.idx-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px; }
+.idx-card { flex: 1 1 104px; min-width: 104px; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 9px; text-align: left; background: var(--surface-2); }
 .idx-card.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface-2)); }
 .idx-card b { font-size: var(--fs); font-variant-numeric: tabular-nums; }
 .idx-chart { flex: 1; min-height: 0; padding: 0 4px 4px; }

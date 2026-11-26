@@ -14,7 +14,7 @@
 import http from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
-import type { ChartReq, ChartRes, DailyRow, IndexQuote, InfoField, InvestorDay, InvestorRow, MarketBackend, NewsRow, RankReq, Res, TicksReq, TicksRes } from '../shared/market';
+import type { ChartReq, ChartRes, DailyRow, IndexQuote, InfoField, InvestorDay, InvestorRow, MarketBackend, NewsRow, NqFutures, RankReq, Res, TicksReq, TicksRes } from '../shared/market';
 import type { OrderBook, Quote, RankRow, TradeTick, WatchRow } from '../shared/kis';
 
 export const GUEST_PORT_DEFAULT = 47800;
@@ -293,6 +293,9 @@ export class RemoteMarket implements MarketBackend {
   }
   index(code: string): Promise<IndexQuote> {
     return this.call('index', code);
+  }
+  nqFutures(): Promise<NqFutures> {
+    return this.call('nqFutures');
   }
   news(code: string): Promise<NewsRow[]> {
     return this.call('news', code);

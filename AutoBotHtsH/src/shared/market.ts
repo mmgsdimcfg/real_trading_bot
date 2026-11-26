@@ -147,6 +147,8 @@ export interface MarketBackend {
   multi(codes: string[]): Promise<WatchRow[]>;
   rank(req: RankReq): Promise<RankRow[]>;
   index(code: string): Promise<IndexQuote>;
+  /** [2026-11-26] E-Mini Nasdaq 100 futures index (KIS 해외지수, delayed about 10 minutes): quote + today's 1-minute bars */
+  nqFutures(): Promise<NqFutures>;
   news(code: string): Promise<NewsRow[]>;
 }
 
@@ -162,9 +164,59 @@ export const INDEXES: { code: string; name: string }[] = [
  *  (AutoBot/nq_futures_indicator_plan_20261126.md). */
 export const NQ_PROXY = { code: '133690', name: '나스닥100 (ETF)', full: 'TIGER 미국나스닥100' } as const;
 
+/** [2026-11-26] E-Mini Nasdaq 100 futures as KIS serves it in 해외지수 (mobile app: 투자정보 > 지수/환율/금리 > 해외지수; code of
+ *  frgn_code.mst 'FENXH' -> ENXH, market N). Measured 2026-11-26: the newest 1-minute bar is about 10 minutes behind the clock. */
+export const NQ_FUTURES = { code: 'ENXH', market: 'N', name: '나스닥100 선물', full: 'E-Mini Nasdaq 100 지수선물' } as const;
+
+export interface NqFutures {
+  name: string;
+  value: number;
+  change: number;
+  changePct: number;
+  sign: string;
+  prevClose?: number;
+  /** 1-minute bars, oldest first (KST) */
+  bars: Bar[];
+  /** start of the newest bar (epoch ms), null without bars */
+  lastBarAt: number | null;
+}
+
+const fnum = (v: unknown): number => {
+  const n = Number(String(v ?? '').replace(/,/g, ''));
+  return Number.isFinite(n) ? n : 0;
+};
+
+/** 해외지수분봉조회 output1 / output2 -> NqFutures (rows: stck_bsop_date YYYYMMDD, stck_cntg_hour HHMMSS in KST, optn_* prices) */
+export function toNqFutures(o1: Record<string, string>, rows: Record<string, string>[]): NqFutures {
+  const bars: Bar[] = [];
+  for (const r of rows) {
+    const d = String(r.stck_bsop_date || '');
+    const h = String(r.stck_cntg_hour || '').padStart(6, '0');
+    const c = fnum(r.optn_prpr);
+    if (!/^\d{8}$/.test(d) || !/^\d{6}$/.test(h) || !(c > 0)) continue;
+    const t = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +h.slice(0, 2), +h.slice(2, 4), 0) - 9 * 3600_000;
+    bars.push({ t, o: fnum(r.optn_oprc) || c, h: fnum(r.optn_hgpr) || c, l: fnum(r.optn_lwpr) || c, c, v: fnum(r.cntg_vol) });
+  }
+  bars.sort((a, b) => a.t - b.t);
+  const value = fnum(o1.ovrs_nmix_prpr);
+  const sign = String(o1.prdy_vrss_sign || '3');
+  const abs = Math.abs(fnum(o1.ovrs_nmix_prdy_vrss));
+  const down = sign === '4' || sign === '5';
+  return {
+    name: String(o1.hts_kor_isnm || NQ_FUTURES.full).trim(),
+    value,
+    change: down ? -abs : abs,
+    changePct: (down ? -1 : 1) * Math.abs(fnum(o1.prdy_ctrt)),
+    sign,
+    prevClose: fnum(o1.ovrs_nmix_prdy_clpr) || undefined,
+    bars,
+    lastBarAt: bars.length ? bars[bars.length - 1].t : null,
+  };
+}
+
 /** % change of the newest bar's close against the close `minutes` earlier, from bars of ONE day (bar start times, ascending).
  *  null when the day has no bar that old yet or the newest bar is older than `maxAgeMs` at `now` (a stale value is not shown). */
-export function retOverMinutes(bars: { t: number; c: number }[], minutes: number, now: number, maxAgeMs = 5 * 60_000): number | null {
+export function retOverMinutes(bars: { t: number; c: number }[], minutes: number, now: number, maxAgeMs = 5 * 60_000, sameDay = true): number | null {
   if (!bars.length) return null;
   const last = bars[bars.length - 1];
   if (now - last.t > maxAgeMs + 60_000 || now < last.t) return null;
@@ -172,7 +224,7 @@ export function retOverMinutes(bars: { t: number; c: number }[], minutes: number
   const want = last.t - minutes * 60_000;
   let ref: { t: number; c: number } | null = null;
   for (const b of bars) {
-    if (Math.floor((b.t + 9 * 3600_000) / 86_400_000) !== day) continue;
+    if (sameDay && Math.floor((b.t + 9 * 3600_000) / 86_400_000) !== day) continue;
     if (b.t <= want) ref = b;
     else break;
   }

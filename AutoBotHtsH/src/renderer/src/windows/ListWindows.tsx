@@ -1,4 +1,7 @@
 // Update log
+// - [2026-11-26] type=feat (Index window: a 나스닥100 선물 card - the real E-Mini Nasdaq 100 futures index KIS serves in 해외지수
+//   (user 2026-11-26: the mobile app shows it), about 10 minutes delayed: value, day change, 5 / 15 / 30-minute change, 1-minute chart
+//   and the time of the newest bar. The ETF card stays as the realtime stand-in)
 // - [2026-11-26] type=feat (Index window: a 나스닥100 (ETF) card - TIGER 미국나스닥100 (133690) as the stand-in for E-mini Nasdaq 100
 //   futures, whose KIS feed needs a paid CME subscription (user 2026-11-26). Price, day change, 5 / 15 / 30-minute change, its 1-minute
 //   chart and a note that says what it is and what it is not. Display only)
@@ -59,8 +62,8 @@ import { AlarmMark, useTodayAlerts } from '../components/AlarmMark';
 import { nextWatchSort, sortWatch, WATCH_COL_LABEL, WATCH_COLS, watchSortOf, type WatchCol, type WatchSort, type WatchSortKey } from '../watchSort';
 import { PriceChart } from '../components/PriceChart';
 import type { Quote, RankRow, WatchRow } from '../../../shared/kis';
-import type { ChartRes, IndexQuote, NewsRow, RankReq, RankType } from '../../../shared/market';
-import { INDEXES, NQ_PROXY, retOverMinutes } from '../../../shared/market';
+import type { ChartRes, IndexQuote, NewsRow, NqFutures, RankReq, RankType } from '../../../shared/market';
+import { INDEXES, NQ_FUTURES, NQ_PROXY, retOverMinutes } from '../../../shared/market';
 import { fmtInt, fmtKrwBig, fmtNum, fmtPct, signOf, upDown } from '../lib';
 
 export { WATCH_COL_LABEL, WATCH_COLS, type WatchCol } from '../watchSort';
@@ -512,13 +515,38 @@ function ProxyCard({ on, onPick }: { on: boolean; onPick: () => void }) {
 }
 
 const PROXY_SEL = 'nq';
+const FUT_SEL = 'nqf';
+/** the feed is delayed: a bar up to this old still counts as current */
+const FUT_MAX_AGE_MS = 30 * 60_000;
+
+/** [2026-11-26] the real futures index (delayed) */
+function FuturesCard({ f, error, on, onPick }: { f: NqFutures | null; error: string; on: boolean; onPick: () => void }) {
+  const s = f ? Math.sign(f.change) : 0;
+  return (
+    <button className={`idx-card ${on ? 'sel' : ''}`} onClick={onPick} title={`${NQ_FUTURES.full} - KIS 해외지수 시세, 약 10분 지연`}>
+      <span>{NQ_FUTURES.name}</span>
+      <b className={upDown(s)}>{f ? fmtNum(f.value) : '-'}</b>
+      <small className={upDown(s)}>{f ? `${fmtNum(f.change)} ${fmtPct(f.changePct)}` : error || '…'}</small>
+      <small className="muted">약 10분 지연</small>
+    </button>
+  );
+}
 
 export function IndexWindow({ win }: { win: Win }) {
   const setOpts = useStore((s) => s.setOpts);
   const sel = (win.opts.index as string) || '0001';
   const proxy = sel === PROXY_SEL;
-  const c = useCall<ChartRes>('chart', [proxy ? { code: NQ_PROXY.code, kind: 'min', n: 1, days: 1 } : { code: sel, kind: 'day', n: 1, index: true }], 60000);
-  const rets = proxy && c.data?.bars.length ? ([5, 15, 30] as const).map((m) => [m, retOverMinutes(c.data!.bars, m, Date.now())] as const) : null;
+  const fut = sel === FUT_SEL;
+  const nq = useCall<NqFutures>('nqFutures', [], 60000);
+  const cc = useCall<ChartRes>('chart', [proxy ? { code: NQ_PROXY.code, kind: 'min', n: 1, days: 1 } : { code: fut ? '0001' : sel, kind: 'day', n: 1, index: true }], 60000);
+  const c = fut ? { data: nq.data ? { bars: nq.data.bars } : null, error: nq.error } : cc;
+  const now = Date.now();
+  const rets =
+    (proxy || fut) && c.data?.bars.length
+      ? ([5, 15, 30] as const).map((m) => [m, fut ? retOverMinutes(c.data!.bars, m, now, FUT_MAX_AGE_MS, false) : retOverMinutes(c.data!.bars, m, now)] as const)
+      : null;
+  const futAt = nq.data?.lastBarAt ?? null;
+  const futLag = futAt === null ? null : Math.max(0, Math.round((now - futAt - 60_000) / 60_000));
   const box = useRef<HTMLDivElement>(null);
   const [ch, setCh] = useState(220);
   useEffect(() => {
@@ -534,8 +562,33 @@ export function IndexWindow({ win }: { win: Win }) {
         {INDEXES.map((i) => (
           <IndexCard key={i.code} code={i.code} on={sel === i.code} onPick={() => setOpts(win.id, { index: i.code })} />
         ))}
+        <FuturesCard f={nq.data} error={nq.error} on={fut} onPick={() => setOpts(win.id, { index: FUT_SEL })} />
         <ProxyCard on={proxy} onPick={() => setOpts(win.id, { index: PROXY_SEL })} />
       </div>
+      {fut && (
+        <div className="idx-note">
+          <p>
+            {rets ? (
+              rets.map(([m, v]) => (
+                <span key={m}>
+                  {m}분 <b className={v === null ? 'muted' : upDown(Math.sign(v))}>{v === null ? '-' : fmtPct(v)}</b>
+                </span>
+              ))
+            ) : (
+              <span className="muted">{nq.error || '분봉 불러오는 중…'}</span>
+            )}
+            {futAt !== null && (
+              <span className={futLag !== null && futLag > 30 ? 'warn-text' : 'muted'}>
+                최근 봉 {new Date(futAt + 9 * 3600_000).toISOString().slice(11, 16)} · {futLag}분 전
+              </span>
+            )}
+          </p>
+          <p className="muted small">
+            {NQ_FUTURES.full} (KIS 해외지수 시세). 실시간이 아니라 약 10분 늦게 들어오므로 등락률도 그만큼 지난 값입니다. 지금 움직임은 옆의 나스닥100 (ETF) 카드를 보세요(정규장만).
+            참고용이며 봇의 매매 판단과 반등 알림에는 쓰지 않습니다.
+          </p>
+        </div>
+      )}
       {proxy && (
         <div className="idx-note">
           <p>
@@ -550,14 +603,14 @@ export function IndexWindow({ win }: { win: Win }) {
             )}
           </p>
           <p className="muted small">
-            {NQ_PROXY.full}({NQ_PROXY.code}) ETF 시세입니다. E-mini 나스닥100 선물 시세는 KIS 의 CME 유료 시세 신청이 있어야 받을 수 있어, 정규장에 선물과 함께 움직이는 이 ETF 를 대신
+            {NQ_PROXY.full}({NQ_PROXY.code}) ETF 시세입니다. 실제 선물 시세(나스닥100 선물 카드)는 약 10분 늦게 들어오므로, 정규장에 선물과 함께 움직이는 이 ETF 를 실시간 대용으로
             보여 줍니다(환율 영향 포함). 09:00 전과 15:30 뒤에는 갱신되지 않습니다. 참고용이며 봇의 매매 판단과 반등 알림에는 쓰지 않습니다.
           </p>
         </div>
       )}
       <div className="idx-chart" ref={box}>
         {c.data?.bars.length ? (
-          <PriceChart bars={c.data.bars} kind={proxy ? 'min' : 'day'} n={1} indicators={['ma']} trades={[]} date="" mode="index" axis="right" left={4} right={64} height={ch} interactive tooltip={false} />
+          <PriceChart bars={c.data.bars} kind={proxy || fut ? 'min' : 'day'} n={1} indicators={['ma']} trades={[]} date="" mode="index" axis="right" left={4} right={64} height={ch} interactive tooltip={false} />
         ) : (
           <div className="empty small">{c.error || '지수 차트 불러오는 중…'}</div>
         )}

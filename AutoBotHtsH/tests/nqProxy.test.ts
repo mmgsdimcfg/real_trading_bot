@@ -25,3 +25,37 @@ describe('retOverMinutes (index window Nasdaq-100 ETF card)', () => {
     expect(retOverMinutes(gap, 5, now)).toBeNull();
   });
 });
+
+import { toNqFutures } from '../src/shared/market';
+import { assertInquiry, restEndpoint } from '../src/shared/kis';
+
+describe('E-Mini Nasdaq 100 futures index (KIS 해외지수분봉조회)', () => {
+  const o1 = { ovrs_nmix_prdy_vrss: '274.50', prdy_vrss_sign: '2', prdy_ctrt: '1.05', ovrs_nmix_prdy_clpr: '26100.25', ovrs_nmix_prpr: '26374.75', hts_kor_isnm: 'E-Mini Nasdaq 100 지수선물' };
+  const rows: Record<string, string>[] = [
+    { stck_bsop_date: '20261126', stck_cntg_hour: '131300', optn_prpr: '26374.75', optn_oprc: '26372.50', optn_hgpr: '26377.75', optn_lwpr: '26372.25', cntg_vol: '19' },
+    { stck_bsop_date: '20261126', stck_cntg_hour: '131200', optn_prpr: '26370.00', optn_oprc: '26369.00', optn_hgpr: '26373.00', optn_lwpr: '26368.00', cntg_vol: '7' },
+    { stck_bsop_date: '', stck_cntg_hour: '131100', optn_prpr: '1' },
+    { stck_bsop_date: '20261126', stck_cntg_hour: '131000', optn_prpr: '0' },
+  ];
+  it('parses the quote and the bars (oldest first, KST)', () => {
+    const f = toNqFutures(o1, rows);
+    expect(f.value).toBe(26374.75);
+    expect(f.change).toBe(274.5);
+    expect(f.changePct).toBe(1.05);
+    expect(f.bars.map((b) => b.c)).toEqual([26370, 26374.75]);
+    expect(f.lastBarAt).toBe(Date.UTC(2026, 10, 26, 4, 13)); // 13:13 KST
+  });
+  it('a falling sign makes the change negative, empty rows give no bars', () => {
+    const f = toNqFutures({ ...o1, prdy_vrss_sign: '5', ovrs_nmix_prdy_vrss: '120.00', prdy_ctrt: '0.46' }, []);
+    expect(f.change).toBe(-120);
+    expect(f.changePct).toBe(-0.46);
+    expect(f.lastBarAt).toBeNull();
+  });
+  it('is the only path outside domestic-stock the allowlist accepts', () => {
+    expect(restEndpoint('inquire_time_indexchartprice').trId).toBe('FHKST03030200');
+    expect(() => assertInquiry('/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice', 'FHKST03030200')).not.toThrow();
+    expect(() => assertInquiry('/uapi/overseas-price/v1/quotations/price', 'HHDFS00000300')).toThrow();
+    expect(() => assertInquiry('/uapi/overseas-stock/v1/trading/order', 'TTTT1002U')).toThrow();
+    expect(() => assertInquiry('/uapi/overseas-futureoption/v1/trading/order', 'OTFM3001U')).toThrow();
+  });
+});

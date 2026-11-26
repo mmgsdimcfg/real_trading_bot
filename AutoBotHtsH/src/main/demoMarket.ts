@@ -8,7 +8,7 @@
 import type { Bar } from '../shared/price';
 import { resampleMinuteBars, weekBars, monthBars, yearBars } from '../shared/price';
 import type { OrderBook, Quote, RankRow, TradeTick, WatchRow, MasterItem } from '../shared/kis';
-import type { ChartReq, ChartRes, TicksReq, TicksRes, DailyRow, IndexQuote, InfoField, InvestorDay, InvestorRow, MarketBackend, NewsRow, RankReq } from '../shared/market';
+import type { ChartReq, ChartRes, TicksReq, TicksRes, DailyRow, IndexQuote, InfoField, InvestorDay, InvestorRow, MarketBackend, NewsRow, NqFutures, RankReq } from '../shared/market';
 import { INDEXES } from '../shared/market';
 
 export const DEMO_MASTER: MasterItem[] = [
@@ -286,6 +286,19 @@ export class DemoMarket implements MarketBackend {
     const v = d[d.length - 1].c * ratio;
     const p = d[d.length - 2].c * ratio;
     return { code, name: INDEXES.find((i) => i.code === code)?.name || code, value: v, change: v - p, changePct: ((v - p) / p) * 100, sign: v >= p ? '2' : '5', up: 512, upLimit: 3, flat: 88, down: 401, downLimit: 0 };
+  }
+
+  /** [2026-11-26] a synthetic futures series: 100 one-minute bars ending 10 minutes ago (the real feed's delay) */
+  async nqFutures(): Promise<NqFutures> {
+    const end = Math.floor(Date.now() / 60_000) * 60_000 - 10 * 60_000;
+    const prev = 26100.25;
+    const bars = Array.from({ length: 100 }, (_, i) => {
+      const t = end - (99 - i) * 60_000;
+      const c = Math.round((26300 + 60 * Math.sin(i / 9) + i * 0.6) * 4) / 4;
+      return { t, o: c - 1, h: c + 2, l: c - 3, c, v: 20 + (i % 7) * 5 };
+    });
+    const value = bars[bars.length - 1].c;
+    return { name: 'E-Mini Nasdaq 100 지수선물', value, change: value - prev, changePct: (value / prev - 1) * 100, sign: value >= prev ? '2' : '5', prevClose: prev, bars, lastBarAt: end };
   }
 
   async news(code: string): Promise<NewsRow[]> {

@@ -39,7 +39,8 @@ describe('inquiry-only allowlist', () => {
   it('every REST API HtsH uses is a GET quotation/ranking TR from the official spec', () => {
     for (const api of REST_APIS) {
       const ep = restEndpoint(api);
-      expect(ep.path).toMatch(/^\/uapi\/domestic-stock\/v1\/(quotations|ranking)\//);
+      // [2026-11-26] + the one overseas index inquiry (E-Mini Nasdaq 100 futures index of the index window)
+      expect(ep.path).toMatch(/^\/uapi\/(domestic-stock\/v1\/(quotations|ranking)\/|overseas-price\/v1\/quotations\/inquire-time-indexchartprice$)/);
       expect(ep.trId).toMatch(/^(FH|CT)/);
     }
   });

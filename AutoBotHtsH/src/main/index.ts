@@ -155,7 +155,7 @@ async function login(req: { env: KisEnv; appKey?: string; appSecret?: string; re
 }
 
 /** market methods the renderer may call - every one of them is an inquiry */
-const METHODS = ['quote', 'orderbook', 'trades', 'ticks', 'chart', 'daily', 'investor', 'investorDaily', 'info', 'multi', 'rank', 'index', 'news'] as const;
+const METHODS = ['quote', 'orderbook', 'trades', 'ticks', 'chart', 'daily', 'investor', 'investorDaily', 'info', 'multi', 'rank', 'index', 'news', 'nqFutures'] as const;
 type Method = (typeof METHODS)[number];
 
 ipcMain.handle('auth:state', () => authState());

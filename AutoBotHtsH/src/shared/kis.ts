@@ -47,6 +47,8 @@ export const REST_APIS = [
   'inquire_daily_indexchartprice',
   'news_title',
   'chk_holiday',
+  // [2026-11-26] overseas index minute chart (해외지수분봉조회) - the E-Mini Nasdaq 100 futures index of the index window
+  'inquire_time_indexchartprice',
 ] as const;
 export type RestApi = (typeof REST_APIS)[number];
 
@@ -67,6 +69,12 @@ export type WsTr = (typeof WS_TRS)[number];
 /** tr_id prefixes of orders, balances and account services - never sent, whatever the allowlist says */
 const FORBIDDEN_TR = /^(TTTC|VTTC|TTTS|VTTS|TTTK|VTTK|CTSC|CTRP|CTRGA|TTTO|VTTO|CTOS|JTCE|H0STCNI|H0IFCNI)/;
 const ALLOWED_PATH = /^\/uapi\/domestic-stock\/v1\/(quotations|ranking)\/[a-z0-9-]+$/;
+/** [2026-11-26] the one inquiry outside domestic-stock (open-trading-api examples_llm/overseas_stock/inquire_time_indexchartprice):
+ *  its exact path and TR, not a pattern */
+const EXTRA_SPEC: Record<string, { url: string; trIds: string[] }> = {
+  inquire_time_indexchartprice: { url: '/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice', trIds: ['FHKST03030200'] },
+};
+const EXTRA_PATHS = new Set(Object.values(EXTRA_SPEC).map((s) => s.url));
 
 export interface RestEndpoint {
   api: RestApi;
@@ -76,7 +84,7 @@ export interface RestEndpoint {
 
 export function restEndpoint(api: string): RestEndpoint {
   if (!(REST_APIS as readonly string[]).includes(api)) throw new Error(`조회 전용: 허용되지 않은 API ${api}`);
-  const spec = KIS_SPEC[api];
+  const spec = KIS_SPEC[api] ?? EXTRA_SPEC[api];
   if (!spec || !spec.url || !spec.trIds.length) throw new Error(`KIS 명세에 없는 API: ${api}`);
   const ep = { api: api as RestApi, path: spec.url, trId: spec.trIds[0] };
   assertInquiry(ep.path, ep.trId);
@@ -86,7 +94,7 @@ export function restEndpoint(api: string): RestEndpoint {
 /** second line of defence: path and tr_id must look like a market-data inquiry */
 export function assertInquiry(path: string, trId: string): void {
   if (FORBIDDEN_TR.test(trId)) throw new Error(`조회 전용: 주문/계좌 TR(${trId})은 사용할 수 없습니다`);
-  if (!ALLOWED_PATH.test(path)) throw new Error(`조회 전용: 시세 조회 경로가 아닙니다 (${path})`);
+  if (!ALLOWED_PATH.test(path) && !EXTRA_PATHS.has(path)) throw new Error(`조회 전용: 시세 조회 경로가 아닙니다 (${path})`);
 }
 
 export function assertWsTr(trId: string): asserts trId is WsTr {

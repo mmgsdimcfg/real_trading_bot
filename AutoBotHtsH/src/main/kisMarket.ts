@@ -62,7 +62,8 @@ import {
   type WatchRow,
 } from '../shared/kis';
 import { resampleMinuteBars, weekBars, monthBars, yearBars, type Bar } from '../shared/price';
-import type { ChartReq, ChartRes, TicksReq, TicksRes, DailyRow, IndexQuote, InfoField, InvestorDay, InvestorRow, MarketBackend, NewsRow, RankReq } from '../shared/market';
+import type { ChartReq, ChartRes, TicksReq, TicksRes, DailyRow, IndexQuote, InfoField, InvestorDay, InvestorRow, MarketBackend, NewsRow, NqFutures, RankReq } from '../shared/market';
+import { NQ_FUTURES, toNqFutures } from '../shared/market';
 import { INDEXES } from '../shared/market';
 
 const KST = 9 * 3600000;
@@ -776,6 +777,17 @@ export class KisMarket implements MarketBackend {
       down: num(o.down_issu_cnt),
       downLimit: num(o.lslm_issu_cnt),
     };
+  }
+
+  /** [2026-11-26] E-Mini Nasdaq 100 futures index, delayed (해외지수분봉조회). One call: the quote and the newest ~100 one-minute bars */
+  async nqFutures(): Promise<NqFutures> {
+    const r = await this.client.get('inquire_time_indexchartprice', {
+      FID_COND_MRKT_DIV_CODE: NQ_FUTURES.market,
+      FID_INPUT_ISCD: NQ_FUTURES.code,
+      FID_HOUR_CLS_CODE: '0',
+      FID_PW_DATA_INCU_YN: 'Y',
+    });
+    return toNqFutures(objOf(r.output1), rowsOf(r.output2));
   }
 
   async news(code: string): Promise<NewsRow[]> {
