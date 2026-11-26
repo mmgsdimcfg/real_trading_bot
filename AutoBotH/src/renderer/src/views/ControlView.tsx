@@ -444,6 +444,9 @@ export function ControlView() {
   const isLocal = useStore((s) => s.status.mode === 'local');
   const historyRev = useStore((s) => s.historyRev);
   const bumpHistory = useStore((s) => s.bumpHistory);
+  // [2026-11-27] rule-trade card "세부 설정": the pipeline tab holds the buy / sell conditions and their values
+  const setTab = useStore((s) => s.setTab);
+  const condDoc = useStore((s) => s.conditions);
   const st = control.status;
   const [mode, setMode] = useState<{ dryRun: boolean; profile: RiskProfile } | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>(() => peek<HistoryRow[]>('control:history') || []);
@@ -858,7 +861,7 @@ export function ControlView() {
           </ProfileInfo>
         </div>
         <div className="card-row">
-          {edgeModel !== undefined && <EdgeModelLine m={edgeModel} tradeMode={tradeMode} />}
+          {edgeModel !== undefined && <EdgeModelLine m={edgeModel} tradeMode={tradeMode} filterOn={!condDoc || condDoc.buy.some((c) => c.func === '_020_edge_ai_meta_filter')} />}
           {nPending > 0 && st?.running && (
             <span className="badge-warn" title="서비스 시작 이후 바뀐 파일이 있습니다">
               ⚠ 미적용 변경 {nPending}건 → 재시작 필요
@@ -970,6 +973,14 @@ export function ControlView() {
                     <RuleExitEdit st={control.ruleExit} disabled={busy || !connected || modeBusy} />
                   </div>
                 )}
+                {/* [2026-11-27] like the rebound card's "세부 설정": opens the pipeline (buy / sell conditions, thresholds, on / off per condition) */}
+                <div className="chips">
+                  {condDoc?.buy?.length ? <span className="chip">매수 조건 {condDoc.buy.length}개</span> : null}
+                  {condDoc?.sell?.length ? <span className="chip">매도 조건 {condDoc.sell.length}개</span> : null}
+                  <button type="button" className="chip link" title="파이프라인 열기 (매수 / 매도 조건 · 기준값 · 조건별 켜기 / 끄기). 노드를 누르면 설정값을 바꿀 수 있습니다" onClick={() => setTab('pipeline')}>
+                    세부 설정 →
+                  </button>
+                </div>
               </div>
             )}
             {normalMode && (
@@ -1295,12 +1306,15 @@ export function ControlView() {
 const pct1 = (v: number) => `${(v * 100).toFixed(1)}%`;
 
 /** [2026-11-12] one line: which Edge AI model the bot uses now, what it was trained on and how it did out of sample */
-function EdgeModelLine({ m, tradeMode }: { m: EdgeModelInfo | null; tradeMode: TradeMode }) {
+function EdgeModelLine({ m, tradeMode, filterOn = true }: { m: EdgeModelInfo | null; tradeMode: TradeMode; filterOn?: boolean }) {
   if (!m) return <span className="muted small">Edge AI 모델: 배포된 모델 없음 (runtime/edge_ai/current_meta.json)</span>;
   const use =
     m.role === 'trade'
       ? tradeMode === 'edge' ? '매수 신호로 사용 중' : tradeMode === 'rules+paper' ? '가상 매매에 사용 중' : 'Edge AI 매매용 (지금은 사용 안 함)'
-      : tradeMode === 'edge' ? '매수 신호로 사용 중' : tradeMode === 'rules+paper' ? '매수 필터(_020) + 가상 매매에 사용 중' : '매수 필터(_020)에 사용 중';
+      : tradeMode === 'edge' ? '매수 신호로 사용 중'
+      // [2026-11-27] filterOn = the server's buy list still has the Edge AI filter (_020); it was left out of the check on 2026-11-27
+      : filterOn ? (tradeMode === 'rules+paper' ? '매수 필터(_020) + 가상 매매에 사용 중' : '매수 필터(_020)에 사용 중')
+      : tradeMode === 'rules+paper' ? '가상 매매에 사용 중 (규칙 매매 필터 _020 은 제외됨)' : '사용 안 함 (규칙 매매 필터 _020 은 제외됨)';
   const detail = [
     `모델 ${m.modelId} (생성 ${m.created.replace('T', ' ')})`,
     `학습 대상: ${edgeLabelKo(m)}${m.horizon && m.target === 'y_tp' ? ` · 당일 장 마감까지 관찰` : ''}`,
