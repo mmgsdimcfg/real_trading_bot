@@ -5,6 +5,9 @@
 //   / 매수가능수량 (buy) or 보유 / 매도가능수량 / 평균단가 (sell). Below: the open orders with 정정 (new price for the rest) and 취소.
 //   The main process asks for a confirmation of every order in a native dialog; nothing is sent from here without it. No account
 //   saved / guest mode / logged out: the form says why and sends nothing)
+// - [2026-11-26] type=feat (잔고 tab beside 미체결 (user 2026-11-26): every holding - 보유 / 매도가능 / 평균단가 / 현재가 / 평가금액 /
+//   평가손익 / 수익률 - with the account's 총평가 and summed 평가손익; a row click shows that symbol, 매도 prepares a sell at the current
+//   price (nothing is sent before the order button and its confirmation). The tab shown is kept in win.opts.tab)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, type Win } from '../store';
@@ -27,6 +30,10 @@ export function OrderWindow({ win }: { win: Win }) {
   const env = useStore((s) => s.auth?.env);
   const rtOn = useStore((s) => s.auth?.rt.status === 'on');
   const setOpts = useStore((s) => s.setOpts);
+  const setCode = useStore((s) => s.setCode);
+  const openOrder = useStore((s) => s.openOrder);
+  const tab: 'open' | 'hold' = win.opts.tab === 'hold' ? 'hold' : 'open';
+  const setTab = (t: 'open' | 'hold') => setOpts(win.id, { tab: t });
   useRealtime(code, { trades: true, book: true });
   const rq = useStore((s) => s.rt.quotes[code]);
   const rbook = useStore((s) => s.rt.books[code]);
@@ -115,6 +122,8 @@ export function OrderWindow({ win }: { win: Win }) {
   }, [ready, side, type, priceNum, loadBuyable]);
 
   const holding = useMemo(() => bal?.holdings.find((h) => h.code === code) || null, [bal, code]);
+  const pnlSum = useMemo(() => (bal?.holdings || []).reduce((s, h) => s + h.pnl, 0), [bal]);
+  const costSum = useMemo(() => (bal?.holdings || []).reduce((s, h) => s + h.avgPrice * h.qty, 0), [bal]);
   const maxQty = edit ? edit.remain : side === 'buy' ? buyable?.qty ?? 0 : holding?.sellable ?? 0;
   const unit = type === 'market' ? live?.price || 0 : priceNum;
   const amount = unit * qtyNum;
@@ -350,7 +359,23 @@ export function OrderWindow({ win }: { win: Win }) {
         </div>
       </div>
       <div className="q-tabs">
-        <b>미체결 {open.length}건</b>
+        {/* [2026-11-26] 잔고 tab beside the open orders (user 2026-11-26) */}
+        <span className="seg">
+          <button className={tab === 'open' ? 'on' : ''} onClick={() => setTab('open')}>
+            미체결 {open.length}
+          </button>
+          <button className={tab === 'hold' ? 'on' : ''} onClick={() => setTab('hold')}>
+            잔고 {bal ? bal.holdings.length : 0}
+          </button>
+        </span>
+        {tab === 'hold' && bal && (
+          <span className="ord-sum">
+            <span className="muted">총평가</span> <b>{fmtInt(bal.total)}원</b> <span className="muted">평가손익</span>{' '}
+            <b className={upDown(Math.sign(pnlSum))}>
+              {fmtInt(pnlSum)}원{costSum > 0 ? ` (${fmtPct((pnlSum / costSum) * 100)})` : ''}
+            </b>
+          </span>
+        )}
         <span>
           {loadErr && <span className="down small">{loadErr} </span>}
           <button className="mini" disabled={!ready} onClick={() => void loadAccount()}>
@@ -359,7 +384,57 @@ export function OrderWindow({ win }: { win: Win }) {
         </span>
       </div>
       <div className="q-tab-body">
-        <table className="grid">
+        {tab === 'hold' && (
+          <table className="grid">
+            <thead>
+              <tr>
+                <th>종목</th>
+                <th className="num">보유</th>
+                <th className="num">매도가능</th>
+                <th className="num">평균단가</th>
+                <th className="num">현재가</th>
+                <th className="num">평가금액</th>
+                <th className="num">평가손익</th>
+                <th className="num">수익률</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {(bal?.holdings || []).map((h) => (
+                <tr key={h.code} className={h.code === code ? 'sel' : ''} onClick={() => setCode(win.id, h.code)} title="누르면 이 종목으로 바꿉니다">
+                  <td>
+                    {h.name || h.code} <span className="mono muted">{h.code}</span>
+                  </td>
+                  <td className="num">{fmtInt(h.qty)}</td>
+                  <td className="num">{fmtInt(h.sellable)}</td>
+                  <td className="num">{fmtInt(h.avgPrice)}</td>
+                  <td className={`num ${upDown(Math.sign(h.price - h.avgPrice))}`}>{fmtInt(h.price)}</td>
+                  <td className="num">{fmtInt(h.price * h.qty)}</td>
+                  <td className={`num ${upDown(Math.sign(h.pnl))}`}>{fmtInt(h.pnl)}</td>
+                  <td className={`num ${upDown(Math.sign(h.pnl))}`}>{fmtPct(h.pnlPct)}</td>
+                  <td className="ord-act">
+                    <button
+                      className="mini"
+                      disabled={!(h.sellable > 0)}
+                      title="이 종목의 매도 주문을 현재가로 준비합니다 (전송은 주문 버튼과 확인 창을 거칩니다)"
+                      onClick={(e) => (e.stopPropagation(), openOrder(h.code, 'sell', h.price))}
+                    >
+                      매도
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!(bal?.holdings.length) && (
+                <tr>
+                  <td colSpan={9} className="center muted">
+                    {ready ? (bal ? '보유 종목이 없습니다' : '잔고 불러오는 중…') : st?.reason || ''}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+        <table className="grid" hidden={tab !== 'open'}>
           <thead>
             <tr>
               <th>시각</th>

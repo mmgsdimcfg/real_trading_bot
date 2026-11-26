@@ -691,3 +691,6 @@ button.ord-go:disabled { opacity: 0.45; }
 .ord-act { white-space: nowrap; text-align: right; }
 .ord-act button + button { margin-left: 3px; }
 .ord-win tr.sel td { background: var(--surface-3); }
+.ord-sum { margin-right: auto; margin-left: 10px; white-space: nowrap; }
+.ord-sum b { font-variant-numeric: tabular-nums; margin-right: 8px; }
+.ord-win .q-tab-body tbody tr[title] { cursor: pointer; }
