@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-27] type=feat - v2.3.45_002: Edge AI 매매 전용 모델(runtime/edge_ai/trade) 표시 - 제어 탭 모델 줄이 매매 모델을 보여 주고, 기대 순손익이 +인 기준이 없으면 '매수 기준 없음 (매수 안 함)' 표시(가상 매매 탭 확률 기준도 같은 문구). 규칙 매매 필터(_020)는 예전 모델 그대로. 작업 탭에 'Edge AI 매매 모델 데이터셋 / 학습' 단계 라벨",
     "[2026-11-27] type=feat - v2.3.45_001: Edge AI 실제 매매는 승격된 모델에서만 - 모델이 미승격이면 제어 탭 '실제 매매' 카드에 '모델 미승격' 표시, 켜려 하면 안내 후 중단(서버 r001 EDGE_LIVE_REQUIRE_PROMOTED: r016 이 켜기를 거부, r003 이 신호마다 EDGE_SIGNAL_MODEL_NOT_PROMOTED 로 거부). 장 마감 파이프라인에 'VWAP 재돌파 기록(g055)' 단계 추가(급락 후 VWAP 재돌파·30분 유지 전진 기록, 주문 없음)",
     "[2026-11-26] type=fix - v2.3.44_005: 가상 매매 탭의 '신규 가상 매수 꺼짐' 표시가 봇 재시작 중 이전 실행의 오래된 상태 파일 값으로 남던 문제 수정(오래된 상태면 표시하지 않음)",
     "[2026-11-26] type=feat - v2.3.44_004: 제어 탭 매매 방식 카드가 카드 폭에 맞춰 배치 - 입력칸 라벨 한 줄 고정, Edge AI 실제 주문 한도 4칸(좁으면 2x2)과 적용 버튼 위치 조정, 좁은 카드에서 청산 방식 적용 버튼과 실행 대상 카드를 아래로, 1회 금액 / 하루 손실 한도 천 단위 쉼표",
@@ -191,7 +192,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "001",
+    "buildNumber": "002",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

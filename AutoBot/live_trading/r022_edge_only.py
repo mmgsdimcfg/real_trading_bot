@@ -411,7 +411,8 @@ class EdgeOnlyRunner:
                  collector_max_positions: int = 0, collector_max_entries: int = 0,
                  exclude_funds: bool = True, no_reentry_after_sl: bool = True, log_only: bool = False, nxt: bool = False,
                  tp_pct: float = 0.0, sl_pct: float = 0.0, horizon_min: float = 0.0, close_only: bool = False):
-        self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir))
+        # [2026-11-27] the trade model (edge_ai/trade, g014 --role trade) when there is one, else the filter model as before
+        self.model = model if model is not None else r011.EdgeAIModel(Path(model_dir), prefer_subdir=r011.TRADE_MODEL_SUBDIR)
         self.data_root = Path(data_root)
         self.out_path = Path(out_dir) / f"edge_only_{date_str}.jsonl"
         self.date_str = date_str

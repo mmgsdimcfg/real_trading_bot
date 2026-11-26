@@ -60,7 +60,7 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
+import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, edgeCutText, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
 import { useStore } from '../store';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
@@ -1297,12 +1297,17 @@ const pct1 = (v: number) => `${(v * 100).toFixed(1)}%`;
 /** [2026-11-12] one line: which Edge AI model the bot uses now, what it was trained on and how it did out of sample */
 function EdgeModelLine({ m, tradeMode }: { m: EdgeModelInfo | null; tradeMode: TradeMode }) {
   if (!m) return <span className="muted small">Edge AI 모델: 배포된 모델 없음 (runtime/edge_ai/current_meta.json)</span>;
-  const use = tradeMode === 'edge' ? '매수 신호로 사용 중' : tradeMode === 'rules+paper' ? '매수 필터(_020) + 가상 매매에 사용 중' : '매수 필터(_020)에 사용 중';
+  const use =
+    m.role === 'trade'
+      ? tradeMode === 'edge' ? '매수 신호로 사용 중' : tradeMode === 'rules+paper' ? '가상 매매에 사용 중' : 'Edge AI 매매용 (지금은 사용 안 함)'
+      : tradeMode === 'edge' ? '매수 신호로 사용 중' : tradeMode === 'rules+paper' ? '매수 필터(_020) + 가상 매매에 사용 중' : '매수 필터(_020)에 사용 중';
   const detail = [
     `모델 ${m.modelId} (생성 ${m.created.replace('T', ' ')})`,
     `학습 대상: ${edgeLabelKo(m)}${m.horizon && m.target === 'y_tp' ? ` · 당일 장 마감까지 관찰` : ''}`,
     `데이터셋 ${m.dataset || '-'} · ${m.nDays ?? '?'}일 · 최종 학습 구간 ${m.trainRange || '-'}`,
-    `확률 기준 ${m.threshold === null ? '-' : m.threshold.toFixed(3)} · 검증 AUC ${m.aucOos === null ? '-' : m.aucOos.toFixed(3)}`,
+    `매수 기준 ${edgeCutText(m.threshold, m.noTrade)} · 검증 AUC ${m.aucOos === null ? '-' : m.aucOos.toFixed(3)}`,
+    m.noTrade ? '매수 기준 없음: 검증 구간에서 기대 순손익이 0보다 큰 기준이 없어 Edge AI 매매(가상/실제)는 매수하지 않습니다. 매일 재학습 때 다시 판단합니다.' : '',
+    m.role === 'trade' ? 'Edge AI 매매 전용 모델입니다 (runtime/edge_ai/trade). 규칙 매매의 매수 필터(_020)는 예전 모델(runtime/edge_ai/current_meta.json)을 그대로 씁니다.' : '',
     m.kept && m.base ? `검증 구간 순손익: 통과 ${m.kept.n.toLocaleString()}건 ${m.kept.meanNet.toFixed(3)}% / 전체 ${m.base.n.toLocaleString()}건 ${m.base.meanNet.toFixed(3)}%` : '',
     m.runKept && m.runBase
       ? `손절 전 도달률(통과 / 전체): +2% ${pct1(m.runKept.tp2)} / ${pct1(m.runBase.tp2)} · +3% ${pct1(m.runKept.tp3)} / ${pct1(m.runBase.tp3)} · +5% ${pct1(m.runKept.tp5)} / ${pct1(m.runBase.tp5)} · 손절 ${pct1(m.runKept.stopped)} / ${pct1(m.runBase.stopped)}`
@@ -1314,7 +1319,7 @@ function EdgeModelLine({ m, tradeMode }: { m: EdgeModelInfo | null; tradeMode: T
     .join('\n');
   return (
     <span className="muted small edge-model" title={detail}>
-      Edge AI 모델 <b className="mono">{m.modelId}</b> · {edgeLabelKo(m)} · 기준 {m.threshold === null ? '-' : m.threshold.toFixed(3)}
+      Edge AI 모델 <b className="mono">{m.modelId}</b> · {edgeLabelKo(m)} · 매수 기준 {edgeCutText(m.threshold, m.noTrade)}
       {m.runKept ? ` · +2% 도달 ${pct1(m.runKept.tp2)}` : ''} · <span className={m.promoted ? '' : 'warn-text'}>{m.promoted ? '승격됨' : '승격 안 됨'}</span> · {use}
     </span>
   );

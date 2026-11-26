@@ -31,6 +31,11 @@ rc_train=0
   nice -n 10 "$PY" "$HERE/g013_edge_ai_dataset.py" --workers "${EDGE_AI_WORKERS:-2}" --live || rc_dataset=$?
   echo "=== $(date '+%F %T') g014 train (g013 rc=$rc_dataset) ==="
   nice -n 10 "$PY" "$HERE/g014_edge_ai_train.py" --threads "${EDGE_AI_WORKERS:-2}" || rc_train=$?
+  # [2026-11-27] the Edge AI trade model (edge_ai/trade): live-exit label, net-return target, no trade without a positive cut
+  echo "=== $(date '+%F %T') g013 trade dataset ==="
+  nice -n 10 "$PY" "$HERE/g013_edge_ai_dataset.py" --workers "${EDGE_AI_WORKERS:-2}" --live-label || true
+  echo "=== $(date '+%F %T') g014 trade train ==="
+  nice -n 10 "$PY" "$HERE/g014_edge_ai_train.py" --threads "${EDGE_AI_WORKERS:-2}" --role trade || true
   echo "=== $(date '+%F %T') done (g014 rc=$rc_train) ==="
 } >>"$LOG" 2>&1
 "$PY" "$HERE/g024_ops_check.py" --edge-ai --rc-dataset "$rc_dataset" --rc-train "$rc_train" --log "$LOG" >>"$LOG" 2>&1 || true

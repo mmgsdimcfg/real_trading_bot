@@ -268,13 +268,18 @@ export class PriceService {
     return job;
   }
 
-  /** [2026-11-12] text of the Edge AI model meta the bot loads (runtime/edge_ai/current_meta.json); null = no model published */
+  /** [2026-11-12] text of the Edge AI model meta the bot loads; null = no model published.
+   *  [2026-11-27] the Edge AI trade model (runtime/edge_ai/trade/current_meta.json, g014 --role trade) when it exists - that is what
+   *  the paper / live Edge AI trades read (r011 TRADE_MODEL_SUBDIR) - else runtime/edge_ai/current_meta.json as before */
   edgeMeta(): Promise<string | null> {
     const job = this.tail.then(async () => {
-      const path = `${this.root()}/runtime/edge_ai/current_meta.json`;
-      const st = await this.host.stat(path);
-      if (!st || !st.size || st.size > 2_000_000) return null;
-      return (await this.host.readRange(path, 0, st.size)).toString('utf8');
+      for (const rel of ['trade/current_meta.json', 'current_meta.json']) {
+        const path = `${this.root()}/runtime/edge_ai/${rel}`;
+        const st = await this.host.stat(path).catch(() => null);
+        if (!st || !st.size || st.size > 2_000_000) continue;
+        return (await this.host.readRange(path, 0, st.size)).toString('utf8');
+      }
+      return null;
     });
     this.tail = job.catch(() => undefined);
     return job;

@@ -179,6 +179,13 @@ describe('Edge AI model meta (current_meta.json)', () => {
     const m = parseEdgeMeta(JSON.stringify({ model_id: '20261111_222939', threshold: 0.52, promoted: true, label: { tp: 2, sl: 1.7, horizon: 60 }, promotion: {} }))!;
     expect([m.target, m.promoted, m.runKept, m.kept, m.aucOos]).toEqual(['y', true, null, null, null]);
     expect(edgeLabelKo(m)).toBe('+2% / -1.7% / 60분 순손익 > 0');
+    expect([m.noTrade, m.role]).toEqual([false, 'gate']);
+    // [2026-11-27] the trade model: no cut with a positive expectancy = threshold 1 + no_trade
+    const { edgeCutText } = await import('../src/shared/paper');
+    const n = parseEdgeMeta(JSON.stringify({ model_id: 'x', threshold: 1.0, no_trade: true, role: 'trade', promoted: false, label: { tp: 3, sl: 1.27, horizon: 300, target: 'y' } }))!;
+    expect([n.noTrade, n.role, n.threshold]).toEqual([true, 'trade', 1]);
+    expect(edgeCutText(n.threshold, n.noTrade)).toBe('없음 (매수 안 함)');
+    expect([edgeCutText(1), edgeCutText(0.3312), edgeCutText(undefined), edgeCutText(null)]).toEqual(['없음 (매수 안 함)', '0.331', '-', '-']);
     expect(parseEdgeMeta('{broken')).toBeNull();
     expect(parseEdgeMeta('{"threshold":0.5}')).toBeNull();
   });

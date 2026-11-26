@@ -46,7 +46,7 @@ class TestStepsAndArgv(unittest.TestCase):
         self.assertEqual(names(collect=False, scan=False), ["apply"])
         self.assertEqual(names(apply=False), ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog"])
         self.assertEqual(names(edge_ai=True, apply=False),
-                         ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "edge_dataset", "edge_train", "edge_check"])
+                         ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "edge_dataset", "edge_train", "edge_check", "trade_dataset", "trade_train"])
         self.assertEqual([s.name for s in r021.job_steps("scan", r021.JobArgs(date="20261110", apply=False))], ["scan"])
         self.assertEqual([s.name for s in r021.job_steps("collect", r021.JobArgs(date="20261110", scan=False, apply=False))], ["collect"])
 

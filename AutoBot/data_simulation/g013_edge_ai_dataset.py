@@ -31,6 +31,12 @@ Run:
   ~/venv/bin/python data_simulation/g013_edge_ai_dataset.py --dates 20261022 --rebuild
 
 Update log:
+- [2026-11-27] type=feat owner=claude
+    summary: Edge AI 재설계 (2) 실전 재현 라벨 - --live-label: --tp / --sl / --horizon 을 실제 쓰는 청산값(live_label: r001
+      EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN, 0 이면 +2 / -1.77 / 400)으로 만든다. 전에는 Edge AI 매매는
+      +3 / -1.27 / 300 인데 라벨은 +2 / -1.77 / 400 이었다. Edge AI 매매 모델(g014 --role trade)의 데이터셋.
+    impact: sim (r021 trade_dataset 단계 - 청산값이 바뀌면 새 태그 폴더를 처음부터 만든다)
+    compatibility: backward-compatible (플래그 없는 호출은 그대로 - 규칙 매매 필터 모델의 데이터셋)
 - [2026-11-12] type=feat owner=claude
     summary: 라벨에 "손절 전 상승폭" 열 추가(run_mfe_pct / run_stopped / run_tp_bars / y_tp). 사용자 요청: 매수 후 +2~5% 상승이
       실제로 나온 진입을 학습. 시간 제한/익절 없이 진입 후 FORCE_EXIT 까지 보되 -sl 손절에 먼저 닿으면 거기서 끝난다
@@ -103,6 +109,26 @@ ENTRY_END = pd.Timestamp("14:50").time()
 FORCE_EXIT = pd.Timestamp("15:15").time()
 TRIGGER_CACHE_BARS = 200   # r003 1m cache cap (_merge_bar_frame) - the live trigger never sees more history
 GEN_PARAM_KEYS = ("tp", "sl", "horizon", "slip_ticks", "min_gap", "min_turnover", "min_price", "max_codes")
+
+
+DEFAULT_LABEL = {"tp": 2.0, "sl": 1.77, "horizon": 400}
+
+
+def live_label(config=cfg) -> dict:
+    """[2026-11-27] The exits the Edge AI trades use right now: r001 EDGE_ONLY_TP_PCT / EDGE_ONLY_SL_PCT / EDGE_ONLY_HORIZON_MIN
+    (%, minutes; the control tab values, live overrides applied) where > 0, else DEFAULT_LABEL. --live-label labels the dataset
+    with these, so the trade model (g014 --role trade) is trained and judged on the exits that are really used (before: always
+    +2 / -1.77 / 400 while the trades ran +3 / -1.27 / 300). A changed exit makes a new dataset tag, built from scratch."""
+    out = dict(DEFAULT_LABEL)
+    for key, name in (("tp", "EDGE_ONLY_TP_PCT"), ("sl", "EDGE_ONLY_SL_PCT"), ("horizon", "EDGE_ONLY_HORIZON_MIN")):
+        try:
+            v = float(getattr(config, name, 0) or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if math.isfinite(v) and v > 0:
+            out[key] = v
+    out["horizon"] = int(round(out["horizon"]))
+    return out
 
 
 def generation_params(args) -> dict:
@@ -558,12 +584,14 @@ def main() -> None:
     p.add_argument("--dates", nargs="*", help="YYYYMMDD list (default: every data folder)")
     p.add_argument("--rebuild", action="store_true", help="rebuild days that already have a file")
     p.add_argument("--workers", type=int, default=3)
-    p.add_argument("--tp", type=float, default=2.0, help="take-profit barrier %%")
+    p.add_argument("--tp", type=float, default=DEFAULT_LABEL["tp"], help="take-profit barrier %%")
     # [2026-11-12] defaults follow the manual-sell regime (r001 AUTO_SELL_MODE="stop_only"): the only automatic exit is the
     # stop at -2% net (about -1.77% in price) and nothing is sold by time, so the label watches until FORCE_EXIT (15:15).
     # Old label: --sl 1.7 --horizon 60.
-    p.add_argument("--sl", type=float, default=1.77, help="stop-loss barrier %% (-2%% net of costs = AUTO_SELL_STOP_NET_PCT)")
-    p.add_argument("--horizon", type=int, default=400, help="time barrier in 1m bars (400 = to the 15:15 force exit)")
+    p.add_argument("--sl", type=float, default=DEFAULT_LABEL["sl"], help="stop-loss barrier %% (-2%% net of costs = AUTO_SELL_STOP_NET_PCT)")
+    p.add_argument("--horizon", type=int, default=DEFAULT_LABEL["horizon"], help="time barrier in 1m bars (400 = to the 15:15 force exit)")
+    p.add_argument("--live-label", action="store_true",
+                   help="[2026-11-27] --tp / --sl / --horizon = the exits the Edge AI trades use now (live_label) - trade model dataset")
     p.add_argument("--slip-ticks", type=int, default=1)
     p.add_argument("--min-gap", type=int, default=5, help="min bars between events of one code")
     p.add_argument("--min-turnover", type=float, default=3e9, help="20d avg turnover KRW")
@@ -573,6 +601,11 @@ def main() -> None:
     p.add_argument("--settle-minutes", type=int, default=30,
                    help="skip a day whose newest 10s file is younger than this (g001 still collecting)")
     args = p.parse_args()
+    if args.live_label:
+        lab = live_label()
+        args.tp, args.sl, args.horizon = lab["tp"], lab["sl"], lab["horizon"]
+        print(f"live label: +{args.tp:g}% / -{args.sl:g}% / {args.horizon} bars", flush=True)
+    del args.live_label   # not a generation setting (the tag is made of tp / sl / horizon), and not sent to the workers
 
     days = sorted(d.name for d in DATA_ROOT.iterdir() if d.is_dir() and d.name.isdigit() and len(d.name) == 8)
     if args.dates:

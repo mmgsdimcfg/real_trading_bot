@@ -387,9 +387,12 @@ def edge_live_summary(paths: ControlPaths) -> dict | None:
 
 
 def edge_model_promoted(paths: ControlPaths) -> bool | None:
-    """[2026-11-27] `promoted` of <runtime>/edge_ai/current_meta.json; None = no readable model"""
+    """[2026-11-27] `promoted` of the model the Edge AI trades read: <runtime>/edge_ai/trade/current_meta.json when it exists
+    (g014 --role trade), else <runtime>/edge_ai/current_meta.json; None = no readable model"""
+    base = paths.runtime_root / "edge_ai"
+    path = base / "trade" / "current_meta.json"
     try:
-        meta = json.loads((paths.runtime_root / "edge_ai" / "current_meta.json").read_text(encoding="utf-8"))
+        meta = json.loads((path if path.is_file() else base / "current_meta.json").read_text(encoding="utf-8"))
         return meta.get("promoted") is True
     except Exception:
         return None

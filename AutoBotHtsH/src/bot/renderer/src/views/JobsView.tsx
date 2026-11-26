@@ -103,7 +103,7 @@ const DESC: Record<string, string> = {
   scan: '수집된 데이터로 종목 선별(g002) 후 감시목록 반영(r004)',
 };
 
-const STEP_LABEL: Record<string, string> = { collect: '데이터 수집(g001)', history: '일봉 이력(g025)', hi52: 'HI52 기록(g042)', gh52: '52주 고점 기록(g048)', hi52acct: 'HI52 모의계좌(g049)', vwaplog: 'VWAP 재돌파 기록(g055)', scan: '종목 선별(g002)', picklog: '선정 성과 기록(g047)', apply: '감시목록 반영(r004)', edge_dataset: 'Edge AI 데이터셋(g013)', edge_train: 'Edge AI 학습(g014)', edge_check: 'Edge AI 점검(g024)', universe: '유니버스(g010)' };
+const STEP_LABEL: Record<string, string> = { collect: '데이터 수집(g001)', history: '일봉 이력(g025)', hi52: 'HI52 기록(g042)', gh52: '52주 고점 기록(g048)', hi52acct: 'HI52 모의계좌(g049)', vwaplog: 'VWAP 재돌파 기록(g055)', scan: '종목 선별(g002)', picklog: '선정 성과 기록(g047)', apply: '감시목록 반영(r004)', edge_dataset: 'Edge AI 데이터셋(g013)', edge_train: 'Edge AI 학습(g014)', edge_check: 'Edge AI 점검(g024)', trade_dataset: 'Edge AI 매매 모델 데이터셋(g013)', trade_train: 'Edge AI 매매 모델 학습(g014)', universe: '유니버스(g010)' };
 
 /** state as a dot + text (.st), colored by kind */
 function stateClass(st: string | undefined) {

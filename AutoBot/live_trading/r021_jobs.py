@@ -210,6 +210,12 @@ STEPS: dict[str, Step] = {
     "edge_dataset": Step("edge_dataset", lambda a, rc: _py("g013_edge_ai_dataset.py", "--workers", _workers(a, 2), "--live"),
                          required=False),
     "edge_train": Step("edge_train", lambda a, rc: _py("g014_edge_ai_train.py", "--threads", _workers(a, 2)), required=False),
+    # [2026-11-27] the Edge AI trade model (edge_ai/trade): dataset labelled with the live exits, target = net return > 0, buy cut
+    # only with a positive expectancy (else no trade). edge_dataset / edge_train stay the rule-trade filter model (_020).
+    "trade_dataset": Step("trade_dataset", lambda a, rc: _py("g013_edge_ai_dataset.py", "--workers", _workers(a, 2), "--live-label"),
+                          required=False),
+    "trade_train": Step("trade_train", lambda a, rc: _py("g014_edge_ai_train.py", "--threads", _workers(a, 2), "--role", "trade"),
+                        required=False),
     "edge_check": Step("edge_check", lambda a, rc: _py("g024_ops_check.py", "--edge-ai", "--rc-dataset",
                                                        str(rc.get("edge_dataset", 0)), "--rc-train",
                                                        str(rc.get("edge_train", 0))), required=False),
@@ -220,7 +226,7 @@ JOBS: dict[str, dict] = {
     "collect": {"title": "데이터 수집 (g001)", "steps": ["collect"]},
     "history": {"title": "일봉 이력 (g025)", "steps": ["history"]},
     "scan": {"title": "감시 종목 선별 (g002 -> r004)", "steps": ["scan", "apply"]},
-    "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check"]},
+    "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check", "trade_dataset", "trade_train"]},
     "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
     "postclose": {"title": "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))",
                   "steps": ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "apply"]},

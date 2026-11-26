@@ -611,6 +611,10 @@ export interface EdgeModelInfo {
   modelId: string;
   created: string;
   threshold: number | null;
+  /** [2026-11-27] g014 found no cut with a positive expectancy: the Edge AI trades buy nothing (threshold is then 1) */
+  noTrade: boolean;
+  /** [2026-11-27] 'trade' = the Edge AI trade model (edge_ai/trade); 'gate' = the rule-trade filter model (also every older meta) */
+  role: 'gate' | 'trade';
   promoted: boolean;
   /** label column: 'y_tp' = +tp% reached before the stop, 'y' = net return > 0 (older models have no target = 'y') */
   target: string;
@@ -631,6 +635,12 @@ export interface EdgeModelInfo {
 
 const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
+/** [2026-11-27] the Edge AI buy cut as text: '없음 (매수 안 함)' when the model has no cut with a positive expectancy */
+export function edgeCutText(threshold: number | null | undefined, noTrade = false): string {
+  if (threshold === null || threshold === undefined) return '-';
+  return noTrade || threshold >= 1 ? '없음 (매수 안 함)' : threshold.toFixed(3);
+}
+
 /** current_meta.json text -> summary; null when the text is not a model meta */
 export function parseEdgeMeta(text: string): EdgeModelInfo | null {
   let m: Record<string, any>;
@@ -648,6 +658,8 @@ export function parseEdgeMeta(text: string): EdgeModelInfo | null {
     modelId: m.model_id,
     created: typeof m.created === 'string' ? m.created : '',
     threshold: numOrNull(m.threshold),
+    noTrade: m.no_trade === true,
+    role: m.role === 'trade' ? 'trade' : 'gate',
     promoted: m.promoted === true,
     target: typeof label.target === 'string' ? label.target : 'y',
     tp: numOrNull(label.tp),

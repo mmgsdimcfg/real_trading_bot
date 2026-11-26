@@ -461,3 +461,20 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - r021 `postclose` 의 새 단계 `vwaplog` = `data_simulation/g055_vwap_reclaim_log.py --date D` (hi52acct 다음, scan 앞, 실패해도 작업은
   계속, collect 스위치를 따름). 주문 없음, KIS 호출 없음, r003/r004 불변. steps 에 `"vwaplog"` 추가 - 앱 단계 라벨 "VWAP 재돌파 기록(g055)".
   산출물 `<runtime>/data/vwap_reclaim/{events.csv, days.csv, report.md}`. 규칙은 g055 머리말에 고정(RULE_VERSION 1, 2026-11-27 부터가 검증 구간).
+
+## Edge AI 모델 분리: 규칙 매매 필터 모델 / Edge AI 매매 모델 (2026-11-27)
+- 모델 파일이 둘이다(사용자 결정: 규칙 매매 필터는 지금처럼 유지).
+  - `runtime/edge_ai/current_meta.json` - 규칙 매매 매수 필터(r005 _020) 모델. 예전과 같다(g013 기본 라벨, g014 기본 = `--role gate`).
+  - `runtime/edge_ai/trade/current_meta.json` - Edge AI 매매(가상 r022, 실제 _e09) 모델. `g013 --live-label`(실제 청산값
+    `EDGE_ONLY_TP_PCT` / `EDGE_ONLY_SL_PCT` / `EDGE_ONLY_HORIZON_MIN` 라벨) + `g014 --role trade`(대상 y = 그 청산의 순손익 > 0).
+    이 파일이 없으면 Edge AI 매매도 앞의 파일을 읽는다(r011 `TRADE_MODEL_SUBDIR`, 1분마다 다시 판단 - 재시작 불필요).
+- trade 모델 meta 의 새 필드: `"role": "trade"`, `"no_trade": bool`. 검증 구간에 "평균 순손익 > 0 이고 거래일 부트스트랩 95% 하한 > 0"
+  인 기준이 없으면 `"threshold": 1.0`, `"no_trade": true` -> 어떤 확률도 기준에 닿지 않아 Edge AI 매매는 매수 0건(가상 매매 단계 표시는
+  "확률 미달"). 필터 모델 meta 에는 `"role": "gate"`, `"no_trade": false`.
+- r016 `set EDGE_LIVE_ORDERS=true` 의 승격 판정과 r005 `EDGE_SIGNAL_MODEL_NOT_PROMOTED` 는 Edge AI 매매가 읽는 모델(trade 가 있으면 trade)
+  기준이다.
+- r021 `edge_ai` 작업(과 `postclose` 의 edge_ai 부분) steps: `edge_dataset`, `edge_train`, `edge_check`, `trade_dataset`, `trade_train`
+  (뒤 2개가 새 단계, 실패해도 작업은 계속). 앱 단계 라벨 "Edge AI 매매 모델 데이터셋(g013)" / "Edge AI 매매 모델 학습(g014)".
+  청산값을 바꾼 뒤 첫 `trade_dataset` 은 그 라벨의 데이터셋을 처음부터 만든다(노트북 약 25분).
+- 앱: 제어 탭 모델 줄은 trade 모델이 있으면 그것을 보여 준다(`edge` 읽기: `edge_ai/trade/current_meta.json` 먼저). `no_trade` 면
+  "매수 기준 없음 (매수 안 함)", 가상 매매 탭의 확률 기준도 같은 문구(기준 >= 1).

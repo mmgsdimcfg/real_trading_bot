@@ -50,6 +50,7 @@ import {
   type PaperGroup,
   type PaperStatus,
   type PaperTrade,
+  edgeCutText,
 } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
 import { showCode } from '../showCode';
@@ -309,7 +310,7 @@ export function PaperView() {
               );
             })}
           <span className="muted">
-            확률 기준 {pst.threshold !== undefined ? pst.threshold.toFixed(3) : '-'}
+            확률 기준 {edgeCutText(pst.threshold)}
             {pst.label?.tp !== undefined ? ` · 목표 +${pst.label.tp}% / 손절 -${pst.label.sl}% / ${pst.label.horizon}분` : ''}
             {exitDiffers(pst) ? ` (직접 설정 - 모델 +${pst.modelLabel!.tp}% / -${pst.modelLabel!.sl}% / ${pst.modelLabel!.horizon}분)` : ''}
             {pst.entryWindow ? ` · 매수 ${pst.entryWindow[0]}~${pst.entryWindow[1]}` : ''}

@@ -1462,11 +1462,13 @@ _EDGE_MODE_GATE = None
 
 def _edge_mode_gate(config):
     """[2026-11-12] Edge AI gate of the "edge" strategy mode: always enforced, cut = EDGE_ONLY_MIN_PROB (0 = model threshold).
-    Its own instance - the normal-mode filter (_020, EDGE_AI_MODE) may be off or in shadow."""
+    Its own instance - the normal-mode filter (_020, EDGE_AI_MODE) may be off or in shadow.
+    [2026-11-27] reads the trade model (edge_ai/trade, g014 --role trade) when there is one; the filter _020 keeps its own model."""
     global _EDGE_MODE_GATE
     if _EDGE_MODE_GATE is None:
-        from r011_edge_ai import EdgeAIGate
-        _EDGE_MODE_GATE = EdgeAIGate("gate", EDGE_AI_DIR, RUNTIME_DATA_DIR, EDGE_AI_DIR / "live", config, EDGE_ONLY_MIN_PROB)
+        from r011_edge_ai import TRADE_MODEL_SUBDIR, EdgeAIGate
+        _EDGE_MODE_GATE = EdgeAIGate("gate", EDGE_AI_DIR, RUNTIME_DATA_DIR, EDGE_AI_DIR / "live", config, EDGE_ONLY_MIN_PROB,
+                                     prefer_subdir=TRADE_MODEL_SUBDIR)
     return _EDGE_MODE_GATE
 
 

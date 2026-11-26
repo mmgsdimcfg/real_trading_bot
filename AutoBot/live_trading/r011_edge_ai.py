@@ -596,6 +596,15 @@ def compute_features(
 # model
 # ---------------------------------------------------------------------------
 
+# [2026-11-27] g014 --role trade writes this as meta "threshold" (with "no_trade": true) when the validation days had no cut with
+# a positive expectancy: a probability never reaches it, so the Edge AI trades (r022 paper, r005 _e09) buy nothing. A valid_prob.
+NO_TRADE_THRESHOLD = 1.0
+# [2026-11-27] Two models: <EDGE_AI_DIR>/current_meta.json = the rule-trade filter model (r005 _020, as before) and
+# <EDGE_AI_DIR>/trade/current_meta.json = the Edge AI trade model (g014 --role trade). The Edge AI trades read the trade model
+# when it exists and the filter model otherwise (a runtime that has not trained one yet behaves as before).
+TRADE_MODEL_SUBDIR = "trade"
+
+
 def valid_prob(value: Any) -> bool:
     """Finite and within [0, 1] (probabilities / thresholds)."""
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0.0 <= value <= 1.0
@@ -608,8 +617,12 @@ class EdgeAIModel:
     whose "model_file" points at it -> the meta file alone selects the (booster, threshold, promoted) generation.
     The loaded pair is held in ONE attribute so a concurrent reader never mixes generations."""
 
-    def __init__(self, model_dir: Path, reload_check_seconds: float = 60.0):
-        self.model_dir = Path(model_dir)
+    def __init__(self, model_dir: Path, reload_check_seconds: float = 60.0, prefer_subdir: str | None = None):
+        self.base_dir = Path(model_dir)
+        # [2026-11-27] prefer_subdir: read <model_dir>/<prefer_subdir>/current_meta.json while that file exists (judged again on
+        # every reload check, so a model published there later is picked up without a restart), else <model_dir> itself
+        self.prefer_subdir = prefer_subdir or None
+        self.model_dir = self.base_dir
         self.reload_check_seconds = reload_check_seconds
         self._loaded: tuple[Any, dict] | None = None   # (booster, meta) - replaced as a whole
         self.error = "not_loaded"
@@ -652,6 +665,11 @@ class EdgeAIModel:
             return
         with self._lock:
             self._last_check = now
+            want = self.base_dir
+            if self.prefer_subdir and (self.base_dir / self.prefer_subdir / "current_meta.json").is_file():
+                want = self.base_dir / self.prefer_subdir
+            if want != self.model_dir:
+                self.model_dir, self._mtime = want, None   # the other folder's file: never "unchanged"
             try:
                 mtime = self.meta_path.stat().st_mtime
             except OSError:
@@ -698,9 +716,9 @@ class EdgeAIGate:
     consecutive-confirm polls of _021 within the same minute get the same decision."""
 
     def __init__(self, mode: str, model_dir: Path, data_root: Path, log_dir: Path, config: StrategyConfig,
-                 min_prob_override: float = 0.0):
+                 min_prob_override: float = 0.0, prefer_subdir: str | None = None):
         self.mode = str(mode).lower()
-        self.model = EdgeAIModel(model_dir)
+        self.model = EdgeAIModel(model_dir, prefer_subdir=prefer_subdir)
         self.data_root = Path(data_root)
         self.log_dir = Path(log_dir)
         self.config = config

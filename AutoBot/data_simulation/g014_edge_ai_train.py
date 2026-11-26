@@ -24,6 +24,18 @@ current_meta.json whose "model_file" points at it. The meta file alone selects t
 publish interrupted at any point) never pairs a new booster with an old threshold/promoted flag.
 
 Update log:
+- [2026-11-27] type=feat owner=claude
+    summary: Edge AI 재설계 (2)(3) - vwap_indicator_review_20261126.md 2 / 6 / 7. 모델을 둘로 나눈다(사용자 결정: 규칙 매매
+      필터는 지금처럼 유지).
+      --role gate (기본, 예전과 같음): 규칙 매매 필터(r005 _020)가 읽는 모델. y_tp / "최소 20% 유지" 기준 / edge_ai/current_meta.json.
+        데이터셋은 --tag 가 없으면 기본 라벨(+2 / -1.77 / 400) 폴더, 없으면 예전처럼 가장 최근 폴더.
+      --role trade: Edge AI 매매(가상 r022 / 실제 r005 _e09)가 읽는 모델 -> edge_ai/trade/current_meta.json (+ trade/reports).
+        (a) 데이터셋 = 실제 청산값(g013 --live-label) 라벨. (b) 학습 대상 y = 그 청산 규칙의 순손익 > 0 (y_tp 는 변동폭을 고르는
+        값이라 기대값과 무관했다). (c) 매수 기준: 내부 검증 구간에서 "통과 진입의 평균 순손익 > 0 이고 거래일 부트스트랩 95% 하한도
+        > 0" 인 기준 중 평균이 가장 높은 것. 없으면 매수하지 않는다: threshold = NO_TRADE_THRESHOLD(1.0, 어떤 확률도 닿지 않음) +
+        meta.no_trade = true. (d) 승격 심사는 전체 이벤트 기준.
+    impact: live - Edge AI 매매는 trade 모델이 있으면 그것을 쓰고 기준이 없으면 0건. 규칙 매매 필터는 불변.
+    compatibility: backward-compatible (인자 없는 호출 = 예전과 같은 모델. trade 모델이 없는 runtime 은 Edge AI 매매도 예전 모델)
 - [2026-11-20] type=feat owner=claude
     summary: 사용자 결정(가상 매매 개선 2번) - ETF·ETN 이벤트를 학습에서 제외(기본, --keep-funds 로 유지). 최근 데이터 폴더 5개의
       <code>_<name>_daily.csv 이름으로 판별(r011.is_fund_product). meta.excluded_funds {codes, events} 기록. 데이터셋(g013)은 그대로라
@@ -68,7 +80,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "live_trading"))
 
 import r001_define_config as cfg  # noqa: E402
-from r011_edge_ai import FEATURE_NAMES, FEATURE_VERSION, fund_codes_in  # noqa: E402
+from r011_edge_ai import FEATURE_NAMES, FEATURE_VERSION, NO_TRADE_THRESHOLD, TRADE_MODEL_SUBDIR, fund_codes_in  # noqa: E402
+
+sys.path.insert(0, str(HERE))
+from g013_edge_ai_dataset import DEFAULT_LABEL, live_label  # noqa: E402
 
 EDGE_AI_DIR = Path(getattr(cfg, "EDGE_AI_DIR", Path(cfg.RUNTIME_ROOT) / "edge_ai"))
 
@@ -151,6 +166,31 @@ def choose_threshold(p: np.ndarray, net: np.ndarray, min_keep: float, min_n: int
     return best_t
 
 
+def choose_buy_threshold(p: np.ndarray, net: np.ndarray, dates: np.ndarray, min_n: int) -> float | None:
+    """[2026-11-27] Buy cut = the cut with the highest mean net return on the inner validation set among the cuts whose kept
+    trades (>= min_n) have a mean net return > 0 AND a day-bootstrap 95 % lower bound > 0. None = no such cut -> buy nothing.
+    (A maximum over many cuts of a noisy mean is positive by chance now and then - the lower bound is what keeps those out.)"""
+    p, net = np.asarray(p, dtype=float), np.asarray(net, dtype=float)
+    frame = pd.DataFrame({"date": np.asarray(dates), "net_ret": net})
+    best: tuple[float, float] | None = None
+    seen: set[float] = set()
+    for q in np.r_[np.arange(0.0, 0.95, 0.05), np.arange(0.95, 0.9951, 0.005)]:
+        t = float(np.quantile(p, q)) if q > 0 else 0.0
+        if t in seen:
+            continue
+        seen.add(t)
+        keep = p >= t
+        if int(keep.sum()) < min_n:
+            break
+        m = float(net[keep].mean())
+        if not m > 0 or (best is not None and m <= best[1]):
+            continue
+        lcb = day_bootstrap_lcb(frame[keep])
+        if lcb == lcb and lcb > 0:
+            best = (t, m)
+    return best[0] if best else None
+
+
 def recency_weights(dates: pd.Series, halflife_days: float) -> np.ndarray | None:
     if not halflife_days or halflife_days <= 0:
         return None
@@ -165,7 +205,9 @@ def recency_weights(dates: pd.Series, halflife_days: float) -> np.ndarray | None
 
 def fit_with_inner_val(df: pd.DataFrame, args, num_threads: int):
     """Early-stopped fit on the first (1-val_frac) dates, threshold from the last val_frac dates,
-    then refit on all dates of df with the found iteration count. Returns (booster, best_iter, threshold)."""
+    then refit on all dates of df with the found iteration count. Returns (booster, best_iter, threshold).
+    [2026-11-27] args.positive_only (--role trade): the threshold is NO_TRADE_THRESHOLD when the validation dates have no cut
+    with a positive expectancy (choose_buy_threshold)."""
     import lightgbm as lgb
 
     dates = sorted(df["date"].unique())
@@ -184,7 +226,11 @@ def fit_with_inner_val(df: pd.DataFrame, args, num_threads: int):
     # [2026-11-12] y_tp 등 새 대상은 "대상 달성률(정밀도)"이 가장 높은 기준을 고른다(최소 유지 비율 안에서). 옛 대상 y 는
     # 기존대로 평균 순손익 기준. 검증 결과 순손익은 확률 순위와 무관하게 평평해서(방향 정보 없음) 순손익으로 고르면 잡음이 된다.
     score = va["net_ret"].to_numpy() if target == "y" else va[target].to_numpy(float)
-    threshold = choose_threshold(p_va, score, args.min_keep, args.min_kept)
+    if getattr(args, "positive_only", False):
+        buy = choose_buy_threshold(p_va, va["net_ret"].to_numpy(), va["date"].to_numpy(), args.min_kept)
+        threshold = NO_TRADE_THRESHOLD if buy is None else buy
+    else:
+        threshold = choose_threshold(p_va, score, args.min_keep, args.min_kept)
     dall = lgb.Dataset(df[list(FEATURE_NAMES)].to_numpy(np.float32), df[target].to_numpy(),
                        weight=recency_weights(df["date"], args.halflife))
     final = lgb.train(params, dall, num_boost_round=best_iter)
@@ -227,7 +273,8 @@ def promotion(oos: pd.DataFrame, folds: list[dict], args) -> dict:
     target = target_of(args)
     ctx = oos[oos["m3_ctx_pass"] == 1]
     # the old target is the normal-mode filter (3-min context events); every other target serves the edge mode (all events)
-    scope = "ctx" if target == "y" and len(ctx) >= args.min_ctx_events else "all"
+    # [2026-11-27] --role trade (args.all_scope): the model decides the Edge AI trades, which take every trigger event
+    scope = "ctx" if target == "y" and len(ctx) >= args.min_ctx_events and not getattr(args, "all_scope", False) else "all"
     sub = ctx if scope == "ctx" else oos
     base = trade_stats(sub["net_ret"])
     kept = trade_stats(sub.loc[sub["keep"], "net_ret"])
@@ -284,6 +331,20 @@ def publish(booster, meta: dict, model_dir: Path) -> Path:
     return model_file
 
 
+def label_tags(dirs: list[Path], want: dict) -> list[Path]:
+    """[2026-11-27] the dataset folders whose params.json has this tp / sl / horizon, order kept. [] = none (or unreadable)."""
+    out = []
+    for d in dirs:
+        try:
+            got = json.loads((d / "params.json").read_text(encoding="utf-8"))
+            same = all(abs(float(got.get(k)) - float(want[k])) < 1e-9 for k in ("tp", "sl", "horizon"))
+        except (OSError, TypeError, ValueError):
+            continue
+        if same:
+            out.append(d)
+    return out
+
+
 def fund_product_codes(n_dirs: int = 5) -> set[str]:
     """[2026-11-20] ETF / ETN codes by name from the newest data folders (<code>_<name>_daily.csv, r011.is_fund_product)"""
     root = Path(getattr(cfg, "DATA_DIR", Path(cfg.RUNTIME_ROOT) / "data"))
@@ -328,7 +389,9 @@ def write_report(path: Path, meta: dict, folds: list[dict], rel: list[dict]) -> 
              f"- label: {meta['label']}",
              f"- OOS AUC: {pm['auc_oos']:.3f} over {pm['n_folds']} walk-forward folds",
              f"- promoted: **{pm['promoted']}** (scope={pm['scope']}) checks={json.dumps(pm['checks'], default=str)}",
-             f"- final threshold: {meta['threshold']:.4f}, iterations: {meta['best_iter']}", "",
+             f"- final threshold: {meta['threshold']:.4f}"
+             + (" = NO TRADE (no cut with a positive expectancy on the validation days)" if meta.get("no_trade") else "")
+             + f", iterations: {meta['best_iter']}", "",
              "| scope | n | win rate | mean net % | PF |", "|---|---|---|---|---|"]
     for name in ("base", "kept"):
         s = pm[name]
@@ -386,17 +449,34 @@ def main() -> None:
     p.add_argument("--no-publish", action="store_true", help="evaluate only, keep current model")
     p.add_argument("--keep-funds", action="store_true",
                    help="[2026-11-20] keep ETF / ETN events (default: left out - the model is for common shares, r011.is_fund_product)")
-    p.add_argument("--target", default="y_tp",
-                   help="label column: y_tp = +tp%% reached before the stop (g013 run_up), y = net return > 0 (old)")
+    p.add_argument("--target", default=None,
+                   help="label column: y_tp = +tp%% reached before the stop (g013 run_up; default of --role gate), "
+                        "y = net return > 0 (default of --role trade)")
+    p.add_argument("--role", choices=("gate", "trade"), default="gate",
+                   help="[2026-11-27] gate = the rule-trade filter model (as before, edge_ai/current_meta.json); trade = the Edge AI "
+                        "trade model: live-label dataset, target y, 'positive expectancy or no trade' cut, edge_ai/trade/")
     p.add_argument("--no-require-positive", dest="require_positive", action="store_false",
                    help="promote on uplift alone (default: the kept entries' mean net must be > 0 at the 95%% day-bootstrap bound)")
     args = p.parse_args()
+    trade = args.role == "trade"
+    args.target = args.target or ("y" if trade else "y_tp")
+    args.positive_only = args.all_scope = trade
+    out_dir = EDGE_AI_DIR / TRADE_MODEL_SUBDIR if trade else EDGE_AI_DIR   # models + current_meta.json + reports
 
     root = EDGE_AI_DIR / "dataset"
     tags = sorted((d for d in root.iterdir() if d.is_dir() and d.name.startswith(f"v{FEATURE_VERSION}_")),
-                  key=lambda d: d.stat().st_mtime)
+                  key=lambda d: d.stat().st_mtime) if root.is_dir() else []
     if args.tag:
         tags = [root / args.tag]
+    elif trade:
+        tags = label_tags(tags, live_label())
+        if not tags:
+            # rc 0 like "too few days": the trade dataset step has not built this label yet - the trade model stays as it is
+            print(f"SKIP training: no dataset labelled with the live exits {live_label()} under {root} "
+                  f"(g013_edge_ai_dataset.py --live-label)", flush=True)
+            return
+    else:
+        tags = label_tags(tags, DEFAULT_LABEL) or tags
     if not tags:
         raise SystemExit(f"no dataset for feature v{FEATURE_VERSION} under {root}")
     ds_dir = tags[-1]
@@ -438,6 +518,7 @@ def main() -> None:
     final_dates = dates[-args.train_window:] if args.train_window > 0 else dates
     final_df = df[df["date"].isin(final_dates)]
     booster, best_iter, threshold = fit_with_inner_val(final_df, args, args.threads)
+    no_trade = bool(threshold >= NO_TRADE_THRESHOLD)
     gains = booster.feature_importance(importance_type="gain")
     importance = sorted(zip(FEATURE_NAMES, map(float, gains)), key=lambda x: -x[1])
     params_path = ds_dir / "params.json"
@@ -446,7 +527,8 @@ def main() -> None:
     meta = {
         "model_id": model_id, "created": datetime.now().isoformat(timespec="seconds"),
         "feature_version": FEATURE_VERSION, "features": list(FEATURE_NAMES),
-        "threshold": threshold, "best_iter": best_iter, "promoted": pm["promoted"], "promotion": pm,
+        "threshold": threshold, "no_trade": no_trade, "role": args.role,
+        "best_iter": best_iter, "promoted": pm["promoted"], "promotion": pm,
         "dataset": ds_dir.name, "n_events": int(len(df)), "n_days": int(n_days),
         "date_range": f"{dates[0]}~{dates[-1]}", "train_range": f"{final_dates[0]}~{final_dates[-1]}",
         "label": {**{k: label.get(k) for k in ("tp", "sl", "horizon", "slip_ticks")}, "target": target},
@@ -454,7 +536,7 @@ def main() -> None:
         "live_feedback": live_feedback(ds_dir.name),
         "excluded_funds": excluded,
     }
-    reports = EDGE_AI_DIR / "reports"
+    reports = out_dir / "reports"
     reports.mkdir(parents=True, exist_ok=True)
     (reports / f"report_{model_id}.json").write_text(json.dumps({"meta": meta, "folds": folds, "reliability": rel},
                                                                 indent=2, default=str), encoding="utf-8")
@@ -465,8 +547,9 @@ def main() -> None:
     if args.no_publish:
         print(f"evaluated only (no publish): report_{model_id}.md")
         return
-    path = publish(booster, meta, EDGE_AI_DIR)
-    print(f"published {path.name} threshold={threshold:.4f} promoted={pm['promoted']} -> {EDGE_AI_DIR}/current_*")
+    path = publish(booster, meta, out_dir)
+    print(f"published {path.name} role={args.role} threshold={threshold:.4f}{' (NO TRADE)' if no_trade else ''} "
+          f"promoted={pm['promoted']} -> {out_dir}/current_*")
 
 
 if __name__ == "__main__":
