@@ -212,8 +212,10 @@ class TestR005Hook(unittest.TestCase):
     def test_registered_before_confirm_and_excluded_from_shadow_and_basic(self):
         order = [c.no for c in r005.BUY_CONDITIONS]
         # [2026-11-08] renumbered: opening gap _020 -> _017, edge AI _028 -> _020, consecutive confirm _021 -> _022
-        self.assertLess(order.index(17), order.index(20))
-        self.assertLess(order.index(20), order.index(22))
+        # [2026-11-27] left out of the check list (user decision: the filter that blocked the most in November); the source stays
+        self.assertNotIn(20, order)
+        self.assertEqual((r005._COND_020.no, r005._COND_020.check), (20, r005._020_edge_ai_meta_filter))
+        self.assertLess(order.index(17), order.index(22))
         self.assertNotIn(20, [c.no for c in r005.SHADOW_ENTRY_CONDITIONS])
         self.assertNotIn(20, [c.no for c in r005.BASIC_BUY_CONDITIONS])
 

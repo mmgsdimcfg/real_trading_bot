@@ -1664,7 +1664,10 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _017_opening_gap_volume_gate),
     _COND_018,
     _COND_019,
-    _COND_020,
+    # [2026-11-27] _COND_020 (Edge AI meta-label filter) is left out of the check list (user decision): it blocked the most rule
+    # signals in November (last 8 trading days: 1,260 of 1,364) and its kept / blocked entries did not differ out of sample
+    # (-0.08 %p, 95 % -0.27 .. +0.11). The filter source (_020_edge_ai_meta_filter, _COND_020, EDGE_AI_MODE) is untouched -
+    # put `_COND_020,` back on this line to restore it. The Edge AI trades (_e09, r022) do not use this filter.
     _COND_021,
     BuyCondition(22, "_022_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
                  "모든 조건이 연속 BUY_CONSECUTIVE_CONFIRM_COUNT회 통과해야 매수 - 직전 통과와 간격 BUY_CONFIRM_MAX_GAP_SECONDS 이내, "
