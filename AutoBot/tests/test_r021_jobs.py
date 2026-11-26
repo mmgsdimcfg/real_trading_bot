@@ -41,12 +41,12 @@ class TestStepsAndArgv(unittest.TestCase):
 
     def test_step_combinations(self):
         names = lambda **kw: [s.name for s in r021.job_steps("postclose", r021.JobArgs(date="20261110", **kw))]  # noqa: E731
-        self.assertEqual(names(), ["collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog", "apply"])
+        self.assertEqual(names(), ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "apply"])
         self.assertEqual(names(collect=False), ["scan", "picklog", "apply"])
         self.assertEqual(names(collect=False, scan=False), ["apply"])
-        self.assertEqual(names(apply=False), ["collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog"])
+        self.assertEqual(names(apply=False), ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog"])
         self.assertEqual(names(edge_ai=True, apply=False),
-                         ["collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog", "edge_dataset", "edge_train", "edge_check"])
+                         ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "edge_dataset", "edge_train", "edge_check"])
         self.assertEqual([s.name for s in r021.job_steps("scan", r021.JobArgs(date="20261110", apply=False))], ["scan"])
         self.assertEqual([s.name for s in r021.job_steps("collect", r021.JobArgs(date="20261110", scan=False, apply=False))], ["collect"])
 
@@ -82,6 +82,15 @@ class TestStepsAndArgv(unittest.TestCase):
         self.assertNotIn("gh52", [s.name for s in r021.job_steps("postclose", r021.JobArgs(date="20261130", collect=False))])
         for job in ("collect", "history", "scan"):
             self.assertNotIn("gh52", [s.name for s in r021.job_steps(job, r021.JobArgs(date="20261130"))])
+
+    def test_vwaplog_step_runs_g055_for_the_job_date(self):
+        """[2026-11-27] vwaplog = g055 --date D, not required, after hi52acct / before scan, on and off with collect."""
+        st = r021.STEPS["vwaplog"]
+        self.assertFalse(st.required)
+        argv = st.build(r021.JobArgs(date="20261127"), {})
+        self.assertTrue(argv[0].endswith("g055_vwap_reclaim_log.py"), argv)
+        self.assertEqual(argv[1:], ["--date", "20261127"])
+        self.assertNotIn("vwaplog", [s.name for s in r021.job_steps("postclose", r021.JobArgs(date="20261127", collect=False))])
 
     def test_hi52acct_step_runs_g049_for_the_job_date(self):
         """[2026-11-21] hi52acct = g049 --date D, not required, after gh52 / before scan, follows the collect switch."""
@@ -247,11 +256,11 @@ class TestHistoryAfterFailedCollect(unittest.TestCase):
         from unittest import mock
 
         self.assertTrue(r021.STEPS["history"].after_failure)
-        self.assertFalse(any(r021.STEPS[n].after_failure for n in ("collect", "hi52", "gh52", "hi52acct", "scan", "apply")))
+        self.assertFalse(any(r021.STEPS[n].after_failure for n in ("collect", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "apply")))
         with tempfile.TemporaryDirectory() as tmp:
             steps = {n: r021.Step(n, (lambda a, rc, n=n: ["-c", "raise SystemExit(1)" if n == "collect" else f"print('{n}')"]),
                                   required=r021.STEPS[n].required, after_failure=r021.STEPS[n].after_failure)
-                     for n in ("collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog", "apply")}
+                     for n in ("collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "apply")}
             with mock.patch.dict(r021.STEPS, steps):
                 rc = r021.run_detached_entry("postclose", r021.JobArgs(date="20261118"), "t", r021.Paths(Path(tmp)))
             st = r021.read_state(r021.Paths(Path(tmp)), "postclose")
@@ -259,7 +268,7 @@ class TestHistoryAfterFailedCollect(unittest.TestCase):
         self.assertEqual(st["state"], "failed")
         self.assertIn("collect failed", st["error"])
         self.assertEqual([(s["name"], s["state"]) for s in st["steps"]],
-                         [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("gh52", "skipped"), ("hi52acct", "skipped"), ("scan", "skipped"), ("picklog", "skipped"), ("apply", "skipped")])
+                         [("collect", "failed"), ("history", "done"), ("hi52", "skipped"), ("gh52", "skipped"), ("hi52acct", "skipped"), ("vwaplog", "skipped"), ("scan", "skipped"), ("picklog", "skipped"), ("apply", "skipped")])
         self.assertEqual(st["steps"][2]["note"], "collect failed")
 
 

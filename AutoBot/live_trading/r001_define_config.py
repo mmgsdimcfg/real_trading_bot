@@ -2174,6 +2174,11 @@ EDGE_LIVE_UNFILLED_CANCEL_SECONDS = 20  # Edge 매수 주문이 이 시간 안�
 # Edge 신규 매수 마감 시각(실제 시계 기준, 가상 매매의 정규장 매수 창과 같은 14:50). 이 뒤에는 판정도 주문도 하지 않는다 -
 # 15:20 청산 전에 산 수량을 정리할 시간을 남긴다 (r003 재시작 후 적용).
 EDGE_LIVE_ENTRY_END = dt_time(14, 50)
+# [2026-11-27] 사용자 결정(vwap_indicator_review_20261126.md 2장 3번, Codex "승격 통제 먼저"): Edge AI 신호(_e09)로 내는 주문은
+# g014 승격 심사를 통과한 모델(current_meta.json "promoted": true)일 때만 낸다 - 병행(EDGE_LIVE_ORDERS)과 단독("edge" 모드) 모두.
+# 미승격이면 확률이 기준을 넘어도 사지 않고 로그에 EDGE_SIGNAL_MODEL_NOT_PROMOTED 를 남긴다. 이미 산 Edge 수량의 청산은 그대로.
+# 가상 매매(r022)는 해당 없음(계속 최신 모델로 기록). 모델은 매일 저녁 다시 심사되고 r003 은 60초 안에 새 결과를 읽는다.
+EDGE_LIVE_REQUIRE_PROMOTED = True
 
 # =============================================================================
 # [2026-11-15] 적응형 익절·손절 엔진 (r024 엔진 / r025 틱 특징 / r026 shadow 러너) - 사용자 결정(설계 Q1: shadow 먼저)

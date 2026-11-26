@@ -13,7 +13,7 @@
 import { app, BrowserWindow, screen, shell } from 'electron';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
-import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, kindLabel, lowerHighLabel, SETUP_KEYS, SETUP_LABEL, type ReboundConfig, type ReboundResult } from '../shared/rebound';
+import { BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, kindLabel, lowerHighLabel, SETUP_KEYS, SETUP_LABEL, vwapHoldLabel, type ReboundConfig, type ReboundResult } from '../shared/rebound';
 
 export interface AlertInfo {
   code: string;
@@ -37,6 +37,8 @@ const CSV_HEAD = [
   'lower_high', 'lh_h1_time', 'lh_h1', 'lh_h2_time', 'lh_h2', 'lh_hc', 'lh_div', 'suppressed',
   // [2026-11-25] kind: classic / vTurn / pullback / vwapHold, and what the setup measured
   'kind', 'setup_note',
+  // [2026-11-27] bars in a row on the same side of VWAP up to the judged bar (+ above / - below)
+  'vwap_hold_bars',
 ];
 const n = (x: number | undefined, d = 2) => (x === undefined || !Number.isFinite(x) ? '' : Number(x.toFixed(d)).toString());
 
@@ -51,6 +53,7 @@ export function csvRow(a: AlertInfo, alerted: boolean, suppressed = ''): string 
     lh?.state ?? '', lh?.h1t === undefined ? '' : hhmm(lh.h1t), n(lh?.h1, 0), lh?.h2t === undefined ? '' : hhmm(lh.h2t), n(lh?.h2, 0), n(lh?.hc, 0),
     lh ? (lh.div ? '1' : '0') : '', suppressed,
     a.res.setup ?? 'classic', a.res.setup ? (a.res.setups?.[a.res.setup]?.note ?? '').replace(/[",\r\n]/g, ' ') : '',
+    n(s.vwapHold, 0),
   ];
   return f.join(',');
 }
@@ -130,7 +133,7 @@ ${row('RSI / 시그널', `${num(s.rsi)} / ${num(s.rsiSignal)}`)}
 ${row('MACD / 시그널', `${num(s.macd)} / ${num(s.macdSignal)}`)}
 ${row('DI+ / DI- / ADX', `${num(s.diPlus)} / ${num(s.diMinus)} / ${num(s.adx)}`)}
 ${row('MA5 각도', `${num(s.angle)}°`)}
-${row('VWAP 대비', `${Number.isFinite(s.vwapPct) ? `${s.vwapPct >= 0 ? '+' : ''}${num(s.vwapPct, 2)}% (${s.vwapPct >= 0 ? '위' : '아래'}, VWAP ${num(s.vwap, 0)})` : '-'}`)}
+${row('VWAP 대비', `${Number.isFinite(s.vwapPct) ? `${s.vwapPct >= 0 ? '+' : ''}${num(s.vwapPct, 2)}% (${vwapHoldLabel(s.vwapHold) || (s.vwapPct >= 0 ? '위' : '아래')}, VWAP ${num(s.vwap, 0)})` : '-'}`)}
 </table></main>
 <footer>감지·알림 전용 - 주문은 내지 않습니다</footer></body></html>`;
 }

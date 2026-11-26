@@ -349,6 +349,9 @@ export interface ReboundSnapshot {
   vwap: number;
   /** close vs VWAP, percent (information only) */
   vwapPct: number;
+  /** [2026-11-27] completed bars in a row, up to the judged bar and inside its KST day, whose close is on the same side of VWAP:
+   *  + above, - below, 0 = on the line / no VWAP (information only; missing in older history items) */
+  vwapHold?: number;
   bbMid: number;
   bbWidthPct: number;
   /** epoch ms / low / volume of the plunge bar (NaN when there is none) */
@@ -404,6 +407,27 @@ const isNum = (x: number) => x === x && Number.isFinite(x);
 const f1 = (x: number) => (isNum(x) ? x.toFixed(1) : '-');
 const f2 = (x: number) => (isNum(x) ? x.toFixed(2) : '-');
 const KST = 9 * 3600000;
+/**
+ * [2026-11-27] How long the close has stayed on one side of VWAP (user 2026-11-27; study vwap_indicator_review_20261126.md: the side
+ * alone does not predict what follows - it is shown, never a condition). Counts the bars back from i while the close is on the side
+ * of bar i and the bar is of the same KST day (the session VWAP starts again each day). + above, - below, 0 on the line / no VWAP
+ */
+export function vwapHoldBars(bars: Bar[], V: Series, i: number = bars.length - 1): number {
+  if (i < 0 || i >= bars.length) return 0;
+  const side = (k: number) => (isNum(V[k]) ? Math.sign(bars[k].c - V[k]) : 0);
+  const s = side(i);
+  if (!s) return 0;
+  const day = Math.floor((bars[i].t + KST) / 86400000);
+  let n = 0;
+  for (let k = i; k >= 0 && side(k) === s && Math.floor((bars[k].t + KST) / 86400000) === day; k--) n++;
+  return s * n;
+}
+
+/** "위 23분째" / "아래 5분째" / '' (1-minute bars: one bar = one minute) */
+export function vwapHoldLabel(hold: number | undefined): string {
+  return hold === undefined || !isNum(hold) || hold === 0 ? '' : `${hold > 0 ? '위' : '아래'} ${Math.abs(hold)}분째`;
+}
+
 /** epoch ms -> "HH:MM" (KST) */
 export const hhmm = (t: number) => (isNum(t) ? new Date(t + KST).toISOString().slice(11, 16) : '-');
 
@@ -425,7 +449,7 @@ export function alertSummary(a: { code: string; name: string; price?: number; ch
         `${hhmm(s.t)} 봉 · ${won(a.price ?? s.close)}원${pct}`,
         a.res!.setups?.[su]?.note ?? '-',
         `RSI ${n(s.rsi)}/${n(s.rsiSignal)} · MACD ${n(s.macd)}/${n(s.macdSignal)}`,
-        `VWAP ${isNum(s.vwapPct) && s.vwapPct >= 0 ? '+' : ''}${n(s.vwapPct, 2)}% · MA5 ${won(s.ma5)} · MA20 ${won(s.ma20)}`,
+        `VWAP ${isNum(s.vwapPct) && s.vwapPct >= 0 ? '+' : ''}${n(s.vwapPct, 2)}%${vwapHoldLabel(s.vwapHold) ? ` ${vwapHoldLabel(s.vwapHold)}` : ''} · MA5 ${won(s.ma5)} · MA20 ${won(s.ma20)}`,
       ]
     : s
     ? [
@@ -434,7 +458,7 @@ export function alertSummary(a: { code: string; name: string; price?: number; ch
         `${hhmm(s.t)} 봉 · ${won(a.price ?? s.close)}원${pct} · 가점 ${a.res!.score}점${a.res!.lowerHigh?.state === 'lh' ? ` · 고점↓${a.res!.lowerHigh.div ? '(다이버전스)' : ''}` : ''}`,
         `RSI ${n(s.rsi)}/${n(s.rsiSignal)} · MACD ${n(s.macd)}/${n(s.macdSignal)}`,
         `DI ${n(s.diPlus)}/${n(s.diMinus)} · ADX ${n(s.adx)} · 각도 ${n(s.angle)}°`,
-        `VWAP ${isNum(s.vwapPct) && s.vwapPct >= 0 ? '+' : ''}${n(s.vwapPct, 2)}% · 급락 ${hhmm(s.plungeT)} (${n(s.plungeFallPct)}%)`,
+        `VWAP ${isNum(s.vwapPct) && s.vwapPct >= 0 ? '+' : ''}${n(s.vwapPct, 2)}%${vwapHoldLabel(s.vwapHold) ? ` ${vwapHoldLabel(s.vwapHold)}` : ''} · 급락 ${hhmm(s.plungeT)} (${n(s.plungeFallPct)}%)`,
         `가점: ${BONUS_KEYS.filter((k) => a.res!.bonus[k].ok).map((k) => BONUS_SHORT[k]).join(', ') || '-'}`,
       ]
     : [`[바닥 반등 초입] ${a.name}(${a.code})`, `14:55 봉 · ${won(a.price)}원${pct} · 가점 3점`, 'RSI 53.3/48.8 · MACD -40.3/-61.7', 'DI 32.2/12.6 · ADX 35.6 · 각도 14.6°', 'VWAP -3.29% · 급락 14:33 (-2.7%)', '가점: ADX 반등, 볼린저, 거래량 감소'];
@@ -878,6 +902,7 @@ export function detectRebound(bars: Bar[], cfg: ReboundConfig = REBOUND_DEFAULTS
     angle: at(ang),
     vwap: at(V),
     vwapPct: isNum(at(V)) && at(V) !== 0 ? (at(close) / at(V) - 1) * 100 : NaN,
+    vwapHold: vwapHoldBars(bars, V, i),
     bbMid: at(B.mid),
     bbWidthPct: i >= 0 ? bbW(i) : NaN,
     plungeT: pj >= 0 ? bars[pj].t : NaN,

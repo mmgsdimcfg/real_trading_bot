@@ -7012,7 +7012,8 @@ def _edge_live_manage(api: TradingAPI, code: str, name: str, now: datetime) -> N
 
 
 _EDGE_REJECT_SILENT = ("EDGE_SIGNAL_NO_TRIGGER", "EDGE_SIGNAL_REGULAR_SESSION_ONLY")      # no 1-minute trigger on this bar: nothing to explain
-_EDGE_REJECT_RARE = ("EDGE_SIGNAL_1MIN_FRAME", "EDGE_SIGNAL_INSUFFICIENT_BARS")       # the same every bar until the frame is there
+_EDGE_REJECT_RARE = ("EDGE_SIGNAL_1MIN_FRAME", "EDGE_SIGNAL_INSUFFICIENT_BARS",       # the same every bar until the frame is there
+                     "EDGE_SIGNAL_MODEL_NOT_PROMOTED")   # [2026-11-27] the same for every signal until the next model (r001 EDGE_LIVE_REQUIRE_PROMOTED)
 
 
 def _edge_live_reject_note(failed, msgs: list) -> tuple[str, float] | None:

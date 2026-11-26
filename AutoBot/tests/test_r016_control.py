@@ -471,6 +471,34 @@ class EdgeLiveTests(Base):
         d.mkdir(parents=True, exist_ok=True)
         r023.save_fill_state(d, st)
 
+    def setUp(self):
+        super().setUp()
+        self._model(True)
+
+    def _model(self, promoted):
+        """[2026-11-27] the published Edge AI model's promotion flag (None = no model file)"""
+        d = self.paths.runtime_root / "edge_ai"
+        d.mkdir(parents=True, exist_ok=True)
+        if promoted is None:
+            (d / "current_meta.json").unlink(missing_ok=True)
+        else:
+            (d / "current_meta.json").write_text(json.dumps({"promoted": promoted}), encoding="utf-8")
+
+    def test_live_orders_need_a_promoted_model(self):
+        # [2026-11-27] r001 EDGE_LIVE_REQUIRE_PROMOTED: no model / an unpromoted model -> `set EDGE_LIVE_ORDERS=true` is refused
+        on = ("set", "EDGE_LIVE_ORDERS=true", "AUTO_SELL_MODE=all", "TRADING_STRATEGY_MODE=normal", "EDGE_ONLY_MODE=paper")
+        for promoted in (False, None):
+            self._model(promoted)
+            rc, out = self.run_cli(*on)
+            self.assertEqual((rc, list(out["rejected"])), (2, ["EDGE_LIVE_ORDERS"]), out)
+            self.assertIn("not promoted", out["rejected"]["EDGE_LIVE_ORDERS"])
+            self.assertIsNot(json.loads(self.paths.overrides.read_text(encoding="utf-8"))["overrides"].get("EDGE_LIVE_ORDERS"), True)
+        rc, out = self.run_cli("set", "EDGE_LIVE_ORDERS=false")                               # off is never refused
+        self.assertEqual((rc, out["rejected"]), (0, {}), out)
+        self._model(True)
+        rc, out = self.run_cli(*on)
+        self.assertEqual((rc, out["rejected"]), (0, {}), out)
+
     def test_live_orders_need_the_full_auto_sell_and_the_rule_strategy(self):
         rc, out = self.run_cli("set", "EDGE_LIVE_ORDERS=true", "AUTO_SELL_MODE=all", "TRADING_STRATEGY_MODE=normal")
         self.assertEqual((rc, out["rejected"]), (0, {}), out)

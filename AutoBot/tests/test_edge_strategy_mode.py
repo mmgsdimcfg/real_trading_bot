@@ -80,8 +80,9 @@ class BuySignalTest(unittest.TestCase):
                             trigger_flag=None, steps_text=None, trigger_reason=None, trigger_info=None, buy_reason=None)
         return c, logs
 
-    def run_signal(self, c, prob=0.6, threshold=0.45, trigger=(True, "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"), reason="pass"):
+    def run_signal(self, c, prob=0.6, threshold=0.45, trigger=(True, "1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK"), reason="pass", promoted=True):
         gate = mock.Mock()
+        gate.model.meta = {"promoted": promoted}
         gate.evaluate.return_value = r011.EdgeAIDecision(True, prob, threshold, True, reason)
         with mock.patch.object(r005, "_edge_mode_gate", return_value=gate), \
                 mock.patch.object(r011, "hybrid_trigger_with_context", lambda *a, **k: trigger):
@@ -95,6 +96,20 @@ class BuySignalTest(unittest.TestCase):
         self.assertIn("EDGE_AI_SIGNAL_p=0.600_thr=0.450_1MIN_BB_MID_GOLDEN_CROSS_LOOKBACK_bar=10:00", c.buy_reason)
         self.assertEqual((c.prev_close, c.day_open, c.day_vwap), (9900.0, 9950.0, 10000.0))     # fetched for the features
         self.assertEqual(gate.evaluate.call_args.kwargs["trigger_info"], c.trigger_info)
+
+    def test_an_unpromoted_model_never_buys(self):
+        # [2026-11-27] r001 EDGE_LIVE_REQUIRE_PROMOTED: the probability passes, the model did not pass g014's promotion check
+        c, logs = self.ctx()
+        ok, _ = self.run_signal(c, promoted=False)
+        self.assertFalse(ok)
+        self.assertIn("EDGE_SIGNAL_MODEL_NOT_PROMOTED_p=0.600_thr=0.450", logs[-1])
+        self.assertEqual(c.trigger_flag, "-")
+        c, logs = self.ctx()
+        self.assertFalse(self.run_signal(c, prob=0.40, promoted=False)[0])
+        self.assertIn("EDGE_SIGNAL_LOW_PROB", logs[-1])                     # the probability is judged first
+        with mock.patch.object(r005, "_edge_require_promoted", return_value=False):
+            c, _ = self.ctx()
+            self.assertTrue(self.run_signal(c, promoted=False)[0])
 
     def test_low_probability_is_rejected(self):
         c, logs = self.ctx()

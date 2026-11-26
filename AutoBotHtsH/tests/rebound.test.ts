@@ -294,8 +294,9 @@ describe('alert text', () => {
   it('CSV row keeps its columns whatever the name holds', () => {
     // [2026-11-24] 30 -> 38: lower_high, lh_h1_time, lh_h1, lh_h2_time, lh_h2, lh_hc, lh_div, suppressed
     // [2026-11-25] 38 -> 40: kind, setup_note
-    expect(csvRow(a, true).split(',')).toHaveLength(40);
-    expect(csvRow(a, true).split(',').slice(-2)).toEqual(['classic', '']);
+    // [2026-11-27] 40 -> 41: vwap_hold_bars
+    expect(csvRow(a, true).split(',')).toHaveLength(41);
+    expect(csvRow(a, true).split(',').slice(-3, -1)).toEqual(['classic', '']);
     expect(csvRow(a, false).split(',')[4]).toBe('0');
     const lh: AlertInfo = { ...a, res: { ...a.res, lowerHigh: { state: 'lh', h1t: a.res.snap.t - 1800000, h1: 39050, h2t: a.res.snap.t - 900000, h2: 38800, hc: 38700, div: false, blocked: true, note: 'x' } } };
     expect(csvRow(lh, false, 'lower_high').split(',').slice(30, 38)).toEqual(['lh', hm(a.res.snap.t - 1800000), '39050', hm(a.res.snap.t - 900000), '38800', '38700', '0', 'lower_high']);
@@ -313,8 +314,8 @@ describe('alert text', () => {
     expect(readFileSync(old, 'utf8')).toBe(oldText);
     const rows = readFileSync(join(dir, 'detections_20261121_2.csv'), 'utf8').trim().split('\r\n');
     expect(rows).toHaveLength(3);
-    expect(rows[0].replace(/^﻿/, '').split(',').slice(-4)).toEqual(['lh_div', 'suppressed', 'kind', 'setup_note']);
-    expect(rows[2].split(',').at(-3)).toBe('lower_high');
+    expect(rows[0].replace(/^﻿/, '').split(',').slice(-5)).toEqual(['lh_div', 'suppressed', 'kind', 'setup_note', 'vwap_hold_bars']);
+    expect(rows[2].split(',').at(-4)).toBe('lower_high');
     // (Codex) _2 in another layout too -> _3; an empty _2 gets the header
     writeFileSync(join(dir, 'detections_20261122.csv'), oldText, 'utf8');
     writeFileSync(join(dir, 'detections_20261122_2.csv'), oldText, 'utf8');

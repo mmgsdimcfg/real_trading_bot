@@ -16,7 +16,7 @@ import { PriceChart } from './PriceChart';
 import { normalizeParams, OSCILLATORS, type IndicatorKey, type IndicatorParams } from '../../../shared/indicators';
 import type { Bar } from '../../../shared/price';
 import type { ChartRes } from '../../../shared/market';
-import { alertSummary, BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, kindLabel, lowerHighLabel, SETUP_KEYS, SETUP_LABEL } from '../../../shared/rebound';
+import { alertSummary, BONUS_KEYS, BONUS_LABEL, COND_KEYS, COND_LABEL, hhmm, kindLabel, lowerHighLabel, SETUP_KEYS, SETUP_LABEL, vwapHoldLabel } from '../../../shared/rebound';
 import type { KakaoState, ReboundHistoryItem } from '../../../preload/index';
 
 const KST = 9 * 3600000;
@@ -218,7 +218,7 @@ export function HistoryTab() {
             <p className="rb-hist-ind">
               RSI {num(cur.res.snap.rsi)} / {num(cur.res.snap.rsiSignal)} · MACD {num(cur.res.snap.macd)} / {num(cur.res.snap.macdSignal)} · DI+ {num(cur.res.snap.diPlus)} / DI- {num(cur.res.snap.diMinus)} / ADX {num(cur.res.snap.adx)}
               <br />
-              MA5 각도 {num(cur.res.snap.angle)}° · VWAP 대비 {num(cur.res.snap.vwapPct, 2)}% · MA5 {num(cur.res.snap.ma5, 0)} / MA20 {num(cur.res.snap.ma20, 0)} / MA60 {num(cur.res.snap.ma60, 0)}
+              MA5 각도 {num(cur.res.snap.angle)}° · VWAP 대비 {num(cur.res.snap.vwapPct, 2)}%{vwapHoldLabel(cur.res.snap.vwapHold) ? ` (${vwapHoldLabel(cur.res.snap.vwapHold)})` : ''} · MA5 {num(cur.res.snap.ma5, 0)} / MA20 {num(cur.res.snap.ma20, 0)} / MA60 {num(cur.res.snap.ma60, 0)}
             </p>
             {cur.kakao && <p className={cur.kakao === 'sent' ? 'rb-ok' : 'rb-warn'}>{cur.kakao === 'sent' ? '카카오톡으로 전송했습니다.' : `카카오톡 전송 실패: ${cur.kakaoError || ''}`}</p>}
             <div className="rb-hist-actions">

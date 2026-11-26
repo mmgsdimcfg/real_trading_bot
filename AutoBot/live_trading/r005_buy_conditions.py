@@ -1470,6 +1470,19 @@ def _edge_mode_gate(config):
     return _EDGE_MODE_GATE
 
 
+def _edge_require_promoted() -> bool:
+    import r001_define_config as _cfg
+    return bool(getattr(_cfg, "EDGE_LIVE_REQUIRE_PROMOTED", True))
+
+
+def _edge_model_promoted(config) -> bool:
+    """[2026-11-27] the model the edge gate has loaded was promoted by g014 (meta "promoted" is exactly True)"""
+    try:
+        return (_edge_mode_gate(config).model.meta or {}).get("promoted") is True
+    except Exception:
+        return False
+
+
 def _e09_edge_ai_signal(ctx: BuyContext) -> bool:
     """[2026-11-12] "edge" 모드 매수 신호(사용자 요청: Edge AI 메타 모델만으로 매매). 모델이 학습한 이벤트와 같은 정의로 판단한다:
     정규장 + 최신 확정 1분봉에서 1분 하이브리드 트리거(r011.hybrid_trigger_with_context, g013 과 동일) + 모델 확률 >= 기준.
@@ -1520,6 +1533,10 @@ def _e09_edge_ai_signal(ctx: BuyContext) -> bool:
         return reject(f"NO_PROB_{decision.reason}")
     if decision.prob < decision.threshold:
         return reject(f"LOW_PROB_p={decision.prob:.3f}_LT_{decision.threshold:.3f} | {trig_reason}")
+    # [2026-11-27] orders of the edge signal only from a model that passed g014's promotion check (r001 EDGE_LIVE_REQUIRE_PROMOTED).
+    # Judged after the probability, so the line is written only for a bar that would have been bought. An unreadable meta = not promoted
+    if _edge_require_promoted() and not _edge_model_promoted(ctx.config):
+        return reject(f"MODEL_NOT_PROMOTED_p={decision.prob:.3f}_thr={decision.threshold:.3f} | {trig_reason}")
     ctx.trigger_flag = "P"
     ctx.trigger_reason = "EDGE_AI_SIGNAL"
     ctx.trigger_info = info

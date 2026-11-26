@@ -631,7 +631,18 @@ export function ControlView() {
   const liveLimits = control.edgeLiveLimits;
   const liveSummary = parseEdgeLiveSummary(st);
   const liveHeld = !!liveSummary && (liveSummary.held.length > 0 || liveSummary.openBuys.length > 0);
+  // [2026-11-27] real Edge AI orders only from a model that passed the promotion check (server r001 EDGE_LIVE_REQUIRE_PROMOTED:
+  // r016 refuses to switch it on, r003 refuses each signal). undefined = model info not loaded yet - the server decides
+  const modelNotPromoted = edgeModel !== undefined && !edgeModel?.promoted;
   const setEdgeLive = async (on: boolean) => {
+    if (on && modelNotPromoted) {
+      window.alert(
+        'Edge AI 실제 매매를 켤 수 없습니다.\n\n' +
+          (edgeModel ? `현재 모델(${edgeModel.modelId})이 승격 심사를 통과하지 못했습니다 (검증 구간에서 통과 진입의 순손익이 0보다 크지 않음).` : '배포된 Edge AI 모델이 없습니다.') +
+          '\n실제 주문은 승격된 모델에서만 나갑니다. 모델은 매일 장 마감 후 다시 심사됩니다.\n가상 매매는 그대로 쓸 수 있습니다.',
+      );
+      return;
+    }
     if (on && autoSellMode !== 'all') {
       window.alert('Edge AI 실제 매매는 자동 매도가 "전체 자동"일 때만 켤 수 있습니다 (신규 Edge 매수의 조건).');
       return;
@@ -1017,7 +1028,17 @@ export function ControlView() {
                           <b>
                             실제 매매 <span className="tag live">LIVE</span>
                           </b>
-                          <span>{edgeLive ? (liveOn ? 'Edge AI 신호로 실제 주문 (규칙 매매와 병행)' : '실제 계좌로 주문 · 작은 한도 · 자동 매도가 전체일 때만') : '서버 코드 갱신 후 쓸 수 있습니다'}</span>
+                          <span className={edgeLive && modelNotPromoted ? 'warn-text' : undefined}>
+                            {!edgeLive
+                              ? '서버 코드 갱신 후 쓸 수 있습니다'
+                              : modelNotPromoted
+                                ? liveOn
+                                  ? '모델 미승격 - 켜져 있어도 실제 주문은 나가지 않습니다'
+                                  : '모델 미승격 - 승격된 모델에서만 켤 수 있습니다'
+                                : liveOn
+                                  ? 'Edge AI 신호로 실제 주문 (규칙 매매와 병행)'
+                                  : '실제 계좌로 주문 · 작은 한도 · 자동 매도가 전체일 때만'}
+                          </span>
                         </span>
                       </label>
                       <label

@@ -197,6 +197,8 @@ STEPS: dict[str, Step] = {
     "gh52": Step("gh52", lambda a, rc: _py("g048_gh52_forward_log.py", "--date", a.date, "--evaluate"), required=False),
     # [2026-11-21] HI52 swing paper account + random benchmark account (next-open plan frozen each evening; no orders)
     "hi52acct": Step("hi52acct", lambda a, rc: _py("g049_hi52_paper_account.py", "--date", a.date), required=False),
+    # [2026-11-27] "plunge, VWAP reclaimed and held" forward log (rule fixed in g055; no orders, no KIS call)
+    "vwaplog": Step("vwaplog", lambda a, rc: _py("g055_vwap_reclaim_log.py", "--date", a.date), required=False),
     "scan": Step("scan", lambda a, rc: _py("g002_data_scan_trade_candidates.py", "--date", a.date, "--no-export-watchlist",
                                            *(["--notify-email"] if a.email else []))),
     # r004 <- <runtime>/data/D/_D_picks.txt through r016 (write lock, backup, history, for_trading_day header, collector note)
@@ -221,10 +223,10 @@ JOBS: dict[str, dict] = {
     "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check"]},
     "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
     "postclose": {"title": "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))",
-                  "steps": ["collect", "history", "hi52", "gh52", "hi52acct", "scan", "picklog", "apply"]},
+                  "steps": ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "apply"]},
 }
 
-STEP_SWITCH = {"collect": "collect", "history": "collect", "hi52": "collect", "gh52": "collect", "hi52acct": "collect", "scan": "scan", "picklog": "scan", "apply": "apply"}  # step -> JobArgs flag
+STEP_SWITCH = {"collect": "collect", "history": "collect", "hi52": "collect", "gh52": "collect", "hi52acct": "collect", "vwaplog": "collect", "scan": "scan", "picklog": "scan", "apply": "apply"}  # step -> JobArgs flag
 
 
 def job_steps(name: str, args: JobArgs) -> list[Step]:

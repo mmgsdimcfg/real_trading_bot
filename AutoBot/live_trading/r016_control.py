@@ -386,6 +386,15 @@ def edge_live_summary(paths: ControlPaths) -> dict | None:
     }
 
 
+def edge_model_promoted(paths: ControlPaths) -> bool | None:
+    """[2026-11-27] `promoted` of <runtime>/edge_ai/current_meta.json; None = no readable model"""
+    try:
+        meta = json.loads((paths.runtime_root / "edge_ai" / "current_meta.json").read_text(encoding="utf-8"))
+        return meta.get("promoted") is True
+    except Exception:
+        return None
+
+
 EDGE_LIVE_GATE_KEYS = ("EDGE_ONLY_MODE", "AUTO_SELL_MODE", "TRADING_STRATEGY_MODE")
 
 
@@ -419,6 +428,10 @@ def validate_edge_live(accepted: dict, overrides: dict, paths: ControlPaths) -> 
     if not touched:
         return rejected
     live = bool(eff("EDGE_LIVE_ORDERS"))
+    # [2026-11-27] switching it on needs a promoted model (r001 EDGE_LIVE_REQUIRE_PROMOTED; r003 judges it again on every signal)
+    need_promoted = bool(getattr(r001, "EDGE_LIVE_REQUIRE_PROMOTED", False))
+    if accepted.get("EDGE_LIVE_ORDERS") is True and need_promoted and edge_model_promoted(paths) is not True:
+        rejected["EDGE_LIVE_ORDERS"] = "the Edge AI model is not promoted (g014) - live orders stay off; paper trading still works"
     sell = str(eff("AUTO_SELL_MODE")).strip().lower()
     strategy = str(eff("TRADING_STRATEGY_MODE")).strip().lower()
     if live and sell != "all":

@@ -897,6 +897,38 @@ class EdgeLiveTest(unittest.TestCase):
                          ("_008_max_open_positions | MAX_OPEN_POSITIONS open=6 max=6", 600.0))
         self.assertEqual(note(mock.Mock(no=24, func_name="_024_x"), []), ("_024_x", 0.0))
         self.assertEqual(note(None, []), ("cond_0", 600.0))
+        self.assertEqual(note(e09, [rej + "MODEL_NOT_PROMOTED_p=0.400_thr=0.331 | CROSS"])[1], 600.0)
+
+    def test_edge_orders_need_a_promoted_model(self):
+        """[2026-11-27] r001 EDGE_LIVE_REQUIRE_PROMOTED: the signal is refused unless the loaded model's meta says promoted: true"""
+        import r001_define_config as cfg
+        import r005_buy_conditions as r005
+        self.assertIs(cfg.EDGE_LIVE_REQUIRE_PROMOTED, True)
+        for meta, want in (({"promoted": True}, True), ({"promoted": False}, False), ({}, False), (None, False), ({"promoted": "true"}, False)):
+            with mock.patch.object(r005, "_edge_mode_gate", return_value=mock.Mock(model=mock.Mock(meta=meta))):
+                self.assertIs(r005._edge_model_promoted(None), want, meta)
+        with mock.patch.object(r005, "_edge_mode_gate", side_effect=RuntimeError("no model")):
+            self.assertIs(r005._edge_model_promoted(None), False)
+        with mock.patch.object(cfg, "EDGE_LIVE_REQUIRE_PROMOTED", False):
+            self.assertIs(r005._edge_require_promoted(), False)
+        self.assertIs(r005._edge_require_promoted(), True)
+
+    def test_the_control_cli_does_not_arm_edge_live_orders_on_an_unpromoted_model(self):
+        import json
+        import r016_control as r016
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = mock.Mock(runtime_root=Path(tmp))
+            base = {"AUTO_SELL_MODE": "all", "TRADING_STRATEGY_MODE": "normal", "EDGE_ONLY_MODE": "paper"}
+            self.assertIsNone(r016.edge_model_promoted(paths))
+            self.assertIn("not promoted", r016.validate_edge_live({"EDGE_LIVE_ORDERS": True}, dict(base), paths)["EDGE_LIVE_ORDERS"])
+            (Path(tmp) / "edge_ai").mkdir()
+            meta = Path(tmp) / "edge_ai" / "current_meta.json"
+            meta.write_text(json.dumps({"promoted": False}), encoding="utf-8")
+            self.assertIn("not promoted", r016.validate_edge_live({"EDGE_LIVE_ORDERS": True}, dict(base), paths)["EDGE_LIVE_ORDERS"])
+            self.assertEqual(r016.validate_edge_live({"EDGE_LIVE_ORDERS": False}, dict(base), paths), {})      # switching off is always allowed
+            self.assertEqual(r016.validate_edge_live({"EDGE_LIVE_ORDER_KRW": 100000}, dict(base, EDGE_LIVE_ORDERS=True), paths), {})
+            meta.write_text(json.dumps({"promoted": True}), encoding="utf-8")
+            self.assertEqual(r016.validate_edge_live({"EDGE_LIVE_ORDERS": True}, dict(base), paths), {})
 
 
 if __name__ == "__main__":
