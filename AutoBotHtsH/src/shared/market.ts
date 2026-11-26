@@ -156,5 +156,29 @@ export const INDEXES: { code: string; name: string }[] = [
   { code: '2001', name: 'KOSPI200' },
 ];
 
+/** [2026-11-26] The index window's Nasdaq-100 card (user 2026-11-26: E-mini Nasdaq 100 futures as a reference). The KIS CME futures feed
+ *  is refused for the account (EGW00550, paid subscription), so the card shows this KRX-listed ETF: during the regular session its
+ *  5-minute returns move with the futures (correlation about 0.9, FX included). Display only - no trading decision or alert reads it
+ *  (AutoBot/nq_futures_indicator_plan_20261126.md). */
+export const NQ_PROXY = { code: '133690', name: '나스닥100 (ETF)', full: 'TIGER 미국나스닥100' } as const;
+
+/** % change of the newest bar's close against the close `minutes` earlier, from bars of ONE day (bar start times, ascending).
+ *  null when the day has no bar that old yet or the newest bar is older than `maxAgeMs` at `now` (a stale value is not shown). */
+export function retOverMinutes(bars: { t: number; c: number }[], minutes: number, now: number, maxAgeMs = 5 * 60_000): number | null {
+  if (!bars.length) return null;
+  const last = bars[bars.length - 1];
+  if (now - last.t > maxAgeMs + 60_000 || now < last.t) return null;
+  const day = Math.floor((last.t + 9 * 3600_000) / 86_400_000); // KST day
+  const want = last.t - minutes * 60_000;
+  let ref: { t: number; c: number } | null = null;
+  for (const b of bars) {
+    if (Math.floor((b.t + 9 * 3600_000) / 86_400_000) !== day) continue;
+    if (b.t <= want) ref = b;
+    else break;
+  }
+  if (!ref || !(ref.c > 0) || want - ref.t > 5 * 60_000) return null;
+  return (last.c / ref.c - 1) * 100;
+}
+
 /** result wrapper over IPC */
 export type Res<T> = { ok: true; data: T } | { ok: false; error: string; code?: string };
