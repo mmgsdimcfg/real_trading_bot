@@ -7,6 +7,9 @@
  *   ONE editing state over every condition of both sides: edits made in several conditions are saved together with one 저장 (only
  *   the changed keys go to the server in one `set`, as everywhere). Nothing here decides a trade - it edits r001 values through r016.
  *   RuleSettingsPanel = the content (AutoBotHtsH shows it in its own MDI window), RuleSettingsModal = AutoBotH's dialog
+ * - [2026-11-27] type=fix - The list showed ON / OFF from a condition's first ENABLE_* key, which read as "the condition is off"
+ *   (09 1분봉 트리거 "OFF" was only its chase guard ENABLE_TRIPLE_CHASE_FROM_CROSS_GUARD). Now "옵션 on/total" with the keys in the
+ *   tooltip, and a note above the switches of the selected condition
  * - [2026-11-27] type=feat - StrategySettingsPanel / StrategySettingsModal (user request: "세부 설정" on the Edge AI and the VWAP trade
  *   cards too): the r001 values of that way of trading (shared/paper STRATEGY_SECTIONS) in sections with a line of what each does,
  *   read with `schema --all` and edited with the same editor and one 저장. The cards' own on / off switches are not in the list
@@ -40,14 +43,16 @@ export function RuleSettingsPanel() {
   const items = useMemo(() => editItemsFor(cur), [cur]);
   const editable = allItems.some((i) => i.editable);
 
-  // the value an ENABLE_* switch would have after 저장 (draft first, then the saved override, then the base)
-  const enabledOf = (c: Condition): boolean | null => {
-    const it = editItemsFor(c).find((i) => isEnableItem(i));
-    if (!it) return null;
-    const d = ed.drafts[it.key];
-    if (typeof d === 'boolean') return d;
-    return !!(it.has_override ? it.override : it.base);
-  };
+  // [2026-11-27] the ENABLE_* switches of a condition and what each would be after 저장 (draft, else the saved override, else the
+  // base). They are OPTIONS inside the condition (a guard, a sub-gate) - most conditions, the trigger above all, have no switch
+  // that turns the whole condition off, so the list shows "옵션 on/total", never a bare ON / OFF of the condition
+  const switchesOf = (c: Condition): { key: string; on: boolean }[] =>
+    editItemsFor(c)
+      .filter((i) => isEnableItem(i))
+      .map((it) => {
+        const d = ed.drafts[it.key];
+        return { key: it.key, on: typeof d === 'boolean' ? d : !!(it.has_override ? it.override : it.base) };
+      });
 
   if (!doc)
     return (
@@ -76,7 +81,8 @@ export function RuleSettingsPanel() {
         <ul className="rule-set-list">
           {conds.map((c) => {
             const its = editItemsFor(c);
-            const on = enabledOf(c);
+            const sw = switchesOf(c);
+            const nOn = sw.filter((x) => x.on).length;
             const dirty = its.some((i) => i.key in ed.changes || ed.errors[i.key]);
             return (
               <li key={condId(side, c)}>
@@ -86,7 +92,14 @@ export function RuleSettingsPanel() {
                   {its.some((i) => i.pending) && <i className="pend-dot">미적용</i>}
                   {its.some((i) => i.has_override) && <i className="ovr-mark" title="저장된 변경값이 있습니다">◆</i>}
                   {dirty && <i className="rs-dirty" title="저장하지 않은 변경" />}
-                  {on !== null && <span className={`tag ${on ? 'ok' : 'off'}`}>{on ? 'ON' : 'OFF'}</span>}
+                  {sw.length > 0 && (
+                    <span
+                      className={`tag ${nOn === sw.length ? 'ok' : 'off'}`}
+                      title={[`이 조건 안의 옵션 스위치 ${sw.length}개 중 ${nOn}개 켜짐 (조건 자체를 끄는 표시가 아닙니다)`, ...sw.map((x) => `${x.key} = ${x.on ? 'ON' : 'OFF'}`)].join('\n')}
+                    >
+                      옵션 {nOn}/{sw.length}
+                    </span>
+                  )}
                 </button>
               </li>
             );
@@ -101,6 +114,11 @@ export function RuleSettingsPanel() {
                 <span className="muted small"> · {STAGE_LABEL[cur.stage] || cur.stage} · {cur.func}</span>
               </h3>
               <p className="rs-desc">{cur.description}</p>
+              {items.some((i) => isEnableItem(i)) && (
+                <p className="muted small rs-switch-note">
+                  아래 ENABLE_* 스위치는 이 조건 안의 옵션(가드 · 하위 게이트)을 켜고 끕니다. 끈다고 조건 전체가 꺼지는 것은 아닙니다.
+                </p>
+              )}
               {items.length ? <ValuesEditor items={items} ed={ed} disabled={!connected || ed.saving} /> : <p className="muted">이 조건에는 바꿀 수 있는 설정값이 없습니다.</p>}
             </>
           )}

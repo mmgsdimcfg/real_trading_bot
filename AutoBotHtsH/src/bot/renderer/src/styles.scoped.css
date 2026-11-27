@@ -252,6 +252,8 @@
 .bot-root .rule-set-detail h3 { font-size: var(--fs); margin: 2px 0 6px; }
 .bot-root .rule-set-detail .rs-desc { font-size: var(--fs); color: var(--text-2); margin: 0 0 10px; line-height: 1.5; white-space: pre-wrap; }
 .bot-root .rule-set-foot { border-top: 1px solid var(--border); padding-top: 6px; }
+.bot-root .rule-set-detail .rs-switch-note { margin: 0 0 8px; }
+.bot-root .rule-set-list .tag { white-space: nowrap; }
 .bot-root .view.rule-set-view { padding: 10px 14px; display: flex; flex-direction: column; }
 /* [2026-11-27] Edge AI / VWAP trade settings (StrategySettingsPanel): sections of value rows, each with a line of what it does */
 .bot-root .modal.strat-set-modal { width: min(860px, 94vw); }
