@@ -256,14 +256,16 @@ async function serverDate(): Promise<string> {
   return d;
 }
 
-async function refreshConditions(): Promise<{ ok: boolean; error?: string }> {
+async function refreshConditions(): Promise<{ ok: boolean; error?: string; live?: boolean }> {
   try {
     const s = getSettings();
     conditions = await fetchConditions(activeClient(), mode === 'remote' ? r015Fallback(ssh, s.remoteRoot, s.pythonPath) : undefined);
     session?.setConditions(conditions);
     send('conditions', conditions);
     setStatus({ conditionsSource: conditions.source });
-    return { ok: true };
+    // [2026-11-27, Codex round 5] live = this answer is the server's own `conditions` (its buy rows carry apply_running), not the
+    // r015 / cached fallback - the caller that just stored a setting says so instead of "saved and shown"
+    return { ok: true, live: (conditions.buy || []).some((r) => 'apply_running' in r) };
   } catch (e) {
     setStatus({ conditionsSource: conditions.source, message: `조건 JSON: ${errMsg(e)} (캐시/내장본 사용)` });
     return { ok: false, error: errMsg(e) };

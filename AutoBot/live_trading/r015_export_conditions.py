@@ -88,7 +88,7 @@ def _value(name: str):
     return str(v)
 
 
-def _rows(conditions, describe_rows, frame_map=None):
+def _rows(conditions, describe_rows, frame_map=None, state_of=None):
     desc = {d["func"]: d for d in describe_rows}
     frame_map = frame_map or {}
     out = []
@@ -96,6 +96,9 @@ def _rows(conditions, describe_rows, frame_map=None):
         d = desc.get(c.func_name, {})
         defines = list(getattr(c, "related_defines", ()) or ())
         out.append({
+            # [2026-11-27] apply / off_by / switchable / locked_reason / prep: what the rule trade does with the condition under
+            # the settings this process read (r005.buy_condition_state - the same function the check loop's skip comes from)
+            **(state_of(c) if state_of is not None else {}),
             "order": order, "no": c.no, "func": c.func_name, "stage": getattr(c, "stage", getattr(c, "kind", "")), "title": c.title,
             "frame": frame_map.get(c.func_name, ""),
             "description": d.get("description", getattr(c, "description", "")),
@@ -115,7 +118,11 @@ def build() -> dict:
                    "enabled": bool(getattr(r001, "ENABLE_PRIOR_DAY_INDICATOR_WARMUP", False)),
                    "note": "전일 원본 1분봉 마지막 N개(및 그 3분 집계)를 당일 봉 앞에 붙여 지표 계산 - 당일 행만 사용"},
         "buy": _rows(r005.active_buy_conditions(), r005.describe_buy_conditions(),
-                     {**BUY_FRAME_BY_FUNC, "_009_hybrid_1min_trigger": "1m+tick" if str(getattr(r001, "ENTRY_TRIGGER_MODE", "")) == "triple" else "1m"}),
+                     {**BUY_FRAME_BY_FUNC, "_009_hybrid_1min_trigger": "1m+tick" if str(getattr(r001, "ENTRY_TRIGGER_MODE", "")) == "triple" else "1m"},
+                     state_of=r005.buy_condition_state),
+        # [2026-11-27] r001 BUY_CONDITION_OFF as stored / the numbers of it that are not honoured (locked or unknown)
+        "buy_condition_off": list(r005.buy_condition_off_requested()),
+        "buy_condition_off_ignored": list(r005.buy_condition_off_ignored()),
         "sell": _rows(r006.active_sell_conditions(), r006.describe_sell_conditions(), SELL_FRAME_BY_FUNC),
     }
 

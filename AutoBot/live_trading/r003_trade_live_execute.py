@@ -7472,6 +7472,16 @@ def _acquire_instance_lock() -> bool:
     return True
 
 
+def _buy_condition_state_snapshot() -> dict[str, str]:
+    """{condition function name: "on" | "off" | "record"} of the buy list this process runs (by function: a number means
+    another condition in the basic / edge lists). Never raises."""
+    try:
+        import r005_buy_conditions as _r005
+        return {str(c.func_name): str(_r005.buy_condition_state(c)["apply"]) for c in _r005.active_buy_conditions()}
+    except Exception:
+        return {}
+
+
 def _write_running_snapshot(*, dry_run: bool, env_dv: str, watch_file: Path, code_count: int) -> None:
     """r003_running.json: what this process actually runs with (not what the editable files say now)."""
     try:
@@ -7487,6 +7497,9 @@ def _write_running_snapshot(*, dry_run: bool, env_dv: str, watch_file: Path, cod
             "env_dv": env_dv,
             "risk_profile": (os.environ.get("AUTO_TRADING_RISK_PROFILE") or os.environ.get("RISK_PROFILE") or "neutral"),
             "overrides_file": str(getattr(_r001, "LIVE_OVERRIDES_PATH", "")),
+            # [2026-11-27] what this process does with each rule-trade buy condition (r005.buy_condition_state): the app shows
+            # it as the running state next to the stored settings
+            "buy_condition_state": _buy_condition_state_snapshot(),
             "overrides_applied": {k: (list(v) if isinstance(v, (tuple, set, frozenset)) else v)
                                   for k, v in (getattr(_r001, "LIVE_OVERRIDES_APPLIED", {}) or {}).items()},
             "overrides_errors": list(getattr(_r001, "LIVE_OVERRIDES_ERRORS", []) or []),
@@ -7531,6 +7544,17 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     atexit.register(_remove_running_snapshot)
     log("R003 START | initializing live executor")
     log(f"  [R003 MODE   ] TRADING_STRATEGY_MODE={TRADING_STRATEGY_MODE}")
+    try:                                          # [2026-11-27] per-condition applied / not applied (r001 BUY_CONDITION_OFF)
+        import r005_buy_conditions as _r005_off
+        _off = sorted(_r005_off.buy_condition_off())
+        _not_blocking = sorted(c.no for c in _r005_off.active_buy_conditions()
+                               if _r005_off.buy_condition_state(c)["apply"] != "on" and c.no not in _off)
+        log(f"  [R003 MODE   ] BUY_CONDITION_OFF={_off or '-'} (규칙 매매에서 적용하지 않는 조건)"
+            + (f" | 설정값 때문에 차단하지 않는 조건: {_not_blocking}" if _not_blocking else ""))
+        if _r005_off.buy_condition_off_ignored():
+            log(f"  [WARN        ] BUY_CONDITION_OFF 의 {list(_r005_off.buy_condition_off_ignored())} 은(는) 끌 수 없는 조건 / 없는 번호 - 무시하고 적용")
+    except Exception as exc:
+        log(f"  [WARN        ] BUY_CONDITION_OFF 상태 확인 실패: {exc}")
     log(f"  [R003 MODE   ] RULE_BUY_ENABLED={RULE_BUY_ENABLED}" + ("" if RULE_BUY_ENABLED else " (규칙 매매 꺼짐 - 신규 매수 주문 없음)"))
 
     try:

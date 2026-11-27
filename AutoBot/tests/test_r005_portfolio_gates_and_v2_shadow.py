@@ -173,8 +173,9 @@ class TestPortfolioGates(unittest.TestCase):
 
     def test_numbers_follow_evaluation_order(self):
         # [2026-11-08] AutoBotH plots conditions bottom-up in evaluation order - the numbers must count up with it
-        # [2026-11-27] _020 (Edge AI filter) is left out of the check list (user decision); its number stays free
-        self.assertEqual([c.no for c in r005.BUY_CONDITIONS], [n for n in range(1, 26) if n != 20])
+        # [2026-11-27] the catalog has every number again; what is not applied is r001 BUY_CONDITION_OFF (default: 20)
+        self.assertEqual([c.no for c in r005.BUY_CONDITIONS], list(range(1, 26)))
+        self.assertEqual(sorted(r005.buy_condition_off()), [20])
         for c in r005.BUY_CONDITIONS:
             self.assertTrue(c.func_name.startswith(f"_{c.no:03d}_"), c.func_name)
         basic = [c.no for c in r005.BASIC_BUY_CONDITIONS]

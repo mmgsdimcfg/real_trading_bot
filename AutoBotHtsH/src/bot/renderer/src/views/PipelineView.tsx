@@ -57,12 +57,17 @@ interface CondData extends Record<string, unknown> {
   pendingMark?: boolean;
   /** an override is active for one of the values */
   ovr?: boolean;
+  /** [2026-11-27] the rule trade does not apply this condition ('off') / only records it ('record') - server state */
+  notApplied?: 'off' | 'record';
+  notAppliedWhy?: string;
 }
 
 /** node-header toggle -> PipelineView (keeps the memoized node free of callbacks in data) */
 const ToggleCtx = createContext<{ toggle: (node: string, key: string) => void; disabled: boolean }>({ toggle: () => undefined, disabled: true });
 
 interface NodeExt {
+  notApplied?: 'off' | 'record';
+  notAppliedWhy?: string;
   enableKey?: string;
   enableOn?: boolean;
   enableDirty?: boolean;
@@ -83,7 +88,7 @@ const CondNode = memo(function CondNode({ id, data }: NodeProps<Node<CondData>>)
   const tg = useContext(ToggleCtx);
   return (
     <div
-      className={`cnode st-${data.state} ${data.dashed ? 'dashed' : ''} ${data.diag ? 'diag-' + data.diag : ''} ${data.focus ? 'focus' : ''} ${data.sub ? 'sub' : ''}`}
+      className={`cnode st-${data.state} ${data.dashed ? 'dashed' : ''} ${data.diag ? 'diag-' + data.diag : ''} ${data.focus ? 'focus' : ''} ${data.sub ? 'sub' : ''} ${data.notApplied === 'off' ? 'not-applied' : ''}`}
       style={{ width: data.width }}
     >
       {!data.sub && <Handle type="target" position={Position.Top} />}
@@ -97,18 +102,23 @@ const CondNode = memo(function CondNode({ id, data }: NodeProps<Node<CondData>>)
             ◆
           </i>
         )}
+        {data.notApplied && (
+          <span className={`napply ${data.notApplied}`} title={data.notAppliedWhy}>
+            {data.notApplied === 'off' ? '미적용' : '기록만'}
+          </span>
+        )}
         {data.state !== 'none' && <span className="cnode-icon">{ICON[data.state]}</span>}
         {data.enableKey && (
           <button
             className={`ntoggle nodrag ${data.enableOn ? 'on' : 'off'} ${data.enableDirty ? 'dirty' : ''}`}
             disabled={tg.disabled}
-            title={`${data.enableKey} = ${data.enableOn ? 'true' : 'false'}${data.enableDirty ? ' (저장 전)' : ''} - 누르면 바꾸고 오른쪽 패널에서 저장`}
+            title={`옵션 스위치 ${data.enableKey} = ${data.enableOn ? 'true' : 'false'}${data.enableDirty ? ' (저장 전)' : ''} - 조건 안의 옵션입니다 (조건 전체를 끄는 스위치가 아님). 누르면 바꾸고 오른쪽 패널에서 저장`}
             onClick={(e) => {
               e.stopPropagation();
               tg.toggle(id, data.enableKey!);
             }}
           >
-            {data.enableOn ? 'ON' : 'OFF'}
+            옵션 {data.enableOn ? 'ON' : 'OFF'}
           </button>
         )}
       </div>
@@ -353,6 +363,7 @@ function readDetailW(): number {
 export function PipelineView() {
   const snap = useStore((s) => s.snapshot);
   const conditions = useStore((s) => s.conditions);
+  const isLive = useStore((s) => s.status.live);
   const side = useStore((s) => s.side);
   const setSide = useStore((s) => s.setSide);
   const selected = useStore((s) => s.selected);
@@ -433,6 +444,19 @@ export function PipelineView() {
       const meta = Object.values(c.values_meta || {});
       const en = nodeEnableKey(c);
       const e: NodeExt = { pendingMark: meta.some((v) => v.pending), ovr: meta.some((v) => v.has_override) };
+      // [2026-11-27] what the bot does with the condition. [Codex round 3] Only on the live day (a past day ran with the
+      // settings of that day, which are not known here): the running bot's own state when it reports one, else the stored
+      // settings - and the tooltip says which of the two it is
+      const run = c.apply_running;
+      const ap = side === 'buy' && isLive ? run ?? c.apply : undefined;
+      if (ap === 'off' || ap === 'record') {
+        e.notApplied = ap;
+        e.notAppliedWhy =
+          (run ? '실행 중인 봇 기준' : '저장된 설정 기준 (실행 중인 봇의 상태는 확인할 수 없음)') +
+          ': 규칙 매매가 이 조건으로 매수를 막지 않습니다' +
+          (!run && (c.off_by || []).length ? ` (${(c.off_by || []).join(', ')})` : '') +
+          ' - 제어 탭 > 규칙 매매 > 세부 설정';
+      }
       if (en) {
         const saved = savedValue(en) === true;
         const on = k === condKey && en.key in ed.drafts ? ed.drafts[en.key] === true : saved;
@@ -441,7 +465,7 @@ export function PipelineView() {
       m.set(k, e);
     }
     return m;
-  }, [conds, condKey, ed.drafts]);
+  }, [conds, condKey, ed.drafts, isLive, side]);
 
   const toggleCtx = {
     disabled: !canEdit,

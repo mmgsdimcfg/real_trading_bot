@@ -619,6 +619,61 @@ export function isPercentUnitKey(key: string): boolean {
   return PERCENT_UNIT_PCT.some((re) => re.test(key));
 }
 
+/** [2026-11-27] per-condition applied / not applied of the rule trade (server r001 BUY_CONDITION_OFF, r005.buy_condition_state) */
+export const BUY_CONDITION_OFF_KEY = 'BUY_CONDITION_OFF';
+export type CondApply = 'on' | 'off' | 'record';
+export const COND_APPLY_KO: Record<CondApply, string> = { on: '적용', off: '미적용', record: '기록만' };
+export interface CondApplyInfo {
+  /** null = the server does not say (older server): nothing is claimed */
+  stored: CondApply | null;
+  running: CondApply | null;
+  /** the running bot does something else than the stored settings say: applied after an r003 restart */
+  restartPending: boolean;
+  switchable: boolean;
+  /** switched off as a whole (BUY_CONDITION_OFF) - as opposed to "its own settings make it pass" */
+  offByList: boolean;
+  /** the server says it cannot be switched off (switchable === false); false when the server says nothing about it */
+  locked: boolean;
+  /** the row comes from the server's live `conditions` answer (it carries apply_running, even null) - only then it may be edited */
+  editable: boolean;
+  /** the settings inside the condition that make it block nothing */
+  offBySettings: string[];
+  lockedReason: string | null;
+  prep: boolean;
+}
+export function condApplyInfo(c: object): CondApplyInfo {
+  return condApplyOf(c as { apply?: CondApply; apply_running?: CondApply | null; off_by?: string[]; switchable?: boolean; locked_reason?: string | null; prep?: boolean });
+}
+function condApplyOf(c: { apply?: CondApply; apply_running?: CondApply | null; off_by?: string[]; switchable?: boolean; locked_reason?: string | null; prep?: boolean }): CondApplyInfo {
+  const stored = c.apply === 'on' || c.apply === 'off' || c.apply === 'record' ? c.apply : null;
+  const running = c.apply_running === 'on' || c.apply_running === 'off' || c.apply_running === 'record' ? c.apply_running : null;
+  const offBy = Array.isArray(c.off_by) ? c.off_by.map(String) : [];
+  return {
+    stored,
+    running,
+    restartPending: stored !== null && running !== null && stored !== running,
+    switchable: stored !== null && c.switchable === true,
+    locked: stored !== null && c.switchable === false,
+    editable: stored !== null && c.switchable === true && 'apply_running' in c,
+    offByList: offBy.includes(BUY_CONDITION_OFF_KEY),
+    offBySettings: offBy.filter((x) => x !== BUY_CONDITION_OFF_KEY),
+    lockedReason: typeof c.locked_reason === 'string' && c.locked_reason ? c.locked_reason : null,
+    prep: c.prep === true,
+  };
+}
+/** [Codex round 3] one condition switched by the SERVER inside its write lock, from the list stored at that moment:
+ *  `set BUY_CONDITION_SWITCH={"no": N, "apply": bool}` (r016). The app never sends the whole list. */
+export const BUY_CONDITION_SWITCH_KEY = 'BUY_CONDITION_SWITCH';
+export const buyConditionSwitch = (no: number, apply: boolean): Record<string, unknown> => ({ [BUY_CONDITION_SWITCH_KEY]: { no, apply } });
+
+/** the BUY_CONDITION_OFF list after switching condition `no` on (apply = true) or off - sorted, no duplicates (display only) */
+export function nextBuyConditionOff(current: number[] | undefined, no: number, apply: boolean): number[] {
+  const set = new Set((current || []).filter((n) => Number.isInteger(n)));
+  if (apply) set.delete(no);
+  else set.add(no);
+  return [...set].sort((a, b) => a - b);
+}
+
 /** "= 0.40%" next to *_PCT values: ratio keys (0.004) x 100, percent-unit keys (0.5 = 0.5 %) as they are */
 export function pctHint(key: string, v: unknown): string {
   if (!/_PCT$/.test(key) || typeof v !== 'number' || !Number.isFinite(v)) return '';

@@ -277,6 +277,23 @@ def read_overrides(paths: ControlPaths) -> dict:
     return dict(data) if isinstance(data, dict) else {}
 
 
+def read_overrides_strict(paths: ControlPaths) -> dict | None:
+    """[2026-11-27, Codex round 4 / 5] the stored overrides for a command that REWRITES the file: None when the file is there but
+    cannot be read as a JSON object (read_overrides() answers {} for it - rewriting from that would drop every other stored
+    value). ONE read: what is judged is what is merged and written back."""
+    if not paths.overrides.is_file():
+        return {}
+    try:
+        data = _json_loads(paths.overrides.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("overrides"), dict):
+        return dict(data["overrides"])
+    return dict(data)
+
+
 def write_overrides(paths: ControlPaths, overrides: dict, by: str) -> None:
     payload = {"updated_at": datetime.now().isoformat(timespec="seconds"), "updated_by": by,
                "overrides": {k: overrides[k] for k in sorted(overrides)}}
@@ -342,8 +359,56 @@ CHOICE_KEYS = {
 }
 
 
-def validate_assignments(assignments: dict) -> tuple[dict, dict]:
-    """Returns (accepted {key: value}, rejected {key: reason}) using the same rules as r001."""
+BUY_CONDITION_SWITCH_KEY = "BUY_CONDITION_SWITCH"
+
+
+def buy_condition_switch(current, switch) -> tuple[list[int] | None, str | None]:
+    """(the new BUY_CONDITION_OFF list, None) or (None, why not). current = the list stored now (any iterable); numbers of it that
+    are not honoured (locked / unknown / not whole numbers) are left out of the new list."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        import r005_buy_conditions as r005  # noqa: E402
+    if not isinstance(switch, dict) or isinstance(switch.get("no"), bool) or not isinstance(switch.get("no"), int) \
+            or not isinstance(switch.get("apply"), bool):
+        return None, 'expected {"no": <condition number>, "apply": true | false}'
+    no = int(switch["no"])
+    known = {c.no for c in r005.BUY_CONDITIONS}
+    if no not in known:
+        return None, f"unknown condition number: {no}"
+    if no in r005.LOCKED_BUY_CONDITIONS:
+        return None, f"condition {no} cannot be switched off ({r005.LOCKED_BUY_CONDITIONS[no]})"
+    keep = {int(n) for n in (current or ()) if isinstance(n, int) and not isinstance(n, bool)
+            and n in known and n not in r005.LOCKED_BUY_CONDITIONS}
+    if switch["apply"]:
+        keep.discard(no)
+    else:
+        keep.add(no)
+    return sorted(keep), None
+
+
+def _buy_condition_off_error(value) -> str | None:
+    """why a BUY_CONDITION_OFF value is refused (None = fine): whole numbers of existing rule-trade conditions that are not locked"""
+    with contextlib.redirect_stdout(io.StringIO()):
+        import r005_buy_conditions as r005  # noqa: E402
+    if not isinstance(value, list):
+        return "expected a list of condition numbers"
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in value):
+        return "condition numbers must be whole numbers"
+    known = {c.no for c in r005.BUY_CONDITIONS}
+    unknown = sorted(set(value) - known)
+    if unknown:
+        return f"unknown condition number(s): {unknown}"
+    locked = sorted(n for n in set(value) if n in r005.LOCKED_BUY_CONDITIONS)
+    if locked:
+        return "condition(s) that cannot be switched off: " + ", ".join(f"{n} ({r005.LOCKED_BUY_CONDITIONS[n]})" for n in locked)
+    return None
+
+
+def validate_assignments(assignments: dict, strict: bool = True) -> tuple[dict, dict]:
+    """Returns (accepted {key: value}, rejected {key: reason}) using the same rules as r001.
+    strict (what `set` is asked to store): also the rules r016 adds - condition numbers of BUY_CONDITION_OFF, value lists.
+    strict=False (the overrides FILE as r001 will read it at the next start): r001's own rules only - a hand-edited
+    BUY_CONDITION_OFF with a locked number is loaded by r001 and that number is ignored at run time (r005.buy_condition_off),
+    so the key is "applied", not "rejected"."""
     accepted: dict = {}
     rejected: dict = {}
     for key, value in assignments.items():
@@ -357,8 +422,13 @@ def validate_assignments(assignments: dict) -> tuple[dict, dict]:
         if not r001.live_override_value_compatible(current, value):
             rejected[key] = f"type mismatch (expected {_type_name(current)}, got {_type_name(value)}; elements must match, no NaN/inf)"
             continue
+        if strict and key == "BUY_CONDITION_OFF":       # [2026-11-27] only known, switchable condition numbers
+            why = _buy_condition_off_error(value)
+            if why:
+                rejected[key] = why
+                continue
         choices = CHOICE_KEYS.get(key)
-        if choices and str(value).strip().lower() not in choices:   # [2026-11-27] a key with a fixed list of values
+        if strict and choices and str(value).strip().lower() not in choices:   # [2026-11-27] a key with a fixed list of values
             rejected[key] = f"must be one of {' / '.join(choices)}"
             continue
         accepted[key] = value
@@ -555,7 +625,7 @@ def read_running_snapshot(paths: ControlPaths) -> dict | None:
 
 def desired_overrides(paths: ControlPaths) -> tuple[dict, dict]:
     """What r003 WOULD apply on the next start: the file contents minus what r001 would reject."""
-    return validate_assignments(read_overrides(paths))
+    return validate_assignments(read_overrides(paths), strict=False)
 
 
 def _same(a, b) -> bool:
@@ -1484,6 +1554,11 @@ def conditions(paths: ControlPaths, diff: dict, snapshot: dict | None) -> dict:
                              "base": _jsonable(base), "override": _jsonable(overrides.get(key)) if key in overrides else None,
                              "has_override": key in overrides, "running": _jsonable(running), "pending": key in pending}
             row["values_meta"] = meta
+            if side == "buy":
+                # [2026-11-27] what the RUNNING r003 does with the condition (its own snapshot); None = not running / an older r003
+                # (keyed by the condition FUNCTION: number 9 is another condition in the basic / edge lists)
+                run = ((snapshot or {}).get("buy_condition_state") or {}).get(str(row.get("func")))
+                row["apply_running"] = run if run in ("on", "off", "record") else None
     data["overrides"] = {k: _jsonable(v) for k, v in overrides.items()}
     data["override_errors"] = list(r001.LIVE_OVERRIDES_ERRORS) + [f"{k}: {v}" for k, v in diff["rejected_in_file"].items()]
     data["overrides_file"] = str(paths.overrides)
@@ -1829,11 +1904,35 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
             assignments = dict(parse_assignment(a) for a in args.assignments)
         except ValueError as exc:
             return _emit({"ok": False, "error": str(exc)}, 2)
+        # [2026-11-27, Codex round 3] BUY_CONDITION_SWITCH={"no": N, "apply": true|false}: ONE condition switched inside the write
+        # lock from the list stored right now (not from what a client read earlier) - nothing another client stored is lost, and
+        # numbers a hand edit left in the file that are not honoured anyway (locked / unknown) are dropped instead of blocking it
+        switch = assignments.pop(BUY_CONDITION_SWITCH_KEY, None)
         accepted, rejected = validate_assignments(assignments)
         disarmed = False
-        if accepted:
+        if accepted or switch is not None:
             with write_lock(paths):
-                overrides = read_overrides(paths)
+                overrides = read_overrides_strict(paths)
+                if overrides is None:
+                    # nothing is written: rewriting the file from an empty read would lose every other stored value
+                    _msg = f"the overrides file cannot be read ({paths.overrides}) - nothing was written; fix or remove the file"
+                    for _k in [*accepted, *([BUY_CONDITION_SWITCH_KEY] if switch is not None else [])]:
+                        rejected[_k] = _msg       # beside what validation already rejected
+                    return _emit({"ok": False, "accepted": {}, "rejected": rejected, "restart_required": False,
+                                  "edge_live_disarmed": False, "error": _msg}, 2)
+                if switch is not None:
+                    # the list r001 will really use at the next start: the stored value when r001 accepts it (type check), else
+                    # the base value - a stored value r001 rejects as a whole is not a source of numbers [Codex round 4]
+                    _base = base_value("BUY_CONDITION_OFF")
+                    _stored = overrides.get("BUY_CONDITION_OFF")
+                    _cur = _stored if "BUY_CONDITION_OFF" in overrides and r001.live_override_value_compatible(_base, _stored) else _base
+                    _new, _why = buy_condition_switch(_cur, switch)
+                    if _why:
+                        rejected[BUY_CONDITION_SWITCH_KEY] = _why
+                    elif "BUY_CONDITION_OFF" in accepted:
+                        rejected[BUY_CONDITION_SWITCH_KEY] = "do not send BUY_CONDITION_OFF and BUY_CONDITION_SWITCH together"
+                    else:
+                        accepted["BUY_CONDITION_OFF"] = _new
                 for _k, _why in validate_edge_live(accepted, overrides, paths).items():   # [2026-11-25] Edge AI live rules
                     rejected[_k] = _why
                     accepted.pop(_k, None)

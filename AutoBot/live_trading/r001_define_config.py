@@ -1574,6 +1574,15 @@ RULE_EXTENDED_VALUES = {
 	"TRIPLE_1MIN_BELOW_TURN_PASS": False,
 }
 RULE_VARIANT_APPLIED: dict[str, object] = {}   # key -> extended value written over the constant (empty for "normal")
+# [2026-11-27] 규칙 매매 매수 조건별 적용 여부 (사용자 요청: "설정에 따라 조건 적용 여부를 정확하게", Codex 검토 3회).
+#   여기에 번호가 있는 조건은 규칙 매매(normal / basic)의 매수 판정에서 적용하지 않는다(r005 check_buy_conditions 가 건너뜀).
+#   - 끌 수 없는 조건(r005 LOCKED_BUY_CONDITIONS: 1, 3, 4, 5, 6, 9, 11, 14, 19, 23, 24, 25)은 여기에 넣어도 무시된다(r016 set 은 거부).
+#     09(트리거)는 매수 신호 자체이고, 나머지는 뒤 조건 / 주문이 쓰는 값·예약을 만들거나 주문 안전장치다.
+#   - 2, 15 는 꺼도 뒤 조건이 읽는 값(세션 시작 시각 / 전일 종가·상승률)은 조용히 계산하고 차단만 하지 않는다.
+#   - Edge AI 매매 / VWAP 매매의 자체 조건 목록에는 적용하지 않는다.
+#   기본 (20,) = Edge AI 메타 라벨 필터 제외(2026-11-27 사용자 결정: 11월에 가장 많이 막은 필터). r003 재시작 후 적용.
+#   조건 안의 ENABLE_* 스위치(옵션)와는 별개다 - 실제 적용 상태는 r016 conditions 의 apply / off_by 가 알려 준다.
+BUY_CONDITION_OFF = (20,)
 # =============================================================================
 # [2026-11-27] VWAP 매매 (사용자 요청, r029_vwap_trade.py) - 규칙 매매 / Edge AI 매매 / 반등 알림과 나란한 네 번째 방식.
 #   매수: (1) 1분 종가와 현재가가 당일 VWAP 위 (2) 1분 MA5 상승 또는 BB 중심선 상승 (3) 60틱봉 MA5 > MA15 골든크로스가

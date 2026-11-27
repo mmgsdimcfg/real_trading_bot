@@ -1719,10 +1719,9 @@ BUY_CONDITIONS: tuple[BuyCondition, ...] = (
                   "OPENING_GAP_HARD_FLOOR_PCT", "OPENING_MIN_EARLY_VOLUME_RATIO"), _017_opening_gap_volume_gate),
     _COND_018,
     _COND_019,
-    # [2026-11-27] _COND_020 (Edge AI meta-label filter) is left out of the check list (user decision): it blocked the most rule
-    # signals in November (last 8 trading days: 1,260 of 1,364) and its kept / blocked entries did not differ out of sample
-    # (-0.08 %p, 95 % -0.27 .. +0.11). The filter source (_020_edge_ai_meta_filter, _COND_020, EDGE_AI_MODE) is untouched -
-    # put `_COND_020,` back on this line to restore it. The Edge AI trades (_e09, r022) do not use this filter.
+    # [2026-11-27] the Edge AI meta-label filter is in the catalog again; it is not APPLIED by default through r001
+    # BUY_CONDITION_OFF = (20,) (user decision: the filter that blocked the most in November) - see buy_condition_state()
+    _COND_020,
     _COND_021,
     BuyCondition(22, "_022_consecutive_poll_confirm", "PRE_ORDER", "연속 폴링 확인",
                  "모든 조건이 연속 BUY_CONSECUTIVE_CONFIRM_COUNT회 통과해야 매수 - 직전 통과와 간격 BUY_CONFIRM_MAX_GAP_SECONDS 이내, "
@@ -1764,9 +1763,165 @@ def active_buy_conditions() -> tuple[BuyCondition, ...]:
     return BASIC_BUY_CONDITIONS if str(TRADING_STRATEGY_MODE).lower() == "basic" else BUY_CONDITIONS
 
 
-def check_buy_conditions(ctx: BuyContext, conditions: tuple[BuyCondition, ...] | None = None) -> BuyDecision:
-    """신규 매수 메인 판정: 조건을 번호 순서대로 평가하고 처음 통과하지 못한 조건에서 멈춘다."""
-    for cond in (active_buy_conditions() if conditions is None else conditions):
+# ---------------------------------------------------------------------------
+# [2026-11-27] per-condition applied / not applied (r001 BUY_CONDITION_OFF) - rule trade only
+# ---------------------------------------------------------------------------
+# Never switched off, with the reason the app shows. 9 is the buy signal itself; the others make what later conditions / the
+# order read (eval_ctx, buy_reason, qty, session, the traded_today reservation) or are order safety (Codex review 1).
+LOCKED_BUY_CONDITIONS: dict[int, str] = {
+    1: "신규 진입 시간·세션 정책 (주문 가능 시간보다 좁음)",
+    3: "주문 함수(place_buy_order)가 같은 쿨다운을 다시 확인하므로 꺼도 주문은 막힘 - TRADE_COOLDOWN_MINUTES 로 조정",
+    4: "같은 봉 중복 주문 방지 (25번이 남긴 기록을 읽음)",
+    5: "보유·미체결 중복 매수 방지",
+    6: "감시목록의 손절 종목 탈락·재편입 정책과 묶여 있음 - HARD_STOP_BLOCK_REENTRY_TODAY 설정으로 켜고 끔",
+    9: "매수 신호 자체 - 끄면 신호 없이 나머지 조건만으로 매수하게 됨 (규칙 매매를 멈추려면 규칙 매매 스위치)",
+    11: "12·13·14번이 쓰는 3분봉 컨텍스트를 만듦",
+    14: "매수 사유(buy_reason)를 만듦 - 차단하지 않는 기록 단계",
+    19: "계좌 동기화가 오래되면 주문하지 않는 안전장치",
+    23: "주문 수량을 정함",
+    24: "오래된 현재가로 주문하지 않는 안전장치",
+    25: "호가 확인 + 매수 예약 (r003 주문이 이 예약에 의존)",
+}
+# Switched off, the values later conditions read are still computed (_prepare_only) - nothing else of the condition runs.
+# 2 -> ctx.session_open_dt (17), 15 -> ctx.prev_close / ctx.rise_ratio (17, 20)
+PREP_BUY_CONDITIONS: tuple[int, ...] = (2, 15)
+
+
+def _cfg_value(name: str, default=None):
+    """the constant as this module's condition functions see it (module global), else r001's"""
+    if name in globals():
+        return globals()[name]
+    import r001_define_config as _r001
+    return getattr(_r001, name, default)
+
+
+def buy_condition_off_requested() -> tuple[int, ...]:
+    """r001 BUY_CONDITION_OFF as numbers (anything that is not a whole number is dropped)"""
+    import r001_define_config as _r001
+    out = []
+    for v in (getattr(_r001, "BUY_CONDITION_OFF", ()) or ()):
+        if isinstance(v, bool) or not isinstance(v, int):
+            continue
+        out.append(int(v))
+    return tuple(dict.fromkeys(out))
+
+
+def buy_condition_off() -> frozenset[int]:
+    """the numbers the rule trade really skips: requested, known and not locked. Empty for the edge strategy (its own list)."""
+    if str(_cfg_value("TRADING_STRATEGY_MODE", "normal")).lower() == "edge":
+        return frozenset()
+    known = {c.no for c in BUY_CONDITIONS}
+    return frozenset(n for n in buy_condition_off_requested() if n in known and n not in LOCKED_BUY_CONDITIONS)
+
+
+def buy_condition_off_ignored() -> tuple[int, ...]:
+    """requested numbers that are NOT honoured (locked or unknown) - r003 warns about them at its start, r016 rejects them"""
+    known = {c.no for c in BUY_CONDITIONS}
+    return tuple(n for n in buy_condition_off_requested() if n not in known or n in LOCKED_BUY_CONDITIONS)
+
+
+def _inactive_reasons(no: int) -> tuple[list[str], bool]:
+    """(why the condition blocks nothing with the current values, record-only?) - the settings inside the condition that make it
+    pass every time. Checked against each function (Codex review 1 B)."""
+    v = _cfg_value
+    why: list[str] = []
+    record = False
+    if no == 2 and float(v("STARTUP_WARMUP_SECONDS", 0) or 0) <= 0:
+        why.append("STARTUP_WARMUP_SECONDS<=0")
+    elif no == 6 and not v("HARD_STOP_BLOCK_REENTRY_TODAY", False):
+        why.append("HARD_STOP_BLOCK_REENTRY_TODAY=False")
+    elif no == 7 and not v("ENABLE_DAILY_LOSS_LIMIT_GATE", False):
+        why.append("ENABLE_DAILY_LOSS_LIMIT_GATE=False")
+    elif no == 8 and not v("ENABLE_MAX_OPEN_POSITIONS_GATE", False):
+        why.append("ENABLE_MAX_OPEN_POSITIONS_GATE=False")
+    elif no == 10 and not v("ENABLE_MARKET_REGIME_GATE", False) and not v("ENABLE_MARKET_DAILY_TREND_GATE", False):
+        why += ["ENABLE_MARKET_REGIME_GATE=False", "ENABLE_MARKET_DAILY_TREND_GATE=False"]
+    elif no == 12 and not v("ENABLE_GC_VOLATILITY_GATE", False) and not v("ENABLE_MIN_ENTRY_ATR_FILTER", True):
+        why += ["ENABLE_GC_VOLATILITY_GATE=False", "ENABLE_MIN_ENTRY_ATR_FILTER=False"]
+    elif no == 15 and float(v("MAX_BUY_RISE_PCT_FROM_PREV_CLOSE", 0) or 0) <= 0:
+        why.append("MAX_BUY_RISE_PCT_FROM_PREV_CLOSE<=0")
+        record = float(v("MAX_BUY_RISE_SHADOW_PCT", 0) or 0) > 0   # [Codex round 3] the shadow record is still written
+    elif no == 16:
+        if not v("ENABLE_ANTI_CHASE_DAY_GATE", False):
+            why.append("ENABLE_ANTI_CHASE_DAY_GATE=False")
+        elif float(v("ANTI_CHASE_MAX_RISE_FROM_OPEN_PCT", 0) or 0) <= 0 and float(v("ANTI_CHASE_MAX_VWAP_GAP_PCT", 0) or 0) <= 0:
+            why.append("ANTI_CHASE_MAX_*_PCT<=0")
+    elif no == 17 and not v("ENABLE_OPENING_GAP_VOLUME_GATE", False):
+        why.append("ENABLE_OPENING_GAP_VOLUME_GATE=False")
+    elif no == 18 and not v("ENABLE_QUOTE_STATUS_GATE", False):
+        why.append("ENABLE_QUOTE_STATUS_GATE=False")
+    elif no == 19 and float(v("ACCOUNT_SYNC_MAX_STALE_SECONDS", 1) or 0) <= 0:
+        why.append("ACCOUNT_SYNC_MAX_STALE_SECONDS<=0")
+    elif no == 20:
+        mode = str(v("EDGE_AI_MODE", "off")).lower()
+        if mode == "off":
+            why.append("EDGE_AI_MODE=off")
+        elif mode == "shadow":
+            why.append("EDGE_AI_MODE=shadow")
+            record = True
+    elif no == 21 and not v("ENABLE_TICK_COST_GATE", False) and not v("ENABLE_SPREAD_GATE", False):
+        why += ["ENABLE_TICK_COST_GATE=False", "ENABLE_SPREAD_GATE=False"]
+    elif no == 22 and int(v("BUY_CONSECUTIVE_CONFIRM_COUNT", 1) or 1) <= 1:
+        why.append("BUY_CONSECUTIVE_CONFIRM_COUNT<=1")
+    return why, record
+
+
+def buy_condition_state(cond: BuyCondition) -> dict[str, object]:
+    """What the rule trade does with this condition under the current settings - the ONE place both the check loop's skip
+    (buy_condition_off) and the export for the app (r015 / r016 `conditions`) are derived from.
+      apply      "on" it can block a buy / "off" it blocks nothing / "record" it is evaluated and logged, never blocks
+      off_by     why it is off / record: "BUY_CONDITION_OFF" and / or the settings inside the condition
+      switchable False for LOCKED_BUY_CONDITIONS and for the strategy-specific rows (basic / edge triggers)
+      locked_reason  the reason of a locked condition (None otherwise)
+      prep       True: switched off it is still evaluated silently for the values later conditions read"""
+    no = int(cond.no)
+    known = _NORMAL_BY_NO.get(no) is cond
+    locked = LOCKED_BUY_CONDITIONS.get(no) if known else "이 전략의 고유 조건 (끌 수 없음)"
+    if locked is None and str(_cfg_value("TRADING_STRATEGY_MODE", "normal")).lower() == "edge":
+        locked = "Edge AI 단독 전략(TRADING_STRATEGY_MODE=edge)에는 조건별 적용 해제를 쓰지 않음"
+    off_by: list[str] = []
+    if known and no in buy_condition_off():
+        off_by.append("BUY_CONDITION_OFF")
+    inactive, record = _inactive_reasons(no) if known else ([], False)
+    off_by += inactive
+    if no == 14 and known:
+        apply = "record"
+    elif "BUY_CONDITION_OFF" in off_by:
+        apply = "off"
+    elif inactive:
+        apply = "record" if record else "off"
+    else:
+        apply = "on"
+    return {"apply": apply, "off_by": off_by, "switchable": locked is None, "locked_reason": locked,
+            "prep": bool(known and no in PREP_BUY_CONDITIONS)}
+
+
+def _prepare_only(cond: BuyCondition, ctx: BuyContext) -> None:
+    """a switched-off PREP condition: ONLY the ctx fields later conditions read are computed - the same service calls the
+    condition makes for them, nothing else of it (no verdict, no log line, no gate / shadow record, no state change).
+    [Codex round 2] the condition function itself is not called: _015 writes its shadow record through the services."""
+    if cond.no == 2:
+        ctx.session_open_dt = ctx.services.get_session_open_datetime(ctx.current_dt, ctx.nxt_tradeable)
+    elif cond.no == 15:
+        prev_close = ctx.services.fetch_prev_close(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+        ctx.prev_close = prev_close
+        ctx.rise_ratio = ctx.services.rise_from_prev_close(ctx.price, float(prev_close or 0.0))
+
+
+def check_buy_conditions(ctx: BuyContext, conditions: tuple[BuyCondition, ...] | None = None,
+                         apply_off: bool | None = None) -> BuyDecision:
+    """신규 매수 메인 판정: 조건을 번호 순서대로 평가하고 처음 통과하지 못한 조건에서 멈춘다.
+    [2026-11-27] 규칙 매매 목록(conditions=None)은 r001 BUY_CONDITION_OFF 의 조건을 건너뛴다(buy_condition_off). 다른 목록을
+    직접 넘기면(Edge / VWAP 자체 목록) 건너뛰지 않는다 - apply_off=True 로 같은 정책을 쓸 수 있다(시간 관찰 shadow)."""
+    rule = conditions is None
+    off = buy_condition_off() if (rule if apply_off is None else apply_off) else frozenset()
+    if 22 in off:
+        ctx.state.buy_confirm_state.pop(ctx.code, None)   # no stale count when the confirm step comes back on
+    for cond in (active_buy_conditions() if rule else conditions):
+        if cond.no in off and _NORMAL_BY_NO.get(cond.no) is cond:
+            if cond.no in PREP_BUY_CONDITIONS:
+                _prepare_only(cond, ctx)
+            continue
         if not cond.check(ctx):
             return BuyDecision(approved=False, failed=cond)
     return BuyDecision(approved=True)
@@ -1796,7 +1951,7 @@ def evaluate_entry_time_shadow(ctx: BuyContext, kind: str) -> bool:
         traded_today=set(ctx.state.traded_today),
     )
     shadow_ctx = replace(ctx, state=shadow_state, services=replace(ctx.services, log=lambda _msg: None), eval_mode=kind)
-    if not check_buy_conditions(shadow_ctx, SHADOW_ENTRY_CONDITIONS).approved:
+    if not check_buy_conditions(shadow_ctx, SHADOW_ENTRY_CONDITIONS, apply_off=True).approved:   # [2026-11-27] the same off policy
         return False
     if shadow_ctx.services.classify_buy_session(shadow_ctx.current_dt) == "regular":
         shadow_ctx.day_open, shadow_ctx.day_vwap = shadow_ctx.services.fetch_day_ref_prices(

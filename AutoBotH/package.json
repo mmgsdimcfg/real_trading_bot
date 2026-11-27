@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-27] type=feat - v2.3.51_001: 규칙 매매 매수 조건별 적용 여부를 서버 판정 그대로 표시 - 세부 설정 목록에 적용 / 미적용 / 기록만 / 필수 / 재시작 대기 표시, 조건을 고르면 이유(조건 전체 해제인지, 조건 안 설정값 때문인지, 끌 수 없는 이유)와 실행 중인 봇의 상태를 보여 주고 '조건 전체 사용' 체크로 조건 하나를 켜고 끔(서버가 끌 수 없는 조건은 거부). 파이프라인 노드에 미적용 / 기록만 표시, 노드 토글은 '옵션 ON/OFF' 로 표기",
     "[2026-11-27] type=fix - v2.3.50_002: 규칙 매매 세부 설정 조건 목록의 ON / OFF 가 조건 전체가 꺼진 것처럼 보이던 문제 수정 - '옵션 켜진 수/전체'로 표시하고(툴팁에 각 스위치), 스위치는 조건 안의 옵션이라는 안내 추가 (09 1분봉 트리거 'OFF' 는 추격 가드만 꺼진 것이었음)",
     "[2026-11-27] type=feat - v2.3.50_001: Edge AI 매매 / VWAP 매매 카드에 '세부 설정 →' 추가 - 그 매매 방식의 설정값(매수 신호 · 가상 매매 · 수집기 종목 · 청산 · 실제 주문 한도)을 묶음별로 설명과 함께 보여 주는 전용 창, 여러 값을 고친 뒤 '저장' 한 번으로 저장(r003 재시작 후 적용). 퍼센트로 입력하는 키(VWAP_*_PCT 등)의 '= x%' 표시 수정",
     "[2026-11-27] type=fix - v2.3.49_002: 확인창(설정 변경 확인 / 안내)을 닫은 뒤 입력칸에 글자가 입력되지 않던 문제 수정 - 화면의 alert / confirm 을 메인 프로세스 메시지 상자로 표시(Electron 자체 alert / confirm 은 Windows 에서 닫힌 뒤 키보드 포커스를 돌려주지 않음)",
@@ -152,7 +153,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.50",
+  "version": "2.3.51",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -200,7 +201,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

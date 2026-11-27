@@ -22,6 +22,19 @@ export interface Condition {
   values?: Record<string, unknown>;
   /** r016 only: per-value edit metadata (absent in r015 / bundled copies -> read-only display) */
   values_meta?: Record<string, ValueMeta>;
+  /** [2026-11-27] buy rows (server r005.buy_condition_state): what the rule trade does with the condition under the STORED settings
+   *  (= after the next r003 start): 'on' it can block, 'off' it blocks nothing, 'record' evaluated / logged but never blocks.
+   *  Absent on an older server */
+  apply?: 'on' | 'off' | 'record';
+  /** why it is off / record: 'BUY_CONDITION_OFF' (switched off as a whole) and / or the settings inside it ('ENABLE_X=False') */
+  off_by?: string[];
+  /** false = a required condition (locked_reason says why) or a strategy-specific row */
+  switchable?: boolean;
+  locked_reason?: string | null;
+  /** switched off it is still evaluated silently for the values later conditions read */
+  prep?: boolean;
+  /** what the RUNNING r003 does with it (its own snapshot); null = not running / an r003 from before this field */
+  apply_running?: 'on' | 'off' | 'record' | null;
 }
 
 export interface ValueMeta {
@@ -39,6 +52,9 @@ export interface ConditionsDoc {
   trading_strategy_mode?: string;
   buy: Condition[];
   sell: Condition[];
+  /** [2026-11-27] server r001 BUY_CONDITION_OFF as stored, and the numbers of it that are not honoured (locked / unknown) */
+  buy_condition_off?: number[];
+  buy_condition_off_ignored?: number[];
   /** r016 only: every stored override, entries r001 refused, and the override file path */
   overrides?: Record<string, unknown>;
   override_errors?: string[];

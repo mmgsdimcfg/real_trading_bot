@@ -213,9 +213,11 @@ class TestR005Hook(unittest.TestCase):
         order = [c.no for c in r005.BUY_CONDITIONS]
         # [2026-11-08] renumbered: opening gap _020 -> _017, edge AI _028 -> _020, consecutive confirm _021 -> _022
         # [2026-11-27] left out of the check list (user decision: the filter that blocked the most in November); the source stays
-        self.assertNotIn(20, order)
-        self.assertEqual((r005._COND_020.no, r005._COND_020.check), (20, r005._020_edge_ai_meta_filter))
-        self.assertLess(order.index(17), order.index(22))
+        self.assertLess(order.index(17), order.index(20))
+        self.assertLess(order.index(20), order.index(22))
+        # not applied by default: r001 BUY_CONDITION_OFF = (20,) (user decision: the filter that blocked the most in November)
+        self.assertIn(20, r005.buy_condition_off())
+        self.assertEqual(r005.buy_condition_state(r005._COND_020)["apply"], "off")
         self.assertNotIn(20, [c.no for c in r005.SHADOW_ENTRY_CONDITIONS])
         self.assertNotIn(20, [c.no for c in r005.BASIC_BUY_CONDITIONS])
 

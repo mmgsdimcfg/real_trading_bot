@@ -517,3 +517,20 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - 매수 조건 `VWAP_BUY_CONDITIONS`(r005): 공통 상태 조건 1~8, `_v09_vwap_signal`(가상 매매와 같은 r029.vwap_signal, 당일 VWAP 은 일중 기준가
   조회값), 23~25.
 - 앱: 제어 탭 VWAP 매매 카드 "실행 대상"에 실제 매매 체크(경고 2회) / 가상 매매 표시, 실제 주문 한도 입력과 오늘 현황.
+
+## 규칙 매매 매수 조건별 적용 여부 (2026-11-27, Codex 검토 4회)
+- r001 `BUY_CONDITION_OFF`(list[int], 기본 `[20]`): 규칙 매매(normal / basic)가 적용하지 않는 매수 조건 번호. `BUY_CONDITIONS` 에는 1~25 가
+  모두 있고(20 복귀), 실제 건너뛰기는 r005 `check_buy_conditions` 가 한다. Edge AI 매매 / VWAP 매매의 자체 목록에는 적용하지 않는다.
+- 끌 수 없는 조건(r005 `LOCKED_BUY_CONDITIONS`): 1, 3, 4, 5, 6, 9, 11, 14, 19, 23, 24, 25. 파일에 직접 넣어도 실행 시 무시하고 r003 이 경고한다.
+  2, 15 는 꺼도 뒤 조건이 읽는 값(세션 시작 시각 / 전일 종가·상승률)만 계산하고 조건 함수는 부르지 않는다.
+- r016 `set BUY_CONDITION_OFF=[..]`: 없는 번호 / 끌 수 없는 번호가 있으면 거부(`unknown condition number(s)` / `condition(s) that cannot be
+  switched off: ...`). 앱은 목록 전체를 보내지 않고 `set BUY_CONDITION_SWITCH={"no": N, "apply": true|false}` 를 쓴다 - r016 이 쓰기 잠금
+  안에서 지금 저장된 목록에 번호 하나만 넣고 뺀다(응답 `accepted.BUY_CONDITION_OFF` = 새 목록, 거부는 `rejected.BUY_CONDITION_SWITCH`).
+- r016 `conditions` 의 `buy` 각 행에 추가: `apply`("on" 차단 가능 / "off" 아무것도 막지 않음 / "record" 평가·기록만),
+  `off_by`(["BUY_CONDITION_OFF", "ENABLE_X=False", ...] - 조건 전체 해제와 조건 안 설정값을 구분), `switchable`(bool), `locked_reason`,
+  `prep`(bool), `apply_running`(실행 중인 r003 의 상태, 조건 함수 이름으로 연결. null = 꺼짐 / 이전 버전). 문서에 `buy_condition_off`,
+  `buy_condition_off_ignored`. `apply` 는 저장된 설정(다음 시작 기준)이다. `buy` 목록은 꺼진 조건도 포함한다(1~25).
+- r003 `r003_running.json` 에 `buy_condition_state`({조건 함수 이름: on|off|record}). 시작 로그 `[R003 MODE] BUY_CONDITION_OFF=[..]`.
+- 앱: 규칙 매매 세부 설정 목록에 적용 / 미적용 / 기록만 / 필수 / 재시작 대기 표시, 조건별 "조건 전체 사용" 체크. 파이프라인은 오늘(실시간)
+  화면에서만 미적용 / 기록만 표시. 조건 안의 `ENABLE_*` 는 "옵션 n/m" 으로 따로 표시한다.
+- 과거 데이터 재생(g003)은 r005 목록을 쓰지 않으므로 이 설정이 자동으로 반영되지 않는다.

@@ -253,6 +253,21 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 .rule-set-foot { border-top: 1px solid var(--border); padding-top: 6px; }
 .rule-set-detail .rs-switch-note { margin: 0 0 8px; }
 .rule-set-list .tag { white-space: nowrap; }
+/* [2026-11-27] applied / not applied per condition (server state) */
+.tag.apply-on { color: var(--st-pass, #2e9e5b); border-color: currentColor; }
+.tag.apply-off { color: var(--st-fail, #d05050); border-color: currentColor; }
+.tag.apply-record { color: var(--st-hold); border-color: currentColor; }
+.tag.lock { color: var(--text-3); border-color: var(--border); }
+.rule-set-list button.on .tag { color: inherit; border-color: currentColor; }
+.rs-apply { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 8px 10px; margin: 0 0 10px; display: flex; flex-direction: column; gap: 4px; }
+.rs-apply.apply-on { border-left-color: var(--st-pass, #2e9e5b); }
+.rs-apply.apply-off { border-left-color: var(--st-fail, #d05050); }
+.rs-apply.apply-record { border-left-color: var(--st-hold); }
+.rs-apply-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.cnode .napply { font-size: 10px; padding: 0 5px; border: 1px solid currentColor; border-radius: 3px; white-space: nowrap; }
+.cnode .napply.off { color: var(--st-fail, #d05050); }
+.cnode .napply.record { color: var(--st-hold); }
+.cnode.not-applied { opacity: 0.6; }
 .view.rule-set-view { padding: 10px 14px; display: flex; flex-direction: column; }
 /* [2026-11-27] Edge AI / VWAP trade settings (StrategySettingsPanel): sections of value rows, each with a line of what it does */
 .modal.strat-set-modal { width: min(860px, 94vw); }
