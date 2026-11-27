@@ -661,6 +661,10 @@ tr.ob-total td { font-weight: 600; border-bottom: none; }
 .grid th .sortable:hover { color: var(--text); }
 .grid th .th-sub { margin-left: 10px; font-weight: 400; color: var(--text-3); }
 .pc-bell { font-size: calc(var(--fs) + 2px); cursor: pointer; user-select: none; -webkit-user-select: none; }
+/* [2026-11-28] why the alert was raised, beside its bell */
+.pc-bell-note rect { fill: var(--panel, #fff); fill-opacity: 0.9; stroke: #f59e0b; stroke-width: 1; }
+.pc-bell-note text { font-size: 11px; fill: var(--text, #222); }
+.pc-bell-note text.head { font-weight: 700; }
 
 /* ---- [2026-11-26] order window + 매수 / 매도 on an order book price (user 2026-11-26) ---- */
 .ob-p.pick { cursor: pointer; position: relative; }

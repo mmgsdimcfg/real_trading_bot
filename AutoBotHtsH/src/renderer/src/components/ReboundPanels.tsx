@@ -43,6 +43,15 @@ export function splitDay(bars: Bar[], t: number): { day: Bar[]; warm: Bar[] } {
 
 type ChartOpts = { ind?: IndicatorKey[]; params?: IndicatorParams; style?: 'candle' | 'line' | 'ohlc'; vol?: boolean; sig?: boolean; tags?: boolean; paneH?: Record<string, number> };
 
+const REQUIRED_IND: IndicatorKey[] = ['ma', 'vwap', 'rsi', 'macd', 'adx'];
+
+/** [2026-11-28] the box beside the bell: what raised the alert, in a few lines (the alert text without the name line) */
+function bellNote(item: ReboundHistoryItem): string[] {
+  const body = alertSummary({ code: item.code, name: item.name, res: item.res }, 400).split('\n').slice(1);
+  const req = item.res.setup ? [] : [`필수 ${COND_KEYS.filter((k) => item.res.conds?.[k]?.ok).map((k) => COND_LABEL[k].slice(0, 1)).join('')} 충족`];
+  return [`🔔 ${kindLabel(item.res)}`, ...req, ...body].filter(Boolean).slice(0, 8);
+}
+
 /** [2026-11-23] 1-minute chart of the alert's day - same chart and settings as the chart window */
 function HistChart({ item }: { item: ReboundHistoryItem }) {
   // the chart window's choices (indicators, periods, style, volume, signals); its defaults when no chart window is open
@@ -74,15 +83,20 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
     return () => ro.disconnect();
   }, []);
   const chartH = Math.max(200, h);
-  const nOsc = ind.filter((k) => OSCILLATORS.includes(k)).length + (o.vol === false ? 0 : 1);
-  const oscH = Math.max(56, Math.min(100, Math.floor((chartH * 0.42) / Math.max(1, nOsc)) - 8));
-  // [2026-11-28] the VWAP line is always drawn here (user): the alert's "VWAP 대비" figures are read against it, whatever the chart
-  // window shows
+  // [2026-11-28] always drawn here (user), whatever the chart window shows: the VWAP line (the alert's "VWAP 대비" figures) and
+  // the indicators of the required conditions - B RSI, C MACD, D DI+ (ADX/DMI), E / F MA5 · MA20
   const shown = useMemo(() => {
-    const list = ind.filter((k) => k !== 'investor');
-    return list.includes('vwap') ? list : [...list, 'vwap' as IndicatorKey];
+    const list: IndicatorKey[] = ind.filter((k) => k !== 'investor');
+    for (const k of REQUIRED_IND) if (!list.includes(k)) list.push(k);
+    return list;
   }, [ind.join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  const bell = useMemo(() => [{ t, id: item.id, title: `${kindLabel(item.res)} 알림 · 봉 ${hhmm(t)}${item.res.setup ? '' : ` · 가점 ${item.res.score}점`}` }], [t, item.id, item.res.score, item.res.setup]);
+  const nOsc = shown.filter((k) => OSCILLATORS.includes(k)).length + (o.vol === false ? 0 : 1);
+  // more panes than the chart window may show (the required indicators): each one a little lower so the price pane keeps its room
+  const oscH = Math.max(44, Math.min(100, Math.floor((chartH * 0.5) / Math.max(1, nOsc)) - 8));
+  const bell = useMemo(
+    () => [{ t, id: item.id, title: `${kindLabel(item.res)} 알림 · 봉 ${hhmm(t)}${item.res.setup ? '' : ` · 가점 ${item.res.score}점`}`, note: bellNote(item) }],
+    [t, item],
+  );
   const loading = res.key !== key;
   return (
     <div className="rb-hist-chart">

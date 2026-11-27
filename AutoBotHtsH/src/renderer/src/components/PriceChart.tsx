@@ -153,7 +153,8 @@ interface Props {
   /** [2026-11-23] index mode: the first view shows the bar holding this time (epoch ms) at about 3/4 of the width (null view) */
   focusT?: number;
   /** [2026-11-23] alert marks: a bell above the bar holding time t (epoch ms) */
-  alerts?: { t: number; id: string; title: string }[];
+  /** `note` [2026-11-28]: lines written in a box beside the bell (why the alert was raised) */
+  alerts?: { t: number; id: string; title: string; note?: string[] }[];
   onAlertClick?: (id: string) => void;
   /** trend lines drawn by the user (bar time / price pairs) */
   tlines?: { t1: number; p1: number; t2: number; p2: number }[];
@@ -988,10 +989,31 @@ export function PriceChart(props: Props) {
               }
             }
             const y = Math.max(16, (bar ? model.sy(bar.h) : model.sy(model.hi)) - 8);
+            // [2026-11-28] the alert's reasons in a box beside the bell (user): right of it, left when it would leave the pane;
+            // it takes no mouse events (the chart under it stays usable)
+            const note = (a.note || []).filter(Boolean);
+            const lineH = 14;
+            const wide = (s: string) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 11.5 : 6.4), 0);
+            const bw = Math.min(W - 8, Math.max(0, ...note.map(wide)) + 14);
+            const bh = note.length * lineH + 8;
+            const bx = x + 12 + bw <= L + W ? x + 12 : Math.max(L + 2, x - 12 - bw);
+            const by = Math.max(4, y - 14 - bh);
             return (
-              <text key={a.id} x={x} y={y} textAnchor="middle" className="pc-bell" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), props.onAlertClick?.(a.id))}>
-                🔔<title>{a.title}</title>
-              </text>
+              <g key={a.id}>
+                {note.length > 0 && (
+                  <g className="pc-bell-note" pointerEvents="none">
+                    <rect x={bx} y={by} width={bw} height={bh} rx={4} />
+                    {note.map((ln, k) => (
+                      <text key={k} x={bx + 7} y={by + 15 + k * lineH} className={k === 0 ? 'head' : ''}>
+                        {ln}
+                      </text>
+                    ))}
+                  </g>
+                )}
+                <text x={x} y={y} textAnchor="middle" className="pc-bell" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), props.onAlertClick?.(a.id))}>
+                  🔔<title>{a.title}</title>
+                </text>
+              </g>
             );
           })}
 
