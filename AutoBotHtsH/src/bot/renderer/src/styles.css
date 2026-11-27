@@ -1168,3 +1168,13 @@ button.pick-chip:disabled { cursor: default; opacity: .6; }
 .method-log .log-item i { font-style: normal; color: var(--text-3); margin-right: 5px; }
 .method-log .log-item em { font-style: normal; font-weight: 600; color: var(--m); margin-right: 5px; }
 @media (max-width: 1250px) { .unit-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } .method-split { grid-template-columns: 1fr; } }
+
+/* [2026-11-27] 대상 구성 card (TargetCompose) */
+.tcompose { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 8px 12px; margin: 0 0 10px; font-size: 12.5px; }
+.tcompose .tc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.tcompose .tc-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+.tcompose .tc-size { display: inline-flex; align-items: center; gap: 5px; }
+.tcompose .tc-size input { width: 78px; padding: 3px 6px; }
+.tcompose p { margin: 6px 0 0; }
+.tcompose .tc-table { max-height: 360px; overflow: auto; padding: 0; margin-top: 8px; }
+.tcompose .tc-table td.reason { max-width: 320px; }

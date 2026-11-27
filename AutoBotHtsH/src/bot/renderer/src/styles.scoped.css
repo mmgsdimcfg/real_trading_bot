@@ -1161,3 +1161,13 @@
 .bot-root .method-log .log-item i { font-style: normal; color: var(--text-3); margin-right: 5px; }
 .bot-root .method-log .log-item em { font-style: normal; font-weight: 600; color: var(--m); margin-right: 5px; }
 @media (max-width: 1250px) { .bot-root .unit-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } .bot-root .method-split { grid-template-columns: 1fr; } }
+
+/* [2026-11-27] 대상 구성 card (TargetCompose) */
+.bot-root .tcompose { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 8px 12px; margin: 0 0 10px; font-size: var(--fs); }
+.bot-root .tcompose .tc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.bot-root .tcompose .tc-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+.bot-root .tcompose .tc-size { display: inline-flex; align-items: center; gap: 5px; }
+.bot-root .tcompose .tc-size input { width: 78px; padding: 3px 6px; }
+.bot-root .tcompose p { margin: 6px 0 0; }
+.bot-root .tcompose .tc-table { max-height: 360px; overflow: auto; padding: 0; margin-top: 8px; }
+.bot-root .tcompose .tc-table td.reason { max-width: 320px; }

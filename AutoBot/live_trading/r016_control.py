@@ -1513,6 +1513,19 @@ def apply_picks_to_watchlist(paths: ControlPaths, date: str, by: str, restart_co
 
     if not (len(date) == 8 and date.isdigit()):
         return {"ok": False, "error": f"bad date {date!r} (YYYYMMDD)"}
+    # [2026-11-27] per-method targets on automatic composition (user setting, default off): r004 becomes the composed union and
+    # the three target lists are stored with it. Off / no config: the picks are copied as before.
+    try:
+        import r031_method_targets as r031  # noqa: E402
+        _cfg, _state = r031.load_config(paths.config_dir)
+    except Exception:
+        _cfg, _state = {"auto": False}, "broken"
+    if _cfg.get("auto") and _state == "ok":
+        res = targets_apply(paths, by, date, restart_collector=restart_collector)
+        res["composed"] = True
+        if res.get("ok"):
+            res.update(count=len(res["composition"]["watch"]), picks_file=None)
+        return res
     pf, picks = r021.read_picks(r021.Paths(paths.runtime_root), date)
     if picks is None:
         return {"ok": False, "error": f"no picks file for {date} ({pf}) - run the scan (g002) for that date first"}
@@ -1522,9 +1535,134 @@ def apply_picks_to_watchlist(paths: ControlPaths, date: str, by: str, restart_co
     meta = {"scan_date": date, "for_trading_day": f"{nxt} (r014 next trading day)" if nxt else ""}
     out = write_watchlist(paths, picks, by, meta=meta)
     out.update(date=date, picks_file=str(pf), for_trading_day=nxt)
+    # [Codex review] target lists stored earlier (by hand, or by a composition before auto was switched off) are kept - say so
+    # when they leave some of the new picks out: those methods will not buy them
+    with contextlib.suppress(Exception):
+        _ov = read_overrides(paths)
+        _codes_now = {p["code"] for p in picks}
+        _left = {m: sorted(_codes_now - set(_ov.get(k) or [])) for m, k in r001.METHOD_TARGET_KEYS.items() if _ov.get(k)}
+        _left = {m: v for m, v in _left.items() if v}
+        if _left:
+            out["target_lists_note"] = ("stored target lists do not include some of these picks (those methods will not buy "
+                                        "them) - apply the composition or clear the lists")
+            out["picks_outside_targets"] = _left
     if restart_collector and out.get("collector_missing") and collector_status(paths, [p["code"] for p in picks])["running"]:
         out["collector_restart"] = collector_restart(paths, by)
     return out
+
+
+# ---------------------------------------------------------------------------
+# [2026-11-27] per-method target symbols composed from the scan (r031): A = the picks, rule = A + ranking up to 30,
+# Edge AI = A + the ranking after that up to 50, VWAP = the union; the user's always-include / always-exclude lists are kept
+# ---------------------------------------------------------------------------
+def _watchlist_scan_date(paths: ControlPaths) -> str | None:
+    for h in read_watchlist(paths)["header"]:
+        if h.startswith("# scan_date="):
+            d = h.split("=", 1)[1].split()[0].strip()
+            return d if len(d) == 8 and d.isdigit() else None
+    return None
+
+
+def targets_compose(paths: ControlPaths, date: str | None = None) -> dict:
+    """the composition for a scan date (default: the scan date r004 came from) with the stored config. Read only.
+    {ok, date, config, config_state, composition | error, stored: {method: [codes]}, watch_now: [codes]}"""
+    import r021_jobs as r021  # noqa: E402  (stdlib only)
+    import r031_method_targets as r031  # noqa: E402  (stdlib only)
+
+    cfg, state = r031.load_config(paths.config_dir)
+    overrides = read_overrides(paths)
+    stored = {m: list(overrides.get(k) or []) if isinstance(overrides.get(k), (list, tuple)) else [] for m, k in r001.METHOD_TARGET_KEYS.items()}
+    out = {"ok": True, "config": cfg, "config_state": state, "stored": stored, "tick_cap": r031.TICK_CAP,
+           # r003 polls at most this many watched symbols at a time (the rest wait in the backup pool and rotate in)
+           "active_size": int(getattr(r001, "ACTIVE_WATCHLIST_SIZE", 0) or 0),
+           "watch_now": [c["code"] for c in read_watchlist(paths)["codes"]]}
+    day = date or _watchlist_scan_date(paths)
+    out["date"] = day
+    if not day or not (len(day) == 8 and day.isdigit()):
+        return {**out, "ok": False, "error": "no scan date (r004 has no scan_date header) - give --date YYYYMMDD"}
+    pf, picks = r021.read_picks(r021.Paths(paths.runtime_root), day)
+    if not picks:
+        return {**out, "ok": False, "error": f"no picks for {day} ({pf}) - run the scan (g002) for that date first"}
+    scan_file = paths.runtime_root / "data" / day / f"_{day}_scan_all.md"
+    ranked = r031.parse_scan_all(scan_file)
+    is_fund = None
+    if cfg["exclude_funds"]:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                from r011_edge_ai import is_fund_product as is_fund  # noqa: E402
+        except Exception:
+            is_fund = None
+    names = {c["code"]: c["name"] for c in read_watchlist(paths)["codes"]}
+    comp = r031.compose(picks, ranked, cfg, is_fund, names)
+    comp["scan_file"] = str(scan_file) if ranked else None
+    comp["fund_filter"] = bool(cfg["exclude_funds"] and is_fund is not None)
+    return {**out, "composition": comp}
+
+
+def targets_apply(paths: ControlPaths, by: str, date: str | None = None, restart_collector: bool = False,
+                  expect: str | None = None) -> dict:
+    """compose and store: r004 <- the union, RULE_ / EDGE_ / VWAP_TARGET_CODES <- the three lists (effective after an r003
+    restart). Nothing is written when the composition fails or a list would be rejected."""
+    import r021_jobs as r021  # noqa: E402
+
+    out = targets_compose(paths, date)
+    if not out.get("ok"):
+        return out
+    comp = out["composition"]
+    day = out["date"]
+    if expect and comp.get("digest") != expect:
+        # [Codex review] what was confirmed is not what would be stored now (the config / the scan changed in between)
+        return {**out, "ok": False, "error": "the composition changed since it was shown - look at it again and apply"}
+    lists = {r001.METHOD_TARGET_KEYS[m]: sorted(comp["lists"][m]) for m in r001.METHOD_TARGET_KEYS}
+    for m, k in r001.METHOD_TARGET_KEYS.items():
+        if not comp["lists"][m]:
+            # an empty list would mean "everything" to r003 - never what a composition with exclusions means
+            return {**out, "ok": False, "error": f"the {m} list is empty - not applied (remove exclusions or switch the method off)"}
+    accepted, rejected = validate_assignments(lists)
+    if rejected:
+        return {**out, "ok": False, "error": "target lists rejected", "rejected": rejected}
+    if not comp["watch"]:
+        return {**out, "ok": False, "error": "nothing to watch"}
+    nxt = _next_trading_day(day, r021)
+    meta = {"scan_date": day, "for_trading_day": f"{nxt} (r014 next trading day)" if nxt else ""}
+    # [Codex review] the target lists first, the watchlist second: if the second write fails, r003 has lists that name symbols
+    # it does not watch (it buys fewer) - never a longer watchlist with no lists (every method buying every added symbol)
+    with write_lock(paths):
+        overrides = read_overrides_strict(paths)
+        if overrides is None:
+            return {**out, "ok": False, "error": f"the overrides file cannot be read ({paths.overrides}) - nothing was written"}
+        before = {k: overrides.get(k) for k in accepted}
+        overrides.update(accepted)
+        write_overrides(paths, overrides, by)
+        append_history(paths, "targets", {k: {"from": _jsonable(before.get(k)), "to": _jsonable(v)} for k, v in accepted.items()}, by)
+    try:
+        wl = write_watchlist(paths, comp["watch"], by, meta=meta)
+    except Exception as exc:
+        return {**out, "ok": False, "restart_required": True,
+                "error": f"the target lists were stored but the watchlist was NOT written ({type(exc).__name__}: {exc}) - apply again"}
+    res = {**out, "applied": True, "watchlist": wl, "restart_required": True, "for_trading_day": nxt,
+           "stored": {m: list(accepted[k]) for m, k in r001.METHOD_TARGET_KEYS.items()}}
+    codes = [e["code"] for e in comp["watch"]]
+    if restart_collector and wl.get("collector_missing") and collector_status(paths, codes)["running"]:
+        res["collector_restart"] = collector_restart(paths, by)
+    return res
+
+
+def targets_config(paths: ControlPaths, patch, by: str) -> dict:
+    """change the stored config (auto, sizes, exclude_funds, include / exclude per method). Stored only - `targets apply` (or the
+    post-close job with auto on) makes the lists."""
+    import r031_method_targets as r031  # noqa: E402
+
+    with write_lock(paths):
+        cfg, state = r031.load_config(paths.config_dir)
+        if state == "broken":
+            return {"ok": False, "error": f"the config file cannot be read ({r031.config_path(paths.config_dir)}) - fix or remove it"}
+        new, why = r031.merge_config(cfg, patch)
+        if why:
+            return {"ok": False, "error": why}
+        saved = r031.save_config(paths.config_dir, new, by)
+        append_history(paths, "targets_config", {"patch": patch}, by)
+    return {"ok": True, "config": saved}
 
 
 def watchlist_vs_picks(paths: ControlPaths, picks: list[dict] | None) -> dict:
@@ -1535,7 +1673,15 @@ def watchlist_vs_picks(paths: ControlPaths, picks: list[dict] | None) -> dict:
         if h.startswith("# scan_date="):
             scan_date = h.split("=", 1)[1].split()[0].strip() or None
     same = picks is not None and bool(picks) and {p["code"] for p in picks} == {c["code"] for c in wl["codes"]}
-    return {"scan_date": scan_date, "same_codes": same, "applied": same, "count": len(wl["codes"]), "mtime": wl["mtime"]}
+    # [2026-11-27] with the composed watchlist (r031) the picks are a part of r004: "applied" = every pick is watched
+    composed = False
+    if not same and picks:
+        with contextlib.suppress(Exception):
+            import r031_method_targets as r031  # noqa: E402
+            _cfg, _state = r031.load_config(paths.config_dir)
+            composed = bool(_cfg.get("auto")) and _state == "ok" and {p["code"] for p in picks} <= {c["code"] for c in wl["codes"]}
+    return {"scan_date": scan_date, "same_codes": same, "applied": same or composed, "composed": composed,
+            "count": len(wl["codes"]), "mtime": wl["mtime"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1756,6 +1902,13 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     p.add_argument("--stdin", action="store_true", help="read entries (one per line) from stdin")
     p.add_argument("--date", default=None, help="apply: the scan date whose _D_picks.txt becomes r004")
     p.add_argument("--restart-collector", action="store_true", help="apply: restart a running g011 that misses the new codes")
+    p = sub.add_parser("targets")   # [2026-11-27] per-method target symbols composed from the scan (r031)
+    p.add_argument("action", choices=["get", "config", "apply"])
+    p.add_argument("--date", default=None, help="scan date YYYYMMDD (default: the scan date of r004)")
+    p.add_argument("--json", default=None, dest="patch", help='config: {"auto": true, "sizes": {"rule": 30}, "exclude": {"vwap": ["005930"]}}')
+    p.add_argument("--stdin", action="store_true", help="config: read the JSON from stdin")
+    p.add_argument("--restart-collector", action="store_true", help="apply: restart a running g011 that misses the new codes")
+    p.add_argument("--expect", default=None, help="apply: the digest of the composition that was shown (refused when it differs)")
     p = sub.add_parser("collector")
     p.add_argument("action", choices=["status", "restart", "start", "detail", "stop", "extra", "prune"])
     p.add_argument("--force", action="store_true", help="start: ignore the session window")
@@ -1987,6 +2140,21 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
 
     if args.cmd == "conditions":
         return _emit(conditions(paths, diff, snapshot))
+
+    if args.cmd == "targets":
+        if args.action == "get":
+            out = targets_compose(paths, args.date)
+            return _emit(out, 0 if out.get("ok") else 2)
+        if args.action == "apply":
+            out = targets_apply(paths, args.by, args.date, restart_collector=bool(args.restart_collector), expect=args.expect)
+            return _emit(out, 0 if out.get("ok") else 2)
+        raw = sys.stdin.read() if args.stdin else (args.patch or "")
+        try:
+            patch = json.loads(raw)
+        except Exception as exc:
+            return _emit({"ok": False, "error": f"bad JSON: {exc}"}, 2)
+        out = targets_config(paths, patch, args.by)
+        return _emit(out, 0 if out.get("ok") else 2)
 
     if args.cmd == "watchlist":
         if args.action == "get":

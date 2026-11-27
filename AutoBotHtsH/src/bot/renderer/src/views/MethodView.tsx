@@ -11,6 +11,7 @@
  *   are picked on the method's table and stored through r016 (after a restart). Nothing is judged here and nothing the app
  *   cannot read is shown (no strategy version names, no "conditions met n/m", no measured values per condition). Controls are
  *   locked while a past day / replay is shown.
+ * - [2026-11-27] type=feat - 대상 구성 card on a method tab (components/TargetCompose): the composition from the scan, its edits and apply
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -19,6 +20,7 @@ import { ColGrip, ColGroup, ColReset, colTable, useColWidths, type ColWidths } f
 import { PriceTag } from '../components/PriceTag';
 import { NxtMark } from '../components/NxtTag';
 import { useMethodSwitch } from '../components/useMethodSwitch';
+import { TargetCompose } from '../components/TargetCompose';
 import { condTitle, fmtInt, fmtKrw, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
 import { peek, put } from '../dataCache';
@@ -291,6 +293,7 @@ export function MethodView() {
           connected={connected}
           busy={swBusy}
           botRunning={botRunning}
+          hostKey={hostKey}
           lastTs={lastTsBy[tab]}
           side={tab === 'rule' ? null : sideData[tab]}
           go={go}
@@ -601,6 +604,7 @@ function MethodDetail(props: {
   connected: boolean;
   busy: boolean;
   botRunning: boolean | null;
+  hostKey: string;
   lastTs: number;
   side: SideData | null;
   go: Go;
@@ -868,6 +872,8 @@ function MethodDetail(props: {
             {traceNote && <span className="muted small">{traceNote}</span>}
           </div>
         )}
+
+        <TargetCompose method={method} enabled={liveNow && props.connected} hostKey={props.hostKey} onApplied={props.onSaved} />
 
         <div className="toolbar method-bar">
           <h4>감시 · 기록 종목</h4>

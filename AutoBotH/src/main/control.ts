@@ -42,7 +42,7 @@
  * - [2026-11-19] type=fix - r003-running confirm notes use the jobs-tab step names (① 데이터 수집(g001), ③ 감시목록 반영(r004))
  */
 
-import { METHOD_TARGET_KEYS, parseMethodTargets } from '../shared/methodUnits';
+import { METHOD_TARGET_KEYS, parseMethodTargets, type TargetsDoc } from '../shared/methodUnits';
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
 import { RULE_VARIANT_KEY, parseRuleVariant, VWAP_MODE_KEY, VWAP_EXIT_KEYS, parseVwapMode, parseVwapExit, VWAP_LIVE_KEY, VWAP_LIVE_LIMIT_KEYS, parseVwapLive, parseVwapLiveLimits, AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_KEY, STRATEGY_KEY, parseAutoSell, parseAutoSellScope, parseModes, parsePaperLogOnly, PAPER_LOG_ONLY_KEY, PAPER_EXIT_KEYS, parsePaperExit, RULE_BUY_KEY, parseRuleBuy, EDGE_LIVE_KEY, EDGE_LIVE_LIMIT_KEYS, parseEdgeLive, parseEdgeLiveLimits, RULE_EXIT_KEYS, parseRuleExit } from '../shared/paper';
 import type { ArgvRunner } from './localRunner';
@@ -583,6 +583,54 @@ export function createControl(deps: ControlDeps) {
     }
     const r = await cl().run<WatchlistSetResult>(['watchlist', 'set', '--stdin'], { stdin: watchlistStdin(list) });
     return afterWatchlistWrite(r);
+  });
+  // [2026-11-27] per-method target symbols composed from the scan (server r031 / r016 `targets`): read the composition, change
+  // the stored config (sizes, always-include / always-exclude, auto), apply it (r004 + the three target lists; native
+  // confirmation here, then the same collector restart / r003 restart offer as a watchlist save). Applied by an r003 restart.
+  handle('ctl:targetsGet', async (date?: string) => {
+    const nc = needConn();
+    if (nc) return nc;
+    const d = date && /^\d{8}$/.test(String(date)) ? ['--date', String(date)] : [];
+    const r = await cl().run<TargetsDoc>(['targets', 'get', ...d]);
+    return { ok: r.ok || !!r.data, error: r.error, data: r.data };
+  });
+  handle('ctl:targetsConfig', async (patch: unknown) => {
+    const nc = needConn();
+    if (nc) return nc;
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return { ok: false, error: '설정 형식이 올바르지 않습니다.' };
+    const r = await cl().run<{ ok: boolean; config?: unknown; error?: string }>(['targets', 'config', '--stdin'], { stdin: JSON.stringify(patch) });
+    return { ok: r.ok, error: r.error || r.data?.error, data: r.data };
+  });
+  handle('ctl:targetsApply', async (date?: string, shown?: string) => {
+    const nc = needConn();
+    if (nc) return nc;
+    const d = date && /^\d{8}$/.test(String(date)) ? ['--date', String(date)] : [];
+    const pre = await cl().run<TargetsDoc>(['targets', 'get', ...d]);
+    // [Codex review] the composition the card showed must be the one confirmed and stored
+    if (shown && pre.data?.composition?.digest && pre.data.composition.digest !== shown)
+      return { ok: false, error: '구성이 화면에 보인 것과 달라졌습니다. 다시 확인한 뒤 적용하세요.', data: pre.data };
+    const c = pre.data?.composition;
+    if (!pre.data?.ok || !c) return { ok: false, error: pre.data?.error || pre.error || '구성을 읽지 못했습니다.', data: pre.data };
+    if (
+      !(await confirm(
+        '대상 종목 구성 적용',
+        `감시목록을 ${c.watch.length}종목으로 바꾸고 매매법별 대상을 저장합니다 (${deps.hostLabel()}).`,
+        `규칙 매매 ${c.lists.rule.length}종목 · Edge AI 매매 ${c.lists.edge.length}종목 · VWAP 매매 ${c.lists.vwap.length}종목 (선별 A ${c.a.length}종목 기준, 스캔 ${pre.data.date}).\n` +
+          `틱 수집 ${c.tick_cap}종목 밖 ${c.no_tick.length}종목은 규칙 매매 · VWAP 매매가 사지 못합니다. 순위로 추가된 종목은 대부분 선별에서 탈락한 종목입니다.\n` +
+          `r003 은 감시 종목 중 ${pre.data.active_size || '?'}종목을 동시에 감시하고 나머지는 대기하다 교대합니다.\n` +
+          '세 매매법의 저장된 대상 목록(직접 지정한 것 포함)을 이 구성으로 덮어씁니다. 기존 감시목록은 백업됩니다. r003 재시작 후 적용됩니다.',
+        '적용',
+      ))
+    ) {
+      return { ok: false, cancelled: true };
+    }
+    const dg = c.digest ? ['--expect', c.digest] : [];
+    const r = await cl().run<TargetsDoc & { watchlist?: WatchlistSetResult }>(['targets', 'apply', ...d, ...dg], { timeoutMs: R016_SERVICE_TIMEOUT });
+    if (r.ok && r.data?.ok) {
+      await afterWatchlistWrite({ ok: true, data: r.data.watchlist || null });
+      void refreshPaper();
+    }
+    return { ok: r.ok && !!r.data?.ok, error: r.data?.error || r.error, data: r.data };
   });
   // [2026-11-17] pipeline card calendar: which dates already hold data (r016 `job dates`, read-only)
   handle('ctl:jobDates', async () => {

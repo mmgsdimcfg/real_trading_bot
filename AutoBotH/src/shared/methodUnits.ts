@@ -188,3 +188,81 @@ export function targetListToStore(picked: Iterable<string>, watched: string[]): 
 }
 
 export const targetsKo = (list: string[]): string => (list.length ? `${list.length}종목 지정` : '전체 (지정 없음)');
+
+// ---- automatic composition of the target lists (server r031 / r016 `targets`) -------------------------------------------------
+/** [2026-11-27] user 2026-11-27: A = the scanner's picks; rule = A + the scan ranking up to sizes.rule (30); Edge AI = A + the
+ *  ranking after that up to sizes.edge (50); VWAP = the union. include / exclude: kept from day to day. auto: the post-close job
+ *  composes (false: it copies the picks as before; the composition can still be applied by hand). */
+export interface TargetsConfig {
+  auto: boolean;
+  sizes: { rule: number; edge: number };
+  exclude_funds: boolean;
+  include: Record<TradeStrategy, string[]>;
+  exclude: Record<TradeStrategy, string[]>;
+  updated_at?: string;
+  updated_by?: string;
+}
+/** where a watched symbol of the composition comes from */
+export type TargetSrc = 'A' | 'rule' | 'edge' | 'manual';
+export interface TargetRow {
+  name: string;
+  src: TargetSrc;
+  /** rank / score / eligible / fail reasons of the scan (null: the scan does not know the symbol) */
+  rank: number | null;
+  score: number | null;
+  eligible: boolean | null;
+  fail: string;
+  /** the methods whose list holds it */
+  in: TradeStrategy[];
+  /** the methods whose always-include list holds it */
+  included: TradeStrategy[];
+}
+export interface TargetsComposition {
+  a: string[];
+  rule_extra: string[];
+  edge_extra: string[];
+  lists: Record<TradeStrategy, string[]>;
+  watch: { code: string; name: string }[];
+  rows: Record<string, TargetRow>;
+  tick_cap: number;
+  /** watched symbols past the tick collector's limit: no tick feed (the rule trade and the VWAP trade cannot buy them) */
+  no_tick: string[];
+  dropped: string[];
+  sizes: { rule: number; edge: number };
+  /** extras the ranking could not supply */
+  short: { rule: number; edge: number };
+  /** always-excluded codes that the composition would have listed */
+  excluded: Record<TradeStrategy, string[]>;
+  scan_file?: string | null;
+  fund_filter?: boolean;
+  /** fingerprint of the lists + the watch order: sent back with `apply` so what is stored is what was shown */
+  digest?: string;
+}
+export interface TargetsDoc {
+  ok: boolean;
+  error?: string;
+  /** scan date the composition was made from */
+  date?: string | null;
+  config: TargetsConfig;
+  /** 'missing' = no config stored yet (defaults), 'broken' = the file cannot be read */
+  config_state: 'missing' | 'ok' | 'broken';
+  composition?: TargetsComposition;
+  /** the three lists stored now (what r003 uses after its next start) */
+  stored: Record<TradeStrategy, string[]>;
+  watch_now: string[];
+  tick_cap: number;
+  /** watched symbols r003 polls at a time (the rest wait and rotate in); 0 = not told */
+  active_size?: number;
+  applied?: boolean;
+  for_trading_day?: string | null;
+}
+export const TARGET_SRC_KO: Record<TargetSrc, string> = { A: 'A (선별)', rule: '순위 추가 (규칙)', edge: '순위 추가 (Edge)', manual: '수동 포함' };
+
+/** the composed list of a method equals what is stored for it (order ignored) */
+export function targetsApplied(doc: TargetsDoc | null | undefined, m: TradeStrategy): boolean | null {
+  const c = doc?.composition;
+  if (!doc || !c) return null;
+  const a = [...c.lists[m]].sort().join(',');
+  const b = [...(doc.stored[m] || [])].sort().join(',');
+  return a === b;
+}

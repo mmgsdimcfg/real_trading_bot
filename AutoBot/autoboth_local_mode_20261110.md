@@ -568,6 +568,18 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   (종목 · 방식당 30분에 한 번). 가상 러너 상태 단계 `not_target`.
   대상 목록이 하나라도 있으면, 어느 방식도 새로 살 수 없는 종목은 활성 감시에서 빠진다: `[ACT DROPOUT ] <sym> | reason=NOT_TARGET`
   (대기열 맨 뒤로, 다시 후보가 되면 승격).
+- 대상 종목 자동 구성 (2026-11-27, `r031_method_targets.py`, 설정 `<runtime>/config/method_targets.json`): A = 그날 g002 picks,
+  규칙 = A + 스캔 순위(`_D_scan_all.md`) 다음 종목으로 `sizes.rule`(30)까지, Edge AI = A + 그다음 순위로 `sizes.edge`(50)까지,
+  VWAP = 합집합. 방식별 `include` / `exclude`(항상 포함 / 제외)는 날마다 유지. 감시목록(r004) = 합집합(A, 규칙 추가, Edge 추가 순).
+  - `r016 targets get [--date D]` -> `{ok, date, config, config_state, composition{a, rule_extra, edge_extra, lists, watch, rows{code:
+    {name, src, rank, score, eligible, fail, in, included}}, tick_cap, no_tick, dropped, short, excluded, digest}, stored, watch_now,
+    active_size}` (읽기 전용).
+  - `r016 targets config --stdin` (JSON: `auto`, `sizes`, `exclude_funds`, `include` / `exclude` 전체 교체, 또는 한 종목씩
+    `include_add` / `include_remove` / `exclude_add` / `exclude_remove` `{method: [codes]}`).
+  - `r016 targets apply [--date D] [--expect DIGEST] [--restart-collector]`: 세 대상 목록을 먼저 저장하고 r004 를 쓴다
+    (r003 재시작 후 적용). `--expect` 가 현재 구성의 digest 와 다르면 거부.
+  - `auto: true` 이면 장 마감 작업의 `watchlist apply --date D` 가 picks 복사 대신 이 구성을 적용한다(기본 false = 기존 동작).
+    `watchlist_vs_picks` 의 `applied` 는 구성 적용 시 "picks 가 모두 감시목록에 있음"으로 판정(`composed: true`).
 - 매매 방식 현황 대시보드 (2026-11-27, 앱): 탭 `method` 의 값 `all | rule | edge | vwap`. 실행 단위 5개(규칙 / Edge AI 가상 · 실전 /
   VWAP 가상 · 실전)의 저장 스위치와 실행 상태는 `shared/methodUnits.ts` (`unitInfos`: r016 status.running + get 의 running 값이
   있을 때만 "실행 중").

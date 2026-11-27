@@ -118,6 +118,12 @@ export const api = {
   ctlHoldings: (): Promise<CtlResult<HoldingsDoc>> => ipcRenderer.invoke('ctl:holdings'),
   watchlistGet: (): Promise<CtlResult<WatchlistDoc>> => ipcRenderer.invoke('ctl:watchlistGet'),
   watchlistSet: (rows: WatchEntry[]): Promise<CtlResult<WatchlistSetResult>> => ipcRenderer.invoke('ctl:watchlistSet', rows),
+  /** [2026-11-27] per-method target symbols composed from the scan: read / change the stored config / apply (confirmed in a native dialog) */
+  targetsGet: (date?: string): Promise<CtlResult<import('../shared/methodUnits').TargetsDoc>> => ipcRenderer.invoke('ctl:targetsGet', date),
+  targetsConfig: (patch: Record<string, unknown>): Promise<CtlResult<{ ok: boolean; config?: import('../shared/methodUnits').TargetsConfig; error?: string }>> =>
+    ipcRenderer.invoke('ctl:targetsConfig', patch),
+  targetsApply: (date?: string, shown?: string): Promise<CtlResult<import('../shared/methodUnits').TargetsDoc> & { cancelled?: boolean }> =>
+    ipcRenderer.invoke('ctl:targetsApply', date, shown),
   onControl: (cb: (s: ControlState) => void) => on('control', cb),
 
   // [2026-11-10] local mode: host role, tick collector, data jobs, doctor (connected host)
