@@ -617,6 +617,30 @@ function versionLabel(): string {
   return `v${app.getVersion()}`;
 }
 ipcMain.on('get-app-version', (e) => (e.returnValue = versionLabel()));
+// [2026-11-27] window.alert / window.confirm of the renderer are shown here as a message box of the main process. Electron's own
+// alert / confirm leave the page without keyboard focus on Windows: after one of them no text box took any typing (symbol box of the
+// chart / quote windows) until the window was left and entered again. Synchronous like the originals (sendSync).
+ipcMain.on('dialog:native', (e, kind: string, text: string) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  const confirm = kind === 'confirm';
+  const opts = {
+    type: (confirm ? 'question' : 'info') as 'question' | 'info',
+    buttons: confirm ? ['확인', '취소'] : ['확인'],
+    defaultId: 0,
+    cancelId: confirm ? 1 : 0,
+    noLink: true,
+    title: app.getName(),
+    message: String(text ?? ''),
+  };
+  let r = 1;
+  try {
+    r = w && !w.isDestroyed() ? dialog.showMessageBoxSync(w, opts) : dialog.showMessageBoxSync(opts);
+  } catch {
+    r = 1;
+  }
+  if (w && !w.isDestroyed()) w.webContents.focus();
+  e.returnValue = confirm ? r === 0 : true;
+});
 
 function createWindow(): void {
   win = new BrowserWindow({

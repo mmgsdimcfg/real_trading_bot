@@ -151,6 +151,12 @@ export type Api = typeof api;
 contextBridge.exposeInMainWorld('api', api);
 
 // custom title bar window buttons
+// [2026-11-27] alert / confirm through the main process (renderer main.tsx replaces window.alert / window.confirm with these)
+contextBridge.exposeInMainWorld('nativeDialog', {
+  alert: (text: string): void => void ipcRenderer.sendSync('dialog:native', 'alert', String(text ?? '')),
+  confirm: (text: string): boolean => ipcRenderer.sendSync('dialog:native', 'confirm', String(text ?? '')) === true,
+});
+
 contextBridge.exposeInMainWorld('winCtl', {
   minimize: () => ipcRenderer.send('win-minimize'),
   toggleMaximize: () => ipcRenderer.send('win-toggle-maximize'),
