@@ -62,6 +62,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AUTO_SELL_KEY, AUTO_SELL_KO, AUTO_SELL_MODES, AUTO_SELL_SCOPE_KEY, AUTO_SELL_SCOPE_KO, AUTO_SELL_SCOPES, autoSellOf, autoSellScopeOf, type AutoSellScope, edgeLabelKo, edgeCutText, VWAP_MODE_KEY, VWAP_STEPS, VWAP_EXIT_NOTE, vwapExitChanges, VWAP_LIVE_KEY, VWAP_LIVE_ON_WARNING, vwapLiveLimitChanges, parseVwapLiveSummary, RULE_VARIANT_KEY, RULE_VARIANTS, RULE_VARIANT_KO, RULE_VARIANT_NOTE, ruleVariantOf, type RuleVariant, TRADE_MODE_KO, tradeModeChanges, tradeModeOf, PAPER_LOG_ONLY_KEY, type AutoSellMode, type EdgeModelInfo, type TradeMode, PAPER_EXIT_KINDS, paperExitChanges, paperExitInput, type PaperExitKind, type PaperExitState, comboChanges, comboLabel, TRADE_KIND_KO, type TradeKind, EDGE_LIVE_KEY, EDGE_LIVE_ON_WARNING, EDGE_LIVE_EXIT_NOTE, COMMON_EXIT_NOTE, ruleExitChanges, EDGE_LIVE_LIMIT_KINDS, EDGE_LIVE_LIMIT_KO, EDGE_LIVE_LIMIT_RANGE, EDGE_LIVE_LIMIT_UNIT, edgeLiveLimitChanges, edgeLiveLimitInput, edgeLiveSummaryText, parseEdgeLiveSummary, type EdgeLiveLimitKind, type EdgeLiveLimits } from '../../../shared/paper';
 import { useStore } from '../store';
+import { useMethodSwitch } from '../components/useMethodSwitch';
 import { peek, put } from '../dataCache';
 import type { RunMode } from '../../../shared/types';
 import {
@@ -500,56 +501,6 @@ export function ControlView() {
   const vwapLivePending = !!vwapLive && vwapLive.running !== null && (vwapLive.pending || vwapLive.running !== vwapLive.effective);
   const vwapLimits = control.vwapLiveLimits;
   const vwapSummary = parseVwapLiveSummary(st);
-  const setVwapLive = async (on: boolean) => {
-    if (!vwapLive) return;
-    if (on && autoSellMode !== 'all') {
-      window.alert('VWAP 매매 실제 매매는 자동 매도가 "전체 자동"일 때만 켤 수 있습니다 (신규 VWAP 매수의 조건).');
-      return;
-    }
-    const lim = vwapLimits;
-    const limText = lim
-      ? `1회 ${lim.order.effective.toLocaleString('ko-KR')}원 · 동시 ${lim.positions.effective}종목 · 하루 ${lim.entries.effective}회 · 하루 손실 ${lim.loss.effective.toLocaleString('ko-KR')}원`
-      : '서버 기본 한도';
-    const text = on
-      ? `${VWAP_LIVE_ON_WARNING}\n\n한도: ${limText}\n` +
-        '주문: 정규장 14:50 까지, 매도1호가 지정가 1회 (재주문 없음). 청산: 위 청산 기준 / 15:20.\n' +
-        'VWAP 매매가 산 수량은 VWAP 매매 규칙으로만 팔고, 같은 종목의 직접 매수분은 팔지 않습니다.\n' +
-        '켜져 있는 동안 VWAP 가상 매매는 새로 사지 않습니다.'
-      : 'VWAP 매매 실제 매매를 끕니다 (가상 매매로 돌아갑니다).\n이미 VWAP 매매가 산 수량이 있으면 그 청산(손절 / 익절 / 시간 / 15:20)은 계속됩니다.';
-    const restart = 'r003 재시작 후부터 적용됩니다. 미체결 주문이 있으면 정리된 뒤(또는 장 마감 후) 재시작하세요.';
-    if (!window.confirm(`VWAP 매매 실제 매매: ${on ? '켬' : '끔'}\n\n${text}\n\n${restart}\n\n바꿀까요?`)) return;
-    if (on && !window.confirm('한 번 더 확인합니다.\n\n실제 계좌로 VWAP 매매 매수 주문이 나갑니다. 켤까요?')) return;
-    setModeBusy(true);
-    try {
-      const r = await window.api.ctlSet({ [VWAP_LIVE_KEY]: on });
-      const rej = r.data?.rejected?.[VWAP_LIVE_KEY];
-      if (!r.ok || rej) window.alert(`VWAP 매매 실제 주문 설정을 바꾸지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
-      else bumpHistory();
-    } finally {
-      setModeBusy(false);
-    }
-  };
-  const setVwap = async (on: boolean) => {
-    if (!vwapMode || on === vwapOn) return;
-    const text = on
-      ? 'VWAP 매매를 켭니다 - 가상 매매로 시작합니다 (실제 주문 없음, 가상 매매 탭의 "VWAP 매매" 장부). 실제 주문은 "실제 매매"를 따로 켜야 나갑니다.\n\n' +
-        VWAP_STEPS.map(([a, b], i) => `${i + 1}. ${a}: ${b}`).join('\n') +
-        '\n\n앞선 검증에서 VWAP 위치의 예측력은 확인되지 않았습니다. r003 재시작 후 적용됩니다. 켤까요?'
-      : 'VWAP 매매를 끕니다. 신규 매수를 멈추고, 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다.' +
-        (vwapLive?.effective === 'true' ? '\nVWAP 실제 매매도 함께 끕니다 (이미 산 수량의 청산은 계속됩니다).' : '') +
-        ' r003 재시작 후 적용됩니다. 끌까요?';
-    if (!window.confirm(text)) return;
-    setModeBusy(true);
-    try {
-      // the live orders go off with the trade itself (and it starts with them off): nothing stays on out of sight
-      const r = await window.api.ctlSet({ ...(vwapLive?.effective === 'true' ? { [VWAP_LIVE_KEY]: false } : {}), [VWAP_MODE_KEY]: on ? 'paper' : 'off' });
-      const rej = r.data?.rejected?.[VWAP_MODE_KEY];
-      if (!r.ok || rej) window.alert(`VWAP 매매 설정을 바꾸지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
-      else bumpHistory();
-    } finally {
-      setModeBusy(false);
-    }
-  };
   // [2026-11-27] rule strategy variant: normal / extended (server RULE_TRADE_VARIANT, applied after an r003 restart)
   const ruleVariant = control.ruleVariant;
   const variantNow = ruleVariantOf(ruleVariant?.effective);
@@ -598,36 +549,7 @@ export function ControlView() {
       setReboundOn(!!s.enabled);
       return;
     }
-    const next = { rules: kind === 'rules' ? on : rulesOn, paper: kind === 'paper' ? on : paperOn };
-    const changes = comboChanges(next, { rules: rulesOn, paper: paperOn }, !!ruleBuy);
-    if (!changes) return;
-    // [2026-11-25] Edge AI 매매 off: its live orders go off with it (stored too - nothing stays on out of sight)
-    // ... and on: it starts with the live orders off too - they are switched on by their own checkbox and its warning only
-    if (kind === 'paper' && control.edgeLive?.effective === 'true') changes[EDGE_LIVE_KEY] = false;
-    const sellMode = autoSellOf(control.autoSell?.effective);
-    const text =
-      kind === 'rules'
-        ? on
-          ? '규칙 매매를 켭니다. 규칙 매수 조건을 통과하면 실제 매수 주문을 냅니다.'
-          : '규칙 매매를 끕니다. 규칙 매수 조건을 통과해도 신규 매수 주문을 내지 않습니다(로그만).\n' +
-            `이미 보유한 종목의 매도는 자동 매도 설정(${AUTO_SELL_KO[sellMode]})대로 계속됩니다.` +
-            (sellMode === 'all' ? '' : '\n자동 매도가 전체가 아니므로 보유 종목이 남을 수 있습니다 - 직접 매도해야 합니다.')
-        : on
-          ? 'Edge AI 신호로 가상 매매를 합니다 (실제 주문 없음, 가상 매매 탭).' +
-            (control.edgeLive?.effective === 'true' ? '\n저장돼 있던 Edge AI 실제 매매 설정은 끈 상태로 시작합니다 (켜려면 "실제 매매" 체크).' : '')
-          : '신규 가상 매수를 멈춥니다. 오늘 열린 가상 보유는 마감 청산까지 그대로 청산됩니다.' +
-            (control.edgeLive?.effective === 'true'
-              ? '\nEdge AI 실제 매매도 함께 끕니다 (이미 산 Edge 수량의 청산은 계속됩니다).'
-              : '');
-    const restart = 'r003 재시작 후부터 적용됩니다. 미체결 주문이 있으면 정리된 뒤(또는 장 마감 후) 재시작하세요 - 재시작하면 미체결 주문 추적이 끊깁니다.';
-    if (!window.confirm(`${TRADE_KIND_KO[kind]}: ${on ? '켬' : '끔'}\n\n${text}\n\n${restart}\n\n바꿀까요?`)) return;
-    setModeBusy(true);
-    try {
-      const r = await window.api.ctlSet(changes);
-      if (!r.ok) window.alert(`매매 방식을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
-    } finally {
-      setModeBusy(false);
-    }
+    await setServerKind(kind, on);
   };
   /** the server runs another strategy (edge = Edge AI real orders, basic): back to the rule-based strategy */
   const toNormal = async () => {
@@ -657,6 +579,8 @@ export function ControlView() {
       window.clearInterval(id);
     };
   }, [connected, isLocal]);
+  // [2026-11-27] the method on / off handlers live in useMethodSwitch (shared with the method board, MethodView)
+  const { setServerKind, setVwap, setVwapLive, setEdgeLive } = useMethodSwitch({ setBusy: setModeBusy, edgeModel });
   // [2026-11-12] AUTO_SELL_MODE: which sells the bot makes by itself (all / only the net -2% stop / none)
   const autoSell = control.autoSell;
   const autoSellMode = autoSellOf(autoSell?.effective);
@@ -716,41 +640,6 @@ export function ControlView() {
   // [2026-11-27] real Edge AI orders only from a model that passed the promotion check (server r001 EDGE_LIVE_REQUIRE_PROMOTED:
   // r016 refuses to switch it on, r003 refuses each signal). undefined = model info not loaded yet - the server decides
   const modelNotPromoted = edgeModel !== undefined && !edgeModel?.promoted;
-  const setEdgeLive = async (on: boolean) => {
-    if (on && modelNotPromoted) {
-      window.alert(
-        'Edge AI 실제 매매를 켤 수 없습니다.\n\n' +
-          (edgeModel ? `현재 모델(${edgeModel.modelId})이 승격 심사를 통과하지 못했습니다 (검증 구간에서 통과 진입의 순손익이 0보다 크지 않음).` : '배포된 Edge AI 모델이 없습니다.') +
-          '\n실제 주문은 승격된 모델에서만 나갑니다. 모델은 매일 장 마감 후 다시 심사됩니다.\n가상 매매는 그대로 쓸 수 있습니다.',
-      );
-      return;
-    }
-    if (on && autoSellMode !== 'all') {
-      window.alert('Edge AI 실제 매매는 자동 매도가 "전체 자동"일 때만 켤 수 있습니다 (신규 Edge 매수의 조건).');
-      return;
-    }
-    const lim = liveLimits;
-    const limText = lim
-      ? `1회 ${lim.order.effective.toLocaleString('ko-KR')}원 · 동시 ${lim.positions.effective}종목 · 하루 ${lim.entries.effective}회 · 하루 손실 ${lim.loss.effective.toLocaleString('ko-KR')}원에서 중단`
-      : '서버 기본 한도';
-    const text = on
-      ? `${EDGE_LIVE_ON_WARNING.replace(/\n\n켤까요\?$/, '')}\n\n` +
-        `한도: ${limText}\n` +
-        '주문: 정규장 14:50 까지, 매도1호가 지정가 1회 (재주문 없음). 청산: 아래 청산 기준 / 15:20.\n' +
-        'Edge 가 산 수량은 Edge 규칙으로만 팔고, 같은 종목의 직접 매수분은 팔지 않습니다.\n' +
-        '켜져 있는 동안 가상 매매는 후보만 기록합니다.'
-      : 'Edge AI 실제 매매를 끕니다 (가상 매매는 아래 체크대로).\n이미 Edge 가 산 수량이 있으면 그 청산(손절 / 익절 / 시간 / 15:20)은 계속됩니다.';
-    const restart = 'r003 재시작 후부터 적용됩니다. 미체결 주문이 있으면 정리된 뒤(또는 장 마감 후) 재시작하세요.';
-    if (!window.confirm(`Edge AI 실제 매매: ${on ? '켬' : '끔'}\n\n${text}\n\n${restart}\n\n바꿀까요?`)) return;
-    if (on && !window.confirm('한 번 더 확인합니다.\n\n실제 계좌로 Edge AI 매수 주문이 나갑니다. 켤까요?')) return;
-    setModeBusy(true);
-    try {
-      const r = await window.api.ctlSet({ [EDGE_LIVE_KEY]: on });
-      if (!r.ok) window.alert(`Edge AI 실제 주문 설정을 바꾸지 못했습니다: ${r.error || JSON.stringify(r.data?.rejected || {})}`);
-    } finally {
-      setModeBusy(false);
-    }
-  };
   // [2026-11-13] AUTO_SELL_SCOPE: the automatic sells sell only what the bot bought / the whole holding (hand-bought included)
   const sellScope = control.autoSellScope;
   const sellScopeMode = autoSellScopeOf(sellScope?.effective);

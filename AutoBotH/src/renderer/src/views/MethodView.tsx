@@ -6,6 +6,9 @@
  *   note, the symbol table (감시 / 수집기 / 보유 badges, the last record of the bot for that method with its source and time,
  *   signals / orders, holding, results) and the method's recent fills. A row opens the timeline on that method's tab. Display
  *   only: switches and settings stay in 제어 (buttons lead there), rows come from shared/methodBoard
+ * - [2026-11-27] type=feat - On / off on this page (user 2026-11-27): the method's switch and its "실제 매매" switch, through the
+ *   same handlers as the control tab (components/useMethodSwitch: same warnings, confirmations and server checks; stored through
+ *   r016, applied by an r003 restart - the restart itself stays in 제어)
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -17,11 +20,12 @@ import { condTitle, fmtInt, fmtKrw, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
 import { peek, put } from '../dataCache';
 import { showCode } from '../showCode';
+import { useMethodSwitch } from '../components/useMethodSwitch';
 import { reasonKo } from '../../../shared/reasonKo';
 import { TRADE_STRATEGIES, TRADE_STRATEGY_KO, strategyModeKo, strategyModes, strategyOfTrade, sideExitKo, type TradeStrategy } from '../../../shared/strategy';
 import { blockReasonKo, type SideStrategy } from '../../../shared/strategyEvents';
 import type { StrategyEvalRowX } from '../../../shared/sideTimeline';
-import { edgeLiveSummaryText, parseEdgeLiveSummary, parseVwapLiveSummary, type PaperStatus, type PaperTrade } from '../../../shared/paper';
+import { edgeLiveSummaryText, parseEdgeLiveSummary, parseVwapLiveSummary, type EdgeModelInfo, type PaperStatus, type PaperTrade } from '../../../shared/paper';
 import { METHOD_FILTER_KO, METHOD_SRC_KO, filterMethodRows, methodRows, methodTotals, type MethodRow, type MethodRowFilter } from '../../../shared/methodBoard';
 
 const REFRESH_MS = 15000;
@@ -53,6 +57,25 @@ export function MethodView() {
   const cols = useColWidths('autoboth.cols.methodCols', 10);
   const fillCols = useColWidths('autoboth.cols.methodFillCols', 7);
   const [filter, setFilter] = useState<MethodRowFilter>('all');
+  // [2026-11-27] on / off here: the control tab's own handlers (same confirmations); the Edge AI model is read for the
+  // "real orders only from a promoted model" check, as the control tab does
+  const connected = status.conn === 'connected';
+  const [swBusy, setSwBusy] = useState(false);
+  const [edgeModel, setEdgeModel] = useState<EdgeModelInfo | null | undefined>(() => peek<EdgeModelInfo | null>('control:edge'));
+  useEffect(() => {
+    if (!connected) return setEdgeModel(undefined);
+    if (method !== 'edge') return;
+    let alive = true;
+    void window.api.getEdgeModel().then((r) => {
+      if (r.ok) put('control:edge', r.model);
+      if (alive) setEdgeModel(r.ok ? r.model : peek<EdgeModelInfo | null>('control:edge'));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [connected, method, status.mode]);
+  const sw = useMethodSwitch({ setBusy: setSwBusy, edgeModel });
+  const swOff = !connected || swBusy;
 
   const modes = useMemo(() => strategyModes(control), [control]);
   const mode = modes[method];
@@ -177,8 +200,8 @@ export function MethodView() {
           {mode.pending && <span className="badge-warn">저장된 설정이 다릅니다 → r003 재시작 후 적용</span>}
         </div>
         <div className="chips">
-          <button type="button" className="chip link" title="매매 방식 켜기 / 끄기 · 실제 / 가상 전환은 제어 탭에서 합니다 (봇 제어 스크립트를 거쳐 저장, 재시작 후 적용)" onClick={() => setTab('control')}>
-            켜기 / 끄기 · 모드 (제어) →
+          <button type="button" className="chip link" title="봇 시작 / 정지 / 재시작, 한도 · 청산 기준 등은 제어 탭에서 합니다" onClick={() => setTab('control')}>
+            제어 (재시작 · 한도) →
           </button>
           <button type="button" className="chip link" title={`${TRADE_STRATEGY_KO[method]} 세부 설정 창`} onClick={openSettings}>
             세부 설정 →
@@ -192,6 +215,69 @@ export function MethodView() {
             </button>
           )}
         </div>
+      </div>
+
+      <div className="method-switch">
+        {method === 'rule' && (
+          <label className={`opt-card${sw.rulesOn ? ' on' : ''}${swOff || !sw.has.rules || !sw.normalMode ? ' dis' : ''}`} title="규칙 매매 신규 매수 (서버 RULE_BUY_ENABLED). 끄면 조건을 통과해도 주문하지 않습니다(로그만). r003 재시작 후 적용">
+            <input type="checkbox" checked={sw.rulesOn} disabled={swOff || !sw.has.rules || !sw.normalMode} onChange={(e) => void sw.setServerKind('rules', e.target.checked)} />
+            <span className="opt-txt">
+              <b>규칙 매매</b>
+              <span>{sw.rulesOn ? '켜짐 · 조건 통과 시 실제 매수 주문' : '꺼짐 · 신규 매수 주문 없음'}</span>
+            </span>
+          </label>
+        )}
+        {method === 'edge' && (
+          <>
+            <label className={`opt-card${sw.edgeOn ? ' on' : ''}${swOff || !sw.has.edge || !sw.normalMode ? ' dis' : ''}`} title="Edge AI 매매 (서버 EDGE_ONLY_MODE). 켜면 가상 매매로 시작합니다. r003 재시작 후 적용">
+              <input type="checkbox" checked={sw.edgeOn} disabled={swOff || !sw.has.edge || !sw.normalMode} onChange={(e) => void sw.setServerKind('paper', e.target.checked)} />
+              <span className="opt-txt">
+                <b>Edge AI 매매</b>
+                <span>{sw.edgeOn ? '켜짐' : '꺼짐'}</span>
+              </span>
+            </label>
+            {sw.edgeOn && (
+              <label className={`opt-card danger${sw.edgeLiveOn ? ' on' : ''}${swOff || !sw.has.edgeLive ? ' dis' : ''}`} title="실제 계좌로 Edge AI 주문 (서버 EDGE_LIVE_ORDERS). 승격된 모델 · 자동 매도 전체일 때만 켤 수 있습니다. r003 재시작 후 적용">
+                <input type="checkbox" checked={sw.edgeLiveOn} disabled={swOff || !sw.has.edgeLive} onChange={(e) => void sw.setEdgeLive(e.target.checked)} />
+                <span className="opt-txt">
+                  <b>
+                    실제 매매 <span className="tag danger">LIVE</span>
+                  </b>
+                  <span>{sw.edgeLiveOn ? '켜짐 · 실제 계좌로 주문' : '꺼짐 · 가상 매매만'}</span>
+                </span>
+              </label>
+            )}
+          </>
+        )}
+        {method === 'vwap' && (
+          <>
+            <label className={`opt-card${sw.vwapOn ? ' on' : ''}${swOff || !sw.has.vwap ? ' dis' : ''}`} title="VWAP 매매 (서버 VWAP_TRADE_MODE off / paper). 켜면 가상 매매로 시작합니다. r003 재시작 후 적용">
+              <input type="checkbox" checked={sw.vwapOn} disabled={swOff || !sw.has.vwap} onChange={(e) => void sw.setVwap(e.target.checked)} />
+              <span className="opt-txt">
+                <b>VWAP 매매</b>
+                <span>{sw.vwapOn ? '켜짐' : '꺼짐'}</span>
+              </span>
+            </label>
+            {sw.vwapOn && (
+              <label className={`opt-card danger${sw.vwapLiveOn ? ' on' : ''}${swOff || !sw.has.vwapLive ? ' dis' : ''}`} title="실제 계좌로 VWAP 매매 주문 (서버 VWAP_TRADE_LIVE_ORDERS). 자동 매도가 전체일 때만 켤 수 있습니다. r003 재시작 후 적용">
+                <input type="checkbox" checked={sw.vwapLiveOn} disabled={swOff || !sw.has.vwapLive} onChange={(e) => void sw.setVwapLive(e.target.checked)} />
+                <span className="opt-txt">
+                  <b>
+                    실제 매매 <span className="tag danger">LIVE</span>
+                  </b>
+                  <span>{sw.vwapLiveOn ? '켜짐 · 실제 계좌로 주문' : '꺼짐 · 가상 매매만'}</span>
+                </span>
+              </label>
+            )}
+          </>
+        )}
+        <span className="muted small">
+          {!connected
+            ? '연결되어 있지 않아 바꿀 수 없습니다.'
+            : method !== 'vwap' && !sw.normalMode
+              ? '서버 매매 방식이 규칙 기반(normal)이 아니라 여기서 바꿀 수 없습니다 (제어 탭에서 확인).'
+              : '저장되는 설정입니다. 바꾼 뒤 r003 을 재시작해야 적용됩니다 (재시작은 제어 탭).'}
+        </span>
       </div>
 
       <div className="kpis">
