@@ -30,12 +30,15 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
   const [size, setSize] = useState('');
   const [msg, setMsg] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<TargetsDoc | null> => {
     const r = await window.api.targetsGet();
     if (r.data) {
       setDoc(r.data);
       setErr(r.data.ok ? '' : r.data.error || '');
-    } else setErr(r.error || '구성을 읽지 못했습니다.');
+      return r.data;
+    }
+    setErr(r.error || '구성을 읽지 못했습니다.');
+    return null;
   }, []);
   useEffect(() => {
     setDoc(null);
@@ -67,17 +70,19 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
     };
   }, [comp, list, method, noTick]);
 
-  const change = async (patch: Record<string, unknown>, done: string) => {
-    if (!enabled || busy) return;
+  /** stores a config change; the fresh document, or null when it was not stored */
+  const change = async (patch: Record<string, unknown>, done: string): Promise<TargetsDoc | null> => {
+    if (!enabled || busy) return null;
     setBusy(true);
     setMsg('');
     try {
       const r = await window.api.targetsConfig(patch);
-      if (!r.ok) setMsg(`저장하지 못했습니다: ${r.error || r.data?.error || '알 수 없는 오류'}`);
-      else {
-        setMsg(done);
-        await load();
+      if (!r.ok) {
+        setMsg(`저장하지 못했습니다: ${r.error || r.data?.error || '알 수 없는 오류'}`);
+        return null;
       }
+      setMsg(done);
+      return await load();
     } finally {
       setBusy(false);
     }
@@ -109,13 +114,16 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
       return;
     if (on) return void change({ auto: true }, '자동 구성 켬 (다음 장 마감 작업부터)');
     void (async () => {
-      await change({ auto: false }, '자동 구성 끔 (장 마감 작업은 선별 종목만 감시목록에 넣습니다)');
-      // [Codex review] the three stored lists stay as they are: tomorrow's picks outside them would not be bought
-      const kept = doc ? (['rule', 'edge', 'vwap'] as const).filter((m) => (doc.stored[m] || []).length > 0) : [];
+      // [Codex review] only when the switch was really stored, and from the lists stored NOW (not what the card read earlier)
+      const fresh = await change({ auto: false }, '자동 구성 끔 (장 마감 작업은 선별 종목만 감시목록에 넣습니다)');
+      if (!fresh) return;
+      const doc = fresh;
+      // the three stored lists stay as they are: tomorrow's picks outside them would not be bought
+      const kept = (['rule', 'edge', 'vwap'] as const).filter((m) => (doc.stored[m] || []).length > 0);
       if (!kept.length) return;
       if (
         !window.confirm(
-          `저장된 대상 목록이 남아 있습니다 (${kept.map((m) => `${TRADE_STRATEGY_KO[m]} ${doc!.stored[m].length}종목`).join(', ')}).\n\n` +
+          `저장된 대상 목록이 남아 있습니다 (${kept.map((m) => `${TRADE_STRATEGY_KO[m]} ${doc.stored[m].length}종목`).join(', ')}).\n\n` +
             '그대로 두면 장 마감 작업이 넣는 새 선별 종목 중 이 목록에 없는 종목은 사지 않습니다.\n"전체(지정 없음)"로 되돌릴까요? (r003 재시작 후 적용)',
         )
       )
@@ -183,7 +191,7 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
           </div>
           <div className="tc-line muted small">
             감시목록 전체 {comp.watch.length}종목
-            {doc.active_size ? ` · r003 동시 감시 ${Math.min(doc.active_size, comp.watch.length)}종목${comp.watch.length > doc.active_size ? ` (나머지 ${comp.watch.length - doc.active_size}종목은 대기하다 교대)` : ''}` : ''}
+            {doc.active_size ? ` · r003 동시 감시 ${Math.min(doc.active_size, comp.watch.length)}종목${comp.watch.length > doc.active_size ? ` (나머지 ${comp.watch.length - doc.active_size}종목은 대기)` : ''}` : ''}
             {' · '}감시 종목이 늘면 한 바퀴 도는 시간이 길어집니다 (종목당 약 0.6초)
           </div>
           <div className="tc-line">

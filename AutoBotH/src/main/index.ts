@@ -125,6 +125,12 @@ const control = createControl({
     return statusPollMs(s.statusPollSec, windowVisible());
   },
   hostLabel,
+  // [2026-11-27] identity of the connection target (a confirmed write is refused when it changed during the confirmation)
+  hostId: () => {
+    const s = getSettings();
+    // the SSH session itself (counted per connect) besides the stored settings: a reconnect in between changes it
+    return mode === 'local' ? `local|${s.localRoot}` : `ssh|${ssh.sessionSeq}|${s.host}|${s.port}|${s.username}|${s.remoteRoot}`;
+  },
   send: (ch, data) => send(ch, data),
   win: () => win,
   reloadConditions: () => refreshConditions(),

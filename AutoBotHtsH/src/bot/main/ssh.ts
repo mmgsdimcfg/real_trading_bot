@@ -60,7 +60,12 @@ export class SshConnection extends EventEmitter implements FileHost {
     }
   }
 
+  /** [2026-11-27] counts every connect() call: a confirmed write is refused when the session it was read from is not the one
+   *  that would run it (a reconnect in between, to the same or another server) */
+  sessionSeq = 0;
+
   async connect(p: SshParams): Promise<void> {
+    this.sessionSeq++;
     this.close();
     if (!p.host) throw new Error('호스트가 설정되지 않았습니다.');
     const cfg: ConnectConfig = {

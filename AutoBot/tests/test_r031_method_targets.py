@@ -120,6 +120,18 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual((cfg["include"]["vwap"], cfg["exclude"]["vwap"], why), ([], [], None))
         self.assertIsNotNone(r031.merge_config(cfg, {"exclude_add": {"x": ["000001"]}})[1])
         self.assertIsNotNone(r031.merge_config(cfg, {"exclude_add": {"vwap": ["1"]}})[1])
+        self.assertIsNotNone(r031.merge_config(cfg, {"exclude_add": {"vwap": [f"{i:06d}" for i in range(r031.EDIT_MAX + 1)]}})[1])
+        # adding a code that is already there keeps the order
+        c2, _ = r031.merge_config(r031.default_config(), {"include_add": {"rule": ["000002", "000001"]}})
+        c2, _ = r031.merge_config(c2, {"include_add": {"rule": ["000002", "000003"]}})
+        self.assertEqual(c2["include"]["rule"], ["000002", "000001", "000003"])
+
+    def test_the_digest_follows_the_date_the_lists_and_the_watch_order(self):
+        cfg = r031.default_config()
+        a = r031.compose(picks(3), ranked(80), cfg, date="20261127")["digest"]
+        self.assertEqual(a, r031.compose(picks(3), ranked(80), cfg, date="20261127")["digest"])
+        self.assertNotEqual(a, r031.compose(picks(3), ranked(80), cfg, date="20261126")["digest"])   # the same symbols, another scan
+        self.assertNotEqual(a, r031.compose(picks(4), ranked(80), cfg, date="20261127")["digest"])
 
     def test_a_broken_file_never_composes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -224,7 +236,19 @@ class ControlTest(unittest.TestCase):
         import r021_jobs as r021
         _pf, pk = r021.read_picks(r021.Paths(self.paths.runtime_root), DAY)
         cmp_ = r016.watchlist_vs_picks(self.paths, pk)
-        self.assertEqual((cmp_["same_codes"], cmp_["applied"], cmp_["composed"]), (False, True, True))
+        self.assertEqual(cmp_["same_codes"], False)
+        self.assertEqual((cmp_["applied"], cmp_["composed"]), (False, False))            # no date given: not judged as composed
+        cmp_ = r016.watchlist_vs_picks(self.paths, pk, DAY)
+        self.assertEqual((cmp_["applied"], cmp_["composed"]), (True, True))
+        self.assertEqual(r016.watchlist_vs_picks(self.paths, pk, "20261126")["applied"], False)   # r004 is of another scan
+
+    def test_a_failed_watchlist_write_leaves_the_lists_and_says_so(self):
+        with mock.patch.object(r016, "_write_watchlist_locked", side_effect=OSError("disk")):
+            res = r016.targets_apply(self.paths, "t", DAY)
+        self.assertFalse(res["ok"])
+        self.assertIn("watchlist was NOT written", res["error"])
+        self.assertEqual(len(r016.read_overrides(self.paths)["RULE_TARGET_CODES"]), 30)   # the narrowing lists are there
+        self.assertFalse(self.paths.watchlist.exists())
 
     def test_picks_copied_while_older_lists_are_stored_say_which_picks_are_left_out(self):
         r016.write_overrides(self.paths, {"VWAP_TARGET_CODES": ["000001", "999999"]}, "t")

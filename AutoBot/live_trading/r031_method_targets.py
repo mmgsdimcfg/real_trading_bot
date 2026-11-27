@@ -132,10 +132,12 @@ def merge_config(cfg: dict, patch) -> tuple[dict, str | None]:
                 return cfg, f"{k}: unknown method {m!r}"
             if not isinstance(v, list) or any(not isinstance(x, str) or not _CODE.fullmatch(x.strip().upper()) for x in v):
                 return cfg, f"{k}.{m} must be a list of 6-character codes"
+            if len(v) > EDIT_MAX:                 # [Codex review] refused, not cut silently
+                return cfg, f"{k}.{m}: too many codes ({len(v)} > {EDIT_MAX})"
             codes = _codes(v)
             other = "exclude" if kind == "include" else "include"
             if op == "add":
-                new[kind][m] = [c for c in new[kind][m] if c not in codes] + codes
+                new[kind][m] = new[kind][m] + [c for c in codes if c not in new[kind][m]]   # a code already there keeps its place
                 new[other][m] = [c for c in new[other][m] if c not in codes]
                 if len(new[kind][m]) > EDIT_MAX:
                     return cfg, f"{kind}.{m}: too many codes (> {EDIT_MAX})"
@@ -216,7 +218,7 @@ def parse_scan_all(path: Path) -> list[dict]:
     return rows
 
 
-def compose(picks: list[dict], ranked: list[dict], cfg: dict, is_fund=None, names: dict | None = None) -> dict:
+def compose(picks: list[dict], ranked: list[dict], cfg: dict, is_fund=None, names: dict | None = None, date: str = "") -> dict:
     """The three target lists and the watchlist for one scan. picks = A ([{code, name}] in scanner order), ranked = parse_scan_all.
     is_fund(name) -> bool (ETF / ETN names; None = no filter). names: {code: name} for manual codes the scan does not know.
     Returns {a, rule_extra, edge_extra, lists: {rule, edge, vwap}, watch: [{code, name}], rows: {code: {...}}, no_tick, short,
@@ -273,7 +275,8 @@ def compose(picks: list[dict], ranked: list[dict], cfg: dict, is_fund=None, name
         # fewer extras than asked for: the ranking ran out (a short / missing scan_all file)
         "short": {"rule": n_rule - len(rule_extra), "edge": n_edge - len(edge_extra)},
         "excluded": {m: [c for c in cfg["exclude"][m] if c in auto[m]] for m in METHODS},
-        "digest": digest({"lists": lists, "watch": order}),
+        # what `apply` stores: the scan date (r004 header), each list as a set, the watch order [Codex review]
+        "digest": digest({"date": date, "lists": {m: sorted(v) for m, v in lists.items()}, "watch": order}),
     }
 
 

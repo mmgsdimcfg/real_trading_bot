@@ -168,6 +168,9 @@ export interface ControlDeps {
   /** r016 client of the host the app is connected to (remote Raspberry Pi or this PC) */
   client: () => R016Client;
   isConnected: () => boolean;
+  /** [2026-11-27] what the connection points at now (run mode + SSH host / port / user / remote root, or the local root): a
+   *  confirmed write is refused when it changed in between (an automatic reconnect uses the newest settings) */
+  hostId?: () => string;
   /** status poll interval in ms (run mode / window visibility) */
   pollMs: () => number;
   /** "라즈베리파이" / "이 PC" - used in messages */
@@ -605,27 +608,37 @@ export function createControl(deps: ControlDeps) {
     const nc = needConn();
     if (nc) return nc;
     const d = date && /^\d{8}$/.test(String(date)) ? ['--date', String(date)] : [];
-    const pre = await cl().run<TargetsDoc>(['targets', 'get', ...d]);
+    // [Codex review] one client and one host for the whole flow: what is confirmed is stored on the host it was read from
+    const client = cl();
+    const host = deps.hostLabel();
+    const myGen = gen; // bumped on every disconnect / run-mode switch
+    const hostId = deps.hostId?.() ?? '';
+    const pre = await client.run<TargetsDoc>(['targets', 'get', ...d]);
     // [Codex review] the composition the card showed must be the one confirmed and stored
     if (shown && pre.data?.composition?.digest && pre.data.composition.digest !== shown)
       return { ok: false, error: '구성이 화면에 보인 것과 달라졌습니다. 다시 확인한 뒤 적용하세요.', data: pre.data };
     const c = pre.data?.composition;
     if (!pre.data?.ok || !c) return { ok: false, error: pre.data?.error || pre.error || '구성을 읽지 못했습니다.', data: pre.data };
+    if (!c.digest) return { ok: false, error: '서버가 구성 확인값(digest)을 주지 않아 적용할 수 없습니다 (봇 코드 갱신 필요).', data: pre.data };
     if (
       !(await confirm(
         '대상 종목 구성 적용',
         `감시목록을 ${c.watch.length}종목으로 바꾸고 매매법별 대상을 저장합니다 (${deps.hostLabel()}).`,
         `규칙 매매 ${c.lists.rule.length}종목 · Edge AI 매매 ${c.lists.edge.length}종목 · VWAP 매매 ${c.lists.vwap.length}종목 (선별 A ${c.a.length}종목 기준, 스캔 ${pre.data.date}).\n` +
           `틱 수집 ${c.tick_cap}종목 밖 ${c.no_tick.length}종목은 규칙 매매 · VWAP 매매가 사지 못합니다. 순위로 추가된 종목은 대부분 선별에서 탈락한 종목입니다.\n` +
-          `r003 은 감시 종목 중 ${pre.data.active_size || '?'}종목을 동시에 감시하고 나머지는 대기하다 교대합니다.\n` +
+          (pre.data.active_size && c.watch.length > pre.data.active_size
+            ? `r003 은 감시 종목 중 ${pre.data.active_size}종목을 동시에 감시하고 나머지 ${c.watch.length - pre.data.active_size}종목은 대기합니다.\n`
+            : '') +
           '세 매매법의 저장된 대상 목록(직접 지정한 것 포함)을 이 구성으로 덮어씁니다. 기존 감시목록은 백업됩니다. r003 재시작 후 적용됩니다.',
         '적용',
       ))
     ) {
       return { ok: false, cancelled: true };
     }
-    const dg = c.digest ? ['--expect', c.digest] : [];
-    const r = await cl().run<TargetsDoc & { watchlist?: WatchlistSetResult }>(['targets', 'apply', ...d, ...dg], { timeoutMs: R016_SERVICE_TIMEOUT });
+    if (myGen !== gen || client !== cl() || deps.hostLabel() !== host || (deps.hostId?.() ?? '') !== hostId || !deps.isConnected())
+      return { ok: false, error: '확인하는 동안 연결이 바뀌었습니다. 다시 시도하세요.' };
+    // the server checks the digest again inside its write lock: nothing changes between this check and the writes
+    const r = await client.run<TargetsDoc & { watchlist?: WatchlistSetResult }>(['targets', 'apply', ...d, '--expect', c.digest], { timeoutMs: R016_SERVICE_TIMEOUT });
     if (r.ok && r.data?.ok) {
       await afterWatchlistWrite({ ok: true, data: r.data.watchlist || null });
       void refreshPaper();

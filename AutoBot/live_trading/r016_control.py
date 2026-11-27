@@ -1462,28 +1462,36 @@ def parse_watchlist_entries(text: str) -> list[dict]:
 WATCHLIST_META_PREFIXES = ("# scan_date=", "# for_trading_day=", "# scanner_config=")
 
 
+def _write_watchlist_locked(paths: ControlPaths, entries: list[dict], by: str, meta: dict[str, str] | None = None):
+    """the r004 replacement itself (backup, atomic write, history); the caller holds write_lock. Returns the backup path.
+    [2026-11-27] split out of write_watchlist so `targets apply` writes the target lists and r004 under ONE lock."""
+    current = read_watchlist(paths)
+    header = current["header"] or ["# Daily live trading watchlist.", "# Format: code,name"]
+    header = [h for h in header if not h.startswith("# [r016]")]
+    if meta is not None:
+        header = [h for h in header if not h.startswith(WATCHLIST_META_PREFIXES)]
+        header += [f"# {k}={v}" for k, v in meta.items() if v]
+        header.append(f"# [r016] applied from picks by {by} at {datetime.now().isoformat(timespec='seconds')}")
+    else:
+        header.append(f"# [r016] edited by {by} at {datetime.now().isoformat(timespec='seconds')}")
+    backup = None
+    if paths.watchlist.is_file():
+        paths.watchlist_backup_dir.mkdir(parents=True, exist_ok=True)
+        backup = paths.watchlist_backup_dir / f"r004_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
+        shutil.copy2(paths.watchlist, backup)
+    body = "\n".join(header) + "\n\n" + "\n".join(f"{e['code']},{e['name']}" for e in entries) + "\n"
+    _atomic_write(paths.watchlist, body)
+    with contextlib.suppress(Exception):      # the file is replaced: a history line that cannot be written does not undo that
+        append_history(paths, "watchlist", {"codes": [e["code"] for e in entries], "backup": str(backup) if backup else None,
+                                            **({"meta": meta} if meta else {})}, by)
+    return backup
+
+
 def write_watchlist(paths: ControlPaths, entries: list[dict], by: str, meta: dict[str, str] | None = None) -> dict:
     """Replace r004 (backup + history). meta (watchlist apply): the g002 export header lines (scan_date, for_trading_day,
     scanner_config) are replaced by the given ones, so r004 says which scan it came from; None (set) keeps them as they are."""
     with write_lock(paths):
-        current = read_watchlist(paths)
-        header = current["header"] or ["# Daily live trading watchlist.", "# Format: code,name"]
-        header = [h for h in header if not h.startswith("# [r016]")]
-        if meta is not None:
-            header = [h for h in header if not h.startswith(WATCHLIST_META_PREFIXES)]
-            header += [f"# {k}={v}" for k, v in meta.items() if v]
-            header.append(f"# [r016] applied from picks by {by} at {datetime.now().isoformat(timespec='seconds')}")
-        else:
-            header.append(f"# [r016] edited by {by} at {datetime.now().isoformat(timespec='seconds')}")
-        backup = None
-        if paths.watchlist.is_file():
-            paths.watchlist_backup_dir.mkdir(parents=True, exist_ok=True)
-            backup = paths.watchlist_backup_dir / f"r004_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
-            shutil.copy2(paths.watchlist, backup)
-        body = "\n".join(header) + "\n\n" + "\n".join(f"{e['code']},{e['name']}" for e in entries) + "\n"
-        _atomic_write(paths.watchlist, body)
-        append_history(paths, "watchlist", {"codes": [e["code"] for e in entries], "backup": str(backup) if backup else None,
-                                            **({"meta": meta} if meta else {})}, by)
+        backup = _write_watchlist_locked(paths, entries, by, meta)
     coll = collector_status(paths, [e["code"] for e in entries])
     return {"ok": True, "count": len(entries), "backup": str(backup) if backup else None, "path": str(paths.watchlist),
             "restart_required": True, "collector_missing": coll["missing"],
@@ -1593,7 +1601,7 @@ def targets_compose(paths: ControlPaths, date: str | None = None) -> dict:
         except Exception:
             is_fund = None
     names = {c["code"]: c["name"] for c in read_watchlist(paths)["codes"]}
-    comp = r031.compose(picks, ranked, cfg, is_fund, names)
+    comp = r031.compose(picks, ranked, cfg, is_fund, names, date=day)
     comp["scan_file"] = str(scan_file) if ranked else None
     comp["fund_filter"] = bool(cfg["exclude_funds"] and is_fund is not None)
     return {**out, "composition": comp}
@@ -1601,49 +1609,57 @@ def targets_compose(paths: ControlPaths, date: str | None = None) -> dict:
 
 def targets_apply(paths: ControlPaths, by: str, date: str | None = None, restart_collector: bool = False,
                   expect: str | None = None) -> dict:
-    """compose and store: r004 <- the union, RULE_ / EDGE_ / VWAP_TARGET_CODES <- the three lists (effective after an r003
-    restart). Nothing is written when the composition fails or a list would be rejected."""
+    """compose and store: RULE_ / EDGE_ / VWAP_TARGET_CODES <- the three lists, r004 <- the union (effective after an r003
+    restart). [Codex review] ONE write lock holds the composition, the `expect` check and both writes: two applies cannot leave the
+    lists of one and the watchlist of the other, and nothing changes between the check and the writes. The lists are written
+    first. Nothing is written when the composition fails, a list would be rejected or `expect` (the digest that was shown) does
+    not match."""
     import r021_jobs as r021  # noqa: E402
 
-    out = targets_compose(paths, date)
-    if not out.get("ok"):
-        return out
-    comp = out["composition"]
-    day = out["date"]
-    if expect and comp.get("digest") != expect:
-        # [Codex review] what was confirmed is not what would be stored now (the config / the scan changed in between)
-        return {**out, "ok": False, "error": "the composition changed since it was shown - look at it again and apply"}
-    lists = {r001.METHOD_TARGET_KEYS[m]: sorted(comp["lists"][m]) for m in r001.METHOD_TARGET_KEYS}
-    for m, k in r001.METHOD_TARGET_KEYS.items():
-        if not comp["lists"][m]:
-            # an empty list would mean "everything" to r003 - never what a composition with exclusions means
-            return {**out, "ok": False, "error": f"the {m} list is empty - not applied (remove exclusions or switch the method off)"}
-    accepted, rejected = validate_assignments(lists)
-    if rejected:
-        return {**out, "ok": False, "error": "target lists rejected", "rejected": rejected}
-    if not comp["watch"]:
-        return {**out, "ok": False, "error": "nothing to watch"}
-    nxt = _next_trading_day(day, r021)
-    meta = {"scan_date": day, "for_trading_day": f"{nxt} (r014 next trading day)" if nxt else ""}
-    # [Codex review] the target lists first, the watchlist second: if the second write fails, r003 has lists that name symbols
-    # it does not watch (it buys fewer) - never a longer watchlist with no lists (every method buying every added symbol)
     with write_lock(paths):
+        out = targets_compose(paths, date)
+        if not out.get("ok"):
+            return out
+        comp = out["composition"]
+        day = out["date"]
+        if expect and comp.get("digest") != expect:
+            return {**out, "ok": False, "error": "the composition changed since it was shown - look at it again and apply"}
+        lists = {r001.METHOD_TARGET_KEYS[m]: sorted(comp["lists"][m]) for m in r001.METHOD_TARGET_KEYS}
+        for m, k in r001.METHOD_TARGET_KEYS.items():
+            if not comp["lists"][m]:
+                # an empty list would mean "everything" to r003 - never what a composition with exclusions means
+                return {**out, "ok": False, "error": f"the {m} list is empty - not applied (remove exclusions or switch the method off)"}
+        accepted, rejected = validate_assignments(lists)
+        if rejected:
+            return {**out, "ok": False, "error": "target lists rejected", "rejected": rejected}
+        if not comp["watch"]:
+            return {**out, "ok": False, "error": "nothing to watch"}
+        nxt = _next_trading_day(day, r021)
+        meta = {"scan_date": day, "for_trading_day": f"{nxt} (r014 next trading day)" if nxt else ""}
         overrides = read_overrides_strict(paths)
         if overrides is None:
             return {**out, "ok": False, "error": f"the overrides file cannot be read ({paths.overrides}) - nothing was written"}
         before = {k: overrides.get(k) for k in accepted}
         overrides.update(accepted)
         write_overrides(paths, overrides, by)
-        append_history(paths, "targets", {k: {"from": _jsonable(before.get(k)), "to": _jsonable(v)} for k, v in accepted.items()}, by)
+        with contextlib.suppress(Exception):
+            append_history(paths, "targets", {k: {"from": _jsonable(before.get(k)), "to": _jsonable(v)} for k, v in accepted.items()}, by)
+        try:
+            backup = _write_watchlist_locked(paths, comp["watch"], by, meta)
+        except Exception as exc:
+            # the lists are stored, r004 is not: r003 would buy fewer symbols (lists naming symbols it does not watch), never more
+            return {**out, "ok": False, "restart_required": True,
+                    "error": f"the target lists were stored but the watchlist was NOT written ({type(exc).__name__}: {exc}) - apply again"}
+    codes = [e["code"] for e in comp["watch"]]
     try:
-        wl = write_watchlist(paths, comp["watch"], by, meta=meta)
-    except Exception as exc:
-        return {**out, "ok": False, "restart_required": True,
-                "error": f"the target lists were stored but the watchlist was NOT written ({type(exc).__name__}: {exc}) - apply again"}
+        coll = collector_status(paths, codes)
+    except Exception:
+        coll = {"missing": [], "running": False}
+    wl = {"ok": True, "count": len(codes), "backup": str(backup) if backup else None, "path": str(paths.watchlist),
+          "restart_required": True, "collector_missing": coll.get("missing") or [], "collector_note": ""}
     res = {**out, "applied": True, "watchlist": wl, "restart_required": True, "for_trading_day": nxt,
            "stored": {m: list(accepted[k]) for m, k in r001.METHOD_TARGET_KEYS.items()}}
-    codes = [e["code"] for e in comp["watch"]]
-    if restart_collector and wl.get("collector_missing") and collector_status(paths, codes)["running"]:
+    if restart_collector and wl["collector_missing"] and coll.get("running"):
         res["collector_restart"] = collector_restart(paths, by)
     return res
 
@@ -1665,7 +1681,7 @@ def targets_config(paths: ControlPaths, patch, by: str) -> dict:
     return {"ok": True, "config": saved}
 
 
-def watchlist_vs_picks(paths: ControlPaths, picks: list[dict] | None) -> dict:
+def watchlist_vs_picks(paths: ControlPaths, picks: list[dict] | None, date: str | None = None) -> dict:
     """r004 compared with a picks list: same_codes = the two code sets are equal (order and names ignored)."""
     wl = read_watchlist(paths)
     scan_date = None
@@ -1679,7 +1695,10 @@ def watchlist_vs_picks(paths: ControlPaths, picks: list[dict] | None) -> dict:
         with contextlib.suppress(Exception):
             import r031_method_targets as r031  # noqa: E402
             _cfg, _state = r031.load_config(paths.config_dir)
-            composed = bool(_cfg.get("auto")) and _state == "ok" and {p["code"] for p in picks} <= {c["code"] for c in wl["codes"]}
+            # [Codex review] ... of THIS scan: r004 says it was made from that date (a watchlist of another day, or one edited
+            # by hand before auto was switched on, is not "applied")
+            composed = (bool(_cfg.get("auto")) and _state == "ok" and bool(date) and scan_date == date
+                        and {p["code"] for p in picks} <= {c["code"] for c in wl["codes"]})
     return {"scan_date": scan_date, "same_codes": same, "applied": same or composed, "composed": composed,
             "count": len(wl["codes"]), "mtime": wl["mtime"]}
 
@@ -2029,7 +2048,8 @@ def main(argv: list[str] | None = None, paths: ControlPaths | None = None, runne
     if args.cmd == "job":
         out, rc = r021.run_job_command(args, args.by, r021.Paths(paths.runtime_root))
         if args.action == "data" and out.get("ok"):  # [2026-11-11] + how r004 relates to that date's picks
-            out["r004"] = watchlist_vs_picks(paths, out.get("picks"))
+            # the date the job data was read for (the default / positional date too), not only --date [Codex review]
+            out["r004"] = watchlist_vs_picks(paths, out.get("picks"), str(out.get("date") or getattr(args, "date", None) or "") or None)
         return _emit(out, rc)
 
     snapshot = read_running_snapshot(paths)
