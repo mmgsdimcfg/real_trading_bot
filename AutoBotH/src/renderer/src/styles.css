@@ -1097,3 +1097,74 @@ button.pick-chip:disabled { cursor: default; opacity: .6; }
 .method-grid.compact td, .method-grid.compact th { padding: 6px 8px; }
 .method-grid td.reason .src { font-style: normal; font-size: 11px; color: var(--text-3); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; margin-right: 6px; }
 .method-view tr.row-held td { background: var(--hover, rgba(127, 127, 127, 0.08)); }
+
+/* [2026-11-27] 매매 방식 현황 dashboard: method colours (rule blue / Edge AI purple / VWAP teal), unit cards, summary, split */
+.method-view { --m-rule: #3d7fe0; --m-edge: #8a63d2; --m-vwap: #1f9d8f; display: flex; flex-direction: column; }
+.method-view .m-rule { --m: var(--m-rule); }
+.method-view .m-edge { --m: var(--m-edge); }
+.method-view .m-vwap { --m: var(--m-vwap); }
+.method-view .mtabs button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; }
+.method-view .mtabs button[class*='m-'] { border-bottom: 2px solid var(--m); }
+.method-view .mtabs button.on[class*='m-'] { background: var(--m); color: #fff; border-color: var(--m); }
+.method-view .mtabs button.on .tl-mode { color: #fff; }
+.run-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--st-idle); flex: none; }
+.run-dot.on { background: var(--st-pass); }
+.method-line { padding: 0 16px; margin: 0 0 8px; }
+.unit-cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; padding: 0 16px 8px; }
+.unit-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); cursor: pointer; overflow: hidden; min-width: 0; }
+.unit-card.sel { border-color: var(--m); box-shadow: 0 0 0 2px var(--m) inset; }
+.unit-card .uc-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: color-mix(in srgb, var(--m) 16%, transparent); border-bottom: 2px solid var(--m); }
+.unit-card.live:not(.m-rule) .uc-head { background: color-mix(in srgb, var(--m) 26%, transparent); }
+.unit-card .uc-head b { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uc-switch { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 6px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg); font-size: 11px; font-weight: 700; cursor: pointer; flex: none; color: var(--text-3); }
+.uc-switch.on { background: var(--st-pass); border-color: var(--st-pass); color: #fff; }
+.uc-switch.dis { opacity: 0.55; cursor: default; }
+.uc-switch input { margin: 0; width: 13px; height: 13px; }
+.unit-card dl, .method-side dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; padding: 8px 10px 10px; font-size: 12.5px; }
+.unit-card dt, .method-side dt { color: var(--text-3); white-space: nowrap; }
+.unit-card dd, .method-side dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.method-side dd { white-space: normal; }
+.method-side .dl-row { display: contents; }
+.ust-run { color: var(--st-pass); font-weight: 600; }
+.ust-pending { color: var(--st-hold); font-weight: 600; }
+.ust-closing { color: var(--accent); }
+.ust-stop, .ust-botoff { color: var(--text-3); }
+.ust-unknown { color: var(--st-fail); }
+.method-sum { display: flex; gap: 10px; padding: 2px 16px 10px; flex-wrap: wrap; }
+.ms-box { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 8px 14px; flex: 1 1 auto; }
+.ms-box > b { font-size: 13px; }
+.ms-box.run { gap: 8px; flex: 0 1 auto; }
+.ms-item { display: flex; flex-direction: column; gap: 1px; }
+.ms-item span { font-size: 11.5px; color: var(--text-3); }
+.ms-item b { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ms-item b i { font-style: normal; font-size: 12px; font-weight: 500; }
+.ms-item.paper { border-left: 1px dashed var(--border); padding-left: 16px; }
+.run-chip { font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid currentColor; }
+.method-split { display: grid; grid-template-columns: minmax(250px, 30%) minmax(0, 1fr); gap: 12px; padding: 0 16px; align-items: start; }
+.method-split .table-wrap { padding: 0 0 12px; }
+.method-split .toolbar, .method-split .method-line, .method-split .method-notes { padding-left: 0; padding-right: 0; }
+.method-side { border: 1px solid var(--border); border-top: 3px solid var(--m); border-radius: 10px; background: var(--surface); }
+.method-side section { padding: 8px 12px 10px; border-bottom: 1px solid var(--border); }
+.method-side section:last-child { border-bottom: none; }
+.method-side h5 { margin: 0 0 6px; font-size: 12.5px; color: var(--text-2); }
+.method-side h5 i { font-style: normal; font-weight: 400; color: var(--text-3); font-size: 11.5px; margin-left: 4px; }
+.method-side dl { padding: 0; }
+.method-side p { margin: 4px 0 0; font-size: 12.5px; }
+.method-side .chips { margin-top: 8px; }
+.cond-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; max-height: 260px; overflow: auto; }
+.cond-list li { padding: 2px 0; display: flex; gap: 6px; align-items: baseline; }
+.cond-list li .mono { color: var(--text-3); font-size: 11px; }
+.cond-list li i { font-style: normal; font-size: 10.5px; margin-left: auto; border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; flex: none; }
+.cond-list li.off { color: var(--text-3); text-decoration: line-through; }
+.cond-list li.off i { text-decoration: none; }
+.cond-list li.rec { color: var(--st-hold); }
+.method-all th.m-rule, .method-all th.m-edge, .method-all th.m-vwap { color: var(--m); font-weight: 600; }
+.method-grid td.mcell { max-width: 210px; cursor: pointer; }
+.method-grid td.mcell.held { color: var(--gain); font-weight: 600; }
+.method-grid td.mcell.pheld { color: var(--st-hold); }
+.method-grid tr.not-target td { opacity: 0.6; }
+.method-log { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 4px 16px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 12px; }
+.method-log .log-item { cursor: pointer; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.method-log .log-item i { font-style: normal; color: var(--text-3); margin-right: 5px; }
+.method-log .log-item em { font-style: normal; font-weight: 600; color: var(--m); margin-right: 5px; }
+@media (max-width: 1250px) { .unit-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } .method-split { grid-template-columns: 1fr; } }

@@ -189,10 +189,11 @@ interface State {
   /** [2026-11-27] timeline method tab: 'auto' = follows what runs / what holds the symbol, else the user's choice (until restart) */
   timelineMethod: 'auto' | TradeStrategy;
   /** [2026-11-27] the method shown by the method board (매매 방식 현황) */
-  methodTab: TradeStrategy;
-  setMethodTab: (m: TradeStrategy) => void;
-  /** open the method board on a method */
-  openMethod: (m: TradeStrategy) => void;
+  /** 'all' = the overview (five units, summary, every method per symbol) */
+  methodTab: 'all' | TradeStrategy;
+  setMethodTab: (m: 'all' | TradeStrategy) => void;
+  /** open the method board on a method (or the overview) */
+  openMethod: (m: 'all' | TradeStrategy) => void;
   setTimelineMethod: (m: 'auto' | TradeStrategy) => void;
   control: ControlState;
   /** bumped after every write so the history table reloads */
@@ -253,7 +254,7 @@ export const useStore = create<State>()((set, get) => ({
   selected: null,
   timeline: null,
   timelineMethod: 'auto',
-  methodTab: 'rule',
+  methodTab: 'all',
   setMethodTab: (methodTab) => set({ methodTab }),
   openMethod: (methodTab) => {
     set({ methodTab });

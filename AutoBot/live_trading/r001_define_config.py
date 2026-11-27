@@ -1544,6 +1544,56 @@ TRADING_STRATEGY_MODE = "normal"   # "normal" | "basic" | "edge"
 # 주문을 내지 않는다([RULE BUY OFF] 로그만). 규칙 기반 전략(TRADING_STRATEGY_MODE normal / basic)에만 적용 - edge 는 무관. 보유분 매도(AUTO_SELL_MODE / 엔진 / 당일 청산), 미체결 매수 정리, 일일 손실·재진입 회계,
 # 가상 매매(EDGE_ONLY_MODE), 수집은 그대로. AUTO_SELL_MODE 가 stop_only / off 면 보유가 남을 수 있다. r003 재시작 후 적용.
 RULE_BUY_ENABLED = True
+# [2026-11-27] 매매법별 대상 종목 (사용자 요청: 매매법마다 대상 종목을 따로 지정, Codex 검토). 종목코드 6자리 문자열의 목록.
+#   빈 목록 = 지금까지와 같음(그 매매법이 보던 범위 전체: 감시 종목, Edge AI 가상은 수집기 종목 포함).
+#   목록이 있으면 그 매매법은 목록의 종목만 "새로 산다"(좁히기만 한다). 이미 산 종목의 매도 / 청산, 미체결 주문 관리는 그대로.
+#   감시목록(r004)에 없는 코드는 넣어도 r003 이 그 종목을 보지 않으므로 효과가 없다.
+#   RULE_TARGET_CODES: 규칙 매매(TRADING_STRATEGY_MODE normal / basic)의 매수 평가. EDGE_TARGET_CODES: Edge AI 실제 주문과 가상 매매
+#   (TRADING_STRATEGY_MODE=edge 의 주 매수 포함). VWAP_TARGET_CODES: VWAP 실제 주문과 가상 매매. r003 재시작 후 적용.
+#   값이 잘못되면(코드 형식이 아닌 원소) 그 매매법은 새로 사지 않는다(method_target_codes: 넓게 여는 쪽이 아니라 닫는 쪽).
+RULE_TARGET_CODES = ()
+EDGE_TARGET_CODES = ()
+VWAP_TARGET_CODES = ()
+METHOD_TARGET_KEYS = {"rule": "RULE_TARGET_CODES", "edge": "EDGE_TARGET_CODES", "vwap": "VWAP_TARGET_CODES"}
+METHOD_TARGET_MAX = 300
+METHOD_TARGET_INVALID = "__invalid__"         # the only element of a list that could not be read: nothing matches it
+
+
+def method_target_error(value) -> str | None:
+	"""why `value` is not a usable target list (None = usable): a list / tuple of 6-character codes (digits / capital letters),
+	at most METHOD_TARGET_MAX"""
+	import re as _re
+	if not isinstance(value, (list, tuple)):
+		return "expected a list of 6-character symbol codes"
+	if len(value) > METHOD_TARGET_MAX:
+		return f"too many codes ({len(value)} > {METHOD_TARGET_MAX})"
+	for x in value:
+		if not isinstance(x, str) or not _re.fullmatch(r"[0-9A-Z]{6}", x):
+			return f"not a symbol code: {x!r}"
+	return None
+
+
+def method_target_codes(method: str, namespace: dict | None = None) -> frozenset:
+	"""[2026-11-27] the target codes of a trading method ("rule" / "edge" / "vwap") as stored now. Empty = no list (everything the
+	method looked at before). A value that cannot be read gives a set no code is in (the method buys nothing new) - never "all"."""
+	ns = globals() if namespace is None else namespace
+	key = METHOD_TARGET_KEYS.get(method, "")
+	value = ns.get(key, ())
+	if method_target_error(value):
+		return frozenset({METHOD_TARGET_INVALID})
+	# [Codex review] a stored list that was NOT applied must not read as "no list": the overrides file could not be loaded at
+	# all (whether a list was stored is not known), or this key's override was rejected (wrong type). Both close the method.
+	for msg in ns.get("LIVE_OVERRIDES_ERRORS") or []:
+		text = str(msg)
+		if text.startswith(key + ":") or text.startswith("load failed") or text.startswith("invalid format"):
+			return frozenset({METHOD_TARGET_INVALID})
+	return frozenset(value)
+
+
+def method_is_target(method: str, code, targets: frozenset | None = None) -> bool:
+	"""True when the method may newly buy `code` (no list, or the code is on it)"""
+	t = method_target_codes(method) if targets is None else targets
+	return not t or str(code).zfill(6) in t
 # [2026-11-27] 규칙 매매 변형 (사용자 결정: 규칙 매매를 normal / extended 두 가지로, 둘 중 하나 선택. 앱 제어 탭 규칙 매매 카드).
 # "normal" = 지금까지의 조건값(아래 상수와 앱에서 저장한 값) 그대로.
 # "extended" = "상승 초입 매수"용 조건값 묶음 RULE_EXTENDED_VALUES 를 라이브 오버라이드 적용 뒤에 덮어쓴다(같은 키를 앱에서 따로 저장해

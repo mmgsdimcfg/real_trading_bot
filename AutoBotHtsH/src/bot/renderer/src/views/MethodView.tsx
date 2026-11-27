@@ -1,32 +1,46 @@
 /*
  * Update log
  * - [2026-11-27] type=feat - "매매 방식 현황" (user 2026-11-27: which symbols does the VWAP trade look at; one place per trading method
- *   for its symbols, their state and the results; plan reviewed with Codex). One view, a method selector (규칙 / Edge AI / VWAP):
- *   the mode the running bot uses (and "재시작 후 적용" when the stored one differs), today's numbers, the bot's "신규 매수 중단"
- *   note, the symbol table (감시 / 수집기 / 보유 badges, the last record of the bot for that method with its source and time,
- *   signals / orders, holding, results) and the method's recent fills. A row opens the timeline on that method's tab. Display
- *   only: switches and settings stay in 제어 (buttons lead there), rows come from shared/methodBoard
- * - [2026-11-27] type=feat - On / off on this page (user 2026-11-27): the method's switch and its "실제 매매" switch, through the
- *   same handlers as the control tab (components/useMethodSwitch: same warnings, confirmations and server checks; stored through
- *   r016, applied by an r003 restart - the restart itself stays in 제어)
+ *   for its symbols, their state and the results; plan reviewed with Codex). Display only: rows come from shared/methodBoard
+ * - [2026-11-27] type=feat - On / off on this page through the control tab's own handlers (components/useMethodSwitch)
+ * - [2026-11-27] type=feat - Dashboard (user mock-up + guide 2026-11-27, Codex review): tabs 전체 현황 / 규칙 / Edge AI / VWAP; five
+ *   unit cards (규칙, Edge AI 가상 · 실전, VWAP 가상 · 실전) with the STORED switch and the RUNNING bot's state apart
+ *   (shared/methodUnits); 전체 현황 = summary (real and paper never added together) + one row per symbol with every method's
+ *   last record; a method tab = left panel (basic info, the conditions / exits / limits the app can read, today's result) + the
+ *   symbol table + fills; a recent-record line at the bottom. Per-method target symbols (server RULE_ / EDGE_ / VWAP_TARGET_CODES)
+ *   are picked on the method's table and stored through r016 (after a restart). Nothing is judged here and nothing the app
+ *   cannot read is shown (no strategy version names, no "conditions met n/m", no measured values per condition). Controls are
+ *   locked while a past day / replay is shown.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { ColGrip, ColGroup, ColReset, colTable, useColWidths } from '../components/useColWidths';
+import { ColGrip, ColGroup, ColReset, colTable, useColWidths, type ColWidths } from '../components/useColWidths';
 import { PriceTag } from '../components/PriceTag';
 import { NxtMark } from '../components/NxtTag';
+import { useMethodSwitch } from '../components/useMethodSwitch';
 import { condTitle, fmtInt, fmtKrw, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
 import { peek, put } from '../dataCache';
 import { showCode } from '../showCode';
-import { useMethodSwitch } from '../components/useMethodSwitch';
 import { reasonKo } from '../../../shared/reasonKo';
-import { TRADE_STRATEGIES, TRADE_STRATEGY_KO, strategyModeKo, strategyModes, strategyOfTrade, sideExitKo, type TradeStrategy } from '../../../shared/strategy';
-import { blockReasonKo, type SideStrategy } from '../../../shared/strategyEvents';
+import { TRADE_STRATEGIES, TRADE_STRATEGY_KO, TRADE_STRATEGY_SHORT, strategyModeKo, strategyModes, strategyOfTrade, strategySummary, sideExitKo, type TradeStrategy } from '../../../shared/strategy';
+import { blockReasonKo, STAGE_ROWS, type SideStrategy } from '../../../shared/strategyEvents';
 import type { StrategyEvalRowX } from '../../../shared/sideTimeline';
-import { edgeLiveSummaryText, parseEdgeLiveSummary, parseVwapLiveSummary, type EdgeModelInfo, type PaperStatus, type PaperTrade } from '../../../shared/paper';
-import { METHOD_FILTER_KO, METHOD_SRC_KO, filterMethodRows, methodRows, methodTotals, type MethodRow, type MethodRowFilter } from '../../../shared/methodBoard';
+import {
+  EDGE_LIVE_LIMIT_KINDS,
+  EDGE_LIVE_LIMIT_KO,
+  EDGE_LIVE_LIMIT_UNIT,
+  edgeLiveSummaryText,
+  parseEdgeLiveSummary,
+  parseVwapLiveSummary,
+  type EdgeModelInfo,
+  type PaperExitState,
+  type PaperStatus,
+  type PaperTrade,
+} from '../../../shared/paper';
+import { METHOD_FILTER_KO, METHOD_SRC_KO, filterMethodRows, methodRows, methodTotals, type MethodRow, type MethodRowFilter, type MethodTotals } from '../../../shared/methodBoard';
+import { METHOD_TARGET_KEYS, UNIT_KO, UNIT_SHORT, runningUnits, targetListToStore, targetsInUse, targetsKo, unitInfos, type UnitInfo } from '../../../shared/methodUnits';
 
 const REFRESH_MS = 15000;
 const BLOCK_NOTE_FRESH_MS = 11 * 60 * 1000;
@@ -39,66 +53,29 @@ const TARGET_NOTE: Record<TradeStrategy, string> = {
 type EvalRes = { key: string; last: Record<string, StrategyEvalRowX>; count: Record<string, number>; total: number };
 type PaperRes = { day: string; ok: boolean; trades: PaperTrade[] };
 type StatusRes = { day: string; ok: boolean; status: PaperStatus | null };
+type SideData = { evals: EvalRes | null; paperTrades: PaperTrade[] | undefined; pst: PaperStatus | null };
+type AllFilter = 'all' | 'watch' | 'traded' | 'holding';
+const ALL_FILTER_KO: Record<AllFilter, string> = { all: '전체', watch: '감시', traded: '체결', holding: '보유' };
+type Go = (code: string, m: TradeStrategy | 'auto') => void;
 
 const sp = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
+const ymd = (d: string | undefined) => (d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : '');
 
-export function MethodView() {
-  const method = useStore((s) => s.methodTab);
-  const setMethod = useStore((s) => s.setMethodTab);
-  const snap = useStore((s) => s.snapshot);
-  const status = useStore((s) => s.status);
-  const control = useStore((s) => s.control);
-  const conditions = useStore((s) => s.conditions);
-  const select = useStore((s) => s.select);
-  const setTab = useStore((s) => s.setTab);
-  const setTimelineMethod = useStore((s) => s.setTimelineMethod);
-  const openResults = useStore((s) => s.openResults);
-  const selected = useStore((s) => s.selected);
-  const cols = useColWidths('autoboth.cols.methodCols', 10);
-  const fillCols = useColWidths('autoboth.cols.methodFillCols', 7);
-  const [filter, setFilter] = useState<MethodRowFilter>('all');
-  // [2026-11-27] on / off here: the control tab's own handlers (same confirmations); the Edge AI model is read for the
-  // "real orders only from a promoted model" check, as the control tab does
-  const connected = status.conn === 'connected';
-  const [swBusy, setSwBusy] = useState(false);
-  const [edgeModel, setEdgeModel] = useState<EdgeModelInfo | null | undefined>(() => peek<EdgeModelInfo | null>('control:edge'));
-  useEffect(() => {
-    if (!connected) return setEdgeModel(undefined);
-    if (method !== 'edge') return;
-    let alive = true;
-    void window.api.getEdgeModel().then((r) => {
-      if (r.ok) put('control:edge', r.model);
-      if (alive) setEdgeModel(r.ok ? r.model : peek<EdgeModelInfo | null>('control:edge'));
-    });
-    return () => {
-      alive = false;
-    };
-  }, [connected, method, status.mode]);
-  const sw = useMethodSwitch({ setBusy: setSwBusy, edgeModel });
-  const swOff = !connected || swBusy;
-
-  const modes = useMemo(() => strategyModes(control), [control]);
-  const mode = modes[method];
-  const side: SideStrategy | null = method === 'rule' ? null : method;
-  const day = snap?.date || status.date;
-  const replayX = snap?.replay?.cursor ?? null;
-  // live day: re-read the bot's files at most every REFRESH_MS (the snapshot itself is pushed)
-  const tick = status.live && snap ? Math.floor(snap.generatedAt / REFRESH_MS) : 0;
-  // the host is part of the key: the same day / method on the other host is other data [Codex round 2]
-  const key = side && day ? `${status.mode}/${status.conn}/${day}/${side}/${replayX ?? ''}` : '';
-
+/** the bot's files of one side strategy for the day: last judged bar per symbol (trace), paper trades, paper runner status.
+ *  Re-read at most every REFRESH_MS on the live day; the paper files are the day's last state and are not read in replay */
+function useSideData(side: SideStrategy, day: string | undefined, replayX: number | null, tick: number, hostKey: string): SideData {
+  const key = day ? `${hostKey}/${day}/${side}/${replayX ?? ''}` : '';
   const [evalRes, setEvalRes] = useState<EvalRes | null>(null);
   const [paperRes, setPaperRes] = useState<(PaperRes & { key: string }) | null>(null);
   const [stRes, setStRes] = useState<(StatusRes & { key: string }) | null>(null);
   useEffect(() => {
-    if (!side || !day) return;
+    if (!day) return;
     let alive = true;
     const k = key;
     void window.api.getStrategyEvalLatest(day, side, replayX).then((r) => {
-      // a failed read shows nothing rather than the answer of an earlier read
       if (alive) setEvalRes(r.ok ? { key: k, last: r.last, count: r.count, total: r.total } : null);
     });
-    if (replayX !== null) return () => void (alive = false); // the paper files are the day's last state: not read against a replay cursor
+    if (replayX !== null) return () => void (alive = false);
     const pk = `paper:${side}:${day}`;
     const kept = peek<PaperRes>(pk);
     if (kept?.ok) setPaperRes({ key: k, ...kept });
@@ -116,31 +93,531 @@ export function MethodView() {
     return () => {
       alive = false;
     };
-  }, [key, tick, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  return {
+    evals: evalRes && evalRes.key === key ? evalRes : null,
+    paperTrades: replayX === null && paperRes && paperRes.key === key ? paperRes.trades : undefined,
+    pst: replayX === null && stRes && stRes.key === key ? stRes.status : null,
+  };
+}
 
-  const evals = evalRes && evalRes.key === key ? evalRes : null;
-  // the paper files are the day's last state: not shown against a replay cursor
-  const paperTrades = replayX === null && paperRes && paperRes.key === key ? paperRes.trades : undefined;
-  const pst = replayX === null && stRes && stRes.key === key ? stRes.status : null;
+export function MethodView() {
+  const tab = useStore((s) => s.methodTab);
+  const setTabM = useStore((s) => s.setMethodTab);
+  const snap = useStore((s) => s.snapshot);
+  const status = useStore((s) => s.status);
+  const control = useStore((s) => s.control);
+  const conditions = useStore((s) => s.conditions);
+  const select = useStore((s) => s.select);
+  const setTab = useStore((s) => s.setTab);
+  const setTimelineMethod = useStore((s) => s.setTimelineMethod);
+  const openResults = useStore((s) => s.openResults);
+  const selected = useStore((s) => s.selected);
+  const bumpHistory = useStore((s) => s.bumpHistory);
+  const cols = useColWidths('autoboth.cols.methodCols', 10);
+  const fillCols = useColWidths('autoboth.cols.methodFillCols', 7);
+  const allCols = useColWidths('autoboth.cols.methodAllCols', 9);
+  const [filter, setFilter] = useState<MethodRowFilter>('all');
+  const [allFilter, setAllFilter] = useState<AllFilter>('all');
 
-  const rows = useMemo(
-    () =>
-      methodRows(method, {
+  const method: TradeStrategy | null = tab === 'all' ? null : tab;
+  const connected = status.conn === 'connected';
+  const day = snap?.date || status.date;
+  const replayX = snap?.replay?.cursor ?? null;
+  // a past day or a replay: everything is read-only (the switches and the target lists are today's settings)
+  const liveNow = !!status.live && replayX === null;
+  const tick = status.live && snap ? Math.floor(snap.generatedAt / REFRESH_MS) : 0;
+  const hostKey = `${status.mode}/${status.conn}`;
+
+  // on / off: the control tab's own handlers (same confirmations)
+  const [swBusy, setSwBusy] = useState(false);
+  const [edgeModel, setEdgeModel] = useState<EdgeModelInfo | null | undefined>(() => peek<EdgeModelInfo | null>('control:edge'));
+  useEffect(() => {
+    if (!connected) return setEdgeModel(undefined);
+    let alive = true;
+    void window.api.getEdgeModel().then((r) => {
+      if (r.ok) put('control:edge', r.model);
+      if (alive) setEdgeModel(r.ok ? r.model : peek<EdgeModelInfo | null>('control:edge'));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [connected, status.mode]);
+  const sw = useMethodSwitch({ setBusy: setSwBusy, edgeModel });
+  const swOff = !connected || swBusy || !liveNow;
+
+  const modes = useMemo(() => strategyModes(control), [control]);
+  const botRunning = control.status ? !!control.status.running : null;
+  // what the bot itself said about its real-order strategies today (start line / block line), newest per strategy
+  const liveNote = useMemo(() => {
+    const out: Partial<Record<SideStrategy, 'on' | 'off' | 'blocked'>> = {};
+    const ref = snap?.lastLineTs || 0;
+    for (const n of snap?.strategyNotes || []) {
+      if (n.mode !== 'live') continue;
+      if (n.kind === 'on' || n.kind === 'off') out[n.strategy] = n.kind;
+      else if (n.kind === 'blocked') out[n.strategy] = ref - n.lastTs <= BLOCK_NOTE_FRESH_MS ? 'blocked' : out[n.strategy] === 'blocked' ? 'on' : out[n.strategy];
+    }
+    return out;
+  }, [snap]);
+  const units = useMemo(() => unitInfos(control, botRunning, liveNow ? { dryRun: !!control.status?.dry_run, liveNote } : {}), [control, botRunning, liveNow, liveNote]);
+  const edge = useSideData('edge', day, replayX, tick, hostKey);
+  const vwap = useSideData('vwap', day, replayX, tick, hostKey);
+  const sideData: Record<SideStrategy, SideData> = { edge, vwap };
+
+  const rowsBy = useMemo(() => {
+    const out = {} as Record<TradeStrategy, MethodRow[]>;
+    for (const m of TRADE_STRATEGIES) {
+      const d = m === 'rule' ? null : sideData[m];
+      out[m] = methodRows(m, {
         symbols: snap?.symbols || [],
         trades: snap?.trades || [],
         condTitle: (k) => condTitle(conditions, 'buy', k),
         reasonKo: (r) => reasonKo(r) || '',
-        evalLast: side ? evals?.last : undefined,
-        evalCount: side ? evals?.count : undefined,
-        paperStatus: side ? pst?.symbols : undefined,
-        paperStateOff: !!status.live && mode.live === true,
-        paperTrades: side ? paperTrades : undefined,
-      }),
-    [method, snap, conditions, side, evals, pst, paperTrades, status.live, mode.live],
+        evalLast: d?.evals?.last,
+        evalCount: d?.evals?.count,
+        paperStatus: d?.pst?.symbols,
+        paperTrades: d?.paperTrades,
+        paperStateOff: liveNow && modes[m].live === true,
+        targets: liveNow ? targetsInUse(control.targets?.[m], botRunning).list : undefined,
+      });
+    }
+    return out;
+  }, [snap, conditions, edge.evals, edge.pst, edge.paperTrades, vwap.evals, vwap.pst, vwap.paperTrades, liveNow, modes, control.targets, botRunning]); // eslint-disable-line react-hooks/exhaustive-deps
+  const totalsBy = useMemo(() => ({ rule: methodTotals(rowsBy.rule), edge: methodTotals(rowsBy.edge), vwap: methodTotals(rowsBy.vwap) }), [rowsBy]);
+  const lastTsBy = useMemo(() => {
+    const out = {} as Record<TradeStrategy, number>;
+    for (const m of TRADE_STRATEGIES) out[m] = rowsBy[m].reduce((a, r) => Math.max(a, r.stateTs || 0), 0);
+    return out;
+  }, [rowsBy]);
+
+  const inSnap = (code: string) => !!snap?.symbols.some((s) => s.code === code);
+  const go: Go = (code, m) => {
+    if (!inSnap(code)) return showCode(code);
+    setTimelineMethod(m);
+    select(code);
+    setTab('timeline');
+  };
+
+  const setUnit = (u: UnitInfo, on: boolean) => {
+    if (u.key === 'rule') return void sw.setServerKind('rules', on);
+    if (u.key === 'edge_paper') return void sw.setServerKind('paper', on);
+    if (u.key === 'vwap_paper') return void sw.setVwap(on);
+    if (u.key === 'edge_live') return void sw.setEdgeLive(on);
+    return void sw.setVwapLive(on);
+  };
+
+  // recent records: the last thing the bot wrote per symbol and method + the real fills
+  const logItems = useMemo(() => {
+    const items: { ts: number; method: TradeStrategy; mode?: 'live' | 'paper'; code: string; name: string; text: string }[] = [];
+    for (const m of TRADE_STRATEGIES) {
+      if (method && m !== method) continue;
+      for (const r of rowsBy[m]) if (r.stateTs && r.stateSrc) items.push({ ts: r.stateTs, method: m, mode: r.stateMode ?? (m === 'rule' ? 'live' : undefined), code: r.code, name: r.name, text: r.state });
+    }
+    for (const t of snap?.trades || []) {
+      const m = strategyOfTrade(t);
+      if (method && m !== method) continue;
+      items.push({ ts: t.ts, method: m, mode: 'live', code: t.code, name: t.name, text: `${t.side === 'BUY' ? '매수' : '매도'} 체결 ${fmtInt(t.qty)}주 @ ${t.approx ? '≈' : ''}${fmtInt(t.price)}${t.side === 'SELL' && Number.isFinite(t.pnlKrw) ? ` · ${fmtKrw(t.pnlKrw)}` : ''}` });
+    }
+    return items.sort((a, b) => b.ts - a.ts).slice(0, 6);
+  }, [rowsBy, snap, method]);
+
+  return (
+    <div className="method-view">
+      <div className="toolbar method-pick">
+        <div className="seg mtabs" title="전체 현황 또는 매매 방식 하나">
+          <button type="button" className={tab === 'all' ? 'on' : ''} onClick={() => setTabM('all')}>
+            전체 현황
+          </button>
+          {TRADE_STRATEGIES.map((m) => (
+            <button key={m} type="button" className={`m-${m} ${tab === m ? 'on' : ''}`} onClick={() => setTabM(m)}>
+              {TRADE_STRATEGY_KO[m]}
+              <i className={`tl-mode ${modes[m].live ? 'live' : modes[m].paper ? 'paper' : 'off'}`}>{strategyModeKo(modes[m]).replace(' 매매', '')}</i>
+            </button>
+          ))}
+        </div>
+        <span className={`run-dot ${liveNow ? 'on' : ''}`} />
+        <span className="muted small">
+          {ymd(day)}
+          {replayX !== null ? ' · 리플레이 시점 기준 (조작 잠김)' : status.live ? ` · 실시간${snap ? ` (${fmtKstTime(snap.generatedAt)} 갱신)` : ''}` : ' · 지난 날짜 (조작 잠김)'}
+        </span>
+        <span className="chips push-right">
+          <button type="button" className="chip link" title="봇 시작 / 정지 / 재시작, 한도 · 청산 기준" onClick={() => setTab('control')}>
+            제어 →
+          </button>
+          <button type="button" className="chip link" title="실제 매매 결과 (기간 합계 · CSV)" onClick={() => openResults(method ?? 'all', 'live')}>
+            매매 결과 →
+          </button>
+          <button type="button" className="chip link" title="가상 매매 장부" onClick={() => setTab('paper')}>
+            가상 매매 →
+          </button>
+        </span>
+      </div>
+
+      <div className="unit-cards">
+        {units.map((u) => (
+          <UnitCard
+            key={u.key}
+            u={u}
+            selected={method === u.method}
+            totals={totalsBy[u.method]}
+            lastTs={lastTsBy[u.method]}
+            targets={targetsInUse(control.targets?.[u.method], botRunning)}
+            disabled={swOff}
+            onSelect={() => setTabM(u.method)}
+            onSwitch={(on) => setUnit(u, on)}
+          />
+        ))}
+      </div>
+      {!liveNow ? null : !connected ? (
+        <p className="muted small method-line">연결되어 있지 않아 스위치를 바꿀 수 없습니다.</p>
+      ) : (
+        <p className="muted small method-line">
+          스위치는 저장되는 설정입니다 (확인 창 뒤 저장, r003 재시작 후 적용 - 재시작은 제어 탭). 카드를 누르면 그 방식의 상세로 이동합니다. 가상 카드의 스위치 = 그 방식 사용, 실전 카드의 스위치 = 실제 주문.
+        </p>
+      )}
+
+      {tab === 'all' ? (
+        <Overview units={units} rowsBy={rowsBy} totalsBy={totalsBy} allFilter={allFilter} setAllFilter={setAllFilter} cols={allCols} selected={selected} go={go} />
+      ) : (
+        <MethodDetail
+          method={tab}
+          rows={rowsBy[tab]}
+          totals={totalsBy[tab]}
+          filter={filter}
+          setFilter={setFilter}
+          cols={cols}
+          fillCols={fillCols}
+          liveNow={liveNow}
+          connected={connected}
+          busy={swBusy}
+          botRunning={botRunning}
+          lastTs={lastTsBy[tab]}
+          side={tab === 'rule' ? null : sideData[tab]}
+          go={go}
+          inSnap={inSnap}
+          onSaved={bumpHistory}
+        />
+      )}
+
+      <div className="method-log" title="봇이 종목 · 방식별로 마지막에 남긴 기록과 실제 체결 (최근 순)">
+        <b>최근 기록</b>
+        {logItems.length ? (
+          logItems.map((l, i) => (
+            <span key={`${l.ts}-${l.code}-${i}`} className="log-item" onClick={() => go(l.code, l.method)}>
+              <i className="mono">{fmtKstTime(l.ts)}</i>
+              <em className={`m-${l.method}`}>
+                [{TRADE_STRATEGY_SHORT[l.method]}
+                {l.mode ? `-${l.mode === 'live' ? '실전' : '가상'}` : ''}]
+              </em>
+              {l.name || l.code} {l.text}
+            </span>
+          ))
+        ) : (
+          <span className="muted">기록 없음</span>
+        )}
+      </div>
+    </div>
   );
-  const totals = useMemo(() => methodTotals(rows), [rows]);
-  const shown = useMemo(() => filterMethodRows(rows, filter), [rows, filter]);
+}
+
+// ---- unit card ----------------------------------------------------------------------------------------------------------------
+
+function UnitCard(props: {
+  u: UnitInfo;
+  selected: boolean;
+  totals: MethodTotals;
+  lastTs: number;
+  targets: { list: string[]; from: 'running' | 'stored' | 'none' | 'unknown' };
+  disabled: boolean;
+  onSelect: () => void;
+  onSwitch: (on: boolean) => void;
+}) {
+  const { u, totals: t } = props;
+  const off = props.disabled || !!u.locked || u.switchOn === null;
+  const swTitle =
+    u.key === 'rule'
+      ? '규칙 매매 신규 매수 (저장되는 설정, r003 재시작 후 적용)'
+      : u.mode === 'paper'
+        ? `${UNIT_KO[u.key]} 사용 (방식 사용 스위치 - 켜면 가상 매매로 시작, r003 재시작 후 적용)`
+        : `${UNIT_KO[u.key]} 실제 주문 (확인 창 2회, r003 재시작 후 적용)`;
+  return (
+    <div className={`unit-card m-${u.method} ${u.mode} ${props.selected ? 'sel' : ''}`} onClick={props.onSelect} title="누르면 이 방식의 상세 (매매를 켜거나 끄지 않습니다)">
+      <div className="uc-head">
+        <b>{UNIT_KO[u.key]}</b>
+        {u.key !== 'rule' && <i className={`tl-mode ${u.mode === 'live' ? 'live' : 'paper'}`}>{u.mode === 'live' ? '실전' : '가상'}</i>}
+        <label className={`uc-switch ${u.switchOn ? 'on' : ''} ${off ? 'dis' : ''}`} title={u.locked ? `${swTitle}\n잠김: ${u.locked}` : swTitle} onClick={(e) => e.stopPropagation()}>
+          <input type="checkbox" checked={!!u.switchOn} disabled={off} onChange={(e) => props.onSwitch(e.target.checked)} />
+          <span>{u.switchOn === null ? '-' : u.switchOn ? 'ON' : 'OFF'}</span>
+        </label>
+      </div>
+      <dl>
+        <dt>모드</dt>
+        <dd>{u.mode === 'live' ? '실전 매매' : '가상 매매'}</dd>
+        <dt>상태</dt>
+        <dd className={`ust-${u.state}`} title="실행 중인 봇이 알려 준 값 기준 (봇이 꺼져 있거나 알려 주지 않으면 실행 중으로 표시하지 않습니다)">
+          {u.stateKo}
+          {u.locked ? <span className="muted small"> · {u.locked}</span> : null}
+        </dd>
+        <dt>대상</dt>
+        <dd title={props.targets.from === 'running' ? '실행 중인 봇의 대상 종목 설정' : props.targets.from === 'stored' ? '저장된 대상 종목 설정 (봇 꺼짐)' : props.targets.from === 'unknown' ? '실행 중인 봇의 대상 종목 설정을 확인할 수 없습니다 (감시 종목 수만 표시)' : '대상 종목 설정을 읽지 못했습니다'}>
+          {t.targets}종목{props.targets.list.length ? ` (지정 ${props.targets.list.length})` : ''}
+        </dd>
+        <dt>오늘</dt>
+        {u.mode === 'live' ? (
+          <dd>
+            매수 {t.buys} · 매도 {t.sells} · 보유 {t.holding}
+            {t.sells ? <b className={pnlClass(t.realizedKrw)}> {fmtKrw(t.realizedKrw)}</b> : null}
+          </dd>
+        ) : (
+          <dd>
+            가상 매수 {t.paperBuys} · 청산 {t.paperSells} · 보유 {t.paperHolding}
+          </dd>
+        )}
+        <dt>기록</dt>
+        <dd className="mono">{props.lastTs ? fmtKstTime(props.lastTs) : '-'}</dd>
+      </dl>
+    </div>
+  );
+}
+
+// ---- overview -----------------------------------------------------------------------------------------------------------------
+
+function cellOf(r: MethodRow | undefined): { text: string; cls: string; title: string } {
+  if (!r) return { text: '-', cls: 'muted', title: '이 방식의 대상 · 기록이 아닙니다' };
+  const title = r.stateRaw ? `${r.state}\n${r.stateRaw}` : r.state;
+  if (r.holdQty) return { text: `보유 ${r.holdQty}주${r.holdPnlPct !== undefined ? ` ${sp(r.holdPnlPct)}` : ''}`, cls: 'held', title };
+  if (r.paperEntry !== undefined) return { text: `가상 보유 @ ${fmtInt(r.paperEntry)}`, cls: 'pheld', title };
+  if (r.notTarget) return { text: '대상 아님', cls: 'muted', title: '이 방식의 대상 종목 지정에 없는 종목입니다 (신규 매수 안 함)' };
+  if (!r.stateSrc) return { text: '기록 없음', cls: 'muted', title };
+  return { text: `${r.stateMode === 'paper' ? '[가상] ' : ''}${r.state}`, cls: `res-${r.stateKind === 'none' || r.stateKind === 'info' ? '' : r.stateKind}`, title };
+}
+
+function Overview(props: {
+  units: UnitInfo[];
+  rowsBy: Record<TradeStrategy, MethodRow[]>;
+  totalsBy: Record<TradeStrategy, MethodTotals>;
+  allFilter: AllFilter;
+  setAllFilter: (f: AllFilter) => void;
+  cols: ColWidths;
+  selected: string | null;
+  go: Go;
+}) {
+  const { rowsBy, totalsBy: tb, cols } = props;
+  const by = useMemo(() => {
+    const m = {} as Record<TradeStrategy, Map<string, MethodRow>>;
+    for (const s of TRADE_STRATEGIES) m[s] = new Map(rowsBy[s].map((r) => [r.code, r]));
+    return m;
+  }, [rowsBy]);
+  const all = useMemo(() => {
+    const codes = new Map<string, { code: string; name: string; nxt?: boolean; watched: boolean; collector: boolean }>();
+    for (const s of TRADE_STRATEGIES)
+      for (const r of rowsBy[s]) {
+        const e = codes.get(r.code) || { code: r.code, name: r.name, nxt: r.nxt, watched: false, collector: false };
+        e.watched = e.watched || r.watched;
+        e.collector = e.collector || r.collector;
+        if (!e.name) e.name = r.name;
+        codes.set(r.code, e);
+      }
+    const rank = (c: string) => {
+      const rs = TRADE_STRATEGIES.map((s) => by[s].get(c));
+      if (rs.some((r) => r?.holdQty)) return 0;
+      if (rs.some((r) => r && r.buys + r.sells > 0)) return 1;
+      if (rs.some((r) => r && (r.paperEntry !== undefined || r.signals + r.orders + r.paperBuys > 0))) return 2;
+      return 3;
+    };
+    return [...codes.values()].sort((a, b) => rank(a.code) - rank(b.code) || a.code.localeCompare(b.code));
+  }, [rowsBy, by]);
+  const pick = (f: AllFilter) =>
+    all.filter((c) => {
+      const rs = TRADE_STRATEGIES.map((s) => by[s].get(c.code));
+      if (f === 'watch') return c.watched;
+      if (f === 'traded') return rs.some((r) => r && r.buys + r.sells > 0);
+      if (f === 'holding') return rs.some((r) => r?.holdQty);
+      return true;
+    });
+  const shown = pick(props.allFilter);
+  const watched = all.filter((c) => c.watched).length;
+  const real = TRADE_STRATEGIES.reduce((a, s) => ({ buys: a.buys + tb[s].buys, sells: a.sells + tb[s].sells, pnl: a.pnl + tb[s].realizedKrw, hold: a.hold + tb[s].holding }), { buys: 0, sells: 0, pnl: 0, hold: 0 });
+  const paper = (['edge', 'vwap'] as const).reduce((a, s) => ({ buys: a.buys + tb[s].paperBuys, sells: a.sells + tb[s].paperSells, hold: a.hold + tb[s].paperHolding, net: a.net + rowsBy[s].reduce((x, r) => x + r.paperNetPct, 0) }), { buys: 0, sells: 0, hold: 0, net: 0 });
+  const nRun = runningUnits(props.units);
+  const th = (i: number, label: string, cls = '', title?: string) => (
+    <th className={cls} title={title}>
+      {label}
+      <ColGrip cols={cols} i={i} />
+    </th>
+  );
+  return (
+    <>
+      <div className="method-sum">
+        <div className="ms-box">
+          <b>종합 현황 (오늘)</b>
+          <div className="ms-item" title="r003 이 지금 감시하는 종목 (방식이 겹쳐도 한 번만 셉니다)">
+            <span>감시 종목</span>
+            <b>{watched}</b>
+          </div>
+          <div className="ms-item" title="실제 체결 (봇 거래 로그 기준, 세 방식 합)">
+            <span>실전 체결</span>
+            <b>
+              매수 {real.buys} · 매도 {real.sells}
+            </b>
+          </div>
+          <div className="ms-item" title="실제 매매의 실현 손익 합 (가상 매매와 더하지 않습니다)">
+            <span>실현 손익 (실전)</span>
+            <b className={pnlClass(real.sells ? real.pnl : undefined)}>{real.sells ? fmtKrw(real.pnl) : '-'}</b>
+          </div>
+          <div className="ms-item">
+            <span>보유 (실전)</span>
+            <b>{real.hold}종목</b>
+          </div>
+          <div className="ms-item paper" title="가상 매매: 매수 / 청산 건수와 청산 건의 순수익률 합 (금액이 아니며 실전 손익과 더하지 않습니다)">
+            <span>가상 매매</span>
+            <b>
+              매수 {paper.buys} · 청산 {paper.sells}
+              {paper.sells ? <i className={pnlClass(paper.net)}> 순수익률 합 {sp(paper.net)}</i> : null}
+            </b>
+          </div>
+        </div>
+        <div className="ms-box run">
+          <b title="실행 중인 봇이 신규 진입을 확인해 준 실행 단위 수">
+            실행 중인 매매 방식 {nRun} / {props.units.length}
+          </b>
+          {props.units.map((u) => (
+            <span key={u.key} className={`run-chip ust-${u.state}`} title={u.stateKo}>
+              {UNIT_SHORT[u.key]} {u.entryRunning === true ? '✓' : u.state === 'unknown' ? '?' : '×'}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="toolbar method-bar">
+        <h4>종목별 현황 (방식별 마지막 기록)</h4>
+        <div className="seg">
+          {(Object.keys(ALL_FILTER_KO) as AllFilter[]).map((f) => (
+            <button key={f} type="button" className={props.allFilter === f ? 'on' : ''} onClick={() => props.setAllFilter(f)}>
+              {ALL_FILTER_KO[f]} {pick(f).length}
+            </button>
+          ))}
+        </div>
+        <span className="muted small">칸 = 그 방식에 대해 봇이 마지막으로 남긴 기록 (앱이 판정하지 않습니다). 칸을 누르면 그 방식의 타임라인</span>
+      </div>
+      <div className="table-wrap">
+        <ColReset cols={cols} />
+        <table {...colTable(cols, 'grid compact method-grid method-all')}>
+          <ColGroup cols={cols} />
+          <thead>
+            <tr>
+              {th(0, '코드')}
+              {th(1, '종목명')}
+              {th(2, '현재가 (전일 대비)', 'num')}
+              {th(3, '구분')}
+              {th(4, '규칙 매매', 'm-rule')}
+              {th(5, 'Edge AI 매매', 'm-edge')}
+              {th(6, 'VWAP 매매', 'm-vwap')}
+              {th(7, '오늘 매매 (실전)', 'num', '실제 체결: 방식 매수 / 매도')}
+              {th(8, '실현 · 가상', 'num', '실제 실현 손익 · 가상 매매 순수익률 합 (따로 표시)')}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((c) => {
+              const rs = TRADE_STRATEGIES.map((s) => by[s].get(c.code));
+              const traded = TRADE_STRATEGIES.map((s, i) => {
+                const r = rs[i];
+                return r && r.buys + r.sells > 0 ? `${TRADE_STRATEGY_SHORT[s]} ${r.buys}/${r.sells}` : '';
+              }).filter(Boolean);
+              const pnl = rs.reduce((a, r) => a + (r && r.sells ? r.realizedKrw : 0), 0);
+              const sold = rs.some((r) => r && r.sells > 0);
+              const pNet = rs.reduce((a, r) => a + (r && r.paperSells ? r.paperNetPct : 0), 0);
+              const pSold = rs.some((r) => r && r.paperSells > 0);
+              return (
+                <tr key={c.code} className={`${c.code === props.selected ? 'sel' : ''}${rs.some((r) => r?.holdQty) ? ' row-held' : ''}`} onClick={() => props.go(c.code, 'auto')} onDoubleClick={() => showCode(c.code)}>
+                  <td className="mono">{c.code}</td>
+                  <td title={c.name}>
+                    {c.name} {c.nxt && <NxtMark />}
+                  </td>
+                  <td className="num">
+                    <PriceTag code={c.code} />
+                  </td>
+                  <td>
+                    {c.watched && <span className="tag">감시</span>}
+                    {c.collector && <span className="tag">수집기</span>}
+                    {!c.watched && !c.collector && <span className="tag lock">기록</span>}
+                  </td>
+                  {TRADE_STRATEGIES.map((s, i) => {
+                    const cell = cellOf(rs[i]);
+                    return (
+                      <td
+                        key={s}
+                        className={`reason mcell ${cell.cls}`}
+                        title={cell.title}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          props.go(c.code, s);
+                        }}
+                      >
+                        {cell.text}
+                      </td>
+                    );
+                  })}
+                  <td className="num">{traded.join(' · ')}</td>
+                  <td className="num">
+                    {sold ? <span className={pnlClass(pnl)}>{fmtKrw(pnl)}</span> : null}
+                    {pSold ? <span className={`muted ${pnlClass(pNet)}`}>{`${sold ? ' · ' : ''}가상 ${sp(pNet)}`}</span> : null}
+                  </td>
+                </tr>
+              );
+            })}
+            {!shown.length && (
+              <tr className="nohover">
+                <td colSpan={9} className="muted center">
+                  표시할 종목이 없습니다.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+// ---- one method ---------------------------------------------------------------------------------------------------------------
+
+const exitText = (st: PaperExitState | undefined, zero: string): { text: string; pending: boolean } | null => {
+  if (!st) return null;
+  const v = (k: 'tp' | 'sl' | 'horizon') => st[k].running ?? st[k].effective;
+  const f = (k: 'tp' | 'sl' | 'horizon', pre: string, unit: string) => (v(k) > 0 ? `${pre}${v(k)}${unit}` : zero);
+  return { text: `익절 ${f('tp', '+', '%')} · 손절 ${f('sl', '-', '%')} · 보유 ${f('horizon', '', '분')}`, pending: st.tp.pending || st.sl.pending || st.horizon.pending };
+};
+
+function MethodDetail(props: {
+  method: TradeStrategy;
+  rows: MethodRow[];
+  totals: MethodTotals;
+  filter: MethodRowFilter;
+  setFilter: (f: MethodRowFilter) => void;
+  cols: ColWidths;
+  fillCols: ColWidths;
+  liveNow: boolean;
+  connected: boolean;
+  busy: boolean;
+  botRunning: boolean | null;
+  lastTs: number;
+  side: SideData | null;
+  go: Go;
+  inSnap: (code: string) => boolean;
+  onSaved: () => void;
+}) {
+  const { method, rows, totals, cols, fillCols, liveNow } = props;
+  const snap = useStore((s) => s.snapshot);
+  const control = useStore((s) => s.control);
+  const conditions = useStore((s) => s.conditions);
+  const selected = useStore((s) => s.selected);
+  const openResults = useStore((s) => s.openResults);
+  const side: SideStrategy | null = method === 'rule' ? null : method;
+  const mode = useMemo(() => strategyModes(control)[method], [control, method]);
+  const shown = useMemo(() => filterMethodRows(rows, props.filter), [rows, props.filter]);
   const fills = useMemo(() => (snap?.trades || []).filter((t) => strategyOfTrade(t) === method).sort((a, b) => b.ts - a.ts), [snap, method]);
+  const daySum = useMemo(() => strategySummary(snap?.trades || [])[method], [snap, method]);
 
   const blockNote = (() => {
     if (!side) return null;
@@ -152,340 +629,439 @@ export function MethodView() {
   const liveSum = method === 'edge' ? parseEdgeLiveSummary(control.status) : method === 'vwap' ? parseVwapLiveSummary(control.status) : null;
   const limits = method === 'edge' ? control.edgeLiveLimits : method === 'vwap' ? control.vwapLiveLimits : undefined;
   const maxEntries = limits ? limits.entries.running ?? limits.entries.effective : null;
-
-  const inSnap = (code: string) => !!snap?.symbols.some((s) => s.code === code);
-  const go = (r: MethodRow) => {
-    // a symbol the day's bot log does not have (tick-collector symbols) has no timeline: show it in the other windows instead
-    if (!inSnap(r.code)) return showCode(r.code);
-    setTimelineMethod(method);
-    select(r.code);
-    setTab('timeline');
-  };
-  const openSettings = () =>
-    method === 'rule' ? window.dispatchEvent(new Event('rule-settings')) : window.dispatchEvent(new CustomEvent('strategy-settings', { detail: method }));
-
-  const modeCls = mode.live ? 'live' : mode.paper ? 'paper' : 'off';
+  const exits = exitText(method === 'rule' ? control.ruleExit : method === 'edge' ? control.paperExit : control.vwapExit, method === 'rule' ? '적용 안 함' : method === 'edge' ? '모델 기준' : '-');
   const traceNote =
-    side && status.live && replayX === null && (mode.live || mode.paper) && evals && evals.total === 0
-      ? mode.live
-        ? '오늘 실제 매매의 봉별 판정 기록이 없습니다 (2026-11-27 이후 버전의 r003 이 장중에 판정한 1분봉부터 쌓입니다). 그때까지 종목별 상태는 봇 로그에 남은 것만 표시되고, 나머지는 "기록 없음"입니다.'
-        : '오늘 봉별 판정 기록이 없습니다 (2026-11-27 이후 버전의 r003 이 판정한 1분봉부터 쌓입니다). 지금은 봇 로그 · 가상 러너 상태만 표시합니다.'
+    side && liveNow && (mode.live || mode.paper) && props.side?.evals && props.side.evals.total === 0
+      ? '오늘 봉별 판정 기록이 없습니다 (2026-11-27 이후 버전의 r003 이 장중에 판정한 1분봉부터 쌓입니다).'
       : '';
 
+  // ---- target symbols of this method ----
+  const tg = control.targets?.[method];
+  const inUse = targetsInUse(tg, props.botRunning);
+  const [draft, setDraft] = useState<Set<string> | null>(null);
+  const [tgMsg, setTgMsg] = useState('');
+  const [saving, setSaving] = useState(false);
+  const methodRef = useRef(method);
+  methodRef.current = method;
+  const canEdit = liveNow && props.connected && !props.busy && !saving && !!tg;
+  useEffect(() => {
+    setDraft(null);
+    setTgMsg('');
+  }, [method]);
+  // [Codex review] a draft does not outlive the live day: on a past day / replay / lost connection it is dropped
+  useEffect(() => {
+    if (!liveNow || !props.connected) setDraft(null);
+  }, [liveNow, props.connected]);
+  const watchedCodes = useMemo(() => rows.filter((r) => r.watched || r.collector).map((r) => r.code), [rows]);
+  const startEdit = () => setDraft(new Set(tg && tg.effective.length ? tg.effective : watchedCodes));
+  const toggle = (code: string) =>
+    setDraft((d) => {
+      const n = new Set(d || []);
+      if (n.has(code)) n.delete(code);
+      else n.add(code);
+      return n;
+    });
+  const draftOutside = draft ? [...draft].filter((c) => !watchedCodes.includes(c)).sort() : [];
+  const saveTargets = async () => {
+    if (!draft || !tg || !canEdit) return;
+    const forMethod = method;
+    const list = targetListToStore(draft, watchedCodes);
+    if (list.join(',') === tg.effective.join(',')) return setDraft(null);
+    const text = list.length
+      ? `${TRADE_STRATEGY_KO[method]}의 대상 종목을 ${list.length}종목으로 지정합니다.\n\n${list.join(', ')}\n\n이 방식은 지정한 종목만 새로 삽니다. 이미 산 종목의 매도 · 청산은 그대로 계속됩니다.` +
+        (method === 'rule' ? '\n규칙 매매 대상에서 빠진 종목도 Edge AI / VWAP 매매가 켜져 있으면 그 방식이 살 수 있습니다.' : '') +
+        (method === 'edge' ? '\nEdge AI 가상 매매의 수집기 종목도 지정한 종목만 새로 삽니다.' : '')
+      : `${TRADE_STRATEGY_KO[method]}의 대상 종목 지정을 해제합니다 (전체 = 지금까지처럼 감시 종목 전부).\n\n모두 선택했거나 모두 해제하면 "전체"로 저장됩니다.`;
+    if (!window.confirm(`${text}\n\nr003 재시작 후부터 적용됩니다. 저장할까요?`)) return;
+    const key = METHOD_TARGET_KEYS[forMethod];
+    setSaving(true);
+    let r;
+    try {
+      r = await window.api.ctlSet({ [key]: list });
+    } finally {
+      setSaving(false);
+    }
+    if (methodRef.current !== forMethod) return; // the answer of another method's save: this page's draft is not touched
+    const rej = r.data?.rejected?.[key];
+    if (!r.ok || rej) return setTgMsg(`저장하지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
+    setTgMsg('저장했습니다 (r003 재시작 후 적용)');
+    setDraft(null);
+    props.onSaved();
+  };
   const th = (i: number, label: string, cls = '', title?: string) => (
     <th className={cls} title={title}>
       {label}
       <ColGrip cols={cols} i={i} />
     </th>
   );
+  const buyConds = method === 'rule' ? [...(conditions?.buy || [])].sort((a, b) => a.order - b.order) : [];
+  const condFromRunning = buyConds.some((c) => c.apply_running !== undefined && c.apply_running !== null);
 
   return (
-    <div className="method-view">
-      <div className="toolbar method-pick">
-        <div className="seg" title="현황을 볼 매매 방식">
-          {TRADE_STRATEGIES.map((m) => (
-            <button key={m} type="button" className={method === m ? 'on' : ''} onClick={() => setMethod(m)}>
-              {TRADE_STRATEGY_KO[m]}
-              <i className={`tl-mode ${modes[m].live ? 'live' : modes[m].paper ? 'paper' : 'off'}`}>{strategyModeKo(modes[m]).replace(' 매매', '')}</i>
-            </button>
-          ))}
-        </div>
-        <span className="muted small">{day ? `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}` : ''}{replayX !== null ? ' · 리플레이 시점 기준' : status.live ? ' · 실시간' : ''}</span>
-      </div>
+    <div className="method-split">
+      <aside className={`method-side m-${method}`}>
+        <section>
+          <h5>기본 정보</h5>
+          <dl>
+            <dt>방식</dt>
+            <dd>
+              <b>{TRADE_STRATEGY_KO[method]}</b> <span className={`tl-mode ${mode.live ? 'live' : mode.paper ? 'paper' : 'off'}`}>{strategyModeKo(mode)}</span>
+            </dd>
+            <dt>기준</dt>
+            <dd>
+              {mode.fromRunning ? '실행 중인 봇' : '저장된 설정 (봇 꺼짐)'}
+              {mode.pending ? <span className="badge-warn"> 저장값 다름 → 재시작 후 적용</span> : null}
+            </dd>
+            <dt>대상 종목</dt>
+            <dd>
+              {tg ? (
+                <>
+                  {inUse.from === 'running' ? `실행 중: ${targetsKo(inUse.list)}` : inUse.from === 'unknown' ? `실행 중: 확인 불가 · 저장: ${targetsKo(tg.effective)}` : `저장: ${targetsKo(inUse.list)}`}
+                  {tg.pending && inUse.from === 'running' ? <span className="badge-warn"> 저장: {targetsKo(tg.effective)} → 재시작 후 적용</span> : null}
+                </>
+              ) : (
+                <span className="muted">확인 불가 (서버가 대상 종목 설정을 모름)</span>
+              )}
+            </dd>
+            <dt>마지막 기록</dt>
+            <dd className="mono">{props.lastTs ? fmtKstTime(props.lastTs) : '-'}</dd>
+            {side && (
+              <>
+                <dt>봉별 판정</dt>
+                <dd>{props.side?.evals ? `${fmtInt(props.side.evals.total)}행 (오늘)` : '-'}</dd>
+              </>
+            )}
+            {method === 'edge' && props.side?.pst?.modelId && (
+              <>
+                <dt>모델</dt>
+                <dd className="mono" title="가상 러너 상태 파일의 모델 · 기준 확률">
+                  {props.side.pst.modelId}
+                  {props.side.pst.threshold !== undefined ? ` · 기준 ${props.side.pst.threshold.toFixed(3)}` : ''}
+                </dd>
+              </>
+            )}
+          </dl>
+        </section>
 
-      <div className="method-head">
-        <div className="method-mode">
-          <b>{TRADE_STRATEGY_KO[method]}</b>
-          <span className={`tl-mode ${modeCls}`} title={mode.fromRunning ? '실행 중인 봇(r003)의 설정' : '봇이 꺼져 있어 저장된 설정입니다'}>
-            {strategyModeKo(mode)}
-          </span>
-          <span className="muted small">{mode.fromRunning ? '실행 중인 봇 기준' : '저장된 설정 기준 (봇 꺼짐)'}</span>
-          {mode.pending && <span className="badge-warn">저장된 설정이 다릅니다 → r003 재시작 후 적용</span>}
-        </div>
-        <div className="chips">
-          <button type="button" className="chip link" title="봇 시작 / 정지 / 재시작, 한도 · 청산 기준 등은 제어 탭에서 합니다" onClick={() => setTab('control')}>
-            제어 (재시작 · 한도) →
-          </button>
-          <button type="button" className="chip link" title={`${TRADE_STRATEGY_KO[method]} 세부 설정 창`} onClick={openSettings}>
-            세부 설정 →
-          </button>
-          <button type="button" className="chip link" title="매매 결과 탭에서 이 방식의 실제 매매만 봅니다 (기간 합계 · CSV 포함)" onClick={() => openResults(method, 'live')}>
-            실제 결과 →
-          </button>
-          {side && (
-            <button type="button" className="chip link" title="가상 매매 탭의 이 방식 장부" onClick={() => openResults(side, 'paper')}>
-              가상 결과 →
-            </button>
+        <section>
+          <h5>
+            매수 조건 <i>{method === 'rule' ? (condFromRunning ? '실행 중인 봇 기준' : '저장된 설정 기준') : '판정 단계 (위에서 아래 순서)'}</i>
+          </h5>
+          {method === 'rule' ? (
+            buyConds.length ? (
+              <ul className="cond-list">
+                {buyConds.map((c) => {
+                  const ap = c.apply_running ?? c.apply;
+                  return (
+                    <li key={c.no} className={ap === 'off' ? 'off' : ap === 'record' ? 'rec' : ''} title={c.description}>
+                      <span className="mono">{String(c.no).padStart(3, '0')}</span> {c.title}
+                      {ap === 'off' ? <i>끔</i> : ap === 'record' ? <i>기록만</i> : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="muted small">조건 목록을 읽지 못했습니다.</p>
+            )
+          ) : (
+            <ul className="cond-list">
+              {[...STAGE_ROWS[side as SideStrategy]]
+                .reverse()
+                .filter((r) => r.key !== 'held')
+                .map((r) => (
+                  <li key={r.key}>{r.label}</li>
+                ))}
+            </ul>
           )}
-        </div>
-      </div>
+          <p className="muted small">종목별로 어디서 멈췄는지는 오른쪽 표의 "지금 상태"와 타임라인에서 봅니다. 세부 값은 세부 설정 창.</p>
+        </section>
 
-      <div className="method-switch">
-        {method === 'rule' && (
-          <label className={`opt-card${sw.rulesOn ? ' on' : ''}${swOff || !sw.has.rules || !sw.normalMode ? ' dis' : ''}`} title="규칙 매매 신규 매수 (서버 RULE_BUY_ENABLED). 끄면 조건을 통과해도 주문하지 않습니다(로그만). r003 재시작 후 적용">
-            <input type="checkbox" checked={sw.rulesOn} disabled={swOff || !sw.has.rules || !sw.normalMode} onChange={(e) => void sw.setServerKind('rules', e.target.checked)} />
-            <span className="opt-txt">
-              <b>규칙 매매</b>
-              <span>{sw.rulesOn ? '켜짐 · 조건 통과 시 실제 매수 주문' : '꺼짐 · 신규 매수 주문 없음'}</span>
-            </span>
-          </label>
-        )}
-        {method === 'edge' && (
-          <>
-            <label className={`opt-card${sw.edgeOn ? ' on' : ''}${swOff || !sw.has.edge || !sw.normalMode ? ' dis' : ''}`} title="Edge AI 매매 (서버 EDGE_ONLY_MODE). 켜면 가상 매매로 시작합니다. r003 재시작 후 적용">
-              <input type="checkbox" checked={sw.edgeOn} disabled={swOff || !sw.has.edge || !sw.normalMode} onChange={(e) => void sw.setServerKind('paper', e.target.checked)} />
-              <span className="opt-txt">
-                <b>Edge AI 매매</b>
-                <span>{sw.edgeOn ? '켜짐' : '꺼짐'}</span>
-              </span>
-            </label>
-            {sw.edgeOn && (
-              <label className={`opt-card danger${sw.edgeLiveOn ? ' on' : ''}${swOff || !sw.has.edgeLive ? ' dis' : ''}`} title="실제 계좌로 Edge AI 주문 (서버 EDGE_LIVE_ORDERS). 승격된 모델 · 자동 매도 전체일 때만 켤 수 있습니다. r003 재시작 후 적용">
-                <input type="checkbox" checked={sw.edgeLiveOn} disabled={swOff || !sw.has.edgeLive} onChange={(e) => void sw.setEdgeLive(e.target.checked)} />
-                <span className="opt-txt">
-                  <b>
-                    실제 매매 <span className="tag danger">LIVE</span>
-                  </b>
-                  <span>{sw.edgeLiveOn ? '켜짐 · 실제 계좌로 주문' : '꺼짐 · 가상 매매만'}</span>
-                </span>
-              </label>
-            )}
-          </>
-        )}
-        {method === 'vwap' && (
-          <>
-            <label className={`opt-card${sw.vwapOn ? ' on' : ''}${swOff || !sw.has.vwap ? ' dis' : ''}`} title="VWAP 매매 (서버 VWAP_TRADE_MODE off / paper). 켜면 가상 매매로 시작합니다. r003 재시작 후 적용">
-              <input type="checkbox" checked={sw.vwapOn} disabled={swOff || !sw.has.vwap} onChange={(e) => void sw.setVwap(e.target.checked)} />
-              <span className="opt-txt">
-                <b>VWAP 매매</b>
-                <span>{sw.vwapOn ? '켜짐' : '꺼짐'}</span>
-              </span>
-            </label>
-            {sw.vwapOn && (
-              <label className={`opt-card danger${sw.vwapLiveOn ? ' on' : ''}${swOff || !sw.has.vwapLive ? ' dis' : ''}`} title="실제 계좌로 VWAP 매매 주문 (서버 VWAP_TRADE_LIVE_ORDERS). 자동 매도가 전체일 때만 켤 수 있습니다. r003 재시작 후 적용">
-                <input type="checkbox" checked={sw.vwapLiveOn} disabled={swOff || !sw.has.vwapLive} onChange={(e) => void sw.setVwapLive(e.target.checked)} />
-                <span className="opt-txt">
-                  <b>
-                    실제 매매 <span className="tag danger">LIVE</span>
-                  </b>
-                  <span>{sw.vwapLiveOn ? '켜짐 · 실제 계좌로 주문' : '꺼짐 · 가상 매매만'}</span>
-                </span>
-              </label>
-            )}
-          </>
-        )}
-        <span className="muted small">
-          {!connected
-            ? '연결되어 있지 않아 바꿀 수 없습니다.'
-            : method !== 'vwap' && !sw.normalMode
-              ? '서버 매매 방식이 규칙 기반(normal)이 아니라 여기서 바꿀 수 없습니다 (제어 탭에서 확인).'
-              : '저장되는 설정입니다. 바꾼 뒤 r003 을 재시작해야 적용됩니다 (재시작은 제어 탭).'}
-        </span>
-      </div>
+        <section>
+          <h5>
+            매도 · 청산 <i>실행 값 (없으면 저장값)</i>
+          </h5>
+          <p>
+            {exits ? exits.text : <span className="muted">확인 불가</span>}
+            {exits?.pending ? <span className="badge-warn"> 재시작 후 적용</span> : null}
+          </p>
+          {method === 'rule' && conditions?.sell?.length ? <p className="muted small">매도 조건 {conditions.sell.length}개 (규칙 파이프라인 · 세부 설정에서 확인)</p> : null}
+          {side && <p className="muted small">남으면 15:20 장 마감 청산 (봇 규칙)</p>}
+        </section>
 
-      <div className="kpis">
-        <div className="kpi" title={TARGET_NOTE[method]}>
-          <span>감시 대상</span>
-          <b>{totals.targets}종목</b>
-          <small className="muted">
-            감시 {totals.watched}
-            {totals.collector ? ` · 수집기 ${totals.collector}` : ''} · 오늘 기록 {totals.recorded}
-          </small>
-        </div>
-        <div className="kpi">
-          <span>{method === 'rule' ? '오늘 매수' : '오늘 신호 · 주문'}</span>
-          <b>{method === 'rule' ? `${totals.buys}건` : `${totals.signals} · ${totals.orders}`}</b>
-          {side && <small className="muted">실제 매수 체결 {totals.buys}건{maxEntries ? ` / 한도 ${maxEntries}회` : ''}</small>}
-        </div>
-        <div className="kpi">
-          <span>오늘 매도 · 실현 손익 (실제)</span>
-          <b className={pnlClass(totals.sells ? totals.realizedKrw : undefined)}>{totals.sells ? `${totals.sells}건 · ${fmtKrw(totals.realizedKrw)}` : '0건'}</b>
-        </div>
-        <div className="kpi">
-          <span>보유 (실제)</span>
-          <b>{totals.holding}종목</b>
-        </div>
-        {side && (totals.paperBuys > 0 || totals.paperHolding > 0 || mode.paper) && (
-          <div className="kpi">
-            <span>가상 매매</span>
-            <b>
-              매수 {totals.paperBuys} · 청산 {totals.paperSells}
-            </b>
-            <small className="muted">가상 보유 {totals.paperHolding}종목</small>
+        {side && (
+          <section>
+            <h5>
+              매매 제한 <i>실제 주문 한도</i>
+            </h5>
+            {limits ? (
+              <dl>
+                {EDGE_LIVE_LIMIT_KINDS.map((k) => (
+                  <span key={k} className="dl-row">
+                    <dt>{EDGE_LIVE_LIMIT_KO[k]}</dt>
+                    <dd>
+                      {k === 'entries' && liveSum ? `${liveSum.entries} / ` : ''}
+                      {fmtInt(limits[k].running ?? limits[k].effective)}
+                      {EDGE_LIVE_LIMIT_UNIT[k]}
+                      {limits[k].pending ? <span className="badge-warn"> 대기</span> : null}
+                    </dd>
+                  </span>
+                ))}
+              </dl>
+            ) : (
+              <p className="muted small">확인 불가</p>
+            )}
+          </section>
+        )}
+
+        <section>
+          <h5>오늘 성과</h5>
+          <dl>
+            <dt>실전</dt>
+            <dd>
+              매수 {daySum.buys} · 매도 {daySum.sells}
+              {daySum.sells ? ` · ${daySum.wins}승 ${daySum.sells - daySum.wins}패` : ''}
+            </dd>
+            <dt>실현 손익</dt>
+            <dd className={pnlClass(daySum.sells ? daySum.pnlKrw : undefined)}>{daySum.sells ? fmtKrw(daySum.pnlKrw) : '-'}</dd>
+            {side && (
+              <>
+                <dt>신호 · 주문</dt>
+                <dd>
+                  {totals.signals} · {totals.orders}
+                </dd>
+                <dt>가상</dt>
+                <dd>
+                  매수 {totals.paperBuys} · 청산 {totals.paperSells} · 보유 {totals.paperHolding}
+                </dd>
+              </>
+            )}
+          </dl>
+          <div className="chips">
+            <button type="button" className="chip link" onClick={() => (method === 'rule' ? window.dispatchEvent(new Event('rule-settings')) : window.dispatchEvent(new CustomEvent('strategy-settings', { detail: method })))}>
+              세부 설정 →
+            </button>
+            <button type="button" className="chip link" onClick={() => openResults(method, 'live')}>
+              실제 결과 →
+            </button>
+            {side && (
+              <button type="button" className="chip link" onClick={() => openResults(side, 'paper')}>
+                가상 결과 →
+              </button>
+            )}
+          </div>
+        </section>
+      </aside>
+
+      <div className="method-main">
+        {(blockNote || liveSum || traceNote) && (
+          <div className="method-notes">
+            {blockNote && (
+              <span className="badge-warn" title={`봇 로그 그대로: "신규 매수 중단 | ${blockNote.text}" - 처음 ${fmtKstTime(blockNote.ts)}, 마지막 ${fmtKstTime(blockNote.lastTs)} 기록`}>
+                봇 기록 {fmtKstTime(blockNote.ts).slice(0, 5)}~{fmtKstTime(blockNote.lastTs).slice(0, 5)} 신규 매수 중단: {blockReasonKo(blockNote.text)}
+              </span>
+            )}
+            {liveSum && (
+              <span className={liveSum.unpricedSells > 0 ? 'badge-warn' : 'muted small'} title="봇의 체결 장부 기준 (직접 매도한 전략 보유분은 들어가지 않습니다)">
+                체결 장부: {edgeLiveSummaryText(liveSum, maxEntries)}
+              </span>
+            )}
+            {traceNote && <span className="muted small">{traceNote}</span>}
           </div>
         )}
-      </div>
 
-      {(blockNote || liveSum || traceNote) && (
-        <div className="method-notes">
-          {blockNote && (
-            <span
-              className="badge-warn"
-              title={`봇 로그 그대로: "신규 매수 중단 | ${blockNote.text}" - 처음 ${fmtKstTime(blockNote.ts)}, 마지막 ${fmtKstTime(blockNote.lastTs)} 기록. 마지막 기록 뒤 11분이 지나면 이 표시는 사라집니다`}
-            >
-              봇 기록 {fmtKstTime(blockNote.ts).slice(0, 5)}~{fmtKstTime(blockNote.lastTs).slice(0, 5)} 신규 매수 중단: {blockReasonKo(blockNote.text)}
-            </span>
-          )}
-          {liveSum && (
-            <span className={liveSum.unpricedSells > 0 ? 'badge-warn' : 'muted small'} title="봇의 체결 장부 기준 (제어 탭과 같은 값)">
-              체결 장부: {edgeLiveSummaryText(liveSum, maxEntries)}
-            </span>
-          )}
-          {traceNote && <span className="muted small">{traceNote}</span>}
-        </div>
-      )}
-
-      <div className="toolbar method-bar">
-        <h4>감시 · 기록 종목</h4>
-        <div className="seg">
-          {FILTERS.map((f) => (
-            <button key={f} type="button" className={filter === f ? 'on' : ''} onClick={() => setFilter(f)}>
-              {METHOD_FILTER_KO[f]} {filterMethodRows(rows, f).length}
+        <div className="toolbar method-bar">
+          <h4>감시 · 기록 종목</h4>
+          <div className="seg">
+            {FILTERS.map((f) => (
+              <button key={f} type="button" className={props.filter === f ? 'on' : ''} onClick={() => props.setFilter(f)}>
+                {METHOD_FILTER_KO[f]} {filterMethodRows(rows, f).length}
+              </button>
+            ))}
+          </div>
+          {draft ? (
+            <>
+              <button type="button" onClick={() => setDraft(new Set([...watchedCodes, ...draftOutside]))}>
+                전체 선택
+              </button>
+              <button type="button" onClick={() => setDraft(new Set())}>
+                전체 해제
+              </button>
+              <button type="button" className="primary" disabled={!canEdit} onClick={() => void saveTargets()}>
+                대상 저장 ({targetListToStore(draft, watchedCodes).length || '전체'})
+              </button>
+              <button type="button" onClick={() => setDraft(null)}>
+                취소
+              </button>
+            </>
+          ) : (
+            <button type="button" disabled={!canEdit} title={tg ? '이 방식이 새로 살 종목을 고릅니다 (저장되는 설정, r003 재시작 후 적용)' : '서버가 대상 종목 설정을 모릅니다 (봇 코드 갱신 필요)'} onClick={startEdit}>
+              대상 종목 지정
             </button>
-          ))}
+          )}
+          {tgMsg && <span className="muted small">{tgMsg}</span>}
         </div>
-        <span className="muted small">{TARGET_NOTE[method]} 행을 누르면 타임라인({TRADE_STRATEGY_KO[method]} 탭)으로 이동</span>
-      </div>
-      <div className="table-wrap">
-        <ColReset cols={cols} />
-        <table {...colTable(cols, 'grid compact method-grid')}>
-          <ColGroup cols={cols} />
-          <thead>
-            <tr>
-              {th(0, '코드')}
-              {th(1, '종목명')}
-              {th(2, '현재가 (전일 대비)', 'num')}
-              {th(3, '구분', '', '감시 = r003 이 지금 감시하는 종목 · 수집기 = 틱 수집기 종목(Edge AI 가상) · 기록 = 감시 대상은 아니지만 이 방식의 보유 / 체결 / 기록이 있는 종목')}
-              {th(4, '지금 상태 (봇의 마지막 기록)', '', '이 방식에 대해 봇이 마지막으로 남긴 기록입니다. 앱이 판정하지 않습니다')}
-              {th(5, '기록 시각')}
-              {th(6, method === 'rule' ? '평가 수 · 매수 체결' : '판정 봉 · 신호 · 주문', 'num', method === 'rule' ? '오늘 조건 평가 횟수 · 매수 체결 건수' : '오늘 판정한 1분봉 수(봉별 판정 기록) · 매수 신호 · 매수 주문')}
-              {th(7, '보유', 'num', '실제 보유: 수량 @ 원가 (봇이 마지막 보유 점검에 적은 손익) · 가상 보유는 "가상"')}
-              {th(8, '오늘 매수 / 매도', 'num')}
-              {th(9, '실현 손익', 'num', '실제 매매의 실현 손익 · 가상 매매는 순수익률 합')}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((r) => (
-              <tr
-                key={r.code}
-                className={`${r.code === selected ? 'sel' : ''}${r.holdQty || r.paperEntry !== undefined ? ' row-held' : ''}`}
-                onClick={() => go(r)}
-                onDoubleClick={() => showCode(r.code)}
-                title={inSnap(r.code) ? '누르면 타임라인 · 두 번 누르면 다른 창에 종목 표시' : '봇의 오늘 로그에 없는 종목(수집기 종목 등)이라 타임라인이 없습니다. 누르면 다른 창(차트 등)에 종목을 표시합니다'}
-              >
-                <td className="mono">{r.code}</td>
-                <td title={r.name}>
-                  {r.name} {r.nxt && <NxtMark />}
-                </td>
-                <td className="num">
-                  <PriceTag code={r.code} />
-                </td>
-                <td>
-                  {r.watched && <span className="tag">감시</span>}
-                  {r.collector && <span className="tag">수집기</span>}
-                  {r.extra && <span className="tag lock">기록</span>}
-                  {r.holdQty ? <span className="tag apply-on">보유</span> : null}
-                  {r.paperEntry !== undefined && <span className="tag apply-record">가상 보유</span>}
-                </td>
-                <td className={`reason res-${r.stateKind === 'none' || r.stateKind === 'info' ? '' : r.stateKind}`} title={r.stateRaw ? `${METHOD_SRC_KO[r.stateSrc]}: ${r.state}\n${r.stateRaw}` : r.state}>
-                  {r.stateSrc && r.stateSrc !== 'rule' && (
-                    <i className="src" title="이 기록이 실제 주문 경로의 것인지 가상 매매 러너의 것인지">
-                      {METHOD_SRC_KO[r.stateSrc]}
-                      {r.stateMode ? ` · ${r.stateMode === 'live' ? '실제' : '가상'}` : ''}
-                    </i>
-                  )}
-                  {r.state}
-                </td>
-                <td className="mono">{r.stateTs ? fmtKstTime(r.stateTs) : '-'}</td>
-                <td className="num">{method === 'rule' ? `${fmtInt(r.evals)} · ${r.orders}` : `${r.evals || '-'} · ${r.signals} · ${r.orders}`}</td>
-                <td className="num">
-                  {r.holdQty ? `${r.holdQty}주${r.holdAvg ? ` @ ${fmtInt(r.holdAvg)}` : ''}` : ''}
-                  {r.holdQty && r.holdPnlPct !== undefined ? <span className={pnlClass(r.holdPnlPct)}> {sp(r.holdPnlPct)}</span> : null}
-                  {r.holdQty && r.holdExitAt ? (
-                    <span className="badge-warn" title={`봇이 ${fmtKstTime(r.holdExitAt)} 에 청산을 결정했지만 그 뒤 매도 체결 기록이 없습니다. 계좌에서 확인하세요`}>
-                      {' '}
-                      청산 결정 {fmtKstTime(r.holdExitAt).slice(0, 5)} · 체결 기록 없음
-                    </span>
-                  ) : null}
-                  {r.paperEntry !== undefined ? `${r.holdQty ? ' · ' : ''}가상 @ ${fmtInt(r.paperEntry)}` : ''}
-                </td>
-                <td className="num">
-                  {r.buys || r.sells ? `${r.buys} / ${r.sells}` : ''}
-                  {r.paperBuys || r.paperSells ? <span className="muted">{`${r.buys || r.sells ? ' · ' : ''}가상 ${r.paperBuys} / ${r.paperSells}`}</span> : null}
-                </td>
-                <td className={`num ${pnlClass(r.sells ? r.realizedKrw : undefined)}`}>
-                  {r.sells ? fmtKrw(r.realizedKrw) : ''}
-                  {r.paperSells ? <span className={`muted ${pnlClass(r.paperNetPct)}`}>{`${r.sells ? ' · ' : ''}가상 ${sp(r.paperNetPct)}`}</span> : null}
-                </td>
+        {draft ? (
+          <p className="muted small method-line">
+            "구분" 칸의 체크로 고릅니다. 모두 선택하거나 모두 해제하면 "전체(지정 없음)"로 저장됩니다. 감시목록(r004)에 없는 종목은 지정해도 봇이 보지 않습니다.
+            {draftOutside.length ? (
+              <>
+                {' '}
+                감시 종목이 아닌 저장 코드:{' '}
+                {draftOutside.map((c) => (
+                  <button key={c} type="button" className="chip" title="누르면 목록에서 뺍니다" onClick={() => toggle(c)}>
+                    {c} ×
+                  </button>
+                ))}
+              </>
+            ) : null}
+          </p>
+        ) : (
+          <p className="muted small method-line">
+            {TARGET_NOTE[method]} 행을 누르면 타임라인({TRADE_STRATEGY_KO[method]} 탭).
+          </p>
+        )}
+        <div className="table-wrap">
+          <ColReset cols={cols} />
+          <table {...colTable(cols, 'grid compact method-grid')}>
+            <ColGroup cols={cols} />
+            <thead>
+              <tr>
+                {th(0, '코드')}
+                {th(1, '종목명')}
+                {th(2, '현재가 (전일 대비)', 'num')}
+                {th(3, '구분', '', '감시 = r003 이 지금 감시 · 수집기 = 틱 수집기 종목(Edge AI 가상) · 기록 = 감시 대상은 아니지만 보유 / 체결 / 기록 있음 · 대상 아님 = 대상 종목 지정에 없음')}
+                {th(4, '지금 상태 (봇의 마지막 기록)', '', '이 방식에 대해 봇이 마지막으로 남긴 기록입니다. 앱이 판정하지 않습니다')}
+                {th(5, '기록 시각')}
+                {th(6, method === 'rule' ? '평가 수 · 매수 체결' : '판정 봉 · 신호 · 주문', 'num')}
+                {th(7, '보유', 'num', '실제 보유: 수량 @ 원가 · 가상 보유는 "가상"')}
+                {th(8, '오늘 매수 / 매도', 'num')}
+                {th(9, '실현 손익', 'num', '실제 매매의 실현 손익 · 가상 매매는 순수익률 합')}
               </tr>
-            ))}
-            {!shown.length && (
-              <tr className="nohover">
-                <td colSpan={10} className="muted center">
-                  {rows.length ? '이 조건에 맞는 종목이 없습니다.' : '표시할 종목이 없습니다 (이 날짜의 봇 로그에 감시 종목이 없습니다).'}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="toolbar method-bar">
-        <h4>오늘 실제 체결 ({TRADE_STRATEGY_KO[method]})</h4>
-        <span className="muted small">최근 {Math.min(fills.length, 8)}건 / 전체 {fills.length}건</span>
-        <button type="button" className="chip link" onClick={() => openResults(method, 'live')}>
-          매매 결과에서 전체 보기 →
-        </button>
-      </div>
-      <div className="table-wrap">
-        <ColReset cols={fillCols} />
-        <table {...colTable(fillCols, 'grid compact')}>
-          <ColGroup cols={fillCols} />
-          <thead>
-            <tr>
-              {['시각', '종목', '구분', '가격', '수량', '사유', '손익'].map((h, i) => (
-                <th key={h} className={i === 3 || i === 4 || i === 6 ? 'num' : ''}>
-                  {h}
-                  <ColGrip cols={fillCols} i={i} />
-                </th>
+            </thead>
+            <tbody>
+              {shown.map((r) => (
+                <tr
+                  key={r.code}
+                  className={`${r.code === selected ? 'sel' : ''}${r.holdQty || r.paperEntry !== undefined ? ' row-held' : ''}${r.notTarget ? ' not-target' : ''}`}
+                  onClick={() => (draft ? undefined : props.go(r.code, method))}
+                  onDoubleClick={() => showCode(r.code)}
+                  title={draft ? undefined : props.inSnap(r.code) ? '누르면 타임라인 · 두 번 누르면 다른 창에 종목 표시' : '봇의 오늘 로그에 없는 종목이라 타임라인이 없습니다. 누르면 다른 창에 종목을 표시합니다'}
+                >
+                  <td className="mono">{r.code}</td>
+                  <td title={r.name}>
+                    {r.name} {r.nxt && <NxtMark />}
+                  </td>
+                  <td className="num">
+                    <PriceTag code={r.code} />
+                  </td>
+                  <td>
+                    {draft && (r.watched || r.collector) ? (
+                      <label className="check" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={draft.has(r.code)} onChange={() => toggle(r.code)} /> 대상
+                      </label>
+                    ) : (
+                      <>
+                        {r.watched && <span className="tag">감시</span>}
+                        {r.collector && <span className="tag">수집기</span>}
+                        {r.extra && <span className="tag lock">기록</span>}
+                        {r.notTarget && <span className="tag lock">대상 아님</span>}
+                        {r.holdQty ? <span className="tag apply-on">보유</span> : null}
+                        {r.paperEntry !== undefined && <span className="tag apply-record">가상 보유</span>}
+                      </>
+                    )}
+                  </td>
+                  <td className={`reason res-${r.stateKind === 'none' || r.stateKind === 'info' ? '' : r.stateKind}`} title={r.stateRaw ? `${METHOD_SRC_KO[r.stateSrc]}: ${r.state}\n${r.stateRaw}` : r.state}>
+                    {r.stateSrc && r.stateSrc !== 'rule' && (
+                      <i className="src">
+                        {METHOD_SRC_KO[r.stateSrc]}
+                        {r.stateMode ? ` · ${r.stateMode === 'live' ? '실제' : '가상'}` : ''}
+                      </i>
+                    )}
+                    {r.state}
+                  </td>
+                  <td className="mono">{r.stateTs ? fmtKstTime(r.stateTs) : '-'}</td>
+                  <td className="num">{method === 'rule' ? `${fmtInt(r.evals)} · ${r.orders}` : `${r.evals || '-'} · ${r.signals} · ${r.orders}`}</td>
+                  <td className="num">
+                    {r.holdQty ? `${r.holdQty}주${r.holdAvg ? ` @ ${fmtInt(r.holdAvg)}` : ''}` : ''}
+                    {r.holdQty && r.holdPnlPct !== undefined ? <span className={pnlClass(r.holdPnlPct)}> {sp(r.holdPnlPct)}</span> : null}
+                    {r.holdQty && r.holdExitAt ? (
+                      <span className="badge-warn" title={`봇이 ${fmtKstTime(r.holdExitAt)} 에 청산을 결정했지만 그 뒤 매도 체결 기록이 없습니다. 계좌에서 확인하세요`}>
+                        {' '}
+                        청산 결정 {fmtKstTime(r.holdExitAt).slice(0, 5)} · 체결 기록 없음
+                      </span>
+                    ) : null}
+                    {r.paperEntry !== undefined ? `${r.holdQty ? ' · ' : ''}가상 @ ${fmtInt(r.paperEntry)}` : ''}
+                  </td>
+                  <td className="num">
+                    {r.buys || r.sells ? `${r.buys} / ${r.sells}` : ''}
+                    {r.paperBuys || r.paperSells ? <span className="muted">{`${r.buys || r.sells ? ' · ' : ''}가상 ${r.paperBuys} / ${r.paperSells}`}</span> : null}
+                  </td>
+                  <td className={`num ${pnlClass(r.sells ? r.realizedKrw : undefined)}`}>
+                    {r.sells ? fmtKrw(r.realizedKrw) : ''}
+                    {r.paperSells ? <span className={`muted ${pnlClass(r.paperNetPct)}`}>{`${r.sells ? ' · ' : ''}가상 ${sp(r.paperNetPct)}`}</span> : null}
+                  </td>
+                </tr>
               ))}
-            </tr>
-          </thead>
-          <tbody>
-            {fills.slice(0, 8).map((t, i) => (
-              <tr
-                key={`${t.code}-${t.ts}-${i}`}
-                onClick={() => {
-                  setTimelineMethod(method);
-                  select(t.code);
-                  setTab('timeline');
-                }}
-              >
-                <td className="mono">{fmtKstTime(t.ts)}</td>
-                <td>
-                  <span className="mono">{t.code}</span> {t.name}
-                </td>
-                <td className={t.side === 'BUY' ? 'gain' : 'loss'}>{t.side === 'BUY' ? '매수' : '매도'}</td>
-                <td className="num" title={t.approx ? '체결 기록이 없어 주문가로 표시 (주문번호로 이은 거래)' : undefined}>
-                  {t.approx ? '≈ ' : ''}
-                  {fmtInt(t.price)}
-                </td>
-                <td className="num">{fmtInt(t.qty)}</td>
-                <td className="reason" title={t.reason}>
-                  {sideExitKo(t.reason) || reasonKo(t.reason) || t.reason}
-                </td>
-                <td className={`num ${pnlClass(t.pnlKrw)}`}>{t.side === 'SELL' ? fmtKrw(t.pnlKrw) : ''}</td>
+              {!shown.length && (
+                <tr className="nohover">
+                  <td colSpan={10} className="muted center">
+                    {rows.length ? '이 조건에 맞는 종목이 없습니다.' : '표시할 종목이 없습니다 (이 날짜의 봇 로그에 감시 종목이 없습니다).'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="toolbar method-bar">
+          <h4>오늘 실제 체결 ({TRADE_STRATEGY_KO[method]})</h4>
+          <span className="muted small">
+            최근 {Math.min(fills.length, 8)}건 / 전체 {fills.length}건
+          </span>
+        </div>
+        <div className="table-wrap">
+          <ColReset cols={fillCols} />
+          <table {...colTable(fillCols, 'grid compact')}>
+            <ColGroup cols={fillCols} />
+            <thead>
+              <tr>
+                {['시각', '종목', '구분', '가격', '수량', '사유', '손익'].map((h, i) => (
+                  <th key={h} className={i === 3 || i === 4 || i === 6 ? 'num' : ''}>
+                    {h}
+                    <ColGrip cols={fillCols} i={i} />
+                  </th>
+                ))}
               </tr>
-            ))}
-            {!fills.length && (
-              <tr className="nohover">
-                <td colSpan={7} className="muted center">
-                  오늘 이 방식의 실제 체결이 없습니다.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {fills.slice(0, 8).map((t, i) => (
+                <tr key={`${t.code}-${t.ts}-${i}`} onClick={() => props.go(t.code, method)}>
+                  <td className="mono">{fmtKstTime(t.ts)}</td>
+                  <td>
+                    <span className="mono">{t.code}</span> {t.name}
+                  </td>
+                  <td className={t.side === 'BUY' ? 'gain' : 'loss'}>{t.hand ? '직접 매도' : t.side === 'BUY' ? '매수' : '매도'}</td>
+                  <td className="num" title={t.approx ? '체결 기록이 없어 주문가로 표시 (주문번호로 이은 거래)' : undefined}>
+                    {t.approx ? '≈ ' : ''}
+                    {fmtInt(t.price)}
+                  </td>
+                  <td className="num">{fmtInt(t.qty)}</td>
+                  <td className="reason" title={t.reason}>
+                    {sideExitKo(t.reason) || reasonKo(t.reason) || t.reason}
+                  </td>
+                  <td className={`num ${pnlClass(t.pnlKrw)}`}>{t.side === 'SELL' ? fmtKrw(t.pnlKrw) : ''}</td>
+                </tr>
+              ))}
+              {!fills.length && (
+                <tr className="nohover">
+                  <td colSpan={7} className="muted center">
+                    오늘 이 방식의 실제 체결이 없습니다.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

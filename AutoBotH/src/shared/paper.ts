@@ -144,6 +144,7 @@ export const PAPER_STAGE_KO: Record<string, string> = {
   bought: '가상 매수',
   sold: '가상 매도',
   fund: 'ETF·ETN 제외',
+  not_target: '대상 종목 아님 (대상 종목 지정)',
   sl_today: '오늘 손절한 종목 (재매수 안 함)',
   candidate: '후보 기록 (신규 매수 꺼짐)',
   // [2026-11-27] VWAP trade (server r029 vwap_signal)

@@ -410,6 +410,9 @@ class EdgeOnlyRunner:
     FILE_PREFIX = "edge_only"
     # [2026-11-27] strategy name in the timeline trace file strategy_eval_<name>_<date>.jsonl (r030)
     TRACE_STRATEGY = "edge"
+    # [2026-11-27] the method's target codes (r001 EDGE_TARGET_CODES / VWAP_TARGET_CODES, set by r003 after the runner is made).
+    # Empty = everything as before. New entries only: an open paper position is closed whatever the list says.
+    targets: frozenset = frozenset()
     # off unless the owner switches it on (r003 / r029.make_runner do): a runner built by a test or a study writes no trace
     trace_enabled = False
 
@@ -877,7 +880,9 @@ class EdgeOnlyRunner:
             self._stage(code, "outside_window")
             return
         block = None
-        if self.exclude_funds and r011.is_fund_product(name):
+        if self.targets and code not in self.targets:      # [2026-11-27] the method's target list: no new entry outside it
+            block = "not_target"
+        elif self.exclude_funds and r011.is_fund_product(name):
             block = "fund"
         elif self.no_reentry_after_sl and code in self.sl_today:
             block = "sl_today"
@@ -927,7 +932,9 @@ class EdgeOnlyRunner:
             self._stage(code, "outside_window")
             return
         block = None
-        if self.exclude_funds and r011.is_fund_product(name):
+        if self.targets and code not in self.targets:      # [2026-11-27] the method's target list: no new entry outside it
+            block = "not_target"
+        elif self.exclude_funds and r011.is_fund_product(name):
             block = "fund"
         elif self.no_reentry_after_sl and code in self.sl_today:
             block = "sl_today"

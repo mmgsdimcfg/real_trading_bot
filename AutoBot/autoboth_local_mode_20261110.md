@@ -560,3 +560,12 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   `[VWAP LIVE   ] <code>_<name> | 직접 매도 N주 기록 | 매도가=<가격|N/A> 원가=<가격|N/A> 손익=<±원(±%)|N/A> | strategy=<edge|vwap> order=<키> | ...`
   한 줄을 쓴다(기록 전용 - 전략 실현 손익 / 한도 불변, `r023.hand_sale_notes`). 앱은 거래 로그의 이 줄을 그 방식의 매도(`Trade.hand`)로
   표시한다(가격이 N/A 면 결과 행 없음).
+- 매매법별 대상 종목 (2026-11-27, r003 재시작 후 적용): r001 `RULE_TARGET_CODES` / `EDGE_TARGET_CODES` / `VWAP_TARGET_CODES` (종목코드
+  6자리 문자열 목록, 빈 목록 = 지금까지의 범위 전체). 목록이 있으면 그 매매법은 목록의 종목만 새로 산다(좁히기만 함, 보유분 매도 /
+  청산 / 미체결 관리는 그대로). `r016 set` 은 코드 형식 · 개수(300)만 검사하고 정렬 · 중복 제거해 저장한다(감시목록 포함 여부는
+  검사하지 않음). `r016 get` 의 `values[KEY].effective / running / pending` 그대로. 읽을 수 없는 값이면 그 매매법은 새로 사지 않는다.
+  로그: `[R003 MODE   ] <method> 대상 종목 N개만 신규 매수: ...`, `[TARGET      ] <sym> | <method> 대상 종목 아님 - 신규 매수 평가 안 함`
+  (종목 · 방식당 30분에 한 번). 가상 러너 상태 단계 `not_target`.
+- 매매 방식 현황 대시보드 (2026-11-27, 앱): 탭 `method` 의 값 `all | rule | edge | vwap`. 실행 단위 5개(규칙 / Edge AI 가상 · 실전 /
+  VWAP 가상 · 실전)의 저장 스위치와 실행 상태는 `shared/methodUnits.ts` (`unitInfos`: r016 status.running + get 의 running 값이
+  있을 때만 "실행 중").

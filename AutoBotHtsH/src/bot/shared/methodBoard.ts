@@ -66,6 +66,8 @@ export interface MethodRow {
   collector: boolean;
   /** on the list only because it is held / was traded / has a record (not counted as a target) */
   extra: boolean;
+  /** [2026-11-27] the method has a target list (server *_TARGET_CODES) and this symbol is not on it: no new buys of it */
+  notTarget: boolean;
   state: string;
   stateKind: MethodRowKind;
   stateSrc: MethodRowSrc;
@@ -118,6 +120,8 @@ export interface MethodBoardInput {
    *  not the method's state (user 2026-11-27: "실제 매매인데 왜 가상 러너 상태인가") - positions / groups are still read */
   paperStateOff?: boolean;
   paperTrades?: PaperTrade[];
+  /** [2026-11-27] the method's target list in use (the running bot's, else the stored one); empty / absent = no list */
+  targets?: string[];
 }
 
 const RESULT_KO: Record<string, string> = { pass: '전부 통과', fail: '막힘', hold: '대기', info: '' };
@@ -141,6 +145,7 @@ const blank = (code: string, name: string): MethodRow => ({
   watched: false,
   collector: false,
   extra: false,
+  notTarget: false,
   state: '기록 없음',
   stateKind: 'none',
   stateSrc: '',
@@ -306,6 +311,11 @@ export function methodRows(method: TradeStrategy, input: MethodBoardInput): Meth
     for (const r of rows.values()) if (r.holdQty && r.stateKind !== 'pass') r.stateKind = r.stateKind === 'none' ? 'hold' : r.stateKind;
   }
 
+  if (input.targets && input.targets.length) {
+    const t = new Set(input.targets);
+    for (const r of rows.values()) r.notTarget = !t.has(r.code);
+  }
+
   const rank = (r: MethodRow) => (r.holdQty || r.paperEntry !== undefined ? 0 : r.signals + r.orders + r.buys + r.paperBuys > 0 ? 1 : r.extra ? 3 : 2);
   return [...rows.values()].sort((a, b) => rank(a) - rank(b) || a.code.localeCompare(b.code));
 }
@@ -330,7 +340,7 @@ export interface MethodTotals {
 export function methodTotals(rows: MethodRow[]): MethodTotals {
   const t: MethodTotals = { targets: 0, watched: 0, collector: 0, recorded: 0, holding: 0, paperHolding: 0, signals: 0, orders: 0, buys: 0, sells: 0, realizedKrw: 0, paperBuys: 0, paperSells: 0 };
   for (const r of rows) {
-    if (!r.extra) t.targets++;
+    if (!r.extra && !r.notTarget) t.targets++;
     if (r.watched) t.watched++;
     if (r.collector) t.collector++;
     if (r.stateSrc) t.recorded++;
@@ -352,7 +362,7 @@ export const METHOD_FILTER_KO: Record<MethodRowFilter, string> = { all: '전체'
 export function filterMethodRows(rows: MethodRow[], f: MethodRowFilter): MethodRow[] {
   switch (f) {
     case 'target':
-      return rows.filter((r) => !r.extra);
+      return rows.filter((r) => !r.extra && !r.notTarget);
     case 'recorded':
       return rows.filter((r) => !!r.stateSrc);
     case 'holding':

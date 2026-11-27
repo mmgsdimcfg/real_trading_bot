@@ -42,6 +42,7 @@
  * - [2026-11-19] type=fix - r003-running confirm notes use the jobs-tab step names (① 데이터 수집(g001), ③ 감시목록 반영(r004))
  */
 
+import { METHOD_TARGET_KEYS, parseMethodTargets } from '../shared/methodUnits';
 import { dialog, ipcMain, type BrowserWindow } from 'electron';
 import { RULE_VARIANT_KEY, parseRuleVariant, VWAP_MODE_KEY, VWAP_EXIT_KEYS, parseVwapMode, parseVwapExit, VWAP_LIVE_KEY, VWAP_LIVE_LIMIT_KEYS, parseVwapLive, parseVwapLiveLimits, AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_KEY, STRATEGY_KEY, parseAutoSell, parseAutoSellScope, parseModes, parsePaperLogOnly, PAPER_LOG_ONLY_KEY, PAPER_EXIT_KEYS, parsePaperExit, RULE_BUY_KEY, parseRuleBuy, EDGE_LIVE_KEY, EDGE_LIVE_LIMIT_KEYS, parseEdgeLive, parseEdgeLiveLimits, RULE_EXIT_KEYS, parseRuleExit } from '../shared/paper';
 import type { ArgvRunner } from './localRunner';
@@ -448,7 +449,7 @@ export function createControl(deps: ControlDeps) {
     try {
       // [2026-11-25] + the paper exits (EDGE_ONLY_TP_PCT / SL_PCT / HORIZON_MIN); r016 lists unknown keys apart, so an older server still answers
       // [2026-11-25] + Edge AI live orders (EDGE_LIVE_ORDERS and its limits)
-      const r = await cl().run(['get', STRATEGY_KEY, PAPER_KEY, AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_LOG_ONLY_KEY, ...Object.values(PAPER_EXIT_KEYS), RULE_BUY_KEY, RULE_VARIANT_KEY, VWAP_MODE_KEY, ...Object.values(VWAP_EXIT_KEYS), VWAP_LIVE_KEY, ...Object.values(VWAP_LIVE_LIMIT_KEYS), EDGE_LIVE_KEY, ...Object.values(EDGE_LIVE_LIMIT_KEYS), ...Object.values(RULE_EXIT_KEYS)]);
+      const r = await cl().run(['get', STRATEGY_KEY, PAPER_KEY, AUTO_SELL_KEY, AUTO_SELL_SCOPE_KEY, PAPER_LOG_ONLY_KEY, ...Object.values(PAPER_EXIT_KEYS), RULE_BUY_KEY, RULE_VARIANT_KEY, VWAP_MODE_KEY, ...Object.values(VWAP_EXIT_KEYS), VWAP_LIVE_KEY, ...Object.values(VWAP_LIVE_LIMIT_KEYS), EDGE_LIVE_KEY, ...Object.values(EDGE_LIVE_LIMIT_KEYS), ...Object.values(RULE_EXIT_KEYS), ...Object.values(METHOD_TARGET_KEYS)]);
       if (myGen !== gen) return;
       const m = parseModes(r.data);
       push({
@@ -467,6 +468,7 @@ export function createControl(deps: ControlDeps) {
         edgeLive: parseEdgeLive(r.data) || undefined,
         edgeLiveLimits: parseEdgeLiveLimits(r.data) || undefined,
         ruleExit: parseRuleExit(r.data) || undefined,
+        targets: parseMethodTargets(r.data),
       });
     } catch {
       /* keep the last known value */
@@ -769,7 +771,7 @@ export function createControl(deps: ControlDeps) {
     clear: () => {
       gen++;
       statusInFlight = null;
-      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, paper: undefined, strategy: undefined, autoSell: undefined, autoSellScope: undefined, paperLogOnly: undefined, paperExit: undefined, ruleBuy: undefined, ruleVariant: undefined, vwapMode: undefined, vwapExit: undefined, vwapLive: undefined, vwapLiveLimits: undefined, edgeLive: undefined, edgeLiveLimits: undefined, ruleExit: undefined, lastAction: undefined });
+      push({ status: null, statusAt: undefined, error: undefined, nxt: undefined, paper: undefined, strategy: undefined, autoSell: undefined, autoSellScope: undefined, paperLogOnly: undefined, paperExit: undefined, ruleBuy: undefined, ruleVariant: undefined, vwapMode: undefined, vwapExit: undefined, vwapLive: undefined, vwapLiveLimits: undefined, edgeLive: undefined, edgeLiveLimits: undefined, ruleExit: undefined, targets: undefined, lastAction: undefined });
     },
   };
 }

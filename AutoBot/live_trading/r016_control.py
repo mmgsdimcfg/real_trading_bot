@@ -427,6 +427,12 @@ def validate_assignments(assignments: dict, strict: bool = True) -> tuple[dict, 
             if why:
                 rejected[key] = why
                 continue
+        if key in r001.METHOD_TARGET_KEYS.values():    # [2026-11-27] per-method target lists: codes only, stored sorted, no repeats
+            why = r001.method_target_error(value)
+            if why:
+                rejected[key] = why
+                continue
+            value = sorted(set(value))
         choices = CHOICE_KEYS.get(key)
         if strict and choices and str(value).strip().lower() not in choices:   # [2026-11-27] a key with a fixed list of values
             rejected[key] = f"must be one of {' / '.join(choices)}"

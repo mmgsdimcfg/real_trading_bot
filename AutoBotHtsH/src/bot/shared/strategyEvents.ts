@@ -201,7 +201,7 @@ const COMMON_TOP: StageRow[] = [
   { key: 'signal', label: '매수 신호', stages: ['signal', 'candidate'] },
 ];
 const COMMON_BOTTOM: StageRow[] = [
-  { key: 'before', label: '공통 안전 조건', stages: ['cond_before', 'limit', 'outside_window', 'fund', 'sl_today', 'blocked'] },
+  { key: 'before', label: '공통 안전 조건', stages: ['cond_before', 'limit', 'outside_window', 'fund', 'not_target', 'sl_today', 'blocked'] },
   { key: 'data', label: '데이터 준비', stages: ['wait_bars', 'no_history', 'stale', 'no_model', 'regular_session_only', '1min_frame_unavailable', 'insufficient_bars', 'no_day_vwap', 'error'] },
   { key: 'held', label: '보유 중', stages: ['held', 'sold'] },
 ];

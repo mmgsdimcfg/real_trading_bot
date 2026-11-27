@@ -1117,6 +1117,8 @@ from r001_define_config import (
     SELL_UNKNOWN_RECONCILE_SECONDS,
     TRADING_STRATEGY_MODE,
     RULE_BUY_ENABLED,
+    method_target_codes,
+    method_is_target,
     PENDING_STATUS_BACKOFF_MAX_SECONDS,
     SESSION_FORCE_CLOSE_ALL_AT_CUTOFF,
     WATCHLIST_MISMATCH_LOG_INTERVAL_SECONDS,
@@ -1173,7 +1175,7 @@ from r002_strategy_core_shared import (
 )
 
 from r005_buy_conditions import (
-    BuyContext, BuyServices, BuyState, RiskState, check_buy_conditions, evaluate_entry_time_shadow, EDGE_BUY_CONDITIONS, VWAP_BUY_CONDITIONS,
+    BuyContext, BuyDecision, BuyServices, BuyState, RiskState, check_buy_conditions, evaluate_entry_time_shadow, EDGE_BUY_CONDITIONS, VWAP_BUY_CONDITIONS,
 )
 from r006_sell_conditions import (
     SellContext, SellServices, SellState, evaluate_sell_conditions, auto_sell_mode, edge_exit_values, vwap_exit_values,
@@ -2898,7 +2900,10 @@ def _make_vwap_paper_runner(date_str: str):
     try:
         import r001_define_config as _cfg_vw
         from r029_vwap_trade import make_runner
-        return make_runner(_cfg_vw, Path(LIVE_RUNTIME_DIR), date_str, log, CANDLE_CONFIRM_DELAY_SECONDS)
+        _vr = make_runner(_cfg_vw, Path(LIVE_RUNTIME_DIR), date_str, log, CANDLE_CONFIRM_DELAY_SECONDS)
+        if _vr is not None:
+            _vr.targets = _METHOD_TARGETS["vwap"]  # [2026-11-27] VWAP_TARGET_CODES: new paper entries only on listed codes
+        return _vr
     except Exception as exc:
         log(f"  [VWAP PAPER  ] init failed: {exc}")
         return None
@@ -2951,6 +2956,7 @@ def _make_edge_only_runner(date_str: str):
                                 sl_pct=getattr(_cfg_mod, "EDGE_ONLY_SL_PCT", 0.0),
                                 horizon_min=getattr(_cfg_mod, "EDGE_ONLY_HORIZON_MIN", 0))
         runner.trace_enabled = True             # [2026-11-27] timeline trace (r030): one row per judged bar of a watched symbol
+        runner.targets = _METHOD_TARGETS["edge"]   # [2026-11-27] EDGE_TARGET_CODES: new paper entries only on listed codes
         # [2026-11-20] the day's KRX tick files also price the paper positions r003 did not evaluate (poll_orphans)
         runner.tick_feed = CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
         # [2026-11-25] NXT tick files (g011: ticks/<date>/nxt) price the NXT holdings r003 did not evaluate (poll_orphans)
@@ -6959,6 +6965,25 @@ def _log_side_hand_sale(note: dict) -> None:
             pass
 
 
+# [2026-11-27] per-method target codes (r001 RULE_ / EDGE_ / VWAP_TARGET_CODES), read once: applied after an r003 restart like
+# every other setting. Empty = no list. New buys only - holdings, exits and open orders never read them.
+_METHOD_TARGETS = {_m: method_target_codes(_m) for _m in ("rule", "edge", "vwap")}
+_NOT_TARGET_DECISION = BuyDecision(approved=False, failed=None)
+_target_note_at: dict = {}
+
+
+def _note_not_target(method: str, symbol_label: str, code: str, now: datetime, every_s: float = 1800.0) -> None:
+    """one log line per symbol and method every `every_s` seconds: the symbol is outside that method's target list"""
+    try:
+        key = (method, str(code).zfill(6))
+        last = _target_note_at.get(key)
+        if last is None or (now - last).total_seconds() >= every_s:
+            _target_note_at[key] = now
+            log(f"  [TARGET      ] {symbol_label} | {method} 대상 종목 아님 - 신규 매수 평가 안 함")
+    except Exception:
+        pass
+
+
 def _side_spec(strategy):
     """[2026-11-27] what differs between the side strategies (edge / vwap): log tag, limits, entry end, exits. Read when called."""
     from types import SimpleNamespace
@@ -7200,6 +7225,9 @@ def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, s
     _conds = VWAP_BUY_CONDITIONS if strategy == r023.VWAP else EDGE_BUY_CONDITIONS
     if api.is_edge_symbol(code) or api.has_pending_order(str(code).zfill(6)):
         return False                              # another strategy holds / is ordering the symbol
+    if not method_is_target(strategy, code, _METHOD_TARGETS.get(strategy)):   # [2026-11-27] this method's target list
+        _note_not_target(strategy, symbol_label, code, current_dt)
+        return False
     if price is None or price <= 0 or price_source not in ("live", "cached_live"):
         return False
     norm = str(code).zfill(6)
@@ -7633,6 +7661,11 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     except Exception as exc:
         log(f"  [WARN        ] BUY_CONDITION_OFF 상태 확인 실패: {exc}")
     log(f"  [R003 MODE   ] RULE_BUY_ENABLED={RULE_BUY_ENABLED}" + ("" if RULE_BUY_ENABLED else " (규칙 매매 꺼짐 - 신규 매수 주문 없음)"))
+    for _m in ("rule", "edge", "vwap"):               # [2026-11-27] per-method target lists (new buys only)
+        _t = _METHOD_TARGETS[_m]
+        if _t:
+            log(f"  [R003 MODE   ] {_m} 대상 종목 {len(_t)}개만 신규 매수: {', '.join(sorted(_t))}"
+                if "__invalid__" not in _t else f"  [WARN        ] {_m} 대상 종목 목록을 읽을 수 없음 - 이 매매법은 신규 매수하지 않음")
 
     try:
         print("[R003 AUTH   ] starting ka.auth()", flush=True)
@@ -8374,7 +8407,15 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                         ),
                         risk=risk, services=buy_services,
                     )
-                    _buy_decision = check_buy_conditions(buy_ctx)
+                    # [2026-11-27] per-method target list (Codex review: before the evaluation, so nothing is reserved / counted
+                    # for a symbol the method does not trade): the main buy belongs to the rule trade, or to the Edge AI trade
+                    # when TRADING_STRATEGY_MODE=edge. Outside the list = "the rule trade did not order it this turn" below
+                    _main_method = "edge" if str(TRADING_STRATEGY_MODE).lower() == "edge" else "rule"
+                    if method_is_target(_main_method, code, _METHOD_TARGETS[_main_method]):
+                        _buy_decision = check_buy_conditions(buy_ctx)
+                    else:
+                        _buy_decision = _NOT_TARGET_DECISION
+                        _note_not_target(_main_method, symbol_label, code, current_dt)
                     # [2026-10-05] 점심 금지/진입 허용창 때문에 _001에서 막힌 종목의 관찰(shadow) 기록 - 상태 사본으로
                     # 평가하므로 실제 매수 판정에는 영향 없음(r005 evaluate_entry_time_shadow).
                     if (

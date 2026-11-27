@@ -236,6 +236,8 @@ export interface ControlState {
   edgeLive?: PaperModeState;
   /** [2026-11-25] server EDGE_LIVE_ORDER_KRW / MAX_POSITIONS / MAX_ENTRIES_PER_DAY / DAILY_LOSS_KRW - undefined until read / older server */
   edgeLiveLimits?: EdgeLiveLimits;
+  /** [2026-11-27] server RULE_ / EDGE_ / VWAP_TARGET_CODES (per-method target symbols; a method an older server does not know is absent) */
+  targets?: import('./methodUnits').MethodTargets;
 }
 
 /** [2026-11-13] one account holding as r016 `holdings` reports it (r023 snapshot): the bot's and the hand-bought quantity */

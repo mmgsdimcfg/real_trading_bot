@@ -104,9 +104,9 @@ const ICON: Record<Tab, JSX.Element> = {
 // Sidebar groups: 운영 (run the bot and its data jobs) / 분석 (look at the day) / 시스템
 // [2026-11-27] 매매 방식: one entry per trading method -> the method board (MethodView) on that method, with its mode. The two
 // rule-only views say so in their names (규칙 종목 보드 / 규칙 파이프라인) [user 2026-11-27, Codex review]
-const NAV: { group: string; tabs: [Tab, string, TradeStrategy?][] }[] = [
+const NAV: { group: string; tabs: [Tab, string, ('all' | TradeStrategy)?][] }[] = [
   { group: '운영', tabs: [['control', '제어'], ['jobs', '데이터 작업'], ['collector', '수집기']] },
-  { group: '매매 방식', tabs: [['method', '규칙 매매', 'rule'], ['method', 'Edge AI 매매', 'edge'], ['method', 'VWAP 매매', 'vwap']] },
+  { group: '매매 방식', tabs: [['method', '전체 현황', 'all'], ['method', '규칙 매매', 'rule'], ['method', 'Edge AI 매매', 'edge'], ['method', 'VWAP 매매', 'vwap']] },
   { group: '분석', tabs: [['board', '규칙 종목 보드'], ['pipeline', '규칙 파이프라인'], ['timeline', '타임라인'], ['chart', '차트'], ['positions', '보유 현황'], ['trades', '매매 결과'], ['paper', '가상 매매']] },
   { group: '시스템', tabs: [['settings', '설정·연결']] },
 ];
@@ -152,7 +152,7 @@ export function App() {
                       {ICON[k]}
                     </svg>
                     {label}
-                    {m && <i className={`tl-mode nav-mode ${modes[m].live ? 'live' : modes[m].paper ? 'paper' : 'off'}`}>{strategyModeKo(modes[m]).replace(' 매매', '')}</i>}
+                    {m && m !== 'all' && <i className={`tl-mode nav-mode ${modes[m].live ? 'live' : modes[m].paper ? 'paper' : 'off'}`}>{strategyModeKo(modes[m]).replace(' 매매', '')}</i>}
                   </button>
                 );
               })}
