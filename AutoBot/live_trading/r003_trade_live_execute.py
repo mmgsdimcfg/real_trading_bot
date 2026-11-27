@@ -4105,7 +4105,8 @@ def _rebalance_active_watchlist(
                 f"유지됨 (active={len(active_set)})"
             )
             warn_state["backup_pool_exhausted_logged"] = True
-    elif backup_pool and len(passed_over) < len(backup_pool) and warn_state.get("backup_pool_exhausted_logged"):
+    elif (len(active_set) >= ACTIVE_WATCHLIST_SIZE or (backup_pool and len(passed_over) < len(backup_pool))) \
+            and warn_state.get("backup_pool_exhausted_logged"):
         warn_state["backup_pool_exhausted_logged"] = False
 
 
@@ -7001,14 +7002,19 @@ def _note_not_target(method: str, symbol_label: str, code: str, now: datetime, e
 
 
 def _split_watchlist_by_candidate(ordered: list, active_set: set, backup_pool, first_active_at: dict, is_candidate,
-                                  now: datetime, size: int) -> int:
+                                  now: datetime, size: int, first=None) -> int:
     """[2026-11-27] the start-up active / backup split again, once the methods are set up (user 2026-11-27: the first loop turn
     should not spend active slots on symbols nobody may buy). Only the symbols that are in the active set or the backup pool
     now are placed (a symbol taken out before - e.g. one restored as bought - stays out), in their watchlist order: candidates
     fill the active slots, the remaining candidates wait first, the non-candidates wait behind them. In place; returns how many
-    non-candidates there are. Reads the target lists only (is_candidate) - no price, no condition."""
-    members = [c for c in ordered if c in active_set or c in backup_pool]
+    non-candidates there are. Reads the target lists only (is_candidate) - no price, no condition.
+    first(code) [Codex review]: candidates that take their slot before the others, in watchlist order too (symbols with an open
+    paper position restored after a restart - their exits are judged on live quotes only inside the active loop)."""
+    members = list(dict.fromkeys(c for c in ordered if c in active_set or c in backup_pool))
     cands = [c for c in members if is_candidate(c)]
+    if first is not None:
+        head = [c for c in cands if first(c)]
+        cands = head + [c for c in cands if c not in set(head)]
     rest = [c for c in members if c not in set(cands)]
     keep = set(cands[:size])
     for c in list(first_active_at):
@@ -7023,6 +7029,18 @@ def _split_watchlist_by_candidate(ordered: list, active_set: set, backup_pool, f
     return len(rest)
 
 
+def _paper_holds(code, edge_only, vwap_paper) -> bool:
+    """True when a paper runner has an open position of the symbol (read only; never raises)"""
+    norm = str(code).zfill(6)
+    for _runner in (edge_only, vwap_paper):
+        try:
+            if _runner is not None and norm in (getattr(_runner, "positions", None) or {}):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _method_buy_candidate(code, edge_live: dict | None, vwap_live: dict | None, edge_only, vwap_paper) -> bool:
     """[2026-11-27] True when at least one trading method that can open a position may newly buy `code`: the main method (rule,
     or Edge AI when TRADING_STRATEGY_MODE=edge), the Edge AI / VWAP real-order paths that are enabled, the paper runners that
@@ -7031,14 +7049,12 @@ def _method_buy_candidate(code, edge_live: dict | None, vwap_live: dict | None, 
     norm = str(code).zfill(6)
     # [Codex review] an open paper position keeps its slot: in the active loop its exits are judged on live quotes (outside it
     # only on the tick files, poll_orphans)
-    for _runner in (edge_only, vwap_paper):
-        try:
-            if _runner is not None and norm in (getattr(_runner, "positions", None) or {}):
-                return True
-        except Exception:
-            pass
+    if _paper_holds(norm, edge_only, vwap_paper):
+        return True
     main = "edge" if str(TRADING_STRATEGY_MODE).lower() == "edge" else "rule"
-    if method_is_target(main, norm, _METHOD_TARGETS[main]):
+    # [Codex review] the rule trade counts only while it can order (RULE_BUY_ENABLED; the Edge AI alone mode always can) -
+    # with rule buys off its (empty) list must not make every symbol a candidate
+    if (main == "edge" or RULE_BUY_ENABLED) and method_is_target(main, norm, _METHOD_TARGETS[main]):
         return True
     if (edge_live or {}).get("enabled") and method_is_target("edge", norm, _METHOD_TARGETS["edge"]):
         return True
@@ -7963,7 +7979,8 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         try:
             _n_rest = _split_watchlist_by_candidate(
                 watch_codes_ordered, active_set, backup_pool, first_active_at,
-                lambda _c: _method_buy_candidate(_c, edge_live, vwap_live, edge_only, vwap_paper), now, ACTIVE_WATCHLIST_SIZE)
+                lambda _c: _method_buy_candidate(_c, edge_live, vwap_live, edge_only, vwap_paper), now, ACTIVE_WATCHLIST_SIZE,
+                first=lambda _c: _paper_holds(_c, edge_only, vwap_paper))
             log(f"  [WL SPLIT    ] 대상 종목 지정 반영 | active={len(active_set)} backup={len(backup_pool)} "
                 f"(어느 방식의 대상도 아님 {_n_rest} - 대기열 뒤)")
         except Exception as exc:

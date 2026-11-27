@@ -138,7 +138,7 @@ class ActiveSlotTest(unittest.TestCase):
         closing = mock.Mock(close_only=True, log_only=False, positions={})
         recording = mock.Mock(close_only=False, log_only=True, positions={})
         holding = mock.Mock(close_only=True, log_only=False, positions={"000009": {}})
-        with mock.patch.dict(r003._METHOD_TARGETS, {"rule": frozenset({"000001"}), "edge": frozenset({"000002"}), "vwap": frozenset({"000003"})}),                 mock.patch.object(r003, "TRADING_STRATEGY_MODE", "normal"):
+        with mock.patch.dict(r003._METHOD_TARGETS, {"rule": frozenset({"000001"}), "edge": frozenset({"000002"}), "vwap": frozenset({"000003"})}),                 mock.patch.object(r003, "TRADING_STRATEGY_MODE", "normal"), mock.patch.object(r003, "RULE_BUY_ENABLED", True):
             c = r003._method_buy_candidate
             self.assertTrue(c("000001", off, off, None, None))                 # the rule trade's
             self.assertFalse(c("000002", off, off, None, None))                # Edge AI's, but no Edge AI path takes entries
@@ -150,7 +150,15 @@ class ActiveSlotTest(unittest.TestCase):
             self.assertTrue(c("000003", off, on, None, None))
             self.assertTrue(c("000003", off, off, None, runner))
             self.assertFalse(c("000009", on, on, runner, runner))              # on nobody's list
-        with mock.patch.dict(r003._METHOD_TARGETS, {"rule": frozenset({"000001"}), "vwap": frozenset()}):
+        # rule buys off: the rule trade's (empty) list does not make every symbol a candidate
+        with mock.patch.dict(r003._METHOD_TARGETS, {"rule": frozenset(), "edge": frozenset({"000002"}), "vwap": frozenset({"000003"})}), \
+                mock.patch.object(r003, "TRADING_STRATEGY_MODE", "normal"):
+            with mock.patch.object(r003, "RULE_BUY_ENABLED", False):
+                self.assertFalse(r003._method_buy_candidate("000009", off, on, None, None))
+                self.assertTrue(r003._method_buy_candidate("000003", off, on, None, None))
+            with mock.patch.object(r003, "RULE_BUY_ENABLED", True):
+                self.assertTrue(r003._method_buy_candidate("000009", off, on, None, None))
+        with mock.patch.dict(r003._METHOD_TARGETS, {"rule": frozenset({"000001"}), "vwap": frozenset()}),                 mock.patch.object(r003, "TRADING_STRATEGY_MODE", "normal"), mock.patch.object(r003, "RULE_BUY_ENABLED", True):
             self.assertTrue(r003._method_buy_candidate("000009", {"enabled": False}, {"enabled": True}, None, None))   # VWAP has no list
             self.assertFalse(r003._method_buy_candidate("000009", {"enabled": False}, {"enabled": False}, None, None))
 
@@ -196,6 +204,10 @@ class ActiveSlotTest(unittest.TestCase):
         self.assertEqual(list(pool), ["000003", "000009", "000008"])   # the waiting candidate first, then the others
         self.assertNotIn("000007", active | set(pool))                 # stays out
         self.assertEqual(first, {"000001": datetime(2026, 11, 27, 8, 0), "000002": self.NOW})   # kept / new / dropped
+        # a symbol with an open paper position takes its slot before the other candidates (restored after a restart)
+        a4, p4 = {"000001", "000002"}, collections.deque(["000003", "000008"])
+        r003._split_watchlist_by_candidate(ordered, a4, p4, {}, lambda c: True, self.NOW, 2, first=lambda c: c == "000008")
+        self.assertEqual((a4, list(p4)), ({"000008", "000001"}, ["000002", "000003"]))
         # every symbol a candidate: the same split as before
         a2, p2, f2 = {"000001", "000009"}, collections.deque(["000002"]), {}
         self.assertEqual(r003._split_watchlist_by_candidate(ordered, a2, p2, f2, lambda c: True, self.NOW, 2), 0)
