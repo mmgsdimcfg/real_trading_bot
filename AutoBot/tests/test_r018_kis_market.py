@@ -198,13 +198,13 @@ class QuoteTest(Base):
         self.assertEqual(len(q2["trades"]), 2)
         # name cached -> later quotes skip search_stock_info
         cache = self.runtime / "cache" / "kis" / "quote" / "005930.json"
-        data = json.loads(cache.read_text())
+        data = json.loads(cache.read_text(encoding="utf-8"))
         data["_at"] = time.time() - 10
         cache.write_text(json.dumps(data))
         c3, s3 = self.client(QUOTE_HANDLERS)
         r018.quote("005930", client=c3)
         self.assertNotIn("CTPF1002R", [t for t, _ in s3.calls])
-        self.assertNotIn("TOKEN_SECRET", cache.read_text())
+        self.assertNotIn("TOKEN_SECRET", cache.read_text(encoding="utf-8"))
 
     def test_venue_unified_for_nxt_symbols_outside_the_krx_session(self):
         self.venue.stop()
@@ -323,7 +323,7 @@ class MinutesTest(Base):
             self.assertEqual(m["rows"][0][0], "090000")
             self.assertEqual(len(s.calls), 3)
             cpath = self.runtime / "cache" / "kis" / "min" / "20261109" / "035720.json"
-            data = json.loads(cpath.read_text())
+            data = json.loads(cpath.read_text(encoding="utf-8"))
             self.assertTrue(data["complete_from_open"])
             data["fetched_at"] = time.time() - 60
             cpath.write_text(json.dumps(data))
@@ -522,7 +522,7 @@ class CodexFindingsTest(Base):
         with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 10, 0, 30)):
             c, _ = self.client({"FHKST03010200": minute_handler("20261109")})
             r018.minutes("035720", "20261109", client=c)
-        data = json.loads(cpath.read_text())
+        data = json.loads(cpath.read_text(encoding="utf-8"))
         data["fetched_at"] = time.time() - 60
         cpath.write_text(json.dumps(data))
         with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 12, 0, 30)):
@@ -535,15 +535,15 @@ class CodexFindingsTest(Base):
                 return real() if n["k"] <= 3 else 0.0
             c2.time_left = budget
             r018.minutes("035720", "20261109", client=c2)
-        self.assertFalse(json.loads(cpath.read_text())["complete_from_open"])
-        data = json.loads(cpath.read_text())
+        self.assertFalse(json.loads(cpath.read_text(encoding="utf-8"))["complete_from_open"])
+        data = json.loads(cpath.read_text(encoding="utf-8"))
         data["fetched_at"] = time.time() - 60
         cpath.write_text(json.dumps(data))
         with mock.patch.object(r018, "_now", return_value=datetime(2026, 11, 9, 12, 0, 40)):
             c3, s3 = self.client({"FHKST03010200": minute_handler("20261109", last="120000")})
             m = r018.minutes("035720", "20261109", client=c3)
         self.assertEqual(len(m["rows"]), 181)  # 09:00..12:00 without a hole
-        self.assertTrue(json.loads(cpath.read_text())["complete_from_open"])
+        self.assertTrue(json.loads(cpath.read_text(encoding="utf-8"))["complete_from_open"])
 
     def test_cache_write_failure_still_returns_quote(self):
         with mock.patch.object(r018.tempfile, "mkstemp", side_effect=PermissionError("ro")):
@@ -656,7 +656,7 @@ class CodexSecondPassTest(Base):
             c, _ = self.client({"FHKST03010230": lambda p: {"output1": {}, "output2": []}})
             m = r018.minutes("035720", "20261106", client=c)
         self.assertFalse(m["complete"])
-        self.assertFalse(json.loads(cpath.read_text())["complete_from_open"])
+        self.assertFalse(json.loads(cpath.read_text(encoding="utf-8"))["complete_from_open"])
 
     def test_legacy_daily_cache_without_flag_is_refetched(self):
         cpath = self.runtime / "cache" / "kis" / "daily" / "005930.json"
