@@ -358,6 +358,22 @@ GRID = {f"g|{tp}|{sl}|{hz}": (tp, sl, hz) for tp in (2.0, 3.0, 5.0) for sl in (1
 GRID_KEYS = list(GRID)
 
 
+# entry filters on the same candidates: first entry hour x largest VWAP gap (%) x smallest age of the tick cross (s). 0 = no filter
+FILTERS = {f"f|{h}|{g}|{w}": (h, g, w) for h in (9, 10) for g in (0.0, 1.5, 1.0, 0.6) for w in (0.0, 15.0, 30.0)}
+
+
+def _filtered(res: list[dict], h: int, g: float, w: float) -> list[dict]:
+    def keep(c: dict) -> bool:
+        if pd.Timestamp(c["now"]).hour < h:
+            return False
+        if g > 0 and (c.get("gap") is None or float(c["gap"]) > g):
+            return False
+        if w > 0 and (c.get("cross_age") is None or float(c["cross_age"]) < w):
+            return False
+        return True
+    return [{**r, "cands": [c for c in r["cands"] if keep(c)]} for r in res]
+
+
 def day_job(job) -> dict:
     """one day in one process: the symbols' candidates, then the day's book under the base settings, without the day's limits
     ("free": every signal that would have filled - what the signal itself is worth) and under the exit grid. Only trades and
@@ -376,6 +392,10 @@ def day_job(job) -> dict:
         nt = [{**r, "cands": r.get("cands_nt", [])} for r in res]
         trades["base_notick"] = run_day(nt, base)
         trades["free_notick"] = run_day(nt, {**base, "max_positions": 10**6, "max_entries": 10**6, "daily_loss": 0})
+        for key, (h, g, w) in FILTERS.items():
+            fr = _filtered(res, h, g, w)
+            trades[key] = run_day(fr, base)
+            trades[key + "|free"] = run_day(fr, {**base, "max_positions": 10**6, "max_entries": 10**6, "daily_loss": 0})
     return {"day": day, "symbol_days": len(res), "stages": dict(stages), "signals": sum(len(r["cands"]) for r in res), "trades": trades,
             "bar_src": dict(Counter(r.get("bar_src", "10s file") for r in res))}
 
@@ -498,6 +518,9 @@ def main() -> int:
             fdf = pd.DataFrame(free)
             report[mode].update({
                 # the same days, symbols and fill / exit model with the tick trigger switched off
+                "filter_grid": [{"start_hour": h, "gap_max": g, "cross_wait_s": w, **{k: v for k, v in summarize(cat(key)).items() if k != "by_reason"},
+                                 "no_limits": {k: v for k, v in summarize(cat(key + "|free")).items() if k != "by_reason"}}
+                                for key, (h, g, w) in FILTERS.items()],
                 "no_tick_trigger": {"with_limits": summarize(cat("base_notick")), "no_limits": summarize(cat("free_notick"))},
                 # days whose bars came from the tick file only (the 10s-file fallback days left out)
                 "tick_bar_days_only": summarize([t for t in trades if t.get("bar_src") == "ticks"]),
