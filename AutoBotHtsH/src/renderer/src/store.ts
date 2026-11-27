@@ -44,7 +44,7 @@ import { wsToOrderBook, wsToTrade } from '../../shared/kis';
 export const BOT_TABS = ['control', 'jobs', 'collector', 'pipeline', 'board', 'timeline', 'chart', 'positions', 'trades', 'paper', 'settings'] as const;
 export type BotTab = (typeof BOT_TABS)[number];
 export type BotWinType = `bot-${BotTab}`;
-export type WinType = 'chart' | 'quote' | 'order' | 'info' | 'watch' | 'watchtile' | 'watchsum' | 'rank' | 'index' | 'news' | 'rebound' | 'rules' | BotWinType;
+export type WinType = 'chart' | 'quote' | 'order' | 'info' | 'watch' | 'watchtile' | 'watchsum' | 'rank' | 'index' | 'news' | 'rebound' | 'rules' | 'edgecfg' | 'vwapcfg' | BotWinType;
 export const isBotWin = (t: WinType): t is BotWinType => t.startsWith('bot-');
 export const botWinOf = (tab: BotTab): BotWinType => `bot-${tab}`;
 
@@ -81,6 +81,8 @@ export const WIN_TITLE: Record<WinType, string> = {
   news: '뉴스',
   rebound: '바닥 반등 초입 감시',
   rules: '규칙 매매 세부 설정',
+  edgecfg: 'Edge AI 매매 세부 설정',
+  vwapcfg: 'VWAP 매매 세부 설정',
   ...(Object.fromEntries(BOT_TABS.map((t) => [botWinOf(t), BOT_TITLE[t]])) as Record<BotWinType, string>),
 };
 
@@ -100,6 +102,8 @@ const DEFAULT_SIZE: Record<WinType, [number, number]> = {
   news: [520, 360],
   rebound: [1360, 760],
   rules: [1180, 720],
+  edgecfg: [860, 720],
+  vwapcfg: [860, 720],
   // bot views were made for a full window
   ...(Object.fromEntries(BOT_TABS.map((t) => [botWinOf(t), [1180, 760]])) as Record<BotWinType, [number, number]>),
 };

@@ -36,10 +36,13 @@ export function App() {
     // [2026-11-27] the rule-trade settings window (bot control > 규칙 매매 > 세부 설정)
     const openRules = () => void useStore.getState().open('rules');
     window.addEventListener('rebound-settings', open);
+    const openStrategy = (e: Event) => void useStore.getState().open((e as CustomEvent).detail === 'vwap' ? 'vwapcfg' : 'edgecfg');
     window.addEventListener('rule-settings', openRules);
+    window.addEventListener('strategy-settings', openStrategy);
     return () => {
       window.removeEventListener('rebound-settings', open);
       window.removeEventListener('rule-settings', openRules);
+      window.removeEventListener('strategy-settings', openStrategy);
     };
   }, []);
   const loggedIn = auth?.status === 'in';

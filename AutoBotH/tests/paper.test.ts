@@ -272,3 +272,26 @@ describe('VWAP live keys', () => {
     expect([p.parseVwapLive({ values: {} }), p.parseVwapLiveLimits({ values: {} }), p.parseVwapLiveSummary({})]).toEqual([null, null, null]);
   });
 });
+
+// [2026-11-27] settings windows of the Edge AI trade / the VWAP trade
+describe('strategy settings sections', () => {
+  it('lists each key once, never the on / off switches of the cards', async () => {
+    const p = await import('../src/shared/paper');
+    for (const kind of ['edge', 'vwap'] as const) {
+      const keys = p.strategyKeys(kind);
+      expect(new Set(keys).size).toBe(keys.length);
+      expect(keys.length).toBeGreaterThan(10);
+      for (const k of ['EDGE_LIVE_ORDERS', 'EDGE_ONLY_MODE', 'EDGE_ONLY_LOG_ONLY', 'VWAP_TRADE_MODE', 'VWAP_TRADE_LIVE_ORDERS']) expect(keys).not.toContain(k);
+      expect(keys.every((k) => k.startsWith(kind === 'edge' ? 'EDGE_' : 'VWAP_'))).toBe(true);
+    }
+  });
+
+  it('shows the percent keys of these trades as percent, not as ratios', async () => {
+    const { pctHint } = await import('../src/shared/control');
+    expect(pctHint('VWAP_TRADE_TP_PCT', 3)).toBe('= 3%');
+    expect(pctHint('VWAP_TRADE_CHASE_MAX_PCT', 0.5)).toBe('= 0.5%');
+    expect(pctHint('EDGE_ONLY_SL_PCT', 1.27)).toBe('= 1.27%');
+    expect(pctHint('RULE_EXIT_TP_PCT', 2)).toBe('= 2%');
+    expect(pctHint('EDGE_TP_PCT', 0.02)).toBe('= 2.00%'); // a ratio key stays a ratio
+  });
+});

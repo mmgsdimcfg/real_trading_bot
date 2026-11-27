@@ -28,7 +28,7 @@ import { TradesView } from '../../../bot/renderer/src/views/TradesView';
 import { PositionsView } from '../../../bot/renderer/src/views/PositionsView';
 import { PaperView } from '../../../bot/renderer/src/views/PaperView';
 import { SettingsView } from '../../../bot/renderer/src/views/SettingsView';
-import { RuleSettingsPanel } from '../../../bot/renderer/src/components/RuleSettings';
+import { RuleSettingsPanel, StrategySettingsPanel } from '../../../bot/renderer/src/components/RuleSettings';
 
 const VIEW: Record<BotTab, () => ReactNode> = {
   control: ControlView,
@@ -95,6 +95,21 @@ export function RuleSettingsWindow() {
     </div>
   );
 }
+
+/** [2026-11-27] MDI windows 'edgecfg' / 'vwapcfg': the Edge AI / VWAP trade settings (their cards' 세부 설정, event 'strategy-settings') */
+function StrategyWindow({ kind }: { kind: 'edge' | 'vwap' }) {
+  return (
+    <div className="bot-root bot-win">
+      <div className="app-main">
+        <main className="view rule-set-view">
+          <StrategySettingsPanel kind={kind} />
+        </main>
+      </div>
+    </div>
+  );
+}
+export const EdgeSettingsWindow = () => <StrategyWindow kind="edge" />;
+export const VwapSettingsWindow = () => <StrategyWindow kind="vwap" />;
 
 /** [2026-11-24] AutoBotH status, left half (connection · bot · day · 절전 방지) - right end of the title bar */
 export function BotStatusTitle() {

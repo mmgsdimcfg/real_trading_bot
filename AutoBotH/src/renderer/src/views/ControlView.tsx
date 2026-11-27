@@ -1204,6 +1204,16 @@ export function ControlView() {
                     )}
                   </div>
                 )}
+                <div className="chips">
+                  <button
+                    type="button"
+                    className="chip link"
+                    title="Edge AI 매매 세부 설정 창 열기 (신호 · 한도 · 청산 등 설정값)"
+                    onClick={() => window.dispatchEvent(new CustomEvent('strategy-settings', { detail: 'edge' }))}
+                  >
+                    세부 설정 →
+                  </button>
+                </div>
               </div>
             )}
             {normalMode && vwapMode && (
@@ -1300,6 +1310,16 @@ export function ControlView() {
                     )}
                   </div>
                 )}
+                <div className="chips">
+                  <button
+                    type="button"
+                    className="chip link"
+                    title="VWAP 매매 세부 설정 창 열기 (신호 · 한도 · 청산 등 설정값)"
+                    onClick={() => window.dispatchEvent(new CustomEvent('strategy-settings', { detail: 'vwap' }))}
+                  >
+                    세부 설정 →
+                  </button>
+                </div>
                 {vwapPending && (
                   <div className="tm-notes">
                     <span className="badge-warn">→ r003 재시작 후 적용 (실행 중: {vwapMode.running === 'paper' ? '켜짐' : '꺼짐'})</span>

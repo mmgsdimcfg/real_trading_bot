@@ -7,6 +7,9 @@
  *   ONE editing state over every condition of both sides: edits made in several conditions are saved together with one 저장 (only
  *   the changed keys go to the server in one `set`, as everywhere). Nothing here decides a trade - it edits r001 values through r016.
  *   RuleSettingsPanel = the content (AutoBotHtsH shows it in its own MDI window), RuleSettingsModal = AutoBotH's dialog
+ * - [2026-11-27] type=feat - StrategySettingsPanel / StrategySettingsModal (user request: "세부 설정" on the Edge AI and the VWAP trade
+ *   cards too): the r001 values of that way of trading (shared/paper STRATEGY_SECTIONS) in sections with a line of what each does,
+ *   read with `schema --all` and edited with the same editor and one 저장. The cards' own on / off switches are not in the list
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -14,6 +17,10 @@ import { useStore } from '../store';
 import { editItemsFor, isEnableItem, sortedConds, STAGE_LABEL, unionEditItems } from '../lib';
 import { EditorActions, ValuesEditor, useValueEditing } from './ValuesEditor';
 import type { Condition } from '../../../shared/types';
+import type { SchemaDoc } from '../../../shared/control';
+import { STRATEGY_KO, STRATEGY_SECTIONS, strategyKeys, type StrategyKind } from '../../../shared/paper';
+import { peek, put } from '../dataCache';
+import type { EditItem } from './ValuesEditor';
 
 type Side = 'buy' | 'sell';
 const SIDE_KO: Record<Side, string> = { buy: '매수 조건', sell: '매도 조건' };
@@ -123,6 +130,88 @@ export function RuleSettingsModal({ onClose }: { onClose: () => void }) {
           </button>
         </header>
         <RuleSettingsPanel />
+      </div>
+    </div>
+  );
+}
+
+/** [2026-11-27] the r001 values of the Edge AI trade / the VWAP trade, in sections (control > card > 세부 설정) */
+export function StrategySettingsPanel({ kind }: { kind: StrategyKind }) {
+  const connected = useStore((s) => s.status.conn === 'connected');
+  const historyRev = useStore((s) => s.historyRev);
+  const [doc, setDoc] = useState<SchemaDoc | null>(() => peek<SchemaDoc>('settings:schema') || null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    if (!connected) return;
+    let alive = true;
+    const kept = peek<SchemaDoc>('settings:schema');
+    if (kept) setDoc(kept);
+    setErr(kept ? '' : '불러오는 중…');
+    void window.api.ctlSchema(true).then((r) => {
+      if (!alive) return;
+      if (r.ok && r.data) {
+        setDoc(put('settings:schema', r.data));
+        setErr('');
+      } else setErr(`불러오기 실패: ${r.error}`);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [connected, historyRev]);
+  const all: EditItem[] = useMemo(() => {
+    const want = new Set(strategyKeys(kind));
+    return (doc?.keys || []).filter((k) => want.has(k.key)).map((k) => ({ ...k, editable: k.editable !== false, current: k.effective }));
+  }, [doc, kind]);
+  const byKey = useMemo(() => new Map(all.map((i) => [i.key, i])), [all]);
+  const ed = useValueEditing(all);
+  const sections = STRATEGY_SECTIONS[kind]
+    .map((sec) => ({ ...sec, rows: sec.keys.filter(([k]) => byKey.has(k)) }))
+    .filter((sec) => sec.rows.length > 0);
+  // what each key does, under its row (the editor's own note line)
+  const notes = useMemo(() => Object.fromEntries(STRATEGY_SECTIONS[kind].flatMap((sec) => sec.keys)), [kind]);
+
+  return (
+    <div className="rule-set strat-set">
+      <div className="rule-set-head">
+        <b>{STRATEGY_KO[kind]} 세부 설정</b>
+        <span className="muted small">저장한 값은 r003 재시작 후 적용 · 켜기 / 끄기는 제어 탭 카드에서</span>
+        {!connected && <span className="badge-warn">연결되면 볼 수 있습니다</span>}
+        {err && <span className="muted small">{err}</span>}
+      </div>
+      <div className="strat-set-body">
+        {sections.map((sec) => (
+          <section key={sec.title}>
+            <h3>{sec.title}</h3>
+            {sec.note && <p className="rs-desc">{sec.note}</p>}
+            <ValuesEditor items={sec.rows.map(([k]) => byKey.get(k)!)} ed={ed} disabled={!connected || ed.saving} alerts={notes} />
+          </section>
+        ))}
+        {connected && doc && !sections.length && <p className="muted">서버에 이 매매 방식의 설정값이 없습니다 (서버 코드 갱신 필요).</p>}
+      </div>
+      <div className="rule-set-foot">
+        <EditorActions ed={ed} disabled={!connected} />
+      </div>
+    </div>
+  );
+}
+
+/** AutoBotH: the Edge AI / VWAP settings as a dialog (window event 'strategy-settings' with detail 'edge' | 'vwap', App.tsx) */
+export function StrategySettingsModal({ kind, onClose }: { kind: StrategyKind; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal rule-set-modal strat-set-modal" role="dialog" aria-label={`${STRATEGY_KO[kind]} 세부 설정`}>
+        <header>
+          <h3>{STRATEGY_KO[kind]} 세부 설정</h3>
+          <button type="button" className="mini" onClick={onClose}>
+            닫기
+          </button>
+        </header>
+        <StrategySettingsPanel kind={kind} />
       </div>
     </div>
   );

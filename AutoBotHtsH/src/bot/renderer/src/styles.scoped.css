@@ -253,6 +253,14 @@
 .bot-root .rule-set-detail .rs-desc { font-size: var(--fs); color: var(--text-2); margin: 0 0 10px; line-height: 1.5; white-space: pre-wrap; }
 .bot-root .rule-set-foot { border-top: 1px solid var(--border); padding-top: 6px; }
 .bot-root .view.rule-set-view { padding: 10px 14px; display: flex; flex-direction: column; }
+/* [2026-11-27] Edge AI / VWAP trade settings (StrategySettingsPanel): sections of value rows, each with a line of what it does */
+.bot-root .modal.strat-set-modal { width: min(860px, 94vw); }
+.bot-root .strat-set-body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.bot-root .strat-set-body section + section { margin-top: 14px; }
+.bot-root .strat-set-body h3 { font-size: var(--fs); margin: 0 0 4px; }
+.bot-root .strat-set-body .rs-desc { font-size: var(--fs); color: var(--text-2); margin: 0 0 6px; }
+.bot-root .strat-set .values.edit tr.related { background: none; }
+.bot-root .strat-set .values.edit .vblock { color: var(--text-2); font-size: var(--fs); }
 /* [2026-11-27] replay-by-date menu at the start of the bar */
 .bot-root .replay-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
 .bot-root .replaybar .datepicker .dp-field { padding: 1px 6px; font-size: var(--fs); }

@@ -18,7 +18,8 @@ import { useStore, type Tab } from './store';
 import { StatusBar } from './components/StatusBar';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ReplayBar } from './components/ReplayBar';
-import { RuleSettingsModal } from './components/RuleSettings';
+import { RuleSettingsModal, StrategySettingsModal } from './components/RuleSettings';
+import type { StrategyKind } from '../../shared/paper';
 import { PipelineView } from './views/PipelineView';
 import { ControlView } from './views/ControlView';
 import { JobsView } from './views/JobsView';
@@ -103,15 +104,23 @@ export function App() {
   const setTab = useStore((s) => s.setTab);
   // [2026-11-27] rule-trade settings window (control tab > 규칙 매매 > 세부 설정)
   const [ruleSettings, setRuleSettings] = useState(false);
+  const [strategySettings, setStrategySettings] = useState<StrategyKind | null>(null);
   useEffect(() => {
     const open = () => setRuleSettings(true);
+    // [2026-11-27] Edge AI / VWAP trade settings (their cards' "세부 설정"): detail = 'edge' | 'vwap'
+    const openStrategy = (e: Event) => setStrategySettings((e as CustomEvent).detail === 'vwap' ? 'vwap' : 'edge');
     window.addEventListener('rule-settings', open);
-    return () => window.removeEventListener('rule-settings', open);
+    window.addEventListener('strategy-settings', openStrategy);
+    return () => {
+      window.removeEventListener('rule-settings', open);
+      window.removeEventListener('strategy-settings', openStrategy);
+    };
   }, []);
   return (
     <div className="app">
       <ConfirmDialog />
       {ruleSettings && <RuleSettingsModal onClose={() => setRuleSettings(false)} />}
+      {strategySettings && <StrategySettingsModal kind={strategySettings} onClose={() => setStrategySettings(null)} />}
       <StatusBar />
       <div className="app-body">
         {/* sidebar: group captions, then one row per tab (icon + label); the current tab sits on a rounded highlight */}

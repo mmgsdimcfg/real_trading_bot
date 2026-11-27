@@ -489,6 +489,113 @@ export const VWAP_LIVE_ON_WARNING =
   'VWAP 매매 실제 매매를 켭니다 - 실제 계좌로 VWAP 매매 매수 주문이 나갑니다 (규칙 매매와 병행).\n\n' +
   '앞선 검증에서 VWAP 위치의 예측력은 확인되지 않았고, 이 매매법은 아직 가상 매매 결과도 없습니다.';
 
+/** [2026-11-27] "세부 설정" windows of the Edge AI trade and the VWAP trade: the r001 keys of each, in sections, with a line of
+ *  what the key does. The on / off switches of the cards (trade mode, live orders, paper buys) are not listed - they have their
+ *  own warnings there. A key the server does not have is left out. */
+export type StrategyKind = 'edge' | 'vwap';
+export const STRATEGY_KO: Record<StrategyKind, string> = { edge: 'Edge AI 매매', vwap: 'VWAP 매매' };
+export interface StrategySection {
+  title: string;
+  note?: string;
+  keys: [string, string][];
+}
+export const STRATEGY_SECTIONS: Record<StrategyKind, StrategySection[]> = {
+  edge: [
+    {
+      title: '매수 신호 · 가상 매매',
+      note: '1분 하이브리드 트리거 + 모델 확률 >= 기준일 때 매수합니다.',
+      keys: [
+        ['EDGE_ONLY_MIN_PROB', '매수 확률 기준 (0 = 모델과 함께 배포된 기준)'],
+        ['EDGE_ONLY_MAX_POSITIONS', '감시 종목 동시 가상 보유 수'],
+        ['EDGE_ONLY_MAX_ENTRIES_PER_DAY', '감시 종목 하루 가상 매수 횟수'],
+        ['EDGE_ONLY_EXCLUDE_FUNDS', 'ETF · ETN 제외'],
+        ['EDGE_ONLY_NO_REENTRY_AFTER_SL', '당일 손절한 종목은 그날 다시 사지 않음'],
+      ],
+    },
+    {
+      title: '수집기 종목 (감시목록 밖)',
+      note: '틱 수집기가 받는 종목도 틱 파일로 가상 매매합니다. 상한은 감시 종목과 따로 셉니다.',
+      keys: [
+        ['EDGE_ONLY_COLLECTOR', '수집기 종목 가상 매매 사용'],
+        ['EDGE_ONLY_COLLECTOR_MAX_POSITIONS', '수집기 종목 동시 가상 보유 수'],
+        ['EDGE_ONLY_COLLECTOR_MAX_ENTRIES_PER_DAY', '수집기 종목 하루 가상 매수 횟수'],
+        ['EDGE_ONLY_COLLECTOR_POLL_SECONDS', '수집기 종목 평가 간격 (초)'],
+      ],
+    },
+    {
+      title: '청산',
+      note: '익절 / 손절 / 보유 시간은 카드의 "청산 방식"과 같은 값입니다 (%, 분 · 0 = 모델 라벨 값).',
+      keys: [
+        ['EDGE_ONLY_TP_PCT', '익절 %'],
+        ['EDGE_ONLY_SL_PCT', '손절 %'],
+        ['EDGE_ONLY_HORIZON_MIN', '보유 시간 상한 (분)'],
+      ],
+    },
+    {
+      title: '실제 주문',
+      note: '실제 매매 켜기 / 끄기는 카드의 "실제 매매" 체크에서 합니다.',
+      keys: [
+        ['EDGE_LIVE_ORDER_KRW', '1회 매수 금액 상한 (원)'],
+        ['EDGE_LIVE_MAX_POSITIONS', '동시 보유 종목 수'],
+        ['EDGE_LIVE_MAX_ENTRIES_PER_DAY', '하루 매수 횟수'],
+        ['EDGE_LIVE_DAILY_LOSS_KRW', '하루 손실 한도 (원) - 닿으면 그날 신규 매수 중단'],
+        ['EDGE_LIVE_UNFILLED_CANCEL_SECONDS', '매수 미체결 잔량 취소까지 (초)'],
+        ['EDGE_LIVE_REQUIRE_PROMOTED', '승격된 모델에서만 실제 주문'],
+      ],
+    },
+  ],
+  vwap: [
+    {
+      title: '매수 신호 (60틱봉 · 안전장치)',
+      note: '1분 종가 · 현재가 > VWAP, 1분 MA5 또는 BB 중심선 상승은 고정 조건입니다.',
+      keys: [
+        ['VWAP_TRADE_TICK_BAR_SIZE', '트리거 틱봉 크기 (틱)'],
+        ['VWAP_TRADE_TICK_MA_FAST', '틱봉 빠른 이동평균'],
+        ['VWAP_TRADE_TICK_MA_SLOW', '틱봉 느린 이동평균'],
+        ['VWAP_TRADE_TICK_CROSS_MAX_AGE_SECONDS', '골든크로스 발생 후 매수 허용 시간 (초)'],
+        ['VWAP_TRADE_MIN_PRINTS_PER_MIN', '최근 체결 밀도 하한 (건/분, 0 이하 = 미적용)'],
+        ['VWAP_TRADE_MIN_PRINTS_WINDOW_MINUTES', '체결 밀도를 재는 구간 (분)'],
+        ['VWAP_TRADE_CHASE_MAX_PCT', '추격 제한: 크로스 봉 종가 대비 현재가 상한 (%)'],
+        ['VWAP_TRADE_MAX_VWAP_GAP_PCT', '추격 제한: VWAP 대비 현재가 상한 (%)'],
+        ['VWAP_TRADE_LIVE_DROP_MAX_PCT', '급락 방지: 직전 1분 종가 대비 현재가 하락 한도 (%)'],
+        ['VWAP_TRADE_BAR_STALE_SECONDS', '최신성: 마지막 확정 1분봉의 허용 지연 (초)'],
+        ['VWAP_TRADE_TICK_FEED_STALE_SECONDS', '최신성: 마지막 체결의 허용 지연 (초)'],
+      ],
+    },
+    {
+      title: '가상 매매 · 공통',
+      keys: [
+        ['VWAP_TRADE_MAX_POSITIONS', '동시 가상 보유 종목 수'],
+        ['VWAP_TRADE_MAX_ENTRIES_PER_DAY', '하루 가상 매수 횟수'],
+        ['VWAP_TRADE_EXCLUDE_FUNDS', 'ETF · ETN 제외'],
+        ['VWAP_TRADE_NO_REENTRY_AFTER_SL', '당일 손절한 종목은 그날 다시 사지 않음 (가상 매매)'],
+      ],
+    },
+    {
+      title: '청산',
+      note: '카드의 "청산 방식"과 같은 값입니다 (%, 분 · 모두 0보다 커야 함).',
+      keys: [
+        ['VWAP_TRADE_TP_PCT', '익절 %'],
+        ['VWAP_TRADE_SL_PCT', '손절 %'],
+        ['VWAP_TRADE_HORIZON_MIN', '보유 시간 상한 (분)'],
+      ],
+    },
+    {
+      title: '실제 주문',
+      note: '실제 매매 켜기 / 끄기는 카드의 "실제 매매" 체크에서 합니다.',
+      keys: [
+        ['VWAP_LIVE_ORDER_KRW', '1회 매수 금액 상한 (원)'],
+        ['VWAP_LIVE_MAX_POSITIONS', '동시 보유 종목 수'],
+        ['VWAP_LIVE_MAX_ENTRIES_PER_DAY', '하루 매수 횟수'],
+        ['VWAP_LIVE_DAILY_LOSS_KRW', '하루 손실 한도 (원) - 닿으면 그날 신규 매수 중단'],
+        ['VWAP_LIVE_UNFILLED_CANCEL_SECONDS', '매수 미체결 잔량 취소까지 (초)'],
+      ],
+    },
+  ],
+};
+/** every key of a strategy's settings window */
+export const strategyKeys = (kind: StrategyKind): string[] => STRATEGY_SECTIONS[kind].flatMap((s) => s.keys.map(([k]) => k));
+
 /** the four buy steps of the VWAP trade, as the control card lists them */
 export const VWAP_STEPS: [string, string][] = [
   ['VWAP', '1분 종가 · 현재가 > 당일 VWAP'],

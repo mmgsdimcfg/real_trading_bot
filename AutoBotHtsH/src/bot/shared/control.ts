@@ -609,6 +609,10 @@ const PERCENT_UNIT_PCT: RegExp[] = [
   /^GAPDIP_\w+_PCT$/,
   /^(BUY_CONFIRM_MAX_PRICE_DRIFT|BUY_ORDER_REPRICE_MAX_CHASE|PRIOR_DAY_WARMUP_MAX_BASE_DIFF)_PCT$/,
   /^V2_\w+_PCT$/,
+  // [2026-11-27] exits / guards entered in percent: VWAP trade, the Edge AI exits of the control tab, the rule strategy's exit bounds
+  /^VWAP_\w+_PCT$/,
+  /^EDGE_ONLY_(TP|SL)_PCT$/,
+  /^RULE_EXIT_(TP|SL)_PCT$/,
 ];
 
 export function isPercentUnitKey(key: string): boolean {
