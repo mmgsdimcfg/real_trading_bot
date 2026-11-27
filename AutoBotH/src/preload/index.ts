@@ -17,6 +17,7 @@
  * - [2026-11-17] type=feat - ctlJobDates (ctl:jobDates): saved date folders for the data jobs tab's calendar
  */
 
+import type { RangeResults } from '../shared/rangeResults';
 import { contextBridge, ipcRenderer } from 'electron';
 import type { EdgeModelInfo, PaperStatus, PaperTrade } from '../shared/paper';
 import type { LiveQuote } from '../shared/liveQuote';
@@ -83,6 +84,8 @@ const api = {
   getPrice: (req: PriceRequest): Promise<PriceResponse> => ipcRenderer.invoke('price:get', req),
   /** Edge-AI-only paper trades of a day (server r022) */
   getPaper: (date: string, book?: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date, book),
+  /** [2026-11-27] results per trading method and mode of every day in [from, to] (YYYYMMDD); budget = per-order KRW for paper sizing */
+  getRangeResults: (from: string, to: string, budget?: number): Promise<RangeResults> => ipcRenderer.invoke('results:range', from, to, budget),
   /** [2026-11-19] status of every paper-traded symbol of a day (server r022; null = no status file) */
   getPaperStatus: (date: string, book?: string): Promise<{ ok: boolean; status: PaperStatus | null; error?: string }> => ipcRenderer.invoke('paper:status', date, book),
   /** the Edge AI model the bot uses now (null = none published) */

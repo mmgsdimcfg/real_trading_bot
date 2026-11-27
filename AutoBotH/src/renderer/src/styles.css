@@ -442,6 +442,13 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 .strat-sum table.grid tbody tr:not(.run) td:first-child b { font-weight: 500; color: var(--text-2); }
 .strat-sum .st-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--st-idle); margin-right: 6px; }
 .strat-sum .st-dot.on { background: var(--st-pass); }
+.strat-bar.period { padding: 0 0 10px; }
+.strat-bar input.ymd { width: 92px; padding: 3px 6px; }
+.range-days table.grid tbody tr { cursor: pointer; }
+.range-days table.grid tbody tr.sel td { background: var(--hover); }
+.range-days table.grid tbody tr.total { cursor: default; }
+.range-days table.grid tbody tr.total td { border-top: 2px solid var(--border); font-weight: 600; }
+.range-days { padding-top: 12px; }
 .strat-bar { display: flex; align-items: center; gap: 12px; padding: 10px 0 0; flex-wrap: wrap; }
 .tag.mode-live { color: var(--st-fail, #d05050); border: 1px solid currentColor; }
 .tag.mode-paper { color: var(--text-2); border: 1px solid var(--border); }

@@ -8,9 +8,12 @@
  *   (실제), Edge AI 매매 (실제 / 가상), VWAP 매매 (실제 / 가상) - what each does now, its buys / sells / win rate / P&L of the
  *   day. A real row filters this tab to that method (KPIs, charts, table), a paper row opens the 가상 매매 tab on that book. Each
  *   trade row carries its method (shared/strategy: from the buy block / sell reason r003 logs)
+ * - [2026-11-27] type=feat - 기간 (user 2026-11-27): 일간 / 주간 / 월간 / 직접 지정. A range shows the same method x mode table summed
+ *   over its days (main 'results:range': each day's buy_sell log and both paper books) and a per-day table under it; a day row
+ *   opens that day. The day-level KPIs / charts / list are shown for 일간 only
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { NxtTag } from '../components/NxtTag';
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis, LabelList } from 'recharts';
 import { useStore } from '../store';
@@ -21,6 +24,8 @@ import { sideExitKo, strategyModeKo, strategyModes, strategyOfTrade, strategySum
 import { paperSummary, type PaperBook, type PaperTrade } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
 import { paperKrw, paperOrderKrw } from './PaperView';
+import { isYmd, PERIODS, PERIOD_KO, periodRange, shiftPeriod, sumResults, type DayResults, type Period, type RangeResults } from '../../../shared/rangeResults';
+import { ymdDash } from '../../../shared/time';
 
 type PaperRes = { day: string; ok: boolean; trades: PaperTrade[]; error?: string };
 /** the day's paper trades of one book (same cache entry as the 가상 매매 tab) */
@@ -121,6 +126,62 @@ export function TradesView() {
     return [...m.values()].sort((a, b) => a.sum - b.sum).map((e) => ({ ...e, label: e.label || condTitle(conditions, 'sell', e.key) }));
   }, [sells, conditions]);
 
+  // ---- [2026-11-27] period: the viewed day, or a range of days read by the main process -------------------------------------
+  const [period, setPeriod] = useState<Period>('day');
+  /** a day inside the shown week / month (starts at the viewed day) */
+  const [anchor, setAnchor] = useState<string>('');
+  const [custom, setCustom] = useState<{ from: string; to: string }>({ from: '', to: '' });
+  const base = isYmd(anchor) ? anchor : day || '';
+  const range: [string, string] | null =
+    period === 'day' || !isYmd(base)
+      ? null
+      : period === 'custom'
+        ? isYmd(custom.from) && isYmd(custom.to) && custom.from <= custom.to
+          ? [custom.from, custom.to]
+          : null
+        : periodRange(period, base);
+  const rangeKey = range ? `${range[0]}-${range[1]}` : '';
+  const [rangeRes, setRangeRes] = useState<{ key: string; res: RangeResults } | null>(null);
+  const [rangeBusy, setRangeBusy] = useState(false);
+  const [rangeRev, setRangeRev] = useState(0);
+  const reqRef = useRef(0);
+  useEffect(() => {
+    if (!rangeKey) return;
+    const [from, to] = rangeKey.split('-');
+    const id = ++reqRef.current;
+    setRangeBusy(true);
+    void window.api
+      .getRangeResults(from, to, paperOrderKrw())
+      .then((res) => {
+        if (id === reqRef.current) setRangeRes({ key: rangeKey, res });
+      })
+      .catch((e) => {
+        if (id === reqRef.current) setRangeRes({ key: rangeKey, res: { ok: false, days: [], error: String((e as Error)?.message || e) } });
+      })
+      .finally(() => {
+        if (id === reqRef.current) setRangeBusy(false);
+      });
+  }, [rangeKey, rangeRev, status.conn]);
+  const rangeDays: DayResults[] | null = range && rangeRes && rangeRes.key === rangeKey && rangeRes.res.ok ? rangeRes.res.days : null;
+  const rangeSum = useMemo(() => (rangeDays ? sumResults(rangeDays) : null), [rangeDays]);
+  const pickPeriod = (p: Period) => {
+    if (p === 'custom' && !isYmd(custom.from) && isYmd(base)) setCustom({ from: periodRange('month', base)[0], to: base });
+    setPeriod(p);
+  };
+  const realOf = (d: DayResults['real'][TradeStrategy]) => ({ buys: d.buys, sells: d.sells, wins: net ? d.winsNet : d.wins, pnlKrw: net ? d.pnlNet : d.pnlKrw });
+  const openDay = (ymd: string) => {
+    setPeriod('day');
+    if (ymd !== day) void window.api.openDay(ymd);
+  };
+  const cell = (d: { sells: number; pnlKrw: number; buys: number } | null) =>
+    !d ? <td className="num muted">읽지 못함</td> : d.buys || d.sells ? (
+      <td className={`num ${pnlClass(d.sells ? d.pnlKrw : undefined)}`}>
+        {d.sells ? fmtKrw(d.pnlKrw) : '-'} <span className="muted small">{d.buys}/{d.sells}</span>
+      </td>
+    ) : (
+      <td className="num muted">-</td>
+    );
+
   const sellLabel = (t: (typeof sells)[number]) => {
     const ex = strategyOfTrade(t) !== 'rule' ? sideExitKo(t.reason) : '';
     return ex ? `${TRADE_STRATEGY_SHORT[strategyOfTrade(t)]} ${ex}` : condTitle(conditions, 'sell', t.condKey);
@@ -136,6 +197,56 @@ export function TradesView() {
   return (
     <div className="trades">
       <div className="strat-sum">
+        <div className="strat-bar period">
+          <div className="seg" title="결과를 볼 기간">
+            {PERIODS.map((p) => (
+              <button key={p} type="button" className={period === p ? 'on' : ''} onClick={() => pickPeriod(p)}>
+                {PERIOD_KO[p]}
+              </button>
+            ))}
+          </div>
+          {(period === 'week' || period === 'month') && isYmd(base) && (
+            <>
+              <button type="button" className="chip link" onClick={() => setAnchor(shiftPeriod(period, base, -1))}>
+                ◀ 이전
+              </button>
+              <b className="mono">{range ? `${ymdDash(range[0])} ~ ${ymdDash(range[1])}` : ''}</b>
+              <button type="button" className="chip link" onClick={() => setAnchor(shiftPeriod(period, base, 1))}>
+                다음 ▶
+              </button>
+              {day && base !== day && (
+                <button type="button" className="chip link" title="보고 있는 날짜가 든 기간으로" onClick={() => setAnchor('')}>
+                  {ymdDash(day)} 기준
+                </button>
+              )}
+            </>
+          )}
+          {period === 'custom' && (
+            <>
+              <input className="mono ymd" value={custom.from} placeholder="YYYYMMDD" maxLength={8} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value.replace(/\D/g, '') }))} />
+              <span>~</span>
+              <input className="mono ymd" value={custom.to} placeholder="YYYYMMDD" maxLength={8} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value.replace(/\D/g, '') }))} />
+              {!range && <span className="badge-warn">날짜 8자리 (시작 ≤ 끝)</span>}
+            </>
+          )}
+          {period === 'day' ? (
+            <span className="muted small">{day ? `${ymdDash(day)} 하루` : ''}</span>
+          ) : (
+            <>
+              <button type="button" className="chip link" disabled={!range || rangeBusy} onClick={() => setRangeRev((n) => n + 1)}>
+                새로 읽기
+              </button>
+              <span className="muted small">
+                {rangeBusy ? '읽는 중…' : rangeDays ? `거래일 ${rangeDays.length}일 (로그가 있는 날)` : ''}
+                {rangeRes && rangeRes.key === rangeKey && rangeRes.res.failed?.length ? ` · 읽지 못한 날 ${rangeRes.res.failed.map(ymdDash).join(', ')}` : ''}
+              </span>
+              {range && rangeRes && rangeRes.key === rangeKey && !rangeRes.res.ok && <span className="badge-warn">{rangeRes.res.error || '읽지 못했습니다'}</span>}
+              <label className="check" title={`손익에서 예상 거래 비용을 뺍니다: ${feeLabel()}`}>
+                <input type="checkbox" checked={net} onChange={(e) => setNet(e.target.checked)} /> 제세금 포함
+              </label>
+            </>
+          )}
+        </div>
         <table className="grid">
           <thead>
             <tr>
@@ -153,15 +264,24 @@ export function TradesView() {
             {modeRows.map(({ s, mode }) => {
               const m = modes[s];
               const on = mode === 'live' ? m.live : m.paper;
-              const d = mode === 'live' ? byStrategy[s] : paperSum[s as PaperBook];
-              const sel = mode === 'live' && filter === s;
-              const openN = mode === 'paper' ? paperSum[s as PaperBook]?.open || 0 : 0;
+              const isDay = period === 'day';
+              const d = isDay
+                ? mode === 'live'
+                  ? byStrategy[s]
+                  : paperSum[s as PaperBook]
+                : !rangeSum
+                  ? null
+                  : mode === 'live'
+                    ? realOf(rangeSum.real[s])
+                    : rangeSum.paper[s as PaperBook];
+              const sel = isDay && mode === 'live' && filter === s;
+              const openN = mode === 'paper' ? (isDay ? paperSum[s as PaperBook]?.open : rangeSum?.paper[s as PaperBook].open) || 0 : 0;
               return (
                 <tr
                   key={`${s}:${mode}`}
                   className={`${sel ? 'sel' : ''} ${on ? 'run' : ''}`}
-                  title={mode === 'live' ? '누르면 아래 내역을 이 매매 방식으로 거릅니다 (다시 누르면 전체)' : '누르면 가상 매매 탭의 이 장부를 엽니다'}
-                  onClick={() => (mode === 'live' ? setFilter(sel ? 'all' : s) : openResults(s, 'paper'))}
+                  title={!isDay ? '기간 합계 - 날짜별 내역은 아래 표의 날짜를 누르세요' : mode === 'live' ? '누르면 아래 내역을 이 매매 방식으로 거릅니다 (다시 누르면 전체)' : '누르면 가상 매매 탭의 이 장부를 엽니다'}
+                  onClick={() => (!isDay ? undefined : mode === 'live' ? setFilter(sel ? 'all' : s) : openResults(s, 'paper'))}
                 >
                   <td>
                     <b>{TRADE_STRATEGY_KO[s]}</b>
@@ -183,12 +303,13 @@ export function TradesView() {
                   </td>
                   <td className="num">{d && d.sells ? `${Math.round((d.wins / d.sells) * 100)}%` : '-'}</td>
                   <td className={`num ${pnlClass(d && d.sells ? d.pnlKrw : undefined)}`}>{d && d.sells ? fmtKrw(d.pnlKrw) : '-'}</td>
-                  <td className="muted small">{mode === 'live' ? (sel ? '아래 표시 중 ▼' : '이 탭 (누르면 거름)') : '가상 매매 탭 →'}</td>
+                  <td className="muted small">{!isDay ? '아래 날짜별 표' : mode === 'live' ? (sel ? '아래 표시 중 ▼' : '이 탭 (누르면 거름)') : '가상 매매 탭 →'}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+        {period === 'day' && (
         <div className="strat-bar">
           <div className="seg" title="아래 요약 · 차트 · 내역에 보일 실제 매매">
             <button type="button" className={filter === 'all' ? 'on' : ''} onClick={() => setFilter('all')}>
@@ -204,7 +325,68 @@ export function TradesView() {
             실제 주문 내역{filter === 'all' ? ' 전체' : `: ${TRADE_STRATEGY_KO[filter]}`} · 현재 모드 - {TRADE_STRATEGIES.map((s) => `${TRADE_STRATEGY_SHORT[s]} ${strategyModeKo(modes[s])}`).join(' · ')}
           </span>
         </div>
+        )}
       </div>
+      {period !== 'day' && (
+        <div className="table-wrap range-days">
+          <table className="grid">
+            <thead>
+              <tr>
+                <th>날짜</th>
+                <th className="num">규칙 (실제)</th>
+                <th className="num">Edge AI (실제)</th>
+                <th className="num">Edge AI (가상)</th>
+                <th className="num">VWAP (실제)</th>
+                <th className="num">VWAP (가상)</th>
+                <th className="num" title="규칙 + Edge AI + VWAP 의 실제 매매 손익">실제 합계</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(rangeDays || []).map((d) => {
+                const r = { rule: realOf(d.real.rule), edge: realOf(d.real.edge), vwap: realOf(d.real.vwap) };
+                const tot = { buys: r.rule.buys + r.edge.buys + r.vwap.buys, sells: r.rule.sells + r.edge.sells + r.vwap.sells, pnlKrw: r.rule.pnlKrw + r.edge.pnlKrw + r.vwap.pnlKrw };
+                return (
+                  <tr key={d.date} className={d.date === day ? 'sel' : ''} title="누르면 이 날짜를 열어 일간 내역을 봅니다" onClick={() => openDay(d.date)}>
+                    <td className="mono">{ymdDash(d.date)}</td>
+                    {cell(r.rule)}
+                    {cell(r.edge)}
+                    {cell(d.paper.edge)}
+                    {cell(r.vwap)}
+                    {cell(d.paper.vwap)}
+                    {cell(tot)}
+                  </tr>
+                );
+              })}
+              {rangeDays && rangeSum && rangeDays.length > 0 && (() => {
+                const r = { rule: realOf(rangeSum.real.rule), edge: realOf(rangeSum.real.edge), vwap: realOf(rangeSum.real.vwap) };
+                const tot = { buys: r.rule.buys + r.edge.buys + r.vwap.buys, sells: r.rule.sells + r.edge.sells + r.vwap.sells, pnlKrw: r.rule.pnlKrw + r.edge.pnlKrw + r.vwap.pnlKrw };
+                return (
+                  <tr className="total">
+                    <td>
+                      <b>합계</b>
+                    </td>
+                    {cell(r.rule)}
+                    {cell(r.edge)}
+                    {cell(rangeSum.paper.edge)}
+                    {cell(r.vwap)}
+                    {cell(rangeSum.paper.vwap)}
+                    {cell(tot)}
+                  </tr>
+                );
+              })()}
+              {(!rangeDays || !rangeDays.length) && (
+                <tr>
+                  <td colSpan={7} className="muted center">
+                    {rangeBusy ? '읽는 중…' : !range ? '기간을 정해 주세요.' : rangeDays ? '이 기간에 로그가 있는 날이 없습니다.' : '불러오지 못했습니다.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <p className="muted small">칸 = 손익 · 매수 / 매도(청산) 건수. 실제 = 로그의 실현 손익{net ? ' (제세금 포함)' : ''}, 가상 = 1회 매수 상한 금액으로 샀다고 본 순손익. 날짜를 누르면 그날 내역을 엽니다.</p>
+        </div>
+      )}
+      {period === 'day' && (<>
       <div className="kpis">
         <div className="kpi">
           <span>매도 건수</span>
@@ -348,6 +530,7 @@ export function TradesView() {
           </tbody>
         </table>
       </div>
+      </>)}
     </div>
   );
 }

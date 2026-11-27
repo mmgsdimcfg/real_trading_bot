@@ -435,6 +435,13 @@
 .bot-root .strat-sum table.grid tbody tr:not(.run) td:first-child b { font-weight: 500; color: var(--text-2); }
 .bot-root .strat-sum .st-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--st-idle); margin-right: 6px; }
 .bot-root .strat-sum .st-dot.on { background: var(--st-pass); }
+.bot-root .strat-bar.period { padding: 0 0 10px; }
+.bot-root .strat-bar input.ymd { width: 92px; padding: 3px 6px; }
+.bot-root .range-days table.grid tbody tr { cursor: pointer; }
+.bot-root .range-days table.grid tbody tr.sel td { background: var(--hover); }
+.bot-root .range-days table.grid tbody tr.total { cursor: default; }
+.bot-root .range-days table.grid tbody tr.total td { border-top: 2px solid var(--border); font-weight: 600; }
+.bot-root .range-days { padding-top: 12px; }
 .bot-root .strat-bar { display: flex; align-items: center; gap: 12px; padding: 10px 0 0; flex-wrap: wrap; }
 .bot-root .tag.mode-live { color: var(--st-fail, #d05050); border: 1px solid currentColor; }
 .bot-root .tag.mode-paper { color: var(--text-2); border: 1px solid var(--border); }

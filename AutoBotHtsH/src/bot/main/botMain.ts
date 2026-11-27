@@ -52,6 +52,8 @@
  * - [2026-11-20] type=feat - scheduler deps.nxtOn = nxtSessionOn(control.nxt()) - collector window and post-close time follow 운용 시간
  */
 
+import { DayEngine } from '../shared/engine';
+import { dayResults, isYmd, RANGE_MAX_DAYS, type DayResults, type RangeResults } from '../shared/rangeResults';
 import { app, BrowserWindow, dialog, ipcMain, powerSaveBlocker, shell } from 'electron';
 import { parseEdgeMeta, parsePaperLines, parsePaperStatus, PAPER_BOOK_PREFIX, paperBookOf } from '../shared/paper';
 import { createRequire } from 'node:module';
@@ -591,6 +593,56 @@ ipcMain.handle('paper:status', async (_e, date: string, book?: string) => {
     return { ok: true, status: text ? parsePaperStatus(text) : null };
   } catch (e) {
     return { ok: false, status: null, error: errMsg(e) };
+  }
+});
+// [2026-11-27] results per trading method and mode of every day in [from, to] (YYYYMMDD): the daily buy_sell log + both paper
+// books of each day that has a log folder. Read-only; a finished day is kept in memory (its files no longer change)
+const rangeDayCache = new Map<string, DayResults>();
+ipcMain.handle('results:range', async (_e, from: string, to: string, budget?: number): Promise<RangeResults> => {
+  if (!files.connected) return { ok: false, days: [], error: `${hostLabel()}에 연결되어 있지 않습니다.` };
+  if (!isYmd(from) || !isYmd(to) || from > to) return { ok: false, days: [], error: '날짜 범위가 올바르지 않습니다.' };
+  const g = hostGen;
+  const b = Number.isFinite(budget) && (budget as number) > 0 ? Math.floor(budget as number) : 500_000;
+  try {
+    const root = mode === 'local' ? localPaths().logDir : `${getSettings().remoteRoot}/runtime/log`;
+    const dates = (await files.readdir(root))
+      .filter((e) => e.isDir && /^\d{8}$/.test(e.name) && e.name >= from && e.name <= to)
+      .map((e) => e.name)
+      .sort();
+    if (dates.length > RANGE_MAX_DAYS) return { ok: false, days: [], error: `한 번에 ${RANGE_MAX_DAYS}일까지 볼 수 있습니다 (${dates.length}일).` };
+    const days: DayResults[] = [];
+    const failed: string[] = [];
+    for (const d of dates) {
+      const key = `${mode}/${hostGen}/${d}/${b}`;
+      const kept = rangeDayCache.get(key);
+      if (kept) {
+        days.push(kept);
+        continue;
+      }
+      try {
+        const svc = pricesFor(mode);
+        const log = await svc.dayTradeLog(d);
+        const eng = new DayEngine(d, conditions);
+        if (log) eng.feedBuySellLines(log.split(/\r?\n/));
+        const paper = async (book: 'edge' | 'vwap') => {
+          try {
+            const text = await svc.paperLog(d, PAPER_BOOK_PREFIX[book]);
+            return text ? parsePaperLines(text) : [];
+          } catch {
+            return null;
+          }
+        };
+        const row = dayResults(d, eng.getTrades(), { edge: await paper('edge'), vwap: await paper('vwap') }, b);
+        if (g !== hostGen) return { ok: false, days: [], error: '실행 위치가 바뀌었습니다.' };
+        if (isPastDate(d) && row.paper.edge && row.paper.vwap) rangeDayCache.set(key, row);
+        days.push(row);
+      } catch {
+        failed.push(d);
+      }
+    }
+    return { ok: true, days, failed };
+  } catch (e) {
+    return { ok: false, days: [], error: errMsg(e) };
   }
 });
 // [2026-11-12] the Edge AI model in use (server file runtime/edge_ai/current_meta.json - r011 reloads it within a minute)
