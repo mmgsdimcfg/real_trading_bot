@@ -76,7 +76,12 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
   const chartH = Math.max(200, h);
   const nOsc = ind.filter((k) => OSCILLATORS.includes(k)).length + (o.vol === false ? 0 : 1);
   const oscH = Math.max(56, Math.min(100, Math.floor((chartH * 0.42) / Math.max(1, nOsc)) - 8));
-  const shown = useMemo(() => ind.filter((k) => k !== 'investor'), [ind.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  // [2026-11-28] the VWAP line is always drawn here (user): the alert's "VWAP 대비" figures are read against it, whatever the chart
+  // window shows
+  const shown = useMemo(() => {
+    const list = ind.filter((k) => k !== 'investor');
+    return list.includes('vwap') ? list : [...list, 'vwap' as IndicatorKey];
+  }, [ind.join()]); // eslint-disable-line react-hooks/exhaustive-deps
   const bell = useMemo(() => [{ t, id: item.id, title: `${kindLabel(item.res)} 알림 · 봉 ${hhmm(t)}${item.res.setup ? '' : ` · 가점 ${item.res.score}점`}` }], [t, item.id, item.res.score, item.res.setup]);
   const loading = res.key !== key;
   return (
