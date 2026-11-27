@@ -969,6 +969,11 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .grid.cols-fixed { table-layout: fixed; }
 .grid.cols-fixed th, .grid.cols-fixed td { overflow: hidden; text-overflow: ellipsis; }
 .cols-scroll { overflow-x: auto; }
+/* [2026-11-27] trade results: the whole tab scrolls and the tables take the height of their rows - the trade list used to get only
+   what was left under the summary + charts, a strip of one row in a short window (user 2026-11-27) */
+.trades { overflow-y: auto; }
+.trades > * { flex-shrink: 0; }
+.trades > .table-wrap { flex: none; }
 .col-reset { display: flex; justify-content: flex-end; padding: 0 0 4px; }
 .board-grid td.today { font-size: 11.5px; color: var(--text-2); }
 .board-grid td.today b { font-weight: 600; color: var(--text); }
