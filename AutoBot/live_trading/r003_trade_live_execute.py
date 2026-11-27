@@ -3945,8 +3945,15 @@ def _rebalance_active_watchlist(
     warn_state: dict[str, bool],
     frame_cache: dict[str, "pd.DataFrame"],
     reentry_state: dict[str, dict] | None = None,
+    is_candidate=None,
 ) -> None:
-    """[2026-08-31] active_set(실시간 폴링 상한, ACTIVE_WATCHLIST_SIZE)과 backup_pool(대기,
+    """[2026-11-27] is_candidate(code) (per-method target lists, Codex review): a symbol no trading method may newly buy does not
+    keep an active slot - it leaves the active set (NOT_TARGET) to the END of the backup pool, is passed over at promotion
+    (it stays in the pool) and is not re-added after a sale. It is never lost: when it becomes a candidate again (a paper
+    runner made anew at the day rollover) the next promotion takes it. None = no target list is set: nothing changes. A held
+    symbol is still watched for its exits by the main loop's position union.
+
+    [2026-08-31] active_set(실시간 폴링 상한, ACTIVE_WATCHLIST_SIZE)과 backup_pool(대기,
     미폴링) 사이의 교체를 매 틱 처리한다. 이탈 사유:
     - GRADUATE: 매수 체결/미체결주문/체결대기(api.has_buy_exposure) - 진입후보 역할이
       끝났으므로 active_set에서는 빠지지만, 청산 감시(TP/SL/트레일링)는 메인 루프의
@@ -3999,6 +4006,8 @@ def _rebalance_active_watchlist(
                 continue
             if int(st.get("used", 0)) >= _reentry_limit(st):
                 continue
+            if is_candidate is not None and not is_candidate(code):   # [2026-11-27] outside every method's target list
+                continue
             st["graduated"] = False
             st["readded"] = True
             active_set.add(code)
@@ -4025,6 +4034,8 @@ def _rebalance_active_watchlist(
             reason = "HARD_STOP"
         elif code in gap_blocked_codes:
             reason = "GAP_BLOCKED"
+        elif is_candidate is not None and not is_candidate(code):
+            reason = "NOT_TARGET"                 # [2026-11-27] no method may newly buy it: the slot goes to a backup symbol
         else:
             started = first_active_at.get(code, current_dt)
             elapsed_minutes = (current_dt - started).total_seconds() / 60.0
@@ -4063,7 +4074,7 @@ def _rebalance_active_watchlist(
         )
         history_lines.append(f"[GRADUATE] {code}_{watch_map.get(code, code)} | reason=POSITION_OPENED")
     for code, reason in dropped:
-        if reason.startswith("TIME_LIMIT"):
+        if reason.startswith("TIME_LIMIT") or reason == "NOT_TARGET":   # NOT_TARGET: kept, promoted again when a method may buy it
             backup_pool.append(code)
         log(
             f"  [ACT DROPOUT ] {_symbol_log_label(code, watch_map.get(code, ""))} | reason={reason} | "
@@ -4072,24 +4083,29 @@ def _rebalance_active_watchlist(
         history_lines.append(f"[DROPOUT] {code}_{watch_map.get(code, code)} | reason={reason}")
 
     promoted: list[str] = []
+    passed_over: list[str] = []                   # [2026-11-27] non-candidates met while promoting: back to the end of the pool
     while len(active_set) < ACTIVE_WATCHLIST_SIZE and backup_pool:
         code = backup_pool.popleft()
+        if is_candidate is not None and not is_candidate(code):   # [2026-11-27] passed over, kept in the pool (see below)
+            passed_over.append(code)
+            continue
         active_set.add(code)
         first_active_at[code] = current_dt
         promoted.append(code)
+    backup_pool.extend(passed_over)
     for code in promoted:
         log(f"  [ACT PROMOTE ] {_symbol_log_label(code, watch_map.get(code, ""))} | active={len(active_set)} backup={len(backup_pool)}")
         history_lines.append(f"[PROMOTE] {code}_{watch_map.get(code, code)}")
     _append_watchlist_change_history(current_dt, history_lines)
 
-    if not backup_pool and len(active_set) < ACTIVE_WATCHLIST_SIZE:
+    if (not backup_pool or len(passed_over) == len(backup_pool)) and len(active_set) < ACTIVE_WATCHLIST_SIZE:
         if not warn_state.get("backup_pool_exhausted_logged"):
             log(
                 f"  [WARN        ] backup_pool 소진 - active_set이 상한({ACTIVE_WATCHLIST_SIZE}) 밑으로 "
                 f"유지됨 (active={len(active_set)})"
             )
             warn_state["backup_pool_exhausted_logged"] = True
-    elif backup_pool and warn_state.get("backup_pool_exhausted_logged"):
+    elif backup_pool and len(passed_over) < len(backup_pool) and warn_state.get("backup_pool_exhausted_logged"):
         warn_state["backup_pool_exhausted_logged"] = False
 
 
@@ -6984,6 +7000,36 @@ def _note_not_target(method: str, symbol_label: str, code: str, now: datetime, e
         pass
 
 
+def _method_buy_candidate(code, edge_live: dict | None, vwap_live: dict | None, edge_only, vwap_paper) -> bool:
+    """[2026-11-27] True when at least one trading method that can open a position may newly buy `code`: the main method (rule,
+    or Edge AI when TRADING_STRATEGY_MODE=edge), the Edge AI / VWAP real-order paths that are enabled, the paper runners that
+    still take new entries. Reads the per-method target lists only - no price, no condition. Used to keep symbols nobody may buy
+    out of the active watch slots."""
+    norm = str(code).zfill(6)
+    # [Codex review] an open paper position keeps its slot: in the active loop its exits are judged on live quotes (outside it
+    # only on the tick files, poll_orphans)
+    for _runner in (edge_only, vwap_paper):
+        try:
+            if _runner is not None and norm in (getattr(_runner, "positions", None) or {}):
+                return True
+        except Exception:
+            pass
+    main = "edge" if str(TRADING_STRATEGY_MODE).lower() == "edge" else "rule"
+    if method_is_target(main, norm, _METHOD_TARGETS[main]):
+        return True
+    if (edge_live or {}).get("enabled") and method_is_target("edge", norm, _METHOD_TARGETS["edge"]):
+        return True
+    if (vwap_live or {}).get("enabled") and method_is_target("vwap", norm, _METHOD_TARGETS["vwap"]):
+        return True
+    # a runner that only records candidates (log_only) or only closes buys nothing [Codex review]
+    if (edge_only is not None and not getattr(edge_only, "close_only", False) and not getattr(edge_only, "log_only", False)
+            and method_is_target("edge", norm, _METHOD_TARGETS["edge"])):
+        return True
+    if vwap_paper is not None and not getattr(vwap_paper, "close_only", False) and method_is_target("vwap", norm, _METHOD_TARGETS["vwap"]):
+        return True
+    return False
+
+
 def _side_spec(strategy):
     """[2026-11-27] what differs between the side strategies (edge / vwap): log tag, limits, entry end, exits. Read when called."""
     from types import SimpleNamespace
@@ -8585,6 +8631,9 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
                     current_dt, api, watch_map, active_set, backup_pool, first_active_at,
                     hard_stop_today_codes, gap_blocked_codes, active_watchlist_warn_state,
                     frame_cache, reentry_state,
+                    # [2026-11-27] only when a target list is set: symbols no method may newly buy leave the active slots
+                    is_candidate=((lambda _c: _method_buy_candidate(_c, edge_live, vwap_live, edge_only, vwap_paper))
+                                  if any(_METHOD_TARGETS.values()) else None),
                 )
             _write_active_watchlist_state(
                 current_dt, watch_map, active_set, backup_pool, first_active_at, position_codes,

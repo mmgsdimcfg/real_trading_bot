@@ -566,6 +566,8 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   검사하지 않음). `r016 get` 의 `values[KEY].effective / running / pending` 그대로. 읽을 수 없는 값이면 그 매매법은 새로 사지 않는다.
   로그: `[R003 MODE   ] <method> 대상 종목 N개만 신규 매수: ...`, `[TARGET      ] <sym> | <method> 대상 종목 아님 - 신규 매수 평가 안 함`
   (종목 · 방식당 30분에 한 번). 가상 러너 상태 단계 `not_target`.
+  대상 목록이 하나라도 있으면, 어느 방식도 새로 살 수 없는 종목은 활성 감시에서 빠진다: `[ACT DROPOUT ] <sym> | reason=NOT_TARGET`
+  (대기열 맨 뒤로, 다시 후보가 되면 승격).
 - 매매 방식 현황 대시보드 (2026-11-27, 앱): 탭 `method` 의 값 `all | rule | edge | vwap`. 실행 단위 5개(규칙 / Edge AI 가상 · 실전 /
   VWAP 가상 · 실전)의 저장 스위치와 실행 상태는 `shared/methodUnits.ts` (`unitInfos`: r016 status.running + get 의 running 값이
   있을 때만 "실행 중").

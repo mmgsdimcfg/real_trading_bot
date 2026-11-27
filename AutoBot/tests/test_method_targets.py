@@ -127,5 +127,76 @@ class LivePathTest(unittest.TestCase):
         self.assertEqual(len(logs), 2)
 
 
+@unittest.skipIf(r003 is None, "r003 import failed (broker SDK not available)")
+class ActiveSlotTest(unittest.TestCase):
+    """a symbol no method may newly buy does not keep an active watch slot"""
+    NOW = datetime(2026, 11, 27, 10, 0, 0)
+
+    def test_who_may_buy(self):
+        on, off = {"enabled": True}, {"enabled": False}
+        runner = mock.Mock(close_only=False, log_only=False, positions={})
+        closing = mock.Mock(close_only=True, log_only=False, positions={})
+        recording = mock.Mock(close_only=False, log_only=True, positions={})
+        holding = mock.Mock(close_only=True, log_only=False, positions={"000009": {}})
+        with mock.patch.dict(r003._METHOD_TARGETS, {"rule": frozenset({"000001"}), "edge": frozenset({"000002"}), "vwap": frozenset({"000003"})}),                 mock.patch.object(r003, "TRADING_STRATEGY_MODE", "normal"):
+            c = r003._method_buy_candidate
+            self.assertTrue(c("000001", off, off, None, None))                 # the rule trade's
+            self.assertFalse(c("000002", off, off, None, None))                # Edge AI's, but no Edge AI path takes entries
+            self.assertTrue(c("000002", on, off, None, None))                  # Edge AI real orders
+            self.assertTrue(c("000002", off, off, runner, None))               # Edge AI paper runner
+            self.assertFalse(c("000002", off, off, closing, None))             # a runner that only closes
+            self.assertFalse(c("000002", off, off, recording, None))           # a runner that only records candidates
+            self.assertTrue(c("000009", off, off, None, holding))              # an open paper position keeps its slot
+            self.assertTrue(c("000003", off, on, None, None))
+            self.assertTrue(c("000003", off, off, None, runner))
+            self.assertFalse(c("000009", on, on, runner, runner))              # on nobody's list
+        with mock.patch.dict(r003._METHOD_TARGETS, {"rule": frozenset({"000001"}), "vwap": frozenset()}):
+            self.assertTrue(r003._method_buy_candidate("000009", {"enabled": False}, {"enabled": True}, None, None))   # VWAP has no list
+            self.assertFalse(r003._method_buy_candidate("000009", {"enabled": False}, {"enabled": False}, None, None))
+
+    def _run(self, active, backup, cand, reentry=None):
+        import collections
+        from types import SimpleNamespace
+        api = SimpleNamespace(positions={}, has_buy_exposure=lambda c: False, live_state={"traded_today": set()})
+        logs = []
+        pool = collections.deque(backup)
+        with mock.patch.object(r003, "log", logs.append), mock.patch.object(r003, "ACTIVE_WATCHLIST_SIZE", 2),                 mock.patch.object(r003, "_append_watchlist_change_history", lambda *a, **k: None),                 mock.patch.object(r003, "REENTRY_MODE", "live"):
+            r003._rebalance_active_watchlist(
+                current_dt=self.NOW, api=api, watch_map={}, active_set=active, backup_pool=pool,
+                first_active_at={c: self.NOW for c in active}, hard_stop_today_codes=set(), gap_blocked_codes=set(),
+                warn_state={}, frame_cache={}, reentry_state=reentry, is_candidate=cand)
+        return pool, logs
+
+    def test_a_non_target_leaves_its_slot_and_the_next_candidate_of_the_backup_pool_takes_it(self):
+        active = {"000001", "000009"}
+        pool, logs = self._run(active, ["000008", "000002", "000003"], lambda c: c in {"000001", "000002", "000003"})
+        self.assertEqual(active, {"000001", "000002"})                         # 000009 out, 000008 passed over, 000002 promoted
+        self.assertEqual(sorted(pool), ["000003", "000008", "000009"])         # nobody is lost: the non-targets wait in the pool
+        self.assertEqual(pool[0], "000003")                                    # behind the candidates
+        # ... and come back when a method may buy them again (a runner made anew at the day rollover)
+        active2 = {"000001"}
+        self._run(active2, list(pool), lambda c: True)
+        self.assertEqual(len(active2), 2)
+        # nothing but non-targets waiting: the pool is kept, nothing is promoted, the loop ends
+        active3: set = set()
+        pool3, _logs3 = self._run(active3, ["000008", "000009"], lambda c: False)
+        self.assertEqual((active3, sorted(pool3)), (set(), ["000008", "000009"]))
+        self.assertTrue(any("ACT DROPOUT" in m and "NOT_TARGET" in m for m in logs))
+
+    def test_without_a_list_nothing_changes(self):
+        active = {"000001", "000009"}
+        pool, logs = self._run(active, ["000008"], None)
+        self.assertEqual(active, {"000001", "000009"})
+        self.assertEqual(list(pool), ["000008"])
+        self.assertFalse(any("NOT_TARGET" in m for m in logs))
+
+    def test_a_sold_non_target_is_not_put_back(self):
+        active: set = set()
+        st = {"used": 0, "graduated": True, "bot": True, "filled": True}
+        self._run(active, [], lambda c: False, reentry={"000009": st})
+        self.assertEqual(active, set())
+        self.assertTrue(st["graduated"])
+
+
 if __name__ == "__main__":
     unittest.main()
