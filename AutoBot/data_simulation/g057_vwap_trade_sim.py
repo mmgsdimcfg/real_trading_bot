@@ -533,6 +533,8 @@ def main() -> int:
             })
         pd.DataFrame(trades).to_csv(out_dir / f"vwap_sim_trades_{mode}.csv", index=False, encoding="utf-8-sig")
         pd.DataFrame(free).to_csv(out_dir / f"vwap_sim_signals_{mode}.csv", index=False, encoding="utf-8-sig")
+        if mode == "tick":   # every signal without the tick trigger, for entry-condition studies
+            pd.DataFrame(cat("free_notick")).to_csv(out_dir / "vwap_sim_signals_notick.csv", index=False, encoding="utf-8-sig")
     (out_dir / "vwap_sim_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     print(json.dumps({m: {"days": len(report[m]["days"]), "symbol_days": report[m]["symbol_days"], "signals": report[m]["signals"],
                           "summary": report[m]["summary"]} for m in report if m != "params"}, ensure_ascii=False, indent=1, default=str))
