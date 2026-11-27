@@ -27,6 +27,9 @@ import { paperKrw, paperOrderKrw } from './PaperView';
 import { isYmd, PERIODS, PERIOD_KO, periodRange, shiftPeriod, sumResults, type DayResults, type Period, type RangeResults } from '../../../shared/rangeResults';
 import { ymdDash } from '../../../shared/time';
 
+/** how often a range that contains the live day is read again */
+const RANGE_REFRESH_MS = 15000;
+
 type PaperRes = { day: string; ok: boolean; trades: PaperTrade[]; error?: string };
 /** the day's paper trades of one book (same cache entry as the 가상 매매 tab) */
 function usePaperTrades(book: PaperBook, day: string | undefined, tick: number | undefined, conn: string): PaperTrade[] | null {
@@ -145,23 +148,50 @@ export function TradesView() {
   const [rangeBusy, setRangeBusy] = useState(false);
   const [rangeRev, setRangeRev] = useState(0);
   const reqRef = useRef(0);
+  /** the range whose numbers are on screen / a request is running */
+  const shownRef = useRef('');
+  const flightRef = useRef(false);
+  const [rangeAt, setRangeAt] = useState(0);
   useEffect(() => {
     if (!rangeKey) return;
     const [from, to] = rangeKey.split('-');
     const id = ++reqRef.current;
-    setRangeBusy(true);
+    // an automatic re-read of the same range keeps the shown numbers and says nothing (no "읽는 중…" flicker)
+    const silent = shownRef.current === rangeKey;
+    if (!silent) setRangeBusy(true);
+    flightRef.current = true;
     void window.api
       .getRangeResults(from, to, paperOrderKrw())
       .then((res) => {
-        if (id === reqRef.current) setRangeRes({ key: rangeKey, res });
+        if (id !== reqRef.current) return;
+        // a failed automatic re-read keeps the last good numbers (the next one tries again)
+        if (silent && !res.ok) return;
+        if (res.ok) {
+          shownRef.current = rangeKey;
+          setRangeAt(Date.now());
+        }
+        setRangeRes({ key: rangeKey, res });
       })
       .catch((e) => {
-        if (id === reqRef.current) setRangeRes({ key: rangeKey, res: { ok: false, days: [], error: String((e as Error)?.message || e) } });
+        if (id === reqRef.current && !silent) setRangeRes({ key: rangeKey, res: { ok: false, days: [], error: String((e as Error)?.message || e) } });
       })
       .finally(() => {
-        if (id === reqRef.current) setRangeBusy(false);
+        if (id === reqRef.current) {
+          setRangeBusy(false);
+          flightRef.current = false;
+        }
       });
   }, [rangeKey, rangeRev, status.conn]);
+  // [2026-11-27] automatic refresh (user 2026-11-27): while the live day is inside the shown range, re-read every RANGE_REFRESH_MS
+  // (finished days come from the main process's memory, so this reads today's files only). A range of past days does not change
+  const rangeLive = !!range && !!status.live && !!status.date && range[0] <= status.date && status.date <= range[1];
+  useEffect(() => {
+    if (!rangeLive) return;
+    const t = setInterval(() => {
+      if (!flightRef.current && document.visibilityState !== 'hidden') setRangeRev((n) => n + 1);
+    }, RANGE_REFRESH_MS);
+    return () => clearInterval(t);
+  }, [rangeLive, rangeKey]);
   const rangeDays: DayResults[] | null = range && rangeRes && rangeRes.key === rangeKey && rangeRes.res.ok ? rangeRes.res.days : null;
   const rangeSum = useMemo(() => (rangeDays ? sumResults(rangeDays) : null), [rangeDays]);
   const pickPeriod = (p: Period) => {
@@ -238,6 +268,7 @@ export function TradesView() {
               </button>
               <span className="muted small">
                 {rangeBusy ? '읽는 중…' : rangeDays ? `거래일 ${rangeDays.length}일 (로그가 있는 날)` : ''}
+                {!rangeBusy && rangeDays && rangeLive ? ` · 자동 갱신 ${RANGE_REFRESH_MS / 1000}초${rangeAt ? ` (${fmtKstTime(rangeAt)} 기준)` : ''}` : ''}
                 {rangeRes && rangeRes.key === rangeKey && rangeRes.res.failed?.length ? ` · 읽지 못한 날 ${rangeRes.res.failed.map(ymdDash).join(', ')}` : ''}
               </span>
               {range && rangeRes && rangeRes.key === rangeKey && !rangeRes.res.ok && <span className="badge-warn">{rangeRes.res.error || '읽지 못했습니다'}</span>}
