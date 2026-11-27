@@ -12,6 +12,8 @@
  * - [2026-11-20] type=feat - Compact board (user 2026-11-20): one line per symbol (long text cut with … and shown in full on hover),
  *   12.5 px text, half the cell padding, "오늘 최대 도달" + "오늘 최다 막힘" merged into one smaller column "오늘 도달 · 최다 막힘"
  *   (header click sorts by depth)
+ * - [2026-11-27] type=feat - Column widths adjustable (user 2026-11-27): drag the right edge of a header cell (useColWidths, kept
+ *   in localStorage); double click on an edge or "열 너비 초기화" = default widths. Wider than the window = sideways scroll
  */
 
 import { useMemo, useState } from 'react';
@@ -23,6 +25,7 @@ import { fmtKstTime } from '../../../shared/time';
 import type { SymbolSummary } from '../../../shared/types';
 import { WatchlistEditor } from '../components/WatchlistEditor';
 import { reasonKo } from '../../../shared/reasonKo';
+import { ColGrip, useColWidths } from '../components/useColWidths';
 
 type SortKey = 'code' | 'name' | 'price' | 'last' | 'cond' | 'depth' | 'blocks' | 'pnl';
 
@@ -36,6 +39,8 @@ const WATCH_TITLE: Record<string, string> = {
   graduated: '오늘 매수 체결로 감시(신규 매수 평가)에서 빠짐',
   removed: '재시작 후 감시목록에 없음 (오늘 앞선 실행에서는 감시)',
 };
+/** default column widths (% of the table) */
+const COL_PCT = [5.5, 10, 13, 4, 6, 5, 11, 21.5, 14, 5, 5];
 const RESULT_LABEL: Record<string, string> = { pass: '✓ 전부 통과', fail: '✕ 막힘', hold: '… 대기' };
 
 export function BoardView() {
@@ -51,6 +56,7 @@ export function BoardView() {
   const [wlOpen, setWlOpen] = useState(false);
   const connected = useStore((s) => s.status.conn === 'connected');
   const total = conditions?.buy.length || 0;
+  const cols = useColWidths('autoboth.boardCols', COL_PCT.length);
 
   const topBlock = (s: SymbolSummary) => Object.entries(s.blockCounts).sort((a, b) => b[1] - a[1])[0];
   const condsInUse = useMemo(() => [...new Set((snap?.symbols || []).map((s) => s.lastEval?.condKey).filter(Boolean) as string[])].sort(), [snap]);
@@ -80,10 +86,11 @@ export function BoardView() {
     return list;
   }, [snap, sort, condFilter, holdOnly, quotes]);
 
-  const th = (k: SortKey, label: string, cls = '') => (
-    <th className={cls} onClick={() => setSort((s) => ({ k, asc: s.k === k ? !s.asc : true }))}>
+  const th = (i: number, k: SortKey | null, label: string, cls = '') => (
+    <th className={cls} title={label} onClick={k ? () => setSort((s) => ({ k, asc: s.k === k ? !s.asc : true })) : undefined}>
       {label}
-      {sort.k === k ? (sort.asc ? ' ▲' : ' ▼') : ''}
+      {k && sort.k === k ? (sort.asc ? ' ▲' : ' ▼') : ''}
+      <ColGrip cols={cols} i={i} />
     </th>
   );
 
@@ -107,39 +114,37 @@ export function BoardView() {
         <span className="muted">
           {rows.length} / {snap?.symbols.length || 0} 종목 · 행을 누르면 타임라인으로 이동
         </span>
+        <span className="muted">· 열 제목 경계를 끌면 너비 조절</span>
+        {cols.widths && (
+          <button onClick={cols.reset} title="모든 열을 기본 너비로 되돌립니다">
+            열 너비 초기화
+          </button>
+        )}
         <button className="push-right" disabled={!connected} onClick={() => setWlOpen(true)} title="r004 감시목록 보기/고치기 (재시작 후 반영)">
           감시목록 편집
         </button>
       </div>
       {wlOpen && <WatchlistEditor onClose={() => setWlOpen(false)} />}
       <div className="table-wrap">
-        <table className="grid board-grid">
+        <table className="grid board-grid" ref={cols.tableRef} style={cols.total ? { width: cols.total } : undefined}>
           <colgroup>
-            <col style={{ width: '5.5%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '13%' }} />
-            <col style={{ width: '4%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '5%' }} />
-            <col style={{ width: '11%' }} />
-            <col style={{ width: '21.5%' }} />
-            <col style={{ width: '14%' }} />
-            <col style={{ width: '5%' }} />
-            <col style={{ width: '5%' }} />
+            {COL_PCT.map((pct, i) => (
+              <col key={i} style={{ width: cols.widths ? cols.widths[i] : `${pct}%` }} />
+            ))}
           </colgroup>
           <thead>
             <tr>
-              {th('code', '코드')}
-              {th('name', '종목명')}
-              {th('price', '현재가 (전일 대비)', 'num')}
-              <th>감시</th>
-              {th('last', '마지막 평가')}
-              <th>상태</th>
-              {th('cond', '멈춘 조건')}
-              <th>사유</th>
-              {th('depth', '오늘 도달 · 최다 막힘')}
-              <th className="num">보유</th>
-              {th('pnl', '실현 손익', 'num')}
+              {th(0, 'code', '코드')}
+              {th(1, 'name', '종목명')}
+              {th(2, 'price', '현재가 (전일 대비)', 'num')}
+              {th(3, null, '감시')}
+              {th(4, 'last', '마지막 평가')}
+              {th(5, null, '상태')}
+              {th(6, 'cond', '멈춘 조건')}
+              {th(7, null, '사유')}
+              {th(8, 'depth', '오늘 도달 · 최다 막힘')}
+              {th(9, null, '보유', 'num')}
+              {th(10, 'pnl', '실현 손익', 'num')}
             </tr>
           </thead>
           <tbody>

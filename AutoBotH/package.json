@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-27] type=feat - v2.3.54_002: 종목 보드 열 너비 조절 - 열 제목의 오른쪽 경계를 끌어 너비를 바꾸고(저장됨), 경계를 두 번 누르거나 '열 너비 초기화'로 기본 너비 복원",
     "[2026-11-27] type=feat - v2.3.54_001: 타임라인에 매매 방식 탭(자동 / 규칙 / Edge AI / VWAP) 추가 - Edge AI · VWAP 탭은 그 방식의 봉별 판정 단계 · 신호 · 주문 · 보유 점검 · 청산과 체결만 표시, 체결 블록이 없는 보조 전략 매수를 주문번호로 보완해 매매 결과에 표시",
     "[2026-11-27] type=feat - v2.3.53_003: 매매 결과 탭의 기간 결과(날짜별 줄 + 합계)를 CSV로 내보내기 - 저장 위치는 직접 선택, 엑셀에서 바로 열림",
     "[2026-11-27] type=feat - v2.3.53_002: 매매 결과 탭의 기간 합계 자동 갱신 - 실시간 날짜가 든 기간은 15초마다 다시 읽음 (지난 기간은 그대로)",
@@ -207,7 +208,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "001",
+    "buildNumber": "002",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

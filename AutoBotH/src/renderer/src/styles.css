@@ -962,6 +962,10 @@ button.mini.info.on { background: var(--primary-bg); border-color: var(--primary
 .board-grid th, .board-grid td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 4px; vertical-align: middle; line-height: 1.45; }
 .board-grid th { font-size: 12px; }
 .board-grid td.reason { max-width: none; }
+/* [2026-11-27] drag handle on the right edge of a header cell (useColWidths) */
+.col-grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 1; }
+.col-grip::after { content: ''; position: absolute; top: 20%; bottom: 20%; right: 2px; width: 1px; background: var(--border); }
+.col-grip:hover::after { top: 0; bottom: 0; width: 2px; background: var(--accent); }
 .board-grid td.today { font-size: 11.5px; color: var(--text-2); }
 .board-grid td.today b { font-weight: 600; color: var(--text); }
 /* [2026-11-11] the dock is a strip under its evaluation chart (between it and the price chart) */
