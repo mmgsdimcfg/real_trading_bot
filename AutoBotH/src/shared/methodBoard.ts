@@ -44,7 +44,7 @@ export function sideSummaries(events: StrategyEvent[]): Partial<Record<SideStrat
     else if (e.kind === 'nobuy') s.nobuys++;
     else if (e.kind === 'paper_buy') s.paperBuys++;
     if (e.kind === 'exit' && s.holding) s.exitAt = e.ts;
-    if (e.kind === 'fill' && e.reason === 'sell') {
+    if ((e.kind === 'fill' && e.reason === 'sell') || e.kind === 'gone') {
       s.holding = undefined;
       s.exitAt = undefined;
     }
@@ -121,11 +121,12 @@ const EVENT_KO: Record<string, string> = {
   fill: '체결 반영',
   nobuy: '신호는 났지만 사지 않음',
   exit: '청산 결정',
+  gone: '봇 보유 종료 (봇 장부: 봇 몫 0)',
   paper_buy: '가상 매수',
   paper_sell: '가상 매도',
   note: '',
 };
-const EVENT_KIND: Record<string, MethodRowKind> = { signal: 'pass', order: 'pass', fill: 'info', nobuy: 'fail', exit: 'info', paper_buy: 'pass', paper_sell: 'info', note: 'info' };
+const EVENT_KIND: Record<string, MethodRowKind> = { gone: 'info', signal: 'pass', order: 'pass', fill: 'info', nobuy: 'fail', exit: 'info', paper_buy: 'pass', paper_sell: 'info', note: 'info' };
 
 const blank = (code: string, name: string): MethodRow => ({
   code,
@@ -253,7 +254,7 @@ export function methodRows(method: TradeStrategy, input: MethodBoardInput): Meth
       // at the same time the log line wins over a trace row: it is the more specific record (signal / order / refusal)
       if (e && (r.stateTs === undefined || e.ts >= r.stateTs)) {
         const ko = EVENT_KO[e.kind] ?? '';
-        r.state = [ko, e.kind === 'note' || !ko ? e.text : e.reason || ''].filter(Boolean).join(' · ');
+        r.state = [ko, e.kind === 'note' || e.kind === 'gone' || !ko ? e.text : e.reason || ''].filter(Boolean).join(' · ');
         r.stateKind = EVENT_KIND[e.kind] || 'info';
         r.stateSrc = 'log';
         r.stateMode = e.mode;

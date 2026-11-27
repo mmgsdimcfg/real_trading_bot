@@ -25,6 +25,11 @@ describe('sideSummaries', () => {
     expect(closed.vwap?.exitAt).toBe(5);
     const sold = sideSummaries([ev({ ts: 3, kind: 'hold', qty: 5 }), ev({ ts: 5, kind: 'exit' }), ev({ ts: 6, kind: 'fill', reason: 'sell' })]);
     expect(sold.vwap?.holding).toBeUndefined();
+    // the bot's ledger going to 0 ends it too (sold by hand: no line of the strategy says so)
+    const gone = sideSummaries([ev({ ts: 3, kind: 'hold', qty: 5 }), ev({ ts: 5, kind: 'exit' }), ev({ ts: 9, kind: 'gone', qty: 5, text: 'account=6->0 bot=5->0' })]);
+    expect(gone.vwap?.holding).toBeUndefined();
+    expect(gone.vwap?.exitAt).toBeUndefined();
+    expect(gone.vwap?.last?.kind).toBe('gone');
   });
 });
 

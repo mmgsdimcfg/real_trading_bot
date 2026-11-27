@@ -227,3 +227,29 @@ describe('a method tab of the timeline', () => {
     expect(defaultTimelineMethod({ rule: off, edge: { live: false, paper: true }, vwap: { live: false, paper: true } }, paperOnly)).toBe('vwap');
   });
 });
+
+describe("the bot's ledger going to 0", () => {
+  it('ends the holding of the side strategy that held the symbol (2026-11-27 237690: sold by hand after the close order did not fill)', () => {
+    const e = new DayEngine('20261127', { buy: [], sell: [] } as never);
+    for (const l of [
+      '2026-11-27 09:00:00,000 [INFO] WATCH | 237690 | 에스티팜 | NXT=True',
+      '2026-11-27 15:19:49,101 [INFO]   [VWAP LIVE   ] 237690_에스티팜   | qty=5 원가=87,900 현재가=87,000(live) 손익=-1.02% 보유=71분 | tp=+3.00% sl=-1.27% 300분 | 계좌 6주 (직접 보유분은 팔지 않음)',
+      '2026-11-27 15:20:18,503 [INFO]   [VWAP LIVE   ] 237690_에스티팜   | 청산 VWAP_CLOSE_1520 | qty=5 원가=87,900 현재가=87,100(live) 손익=-0.91%',
+      '2026-11-27 18:25:15,645 [INFO]   [EDGE LIVE   ] 237690_에스티팜   | 정규장 마감 뒤 Edge 잔량 5주 - 다음 정규장에서 청산 (확인 필요)',
+    ])
+      e.feedMainLines([l]);
+    const before = e.snapshot().symbols.find((x) => x.code === '237690')?.side?.vwap;
+    expect(before?.holding?.qty).toBe(5); // the exit decision alone does not end it
+    expect(before?.exitAt).toBeGreaterThan(0);
+    e.feedMainLines(['2026-11-27 18:25:27,330 [INFO]   [BOT LEDGER  ] 237690_에스티팜   | account=6->0 bot=5->0']);
+    const after = e.snapshot().symbols.find((x) => x.code === '237690')?.side?.vwap;
+    expect(after?.holding).toBeUndefined();
+    expect(after?.last?.kind).toBe('gone');
+    const tl = sideTimeline('vwap', e.timeline('237690').strategy || [], []);
+    expect(tl.holding).toBeUndefined();
+    // a ledger line of a symbol no side strategy touched adds nothing
+    e.feedMainLines(['2026-11-27 18:26:57,793 [INFO]   [BOT LEDGER  ] 099320_쎄트렉아이 | account=6->0 bot=3->0']);
+    expect(e.snapshot().symbols.find((x) => x.code === '099320')?.side).toBeUndefined();
+  });
+});
+

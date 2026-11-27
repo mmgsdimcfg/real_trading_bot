@@ -236,6 +236,15 @@ export class DayEngine {
     }
 
     if (p.tag === 'ACT REENTER' || (p.tag === 'BOT LEDGER' && /\baccount=\d+->0\b/.test(p.rest))) s.closedTs = p.ts;
+    // [2026-11-27] the bot's own quantity of the symbol went to 0 (2026-11-27 18:25: the 5 VWAP shares of 237690 were sold by hand -
+    // no line of the strategy says so, its last one still read "잔량 5주"): the side strategy that held it holds nothing now
+    if (p.tag === 'BOT LEDGER' && s.side.length) {
+      const m = /\bbot=(\d+)->0\b/.exec(p.rest);
+      const strategy = this.lastSide.get(p.code);
+      if (m && +m[1] > 0 && strategy) {
+        s.side.push({ id: this.nextId++, ts: p.ts, code: p.code, strategy, mode: 'live', kind: 'gone', text: p.rest.trim(), qty: +m[1], raw });
+      }
+    }
     if (p.tag.startsWith('ACT ')) {
       const next: Record<string, WatchState> = {
         'ACT PROMOTE': 'active',

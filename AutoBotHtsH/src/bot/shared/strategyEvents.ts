@@ -18,6 +18,7 @@ export type StrategyEventKind =
   | 'nobuy' // signal conditions passed up to a condition that refused the buy
   | 'hold' // holding check: price / P&L against the exits
   | 'exit' // exit decided (sell order follows)
+  | 'gone' // [2026-11-27] the bot's ledger says its quantity of the symbol went to 0 ("[BOT LEDGER] ... bot=N->0": sold by hand, or a sale the strategy's own lines did not report)
   | 'paper_buy'
   | 'paper_sell'
   | 'note'; // anything else the strategy wrote about the symbol

@@ -156,6 +156,11 @@ export function sideTimeline(strategy: SideStrategy, events: StrategyEvent[], ev
         break;
       case 'exit':
         push(e.ts, e.code, 'sell', 'exit', 'pass', e.mode, e.reason || '', `청산 결정 · ${e.reason || ''}${e.pnlPct === undefined ? '' : ` · 손익 ${sp(e.pnlPct)}`}${e.price ? ` · 현재가 ${n0(e.price)}` : ''}`, e.raw, '청산');
+        // [2026-11-27] a decision is not a sale (the 15:20 close order of 237690 did not fill): the holding ends with a sale
+        // the bot recorded or with its ledger going to 0
+        break;
+      case 'gone':
+        push(e.ts, e.code, 'sell', 'exit', 'info', e.mode, 'BOT_LEDGER', `봇 보유 종료 · 봇 장부에서 봇 몫 ${e.qty ?? ''}주 -> 0 (직접 매도 등) · ${e.text}`, e.raw, '청산');
         holding = undefined;
         break;
       case 'paper_sell':
@@ -212,7 +217,7 @@ export function defaultTimelineMethod(modes: Record<TradeStrategy, { live: boole
     for (const e of side) {
       if (e.mode !== mode) continue;
       if (e.kind === 'order' || e.kind === 'hold' || e.kind === 'paper_buy' || (e.kind === 'fill' && e.reason !== 'sell')) held = e.strategy;
-      else if ((e.kind === 'exit' || e.kind === 'paper_sell' || (e.kind === 'fill' && e.reason === 'sell')) && held === e.strategy) held = null;
+      else if ((e.kind === 'gone' || e.kind === 'paper_sell' || (e.kind === 'fill' && e.reason === 'sell')) && held === e.strategy) held = null;
     }
     return held;
   };
