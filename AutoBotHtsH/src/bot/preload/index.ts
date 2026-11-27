@@ -84,6 +84,8 @@ export const api = {
   getPrice: (req: PriceRequest): Promise<PriceResponse> => ipcRenderer.invoke('price:get', req),
   /** Edge-AI-only paper trades of a day (server r022) */
   getPaper: (date: string, book?: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date, book),
+  /** [2026-11-27] save a text (CSV export) to a file the user picks in the save dialog */
+  saveText: (defaultName: string, text: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> => ipcRenderer.invoke('file:saveText', defaultName, text),
   /** [2026-11-27] results per trading method and mode of every day in [from, to] (YYYYMMDD); budget = per-order KRW for paper sizing */
   getRangeResults: (from: string, to: string, budget?: number): Promise<RangeResults> => ipcRenderer.invoke('results:range', from, to, budget),
   /** [2026-11-19] status of every paper-traded symbol of a day (server r022; null = no status file) */

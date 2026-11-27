@@ -24,7 +24,7 @@ import { sideExitKo, strategyModeKo, strategyModes, strategyOfTrade, strategySum
 import { paperSummary, type PaperBook, type PaperTrade } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
 import { paperKrw, paperOrderKrw } from './PaperView';
-import { isYmd, PERIODS, PERIOD_KO, periodRange, shiftPeriod, sumResults, type DayResults, type Period, type RangeResults } from '../../../shared/rangeResults';
+import { isYmd, PERIODS, PERIOD_KO, periodRange, rangeCsv, shiftPeriod, sumResults, type DayResults, type Period, type RangeResults } from '../../../shared/rangeResults';
 import { ymdDash } from '../../../shared/time';
 
 /** how often a range that contains the live day is read again */
@@ -194,6 +194,14 @@ export function TradesView() {
   }, [rangeLive, rangeKey]);
   const rangeDays: DayResults[] | null = range && rangeRes && rangeRes.key === rangeKey && rangeRes.res.ok ? rangeRes.res.days : null;
   const rangeSum = useMemo(() => (rangeDays ? sumResults(rangeDays) : null), [rangeDays]);
+  // [2026-11-27] the shown range as a CSV file (the numbers on screen: the costs switch applies)
+  const [csvMsg, setCsvMsg] = useState('');
+  const exportCsv = async () => {
+    if (!range || !rangeDays?.length) return;
+    const r = await window.api.saveText(`매매결과_${range[0]}-${range[1]}${net ? '_제세금포함' : ''}.csv`, rangeCsv(rangeDays, net));
+    setCsvMsg(r.ok ? `저장했습니다: ${r.path}` : r.canceled ? '' : `저장하지 못했습니다: ${r.error || '오류'}`);
+  };
+  useEffect(() => setCsvMsg(''), [rangeKey]);
   const pickPeriod = (p: Period) => {
     if (p === 'custom' && !isYmd(custom.from) && isYmd(base)) setCustom({ from: periodRange('month', base)[0], to: base });
     setPeriod(p);
@@ -275,6 +283,16 @@ export function TradesView() {
               <label className="check" title={`손익에서 예상 거래 비용을 뺍니다: ${feeLabel()}`}>
                 <input type="checkbox" checked={net} onChange={(e) => setNet(e.target.checked)} /> 제세금 포함
               </label>
+              <button
+                type="button"
+                className="chip link"
+                disabled={!rangeDays?.length}
+                title="아래 날짜별 표와 합계를 CSV 파일로 저장합니다 (엑셀에서 바로 열림). 저장 위치는 직접 고릅니다"
+                onClick={() => void exportCsv()}
+              >
+                CSV 내보내기
+              </button>
+              {csvMsg && <span className="muted small">{csvMsg}</span>}
             </>
           )}
         </div>

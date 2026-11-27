@@ -58,3 +58,25 @@ describe('periods', () => {
     expect(isYmd('')).toBe(false);
   });
 });
+
+describe('CSV of a range', () => {
+  it('one row per day and a total; BOM + CRLF; an unread paper book leaves empty cells', async () => {
+    const { rangeCsv } = await import('../src/shared/rangeResults');
+    const a = dayResults('20261126', [buy('rule'), sell('rule', 1000)], { edge: [paper(10000, 2)], vwap: null }, 100_000);
+    const b = dayResults('20261127', [buy('vwap'), sell('vwap', -500)], { edge: [], vwap: [paper(10000, 1)] }, 100_000);
+    const csv = rangeCsv([a, b], false);
+    expect(csv.startsWith('\uFEFF날짜,규칙 실제 매수,')).toBe(true);
+    const lines = csv.slice(1).trimEnd().split('\r\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[0].split(',')).toHaveLength(24);
+    //            rule       edge     edge paper  vwap       vwap paper  real total
+    expect(lines[1]).toBe('2026-11-26,1,1,1,1000,0,0,0,0,1,1,1,2000,0,0,0,0,,,,,1,1,1000');
+    expect(lines[2]).toBe('2026-11-27,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,-500,1,1,1,1000,1,1,-500');
+    expect(lines[3]).toBe('합계,1,1,1,1000,0,0,0,0,1,1,1,2000,1,1,0,-500,1,1,1,1000,2,2,500');
+    // net of costs: the header says so and the rule profit is smaller
+    const net = rangeCsv([a], true).slice(1).split('\r\n');
+    expect(net[0]).toContain('규칙 실제 손익(제세금 포함)');
+    expect(Number(net[1].split(',')[4])).toBeLessThan(1000);
+    expect(rangeCsv([], false).slice(1).trimEnd().split('\r\n')).toHaveLength(1);
+  });
+});

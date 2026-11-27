@@ -128,3 +128,29 @@ export function shiftPeriod(kind: 'week' | 'month', ymd: string, dir: -1 | 1): s
 }
 /** most days one request reads */
 export const RANGE_MAX_DAYS = 93;
+
+// ---- [2026-11-27] CSV of a range (user 2026-11-27) ------------------------------------------------------------------------
+const csvCell = (v: string | number): string => {
+  const t = typeof v === 'number' ? String(Math.round(v)) : v;
+  return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+};
+/** one row per day and a total row: per method x mode the buys, sells, wins and P&L (real = net of costs when `net`), then the
+ *  real total. A paper book that could not be read on a day leaves its cells empty. UTF-8 BOM + CRLF so Excel opens it as is */
+export function rangeCsv(days: DayResults[], net: boolean): string {
+  const cols: [string, (d: { real: Record<TradeStrategy, MethodSum>; paper: Record<PaperBook, PaperSum | null> }) => (number | '')[]][] = [];
+  const real = (k: TradeStrategy) => (d: { real: Record<TradeStrategy, MethodSum> }): number[] => [d.real[k].buys, d.real[k].sells, net ? d.real[k].winsNet : d.real[k].wins, net ? d.real[k].pnlNet : d.real[k].pnlKrw];
+  const pap = (k: PaperBook) => (d: { paper: Record<PaperBook, PaperSum | null> }): (number | '')[] => {
+    const x = d.paper[k];
+    return x ? [x.buys, x.sells, x.wins, x.pnlKrw] : ['', '', '', ''];
+  };
+  cols.push(['규칙 실제', real('rule')], ['Edge AI 실제', real('edge')], ['Edge AI 가상', pap('edge')], ['VWAP 실제', real('vwap')], ['VWAP 가상', pap('vwap')]);
+  const pnlKo = net ? '손익(제세금 포함)' : '손익';
+  const head = ['날짜', ...cols.flatMap(([n], i) => ['매수', '매도', '승', i === 0 || i === 1 || i === 3 ? pnlKo : '손익(가상)'].map((f) => `${n} ${f}`)), '실제 합계 매수', '실제 합계 매도', `실제 합계 ${pnlKo}`];
+  const line = (label: string, d: { real: Record<TradeStrategy, MethodSum>; paper: Record<PaperBook, PaperSum | null> }) => {
+    const r = (['rule', 'edge', 'vwap'] as TradeStrategy[]).map((k) => real(k)(d));
+    return [label, ...cols.flatMap(([, f]) => f(d)), r.reduce((a, x) => a + x[0], 0), r.reduce((a, x) => a + x[1], 0), r.reduce((a, x) => a + x[3], 0)].map(csvCell).join(',');
+  };
+  const rows = days.map((d) => line(`${d.date.slice(0, 4)}-${d.date.slice(4, 6)}-${d.date.slice(6, 8)}`, d));
+  if (days.length) rows.push(line('합계', sumResults(days)));
+  return '\uFEFF' + [head.map(csvCell).join(','), ...rows].join('\r\n') + '\r\n';
+}

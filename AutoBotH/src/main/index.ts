@@ -53,7 +53,7 @@ import { dayResults, isYmd, RANGE_MAX_DAYS, type DayResults, type RangeResults }
 import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell } from 'electron';
 import { parseEdgeMeta, parsePaperLines, parsePaperStatus, PAPER_BOOK_PREFIX, paperBookOf } from '../shared/paper';
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { basename, join } from 'node:path';
 import type { AppStatus, ConditionsDoc, RunMode, Settings, Snapshot } from '../shared/types';
@@ -638,6 +638,23 @@ ipcMain.handle('paper:status', async (_e, date: string, book?: string) => {
     return { ok: true, status: text ? parsePaperStatus(text) : null };
   } catch (e) {
     return { ok: false, status: null, error: errMsg(e) };
+  }
+});
+// [2026-11-27] save a text the renderer made (CSV export) to a file the user picks in the native save dialog - nothing is
+// written without that choice; the path is the user's, never a bot file
+ipcMain.handle('file:saveText', async (_e, defaultName: string, text: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> => {
+  try {
+    const name = String(defaultName || 'export.csv').replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+    const body = String(text ?? '');
+    if (body.length > 20_000_000) return { ok: false, error: '내보낼 내용이 너무 큽니다.' };
+    const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    const opts = { title: 'CSV로 내보내기', defaultPath: join(app.getPath('documents'), name), filters: [{ name: 'CSV', extensions: ['csv'] }] };
+    const r = w && !w.isDestroyed() ? await dialog.showSaveDialog(w, opts) : await dialog.showSaveDialog(opts);
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    writeFileSync(r.filePath, body, 'utf8');
+    return { ok: true, path: r.filePath };
+  } catch (e) {
+    return { ok: false, error: errMsg(e) };
   }
 });
 // [2026-11-27] results per trading method and mode of every day in [from, to] (YYYYMMDD): the daily buy_sell log + both paper
