@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-27] type=feat - v2.3.52_001: 매매 결과 탭에 매매 방식 · 모드별 결과표(규칙 실제 / Edge AI 실제 · 가상 / VWAP 실제 · 가상)와 방식별 필터 추가 - 실제 거래마다 방식 표시, 제어 · 가상 매매 탭에서 결과로 바로 이동",
     "[2026-11-27] type=feat - v2.3.51_002: 파이프라인 노드 토글을 조건 전체 스위치(적용 / 미적용)로 변경 - 세부 설정 목록과 같은 표시(필수 / 기록만 / 재시작 대기 / 옵션 n/m), 누르면 확인 후 서버에 바로 저장",
     "[2026-11-27] type=feat - v2.3.51_001: 규칙 매매 매수 조건별 적용 여부를 서버 판정 그대로 표시 - 세부 설정 목록에 적용 / 미적용 / 기록만 / 필수 / 재시작 대기 표시, 조건을 고르면 이유(조건 전체 해제인지, 조건 안 설정값 때문인지, 끌 수 없는 이유)와 실행 중인 봇의 상태를 보여 주고 '조건 전체 사용' 체크로 조건 하나를 켜고 끔(서버가 끌 수 없는 조건은 거부). 파이프라인 노드에 미적용 / 기록만 표시, 노드 토글은 '옵션 ON/OFF' 로 표기",
     "[2026-11-27] type=fix - v2.3.50_002: 규칙 매매 세부 설정 조건 목록의 ON / OFF 가 조건 전체가 꺼진 것처럼 보이던 문제 수정 - '옵션 켜진 수/전체'로 표시하고(툴팁에 각 스위치), 스위치는 조건 안의 옵션이라는 안내 추가 (09 1분봉 트리거 'OFF' 는 추격 가드만 꺼진 것이었음)",
@@ -154,7 +155,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.51",
+  "version": "2.3.52",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -202,7 +203,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "002",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

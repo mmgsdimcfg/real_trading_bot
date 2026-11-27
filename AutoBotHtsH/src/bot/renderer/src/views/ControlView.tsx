@@ -440,6 +440,7 @@ function HostPanel() {
 
 export function ControlView() {
   const control = useStore((s) => s.control);
+  const openResults = useStore((s) => s.openResults);
   const connected = useStore((s) => s.status.conn === 'connected');
   const isLocal = useStore((s) => s.status.mode === 'local');
   const historyRev = useStore((s) => s.historyRev);
@@ -1073,6 +1074,9 @@ export function ControlView() {
                   <button type="button" className="chip link" title="규칙 매매 세부 설정 창 열기 (매수 / 매도 조건 · 기준값 · 조건별 켜기 / 끄기)" onClick={() => window.dispatchEvent(new Event('rule-settings'))}>
                     세부 설정 →
                   </button>
+                  <button type="button" className="chip link" title="매매 결과 탭에서 규칙 매매의 실제 매매 내역만 봅니다" onClick={() => openResults('rule', 'live')}>
+                    매매 결과 →
+                  </button>
                 </div>
               </div>
             )}
@@ -1213,6 +1217,12 @@ export function ControlView() {
                   >
                     세부 설정 →
                   </button>
+                  <button type="button" className="chip link" title="가상 매매 탭의 Edge AI 장부 (주문 없는 가상 매수 / 매도)" onClick={() => openResults('edge', 'paper')}>
+                    가상 결과 →
+                  </button>
+                  <button type="button" className="chip link" title="매매 결과 탭에서 Edge AI 매매의 실제 주문 내역만 봅니다" onClick={() => openResults('edge', 'live')}>
+                    실제 결과 →
+                  </button>
                 </div>
               </div>
             )}
@@ -1318,6 +1328,12 @@ export function ControlView() {
                     onClick={() => window.dispatchEvent(new CustomEvent('strategy-settings', { detail: 'vwap' }))}
                   >
                     세부 설정 →
+                  </button>
+                  <button type="button" className="chip link" title="가상 매매 탭의 VWAP 장부 (주문 없는 가상 매수 / 매도)" onClick={() => openResults('vwap', 'paper')}>
+                    가상 결과 →
+                  </button>
+                  <button type="button" className="chip link" title="매매 결과 탭에서 VWAP 매매의 실제 주문 내역만 봅니다" onClick={() => openResults('vwap', 'live')}>
+                    실제 결과 →
                   </button>
                 </div>
                 {vwapPending && (

@@ -99,6 +99,8 @@ export interface Trade {
   pnlKrw?: number;
   pnlPct?: number;
   raw: string;
+  /** [2026-11-27] the trading method the order came from (shared/strategy); absent = rule */
+  strategy?: 'rule' | 'edge' | 'vwap';
 }
 
 /** 'removed' [2026-11-13]: watched by an earlier r003 run of the day but not in the watchlist of the latest run (r004 was edited) */

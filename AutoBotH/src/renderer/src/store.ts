@@ -35,6 +35,8 @@
 import { create } from 'zustand';
 import type { AppStatus, ConditionsDoc, EvalEvent, Settings, Side, Snapshot, Trade } from '../../shared/types';
 import type { ControlState } from '../../shared/control';
+import type { PaperBook } from '../../shared/paper';
+import type { TradeFilter } from '../../shared/strategy';
 import type { ChartKind } from '../../shared/price';
 import type { IndicatorKey } from '../../shared/indicators';
 import { fromMarketQuote, type LiveQuote } from '../../shared/liveQuote';
@@ -143,6 +145,14 @@ function loadLayout(): TimelineLayout {
 const BUY_EVAL_ONLY_KEY = 'autoboth.timelineBuyEvalOnly';
 /** [2026-11-11] 매매 결과 / 보유 현황: "제세금 포함" (net of the estimated commission + sell tax) */
 const FEES_INCLUDED_KEY = 'autoboth.feesIncluded';
+const PAPER_BOOK_KEY = 'autoboth.paperBook';
+function loadPaperBook(): PaperBook {
+  try {
+    return localStorage.getItem(PAPER_BOOK_KEY) === 'vwap' ? 'vwap' : 'edge';
+  } catch {
+    return 'edge';
+  }
+}
 const SELL_EVAL_ONLY_KEY = 'autoboth.timelineSellEvalOnly';
 function loadFlag(key: string): boolean {
   try {
@@ -201,6 +211,14 @@ interface State {
   /** 매매 결과 / 보유 현황: P&L shown net of the estimated costs (shared/fees), kept in localStorage */
   feesIncluded: boolean;
   setFeesIncluded: (on: boolean) => void;
+  /** [2026-11-27] 매매 결과: which trading method's real trades are listed ('all' = every method) */
+  tradeFilter: TradeFilter;
+  setTradeFilter: (f: TradeFilter) => void;
+  /** [2026-11-27] 가상 매매: which paper book is shown (Edge AI / VWAP), kept in localStorage */
+  paperBook: PaperBook;
+  setPaperBook: (b: PaperBook) => void;
+  /** open the results of a method in a mode: real -> 매매 결과 filtered, paper -> 가상 매매 with that book */
+  openResults: (strategy: TradeFilter, mode: 'live' | 'paper') => void;
   setTab: (t: Tab) => void;
   /** [2026-11-19] symbol the chart tab should show next (set by openChart, cleared by ChartView once taken) */
   chartRequest: string | null;
@@ -262,6 +280,26 @@ export const useStore = create<State>()((set, get) => ({
       localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
     } catch {
       /* storage unavailable */
+    }
+  },
+  tradeFilter: 'all',
+  setTradeFilter: (tradeFilter) => set({ tradeFilter }),
+  paperBook: loadPaperBook(),
+  setPaperBook: (paperBook) => {
+    set({ paperBook });
+    try {
+      localStorage.setItem(PAPER_BOOK_KEY, paperBook);
+    } catch {
+      /* storage unavailable */
+    }
+  },
+  openResults: (strategy, mode) => {
+    if (mode === 'paper' && (strategy === 'edge' || strategy === 'vwap')) {
+      get().setPaperBook(strategy);
+      get().setTab('paper');
+    } else {
+      set({ tradeFilter: strategy });
+      get().setTab('trades');
     }
   },
   feesIncluded: loadFlag(FEES_INCLUDED_KEY),

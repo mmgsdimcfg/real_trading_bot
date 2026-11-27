@@ -61,6 +61,8 @@ import { showCode } from '../showCode';
 /** [2026-11-20] the bot's per-order budget (r001 MAX_ORDER_AMOUNT_KRW) - virtual trades are sized like real ones for the KRW columns */
 export const ORDER_KRW_DEFAULT = 500_000;
 let orderKrwCache: number | null = null;
+/** the budget read so far (the default until the host's settings were read) - 매매 결과's paper rows */
+export const paperOrderKrw = (): number => orderKrwCache ?? ORDER_KRW_DEFAULT;
 /** shares the bot would buy at `price` with `budget` (0 = it would not buy) */
 export const paperQty = (price: number | undefined, budget: number) => (price && price > 0 ? Math.floor(budget / price) : 0);
 /** KRW result of a virtual trade: open = (price - buy) x qty (before costs), closed = net % of the bought amount */
@@ -108,21 +110,10 @@ export function PaperView() {
   const snap = useStore((s) => s.snapshot);
   const status = useStore((s) => s.status);
   // [2026-11-27] which paper book: the Edge AI trade or the VWAP trade (their own files on the server)
-  const [book, setBook] = useState<PaperBook>(() => {
-    try {
-      return localStorage.getItem('autoboth.paperBook') === 'vwap' ? 'vwap' : 'edge';
-    } catch {
-      return 'edge';
-    }
-  });
-  const pickBook = (b: PaperBook) => {
-    setBook(b);
-    try {
-      localStorage.setItem('autoboth.paperBook', b);
-    } catch {
-      /* not kept */
-    }
-  };
+  // (in the store since 2026-11-27 so 매매 결과 / 제어 can open a book)
+  const book: PaperBook = useStore((s) => s.paperBook);
+  const pickBook = useStore((s) => s.setPaperBook);
+  const openResults = useStore((s) => s.openResults);
   const edgeMode = useStore((s) => s.control.paper);
   const vwapMode = useStore((s) => s.control.vwapMode);
   const vwapLiveRunning = useStore((s) => s.control.vwapLive?.running) === 'true';
@@ -253,6 +244,9 @@ export function PaperView() {
         {book === 'vwap' && vwapLiveRunning && <span className="badge-warn">VWAP 실제 매매 중 - 가상 매수는 하지 않고, 실제 주문 내역은 매매 결과 탭에 있습니다</span>}
         {book === 'edge' && realEdge && <span className="badge-warn">매매 방식이 Edge AI(실제 주문)입니다 - 가상 매매는 돌지 않고, 실제 내역은 매매 결과 탭에 있습니다</span>}
         {book === 'edge' && liveEdge && !realEdge && <span className="badge-warn">Edge AI 실제 매매 중 - 실제 주문 내역은 이 창이 아니라 매매 결과 탭에 있습니다</span>}
+        <button type="button" className="chip link" title={`${PAPER_BOOK_KO[book]}의 실제 주문 내역: 매매 결과 탭을 이 매매 방식으로 걸러 엽니다`} onClick={() => openResults(book, 'live')}>
+          실제 매매 결과 →
+        </button>
         <span className="muted">Edge AI 확률만으로 판단한 가상 매수/매도 기록입니다. 실제 주문·계좌와 무관합니다. 켜고 끄기는 제어 탭.</span>
       </div>
       <div className="toolbar">

@@ -429,6 +429,18 @@
 .bot-root .kpi span { color: var(--text-3); font-size: var(--fs); }
 .bot-root .kpi b { font-size: var(--fs); font-weight: 600; font-variant-numeric: tabular-nums; }
 .bot-root .kpi small { color: var(--text-3); }
+.bot-root .strat-sum { padding: 12px 16px 0; }
+.bot-root .strat-sum table.grid tbody tr { cursor: pointer; }
+.bot-root .strat-sum table.grid tbody tr.sel td { background: var(--hover); }
+.bot-root .strat-sum table.grid tbody tr:not(.run) td:first-child b { font-weight: 500; color: var(--text-2); }
+.bot-root .strat-sum .st-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--st-idle); margin-right: 6px; }
+.bot-root .strat-sum .st-dot.on { background: var(--st-pass); }
+.bot-root .strat-bar { display: flex; align-items: center; gap: 12px; padding: 10px 0 0; flex-wrap: wrap; }
+.bot-root .tag.mode-live { color: var(--st-fail, #d05050); border: 1px solid currentColor; }
+.bot-root .tag.mode-paper { color: var(--text-2); border: 1px solid var(--border); }
+.bot-root .tag.strat-rule { color: var(--text-2); border: 1px solid var(--border); }
+.bot-root .tag.strat-edge { color: var(--series-1, #5b8def); border: 1px solid currentColor; }
+.bot-root .tag.strat-vwap { color: var(--st-hold); border: 1px solid currentColor; }
 .bot-root .trade-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 16px 16px; }
 .bot-root .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0 12px 10px; }
 .bot-root .chart-mid { height: 260px; }

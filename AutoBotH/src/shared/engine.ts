@@ -26,6 +26,7 @@
  *   events, so a busy symbol keeps its morning on the 매수 평가 chart (068270 showed nothing before 11:00)
  */
 
+import { buyStrategyOf, sellStrategyOf } from './strategy';
 import type {
   ConditionsDoc,
   EvalEvent,
@@ -82,6 +83,8 @@ export class DayEngine {
   private sellStats = new Map<string, SellNodeStat>();
   private trades: Trade[] = [];
   private openTrade: Trade | null = null;
+  /** [2026-11-27] method of the symbol's last buy block - a sell whose reason does not name a method takes it */
+  private lastBuyStrategy = new Map<string, 'rule' | 'edge' | 'vwap'>();
   private unknown = new Map<string, UnknownEntry>();
   private unknownLines = 0;
   private regime?: string;
@@ -356,6 +359,10 @@ export class DayEngine {
         reason,
         raw,
       };
+      if (t.side === 'BUY') {
+        t.strategy = buyStrategyOf(tail);
+        this.lastBuyStrategy.set(code, t.strategy);
+      } else t.strategy = sellStrategyOf(reason) || this.lastBuyStrategy.get(code) || 'rule';
       if (t.side === 'SELL') {
         t.pnlKrw = num(kv['수익금액']);
         t.pnlPct = num(kv['수익율']);
