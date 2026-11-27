@@ -4,10 +4,12 @@
  *   column (localStorage), ColGrip is the handle on the right edge of a header cell. Until a column is first dragged the table keeps
  *   its default (percentage) widths; the first drag freezes every column at the width it has on screen, so only the dragged one
  *   changes. Double click on a handle = back to the default widths.
+ * - [2026-11-27] type=feat - Helpers for tables without fixed widths (trade results, holdings): colTable (ref + fixed layout once
+ *   a column was dragged), ColGroup, ColReset ("열 너비 초기화", shown only while widths are set)
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { MouseEvent as ReactMouseEvent, RefObject } from 'react';
+import type { CSSProperties, MouseEvent as ReactMouseEvent, RefObject } from 'react';
 
 export const COL_MIN = 32;
 export const COL_MAX = 1200;
@@ -124,5 +126,34 @@ export function ColGrip(props: { cols: ColWidths; i: number }) {
         props.cols.reset();
       }}
     />
+  );
+}
+
+/** props of a <table> whose columns size themselves until one is dragged: then fixed layout at the stored widths */
+export function colTable(cols: ColWidths, className: string): { ref: RefObject<HTMLTableElement>; className: string; style: CSSProperties | undefined } {
+  return { ref: cols.tableRef, className: cols.widths ? `${className} cols-fixed` : className, style: cols.total ? { width: cols.total } : undefined };
+}
+
+/** first child of such a table */
+export function ColGroup(props: { cols: ColWidths }) {
+  if (!props.cols.widths) return null;
+  return (
+    <colgroup>
+      {props.cols.widths.map((w, i) => (
+        <col key={i} style={{ width: w }} />
+      ))}
+    </colgroup>
+  );
+}
+
+/** "열 너비 초기화" line above a table, only while its widths were changed */
+export function ColReset(props: { cols: ColWidths }) {
+  if (!props.cols.widths) return null;
+  return (
+    <div className="col-reset">
+      <button type="button" className="chip link" onClick={props.cols.reset} title="이 표의 모든 열을 기본 너비로 되돌립니다">
+        열 너비 초기화
+      </button>
+    </div>
   );
 }

@@ -11,12 +11,14 @@
  * - [2026-11-27] type=feat - 기간 (user 2026-11-27): 일간 / 주간 / 월간 / 직접 지정. A range shows the same method x mode table summed
  *   over its days (main 'results:range': each day's buy_sell log and both paper books) and a per-day table under it; a day row
  *   opens that day. The day-level KPIs / charts / list are shown for 일간 only
+ * - [2026-11-27] type=feat - Column widths adjustable by dragging a header edge (useColWidths; double click / 열 너비 초기화 = default)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { NxtTag } from '../components/NxtTag';
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis, LabelList } from 'recharts';
 import { useStore } from '../store';
+import { ColGrip, ColGroup, ColReset, colTable, useColWidths } from '../components/useColWidths';
 import { condTitle, fmtInt, fmtKrw, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
 import { feeLabel, pnlKrw as netKrw, pnlPct as netPct } from '../../../shared/fees';
@@ -52,6 +54,9 @@ function usePaperTrades(book: PaperBook, day: string | undefined, tick: number |
 }
 
 export function TradesView() {
+  const sumCols = useColWidths('autoboth.cols.sumCols', 8);
+  const rangeCols = useColWidths('autoboth.cols.rangeCols', 7);
+  const tradeCols = useColWidths('autoboth.cols.tradeCols', 10);
   const snap = useStore((s) => s.snapshot);
   const conditions = useStore((s) => s.conditions);
   const select = useStore((s) => s.select);
@@ -296,17 +301,20 @@ export function TradesView() {
             </>
           )}
         </div>
-        <table className="grid">
+        <div className="cols-scroll">
+        <ColReset cols={sumCols} />
+        <table {...colTable(sumCols, 'grid')}>
+          <ColGroup cols={sumCols} />
           <thead>
             <tr>
-              <th>매매 방식</th>
-              <th>모드</th>
-              <th title="실행 중인 봇의 설정 (봇이 꺼져 있으면 저장된 설정). 오늘 도중에 바꿨다면 그 전 거래도 아래 숫자에 들어 있습니다">지금 상태</th>
-              <th className="num">매수</th>
-              <th className="num">매도 (청산)</th>
-              <th className="num">승률</th>
-              <th className="num" title="실제 = 로그의 실현 손익 (제세금 포함 스위치 반영) · 가상 = 1회 매수 상한 금액으로 샀다고 본 순손익 (비용 차감)">손익</th>
-              <th>내역 위치</th>
+              <th>매매 방식<ColGrip cols={sumCols} i={0} /></th>
+              <th>모드<ColGrip cols={sumCols} i={1} /></th>
+              <th title="실행 중인 봇의 설정 (봇이 꺼져 있으면 저장된 설정). 오늘 도중에 바꿨다면 그 전 거래도 아래 숫자에 들어 있습니다">지금 상태<ColGrip cols={sumCols} i={2} /></th>
+              <th className="num">매수<ColGrip cols={sumCols} i={3} /></th>
+              <th className="num">매도 (청산)<ColGrip cols={sumCols} i={4} /></th>
+              <th className="num">승률<ColGrip cols={sumCols} i={5} /></th>
+              <th className="num" title="실제 = 로그의 실현 손익 (제세금 포함 스위치 반영) · 가상 = 1회 매수 상한 금액으로 샀다고 본 순손익 (비용 차감)">손익<ColGrip cols={sumCols} i={6} /></th>
+              <th>내역 위치<ColGrip cols={sumCols} i={7} /></th>
             </tr>
           </thead>
           <tbody>
@@ -358,6 +366,7 @@ export function TradesView() {
             })}
           </tbody>
         </table>
+        </div>
         {period === 'day' && (
         <div className="strat-bar">
           <div className="seg" title="아래 요약 · 차트 · 내역에 보일 실제 매매">
@@ -378,16 +387,18 @@ export function TradesView() {
       </div>
       {period !== 'day' && (
         <div className="table-wrap range-days">
-          <table className="grid">
+          <ColReset cols={rangeCols} />
+          <table {...colTable(rangeCols, 'grid')}>
+            <ColGroup cols={rangeCols} />
             <thead>
               <tr>
-                <th>날짜</th>
-                <th className="num">규칙 (실제)</th>
-                <th className="num">Edge AI (실제)</th>
-                <th className="num">Edge AI (가상)</th>
-                <th className="num">VWAP (실제)</th>
-                <th className="num">VWAP (가상)</th>
-                <th className="num" title="규칙 + Edge AI + VWAP 의 실제 매매 손익">실제 합계</th>
+                <th>날짜<ColGrip cols={rangeCols} i={0} /></th>
+                <th className="num">규칙 (실제)<ColGrip cols={rangeCols} i={1} /></th>
+                <th className="num">Edge AI (실제)<ColGrip cols={rangeCols} i={2} /></th>
+                <th className="num">Edge AI (가상)<ColGrip cols={rangeCols} i={3} /></th>
+                <th className="num">VWAP (실제)<ColGrip cols={rangeCols} i={4} /></th>
+                <th className="num">VWAP (가상)<ColGrip cols={rangeCols} i={5} /></th>
+                <th className="num" title="규칙 + Edge AI + VWAP 의 실제 매매 손익">실제 합계<ColGrip cols={rangeCols} i={6} /></th>
               </tr>
             </thead>
             <tbody>
@@ -528,19 +539,21 @@ export function TradesView() {
         </div>
       </div>
       <div className="table-wrap">
-        <table className="grid">
+        <ColReset cols={tradeCols} />
+        <table {...colTable(tradeCols, 'grid')}>
+          <ColGroup cols={tradeCols} />
           <thead>
             <tr>
-              <th>시각</th>
-              <th>종목</th>
-              <th>방식</th>
-              <th>구분</th>
-              <th className="num">가격</th>
-              <th className="num">수량</th>
-              <th>매도 조건</th>
-              <th>사유</th>
-              <th className="num">손익{net ? ' (순)' : ''}</th>
-              <th className="num">수익률{net ? ' (순)' : ''}</th>
+              <th>시각<ColGrip cols={tradeCols} i={0} /></th>
+              <th>종목<ColGrip cols={tradeCols} i={1} /></th>
+              <th>방식<ColGrip cols={tradeCols} i={2} /></th>
+              <th>구분<ColGrip cols={tradeCols} i={3} /></th>
+              <th className="num">가격<ColGrip cols={tradeCols} i={4} /></th>
+              <th className="num">수량<ColGrip cols={tradeCols} i={5} /></th>
+              <th>매도 조건<ColGrip cols={tradeCols} i={6} /></th>
+              <th>사유<ColGrip cols={tradeCols} i={7} /></th>
+              <th className="num">손익{net ? ' (순)' : ''}<ColGrip cols={tradeCols} i={8} /></th>
+              <th className="num">수익률{net ? ' (순)' : ''}<ColGrip cols={tradeCols} i={9} /></th>
             </tr>
           </thead>
           <tbody>

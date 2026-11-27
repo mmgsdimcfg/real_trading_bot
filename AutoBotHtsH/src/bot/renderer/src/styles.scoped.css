@@ -959,6 +959,10 @@
 .bot-root .col-grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 1; }
 .bot-root .col-grip::after { content: ''; position: absolute; top: 20%; bottom: 20%; right: 2px; width: 1px; background: var(--border); }
 .bot-root .col-grip:hover::after { top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.bot-root .grid.cols-fixed { table-layout: fixed; }
+.bot-root .grid.cols-fixed th, .bot-root .grid.cols-fixed td { overflow: hidden; text-overflow: ellipsis; }
+.bot-root .cols-scroll { overflow-x: auto; }
+.bot-root .col-reset { display: flex; justify-content: flex-end; padding: 0 0 4px; }
 .bot-root .board-grid td.today { font-size: var(--fs); color: var(--text-2); }
 .bot-root .board-grid td.today b { font-weight: 600; color: var(--text); }
 /* [2026-11-11] the dock is a strip under its evaluation chart (between it and the price chart) */

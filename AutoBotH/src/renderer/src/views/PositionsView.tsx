@@ -12,11 +12,13 @@
  *   server has no holdings snapshot yet (older server code, or r003 not started since the update)
  * - [2026-11-18] type=perf - Holdings and the KIS prices of held symbols: the last answers (dataCache, quotes shared with the chart
  *   tab) are shown at once when the tab is opened again, then refreshed
+ * - [2026-11-27] type=feat - Column widths adjustable by dragging a header edge (useColWidths; double click / 열 너비 초기화 = default)
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { NxtMark } from '../components/NxtTag';
 import { useStore } from '../store';
+import { ColGrip, ColGroup, ColReset, colTable, useColWidths } from '../components/useColWidths';
 import { peek, put, storedAt } from '../dataCache';
 import { condTitle, fmtInt, fmtKrw, fmtPct, pnlClass } from '../lib';
 import { fmtKstTime } from '../../../shared/time';
@@ -65,6 +67,7 @@ const ageText = (sec: number | null | undefined) => {
 };
 
 export function PositionsView() {
+  const posCols = useColWidths('autoboth.cols.posCols', 10);
   const snap = useStore((s) => s.snapshot);
   const conditions = useStore((s) => s.conditions);
   const status = useStore((s) => s.status);
@@ -259,19 +262,21 @@ export function PositionsView() {
       )}
       {quoteErr && <p className="muted small" style={{ padding: '0 16px' }}>현재가: {quoteErr}</p>}
       <div className="table-wrap">
-        <table className="grid">
+        <ColReset cols={posCols} />
+        <table {...colTable(posCols, 'grid')}>
+          <ColGroup cols={posCols} />
           <thead>
             <tr>
-              <th>종목</th>
-              <th>구분</th>
-              <th>매수 시각</th>
-              <th>보유 시간</th>
-              <th className="num">{fromAccount ? '평균 매수가' : '매수가'}</th>
-              <th className="num">수량</th>
-              <th className="num">현재가</th>
-              <th className="num">평가 손익{net ? ' (순)' : ''}</th>
-              <th className="num">수익률</th>
-              <th>마지막 매도 평가</th>
+              <th>종목<ColGrip cols={posCols} i={0} /></th>
+              <th>구분<ColGrip cols={posCols} i={1} /></th>
+              <th>매수 시각<ColGrip cols={posCols} i={2} /></th>
+              <th>보유 시간<ColGrip cols={posCols} i={3} /></th>
+              <th className="num">{fromAccount ? '평균 매수가' : '매수가'}<ColGrip cols={posCols} i={4} /></th>
+              <th className="num">수량<ColGrip cols={posCols} i={5} /></th>
+              <th className="num">현재가<ColGrip cols={posCols} i={6} /></th>
+              <th className="num">평가 손익{net ? ' (순)' : ''}<ColGrip cols={posCols} i={7} /></th>
+              <th className="num">수익률<ColGrip cols={posCols} i={8} /></th>
+              <th>마지막 매도 평가<ColGrip cols={posCols} i={9} /></th>
             </tr>
           </thead>
           <tbody>
