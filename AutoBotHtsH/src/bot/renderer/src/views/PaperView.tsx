@@ -62,9 +62,41 @@ import { showCode } from '../showCode';
 
 /** [2026-11-20] the bot's per-order budget (r001 MAX_ORDER_AMOUNT_KRW) - virtual trades are sized like real ones for the KRW columns */
 export const ORDER_KRW_DEFAULT = 500_000;
-let orderKrwCache: number | null = null;
+/** [2026-11-28, Codex review] per run mode (this PC / the Pi): the budget of one host is not used for the other */
+const orderKrwCache = new Map<string, number>();
 /** the budget read so far (the default until the host's settings were read) - 매매 결과's paper rows */
-export const paperOrderKrw = (): number => orderKrwCache ?? ORDER_KRW_DEFAULT;
+/** the per-order budget (server MAX_ORDER_AMOUNT_KRW) the paper KRW figures are worked out with: read once per connection
+ *  target, ORDER_KRW_DEFAULT until it is known. `known` = it came from the host (false: the default is shown) */
+export function usePaperBudget(): { krw: number; known: boolean } {
+  const mode = useStore((s) => s.status.mode);
+  const conn = useStore((s) => s.status.conn);
+  const key = String(mode);
+  const connected = conn === 'connected' || conn === 'local';
+  const [v, setV] = useState<{ key: string; krw: number } | null>(() => (orderKrwCache.has(key) ? { key, krw: orderKrwCache.get(key) as number } : null));
+  useEffect(() => {
+    if (!connected) {
+      // [Codex review] the next connection may be another host of the same run mode: its budget is read again
+      orderKrwCache.delete(key);
+      return setV(null);
+    }
+    const c = orderKrwCache.get(key);
+    if (c !== undefined) return setV({ key, krw: c });
+    setV(null);
+    let alive = true;
+    void window.api.ctlSchema(true).then((r) => {
+      const k = r.ok ? r.data?.keys.find((x) => x.key === 'MAX_ORDER_AMOUNT_KRW') : undefined;
+      const n = Number(k?.effective ?? k?.base);
+      if (Number.isFinite(n) && n > 0) {
+        orderKrwCache.set(key, n);
+        if (alive) setV({ key, krw: n });
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [key, connected]);
+  return v && v.key === key ? { krw: v.krw, known: true } : { krw: ORDER_KRW_DEFAULT, known: false };
+}
 /** shares the bot would buy at `price` with `budget` (0 = it would not buy) */
 export const paperQty = (price: number | undefined, budget: number) => (price && price > 0 ? Math.floor(budget / price) : 0);
 /** KRW result of a virtual trade: open = (price - buy) x qty (before costs), closed = net % of the bought amount */
@@ -184,22 +216,7 @@ export function PaperView() {
   const sum = useMemo(() => paperSummary(trades), [trades]);
   // [2026-11-20] per-order budget from the host's settings (once per session)
   const connected = status.conn === 'connected' || status.conn === 'local';
-  const [orderKrw, setOrderKrw] = useState<number>(orderKrwCache ?? ORDER_KRW_DEFAULT);
-  useEffect(() => {
-    if (orderKrwCache !== null || !connected) return;
-    let alive = true;
-    void window.api.ctlSchema(true).then((r) => {
-      const k = r.ok ? r.data?.keys.find((x) => x.key === 'MAX_ORDER_AMOUNT_KRW') : undefined;
-      const v = Number(k?.effective ?? k?.base);
-      if (Number.isFinite(v) && v > 0) {
-        orderKrwCache = v;
-        if (alive) setOrderKrw(v);
-      }
-    });
-    return () => {
-      alive = false;
-    };
-  }, [connected]);
+  const orderKrw = usePaperBudget().krw;
   const sumKrw = useMemo(
     () => trades.filter((t) => t.exitTs !== undefined).reduce((a, t) => a + (paperKrw(t.entry, orderKrw, { netPct: t.netPct ?? 0 }) || 0), 0),
     [trades, orderKrw],
@@ -219,7 +236,10 @@ export function PaperView() {
   const realEdge = (strategy?.running ?? strategy?.effective) === 'edge';
   const running = mode?.running ?? null;
   // [2026-11-26] Edge AI live orders beside the rule strategy (EDGE_LIVE_ORDERS in the running r003): its trades are real ones, not listed here
-  const liveEdge = useStore((s) => s.control.edgeLive?.running) === 'true';
+  const liveEdge = useStore((s) => s.control.edgeLive?.running === 'true' && s.control.paper?.running === 'paper');
+  // a dry-run bot sends no order: not "실제 매매 중" [Codex review]
+  const dryRun = useStore((s) => !!s.control.status?.dry_run);
+  const liveNow = running === 'paper' && !dryRun && ((book === 'vwap' && vwapLiveRunning) || (book === 'edge' && liveEdge));
   const modeText = !mode
     ? '서버가 가상 매매 설정을 모릅니다 (서버 코드 갱신 필요)'
     : running === 'paper'
@@ -238,7 +258,8 @@ export function PaperView() {
             </button>
           ))}
         </div>
-        <span className={`badge-mode ${running === 'paper' ? 'on' : ''}`}>{modeText}</span>
+        {/* [2026-11-28] real orders of this method run: its paper runner only closes - not "가상 매매 진행 중" (user: one of the two) */}
+        <span className={`badge-mode ${running === 'paper' && !liveNow ? 'on' : ''}`}>{liveNow ? '실행 중인 봇: 실제 매매 중 (가상 매수 없음, 남은 가상 보유만 청산)' : modeText}</span>
         {/* [2026-11-26] not from a stale status file: after a restart with other settings the old file said "꺼짐" until the new r003 wrote its own */}
         {pst?.logOnly && !stale && (
           <span className="badge-warn" title="서버 r001 EDGE_ONLY_LOG_ONLY - 트리거가 뜬 봉은 edge_only_candidates_<날짜>.jsonl 에 후보로만 기록, 이미 있는 가상 보유는 그대로 청산">
@@ -246,7 +267,7 @@ export function PaperView() {
           </span>
         )}
         {mode?.pending && <span className="badge-warn">⚠ 설정이 바뀌었습니다 → r003 재시작 후 적용</span>}
-        {book === 'vwap' && vwapLiveRunning && <span className="badge-warn">VWAP 실제 매매 중 - 가상 매수는 하지 않고, 실제 주문 내역은 매매 결과 탭에 있습니다</span>}
+        {book === 'vwap' && vwapLiveRunning && <span className="badge-warn">실제 주문 내역은 매매 결과 탭에 있습니다</span>}
         {book === 'edge' && realEdge && <span className="badge-warn">매매 방식이 Edge AI(실제 주문)입니다 - 가상 매매는 돌지 않고, 실제 내역은 매매 결과 탭에 있습니다</span>}
         {book === 'edge' && liveEdge && !realEdge && <span className="badge-warn">Edge AI 실제 매매 중 - 실제 주문 내역은 이 창이 아니라 매매 결과 탭에 있습니다</span>}
         <button type="button" className="chip link" title={`${PAPER_BOOK_KO[book]}의 실제 주문 내역: 매매 결과 탭을 이 매매 방식으로 걸러 엽니다`} onClick={() => openResults(book, 'live')}>

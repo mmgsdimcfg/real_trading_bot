@@ -287,6 +287,21 @@ export interface PaperSummary {
   byReason: Record<string, number>;
 }
 
+/** [2026-11-28, Codex review] the paper book as it stood at `cursor` (replay): buys after it are left out, a position closed
+ *  after it is still open (its exit fields dropped). null cursor = the book as it is. */
+export function paperAsOf(trades: PaperTrade[], cursor: number | null | undefined): PaperTrade[] {
+  if (cursor === null || cursor === undefined) return trades;
+  const out: PaperTrade[] = [];
+  for (const t of trades) {
+    if (t.entryTs > cursor) continue;
+    if (t.exitTs !== undefined && t.exitTs > cursor) {
+      const { exitTs: _x, exit: _e, reason: _r, netPct: _n, ...open } = t as PaperTrade & { netPct?: number };
+      out.push(open as PaperTrade);
+    } else out.push(t);
+  }
+  return out;
+}
+
 export function paperSummary(trades: PaperTrade[]): PaperSummary {
   const closed = trades.filter((t) => t.exitTs !== undefined);
   const nets = closed.map((t) => t.netPct ?? 0);

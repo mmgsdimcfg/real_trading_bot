@@ -4,6 +4,8 @@
  *   the mode of each method from the control state
  */
 import { describe, expect, it } from 'vitest';
+import type { Trade } from '../src/shared/types';
+import { paperAsOf } from '../src/shared/paper';
 import { DayEngine } from '../src/shared/engine';
 import { buyStrategyOf, sellStrategyOf, sideExitKo, strategyModeKo, strategyModes, strategySummary } from '../src/shared/strategy';
 
@@ -38,9 +40,9 @@ describe('trade method of a real trade', () => {
     const t = e.getTrades();
     expect(t.map((x) => x.strategy)).toEqual(['rule', 'vwap', 'vwap', 'edge', 'edge', 'rule']);
     const s = strategySummary(t);
-    expect(s.vwap).toEqual({ buys: 1, sells: 1, wins: 1, pnlKrw: 300 });
-    expect(s.edge).toEqual({ buys: 1, sells: 1, wins: 0, pnlKrw: -90 });
-    expect(s.rule).toEqual({ buys: 1, sells: 1, wins: 0, pnlKrw: -100 });
+    expect(s.vwap).toEqual({ buys: 1, sells: 1, wins: 1, pnlKrw: 300, unknown: 0 });
+    expect(s.edge).toEqual({ buys: 1, sells: 1, wins: 0, pnlKrw: -90, unknown: 0 });
+    expect(s.rule).toEqual({ buys: 1, sells: 1, wins: 0, pnlKrw: -100, unknown: 0 });
   });
 });
 
@@ -72,3 +74,28 @@ describe('mode of each method', () => {
     expect([m.rule.live, m.edge.live, m.edge.paper]).toEqual([false, true, false]);
   });
 });
+
+describe('sells without a known result', () => {
+  it('are counted apart: not a 0 in the sum, not in the win rate', () => {
+    const t = (p: Partial<Trade>): Trade => ({ code: '000001', name: 'A', side: 'SELL', ts: 1, price: 100, qty: 1, reason: '', raw: '', ...p });
+    const s = strategySummary([t({ pnlKrw: 500 }), t({ pnlKrw: undefined }), t({ pnlKrw: -200 })]);
+    expect(s.rule).toEqual({ buys: 0, sells: 3, wins: 1, pnlKrw: 300, unknown: 1 });
+  });
+});
+
+describe('the paper book at a replay cursor', () => {
+  it('leaves out later buys and keeps a position open that was closed after the cursor', () => {
+    const rows = [
+      { code: 'A', entryTs: 100, entry: 10, exitTs: 200, exit: 11, netPct: 1 },
+      { code: 'B', entryTs: 150, entry: 10, exitTs: 400, exit: 9, netPct: -2, reason: 'sl' },
+      { code: 'C', entryTs: 350, entry: 10 },
+    ] as never[];
+    const at = paperAsOf(rows, 300) as unknown as { code: string; exitTs?: number; netPct?: number }[];
+    expect(at.map((t) => t.code)).toEqual(['A', 'B']);
+    expect(at[0].exitTs).toBe(200);
+    expect(at[1].exitTs).toBeUndefined(); // still open at the cursor
+    expect(at[1].netPct).toBeUndefined();
+    expect(paperAsOf(rows, null)).toBe(rows);
+  });
+});
+

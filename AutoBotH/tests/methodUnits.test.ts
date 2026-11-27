@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMethodTargets, runningUnits, targetListToStore, targetsInUse, unitInfos } from '../src/shared/methodUnits';
+import { BLOCK_NOTE_FRESH_MS, liveNotes, parseMethodTargets, runningUnits, targetListToStore, targetsInUse, unitInfos } from '../src/shared/methodUnits';
 import { methodRows, methodTotals, filterMethodRows } from '../src/shared/methodBoard';
 import type { SymbolSummary } from '../src/shared/types';
 
@@ -46,6 +46,8 @@ describe('unitInfos', () => {
     expect(edgeOnly.rule.locked).toBe('Edge AI 단독 모드');
     expect(edgeOnly.edge_live.locked).toBe('단독 모드 · 실전');
     expect(edgeOnly.edge_live.entryRunning).toBe(true);
+    expect([edgeOnly.edge_paper.switchOn, edgeOnly.edge_live.switchOn]).toEqual([false, true]); // the mode itself is the real trade
+    expect(edgeOnly.vwap_live.locked).toBe('서버 매매 방식이 normal 이 아님');
     const old = by(unitInfos({ strategy: m('normal'), paper: m('paper') }, true)); // a server without the newer keys
     expect(old.vwap_paper).toMatchObject({ switchOn: null, locked: '서버가 이 설정을 모릅니다' });
     expect(old.vwap_live.switchOn).toBeNull();
@@ -65,6 +67,12 @@ describe('of a method\'s paper and real cards at most one is on', () => {
     // real orders stored on while the method itself is off: nothing runs, nothing is shown on
     expect(pair({ ...today, vwapMode: m('off'), vwapLive: m('true') }, 'vwap')).toEqual([false, false]);
     expect(pair({ ...today, edgeLive: m('true') }, 'edge')).toEqual([false, true]);
+    // a real-orders flag left while the method is off is not "pending" on the real card
+    const left = by(unitInfos({ ...today, paper: m('off'), edgeLive: m('true') }, true));
+    expect(left.edge_live).toMatchObject({ switchOn: false, state: 'stop', entryStored: false });
+    // Edge AI paper on but candidates only: the card says it buys nothing on paper
+    const logOnly = by(unitInfos({ ...today, paperLogOnly: m('true') }, true));
+    expect(logOnly.edge_paper).toMatchObject({ switchOn: true, stateKo: '후보 기록만 (가상 매수 안 함)' });
   });
 });
 
@@ -111,5 +119,15 @@ describe('method targets', () => {
     expect(methodTotals(rows).targets).toBe(1);
     expect(filterMethodRows(rows, 'target').map((r) => r.code)).toEqual(['000002']);
     expect(methodRows('vwap', { symbols: [sym('000001')], trades: [], targets: [] })[0].notTarget).toBe(false);
+  });
+});
+
+describe('liveNotes', () => {
+  const n = (strategy: 'edge' | 'vwap', kind: string, lastTs: number, mode = 'live') => ({ strategy, kind, lastTs, mode });
+  it('the newest start line per strategy; a block line counts only while it is fresh; paper lines are ignored', () => {
+    const ref = 100 * 60_000;
+    expect(liveNotes([n('vwap', 'on', 0), n('vwap', 'blocked', ref - 1000), n('edge', 'off', 0), n('edge', 'on', 0, 'paper')], ref)).toEqual({ vwap: 'blocked', edge: 'off' });
+    expect(liveNotes([n('vwap', 'on', 0), n('vwap', 'blocked', ref - BLOCK_NOTE_FRESH_MS - 1)], ref)).toEqual({ vwap: 'on' });
+    expect(liveNotes(undefined, ref)).toEqual({});
   });
 });

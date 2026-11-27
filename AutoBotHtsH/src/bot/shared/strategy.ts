@@ -47,20 +47,26 @@ export interface StrategyDaySummary {
   sells: number;
   wins: number;
   pnlKrw: number;
+  /** [2026-11-28] sells without a known result (no price / cost): not in pnlKrw, not in the win rate (sells - unknown) */
+  unknown: number;
 }
 /** real trades of the day per method (pnl from the sells as given - the caller passes net or gross rows) */
 export function strategySummary(trades: Pick<Trade, 'side' | 'strategy' | 'pnlKrw'>[]): Record<TradeStrategy, StrategyDaySummary> {
   const out: Record<TradeStrategy, StrategyDaySummary> = {
-    rule: { buys: 0, sells: 0, wins: 0, pnlKrw: 0 },
-    edge: { buys: 0, sells: 0, wins: 0, pnlKrw: 0 },
-    vwap: { buys: 0, sells: 0, wins: 0, pnlKrw: 0 },
+    rule: { buys: 0, sells: 0, wins: 0, pnlKrw: 0, unknown: 0 },
+    edge: { buys: 0, sells: 0, wins: 0, pnlKrw: 0, unknown: 0 },
+    vwap: { buys: 0, sells: 0, wins: 0, pnlKrw: 0, unknown: 0 },
   };
   for (const t of trades) {
     const e = out[strategyOfTrade(t)];
     if (t.side === 'BUY') e.buys++;
     else {
       e.sells++;
-      const p = Number.isFinite(t.pnlKrw as number) ? (t.pnlKrw as number) : 0;
+      if (!Number.isFinite(t.pnlKrw as number)) {
+        e.unknown++;
+        continue;
+      }
+      const p = t.pnlKrw as number;
       e.pnlKrw += p;
       if (p > 0) e.wins++;
     }
@@ -95,7 +101,9 @@ export function strategyModes(c: Pick<ControlState, 'strategy' | 'ruleBuy' | 'pa
   const logOnly = val(c.paperLogOnly) === 'true';
   const vwapMode = val(c.vwapMode);
   const vwapLive = val(c.vwapLive);
-  const edgeLiveOn = edgeOnly ? true : edgeLive === null ? null : edgeLive === 'true' && normal !== false;
+  // [2026-11-28, Codex review] Edge AI real orders beside the rule trade need the Edge AI trade itself on (EDGE_ONLY_MODE
+  // paper; r003 _edge_live_config_ok): a real-orders flag left stored while the method is off places no order
+  const edgeLiveOn = edgeOnly ? true : edgeLive === null ? null : edgeLive === 'true' && normal !== false && paper !== 'off';
   const vwapLiveOn = vwapLive === null || vwapMode === null ? null : vwapLive === 'true' && vwapMode === 'paper' && normal !== false;
   return {
     rule: {

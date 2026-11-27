@@ -14,7 +14,7 @@
  * - [2026-11-27] type=feat - 대상 구성 card on a method tab (components/TargetCompose): the composition from the scan, its edits and apply
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { ColGrip, ColGroup, ColReset, colTable, useColWidths, type ColWidths } from '../components/useColWidths';
 import { PriceTag } from '../components/PriceTag';
@@ -42,10 +42,9 @@ import {
   type PaperTrade,
 } from '../../../shared/paper';
 import { METHOD_FILTER_KO, METHOD_SRC_KO, filterMethodRows, methodRows, methodTotals, type MethodRow, type MethodRowFilter, type MethodTotals } from '../../../shared/methodBoard';
-import { METHOD_TARGET_KEYS, UNIT_KO, UNIT_SHORT, runningUnits, targetListToStore, targetsInUse, targetsKo, unitInfos, type UnitInfo } from '../../../shared/methodUnits';
+import { METHOD_TARGET_KEYS, UNIT_KO, UNIT_SHORT, runningUnits, targetListToStore, targetsInUse, targetsKo, unitInfos, type UnitInfo, BLOCK_NOTE_FRESH_MS, liveNotes } from '../../../shared/methodUnits';
 
 const REFRESH_MS = 15000;
-const BLOCK_NOTE_FRESH_MS = 11 * 60 * 1000;
 const FILTERS: MethodRowFilter[] = ['all', 'target', 'recorded', 'active', 'holding'];
 const TARGET_NOTE: Record<TradeStrategy, string> = {
   rule: '규칙 매매는 r003 이 감시하는 종목(r004 감시목록)을 조건 순서대로 평가합니다.',
@@ -59,6 +58,9 @@ type SideData = { evals: EvalRes | null; paperTrades: PaperTrade[] | undefined; 
 type AllFilter = 'all' | 'watch' | 'traded' | 'holding';
 const ALL_FILTER_KO: Record<AllFilter, string> = { all: '전체', watch: '감시', traded: '체결', holding: '보유' };
 type Go = (code: string, m: TradeStrategy | 'auto') => void;
+
+/** [2026-11-28, Codex review] the day the page shows: "오늘" only on the live day, else its date (a past day is not today) */
+const DayCtx = createContext('오늘');
 
 const sp = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
 const ymd = (d: string | undefined) => (d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : '');
@@ -151,16 +153,7 @@ export function MethodView() {
   const modes = useMemo(() => strategyModes(control), [control]);
   const botRunning = control.status ? !!control.status.running : null;
   // what the bot itself said about its real-order strategies today (start line / block line), newest per strategy
-  const liveNote = useMemo(() => {
-    const out: Partial<Record<SideStrategy, 'on' | 'off' | 'blocked'>> = {};
-    const ref = snap?.lastLineTs || 0;
-    for (const n of snap?.strategyNotes || []) {
-      if (n.mode !== 'live') continue;
-      if (n.kind === 'on' || n.kind === 'off') out[n.strategy] = n.kind;
-      else if (n.kind === 'blocked') out[n.strategy] = ref - n.lastTs <= BLOCK_NOTE_FRESH_MS ? 'blocked' : out[n.strategy] === 'blocked' ? 'on' : out[n.strategy];
-    }
-    return out;
-  }, [snap]);
+  const liveNote = useMemo(() => liveNotes(snap?.strategyNotes, snap?.lastLineTs || 0), [snap]);
   const units = useMemo(() => unitInfos(control, botRunning, liveNow ? { dryRun: !!control.status?.dry_run, liveNote } : {}), [control, botRunning, liveNow, liveNote]);
   const edge = useSideData('edge', day, replayX, tick, hostKey);
   const vwap = useSideData('vwap', day, replayX, tick, hostKey);
@@ -220,7 +213,11 @@ export function MethodView() {
         return;
       }
       if (!on) return void (await setLive(false));
-      if (!methodOn && !(await setMethod(true))) return;
+      if (!methodOn) {
+        // [Codex review] two stored steps: say so first - cancelling the second leaves the method on in paper
+        if (!window.confirm(`${TRADE_STRATEGY_KO[u.method]}가 꺼져 있습니다.\n\n먼저 이 방식을 켜고(가상 매매로 저장) 이어서 실제 매매를 켭니다.\n실제 매매 확인을 취소하거나 조건이 맞지 않으면 가상 매매로 켜진 상태로 남습니다.\n\n진행할까요?`)) return;
+        if (!(await setMethod(true))) return;
+      }
       await setLive(true);
     })();
   };
@@ -240,7 +237,9 @@ export function MethodView() {
     return items.sort((a, b) => b.ts - a.ts).slice(0, 6);
   }, [rowsBy, snap, method]);
 
+  const dayKo = liveNow || !day ? '오늘' : `${day.slice(4, 6)}-${day.slice(6, 8)}`;
   return (
+    <DayCtx.Provider value={dayKo}>
     <div className="method-view">
       <div className="toolbar method-pick">
         <div className="seg mtabs" title="전체 현황 또는 매매 방식 하나">
@@ -337,6 +336,7 @@ export function MethodView() {
         )}
       </div>
     </div>
+    </DayCtx.Provider>
   );
 }
 
@@ -353,6 +353,7 @@ function UnitCard(props: {
   onSwitch: (on: boolean) => void;
 }) {
   const { u, totals: t } = props;
+  const dayKo = useContext(DayCtx);
   const off = props.disabled || !!u.locked || u.switchOn === null;
   const swTitle =
     u.key === 'rule'
@@ -382,7 +383,7 @@ function UnitCard(props: {
         <dd title={props.targets.from === 'running' ? '실행 중인 봇의 대상 종목 설정' : props.targets.from === 'stored' ? '저장된 대상 종목 설정 (봇 꺼짐)' : props.targets.from === 'unknown' ? '실행 중인 봇의 대상 종목 설정을 확인할 수 없습니다 (감시 종목 수만 표시)' : '대상 종목 설정을 읽지 못했습니다'}>
           {t.targets}종목{props.targets.list.length ? ` (지정 ${props.targets.list.length})` : ''}
         </dd>
-        <dt>오늘</dt>
+        <dt>{dayKo}</dt>
         {u.mode === 'live' ? (
           <dd>
             매수 {t.buys} · 매도 {t.sells} · 보유 {t.holding}
@@ -423,6 +424,7 @@ function Overview(props: {
   go: Go;
 }) {
   const { rowsBy, totalsBy: tb, cols } = props;
+  const dayKo = useContext(DayCtx);
   const by = useMemo(() => {
     const m = {} as Record<TradeStrategy, Map<string, MethodRow>>;
     for (const s of TRADE_STRATEGIES) m[s] = new Map(rowsBy[s].map((r) => [r.code, r]));
@@ -470,7 +472,7 @@ function Overview(props: {
     <>
       <div className="method-sum">
         <div className="ms-box">
-          <b>종합 현황 (오늘)</b>
+          <b>종합 현황 ({dayKo})</b>
           <div className="ms-item" title="r003 이 지금 감시하는 종목 (방식이 겹쳐도 한 번만 셉니다)">
             <span>감시 종목</span>
             <b>{watched}</b>
@@ -533,7 +535,7 @@ function Overview(props: {
               {th(4, '규칙 매매', 'm-rule')}
               {th(5, 'Edge AI 매매', 'm-edge')}
               {th(6, 'VWAP 매매', 'm-vwap')}
-              {th(7, '오늘 매매 (실전)', 'num', '실제 체결: 방식 매수 / 매도')}
+              {th(7, `${dayKo} 매매 (실전)`, 'num', '실제 체결: 방식 매수 / 매도')}
               {th(8, '실현 · 가상', 'num', '실제 실현 손익 · 가상 매매 순수익률 합 (따로 표시)')}
             </tr>
           </thead>
@@ -629,6 +631,7 @@ function MethodDetail(props: {
   onSaved: () => void;
 }) {
   const { method, rows, totals, cols, fillCols, liveNow } = props;
+  const dayKo = useContext(DayCtx);
   const snap = useStore((s) => s.snapshot);
   const control = useStore((s) => s.control);
   const conditions = useStore((s) => s.conditions);
@@ -647,7 +650,8 @@ function MethodDetail(props: {
     const ref = snap?.lastLineTs || 0;
     return last && last.kind === 'blocked' && ref - last.lastTs <= BLOCK_NOTE_FRESH_MS ? last : null;
   })();
-  const liveSum = method === 'edge' ? parseEdgeLiveSummary(control.status) : method === 'vwap' ? parseVwapLiveSummary(control.status) : null;
+  // the bot's fill ledger is its state NOW: shown on the live day only (not beside a past day's numbers)
+  const liveSum = !liveNow ? null : method === 'edge' ? parseEdgeLiveSummary(control.status) : method === 'vwap' ? parseVwapLiveSummary(control.status) : null;
   const limits = method === 'edge' ? control.edgeLiveLimits : method === 'vwap' ? control.vwapLiveLimits : undefined;
   const maxEntries = limits ? limits.entries.running ?? limits.entries.effective : null;
   const exits = exitText(method === 'rule' ? control.ruleExit : method === 'edge' ? control.paperExit : control.vwapExit, method === 'rule' ? '적용 안 함' : method === 'edge' ? '모델 기준' : '-');
@@ -749,7 +753,7 @@ function MethodDetail(props: {
             {side && (
               <>
                 <dt>봉별 판정</dt>
-                <dd>{props.side?.evals ? `${fmtInt(props.side.evals.total)}행 (오늘)` : '-'}</dd>
+                <dd>{props.side?.evals ? `${fmtInt(props.side.evals.total)}행 (${dayKo})` : '-'}</dd>
               </>
             )}
             {method === 'edge' && props.side?.pst?.modelId && (
@@ -835,7 +839,7 @@ function MethodDetail(props: {
         )}
 
         <section>
-          <h5>오늘 성과</h5>
+          <h5>{dayKo} 성과</h5>
           <dl>
             <dt>실전</dt>
             <dd>
@@ -957,7 +961,7 @@ function MethodDetail(props: {
                 {th(5, '기록 시각')}
                 {th(6, method === 'rule' ? '평가 수 · 매수 체결' : '판정 봉 · 신호 · 주문', 'num')}
                 {th(7, '보유', 'num', '실제 보유: 수량 @ 원가 · 가상 보유는 "가상"')}
-                {th(8, '오늘 매수 / 매도', 'num')}
+                {th(8, `${dayKo} 매수 / 매도`, 'num')}
                 {th(9, '실현 손익', 'num', '실제 매매의 실현 손익 · 가상 매매는 순수익률 합')}
               </tr>
             </thead>
@@ -1037,7 +1041,7 @@ function MethodDetail(props: {
         </div>
 
         <div className="toolbar method-bar">
-          <h4>오늘 실제 체결 ({TRADE_STRATEGY_KO[method]})</h4>
+          <h4>{dayKo} 실제 체결 ({TRADE_STRATEGY_KO[method]})</h4>
           <span className="muted small">
             최근 {Math.min(fills.length, 8)}건 / 전체 {fills.length}건
           </span>
@@ -1078,7 +1082,7 @@ function MethodDetail(props: {
               {!fills.length && (
                 <tr className="nohover">
                   <td colSpan={7} className="muted center">
-                    오늘 이 방식의 실제 체결이 없습니다.
+                    {dayKo} 이 방식의 실제 체결이 없습니다.
                   </td>
                 </tr>
               )}

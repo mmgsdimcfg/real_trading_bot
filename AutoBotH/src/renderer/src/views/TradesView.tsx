@@ -25,7 +25,9 @@ import { feeLabel, pnlKrw as netKrw, pnlPct as netPct } from '../../../shared/fe
 import { sideExitKo, strategyModeKo, strategyModes, strategyOfTrade, strategySummary, TRADE_STRATEGIES, TRADE_STRATEGY_KO, TRADE_STRATEGY_SHORT, type TradeStrategy } from '../../../shared/strategy';
 import { paperSummary, type PaperBook, type PaperTrade } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
-import { paperKrw, paperOrderKrw } from './PaperView';
+import { paperKrw, usePaperBudget } from './PaperView';
+import { paperAsOf } from '../../../shared/paper';
+import { liveNotes, unitInfos } from '../../../shared/methodUnits';
 import { isYmd, PERIODS, PERIOD_KO, periodRange, rangeCsv, shiftPeriod, sumResults, type DayResults, type Period, type RangeResults } from '../../../shared/rangeResults';
 import { ymdDash } from '../../../shared/time';
 
@@ -71,15 +73,28 @@ export function TradesView() {
   const openResults = useStore((s) => s.openResults);
   const day = snap?.date || status.date;
   const tick = status.live ? snap?.generatedAt : 0;
-  const paperEdge = usePaperTrades('edge', day, tick, status.conn);
-  const paperVwap = usePaperTrades('vwap', day, tick, status.conn);
+  // [2026-11-28, Codex review] in a replay the paper books are cut at the cursor like the real trades (a buy / an exit after it
+  // has not happened yet)
+  const replayAt = snap?.replay?.cursor ?? null;
+  const paperEdgeAll = usePaperTrades('edge', day, tick, status.conn);
+  const paperVwapAll = usePaperTrades('vwap', day, tick, status.conn);
+  const paperEdge = useMemo(() => (paperEdgeAll ? paperAsOf(paperEdgeAll, replayAt) : paperEdgeAll), [paperEdgeAll, replayAt]);
+  const paperVwap = useMemo(() => (paperVwapAll ? paperAsOf(paperVwapAll, replayAt) : paperVwapAll), [paperVwapAll, replayAt]);
+  const budget = usePaperBudget();
+  // what each run unit does now, from the running bot only (the same source as the method board)
+  const liveNote = useMemo(() => (status.live ? liveNotes(snap?.strategyNotes, snap?.lastLineTs || 0) : {}), [snap, status.live]);
+  const units = useMemo(
+    () => unitInfos(control, control.status ? !!control.status.running : null, { dryRun: !!control.status?.dry_run, liveNote }),
+    [control, liveNote],
+  );
   const modes = useMemo(() => strategyModes(control), [control]);
   // every method's real trades (net when the switch is on) for the summary table, whatever the filter
   const allRows = useMemo(
     () =>
       allTrades.map((t) => {
-        const can = net && t.side === 'SELL' && !!t.buyPrice && !!t.price && !!t.qty;
-        return can ? { ...t, pnlKrw: netKrw(t.buyPrice!, t.price, t.qty, true) } : t;
+        const priced = t.side === 'SELL' && !!t.buyPrice && !!t.price && !!t.qty;
+        const can = priced && (net || !Number.isFinite(t.pnlKrw as number));
+        return can ? { ...t, pnlKrw: netKrw(t.buyPrice!, t.price, t.qty, net) } : t;
       }),
     [allTrades, net],
   );
@@ -87,8 +102,7 @@ export function TradesView() {
   const paperRow = (rows: PaperTrade[] | null) => {
     if (!rows) return null;
     const s = paperSummary(rows);
-    const budget = paperOrderKrw();
-    const krw = rows.filter((t) => t.exitTs !== undefined).reduce((a, t) => a + (paperKrw(t.entry, budget, { netPct: t.netPct ?? 0 }) || 0), 0);
+    const krw = rows.filter((t) => t.exitTs !== undefined).reduce((a, t) => a + (paperKrw(t.entry, budget.krw, { netPct: t.netPct ?? 0 }) || 0), 0);
     return { buys: rows.length, sells: s.closed, wins: s.wins, pnlKrw: krw, open: s.open };
   };
   const paperSum: Record<PaperBook, ReturnType<typeof paperRow>> = { edge: paperRow(paperEdge), vwap: paperRow(paperVwap) };
@@ -99,13 +113,16 @@ export function TradesView() {
       trades
         .filter((t) => t.side === 'SELL')
         .map((t) => {
-          const can = net && !!t.buyPrice && !!t.price && !!t.qty;
-          return { ...t, pnlKrw: can ? netKrw(t.buyPrice!, t.price, t.qty, true) : t.pnlKrw, pnlPct: can ? netPct(t.buyPrice!, t.price, t.qty, true) : t.pnlPct };
+          const priced = !!t.buyPrice && !!t.price && !!t.qty;
+          const can = priced && (net || !Number.isFinite(t.pnlKrw as number));
+          return { ...t, pnlKrw: can ? netKrw(t.buyPrice!, t.price, t.qty, net) : t.pnlKrw, pnlPct: can ? netPct(t.buyPrice!, t.price, t.qty, net) : t.pnlPct };
         }),
     [trades, net],
   );
   const total = sells.reduce((a, t) => a + (t.pnlKrw || 0), 0);
   const wins = sells.filter((t) => (t.pnlKrw || 0) > 0).length;
+  /** sells whose result is known (a hand sale without price / cost is not a loss) */
+  const knownSells = sells.filter((t) => Number.isFinite(t.pnlKrw as number)).length;
 
   const cum = useMemo(() => {
     let acc = 0;
@@ -166,7 +183,7 @@ export function TradesView() {
     if (!silent) setRangeBusy(true);
     flightRef.current = true;
     void window.api
-      .getRangeResults(from, to, paperOrderKrw())
+      .getRangeResults(from, to, budget.krw)
       .then((res) => {
         if (id !== reqRef.current) return;
         // a failed automatic re-read keeps the last good numbers (the next one tries again)
@@ -186,7 +203,7 @@ export function TradesView() {
           flightRef.current = false;
         }
       });
-  }, [rangeKey, rangeRev, status.conn]);
+  }, [rangeKey, rangeRev, status.conn, budget.krw]);
   // [2026-11-27] automatic refresh (user 2026-11-27): while the live day is inside the shown range, re-read every RANGE_REFRESH_MS
   // (finished days come from the main process's memory, so this reads today's files only). A range of past days does not change
   const rangeLive = !!range && !!status.live && !!status.date && range[0] <= status.date && status.date <= range[1];
@@ -211,7 +228,7 @@ export function TradesView() {
     if (p === 'custom' && !isYmd(custom.from) && isYmd(base)) setCustom({ from: periodRange('month', base)[0], to: base });
     setPeriod(p);
   };
-  const realOf = (d: DayResults['real'][TradeStrategy]) => ({ buys: d.buys, sells: d.sells, wins: net ? d.winsNet : d.wins, pnlKrw: net ? d.pnlNet : d.pnlKrw });
+  const realOf = (d: DayResults['real'][TradeStrategy]) => ({ buys: d.buys, sells: d.sells, wins: net ? d.winsNet : d.wins, pnlKrw: net ? d.pnlNet : d.pnlKrw, unknown: d.unknown || 0 });
   const openDay = (ymd: string) => {
     setPeriod('day');
     if (ymd !== day) void window.api.openDay(ymd);
@@ -333,6 +350,7 @@ export function TradesView() {
                     : rangeSum.paper[s as PaperBook];
               const sel = isDay && mode === 'live' && filter === s;
               const openN = mode === 'paper' ? (isDay ? paperSum[s as PaperBook]?.open : rangeSum?.paper[s as PaperBook].open) || 0 : 0;
+              const unk = d && 'unknown' in d ? Number((d as { unknown?: number }).unknown) || 0 : 0;
               return (
                 <tr
                   key={`${s}:${mode}`}
@@ -348,17 +366,18 @@ export function TradesView() {
                   </td>
                   <td>
                     <span className={`st-dot ${on ? 'on' : ''}`} />
-                    {on === null ? '확인 안 됨' : on ? (mode === 'live' ? '실제 주문 중' : '가상 매매 중') : '꺼짐'}
-                    {on === false && mode === 'paper' && m.live ? <span className="muted small"> (실제 매매 중이라 가상 매수 안 함)</span> : null}
-                    {m.pending ? <span className="muted small"> · 재시작 대기</span> : null}
-                    {!m.fromRunning && on !== null ? <span className="muted small"> · 저장된 설정</span> : null}
+                    {/* [2026-11-28, Codex review] the running bot's state (bot off / dry-run / pending are said), not the stored switch */}
+                    {units.find((u) => u.method === s && u.mode === mode)?.stateKo ?? '확인 안 됨'}
                   </td>
                   <td className="num">{d ? `${d.buys}건` : '-'}</td>
                   <td className="num">
                     {d ? `${d.sells}건` : '-'}
                     {openN > 0 ? <span className="muted small"> · 보유 {openN}</span> : null}
                   </td>
-                  <td className="num">{d && d.sells ? `${Math.round((d.wins / d.sells) * 100)}%` : '-'}</td>
+                  <td className="num" title={d && unk ? `손익을 알 수 없는 매도 ${unk}건은 승률과 손익에서 뺐습니다` : undefined}>
+                    {d && d.sells - unk > 0 ? `${Math.round((d.wins / (d.sells - unk)) * 100)}%` : '-'}
+                    {d && unk ? <span className="muted small"> · 미확인 {unk}</span> : null}
+                  </td>
                   <td className={`num ${pnlClass(d && d.sells ? d.pnlKrw : undefined)}`}>{d && d.sells ? fmtKrw(d.pnlKrw) : '-'}</td>
                   <td className="muted small">{!isDay ? '아래 날짜별 표' : mode === 'live' ? (sel ? '아래 표시 중 ▼' : '이 탭 (누르면 거름)') : '가상 매매 탭 →'}</td>
                 </tr>
@@ -458,9 +477,10 @@ export function TradesView() {
         </div>
         <div className="kpi">
           <span>승률</span>
-          <b>{sells.length ? `${Math.round((wins / sells.length) * 100)}%` : '-'}</b>
+          <b>{knownSells ? `${Math.round((wins / knownSells) * 100)}%` : '-'}</b>
           <small>
-            {wins}승 {sells.length - wins}패
+            {wins}승 {knownSells - wins}패
+            {sells.length > knownSells ? ` · 미확인 ${sells.length - knownSells}` : ''}
           </small>
         </div>
         <div className="kpi">

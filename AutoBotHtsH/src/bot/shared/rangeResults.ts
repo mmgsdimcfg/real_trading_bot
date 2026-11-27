@@ -19,6 +19,8 @@ export interface MethodSum {
   /** net of the estimated commission + sell tax (shared/fees); a sell without prices stays gross */
   pnlNet: number;
   winsNet: number;
+  /** [2026-11-28] sells without a known result: not in the sums, not in the win rate */
+  unknown: number;
 }
 export interface PaperSum {
   buys: number;
@@ -43,7 +45,7 @@ export interface RangeResults {
   failed?: string[];
 }
 
-const zeroReal = (): MethodSum => ({ buys: 0, sells: 0, wins: 0, pnlKrw: 0, pnlNet: 0, winsNet: 0 });
+const zeroReal = (): MethodSum => ({ buys: 0, sells: 0, wins: 0, pnlKrw: 0, pnlNet: 0, winsNet: 0, unknown: 0 });
 const zeroPaper = (): PaperSum => ({ buys: 0, sells: 0, wins: 0, open: 0, pnlKrw: 0 });
 
 export function paperDaySum(rows: PaperTrade[], budget: number): PaperSum {
@@ -66,8 +68,13 @@ export function dayResults(date: string, trades: Trade[], paper: Record<PaperBoo
       continue;
     }
     e.sells++;
-    const gross = Number.isFinite(t.pnlKrw as number) ? (t.pnlKrw as number) : 0;
-    const net = t.buyPrice && t.price && t.qty ? feePnl(t.buyPrice, t.price, t.qty, true) : gross;
+    if (!Number.isFinite(t.pnlKrw as number) && !(t.buyPrice && t.price && t.qty)) {
+      e.unknown++; // no result known: counted apart [Codex review]
+      continue;
+    }
+    const priced = !!(t.buyPrice && t.price && t.qty);
+    const gross = Number.isFinite(t.pnlKrw as number) ? (t.pnlKrw as number) : priced ? feePnl(t.buyPrice!, t.price, t.qty, false) : 0;
+    const net = priced ? feePnl(t.buyPrice!, t.price, t.qty, true) : gross;
     e.pnlKrw += gross;
     e.pnlNet += net;
     if (gross > 0) e.wins++;

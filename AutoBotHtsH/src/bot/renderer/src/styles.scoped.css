@@ -1160,7 +1160,10 @@
 .bot-root .method-log .log-item { cursor: pointer; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bot-root .method-log .log-item i { font-style: normal; color: var(--text-3); margin-right: 5px; }
 .bot-root .method-log .log-item em { font-style: normal; font-weight: 600; color: var(--m); margin-right: 5px; }
-@media (max-width: 1250px) { .bot-root .unit-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } .bot-root .method-split { grid-template-columns: 1fr; } }
+/* [2026-11-28, Codex review] by the width of the view itself, not of the app (AutoBotHtsH windows) */
+.bot-root .method-view { container-type: inline-size; }
+@container (max-width: 1150px) { .bot-root .unit-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } .bot-root .method-split { grid-template-columns: 1fr; } }
+@container (max-width: 720px) { .bot-root .unit-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* [2026-11-27] 대상 구성 card (TargetCompose) */
 .bot-root .tcompose { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 8px 12px; margin: 0 0 10px; font-size: var(--fs); }

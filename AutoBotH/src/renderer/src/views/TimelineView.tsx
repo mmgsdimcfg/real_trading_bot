@@ -531,6 +531,13 @@ export function TimelineView() {
     />
   ));
 
+  // [2026-11-28, Codex review] the head line counts what is shown: the tab's method, real and paper apart (the symbol's total
+  // realized figure mixed every method into each tab)
+  const realN = trades.filter((t) => !t.paper).length;
+  const paperN = trades.length - realN;
+  const realSells = trades.filter((t) => !t.paper && t.side === 'SELL' && Number.isFinite(t.pnlKrw as number));
+  const realSold = realSells.length > 0;
+  const realPnl = realSells.reduce((a2, t) => a2 + (t.pnlKrw as number), 0);
   // [2026-11-27] status line of a side tab: what the bot last said (never worked out here)
   const blockNote = (() => {
     if (!sideKind) return null;
@@ -598,7 +605,8 @@ export function TimelineView() {
         {selected && <PriceTag code={selected} detail />}
         {sym && (
           <span className="symline">
-            이벤트 {events.length.toLocaleString()}건 (최근 2,000건) · 거래 {trades.length}건{sym.realizedKrw ? ` · 실현 ${fmtKrw(sym.realizedKrw)}` : ''}
+            이벤트 {events.length.toLocaleString()}건 (최근 2,000건) · 실제 거래 {realN}건{paperN ? ` · 가상 ${paperN}건` : ''}
+            {realSold ? ` · 실현 ${fmtKrw(realPnl)} (${TRADE_STRATEGY_KO[method]} 실제 매도)` : ''}
           </span>
         )}
         <span className="muted">점 위에 마우스를 올리면 로그 원문을 보여 주고, 누르면 고정합니다. 세로 점선: 매수/매도 체결</span>

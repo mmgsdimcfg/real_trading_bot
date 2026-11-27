@@ -37,6 +37,16 @@ describe('results of a day and of a range', () => {
   });
 });
 
+describe('sells without a result field', () => {
+  it('prices known: gross and net both come from the prices; nothing known: counted apart', () => {
+    const priced: Trade = { code: '000001', name: 'X', side: 'SELL', ts: 0, price: 11000, qty: 1, reason: 'R', raw: '', buyPrice: 10000, strategy: 'vwap' };
+    const blank: Trade = { code: '000002', name: 'Y', side: 'SELL', ts: 0, price: 0, qty: 5, reason: 'R', raw: '', strategy: 'vwap' };
+    const d = dayResults('20261127', [priced, blank], { edge: null, vwap: null }, 100_000);
+    expect(d.real.vwap).toMatchObject({ sells: 2, wins: 1, winsNet: 1, pnlKrw: 1000, unknown: 1 });
+    expect(d.real.vwap.pnlNet).toBeGreaterThan(0);
+  });
+});
+
 describe('periods', () => {
   it('week = Monday - Sunday, month = first - last day', () => {
     expect(periodRange('week', '20261127')).toEqual(['20261123', '20261129']); // a Friday

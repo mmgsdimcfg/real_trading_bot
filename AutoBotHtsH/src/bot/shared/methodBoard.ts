@@ -296,7 +296,13 @@ export function methodRows(method: TradeStrategy, input: MethodBoardInput): Meth
         r.holdQty = r.holdAvg = r.holdPnlPct = r.holdExitAt = undefined;
       }
     }
-    if (input.paperTrades) for (const r of rows.values()) r.paperBuys = 0; // the paper book itself counts its buys
+    // the paper book itself counts its buys and says what is open: a position the status file still lists but the book has
+    // closed is not held [Codex review]
+    if (input.paperTrades)
+      for (const r of rows.values()) {
+        r.paperBuys = 0;
+        r.paperEntry = undefined;
+      }
     for (const t of input.paperTrades || []) {
       const r = get(t.code, t.name);
       r.paperBuys++;

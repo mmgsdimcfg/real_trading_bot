@@ -8,7 +8,7 @@
  *   after an r003 restart). Nothing is composed or judged in the app.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fmtInt } from '../lib';
 import { TRADE_STRATEGY_KO, type TradeStrategy } from '../../../shared/strategy';
 import { METHOD_TARGET_KEYS, TARGET_SRC_KO, targetsApplied, type TargetsDoc } from '../../../shared/methodUnits';
@@ -30,8 +30,15 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
   const [size, setSize] = useState('');
   const [msg, setMsg] = useState('');
 
+  // [Codex review] a read that finishes after a newer one was started (connection switched meanwhile) is dropped
+  const seq = useRef(0);
+  // [Codex review] the connection a running action was started on: a step after an await stops when it changed meanwhile
+  const hostRef = useRef(props.hostKey);
+  hostRef.current = props.hostKey;
   const load = useCallback(async (): Promise<TargetsDoc | null> => {
+    const mine = ++seq.current;
     const r = await window.api.targetsGet();
+    if (mine !== seq.current) return null;
     if (r.data) {
       setDoc(r.data);
       setErr(r.data.ok ? '' : r.data.error || '');
@@ -75,14 +82,17 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
     if (!enabled || busy) return null;
     setBusy(true);
     setMsg('');
+    const host = hostRef.current;
     try {
       const r = await window.api.targetsConfig(patch);
+      if (hostRef.current !== host) return null;
       if (!r.ok) {
         setMsg(`저장하지 못했습니다: ${r.error || r.data?.error || '알 수 없는 오류'}`);
         return null;
       }
       setMsg(done);
-      return await load();
+      const fresh = await load();
+      return hostRef.current === host ? fresh : null;
     } finally {
       setBusy(false);
     }
@@ -114,6 +124,7 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
       return;
     if (on) return void change({ auto: true }, '자동 구성 켬 (다음 장 마감 작업부터)');
     void (async () => {
+      const host = hostRef.current;
       // [Codex review] only when the switch was really stored, and from the lists stored NOW (not what the card read earlier)
       const fresh = await change({ auto: false }, '자동 구성 끔 (장 마감 작업은 선별 종목만 감시목록에 넣습니다)');
       if (!fresh) return;
@@ -128,7 +139,9 @@ export function TargetCompose(props: { method: TradeStrategy; enabled: boolean; 
         )
       )
         return setMsg('자동 구성 끔 - 저장된 대상 목록은 그대로 둡니다 (새 선별 종목이 목록에 없으면 사지 않습니다)');
+      if (hostRef.current !== host) return;
       const r = await window.api.ctlSet(Object.fromEntries(kept.map((m) => [METHOD_TARGET_KEYS[m], []])));
+      if (hostRef.current !== host) return; // the answer of the connection left meanwhile is not shown on the new one
       setMsg(r.ok ? '자동 구성 끔 - 대상 목록을 전체(지정 없음)로 되돌렸습니다 (r003 재시작 후 적용)' : `대상 목록을 되돌리지 못했습니다: ${r.error || ''}`);
       props.onApplied();
       await load();

@@ -67,6 +67,23 @@ export interface UnitHints {
   liveNote?: Partial<Record<'edge' | 'vwap', 'on' | 'off' | 'blocked'>>;
 }
 
+/** a block line older than this no longer says "stopped now" */
+export const BLOCK_NOTE_FRESH_MS = 11 * 60 * 1000;
+
+/** the newest start / block line of each real-order strategy (`ref`: the time of the last log line read) */
+export function liveNotes(
+  notes: { strategy: 'edge' | 'vwap'; mode: string; kind: string; lastTs: number }[] | undefined,
+  ref: number,
+): NonNullable<UnitHints['liveNote']> {
+  const out: NonNullable<UnitHints['liveNote']> = {};
+  for (const n of notes || []) {
+    if (n.mode !== 'live') continue;
+    if (n.kind === 'on' || n.kind === 'off') out[n.strategy] = n.kind;
+    else if (n.kind === 'blocked') out[n.strategy] = ref - n.lastTs <= BLOCK_NOTE_FRESH_MS ? 'blocked' : out[n.strategy] === 'blocked' ? 'on' : out[n.strategy];
+  }
+  return out;
+}
+
 /** `botRunning`: r016 status.running (null = no status yet / unreachable) */
 export function unitInfos(c: Modes, botRunning: boolean | null, hints: UnitHints = {}): UnitInfo[] {
   const stored = strategyModes(view(c, 'stored'));
@@ -107,8 +124,11 @@ export function unitInfos(c: Modes, botRunning: boolean | null, hints: UnitHints
       } else {
         switchOn = live && methodOn[method] !== null ? liveOn : null;
         if (!live || methodOn[method] === null) locked = '서버가 이 설정을 모릅니다';
-        else if (method === 'edge' && !normal) locked = edgeOnly ? '단독 모드 · 실전' : '서버 매매 방식이 normal 이 아님';
+        // [Codex review] real orders beside the rule trade exist only in the normal mode (the server refuses them otherwise)
+        else if (!normal) locked = method === 'edge' && edgeOnly ? '단독 모드 · 실전' : '서버 매매 방식이 normal 이 아님';
       }
+      // TRADING_STRATEGY_MODE=edge: the Edge AI trade IS the real trade (no paper beside it) - the cards say so, locked
+      if (method === 'edge' && edgeOnly) switchOn = mode === 'live';
     }
     let state: UnitState;
     if (botRunning === null) state = 'unknown';
@@ -120,8 +140,13 @@ export function unitInfos(c: Modes, botRunning: boolean | null, hints: UnitHints
     else state = 'stop';
     let stateKo = STATE_KO[state];
     if (state === 'pending') stateKo = entryRunning ? '실행 중 · 재시작 후 꺼짐' : '적용 대기 · 재시작 후 켜짐';
+    if (state === 'pending' && key === 'edge_paper' && !entryRunning && c.paper?.running === 'paper' && c.paperLogOnly?.running === 'true')
+      stateKo = '후보 기록만 · 재시작 후 가상 매수';
     if (state === 'closing') stateKo = '신규 진입 중지 · 실전 우선';
     if (state === 'botoff') stateKo = '봇 꺼짐 · 설정 ON';
+    // [Codex review] Edge AI paper on with "candidates only" (EDGE_ONLY_LOG_ONLY): the card is on but it buys nothing on paper
+    if (key === 'edge_paper' && switchOn && !entryStored && c.paperLogOnly?.effective === 'true' && (state === 'stop' || state === 'botoff'))
+      stateKo = botRunning ? '후보 기록만 (가상 매수 안 함)' : '봇 꺼짐 · 후보 기록만';
     if (state === 'run' && mode === 'live') {
       const note = method === 'rule' ? undefined : hints.liveNote?.[method];
       if (hints.dryRun) {
@@ -137,6 +162,14 @@ export function unitInfos(c: Modes, botRunning: boolean | null, hints: UnitHints
         stateKo = '신규 매수 중단 (봇 기록)';
         entryRunning = false;
       } else if (method !== 'rule') stateKo = '실행 중 (설정 기준)';
+    }
+    // still running until the restart, but the bot said it stopped buying [Codex review]
+    if (state === 'pending' && mode === 'live' && entryRunning && method !== 'rule') {
+      const note = hints.liveNote?.[method];
+      if (hints.dryRun) stateKo = '주문 안 함 (dry-run) · 재시작 후 꺼짐';
+      else if (note === 'off') stateKo = '신규 매수 꺼짐 (봇 기록) · 재시작 후 꺼짐';
+      else if (note === 'blocked') stateKo = '신규 매수 중단 (봇 기록) · 재시작 후 꺼짐';
+      if (hints.dryRun || note === 'off' || note === 'blocked') entryRunning = false;
     }
     return { key, method, mode, switchOn, locked, entryStored, entryRunning, state, stateKo };
   });
