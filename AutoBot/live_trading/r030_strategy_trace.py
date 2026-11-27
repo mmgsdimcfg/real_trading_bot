@@ -144,7 +144,7 @@ atexit.register(_flush_at_exit)
 # ---- the stage of a refused real-order bar, from the condition that refused it and what that condition wrote -------------
 _SIGNAL_STAGES = (
     # VWAP signal (r005 _v09_vwap_signal -> r029.vwap_signal stage names, upper-cased in its reject line)
-    ("VWAP_SIGNAL_BELOW_VWAP", "below_vwap"), ("VWAP_SIGNAL_NO_TREND", "no_trend"), ("VWAP_SIGNAL_NO_TICK_CROSS", "no_tick_cross"),
+    ("VWAP_SIGNAL_BELOW_VWAP", "below_vwap"), ("VWAP_SIGNAL_NO_TREND", "no_trend"), ("VWAP_SIGNAL_LOW_GAP", "low_gap"), ("VWAP_SIGNAL_NO_TICK_CROSS", "no_tick_cross"),
     ("VWAP_SIGNAL_CHASE", "chase"), ("VWAP_SIGNAL_PRICE_DROP", "price_drop"), ("VWAP_SIGNAL_STALE", "stale"),
     ("VWAP_SIGNAL_NO_HISTORY", "no_history"), ("VWAP_SIGNAL_INSUFFICIENT_BARS", "wait_bars"),
     ("VWAP_SIGNAL_NO_DAY_VWAP", "no_history"), ("VWAP_SIGNAL_1MIN_FRAME_UNAVAILABLE", "wait_bars"),

@@ -25,6 +25,10 @@ app), same record layout as r022's edge_only files. Log lines "[VWAP PAPER  ]".
 Earlier studies found no forward edge in "price above VWAP" (vwap_indicator_review_20261126.md 3) - this runs on paper first.
 
 Update log:
+- [2026-11-28] type=feat owner=claude
+    summary: 시가 갭 하한(VWAP_TRADE_MIN_OPEN_GAP_PCT, 단계 low_gap)과 틱 조건 on/off(VWAP_TRADE_TICK_TRIGGER) 추가 (사용자 요청)
+    impact: r001 기본값 = 갭 1% 이상만, 틱 조건 끔. VwapParams() 의 기본값은 종전 동작(갭 미적용, 틱 조건 사용)
+    compatibility: backward-compatible (vwap_signal 의 새 인자 open_gap_pct 는 선택)
 - [2026-11-27] type=feat owner=claude
     summary: 신규 - VWAP 매매 신호(vwap_signal)와 가상 매매 러너(VwapPaperRunner, r022 EdgeOnlyRunner 재사용). 주문 없음.
     impact: paper (r001 VWAP_TRADE_MODE="paper" 일 때만, 기본 off). 규칙 매매 / Edge AI 매매 판정 불변
@@ -32,6 +36,8 @@ Update log:
 """
 from __future__ import annotations
 
+import math
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +52,10 @@ TAG = "  [VWAP PAPER  ]"
 FILE_PREFIX = "vwap_paper"
 MODEL_ID = "vwap_rule_v1"
 FULL_SESSION_FIRST_BAR = pd.Timestamp("09:02").time()   # the store must start at the open or the VWAP is not the day's VWAP
+OPEN_BAR_END = pd.Timestamp("09:01").time()             # [2026-11-28] the bar whose open IS the day's open (index = bar end)
+PREV_DIR_LOOKBACK = 7                                    # dated folders looked at for the previous close
+PREV_RETRY_S = 120.0                                     # a previous close that could not be read is looked for again after this
+GAP_EPS = 1e-9                                           # (open / prev - 1) * 100 of an exact 0.5 % gap is 0.49999999999998934
 MIN_BARS = 21                                            # SMA20 now and one bar ago
 
 
@@ -57,12 +67,17 @@ class VwapParams:
     bar_stale_s: float = 90.0
     ma_fast: int = 5
     bb_period: int = 20
+    # [2026-11-28] the defaults here are the earlier behaviour; r001 sets the running values (from_config)
+    tick_trigger: bool = True          # False: no 60-tick cross needed (and no chase limit against the cross bar)
+    min_open_gap_pct: float = 0.0      # > 0: the day's open must be at least this % above the previous close
 
     @classmethod
     def from_config(cls, cfg) -> "VwapParams":
         g = lambda k, d: float(getattr(cfg, k, d))   # noqa: E731
         return cls(chase_max_pct=g("VWAP_TRADE_CHASE_MAX_PCT", 0.5), max_vwap_gap_pct=g("VWAP_TRADE_MAX_VWAP_GAP_PCT", 2.0),
-                   live_drop_max_pct=g("VWAP_TRADE_LIVE_DROP_MAX_PCT", 0.4), bar_stale_s=g("VWAP_TRADE_BAR_STALE_SECONDS", 90.0))
+                   live_drop_max_pct=g("VWAP_TRADE_LIVE_DROP_MAX_PCT", 0.4), bar_stale_s=g("VWAP_TRADE_BAR_STALE_SECONDS", 90.0),
+                   tick_trigger=bool(getattr(cfg, "VWAP_TRADE_TICK_TRIGGER", False)),
+                   min_open_gap_pct=g("VWAP_TRADE_MIN_OPEN_GAP_PCT", 1.0))
 
 
 def session_vwap(raw: pd.DataFrame) -> float:
@@ -73,10 +88,11 @@ def session_vwap(raw: pd.DataFrame) -> float:
 
 
 def vwap_signal(raw: pd.DataFrame, price: float, now: datetime, tick, p: VwapParams,
-                vwap: float | None = None) -> tuple[bool, str, dict]:
+                vwap: float | None = None, open_gap_pct: float | None = None) -> tuple[bool, str, dict]:
     """(buy?, stage or reason, info). `raw` = the day's regular 1-minute bars up to the last completed one (index = bar end),
     `tick` = r013 TickTriggerResult of the symbol (None = no tick feed). The stage names are what the app shows:
-    no_history / below_vwap / no_trend / no_tick_cross / chase / price_drop / stale / signal.
+    no_history / below_vwap / no_trend / low_gap / no_tick_cross / chase / price_drop / stale / signal.
+    `open_gap_pct`: the day's open against the previous close in % (None = not known) - needed when p.min_open_gap_pct > 0.
     `vwap`: the day's VWAP when the caller has it from elsewhere (r003's 1-minute cache holds 200 bars, so the live path passes
     the day reference price) - then `raw` need not start at the open."""
     info: dict = {}
@@ -99,14 +115,22 @@ def vwap_signal(raw: pd.DataFrame, price: float, now: datetime, tick, p: VwapPar
     info.update(ma5_up=ma_up, bb_mid_up=mid_up)
     if not (ma_up or mid_up):
         return False, "no_trend", info
-    if tick is None or not getattr(tick, "ok", False):
-        info["tick"] = str(getattr(tick, "reason", "") or "no tick feed")[:160]
-        return False, "no_tick_cross", info
-    cross = next((c for c in tick.crosses.values() if c.ok), None)
-    cross_close = float(getattr(cross, "cross_close", float("nan"))) if cross is not None else float("nan")
-    info.update(tick=tick.label, tick_cross=str(tick.cross_time), cross_close=cross_close if cross_close == cross_close else None)
-    if cross_close == cross_close and cross_close > 0 and price > cross_close * (1 + p.chase_max_pct / 100.0):
-        return False, "chase", info
+    if p.min_open_gap_pct > 0:                 # [2026-11-28] gap-up symbols only; an unknown gap is not a pass
+        gap_ok = isinstance(open_gap_pct, (int, float)) and not isinstance(open_gap_pct, bool) and math.isfinite(open_gap_pct)
+        info["open_gap_pct"] = float(open_gap_pct) if gap_ok else None
+        if not gap_ok or float(open_gap_pct) < p.min_open_gap_pct - GAP_EPS:
+            return False, "low_gap", info
+    if p.tick_trigger:
+        if tick is None or not getattr(tick, "ok", False):
+            info["tick"] = str(getattr(tick, "reason", "") or "no tick feed")[:160]
+            return False, "no_tick_cross", info
+        cross = next((c for c in tick.crosses.values() if c.ok), None)
+        cross_close = float(getattr(cross, "cross_close", float("nan"))) if cross is not None else float("nan")
+        info.update(tick=tick.label, tick_cross=str(tick.cross_time), cross_close=cross_close if cross_close == cross_close else None)
+        if cross_close == cross_close and cross_close > 0 and price > cross_close * (1 + p.chase_max_pct / 100.0):
+            return False, "chase", info
+    else:
+        info["tick"] = "TICK_OFF"
     if price > vwap * (1 + p.max_vwap_gap_pct / 100.0):
         return False, "chase", info
     if price < last * (1 - p.live_drop_max_pct / 100.0):
@@ -118,7 +142,7 @@ def trace_fields(stage: str, info: dict | None) -> dict:
     """[2026-11-27] what the timeline trace (r030) keeps of one vwap_signal answer: the values the decision used, as they are"""
     i = info or {}
     out = {"stage": str(stage)}
-    for src, dst in (("vwap", "vwap"), ("vwap_gap_pct", "gap"), ("bar_age_s", "bar_age"), ("tick", "tick"),
+    for src, dst in (("vwap", "vwap"), ("vwap_gap_pct", "gap"), ("bar_age_s", "bar_age"), ("tick", "tick"), ("open_gap_pct", "open_gap"),
                      ("tick_cross", "tick_cross"), ("cross_close", "cross_close"), ("ma5_up", "ma5_up"), ("bb_mid_up", "mid_up")):
         if i.get(src) is not None:
             out[dst] = i[src]
@@ -142,8 +166,13 @@ class VwapPaperRunner(r022.EdgeOnlyRunner):
     def __init__(self, out_dir: Path, date_str: str, log: Callable[[str], None], params: VwapParams,
                  tick_eval: Callable[[str, datetime], object] | None, max_positions: int = 3, max_entries: int = 20,
                  tp_pct: float = 3.0, sl_pct: float = 1.27, horizon_min: float = 300, exclude_funds: bool = True,
-                 no_reentry_after_sl: bool = True, close_only: bool = False):
+                 no_reentry_after_sl: bool = True, close_only: bool = False, daily_root: Path | None = None):
         self.params = params
+        # [2026-11-28] where the dated data folders (data/YYYYMMDD/<code>_*_daily.csv) are: the previous close of the gap floor.
+        # The base runner is given the output folder as its data root (it reads nothing from it here) [Codex review]
+        self.daily_root = Path(daily_root) if daily_root is not None else None
+        self._prev_dir: Path | None = None
+        self._prev_miss: dict[str, float] = {}
         self.tick_eval = tick_eval
         super().__init__(Path(out_dir), Path(out_dir), out_dir, date_str, lambda m: log(str(m).replace(r022.TAG, TAG)), None,
                          max_positions=max_positions, max_entries=max_entries, model=_RuleModel(),
@@ -153,15 +182,59 @@ class VwapPaperRunner(r022.EdgeOnlyRunner):
     def _threshold(self):
         return None     # no probability cut: the status file shows none
 
+    def _prev_close_of(self, code: str) -> float:
+        """the previous trading day's close from the dated data folders (nan = not known -> the gap floor refuses the buy).
+        The reference folder is the newest one before today that holds daily files at all (a weekend / holiday folder can hold
+        only today_buys.txt); the symbol's file must be in THAT folder and reach its date - an older file's close is not the
+        previous close [Codex review]. A failed read is tried again after PREV_RETRY_S, a found value is kept."""
+        cached = self._prev_close.get(code)
+        if cached is not None and (math.isfinite(cached) or time.monotonic() - self._prev_miss.get(code, 0.0) < PREV_RETRY_S):
+            return cached
+        val = float("nan")
+        try:
+            root = Path(self.daily_root if self.daily_root is not None else self.data_root)
+            if self._prev_dir is None:
+                names = sorted((q.name for q in root.iterdir() if q.is_dir() and q.name.isdigit() and len(q.name) == 8
+                                and q.name < self.date_str), reverse=True)
+                for name in names[:PREV_DIR_LOOKBACK]:
+                    if next((root / name).glob("*_daily.csv"), None) is not None:
+                        self._prev_dir = root / name
+                        break
+            if self._prev_dir is not None:
+                files = sorted(self._prev_dir.glob(f"{code}_*_daily.csv"))
+                if files:
+                    d = pd.read_csv(files[0], encoding="utf-8-sig", dtype={"date": str})
+                    d = d[d["date"].astype(str).str.slice(0, 8) < self.date_str]
+                    if not d.empty and str(d["date"].iloc[-1])[:8] >= self._prev_dir.name:
+                        val = float(pd.to_numeric(d["close"], errors="coerce").iloc[-1])
+        except Exception:
+            val = float("nan")
+        if not (math.isfinite(val) and val > 0):
+            val = float("nan")
+            self._prev_miss[code] = time.monotonic()
+        self._prev_close[code] = val
+        return val
+
     def _check_entry(self, code: str, name: str, now: datetime, price: float, store: pd.DataFrame, group: str = "watch",
                      block: str | None = None, session: str = "regular") -> None:
         tick = None
-        if self.tick_eval is not None:
+        if self.tick_eval is not None and self.params.tick_trigger:
             try:
                 tick = self.tick_eval(code, now)
             except Exception as exc:            # the tick feed never breaks the runner
                 self.log(f"{TAG} {code} tick feed error ({type(exc).__name__}: {exc})")
-        ok, stage, info = vwap_signal(store, float(price), now, tick, self.params)
+        open_gap = None
+        if self.params.min_open_gap_pct > 0:
+            try:                                # the day's open (the store starts at the open) against the previous close
+                prev = float(self._prev_close_of(code))
+                day_open = float(store["open"].iloc[0]) if store is not None and len(store) else float("nan")
+                # only the 09:00 bar holds the day's open: a store that starts later gives no gap (no buy)
+                if (pd.Timestamp(store.index[0]).time() <= OPEN_BAR_END and math.isfinite(prev) and prev > 0
+                        and math.isfinite(day_open) and day_open > 0):
+                    open_gap = (day_open / prev - 1.0) * 100.0
+            except Exception:
+                open_gap = None
+        ok, stage, info = vwap_signal(store, float(price), now, tick, self.params, open_gap_pct=open_gap)
         try:                                    # [2026-11-27] timeline trace (record only; never stops the evaluation)
             self._trace_info = {k: v for k, v in trace_fields(stage, info).items() if k != "stage"}
         except Exception:
@@ -212,7 +285,8 @@ def make_runner(cfg, out_dir: Path, date_str: str, log: Callable[[str], None], c
             tp_pct=float(getattr(cfg, "VWAP_TRADE_TP_PCT", 3.0)), sl_pct=float(getattr(cfg, "VWAP_TRADE_SL_PCT", 1.27)),
             horizon_min=float(getattr(cfg, "VWAP_TRADE_HORIZON_MIN", 300)),
             exclude_funds=bool(getattr(cfg, "VWAP_TRADE_EXCLUDE_FUNDS", True)),
-            no_reentry_after_sl=bool(getattr(cfg, "VWAP_TRADE_NO_REENTRY_AFTER_SL", True)), close_only=close_only)
+            no_reentry_after_sl=bool(getattr(cfg, "VWAP_TRADE_NO_REENTRY_AFTER_SL", True)), close_only=close_only,
+            daily_root=getattr(cfg, "RUNTIME_DATA_DIR", None))
         runner.trace_enabled = True             # [2026-11-27] timeline trace (r030): one row per judged bar
         # the day's KRX tick files price the paper positions r003 did not evaluate this turn (r022 poll_orphans)
         runner.tick_feed = r022.CollectorTickFeed(Path(cfg.TICK_DATA_DIR) / date_str, date_str, confirm_delay_s)
@@ -221,6 +295,7 @@ def make_runner(cfg, out_dir: Path, date_str: str, log: Callable[[str], None], c
         if not close_only:
             lab = runner._label()
             log(f"{TAG} paper mode enabled (no orders) | max_positions={runner.max_positions} max_entries={runner.max_entries} | "
+                f"open_gap>={runner.params.min_open_gap_pct:g}% tick_trigger={'on' if runner.params.tick_trigger else 'off'} | "
                 f"exits +{lab['tp']:g}% / -{lab['sl']:g}% / {lab['horizon']:g}min | out={runner.out_path}")
         return runner
     except Exception as exc:

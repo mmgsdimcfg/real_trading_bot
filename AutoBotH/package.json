@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-28] type=feat - v2.3.58_001: VWAP 매매 세부 설정에 시가 갭 하한(VWAP_TRADE_MIN_OPEN_GAP_PCT)과 틱 조건 사용(VWAP_TRADE_TICK_TRIGGER) 추가, 단계 표시에 '시가 갭' 추가",
     "[2026-11-28] type=fix - v2.3.57_006: 가상/실전 카드 Codex 검토 반영 (실전 켜기 전 확인, 단독 모드 잠금, 후보 기록만 표시) + 사용성 수정 (타임라인 실현손익을 선택 방식만 합산, 손익 미확인 매도는 승률/합계에서 분리, 리플레이 시점으로 가상 장부 절단, 가상 예산 공통 조회, 과거 날짜 표기, 좁은 창 카드 배치, 대상 구성 호스트 전환 보호)",
     "[2026-11-28] type=fix - v2.3.57_005: 매매 방식 현황: 한 방식의 가상 · 실전 카드는 둘 중 하나만 켜짐 (실전을 켜면 가상은 꺼지고, 실전을 끄면 가상으로 전환, 가상을 끄면 방식 전체 꺼짐)",
     "[2026-11-27] type=fix - v2.3.57_004: 대상 구성 적용을 확인한 연결에 고정 - 조회 · 확인 · 적용 실행 직전에 같은 연결인지 검사, 바뀌었으면 실행하지 않음",
@@ -173,7 +174,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.57",
+  "version": "2.3.58",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -221,7 +222,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "006",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

@@ -1661,6 +1661,13 @@ VWAP_TRADE_LIVE_DROP_MAX_PCT = 0.4            # 현재가가 직전 1분 종가�
 VWAP_TRADE_BAR_STALE_SECONDS = 90.0           # 마지막 확정 1분봉이 이보다 오래됐으면 매수 안 함
 VWAP_TRADE_EXCLUDE_FUNDS = True               # ETF / ETN 제외
 VWAP_TRADE_NO_REENTRY_AFTER_SL = True         # 당일 손절된 종목은 그날 다시 사지 않음
+# [2026-11-28] 사용자 요청 (g057 시뮬레이션: 10/30~11/27 신호 중 시가 갭 +1% 미만은 승률 15~16%, 평균 -0.90%).
+#   VWAP_TRADE_MIN_OPEN_GAP_PCT: 당일 시가가 전일 종가보다 이 % 이상 높은 종목만 산다 (0 이하 = 미적용). 시가 / 전일 종가를
+#     모르면 사지 않는다. 가상 / 실제 공통.
+#   VWAP_TRADE_TICK_TRIGGER: 60틱봉 MA5 > MA15 골든크로스(3단계)와 크로스 봉 대비 추격 제한을 쓸지. False(기본) = 쓰지 않는다
+#     - 실제 주문을 켜면 그쪽에도 같이 적용된다(틱 조건이 빠진 만큼 신호가 늘어난다). r003 재시작 후 적용.
+VWAP_TRADE_MIN_OPEN_GAP_PCT = 1.0
+VWAP_TRADE_TICK_TRIGGER = False
 # [2026-11-27] VWAP 매매 실제 주문 (사용자 결정: 가상 + 실제 선택, Edge AI 실제 매매와 같은 구조 - r003 보조 전략 경로, 장부 r023 "vwap").
 #   True 이고 VWAP_TRADE_MODE="paper", TRADING_STRATEGY_MODE="normal", AUTO_SELL_MODE="all" 일 때만 새로 산다. 켜져 있는 동안 가상
 #   매매는 새로 사지 않는다(같은 신호를 두 번 세지 않음). 매수: 정규장(KRX) 매도1호가 지정가 1건(분할·재주문 없음),

@@ -546,6 +546,7 @@ VWAP_LIVE_RANGES = {
     "VWAP_TRADE_TP_PCT": (0.1, 30.0),
     "VWAP_TRADE_SL_PCT": (0.1, 30.0),
     "VWAP_TRADE_HORIZON_MIN": (1, 400),
+    "VWAP_TRADE_MIN_OPEN_GAP_PCT": (0.0, 30.0),      # [2026-11-28] 0 = not applied
 }
 
 

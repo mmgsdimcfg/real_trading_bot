@@ -496,7 +496,7 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   `RULE_EXTENDED_VALUES` / `RULE_VARIANT_APPLIED` 는 `set` 대상이 아니다. r016 `conditions` 의 값은 변형 적용 뒤의 값이다. r003 재시작 후 적용.
 - VWAP 매매(r029_vwap_trade.py): `VWAP_TRADE_MODE`(str, `off` | `paper`, 다른 값은 거부). paper = 가상 매매(주문 없음) -
   `runtime/data/live_runtime/vwap_paper_<날짜>.jsonl`(ENTRY / EXIT, r022 의 edge_only 파일과 같은 형식, prob / threshold 는 null,
-  model_id `vwap_rule_v1`) 과 `vwap_paper_status_<날짜>.json`(같은 형식, 새 stage: `below_vwap`, `no_trend`, `no_tick_cross`, `chase`,
+  model_id `vwap_rule_v1`) 과 `vwap_paper_status_<날짜>.json`(같은 형식, 새 stage: `below_vwap`, `no_trend`, `low_gap`(2026-11-28: 시가 갭이 `VWAP_TRADE_MIN_OPEN_GAP_PCT` 미만이거나 모름), `no_tick_cross`(`VWAP_TRADE_TICK_TRIGGER`=True 일 때만), `chase`,
   `price_drop`, `stale`). 로그 `[VWAP PAPER  ]`. 정규장 감시 종목만. 매수 4단계와 설정 키(`VWAP_TRADE_*`)는 r001 / r029 머리말.
   청산 `VWAP_TRADE_TP_PCT` / `VWAP_TRADE_SL_PCT`(%) / `VWAP_TRADE_HORIZON_MIN`(분), 남으면 15:20 청산. 실제 주문 경로는 아직 없다.
 - 앱: 제어 탭 규칙 매매 카드에 Normal / Extended 선택, VWAP 매매 카드(스위치, 매수 4단계, 청산 기준 입력). 가상 매매 탭에 장부 선택
@@ -539,7 +539,7 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 
 - 새 파일 `runtime/data/live_runtime/strategy_eval_<strategy>_<date>.jsonl` (`strategy` = `edge` | `vwap`, r030_strategy_trace.py).
   보조 전략이 1분봉 하나를 판정할 때마다 한 줄: `{"t": 판정 시각, "bar": "HH:MM", "code", "mode": "live"|"paper", "stage", ...}`.
-  `stage`: VWAP `below_vwap / no_trend / no_tick_cross / chase / price_drop / stale / no_history`, Edge `below_mid / no_trigger /
+  `stage`: VWAP `below_vwap / no_trend / low_gap / no_tick_cross / chase / price_drop / stale / no_history`, Edge `below_mid / no_trigger /
   below_threshold / not_promoted / no_model`, 공통 `cond_before / cond_after`(공통 안전 조건, `no` = 조건 번호, `cond`, `detail`) `/ signal /
   ordered / order_refused / bought / candidate / held / sold / wait_bars / outside_window / limit / fund / sl_today / error`.
   그 밖의 키(`vwap`, `gap`, `tick`, `tick_cross`, `bar_age`, `prob`, `thr`, `price`, `reason`, `qty`)는 봇이 그 판정에 쓴 값 그대로다.

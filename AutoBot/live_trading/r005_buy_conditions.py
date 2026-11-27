@@ -1591,8 +1591,15 @@ def _v09_vwap_signal(ctx: BuyContext) -> bool:
         vwap = float(ctx.day_vwap) if ctx.day_vwap is not None and float(ctx.day_vwap) > 0 else None
         if vwap is None:
             return reject("NO_DAY_VWAP")
-        tick = _vwap_tick_eval(str(ctx.code).zfill(6), ctx.current_dt)
-        ok, stage, info = r029.vwap_signal(raw, float(ctx.price), ctx.current_dt, tick, r029.VwapParams.from_config(_cfg), vwap=vwap)
+        params = r029.VwapParams.from_config(_cfg)
+        tick = _vwap_tick_eval(str(ctx.code).zfill(6), ctx.current_dt) if params.tick_trigger else None
+        open_gap = None                       # [2026-11-28] VWAP_TRADE_MIN_OPEN_GAP_PCT: the day's open against the previous close
+        if params.min_open_gap_pct > 0:
+            prev_close = ctx.prev_close if ctx.prev_close else ctx.services.fetch_prev_close(ctx.code, ctx.current_dt, ctx.nxt_tradeable)
+            if (prev_close and math.isfinite(float(prev_close)) and float(prev_close) > 0
+                    and ctx.day_open and math.isfinite(float(ctx.day_open)) and float(ctx.day_open) > 0):
+                open_gap = (float(ctx.day_open) / float(prev_close) - 1.0) * 100.0
+        ok, stage, info = r029.vwap_signal(raw, float(ctx.price), ctx.current_dt, tick, params, vwap=vwap, open_gap_pct=open_gap)
     except Exception as exc:
         return reject(f"ERROR_{type(exc).__name__}: {exc}")
     try:                                          # [2026-11-27] for the timeline trace (record only; its own try - Codex round 2)
@@ -2008,6 +2015,7 @@ VWAP_BUY_CONDITIONS: tuple[BuyCondition, ...] = tuple(
                     "정규장 + 최신 확정 1분봉: 현재가·1분 종가 > 당일 VWAP, 1분 MA5 또는 BB 중심선 상승, 60틱 MA5/MA15 골든크로스 "
                     "(VWAP_TRADE_TICK_CROSS_MAX_AGE_SECONDS 이내, 체결 밀도), 추격 / 급락 / 최신성 가드. 데이터 없음/오류는 매수 안 함",
                     ("VWAP_TRADE_LIVE_ORDERS", "VWAP_TRADE_TICK_CROSS_MAX_AGE_SECONDS", "VWAP_TRADE_CHASE_MAX_PCT",
-                     "VWAP_TRADE_MAX_VWAP_GAP_PCT", "VWAP_TRADE_LIVE_DROP_MAX_PCT", "VWAP_TRADE_MIN_PRINTS_PER_MIN"), _v09_vwap_signal)]
+                     "VWAP_TRADE_MAX_VWAP_GAP_PCT", "VWAP_TRADE_LIVE_DROP_MAX_PCT", "VWAP_TRADE_MIN_PRINTS_PER_MIN",
+                     "VWAP_TRADE_MIN_OPEN_GAP_PCT", "VWAP_TRADE_TICK_TRIGGER"), _v09_vwap_signal)]
     + [_NORMAL_BY_NO[n] for n in (23, 24, 25)]
 )

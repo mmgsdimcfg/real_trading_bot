@@ -150,6 +150,7 @@ export const PAPER_STAGE_KO: Record<string, string> = {
   // [2026-11-27] VWAP trade (server r029 vwap_signal)
   below_vwap: 'VWAP 아래',
   no_trend: '1분 MA5 · BB 중심선 상승 아님',
+  low_gap: '시가 갭 부족 (전일 종가 대비 시가)',
   no_tick_cross: '60틱 골든크로스 없음 / 만료',
   chase: '추격 제한 (크로스·VWAP 대비 이격)',
   price_drop: '신호 후 급락',
@@ -563,8 +564,10 @@ export const STRATEGY_SECTIONS: Record<StrategyKind, StrategySection[]> = {
   vwap: [
     {
       title: '매수 신호 (60틱봉 · 안전장치)',
-      note: '1분 종가 · 현재가 > VWAP, 1분 MA5 또는 BB 중심선 상승은 고정 조건입니다.',
+      note: '1분 종가 · 현재가 > VWAP, 1분 MA5 또는 BB 중심선 상승은 고정 조건입니다. 틱 조건을 끄면 아래 틱봉 · 체결 밀도 · 크로스 봉 추격 제한은 쓰이지 않습니다.',
       keys: [
+        ['VWAP_TRADE_MIN_OPEN_GAP_PCT', '시가 갭 하한: 전일 종가 대비 당일 시가 (%, 0 = 미적용)'],
+        ['VWAP_TRADE_TICK_TRIGGER', '틱 조건 사용 (60틱 골든크로스 · 기본 끔)'],
         ['VWAP_TRADE_TICK_BAR_SIZE', '트리거 틱봉 크기 (틱)'],
         ['VWAP_TRADE_TICK_MA_FAST', '틱봉 빠른 이동평균'],
         ['VWAP_TRADE_TICK_MA_SLOW', '틱봉 느린 이동평균'],

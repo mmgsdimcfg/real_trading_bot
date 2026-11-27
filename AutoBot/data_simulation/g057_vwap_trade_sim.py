@@ -59,7 +59,9 @@ ENTRY_START, ENTRY_END = dt_time(9, 5), dt_time(14, 50)
 SESSION_START, FORCE_EXIT = dt_time(9, 0), dt_time(15, 20)
 COMMISSION_PCT = float(getattr(cfg, "V2_COMMISSION_PCT", 0.015))
 SELL_TAX_PCT = float(getattr(cfg, "V2_SELL_TAX_PCT", 0.20))
-PARAMS = r029.VwapParams.from_config(cfg)
+import dataclasses  # noqa: E402
+
+PARAMS = dataclasses.replace(r029.VwapParams.from_config(cfg), tick_trigger=True, min_open_gap_pct=0.0)
 
 
 def net_pct(entry: float, exit_px: float) -> float:

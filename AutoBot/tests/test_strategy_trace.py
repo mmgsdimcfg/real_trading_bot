@@ -276,7 +276,7 @@ class LiveTraceTest(unittest.TestCase):
             services.get_frame_1min.return_value = bars(RISING)
             services.fetch_day_ref_prices.return_value = (100.0, 102.0)
             return SimpleNamespace(services=services, current_dt=T, code="005930", nxt_tradeable=False, price=103.1, symbol_label="005930",
-                                   day_open=None, day_vwap=None, log=logs.append, side_eval="unset", trigger_flag="", steps_text="",
+                                   day_open=None, day_vwap=None, prev_close=98.0, log=logs.append, side_eval="unset", trigger_flag="", steps_text="",
                                    trigger_reason="", buy_reason="")
         with mock.patch.object(r011, "session_raw_1min", side_effect=lambda frame, day: frame), \
                 mock.patch.object(r005, "_vwap_tick_eval", return_value=tick()):
@@ -288,6 +288,15 @@ class LiveTraceTest(unittest.TestCase):
                 self.assertTrue(r005._v09_vwap_signal(b))
             self.assertIsNone(b.side_eval)
             self.assertTrue(b.buy_reason.startswith("VWAP_SIGNAL_gap="))
+            # [2026-11-28] VWAP_TRADE_MIN_OPEN_GAP_PCT: open 100 against a previous close of 99.9 is +0.10 % - no buy, stage low_gap
+            c = ctx()
+            c.prev_close = 99.9
+            import r001_define_config as r001
+            with mock.patch.object(r001, "VWAP_TRADE_MIN_OPEN_GAP_PCT", 1.0, create=True):
+                self.assertFalse(r005._v09_vwap_signal(c))
+            self.assertEqual(c.side_eval["stage"], "low_gap")
+            self.assertTrue(any("VWAP_SIGNAL_LOW_GAP" in str(m) for m in logs))
+            logs.clear()
         self.assertEqual(logs, [])
 
     def test_nothing_is_written_without_the_session_logging_and_errors_stay_inside(self):

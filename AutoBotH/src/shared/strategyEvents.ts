@@ -210,6 +210,7 @@ export const STAGE_ROWS: Record<SideStrategy, StageRow[]> = {
     ...COMMON_TOP,
     { key: 'chase', label: '추격 · 급락 제한', stages: ['chase', 'price_drop'] },
     { key: 'tick', label: '60틱 골든크로스', stages: ['no_tick_cross'] },
+    { key: 'gap', label: '시가 갭', stages: ['low_gap'] },
     { key: 'trend', label: '1분 추세 (MA5 · BB 중심선)', stages: ['no_trend'] },
     { key: 'vwap', label: 'VWAP 위', stages: ['below_vwap'] },
     ...COMMON_BOTTOM,

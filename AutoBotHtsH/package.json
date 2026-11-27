@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.1.20_001 (2026-11-28): VWAP 매매 세부 설정에 시가 갭 하한과 틱 조건 사용 추가, 단계 표시에 '시가 갭' 추가",
     "v1.1.19_007 (2026-11-28): 바닥 반등 초입 감시 히스토리 차트에 VWAP 선을 항상 표시",
     "v1.1.19_006 (2026-11-28): 가상/실전 카드 Codex 검토 반영 + 사용성 수정 (타임라인 실현손익 방식별 합산, 손익 미확인 매도 분리, 리플레이 시점 가상 장부, 가상 예산 공통 조회, 과거 날짜 표기, 좁은 창 카드 배치, 대상 구성 호스트 전환 보호)",
     "v1.1.19_005 (2026-11-28): 매매 방식 현황: 한 방식의 가상 · 실전 카드는 둘 중 하나만 켜짐 (실전을 켜면 가상은 꺼지고, 실전을 끄면 가상으로 전환, 가상을 끄면 방식 전체 꺼짐)",
@@ -133,7 +134,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.1.19",
+  "version": "1.1.20",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -187,7 +188,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "007",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",
