@@ -129,7 +129,10 @@ export class R016Client {
     return buildR016Command(c.remoteRoot, c.pythonPath, c.by, args);
   }
 
-  run<T = unknown>(args: string[], opts: { timeoutMs?: number; stdin?: string } = {}): Promise<R016Result<T>> {
+  /** opts.guard [2026-11-27, Codex review]: checked in the same tick the command is handed to the SSH session / the local
+   *  process, i.e. after it waited in the queue: a returned text refuses the call (nothing is run) - a confirmed write is thus
+   *  bound to the connection it was confirmed on */
+  run<T = unknown>(args: string[], opts: { timeoutMs?: number; stdin?: string; guard?: () => string | null } = {}): Promise<R016Result<T>> {
     let call: (timeoutMs: number, stdin?: string) => Promise<{ out: string; err: string; code: number | null }>;
     try {
       if (this.argv) {
@@ -149,6 +152,8 @@ export class R016Client {
     }
     this.queued++;
     const job = this.tail.then(async () => {
+      const refused = opts.guard ? opts.guard() : null;
+      if (refused) return { ok: false, rc: null, data: null, stderr: '', error: refused } as R016Result<T>;
       const r = await call(opts.timeoutMs ?? R016_TIMEOUT, opts.stdin);
       if (r.err.trim()) {
         this.stderrLog.push(`[${new Date().toISOString()}] ${args[0]}: ${r.err.trim().slice(0, 2000)}`);
@@ -613,7 +618,13 @@ export function createControl(deps: ControlDeps) {
     const host = deps.hostLabel();
     const myGen = gen; // bumped on every disconnect / run-mode switch
     const hostId = deps.hostId?.() ?? '';
-    const pre = await client.run<TargetsDoc>(['targets', 'get', ...d]);
+    const moved = (): string | null =>
+      myGen !== gen || client !== cl() || deps.hostLabel() !== host || (deps.hostId?.() ?? '') !== hostId || !deps.isConnected()
+        ? '확인한 뒤 연결이 바뀌어 적용하지 않았습니다. 다시 시도하세요.'
+        : null;
+    // [Codex review] the read is bound to the same connection as the write: it is refused too when the target changed while it
+    // waited in the queue (so a composition read on another host / root is never the one that gets confirmed)
+    const pre = await client.run<TargetsDoc>(['targets', 'get', ...d], { guard: moved });
     // [Codex review] the composition the card showed must be the one confirmed and stored
     if (shown && pre.data?.composition?.digest && pre.data.composition.digest !== shown)
       return { ok: false, error: '구성이 화면에 보인 것과 달라졌습니다. 다시 확인한 뒤 적용하세요.', data: pre.data };
@@ -635,10 +646,13 @@ export function createControl(deps: ControlDeps) {
     ) {
       return { ok: false, cancelled: true };
     }
-    if (myGen !== gen || client !== cl() || deps.hostLabel() !== host || (deps.hostId?.() ?? '') !== hostId || !deps.isConnected())
-      return { ok: false, error: '확인하는 동안 연결이 바뀌었습니다. 다시 시도하세요.' };
+    const why = moved();
+    if (why) return { ok: false, error: why };
     // the server checks the digest again inside its write lock: nothing changes between this check and the writes
-    const r = await client.run<TargetsDoc & { watchlist?: WatchlistSetResult }>(['targets', 'apply', ...d, '--expect', c.digest], { timeoutMs: R016_SERVICE_TIMEOUT });
+    const r = await client.run<TargetsDoc & { watchlist?: WatchlistSetResult }>(['targets', 'apply', ...d, '--expect', c.digest], {
+      timeoutMs: R016_SERVICE_TIMEOUT,
+      guard: moved, // again at the moment the command is started (it may have waited in the queue)
+    });
     if (r.ok && r.data?.ok) {
       await afterWatchlistWrite({ ok: true, data: r.data.watchlist || null });
       void refreshPaper();

@@ -357,6 +357,29 @@ describe('R016Client (mocked SSH exec)', () => {
     );
   });
 
+  it('a guard is asked when the call is started (after its wait in the queue), and a refused call runs nothing', async () => {
+    let release: (() => void) | null = null;
+    const exec = vi.fn(async (cmd: string) => {
+      if (cmd.includes("'status'")) await new Promise<void>((res) => (release = res));
+      return { out: j({ ok: true }), err: '', code: 0 };
+    });
+    const c = new R016Client(exec, cfg);
+    let moved = false;
+    const first = c.run(['status']);
+    const second = c.run(['targets', 'apply'], { guard: () => (moved ? '연결이 바뀌었습니다' : null) });
+    await Promise.resolve();
+    moved = true; // the connection changes while the write waits behind the first call
+    release!();
+    await first;
+    const r = await second;
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('연결이 바뀌었습니다');
+    expect(exec).toHaveBeenCalledTimes(1); // the write was never handed to the session
+    moved = false;
+    expect((await c.run(['targets', 'get'], { guard: () => null })).ok).toBe(true);
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
   it('runs calls one at a time (serial queue)', async () => {
     let active = 0;
     let maxActive = 0;

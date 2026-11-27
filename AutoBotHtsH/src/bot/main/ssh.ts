@@ -60,8 +60,9 @@ export class SshConnection extends EventEmitter implements FileHost {
     }
   }
 
-  /** [2026-11-27] counts every connect() call: a confirmed write is refused when the session it was read from is not the one
-   *  that would run it (a reconnect in between, to the same or another server) */
+  /** [2026-11-27] changes whenever the SSH client instance changes: at the start of every connect() (the old client is closed),
+   *  when the new client is put in place (two overlapping connects end on different numbers) and on close(). A confirmed write
+   *  is refused when the session it was read from is not the one that would run it. */
   sessionSeq = 0;
 
   async connect(p: SshParams): Promise<void> {
@@ -121,6 +122,7 @@ export class SshConnection extends EventEmitter implements FileHost {
       throw e;
     }
     this.client = client;
+    this.sessionSeq++; // the client that runs commands from here on [Codex review]
     this.sftp = await new Promise<SFTPWrapper>((resolve, reject) => client.sftp((e, s) => (e ? reject(e) : resolve(s))));
     this.connected = true;
   }
@@ -128,6 +130,7 @@ export class SshConnection extends EventEmitter implements FileHost {
   close(): void {
     const c = this.client;
     this.connected = false;
+    this.sessionSeq++;
     this.client = null;
     this.sftp = null;
     if (c) {

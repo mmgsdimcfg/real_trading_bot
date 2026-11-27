@@ -129,7 +129,8 @@ const control = createControl({
   hostId: () => {
     const s = getSettings();
     // the SSH session itself (counted per connect) besides the stored settings: a reconnect in between changes it
-    return mode === 'local' ? `local|${s.localRoot}` : `ssh|${ssh.sessionSeq}|${s.host}|${s.port}|${s.username}|${s.remoteRoot}`;
+    // JSON of the parts: no two different targets can spell the same text [Codex review]
+    return JSON.stringify(mode === 'local' ? ['local', s.localRoot, s.localPython] : ['ssh', ssh.sessionSeq, s.host, s.port, s.username, s.remoteRoot]);
   },
   send: (ch, data) => send(ch, data),
   win: () => win,
