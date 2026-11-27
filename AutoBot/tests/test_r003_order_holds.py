@@ -25,6 +25,14 @@ NOW = datetime(2026, 11, 25, 10, 0, 0)
 DAY = "20261125"
 
 
+class _FixedNow(datetime):
+    """datetime whose now() is the test's NOW (for r003 code that reads the clock itself)"""
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
 def _api(pending=None, holds=None, dry_run=False):
     api = object.__new__(r003.TradingAPI)
     api.env_dv = "real"
@@ -115,7 +123,9 @@ class OrderHoldTest(unittest.TestCase):
         # closed at the broker: still held until the next account sync has put a last fill into the r023 ledger
         self.assertTrue(api.order_holds["005930"]["release_after_sync"])
         self.assertTrue(api.has_pending_order("005930"))
-        with mock.patch.object(r003.r023, "save_ledger"), mock.patch.object(r003.r023, "save_snapshot"):
+        # [2026-11-27] _update_bot_ledger takes no time: it uses the clock. The day is fixed to NOW's, or the release is written to
+        # today's order_holds file and the check below reads the file of DAY (the test passed on 2026-11-25 only)
+        with mock.patch.object(r003.r023, "save_ledger"), mock.patch.object(r003.r023, "save_snapshot"),                 mock.patch.object(r003, "datetime", _FixedNow):
             api._update_bot_ledger({"005930": {"quantity": 7}})
         self.assertNotIn("005930", api.order_holds)
         self.assertNotIn("005930", api._bot_order_window["sell"])                       # a later trade is not that order's
