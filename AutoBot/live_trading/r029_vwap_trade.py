@@ -114,6 +114,17 @@ def vwap_signal(raw: pd.DataFrame, price: float, now: datetime, tick, p: VwapPar
     return True, "signal", info
 
 
+def trace_fields(stage: str, info: dict | None) -> dict:
+    """[2026-11-27] what the timeline trace (r030) keeps of one vwap_signal answer: the values the decision used, as they are"""
+    i = info or {}
+    out = {"stage": str(stage)}
+    for src, dst in (("vwap", "vwap"), ("vwap_gap_pct", "gap"), ("bar_age_s", "bar_age"), ("tick", "tick"),
+                     ("tick_cross", "tick_cross"), ("cross_close", "cross_close"), ("ma5_up", "ma5_up"), ("bb_mid_up", "mid_up")):
+        if i.get(src) is not None:
+            out[dst] = i[src]
+    return out
+
+
 class _RuleModel:
     """stands in for the Edge AI model object the base runner reads (meta only; nothing is predicted)"""
     meta = {"model_id": MODEL_ID}
@@ -126,6 +137,7 @@ class _RuleModel:
 class VwapPaperRunner(r022.EdgeOnlyRunner):
     """r022's paper book (store, limits, exits, session close, status file, restore) with the VWAP signal as the entry"""
     FILE_PREFIX = FILE_PREFIX
+    TRACE_STRATEGY = "vwap"
 
     def __init__(self, out_dir: Path, date_str: str, log: Callable[[str], None], params: VwapParams,
                  tick_eval: Callable[[str, datetime], object] | None, max_positions: int = 3, max_entries: int = 20,
@@ -150,6 +162,10 @@ class VwapPaperRunner(r022.EdgeOnlyRunner):
             except Exception as exc:            # the tick feed never breaks the runner
                 self.log(f"{TAG} {code} tick feed error ({type(exc).__name__}: {exc})")
         ok, stage, info = vwap_signal(store, float(price), now, tick, self.params)
+        try:                                    # [2026-11-27] timeline trace (record only; never stops the evaluation)
+            self._trace_info = {k: v for k, v in trace_fields(stage, info).items() if k != "stage"}
+        except Exception:
+            self._trace_info = None
         if not ok:
             self._stage(code, stage)
             return
@@ -197,6 +213,7 @@ def make_runner(cfg, out_dir: Path, date_str: str, log: Callable[[str], None], c
             horizon_min=float(getattr(cfg, "VWAP_TRADE_HORIZON_MIN", 300)),
             exclude_funds=bool(getattr(cfg, "VWAP_TRADE_EXCLUDE_FUNDS", True)),
             no_reentry_after_sl=bool(getattr(cfg, "VWAP_TRADE_NO_REENTRY_AFTER_SL", True)), close_only=close_only)
+        runner.trace_enabled = True             # [2026-11-27] timeline trace (r030): one row per judged bar
         # the day's KRX tick files price the paper positions r003 did not evaluate this turn (r022 poll_orphans)
         runner.tick_feed = r022.CollectorTickFeed(Path(cfg.TICK_DATA_DIR) / date_str, date_str, confirm_delay_s)
         runner.nxt_feed = None            # regular session only

@@ -17,6 +17,7 @@
  * - [2026-11-17] type=feat - ctlJobDates (ctl:jobDates): saved date folders for the data jobs tab's calendar
  */
 
+import type { StrategyEvalRowX } from '../shared/sideTimeline';
 import type { RangeResults } from '../shared/rangeResults';
 import { contextBridge, ipcRenderer } from 'electron';
 import type { EdgeModelInfo, PaperStatus, PaperTrade } from '../shared/paper';
@@ -84,6 +85,9 @@ const api = {
   getPrice: (req: PriceRequest): Promise<PriceResponse> => ipcRenderer.invoke('price:get', req),
   /** Edge-AI-only paper trades of a day (server r022) */
   getPaper: (date: string, book?: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date, book),
+  /** [2026-11-27] per-bar evaluation trace rows of a side strategy for one symbol (total = rows of the day for every symbol) */
+  getStrategyEvals: (date: string, strategy: string, code: string): Promise<{ ok: boolean; rows: StrategyEvalRowX[]; total?: number; error?: string }> =>
+    ipcRenderer.invoke('strategy:evals', date, strategy, code),
   /** [2026-11-27] save a text (CSV export) to a file the user picks in the save dialog */
   saveText: (defaultName: string, text: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> => ipcRenderer.invoke('file:saveText', defaultName, text),
   /** [2026-11-27] results per trading method and mode of every day in [from, to] (YYYYMMDD); budget = per-order KRW for paper sizing */

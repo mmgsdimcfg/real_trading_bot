@@ -39,7 +39,8 @@ import { create } from 'zustand';
 import type { AppStatus, ConditionsDoc, EvalEvent, Settings, Side, Snapshot, Trade } from '../../shared/types';
 import type { ControlState } from '../../shared/control';
 import type { PaperBook } from '../../shared/paper';
-import type { TradeFilter } from '../../shared/strategy';
+import type { TradeFilter, TradeStrategy } from '../../shared/strategy';
+import type { StrategyEvent } from '../../shared/strategyEvents';
 import type { ChartKind } from '../../shared/price';
 import type { IndicatorKey } from '../../shared/indicators';
 import { fromMarketQuote, type LiveQuote } from '../../shared/liveQuote';
@@ -194,7 +195,10 @@ interface State {
   tab: Tab;
   side: Side;
   selected: string | null;
-  timeline: { code: string; events: EvalEvent[]; trades: Trade[] } | null;
+  timeline: { code: string; events: EvalEvent[]; trades: Trade[]; strategy?: StrategyEvent[] } | null;
+  /** [2026-11-27] timeline method tab: 'auto' = follows what runs / what holds the symbol, else the user's choice (until restart) */
+  timelineMethod: 'auto' | TradeStrategy;
+  setTimelineMethod: (m: 'auto' | TradeStrategy) => void;
   control: ControlState;
   /** bumped after every write so the history table reloads */
   historyRev: number;
@@ -253,6 +257,8 @@ export const useStore = create<State>()((set, get) => ({
   side: 'buy',
   selected: null,
   timeline: null,
+  timelineMethod: 'auto',
+  setTimelineMethod: (timelineMethod) => set({ timelineMethod }),
   chartRequest: null,
   chartCode: null,
   control: { status: null, busy: null },
@@ -377,7 +383,7 @@ export const useStore = create<State>()((set, get) => ({
   select: (code) => {
     // [2026-11-18] the symbol's events from the last visit are shown at once (dataCache), then refreshed
     const day = get().status.date;
-    const kept = code ? peek<{ code: string; events: EvalEvent[]; trades: Trade[] }>(timelineKey(day, code)) : undefined;
+    const kept = code ? peek<{ code: string; events: EvalEvent[]; trades: Trade[]; strategy?: StrategyEvent[] }>(timelineKey(day, code)) : undefined;
     set({ selected: code, timeline: code && get().timeline?.code === code ? get().timeline : kept || null });
     void get().refreshTimeline();
   },

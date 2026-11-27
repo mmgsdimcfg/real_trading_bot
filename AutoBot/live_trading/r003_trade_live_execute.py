@@ -1604,6 +1604,26 @@ def log_trade(msg: str, mirror_main_log: bool = True) -> None:
         log(f"  [TRADE       ] {msg}")
 
 
+def _log_buy_trade_block(code: str, pending: dict, fill_price: float, filled_qty: int, event_time: datetime | None = None) -> None:
+    """[2026-11-27] the ">>> <code>_<name> Buy - ..." block of the daily trade log for a confirmed buy (one writer: the normal
+    confirm and the side-strategy order the fill ledger closed before the account row arrived)"""
+    code_name = str(pending.get("code_name", ""))
+    compact_code_label = f"{code}_{code_name}" if code_name else code
+    buy_time_label = _format_trade_time_label(pending.get("submitted_at"))
+    buy_price_label = f"{fill_price:,.0f}" if fill_price > 0 else "N/A"
+    buy_detail_text = str(pending.get("buy_detail", "")).strip()
+    summary_line = f">>> {compact_code_label} Buy - {buy_detail_text}" if buy_detail_text else f">>> {compact_code_label} Buy"
+    _log_trade_block(
+        [
+            "=" * 110,
+            summary_line,
+            f"*** 매수시각={buy_time_label} | 매수가격={buy_price_label} | 매수수량={filled_qty}",
+        ],
+        event_time=event_time or datetime.now(),
+        mirror_main_log=False,
+    )
+
+
 def _log_trade_block(lines: list[str], event_time: datetime | None = None, mirror_main_log: bool = False) -> None:
     ts = event_time or datetime.now()
     stamp = ts.strftime("%Y-%m-%d %H:%M:%S")
@@ -2930,6 +2950,7 @@ def _make_edge_only_runner(date_str: str):
                                 tp_pct=getattr(_cfg_mod, "EDGE_ONLY_TP_PCT", 0.0),
                                 sl_pct=getattr(_cfg_mod, "EDGE_ONLY_SL_PCT", 0.0),
                                 horizon_min=getattr(_cfg_mod, "EDGE_ONLY_HORIZON_MIN", 0))
+        runner.trace_enabled = True             # [2026-11-27] timeline trace (r030): one row per judged bar of a watched symbol
         # [2026-11-20] the day's KRX tick files also price the paper positions r003 did not evaluate (poll_orphans)
         runner.tick_feed = CollectorTickFeed(_cfg_mod.TICK_DATA_DIR / date_str, date_str, CANDLE_CONFIRM_DELAY_SECONDS)
         # [2026-11-25] NXT tick files (g011: ticks/<date>/nxt) price the NXT holdings r003 did not evaluate (poll_orphans)
@@ -4878,8 +4899,9 @@ class TradingAPI:
             str(status.get("cancel_yn", "")) == "Y", now, (V2_COMMISSION_PCT, V2_SELL_TAX_PCT),
             float(status.get("filled_amt", 0.0) or 0.0))
         if any(d > 0 for _c, _s, d, _k in changes):
-            log(f"  [EDGE LIVE   ] {_sym_label(code)} | {side} 체결 {int(status.get('filled_qty', 0))}주 반영 (order "
-                f"{pending.get('order_no', '')}) -> Edge {self.edge_quantity(code)}주 원가 {self.edge_avg_price(code):,.0f}")
+            _sp = _side_spec(pending.get("strategy"))   # [2026-11-27] the tag / name of the order's own strategy (was always Edge)
+            log(f"{_sp.tag} {_sym_label(code)} | {side} 체결 {int(status.get('filled_qty', 0))}주 반영 (order "
+                f"{pending.get('order_no', '')}) -> {_sp.ko} {self.edge_quantity(code)}주 원가 {self.edge_avg_price(code):,.0f}")
             self._save_fills(now)
 
     def _edge_cancel_buy(self, code: str, pending: dict, now: datetime) -> None:
@@ -4943,7 +4965,7 @@ class TradingAPI:
             filled = int(st["applied"].get(key, 0) or 0)
             amt = float(((st.get("applied_amt") or {}).get(key) or [0.0, 0])[0] or 0.0)
             status = {"filled_qty": filled, "avg_price": amt / filled if filled > 0 and amt > 0 else 0.0}
-            log(f"  [EDGE LIVE   ] {_sym_label(code)} | {pending.get('side')} 주문 {no} 종결(체결 장부) | 체결 {filled}주")
+            log(f"{_side_spec(pending.get('strategy')).tag} {_sym_label(code)} | {pending.get('side')} 주문 {no} 종결(체결 장부) | 체결 {filled}주")
             if pending.get("side") == "buy":
                 pos = self.positions.get(code)
                 if filled > 0 and pos is not None:
@@ -4952,6 +4974,17 @@ class TradingAPI:
                     if filled <= 0:
                         self._edge_entry_back(pending)
                         self.buy_inflight_codes.discard(str(code).zfill(6))
+                    else:
+                        # [2026-11-27] filled, but the account row of the symbol is not there yet: the pending order is closed
+                        # here without _confirm_pending_buy, so the Buy block of the daily trade log was never written (the
+                        # 2026-11-27 VWAP buy of 237690 had only its SUBMIT / PENDING lines). The block only - nothing else changes
+                        try:
+                            # price: the average of what THIS order filled (its lot) - not the book / account average, which
+                            # mixes other orders in [Codex round 2]; unknown -> the block says N/A
+                            _px = r023.order_lot_price(st, str(pending.get("strategy", "")), code, key)
+                            _log_buy_trade_block(code, pending, _px, filled)
+                        except Exception as exc:
+                            log(f"{_side_spec(pending.get('strategy')).tag} {_sym_label(code)} | 매수 기록 쓰기 오류: {exc}")
                     self.pending_orders.pop(code, None)
             elif filled > 0:
                 self._confirm_pending_sell(code, pending, status,
@@ -5434,22 +5467,8 @@ class TradingAPI:
             pos["current_price"] = float(pos.get("current_price") or fill_price)
             pos["highest_price"] = max(float(pos.get("highest_price", fill_price)), float(pos["current_price"]), fill_price)
 
-        code_name = str(pending.get("code_name", ""))
-        compact_code_label = f"{code}_{code_name}" if code_name else code
         event_time = datetime.now()
-        buy_time_label = _format_trade_time_label(pending.get("submitted_at"))
-        buy_price_label = f"{fill_price:,.0f}" if fill_price > 0 else "N/A"
-        buy_detail_text = str(pending.get("buy_detail", "")).strip()
-        summary_line = f">>> {compact_code_label} Buy - {buy_detail_text}" if buy_detail_text else f">>> {compact_code_label} Buy"
-        _log_trade_block(
-            [
-                "=" * 110,
-                summary_line,
-                f"*** 매수시각={buy_time_label} | 매수가격={buy_price_label} | 매수수량={filled_qty}",
-            ],
-            event_time=event_time,
-            mirror_main_log=False,
-        )
+        _log_buy_trade_block(code, pending, fill_price, filled_qty, event_time)
         self._record_position_meta(code, pos)
         self.startup_position_codes.discard(str(code).zfill(6))
         self.persist_live_state()
@@ -7112,6 +7131,32 @@ def _edge_live_reject_note(failed, msgs: list) -> tuple[str, float] | None:
     return text, 0.0
 
 
+def _side_trace(strategy: str, now: datetime, code: str, ctx, bar: str, stage: str = "", failed=None, msgs: list | None = None) -> None:
+    """[2026-11-27] one row of the timeline trace (r030, strategy_eval_<strategy>_<date>.jsonl) for a judged bar of the real-order
+    path: where it stopped (the refusing condition and what it wrote) or that it was ordered. A record only - queued, written by
+    another thread, never raises, never read back by the bot."""
+    try:
+        if not _LOG_CTX.get("trade_log"):
+            return                                # logging not set up (a test / tool that only imported r003): no file of the real runtime
+        import r030_strategy_trace as r030
+        _se = getattr(ctx, "side_eval", None)
+        fields = dict(_se) if isinstance(_se, dict) else {}
+        sig_stage = fields.pop("stage", None)
+        if failed is not None:
+            no = int(getattr(failed, "no", 0) or 0)
+            detail = str(msgs[-1]).strip() if msgs else ""
+            if detail.startswith("[") and " | " in detail:
+                detail = detail.split(" | ", 1)[1].strip()
+            stage = (sig_stage if no == 9 and sig_stage and sig_stage != "signal" else None) or r030.reject_stage(no, detail)
+            fields.update(no=no, cond=str(getattr(failed, "func_name", "") or ""), detail=detail[:240])
+        else:
+            fields.update(reason=str(getattr(ctx, "buy_reason", "") or "")[:240], qty=int(getattr(ctx, "qty", 0) or 0))
+        r030.trace(LIVE_RUNTIME_DIR, strategy, now.strftime("%Y%m%d"), now, code, "live", stage, bar=bar,
+                   price=float(getattr(ctx, "price", 0.0) or 0.0), **fields)
+    except Exception:
+        pass
+
+
 def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, symbol_label: str, current_dt: datetime,
                        nxt_tradeable: bool, price, price_source: str, bar_time, buy_frame, cross_info, traded_today: set,
                        hard_stop_today_codes: set, gap_blocked_codes: set, tick_nofile_logged: set, risk, buy_services,
@@ -7163,7 +7208,9 @@ def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, s
         risk=risk, services=_dc.replace(buy_services, log=_msgs.append),   # kept for the one reject line below, not written as they are
     )
     _decision = check_buy_conditions(ctx, _conds)
+    _bar_label = pd.Timestamp(last_bar).strftime("%H:%M")
     if not _decision.approved:
+        _side_trace(strategy, current_dt, norm, ctx, _bar_label, failed=_decision.failed, msgs=_msgs)   # [2026-11-27] timeline trace
         try:                                      # [2026-11-26] why not (a log line only - never changes the decision)
             _note = _edge_live_reject_note(_decision.failed, _msgs)
             if strategy == r023.VWAP and _note is not None and int(getattr(_decision.failed, 'no', 0) or 0) == 9:
@@ -7181,7 +7228,9 @@ def _edge_live_try_buy(api: TradingAPI, edge_live: dict, code: str, name: str, s
     if api.place_buy_order(code, price, ctx.qty, current_dt, nxt_tradeable, ctx.session,
                            buy_detail=f"{_sp.prefix}_LIVE {ctx.buy_reason}", code_name=name, strategy=strategy):
         log(f"{_sp.tag} {symbol_label} | 매수 주문 접수 | 상한 {_sp.order_krw:,.0f}원")
+        _side_trace(strategy, current_dt, norm, ctx, _bar_label, stage="ordered")
         return True
+    _side_trace(strategy, current_dt, norm, ctx, _bar_label, stage="order_refused")
     traded_today.discard(norm)                    # the reservation of _025 is released, the bar stays judged
     api.live_state["traded_today"] = traded_today
     return False

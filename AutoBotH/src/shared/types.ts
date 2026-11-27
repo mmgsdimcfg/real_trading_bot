@@ -83,6 +83,10 @@ export interface EvalEvent {
   reason: string;
   raw: string;
   steps?: Record<string, 'P' | 'F' | '-'>;
+  /** [2026-11-27] text for people when the event is not a rule condition (a side strategy's stage / event row) */
+  ko?: string;
+  /** row label of such an event (the rule conditions get theirs from the condition list) */
+  rowLabel?: string;
 }
 
 export interface Trade {
@@ -101,6 +105,12 @@ export interface Trade {
   raw: string;
   /** [2026-11-27] the trading method the order came from (shared/strategy); absent = rule */
   strategy?: 'rule' | 'edge' | 'vwap';
+  /** [2026-11-27] built from the order's SUBMIT / PENDING lines because the day's log has no fill block for it: the price is
+   *  the order's limit price and the quantity the filled quantity last seen - not a confirmed average */
+  approx?: boolean;
+  orderNo?: string;
+  /** [2026-11-27] a paper (virtual) trade drawn as a marker on a method tab of the timeline - never a real fill */
+  paper?: boolean;
 }
 
 /** 'removed' [2026-11-13]: watched by an earlier r003 run of the day but not in the watchlist of the latest run (r004 was edited) */
@@ -181,6 +191,8 @@ export interface Snapshot {
   lines: number;
   lastLineTs?: number;
   files: FileProgress[];
+  /** [2026-11-27] what the side strategies wrote without naming a symbol (new buys on / stopped and why), oldest first */
+  strategyNotes?: import('./strategyEvents').StrategyNote[];
   /** past day loaded with time replay: the day's log time range and the replay cursor (null = whole day) */
   replay?: ReplayInfo;
 }

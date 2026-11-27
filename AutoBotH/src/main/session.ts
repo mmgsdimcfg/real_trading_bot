@@ -161,7 +161,7 @@ export class DaySession {
     return s;
   }
 
-  timeline(code: string): Promise<{ events: EvalEvent[]; trades: Trade[] }> {
+  timeline(code: string): Promise<{ events: EvalEvent[]; trades: Trade[]; strategy?: import('../shared/strategyEvents').StrategyEvent[] }> {
     return this.call({ t: 'timeline', code });
   }
 

@@ -408,6 +408,10 @@ def net_pct(entry: float, exit_px: float) -> float:
 class EdgeOnlyRunner:
     # [2026-11-27] file name prefix of the day's records / status / candidates (r029 VwapPaperRunner: "vwap_paper")
     FILE_PREFIX = "edge_only"
+    # [2026-11-27] strategy name in the timeline trace file strategy_eval_<name>_<date>.jsonl (r030)
+    TRACE_STRATEGY = "edge"
+    # off unless the owner switches it on (r003 / r029.make_runner do): a runner built by a test or a study writes no trace
+    trace_enabled = False
 
     def __init__(self, model_dir: Path, data_root: Path, out_dir: Path, date_str: str, log: Callable[[str], None], config,
                  min_prob: float = 0.0, max_positions: int = 3, max_entries: int = 10, model=None,
@@ -809,12 +813,29 @@ class EdgeOnlyRunner:
         if st is not None:
             st["stage"] = stage
             st["prob"] = None if prob is None else round(float(prob), 4)
+        # [2026-11-27] timeline trace (r030): the stage a NEW bar of the symbol ended at - once per bar, a record only. The
+        # stage calls of the exit / close-only polling above the new-bar check are not bars and are not traced
+        pend = getattr(self, "_trace_pending", None)
+        if pend is not None and pend[0] == code:
+            self._trace_pending = None
+            info, self._trace_info = getattr(self, "_trace_info", None), None
+            # watched symbols only: the tick-collector group is many symbols the timeline does not show
+            if not self.trace_enabled or (st or {}).get("group", "watch") != "watch":
+                return
+            try:                                  # [Codex round 2] only values the decision already has - nothing is asked again
+                import r030_strategy_trace as r030
+                r030.trace(self.out_path.parent, self.TRACE_STRATEGY, self.date_str, pend[1], code, "paper", stage,
+                           bar=pend[2], price=(st or {}).get("price"), prob=prob, **(info if isinstance(info, dict) else {}))
+            except Exception:
+                pass
 
     def _on_symbol(self, code: str, name: str, now: datetime, frame_1m, price: float, group: str = "watch") -> None:
         if not (price > 0):
             return
         st = self.sym_state.setdefault(code, {"stage": "wait_bars", "prob": None, "bar": None, "bars": 0})
         st.update(name=name, group=group, price=price, at=now.isoformat(timespec="seconds"))
+        self._trace_pending = None                 # [2026-11-27] set again below when this poll brings a new bar
+        self._trace_info = None
         was_open = code in self.positions
         if was_open:
             self._check_exit(code, now, price)
@@ -838,12 +859,15 @@ class EdgeOnlyRunner:
         if self.last_bar.get(code) == key:
             return  # no new completed bar
         self.last_bar[code] = key
+        self._trace_pending = (code, now, pd.Timestamp(key).strftime("%H:%M"))   # [2026-11-27] the next _stage of this bar is traced
         st.update(bar=pd.Timestamp(key).strftime("%H:%M"), bars=int(len(store)))
         # a symbol that was held at the start of this poll is not bought on this bar (also right after its sale: the
         # next entry needs a new bar, like the simulator where a position blocks the symbol until it is closed)
         if was_open:
             if code in self.positions:
                 self._stage(code, "held", self.positions[code].get("prob"))
+            else:
+                self._stage(code, "sold")          # [Codex round 2] sold in this poll: the same stage again, so the bar has its trace row
             return
         if len(store) < r011.MIN_SESSION_BARS:
             self._stage(code, "wait_bars")
@@ -884,12 +908,15 @@ class EdgeOnlyRunner:
         if self.last_bar.get(code) == key:
             return  # no new completed bar
         self.last_bar[code] = key
+        self._trace_pending = (code, now, pd.Timestamp(key).strftime("%H:%M"))   # [2026-11-27] the next _stage of this bar is traced
         regular = self.bars.get(code) if sess == "nxt_after" else None
         store = own if regular is None or regular.empty else pd.concat([regular, own])
         st.update(bar=pd.Timestamp(key).strftime("%H:%M"), bars=int(len(own)))
         if was_open:
             if code in self.positions:
                 self._stage(code, "held", self.positions[code].get("prob"))
+            else:
+                self._stage(code, "sold")          # [Codex round 2] sold in this poll: the bar still has its trace row
             return
         if len(own) < r011.MIN_SESSION_BARS:
             self._stage(code, "wait_bars")
@@ -982,6 +1009,7 @@ class EdgeOnlyRunner:
                 return
             self._stage(code, "no_model")
             return
+        self._trace_info = {"thr": threshold}      # [2026-11-27] timeline trace: the cut this bar is judged against
         if code not in self._daily:
             self._daily[code] = r011.load_daily_features(self.data_root, code, self.date_str)
         first = store.index[0]

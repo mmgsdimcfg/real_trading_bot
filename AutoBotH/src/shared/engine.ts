@@ -27,6 +27,7 @@
  */
 
 import { buyStrategyOf, sellStrategyOf } from './strategy';
+import { STRATEGY_TAGS, parseStrategyNote, parseStrategyRest, type SideStrategy, type StrategyEvent, type StrategyNote } from './strategyEvents';
 import type {
   ConditionsDoc,
   EvalEvent,
@@ -53,9 +54,29 @@ export const TIMELINE_CAP = 2000;
 const COMPACT_BUCKETS_MS = [30000, 60000, 120000, 300000, 600000, 1800000];
 const COMPACT_KEEP_RECENT = 400;
 
+/** [2026-11-27] strategy events kept per symbol / notes kept per day (a held symbol writes a check line every ~30 s) */
+const STRATEGY_EVENT_CAP = 4000;
+const STRATEGY_NOTE_CAP = 200;
+/** a fill block belongs to a side order when its printed order time is within this of the order's SUBMIT line */
+const SIDE_BLOCK_MATCH_MS = 15000;
+
+/** a side-strategy buy order seen in the buy_sell log ([BUY SUBMIT] ... reason=VWAP_LIVE ..., then [BUY PENDING] filled=a/b) */
+interface SideOrder {
+  code: string;
+  name: string;
+  ts: number;
+  price: number;
+  tail: string;
+  strategy: SideStrategy;
+  filled: number;
+  raw: string;
+}
+
 interface SymState {
   summary: SymbolSummary;
   timeline: EvalEvent[];
+  /** [2026-11-27] what the side strategies wrote about the symbol */
+  side: StrategyEvent[];
   /** watch state at the end of the previous r003 run (set on "R003 START") */
   prevWatch?: WatchState;
   carriedTs?: number;
@@ -85,6 +106,12 @@ export class DayEngine {
   private openTrade: Trade | null = null;
   /** [2026-11-27] method of the symbol's last buy block - a sell whose reason does not name a method takes it */
   private lastBuyStrategy = new Map<string, 'rule' | 'edge' | 'vwap'>();
+  /** [2026-11-27] side-strategy buy orders of the buy_sell log by order number, and the trade list with them merged in */
+  private sideOrders = new Map<string, SideOrder>();
+  private mergedTrades: Trade[] | null = null;
+  private strategyNotes: StrategyNote[] = [];
+  /** the side strategy that last signalled / ordered the symbol (older logs tag every fill line "[EDGE LIVE]") */
+  private lastSide = new Map<string, SideStrategy>();
   private unknown = new Map<string, UnknownEntry>();
   private unknownLines = 0;
   private regime?: string;
@@ -160,6 +187,18 @@ export class DayEngine {
 
     // tagged line without a symbol: global state
     if (!p.code) {
+      const st = STRATEGY_TAGS[p.tag];
+      if (st) {
+        const n = parseStrategyNote(p.body);
+        // the same note repeats every 10 minutes while it holds: keep the first time it was said and the last
+        const last = this.strategyNotes[this.strategyNotes.length - 1];
+        if (last && last.strategy === st.strategy && last.mode === st.mode && last.kind === n.kind && last.text === n.text) last.lastTs = p.ts;
+        else {
+          this.strategyNotes.push({ ts: p.ts, lastTs: p.ts, ...st, ...n });
+          if (this.strategyNotes.length > STRATEGY_NOTE_CAP) this.strategyNotes.shift();
+        }
+        return;
+      }
       if (p.tag === 'MKT REGIME') this.regime = p.body.split('|')[0].trim();
       else if (p.tag === 'WL SPLIT') {
         const m = /active=(\d+)\s+backup=(\d+)/.exec(p.body);
@@ -176,6 +215,24 @@ export class DayEngine {
     if (!this.syms.has(p.code) && IGNORED_TAGS.has(p.tag) && !p.tag.startsWith('ACT ')) return;
     const s = this.sym(p.code);
     if (p.name) this.setName(p.code, p.name);
+
+    // [2026-11-27] a side strategy's line about the symbol: kept as it is for the timeline's method tabs, not a rule condition
+    const side = STRATEGY_TAGS[p.tag];
+    if (side) {
+      const f = parseStrategyRest(side.mode, p.rest);
+      let strategy = side.strategy;
+      if (f.kind === 'signal' || f.kind === 'order' || f.kind === 'nobuy' || f.kind === 'hold' || f.kind === 'exit') this.lastSide.set(p.code, strategy);
+      // fill / close lines of logs before 2026-11-27 are always tagged EDGE LIVE: those (only those) follow the strategy that last
+      // signalled / ordered the symbol. A VWAP LIVE tag is always what it says [Codex round 3]
+      else if (p.tag === 'EDGE LIVE') strategy = this.lastSide.get(p.code) || strategy;
+      s.side.push({ id: this.nextId++, ts: p.ts, code: p.code, strategy, mode: side.mode, ...f, raw });
+      if (s.side.length > STRATEGY_EVENT_CAP) {
+        // thin the oldest holding checks first (one of two), the rarer events stay
+        let dropped = false;
+        s.side = s.side.filter((e, i) => !(e.kind === 'hold' && i < s.side.length / 2 && (dropped = !dropped)));
+      }
+      return;
+    }
 
     if (p.tag === 'ACT REENTER' || (p.tag === 'BOT LEDGER' && /\baccount=\d+->0\b/.test(p.rest))) s.closedTs = p.ts;
     if (p.tag.startsWith('ACT ')) {
@@ -329,6 +386,7 @@ export class DayEngine {
           evalCount: 0,
         },
         timeline: [],
+        side: [],
       };
       this.syms.set(code, s);
     }
@@ -344,6 +402,29 @@ export class DayEngine {
   private buySellLine(raw: string): void {
     const p = parseBuySellLine(raw);
     if (!p) return;
+    // [2026-11-27] a side-strategy buy order: r003 (before 2026-11-27) could close it without writing the fill block, so the
+    // order itself is remembered by its number - see allTrades()
+    const so = /^\[BUY (SUBMIT|PENDING)\s*\]\s+(\d{6})_(\S*)\s*\|(.*)$/.exec(p.body);
+    if (so) {
+      const kv = parseKv(so[4]);
+      const no = (kv.order_no || '').replace(/^0+/, '');
+      if (!no) return;
+      if (so[1] === 'SUBMIT') {
+        const tail = (kv.reason || '').trim();
+        const strategy = buyStrategyOf(tail);
+        if (strategy !== 'rule' && /^(VWAP|EDGE)_LIVE\b/.test(tail))
+          this.sideOrders.set(no, { code: so[2], name: so[3].replace(/~+$/, ''), ts: p.ts, price: num(kv.price), tail, strategy, filled: 0, raw });
+      } else {
+        const o = this.sideOrders.get(no);
+        const f = /^(\d+)\/(\d+)/.exec(kv.filled || '');
+        if (o && f && +f[1] !== o.filled) {
+          o.filled = +f[1]; // the cumulative quantity as last seen (never summed)
+          o.raw += '\n' + raw;
+          this.mergedTrades = null;
+        }
+      }
+      return;
+    }
     const b = BS_BLOCK_RE.exec(p.body);
     if (b) {
       const [, code, name, side, tail] = b;
@@ -371,6 +452,7 @@ export class DayEngine {
       }
       if (name) this.setName(code, name);
       this.trades.push(t);
+      this.mergedTrades = null;
       this.openTrade = t;
       return;
     }
@@ -379,6 +461,7 @@ export class DayEngine {
       const t = this.openTrade;
       const kv = parseKv(d[1]);
       t.raw += '\n' + raw;
+      this.mergedTrades = null; // the detail line sets the block's time / price: the merged list is built again [Codex round 3]
       if (kv['매수시각']) {
         const bts = kstDateTimeToEpoch(kv['매수시각']);
         if (t.side === 'BUY') {
@@ -402,14 +485,41 @@ export class DayEngine {
 
   // ---- output --------------------------------------------------------------------------
 
-  getTrades(): Trade[] {
-    return this.trades;
+  /** [2026-11-27] the fill blocks of the trade log + the side-strategy buy orders that were filled but have no block (matched
+   *  by symbol, method and the order time the block prints - only then it is certainly the same order). Time order. */
+  private allTrades(): Trade[] {
+    if (this.mergedTrades) return this.mergedTrades;
+    const extra: Trade[] = [];
+    // [Codex round 3] one block answers one order: each filled order takes the nearest block of its symbol + method that no other
+    // order took (the block prints the order's submit time; SIDE_BLOCK_MATCH_MS allows for the API round trip). A side strategy
+    // judges a symbol once per 1-minute bar and never reprices, so two of its orders are never that close.
+    const used = new Set<Trade>();
+    const orders = [...this.sideOrders].filter(([, o]) => o.filled > 0).sort((a, b) => a[1].ts - b[1].ts);
+    for (const [no, o] of orders) {
+      let best: Trade | null = null;
+      for (const t of this.trades) {
+        if (t.side !== 'BUY' || t.code !== o.code || t.strategy !== o.strategy || used.has(t)) continue;
+        const gap = Math.abs(t.ts - o.ts);
+        if (gap <= SIDE_BLOCK_MATCH_MS && (!best || gap < Math.abs(best.ts - o.ts))) best = t;
+      }
+      if (best) {
+        used.add(best);
+        continue;
+      }
+      extra.push({ code: o.code, name: o.name, side: 'BUY', ts: o.ts, price: o.price, qty: o.filled, reason: o.tail, raw: o.raw, strategy: o.strategy, approx: true, orderNo: no });
+    }
+    this.mergedTrades = extra.length ? [...this.trades, ...extra].sort((a, b) => a.ts - b.ts) : this.trades;
+    return this.mergedTrades;
   }
 
-  timeline(code: string): { events: EvalEvent[]; trades: Trade[] } {
+  getTrades(): Trade[] {
+    return this.allTrades();
+  }
+
+  timeline(code: string): { events: EvalEvent[]; trades: Trade[]; strategy: StrategyEvent[] } {
     const s = this.syms.get(code);
     const events = s ? s.timeline.slice() : [];
-    return { events, trades: this.trades.filter((t) => t.code === code) };
+    return { events, trades: this.allTrades().filter((t) => t.code === code), strategy: s ? s.side.slice() : [] };
   }
 
   snapshot(): Snapshot {
@@ -421,7 +531,8 @@ export class DayEngine {
       const c = this.syms.get(code)?.closedTs;
       return c !== undefined && ts <= c;
     };
-    for (const t of this.trades) {
+    const trades = this.allTrades();
+    for (const t of trades) {
       if (t.side === 'BUY') {
         if (closedBefore(t.code, t.ts)) continue;
         const cur = pos.get(t.code);
@@ -439,7 +550,7 @@ export class DayEngine {
       this.sym(t.code);
     }
     const symbols: SymbolSummary[] = [];
-    const traded = new Set(this.trades.map((t) => t.code));
+    const traded = new Set(trades.map((t) => t.code));
     const now = this.lastLineTs || 0;
     for (const [code, s] of this.syms) {
       const sum = { ...s.summary, realizedKrw: realized.get(code) || 0 };
@@ -455,7 +566,7 @@ export class DayEngine {
             ? 'unmanaged'
             : undefined;
       // taken off the watchlist before anything happened to it: not a symbol of the day
-      if (sum.watch === 'removed' && !s.timeline.length && !traded.has(code) && !sum.held) continue;
+      if (sum.watch === 'removed' && !s.timeline.length && !s.side.length && !traded.has(code) && !sum.held) continue;
       symbols.push(sum);
     }
     symbols.sort((a, b) => a.code.localeCompare(b.code));
@@ -465,7 +576,8 @@ export class DayEngine {
       symbols,
       buyStats: Object.fromEntries(this.buyStats),
       sellStats: Object.fromEntries(this.sellStats),
-      trades: this.trades,
+      trades,
+      strategyNotes: this.strategyNotes.slice(),
       unknown: [...this.unknown.values()].sort((a, b) => b.count - a.count),
       warnings: this.unknownLines,
       regime: this.regime,

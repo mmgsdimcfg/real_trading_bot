@@ -640,6 +640,20 @@ ipcMain.handle('paper:status', async (_e, date: string, book?: string) => {
     return { ok: false, status: null, error: errMsg(e) };
   }
 });
+// [2026-11-27] per-bar evaluation trace rows of one symbol for the timeline's method tabs (server r030 file; none on a day /
+// host whose bot did not write it)
+ipcMain.handle('strategy:evals', async (_e, date: string, strategy: string, code: string) => {
+  if (!files.connected) return { ok: false, rows: [], error: `${hostLabel()}에 연결되어 있지 않습니다.` };
+  const g = hostGen;
+  try {
+    const rows = await pricesFor(mode).strategyEvals(String(date), String(strategy));
+    if (g !== hostGen) return { ok: false, rows: [], error: '실행 위치가 바뀌었습니다.' };
+    const c = String(code);
+    return { ok: true, rows: rows.filter((r) => r.code === c), total: rows.length };
+  } catch (e) {
+    return { ok: false, rows: [], error: errMsg(e) };
+  }
+});
 // [2026-11-27] save a text the renderer made (CSV export) to a file the user picks in the native save dialog - nothing is
 // written without that choice; the path is the user's, never a bot file
 ipcMain.handle('file:saveText', async (_e, defaultName: string, text: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> => {

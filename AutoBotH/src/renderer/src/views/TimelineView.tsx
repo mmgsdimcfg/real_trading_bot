@@ -66,10 +66,21 @@
  * - [2026-11-20] type=feat - 자동 보기 (AutoView) next to the symbol picker - steps through the target symbols every N s
  * - [2026-11-20] type=feat - 운용 시간 (user 2026-11-20): regular session only (r001 ENABLE_NXT_SESSION off) -> the x axis is 09:00 - 15:30
  *   and every symbol shows only what falls in it (NXT minutes / events left out); NXT on -> 08:00 - 20:00 as before
+ * - [2026-11-27] type=feat - 매매 방식 탭 (user 2026-11-27: "타임라인은 실행 중인 매매 방식의 데이터를"): 규칙 매매 / Edge AI 매매 /
+ *   VWAP 매매, each with what it does now (실제 / 가상 / 꺼짐). 자동 = the side strategy that holds or ordered the symbol, else
+ *   the method placing real orders, else the one running paper; a click keeps the chosen tab. The rule tab is the view as it
+ *   was. An Edge AI / VWAP tab draws the same three charts from that method's own records: the stage each judged 1-minute bar
+ *   stopped at (server r030 trace) + the signal / order / not-bought lines, the price chart with only that method's fills (paper
+ *   trades too), and the holding checks / exits; a status line says the holding, the last judged bar and why new buys are
+ *   stopped. Zoom, hover dock, pinning and the linked crosshair work as before
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { timelinePriceFetch } from '../prefetch';
+import { strategyModeKo, strategyModes, strategyOfTrade, TRADE_STRATEGIES, TRADE_STRATEGY_KO, type TradeStrategy } from '../../../shared/strategy';
+import { blockReasonKo, type SideStrategy, type StrategyEvent } from '../../../shared/strategyEvents';
+import { defaultTimelineMethod, evalRowKo, paperTradesAsTrades, sideTimeline, type StrategyEvalRowX } from '../../../shared/sideTimeline';
+import type { PaperTrade } from '../../../shared/paper';
 import { PriceTag } from '../components/PriceTag';
 import { NxtMark } from '../components/NxtTag';
 import { CartesianGrid, Customized, ReferenceDot, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
@@ -259,10 +270,10 @@ function TipDock({ pt, side, pinned, onUnpin }: { pt: Pt | null; side: '매수' 
           </button>
         )}
         <span>
-          <b>{fmtKstTime(ev.ts)}</b> [{ev.tag}] {condTitle(conditions, ev.side, ev.condKey)}
+          <b>{fmtKstTime(ev.ts)}</b> [{ev.tag}] {ev.rowLabel ?? condTitle(conditions, ev.side, ev.condKey)}
           {ev.sub ? ` / ${ev.sub}` : ''}
         </span>
-        <span className="reason-ko">{reasonKo(ev.reason) || ev.reason}</span>
+        <span className="reason-ko">{ev.ko ?? (reasonKo(ev.reason) || ev.reason)}</span>
         <span className="muted small mono">{ev.reason}</span>
       </div>
       <pre className="raw">{ev.raw}</pre>
@@ -272,6 +283,11 @@ function TipDock({ pt, side, pinned, onUnpin }: { pt: Pt | null; side: '매수' 
 
 /** stable empty list (memo inputs) */
 const NO_EVENTS: EvalEvent[] = [];
+const NO_SIDE: StrategyEvent[] = [];
+const NO_TRADES: Trade[] = [];
+const NO_KEYS: string[] = [];
+/** a "new buys stopped" note counts as current while it was repeated within this time (the bot repeats it every 10 minutes) */
+const BLOCK_NOTE_FRESH_MS = 11 * 60 * 1000;
 
 export function TimelineView() {
   const snap = useStore((s) => s.snapshot);
@@ -305,8 +321,46 @@ export function TimelineView() {
   const setBuyHidden = useStore((s) => s.setBuyHidden);
   const layout = useStore((s) => s.layout);
   const setLayout = useStore((s) => s.setLayout);
+  // ---- [2026-11-27] method tab: the rule strategy (the view as it was) or a side strategy's own records --------------------
+  const control = useStore((s) => s.control);
+  const methodPick = useStore((s) => s.timelineMethod);
+  const setMethodPick = useStore((s) => s.setTimelineMethod);
+  const modes = useMemo(() => strategyModes(control), [control]);
+  const sideEvents = timeline && timeline.code === selected ? timeline.strategy || NO_SIDE : NO_SIDE;
+  const ruleTraded = !!timeline && timeline.code === selected && timeline.trades.some((t) => strategyOfTrade(t) === 'rule');
+  const autoMethod = useMemo(() => defaultTimelineMethod(modes, sideEvents, ruleTraded), [modes, sideEvents, ruleTraded]);
+  const method: TradeStrategy = methodPick === 'auto' ? autoMethod : methodPick;
+  const sideKind: SideStrategy | null = method === 'rule' ? null : method;
+  const dayX = snap?.date || status.date;
+  const tickX = status.live ? snap?.generatedAt : 0;
+  const replayX = snap?.replay?.cursor ?? null;
+  const [evalRes, setEvalRes] = useState<{ key: string; rows: StrategyEvalRowX[]; total: number } | null>(null);
+  const [paperRes, setPaperRes] = useState<{ key: string; rows: PaperTrade[] } | null>(null);
+  const sideKey = sideKind && selected && dayX ? `${dayX}/${sideKind}/${selected}` : '';
+  useEffect(() => {
+    if (!sideKind || !selected || !dayX) return;
+    let alive = true;
+    const key = sideKey;
+    void window.api.getStrategyEvals(dayX, sideKind, selected).then((r) => {
+      if (alive && r.ok) setEvalRes({ key, rows: r.rows, total: r.total || 0 });
+    });
+    const pk = `paper:${sideKind}:${dayX}`;
+    const kept = peek<{ day: string; ok: boolean; trades: PaperTrade[] }>(pk);
+    if (kept?.ok) setPaperRes({ key, rows: kept.trades });
+    void window.api.getPaper(dayX, sideKind).then((r) => {
+      if (r.ok) put(pk, { day: dayX, ...r });
+      if (alive && r.ok) setPaperRes({ key, rows: r.trades });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [sideKey, tickX, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
+  const evalRows = evalRes && evalRes.key === sideKey ? evalRes.rows : null;
+  const sideTl = useMemo(() => (sideKind ? sideTimeline(sideKind, sideEvents, evalRows || [], replayX) : null), [sideKind, sideEvents, evalRows, replayX]);
+  const paperRows = paperRes && paperRes.key === sideKey ? paperRes.rows : null;
+
   /** every buy row bottom-up: 준비, conditions in evaluation order, 주문 */
-  const buyRows = useMemo(
+  const ruleBuyRows = useMemo(
     () => [
       { key: 'PREP', label: '준비' },
       ...buyConds.map((c) => ({ key: condKeyOf(c.no), label: condKeyOf(c.no) + ' ' + c.title.slice(0, 10) })),
@@ -314,6 +368,7 @@ export function TimelineView() {
     ],
     [buyConds],
   );
+  const buyRows = sideTl ? sideTl.buyRows : ruleBuyRows;
   const buyEvalOnly = useStore((s) => s.buyEvalOnly);
   const setBuyEvalOnly = useStore((s) => s.setBuyEvalOnly);
   const sellHidden = useStore((s) => s.sellHidden);
@@ -321,7 +376,7 @@ export function TimelineView() {
   const sellEvalOnly = useStore((s) => s.sellEvalOnly);
   const setSellEvalOnly = useStore((s) => s.setSellEvalOnly);
   /** every sell row bottom-up: 평가 제외 ('PREP': [HOLD SKIP], e.g. not bought today), conditions, 세션 종료, 주문 */
-  const sellRows = useMemo(
+  const ruleSellRows = useMemo(
     () => [
       { key: 'PREP', label: '평가 제외' },
       ...sellConds.map((c) => ({ key: condKeyOf(c.no), label: condKeyOf(c.no) + ' ' + c.title.slice(0, 10) })),
@@ -330,6 +385,7 @@ export function TimelineView() {
     ],
     [sellConds],
   );
+  const sellRows = sideTl ? sideTl.sellRows : ruleSellRows;
 
   // [2026-11-18] a KRX-only symbol: only what falls in the KRX session (09:00 - 15:30) is drawn
   // [2026-11-19] ... 09:00 - 20:00 (KRX after-hours market); NXT = the day's WATCH line or the server's flag on the price answer
@@ -341,9 +397,17 @@ export function TimelineView() {
   const selNxt = !!snap?.symbols.find((s) => s.code === selected)?.nxt || (price?.ok === true && price.nxt === true);
   const krxRange = selNxt && nxtOn ? null : shownSessionRange(snap?.date || status.date, nxtOn ? false : selNxt, nxtOn, shownNow);
   const inShown = (t: number) => !krxRange || (t >= krxRange[0] && t <= krxRange[1]);
-  const allEvents = timeline && timeline.code === selected ? timeline.events : NO_EVENTS;
+  const allEvents = sideTl ? sideTl.events : timeline && timeline.code === selected ? timeline.events : NO_EVENTS;
   const events = useMemo(() => (krxRange ? allEvents.filter((e) => inShown(e.ts)) : allEvents), [allEvents, krxRange?.[0], krxRange?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const trades = timeline && timeline.code === selected ? timeline.trades : [];
+  const allTrades = timeline && timeline.code === selected ? timeline.trades : NO_TRADES;
+  // a side tab: that method's real fills + its paper trades of the symbol
+  const trades = useMemo(
+    () =>
+      sideKind
+        ? [...allTrades.filter((t) => strategyOfTrade(t) === sideKind), ...paperTradesAsTrades(paperRows || [], selected || '', sideKind, replayX)].sort((a, b) => a.ts - b.ts)
+        : allTrades.filter((t) => strategyOfTrade(t) === 'rule'), // each tab shows its own method's fills (the side fills are on their tabs)
+    [allTrades, sideKind, paperRows, selected, replayX],
+  );
   const buyKeysWithEvents = useMemo(() => new Set(events.filter((e) => e.side === 'buy').map((e) => e.condKey)), [events]);
   // sell rows with evaluations of this symbol: sell events + the condition of each sell fill
   const sellKeysWithEvents = useMemo(
@@ -351,8 +415,9 @@ export function TimelineView() {
     [events, trades],
   );
   const timelineReady = !!timeline && timeline.code === selected;
-  const { hiddenKeys, shownRows } = useRowPick(buyRows, buyHidden, buyEvalOnly, buyKeysWithEvents, timelineReady);
-  const { hiddenKeys: sellHiddenKeys, shownRows: shownSellRows } = useRowPick(sellRows, sellHidden, sellEvalOnly, sellKeysWithEvents, timelineReady);
+  // (a side tab shows all of its rows: the row pickers belong to the rule conditions)
+  const { hiddenKeys, shownRows } = useRowPick(buyRows, sideTl ? NO_KEYS : buyHidden, sideTl ? false : buyEvalOnly, buyKeysWithEvents, timelineReady);
+  const { hiddenKeys: sellHiddenKeys, shownRows: shownSellRows } = useRowPick(sellRows, sideTl ? NO_KEYS : sellHidden, sideTl ? false : sellEvalOnly, sellKeysWithEvents, timelineReady);
   const buyY = useMemo(() => new Map(shownRows.map((r, i) => [r.key, i])), [shownRows]);
   const sellY = useMemo(() => new Map(shownSellRows.map((r, i) => [r.key, i])), [shownSellRows]);
   const buyPts = useMemo(() => events.filter((e) => e.side === 'buy' && buyY.has(e.condKey)).map((ev) => ({ x: ev.ts, y: buyY.get(ev.condKey)!, ev })), [events, buyY]);
@@ -437,7 +502,7 @@ export function TimelineView() {
       // a failed live refresh keeps the bars already shown (also the kept bars of a switch)
       if (r.ok || (changed && !peek(ck))) setPrice(r);
     });
-  }, [reqKey, liveTick, status.conn]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [reqKey, liveTick, status.conn, method]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // past-day replay: intraday bars after the replay time are not shown yet
   const shownBars = useMemo(
@@ -457,14 +522,72 @@ export function TimelineView() {
     <ReferenceLine
       key={i}
       x={t.ts}
-      stroke={t.side === 'BUY' ? 'var(--gain)' : 'var(--loss)'}
-      strokeDasharray="4 3"
+      stroke={t.paper ? 'var(--text-3)' : t.side === 'BUY' ? 'var(--gain)' : 'var(--loss)'}
+      strokeDasharray={t.paper ? '1 4' : '4 3'}
       label={{ value: tradeLabel(t), position: t.side === 'BUY' ? 'insideTopRight' : 'insideBottomLeft', fill: 'var(--text-2)', fontSize: 11 }}
     />
   ));
 
+  // [2026-11-27] status line of a side tab: what the bot last said (never worked out here)
+  const blockNote = (() => {
+    if (!sideKind) return null;
+    const notes = (snap?.strategyNotes || []).filter((n) => n.strategy === sideKind && n.mode === 'live');
+    const last = notes[notes.length - 1];
+    const ref = snap?.lastLineTs || 0;
+    return last && last.kind === 'blocked' && ref - last.lastTs <= BLOCK_NOTE_FRESH_MS ? last : null;
+  })();
+  const methodTabs = (
+    <div className="toolbar tl-method">
+      <div className="seg" title="타임라인에 보일 매매 방식. 자동 = 이 종목을 보유 / 주문한 방식, 없으면 실제 주문 중인 방식, 그다음 가상 매매 중인 방식">
+        <button type="button" className={methodPick === 'auto' ? 'on' : ''} onClick={() => setMethodPick('auto')}>
+          자동
+        </button>
+        {TRADE_STRATEGIES.map((m) => (
+          <button key={m} type="button" className={`${method === m ? 'on' : ''} ${methodPick === 'auto' && method === m ? 'auto' : ''}`} onClick={() => setMethodPick(m)}>
+            {TRADE_STRATEGY_KO[m]}
+            {status.live && <i className={`tl-mode ${modes[m].live ? 'live' : modes[m].paper ? 'paper' : 'off'}`}>{strategyModeKo(modes[m]).replace(' 매매', '')}</i>}
+          </button>
+        ))}
+      </div>
+      {methodPick === 'auto' && <span className="muted small">자동 선택: {TRADE_STRATEGY_KO[method]}</span>}
+      {sideKind && sideTl && (
+        <>
+          {blockNote && (
+            <span
+              className="badge-warn"
+              title={`봇 로그 그대로: "신규 매수 중단 | ${blockNote.text}" - 처음 ${fmtKstTime(blockNote.ts)}, 마지막 ${fmtKstTime(blockNote.lastTs)} 기록. 봇은 중단된 동안 10분마다 이 줄을 다시 쓰고, 풀려도 따로 알리지 않습니다 (마지막 기록 뒤 11분이 지나면 이 표시는 사라집니다)`}
+            >
+              봇 기록 {fmtKstTime(blockNote.ts).slice(0, 5)}~{fmtKstTime(blockNote.lastTs).slice(0, 5)} 신규 매수 중단: {blockReasonKo(blockNote.text)}
+            </span>
+          )}
+          {sideTl.holding && (
+            <span className="chip" title={sideTl.holding.raw}>
+              {sideTl.holding.mode === 'paper' ? '가상 ' : ''}보유 {sideTl.holding.qty ?? '-'}주 · 원가 {fmtInt(sideTl.holding.avg)} · 손익{' '}
+              <b className={(sideTl.holding.pnlPct || 0) > 0 ? 'gain' : (sideTl.holding.pnlPct || 0) < 0 ? 'loss' : ''}>
+                {sideTl.holding.pnlPct === undefined ? '-' : `${sideTl.holding.pnlPct > 0 ? '+' : ''}${sideTl.holding.pnlPct.toFixed(2)}%`}
+              </b>
+              {sideTl.holding.tpPct !== undefined && sideTl.holding.slPct !== undefined ? ` · 익절 ${sideTl.holding.tpPct}% / 손절 ${sideTl.holding.slPct}%` : ''} ({fmtKstTime(sideTl.holding.ts)} 봇 점검 기록)
+            </span>
+          )}
+          {sideTl.lastEval && (
+            <span className="muted small" title="봇이 마지막으로 판정한 1분봉에서 본 값 (봇 기록 그대로)">
+              마지막 판정 [{sideTl.lastEval.mode === 'paper' ? '가상' : '실제'}] {typeof sideTl.lastEval.extra?.bar === 'string' ? `${sideTl.lastEval.extra.bar} 봉 · ` : ''}
+              {fmtKstTime(sideTl.lastEval.ts)} - {evalRowKo(sideTl.lastEval)}
+            </span>
+          )}
+          {selected && evalRows && !sideTl.traced && (
+            <span className="muted small" title="1분봉마다 어느 단계에서 멈췄는지는 새 버전의 봇(r003)이 기록합니다 (strategy_eval 파일). 그 전 시간 / 날짜는 봇이 로그에 남긴 신호 · 주문 · 보유 점검 · 청산만 표시합니다">
+              ⓘ 봉별 단계 기록 없음 (봇을 새 버전으로 재시작한 뒤부터 쌓임) - 지금은 신호 · 주문 · 보유 · 청산 기록만 표시
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className="timeline">
+      {methodTabs}
       <div className="toolbar">
         <SymbolPicker allowAll={false} />
         <AutoView />
@@ -481,17 +604,19 @@ export function TimelineView() {
       {selected && (
         <div className="charts">
           <div className="chart-head">
-            <h4>매수 평가 - 도달 깊이 (조건 평가 순서)</h4>
-            <YPick
-              side="매수"
-              rows={buyRows}
-              shown={shownRows.length}
-              hidden={hiddenKeys}
-              setHidden={setBuyHidden}
-              evalOnly={buyEvalOnly}
-              setEvalOnly={setBuyEvalOnly}
-              evaluated={buyKeysWithEvents}
-            />
+            <h4>{sideKind ? `${TRADE_STRATEGY_KO[sideKind]} 매수 판정 - 1분봉마다 멈춘 단계 (위로 갈수록 주문에 가까움)` : '매수 평가 - 도달 깊이 (조건 평가 순서)'}</h4>
+            {!sideKind && (
+              <YPick
+                side="매수"
+                rows={buyRows}
+                shown={shownRows.length}
+                hidden={hiddenKeys}
+                setHidden={setBuyHidden}
+                evalOnly={buyEvalOnly}
+                setEvalOnly={setBuyEvalOnly}
+                evaluated={buyKeysWithEvents}
+              />
+            )}
             {/* [2026-11-12] legend moved out of the plot (was a recharts Legend above the grid) to the right end of the head row */}
             <span className="tl-legend">
               {SERIES.map((s) => (
@@ -625,7 +750,7 @@ export function TimelineView() {
                 onZoom={intradayKind ? setZoom : undefined}
                 zoomLimit={full}
                 trades={trades}
-                buyPrice={sym?.position?.buyPrice}
+                buyPrice={sideTl ? sideTl.holding?.avg : sym?.position?.buyPrice}
                 date={day}
                 hoverTime={hovBuy ? hovBuy.ev.ts : hovSell ? hovSell.ev.ts : null}
                 onHover={(i) => {
@@ -638,21 +763,23 @@ export function TimelineView() {
             )}
           </div>
           <div className="chart-head">
-            <h4>매도 평가 (보유 중 발동/보류)</h4>
-            <YPick
-              side="매도"
-              rows={sellRows}
-              shown={shownSellRows.length}
-              hidden={sellHiddenKeys}
-              setHidden={setSellHidden}
-              evalOnly={sellEvalOnly}
-              setEvalOnly={setSellEvalOnly}
-              evaluated={sellKeysWithEvents}
-            />
+            <h4>{sideKind ? `${TRADE_STRATEGY_KO[sideKind]} 보유 점검 · 청산` : '매도 평가 (보유 중 발동/보류)'}</h4>
+            {!sideKind && (
+              <YPick
+                side="매도"
+                rows={sellRows}
+                shown={shownSellRows.length}
+                hidden={sellHiddenKeys}
+                setHidden={setSellHidden}
+                evalOnly={sellEvalOnly}
+                setEvalOnly={setSellEvalOnly}
+                evaluated={sellKeysWithEvents}
+              />
+            )}
           </div>
           <div className="chart-sell" style={{ height: sellH }}>
             {sellPts.length === 0 && trades.length === 0 ? (
-              <div className="empty small">오늘 이 종목의 매도 평가 로그가 없습니다.</div>
+              <div className="empty small">{sideKind ? `이 종목의 ${TRADE_STRATEGY_KO[sideKind]} 보유 / 청산 기록이 없습니다.` : '오늘 이 종목의 매도 평가 로그가 없습니다.'}</div>
             ) : (
               <ResponsiveContainer>
                 <ScatterChart
@@ -717,8 +844,10 @@ export function TimelineView() {
 
 /** fill marker text: "매수 22,133" / "매도 22,450 (+1.43%) AUX_REVERSAL_SCORE" */
 function tradeLabel(t: Trade): string {
-  const price = Number.isFinite(t.price) ? ` ${fmtInt(t.price)}` : '';
-  if (t.side === 'BUY') return `매수${price}`;
+  const price = Number.isFinite(t.price) ? ` ${t.approx ? '≈' : ''}${fmtInt(t.price)}` : '';
+  // [2026-11-27] a paper trade and an order-price (not confirmed average) buy say so on the marker
+  if (t.paper) return `가상 ${t.side === 'BUY' ? '매수' : '매도'}${price}${t.side === 'SELL' && Number.isFinite(t.pnlPct) ? ` (${(t.pnlPct as number) >= 0 ? '+' : ''}${(t.pnlPct as number).toFixed(2)}%)` : ''}`;
+  if (t.side === 'BUY') return `매수${price}${t.approx ? ' (주문가)' : ''}`;
   const pct = Number.isFinite(t.pnlPct) ? ` (${(t.pnlPct as number) >= 0 ? '+' : ''}${(t.pnlPct as number).toFixed(2)}%)` : '';
   return `매도${price}${pct} ${t.reason.slice(0, 18)}`.trim();
 }

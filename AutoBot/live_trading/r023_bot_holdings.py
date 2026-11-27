@@ -775,6 +775,21 @@ def edge_avg_price(state: dict | None, code, strategy: str | None = None) -> flo
     return sum(int(lot["qty"]) * float(lot["avg"]) for lot in lots.values()) / int(b["qty"])
 
 
+def order_lot_price(state: dict | None, strategy: str, code, key: str) -> float:
+    """[2026-11-27] the average price of what ONE buy order filled (its lot in the strategy's book); 0 = not known - the lot's
+    price is not the average of exactly the quantity applied of that order, or the lot is gone. Read only (trade log line)."""
+    try:
+        b = ((state or {}).get(strategy) or {}).get(_norm(code)) or {}
+        lot = (b.get("lots") or {}).get(key)
+        if not lot or float(lot.get("avg", 0.0)) <= 0:
+            return 0.0
+        if int(lot.get("avg_at", -1)) != int(((state or {}).get("applied") or {}).get(key, 0) or 0):
+            return 0.0
+        return float(lot["avg"])
+    except Exception:
+        return 0.0
+
+
 def edge_entry_at(state: dict | None, code, strategy: str | None = None) -> str:
     b = _side_book(state, code, strategy)
     return str(b.get("entry_at", "")) if isinstance(b, dict) else ""

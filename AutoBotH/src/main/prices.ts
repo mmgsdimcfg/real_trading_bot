@@ -66,6 +66,7 @@
  *   server_day/<code>.v3.json (v2 answers could lack those days)
  */
 
+import { parseStrategyEvalRows, type StrategyEvalRowX } from '../shared/sideTimeline';
 import { LineBuffer } from '../shared/lineBuffer';
 import { CHART_CACHE_MS, isMarketHours, isNxtOnlyHours, kstNowIso } from '../shared/control';
 import {
@@ -184,6 +185,9 @@ export function coversGaps(bars: Bar[], gaps: [number, number][]): boolean {
 /** r016 `bars` result: null = unavailable (old server / no client) */
 type ServerBarsResult = { ok: true; data: ServerBars } | { ok: false; error: string } | null;
 
+/** most bytes of a strategy trace file read by one call */
+const EVAL_CHUNK = 16_000_000;
+
 export class PriceService {
   private ticks = new Map<string, TickCache>();
   private files = new Map<string, { at: number; names: string[] }>();
@@ -226,6 +230,7 @@ export class PriceService {
 
   /** the host changed (run mode switch): forget everything read from the old one */
   resetAll(): void {
+    this.evalCache.clear();
     this.resetServerSupport();
     this.ticks.clear();
     this.files.clear();
@@ -266,6 +271,39 @@ export class PriceService {
       return (await this.host.readRange(path, 0, st.size)).toString('utf8');
     });
     this.tail = job.catch(() => undefined);
+    return job;
+  }
+
+  /** [2026-11-27] per-bar evaluation trace of a side strategy (server r030: strategy_eval_<strategy>_<date>.jsonl). The file
+   *  only grows, so each call reads the bytes added since the last one and keeps the parsed rows (whole lines only). */
+  private evalCache = new Map<string, { size: number; rows: StrategyEvalRowX[] }>();
+  /** dropped with everything else when the host / folder changes (resetAll) */
+  clearStrategyEvals(): void {
+    this.evalCache.clear();
+  }
+  strategyEvals(date: string, strategy: string): Promise<StrategyEvalRowX[]> {
+    const job = this.tail.then(async () => {
+      if (!/^\d{8}$/.test(date) || !/^(edge|vwap)$/.test(strategy)) return [];
+      const path = `${this.root()}/runtime/data/live_runtime/strategy_eval_${strategy}_${date}.jsonl`;
+      const key = `${this.root()}|${path}`;
+      const st = await this.host.stat(path);
+      if (!st || !st.size) return [];
+      let c = this.evalCache.get(key);
+      if (!c || st.size < c.size) c = { size: 0, rows: [] }; // new or replaced file: from the start
+      if (st.size > c.size) {
+        // [Codex round 3] at most EVAL_CHUNK bytes a call (a longer unread stretch is caught up over the next calls); the offset
+        // advances by BYTES up to the last line break of what was read, never by a re-encoded text length
+        const buf = await this.host.readRange(path, c.size, Math.min(st.size, c.size + EVAL_CHUNK));
+        const cut = buf.lastIndexOf(0x0a);
+        if (cut >= 0) {
+          c = { size: c.size + cut + 1, rows: c.rows.concat(parseStrategyEvalRows(buf.subarray(0, cut + 1).toString('utf8'))) };
+          this.evalCache.set(key, c);
+          if (this.evalCache.size > 6) this.evalCache.delete(this.evalCache.keys().next().value as string);
+        }
+      }
+      return c.rows;
+    });
+    this.tail = job.then(() => undefined).catch(() => undefined);
     return job;
   }
 

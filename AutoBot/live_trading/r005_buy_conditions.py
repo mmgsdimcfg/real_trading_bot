@@ -429,6 +429,9 @@ class BuyContext:
     trigger_info: dict | None = None
     # [2026-10-30] _009 triple 모드에서 1분 MA + 60틱 + 120틱 골든크로스가 모두 통과했으면 True(3분 소프트 게이트 BYPASS 대상)
     triple_cross: bool = False
+    # [2026-11-27] what a side strategy's signal condition saw on this bar (stage, vwap, gap ...) - written to the timeline
+    # trace by r003 (r030), never read by a condition
+    side_eval: dict | None = None
 
     @property
     def norm_code(self) -> str:
@@ -1592,6 +1595,10 @@ def _v09_vwap_signal(ctx: BuyContext) -> bool:
         ok, stage, info = r029.vwap_signal(raw, float(ctx.price), ctx.current_dt, tick, r029.VwapParams.from_config(_cfg), vwap=vwap)
     except Exception as exc:
         return reject(f"ERROR_{type(exc).__name__}: {exc}")
+    try:                                          # [2026-11-27] for the timeline trace (record only; its own try - Codex round 2)
+        ctx.side_eval = r029.trace_fields(stage, info)
+    except Exception:
+        ctx.side_eval = None
     if not ok:
         return reject(f"{stage.upper()} | {info.get('tick') or ''}".rstrip(" |"))
     ctx.trigger_flag = "P"

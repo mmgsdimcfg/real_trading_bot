@@ -534,3 +534,21 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - 앱: 규칙 매매 세부 설정 목록에 적용 / 미적용 / 기록만 / 필수 / 재시작 대기 표시, 조건별 "조건 전체 사용" 체크. 파이프라인은 오늘(실시간)
   화면에서만 미적용 / 기록만 표시. 조건 안의 `ENABLE_*` 는 "옵션 n/m" 으로 따로 표시한다.
 - 과거 데이터 재생(g003)은 r005 목록을 쓰지 않으므로 이 설정이 자동으로 반영되지 않는다.
+
+## 보조 전략(Edge AI / VWAP)의 봉별 판정 기록과 타임라인 매매 방식 탭 (2026-11-27, Codex 검토 반영)
+
+- 새 파일 `runtime/data/live_runtime/strategy_eval_<strategy>_<date>.jsonl` (`strategy` = `edge` | `vwap`, r030_strategy_trace.py).
+  보조 전략이 1분봉 하나를 판정할 때마다 한 줄: `{"t": 판정 시각, "bar": "HH:MM", "code", "mode": "live"|"paper", "stage", ...}`.
+  `stage`: VWAP `below_vwap / no_trend / no_tick_cross / chase / price_drop / stale / no_history`, Edge `below_mid / no_trigger /
+  below_threshold / not_promoted / no_model`, 공통 `cond_before / cond_after`(공통 안전 조건, `no` = 조건 번호, `cond`, `detail`) `/ signal /
+  ordered / order_refused / bought / candidate / held / sold / wait_bars / outside_window / limit / fund / sl_today / error`.
+  그 밖의 키(`vwap`, `gap`, `tick`, `tick_cross`, `bar_age`, `prob`, `thr`, `price`, `reason`, `qty`)는 봇이 그 판정에 쓴 값 그대로다.
+- 기록 전용이다: 판정 / 주문 / 상태에 쓰이지 않고 봇이 다시 읽지 않는다. 호출은 큐에 넣기만 하고 파일 쓰기는 별도 스레드가 한다(큐가
+  차면 버리고 센다). 실주문 경로는 r003 `_side_trace`(`_edge_live_try_buy` 의 판정 뒤 / 주문 뒤), 가상 경로는 r022 `_stage`(새 봉의 첫 단계
+  호출, 감시 종목만). 가상 매매 실행기는 r003 / r029.make_runner 가 켠 것만 기록한다.
+- r003: 보조 전략 매수가 계좌 반영보다 먼저 체결 장부로 종결될 때 `<date>_buy_sell.log` 에 `>>> <code>_<name> Buy - ...` 블록이 빠지던 것을
+  기록한다(가격 = 그 주문의 lot 평균, 모르면 N/A). 체결 반영 / 종결 로그의 태그는 주문의 전략(`[VWAP LIVE]` / `[EDGE LIVE]`)을 쓴다.
+- 앱: 타임라인에 매매 방식 탭(자동 / 규칙 / Edge AI / VWAP). 보조 전략 탭은 위 파일과 주 로그의 `[VWAP LIVE]` `[EDGE LIVE]` `[VWAP PAPER]`
+  `[EDGE ONLY]` 줄(신호 / 주문 / 매수 안 함 / 보유 점검 / 청산 / 신규 매수 중단)을 그대로 보여 준다. 판정을 다시 계산하지 않는다.
+  블록이 없는 날(2026-11-27 이전 봇)의 보조 전략 매수는 `[BUY SUBMIT]` / `[BUY PENDING]` 줄을 주문번호로 이어 거래 목록에 넣는다(가격은
+  주문가, `≈` 표시). main IPC `strategy:evals(date, strategy, code)`.

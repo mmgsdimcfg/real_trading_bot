@@ -561,7 +561,10 @@ export function TradesView() {
                   <span className={`tag strat-${strategyOfTrade(t)}`}>{TRADE_STRATEGY_SHORT[strategyOfTrade(t)]}</span>
                 </td>
                 <td>{t.side === 'BUY' ? '매수' : '매도'}</td>
-                <td className="num">{fmtInt(t.price)}</td>
+                <td className="num" title={t.approx ? '이 주문은 그날 로그에 체결 기록 블록이 없어 주문 접수 / 체결 확인 줄로 만든 행입니다: 가격은 주문가(지정가), 수량은 마지막으로 확인된 체결 수량' : undefined}>
+                  {t.approx ? '≈ ' : ''}
+                  {fmtInt(t.price)}
+                </td>
                 <td className="num">{fmtInt(t.qty)}</td>
                 <td>{t.side === 'SELL' ? sellLabel(t as (typeof sells)[number]) : ''}</td>
                 <td className="reason">{t.reason}</td>

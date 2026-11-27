@@ -202,6 +202,10 @@ export const IGNORED_TAGS = new Set([
   'BOT LEDGER', // [2026-11-13] r023 bot / manual quantity ledger changes, not a condition
   'SELL LIMIT', // [2026-11-13] AUTO_SELL_SCOPE=bot_only: a sell was cut down to the bot's quantity (the order line follows)
   'EDGE ONLY', // [2026-11-12] Edge-AI-only paper trading (r022): virtual buys / sells, not a condition of the real pipeline
+  // [2026-11-27] side strategies (Edge AI / VWAP real orders, VWAP paper): the engine keeps their lines as strategy events
+  'EDGE LIVE',
+  'VWAP LIVE',
+  'VWAP PAPER',
   'EXIT SHADOW', // [2026-11-15] adaptive exit engine shadow (r026): virtual exits only, real selling unchanged
   'EXIT ENGINE', // [2026-11-15] adaptive exit engine live (r027): engine state lines; the order itself logs [SELL TRIGGER]
   'ENTRY ENGINE', // [2026-11-15] r028 entry engine shadow (no orders): candidate / shadow buy lines
