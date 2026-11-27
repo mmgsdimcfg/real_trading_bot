@@ -183,6 +183,28 @@ class ActiveSlotTest(unittest.TestCase):
         self.assertEqual((active3, sorted(pool3)), (set(), ["000008", "000009"]))
         self.assertTrue(any("ACT DROPOUT" in m and "NOT_TARGET" in m for m in logs))
 
+    def test_the_start_up_split_puts_candidates_in_the_active_slots_first(self):
+        import collections
+        ordered = ["000001", "000009", "000002", "000008", "000003", "000007"]
+        active = {"000001", "000009"}                                   # the first two of the watchlist, one of them nobody's
+        pool = collections.deque(["000002", "000008", "000003"])       # 000007 was taken out before (restored as bought)
+        first = {"000001": datetime(2026, 11, 27, 8, 0), "000009": datetime(2026, 11, 27, 8, 0)}
+        n = r003._split_watchlist_by_candidate(ordered, active, pool, first, lambda c: c in {"000001", "000002", "000003", "000007"},
+                                               self.NOW, 2)
+        self.assertEqual(n, 2)
+        self.assertEqual(active, {"000001", "000002"})                 # watchlist order among the candidates
+        self.assertEqual(list(pool), ["000003", "000009", "000008"])   # the waiting candidate first, then the others
+        self.assertNotIn("000007", active | set(pool))                 # stays out
+        self.assertEqual(first, {"000001": datetime(2026, 11, 27, 8, 0), "000002": self.NOW})   # kept / new / dropped
+        # every symbol a candidate: the same split as before
+        a2, p2, f2 = {"000001", "000009"}, collections.deque(["000002"]), {}
+        self.assertEqual(r003._split_watchlist_by_candidate(ordered, a2, p2, f2, lambda c: True, self.NOW, 2), 0)
+        self.assertEqual((a2, list(p2)), ({"000001", "000009"}, ["000002"]))
+        # nobody a candidate: the active set is empty, everything waits
+        a3, p3 = {"000001", "000009"}, collections.deque(["000002"])
+        r003._split_watchlist_by_candidate(ordered, a3, p3, {}, lambda c: False, self.NOW, 2)
+        self.assertEqual((a3, list(p3)), (set(), ["000001", "000009", "000002"]))
+
     def test_without_a_list_nothing_changes(self):
         active = {"000001", "000009"}
         pool, logs = self._run(active, ["000008"], None)

@@ -7000,6 +7000,29 @@ def _note_not_target(method: str, symbol_label: str, code: str, now: datetime, e
         pass
 
 
+def _split_watchlist_by_candidate(ordered: list, active_set: set, backup_pool, first_active_at: dict, is_candidate,
+                                  now: datetime, size: int) -> int:
+    """[2026-11-27] the start-up active / backup split again, once the methods are set up (user 2026-11-27: the first loop turn
+    should not spend active slots on symbols nobody may buy). Only the symbols that are in the active set or the backup pool
+    now are placed (a symbol taken out before - e.g. one restored as bought - stays out), in their watchlist order: candidates
+    fill the active slots, the remaining candidates wait first, the non-candidates wait behind them. In place; returns how many
+    non-candidates there are. Reads the target lists only (is_candidate) - no price, no condition."""
+    members = [c for c in ordered if c in active_set or c in backup_pool]
+    cands = [c for c in members if is_candidate(c)]
+    rest = [c for c in members if c not in set(cands)]
+    keep = set(cands[:size])
+    for c in list(first_active_at):
+        if c not in keep:
+            first_active_at.pop(c, None)
+    for c in keep:
+        first_active_at.setdefault(c, now)
+    active_set.clear()
+    active_set.update(keep)
+    backup_pool.clear()
+    backup_pool.extend(cands[size:] + rest)
+    return len(rest)
+
+
 def _method_buy_candidate(code, edge_live: dict | None, vwap_live: dict | None, edge_only, vwap_paper) -> bool:
     """[2026-11-27] True when at least one trading method that can open a position may newly buy `code`: the main method (rule,
     or Edge AI when TRADING_STRATEGY_MODE=edge), the Edge AI / VWAP real-order paths that are enabled, the paper runners that
@@ -7934,6 +7957,17 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     vwap_paper = _make_vwap_paper_runner(date_str)   # [2026-11-27] VWAP trade, paper (r029) - None unless VWAP_TRADE_MODE == "paper"
     edge_live = _edge_live_setup(api)             # [2026-11-25] Edge AI live orders beside the rule strategy
     vwap_live = _vwap_live_setup(api)             # [2026-11-27] VWAP trade live orders beside the rule strategy
+    # [2026-11-27] per-method target lists: the active / backup split made above did not know them. Split again before the first
+    # loop turn so the active slots start with symbols a method may buy (no list = nothing is done)
+    if any(_METHOD_TARGETS.values()):
+        try:
+            _n_rest = _split_watchlist_by_candidate(
+                watch_codes_ordered, active_set, backup_pool, first_active_at,
+                lambda _c: _method_buy_candidate(_c, edge_live, vwap_live, edge_only, vwap_paper), now, ACTIVE_WATCHLIST_SIZE)
+            log(f"  [WL SPLIT    ] 대상 종목 지정 반영 | active={len(active_set)} backup={len(backup_pool)} "
+                f"(어느 방식의 대상도 아님 {_n_rest} - 대기열 뒤)")
+        except Exception as exc:
+            log(f"  [WL SPLIT    ] 대상 종목 지정 반영 실패 - 처음 분할 그대로 시작: {exc}")
     exit_shadow = _make_exit_shadow_runner(date_str)
     sell_services.exit_live = _make_exit_live_manager(date_str)   # [2026-11-15] None unless EXIT_ENGINE_MODE="live"
     global _ENTRY_SHADOW
