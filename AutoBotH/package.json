@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-27] type=feat - v2.3.55_001: 매매 방식 현황 화면 추가(규칙 / Edge AI / VWAP 별 감시 · 기록 종목, 종목별 지금 상태, 보유, 오늘 결과를 한 화면에) - 메뉴에 '매매 방식' 묶음, 규칙 전용 탭 이름을 규칙 종목 보드 / 규칙 파이프라인으로, 타임라인 체결 표 열 너비 조절",
     "[2026-11-27] type=fix - v2.3.54_004: 매매 결과 탭 내역 표가 좁은 칸 안에서만 스크롤되던 문제 수정(탭 전체 스크롤), 가상 매매 탭의 표에도 열 너비 조절 추가",
     "[2026-11-27] type=feat - v2.3.54_003: 매매 결과(방식별 표 · 날짜별 표 · 내역)와 보유 현황 표에도 열 너비 조절 - 열 제목 경계를 끌어 조절(저장됨), 경계를 두 번 누르거나 '열 너비 초기화'로 복원",
     "[2026-11-27] type=feat - v2.3.54_002: 종목 보드 열 너비 조절 - 열 제목의 오른쪽 경계를 끌어 너비를 바꾸고(저장됨), 경계를 두 번 누르거나 '열 너비 초기화'로 기본 너비 복원",
@@ -162,7 +163,7 @@
     "[2026-09-27] type=feat - Add npm run dist script, add electron-builder and build config (appId/productName/npmRebuild:false/files/win nsis+portable), output names changed to AutoBotH_Setup_v<version>.exe / AutoBotH_Setup_v<version>_Portable.exe"
   ],
   "name": "autoboth",
-  "version": "2.3.54",
+  "version": "2.3.55",
   "description": "r003 매수/매도 조건 파이프라인 뷰어 + 원격 제어 (SSH, r016_control.py)",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -210,7 +211,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

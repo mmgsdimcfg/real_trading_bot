@@ -163,7 +163,7 @@ function loadFlag(key: string): boolean {
   }
 }
 
-export type Tab = 'control' | 'jobs' | 'collector' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'positions' | 'trades' | 'paper' | 'settings';
+export type Tab = 'control' | 'jobs' | 'collector' | 'method' | 'pipeline' | 'board' | 'timeline' | 'chart' | 'positions' | 'trades' | 'paper' | 'settings';
 
 /** local-mode scheduler state pushed by main ('sched') */
 export interface SchedView {
@@ -188,6 +188,11 @@ interface State {
   timeline: { code: string; events: EvalEvent[]; trades: Trade[]; strategy?: StrategyEvent[] } | null;
   /** [2026-11-27] timeline method tab: 'auto' = follows what runs / what holds the symbol, else the user's choice (until restart) */
   timelineMethod: 'auto' | TradeStrategy;
+  /** [2026-11-27] the method shown by the method board (매매 방식 현황) */
+  methodTab: TradeStrategy;
+  setMethodTab: (m: TradeStrategy) => void;
+  /** open the method board on a method */
+  openMethod: (m: TradeStrategy) => void;
   setTimelineMethod: (m: 'auto' | TradeStrategy) => void;
   control: ControlState;
   /** bumped after every write so the history table reloads */
@@ -248,6 +253,12 @@ export const useStore = create<State>()((set, get) => ({
   selected: null,
   timeline: null,
   timelineMethod: 'auto',
+  methodTab: 'rule',
+  setMethodTab: (methodTab) => set({ methodTab }),
+  openMethod: (methodTab) => {
+    set({ methodTab });
+    get().setTab('method');
+  },
   setTimelineMethod: (timelineMethod) => set({ timelineMethod }),
   chartRequest: null,
   chartCode: null,

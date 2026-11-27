@@ -146,6 +146,8 @@ export interface SymbolSummary {
   sellCounts: Record<string, number>;
   realizedKrw: number;
   evalCount: number;
+  /** [2026-11-27] what the side strategies (Edge AI / VWAP) wrote about the symbol today, per strategy (shared/methodBoard) */
+  side?: Partial<Record<'edge' | 'vwap', import('./methodBoard').SideSymSummary>>;
 }
 
 export interface NodeStat {

@@ -73,6 +73,7 @@
  *   stopped at (server r030 trace) + the signal / order / not-bought lines, the price chart with only that method's fills (paper
  *   trades too), and the holding checks / exits; a status line says the holding, the last judged bar and why new buys are
  *   stopped. Zoom, hover dock, pinning and the linked crosshair work as before
+ * - [2026-11-27] type=feat - Trade table: column widths adjustable by dragging a header edge (useColWidths)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -86,6 +87,7 @@ import { NxtMark } from '../components/NxtTag';
 import { CartesianGrid, Customized, ReferenceDot, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
 import { reasonKo } from '../../../shared/reasonKo';
 import { useStore } from '../store';
+import { ColGrip, ColGroup, ColReset, colTable, useColWidths } from '../components/useColWidths';
 import { SymbolPicker } from '../components/SymbolPicker';
 import { AutoView } from '../components/AutoView';
 import { condTitle, fmtInt, fmtKrw, sortedConds } from '../lib';
@@ -290,6 +292,7 @@ const NO_KEYS: string[] = [];
 const BLOCK_NOTE_FRESH_MS = 11 * 60 * 1000;
 
 export function TimelineView() {
+  const tlCols = useColWidths('autoboth.cols.tlCols', 6);
   const snap = useStore((s) => s.snapshot);
   const conditions = useStore((s) => s.conditions);
   const selected = useStore((s) => s.selected);
@@ -808,15 +811,18 @@ export function TimelineView() {
           <TipDock pt={pinSell || hovSell} side="매도" pinned={!!pinSell} onUnpin={() => setPinSell(null)} />
           <HeightGrip height={sellH} min={GRIP_MIN} max={GRIP_MAX} onChange={(h) => setLayout({ sellH: h })} onReset={() => setLayout({ sellH: undefined })} />
           {trades.length > 0 && (
-            <table className="grid compact">
+            <div className="cols-scroll">
+            <ColReset cols={tlCols} />
+            <table {...colTable(tlCols, 'grid compact')}>
+              <ColGroup cols={tlCols} />
               <thead>
                 <tr>
-                  <th>시각</th>
-                  <th>구분</th>
-                  <th className="num">가격</th>
-                  <th className="num">수량</th>
-                  <th>사유 / 조건</th>
-                  <th className="num">손익</th>
+                  <th>시각<ColGrip cols={tlCols} i={0} /></th>
+                  <th>구분<ColGrip cols={tlCols} i={1} /></th>
+                  <th className="num">가격<ColGrip cols={tlCols} i={2} /></th>
+                  <th className="num">수량<ColGrip cols={tlCols} i={3} /></th>
+                  <th>사유 / 조건<ColGrip cols={tlCols} i={4} /></th>
+                  <th className="num">손익<ColGrip cols={tlCols} i={5} /></th>
                 </tr>
               </thead>
               <tbody>
@@ -835,6 +841,7 @@ export function TimelineView() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       )}

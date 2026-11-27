@@ -41,7 +41,7 @@ export const kstDay = () => new Date(Date.now() + 9 * 3600000).toISOString().sli
 import { wsToOrderBook, wsToTrade } from '../../shared/kis';
 
 /** [2026-11-20] AutoBotH tabs (src/bot/renderer/src/store.ts Tab) as window types */
-export const BOT_TABS = ['control', 'jobs', 'collector', 'pipeline', 'board', 'timeline', 'chart', 'positions', 'trades', 'paper', 'settings'] as const;
+export const BOT_TABS = ['control', 'jobs', 'collector', 'method', 'pipeline', 'board', 'timeline', 'chart', 'positions', 'trades', 'paper', 'settings'] as const;
 export type BotTab = (typeof BOT_TABS)[number];
 export type BotWinType = `bot-${BotTab}`;
 export type WinType = 'chart' | 'quote' | 'order' | 'info' | 'watch' | 'watchtile' | 'watchsum' | 'rank' | 'index' | 'news' | 'rebound' | 'rules' | 'edgecfg' | 'vwapcfg' | BotWinType;
@@ -52,8 +52,9 @@ export const BOT_TITLE: Record<BotTab, string> = {
   control: '제어',
   jobs: '데이터 작업',
   collector: '수집기',
-  pipeline: '파이프라인',
-  board: '종목 보드',
+  method: '매매 방식 현황',
+  pipeline: '규칙 파이프라인',
+  board: '규칙 종목 보드',
   timeline: '타임라인',
   chart: '봇 차트',
   positions: '보유 현황',
@@ -63,8 +64,9 @@ export const BOT_TITLE: Record<BotTab, string> = {
 };
 /** bot menu groups (as the AutoBotH sidebar) */
 export const BOT_GROUPS: { group: string; tabs: BotTab[] }[] = [
-  { group: '운영', tabs: ['control', 'jobs', 'collector', 'pipeline'] },
-  { group: '분석', tabs: ['board', 'timeline', 'chart', 'positions', 'trades', 'paper'] },
+  { group: '운영', tabs: ['control', 'jobs', 'collector'] },
+  { group: '매매 방식', tabs: ['method'] },
+  { group: '분석', tabs: ['board', 'pipeline', 'timeline', 'chart', 'positions', 'trades', 'paper'] },
   { group: '시스템', tabs: ['settings'] },
 ];
 

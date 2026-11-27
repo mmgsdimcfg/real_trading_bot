@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.1.17_001 (2026-11-27): 매매 방식 현황 화면 추가(규칙 / Edge AI / VWAP 별 감시 · 기록 종목, 종목별 지금 상태, 보유, 오늘 결과를 한 화면에) - 메뉴에 '매매 방식' 묶음, 규칙 전용 탭 이름을 규칙 종목 보드 / 규칙 파이프라인으로, 타임라인 체결 표 열 너비 조절",
     "v1.1.16_004 (2026-11-27): 매매 결과 탭 내역 표가 좁은 칸 안에서만 스크롤되던 문제 수정(탭 전체 스크롤), 가상 매매 탭의 표에도 열 너비 조절 추가",
     "v1.1.16_003 (2026-11-27): 매매 결과(방식별 표 · 날짜별 표 · 내역)와 보유 현황 표에도 열 너비 조절 - 열 제목 경계를 끌어 조절(저장됨), 경계를 두 번 누르거나 '열 너비 초기화'로 복원",
     "v1.1.16_002 (2026-11-27): 종목 보드 열 너비 조절 - 열 제목의 오른쪽 경계를 끌어 너비를 바꾸고(저장됨), 경계를 두 번 누르거나 '열 너비 초기화'로 기본 너비 복원",
@@ -121,7 +122,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.1.16",
+  "version": "1.1.17",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -175,7 +176,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "004",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",

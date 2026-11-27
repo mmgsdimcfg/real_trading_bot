@@ -654,6 +654,30 @@ ipcMain.handle('strategy:evals', async (_e, date: string, strategy: string, code
     return { ok: false, rows: [], error: errMsg(e) };
   }
 });
+
+// [2026-11-27] method board: the last judged bar of every symbol of a strategy's trace (+ rows per symbol) - a summary, the whole
+// history stays with the timeline's 'strategy:evals' [Codex review]. upTo: replay cursor (rows after it are left out)
+ipcMain.handle('strategy:evalLatest', async (_e, date: string, strategy: string, upTo?: number | null) => {
+  if (!files.connected) return { ok: false, last: {}, count: {}, total: 0, error: `${hostLabel()}에 연결되어 있지 않습니다.` };
+  const g = hostGen;
+  try {
+    const rows = await pricesFor(mode).strategyEvals(String(date), String(strategy));
+    if (g !== hostGen) return { ok: false, last: {}, count: {}, total: 0, error: '실행 위치가 바뀌었습니다.' };
+    const cut = typeof upTo === 'number' && Number.isFinite(upTo) ? upTo : null;
+    const last: Record<string, (typeof rows)[number]> = {};
+    const count: Record<string, number> = {};
+    let total = 0;
+    for (const r of rows) {
+      if (cut !== null && r.ts > cut) continue;
+      total++;
+      count[r.code] = (count[r.code] || 0) + 1;
+      if (!last[r.code] || r.ts >= last[r.code].ts) last[r.code] = r;
+    }
+    return { ok: true, last, count, total };
+  } catch (e) {
+    return { ok: false, last: {}, count: {}, total: 0, error: e instanceof Error ? e.message : String(e) };
+  }
+});
 // [2026-11-27] save a text the renderer made (CSV export) to a file the user picks in the native save dialog - nothing is
 // written without that choice; the path is the user's, never a bot file
 ipcMain.handle('file:saveText', async (_e, defaultName: string, text: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> => {

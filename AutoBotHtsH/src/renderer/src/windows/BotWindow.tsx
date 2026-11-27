@@ -27,6 +27,7 @@ import { ChartView } from '../../../bot/renderer/src/views/ChartView';
 import { TradesView } from '../../../bot/renderer/src/views/TradesView';
 import { PositionsView } from '../../../bot/renderer/src/views/PositionsView';
 import { PaperView } from '../../../bot/renderer/src/views/PaperView';
+import { MethodView } from '../../../bot/renderer/src/views/MethodView';
 import { SettingsView } from '../../../bot/renderer/src/views/SettingsView';
 import { RuleSettingsPanel, StrategySettingsPanel } from '../../../bot/renderer/src/components/RuleSettings';
 
@@ -34,6 +35,7 @@ const VIEW: Record<BotTab, () => ReactNode> = {
   control: ControlView,
   jobs: JobsView,
   collector: CollectorView,
+  method: MethodView,
   pipeline: PipelineView,
   board: BoardView,
   timeline: TimelineView,

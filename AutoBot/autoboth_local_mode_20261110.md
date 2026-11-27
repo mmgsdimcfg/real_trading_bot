@@ -552,3 +552,7 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
   `[EDGE ONLY]` 줄(신호 / 주문 / 매수 안 함 / 보유 점검 / 청산 / 신규 매수 중단)을 그대로 보여 준다. 판정을 다시 계산하지 않는다.
   블록이 없는 날(2026-11-27 이전 봇)의 보조 전략 매수는 `[BUY SUBMIT]` / `[BUY PENDING]` 줄을 주문번호로 이어 거래 목록에 넣는다(가격은
   주문가, `≈` 표시). main IPC `strategy:evals(date, strategy, code)`.
+- 매매 방식 현황 (2026-11-27, 앱 전용 · 서버 변경 없음): 탭 `method` (AutoBotHtsH 창 `bot-method`) - 방식별 감시 · 기록 종목 표
+  (`shared/methodBoard.ts`: 감시 종목 + 가상 러너 상태의 수집기 종목 + 그 방식의 기록 / 체결이 있는 종목, 종목별 마지막 기록은
+  봉별 판정(r030) / 봇 로그 / 가상 러너 상태 중 가장 최근 것). main IPC `strategy:evalLatest(date, strategy, upTo)` = 종목별 마지막
+  판정 행 + 행 수. 켜기 / 끄기 · 설정은 제어 탭 그대로(r016).

@@ -86,6 +86,8 @@ const api = {
   /** Edge-AI-only paper trades of a day (server r022) */
   getPaper: (date: string, book?: string): Promise<{ ok: boolean; trades: PaperTrade[]; error?: string }> => ipcRenderer.invoke('paper:get', date, book),
   /** [2026-11-27] per-bar evaluation trace rows of a side strategy for one symbol (total = rows of the day for every symbol) */
+  getStrategyEvalLatest: (date: string, strategy: string, upTo?: number | null): Promise<{ ok: boolean; last: Record<string, StrategyEvalRowX>; count: Record<string, number>; total: number; error?: string }> =>
+    ipcRenderer.invoke('strategy:evalLatest', date, strategy, upTo ?? null),
   getStrategyEvals: (date: string, strategy: string, code: string): Promise<{ ok: boolean; rows: StrategyEvalRowX[]; total?: number; error?: string }> =>
     ipcRenderer.invoke('strategy:evals', date, strategy, code),
   /** [2026-11-27] save a text (CSV export) to a file the user picks in the save dialog */

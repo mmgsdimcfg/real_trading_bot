@@ -1078,3 +1078,20 @@ button.pick-chip:disabled { cursor: default; opacity: .6; }
 /* [2026-11-23] previous close reference line of tick / minute charts */
 .pc-ref { stroke: var(--text-2); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.85; }
 .pc-ref-label { fill: var(--text-2); }
+
+/* [2026-11-27] method board (매매 방식 현황, MethodView) + the mode badge of the 매매 방식 nav rows */
+.nav-mode { margin-left: auto; }
+.method-view { height: 100%; overflow: auto; padding-bottom: 12px; }
+.method-view .table-wrap { flex: none; }
+.method-view .method-pick .seg button { display: inline-flex; align-items: center; gap: 6px; }
+.method-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 2px 16px 8px; }
+.method-mode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.method-mode b { font-size: 16px; }
+.method-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 16px 0; }
+.method-bar { padding-bottom: 6px; }
+.method-bar h4 { margin: 0; font-size: 13px; color: var(--text-2); }
+.method-grid td .tag { margin-right: 4px; }
+.method-grid td.reason { max-width: 340px; }
+.method-grid.compact td, .method-grid.compact th { padding: 6px 8px; }
+.method-grid td.reason .src { font-style: normal; font-size: 11px; color: var(--text-3); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; margin-right: 6px; }
+.method-view tr.row-held td { background: var(--hover, rgba(127, 127, 127, 0.08)); }

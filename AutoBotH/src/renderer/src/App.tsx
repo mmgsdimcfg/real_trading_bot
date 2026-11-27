@@ -13,6 +13,8 @@
  * - [2026-11-11] type=feat - 보유 현황 tab (PositionsView) between 차트 and 매매 결과
  */
 
+import { MethodView } from './views/MethodView';
+import { strategyModeKo, strategyModes, type TradeStrategy } from '../../shared/strategy';
 import { useEffect, useState } from 'react';
 import { useStore, type Tab } from './store';
 import { StatusBar } from './components/StatusBar';
@@ -34,6 +36,13 @@ import { SettingsView } from './views/SettingsView';
 
 // 16 px line icons (stroke = currentColor, so they follow the item's text color and the theme)
 const ICON: Record<Tab, JSX.Element> = {
+  method: (
+    <>
+      <circle cx="4" cy="4" r="1.6" />
+      <circle cx="4" cy="12" r="1.6" />
+      <path d="M8 4h6M8 12h6M8 8h4" />
+    </>
+  ),
   control: (
     <>
       <path d="M2 4.5h7M12 4.5h2M2 11.5h2M7 11.5h7" />
@@ -93,15 +102,22 @@ const ICON: Record<Tab, JSX.Element> = {
 };
 
 // Sidebar groups: 운영 (run the bot and its data jobs) / 분석 (look at the day) / 시스템
-const NAV: { group: string; tabs: [Tab, string][] }[] = [
-  { group: '운영', tabs: [['control', '제어'], ['jobs', '데이터 작업'], ['collector', '수집기'], ['pipeline', '파이프라인']] },
-  { group: '분석', tabs: [['board', '종목 보드'], ['timeline', '타임라인'], ['chart', '차트'], ['positions', '보유 현황'], ['trades', '매매 결과'], ['paper', '가상 매매']] },
+// [2026-11-27] 매매 방식: one entry per trading method -> the method board (MethodView) on that method, with its mode. The two
+// rule-only views say so in their names (규칙 종목 보드 / 규칙 파이프라인) [user 2026-11-27, Codex review]
+const NAV: { group: string; tabs: [Tab, string, TradeStrategy?][] }[] = [
+  { group: '운영', tabs: [['control', '제어'], ['jobs', '데이터 작업'], ['collector', '수집기']] },
+  { group: '매매 방식', tabs: [['method', '규칙 매매', 'rule'], ['method', 'Edge AI 매매', 'edge'], ['method', 'VWAP 매매', 'vwap']] },
+  { group: '분석', tabs: [['board', '규칙 종목 보드'], ['pipeline', '규칙 파이프라인'], ['timeline', '타임라인'], ['chart', '차트'], ['positions', '보유 현황'], ['trades', '매매 결과'], ['paper', '가상 매매']] },
   { group: '시스템', tabs: [['settings', '설정·연결']] },
 ];
 
 export function App() {
   const tab = useStore((s) => s.tab);
   const setTab = useStore((s) => s.setTab);
+  const methodTab = useStore((s) => s.methodTab);
+  const openMethod = useStore((s) => s.openMethod);
+  const control = useStore((s) => s.control);
+  const modes = strategyModes(control);
   // [2026-11-27] rule-trade settings window (control tab > 규칙 매매 > 세부 설정)
   const [ruleSettings, setRuleSettings] = useState(false);
   const [strategySettings, setStrategySettings] = useState<StrategyKind | null>(null);
@@ -128,14 +144,18 @@ export function App() {
           {NAV.map(({ group, tabs }) => (
             <div key={group} className="nav-group">
               <div className="nav-caption">{group}</div>
-              {tabs.map(([k, label]) => (
-                <button key={k} className={tab === k ? 'tab active' : 'tab'} onClick={() => setTab(k)} aria-current={tab === k ? 'page' : undefined}>
-                  <svg className="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
-                    {ICON[k]}
-                  </svg>
-                  {label}
-                </button>
-              ))}
+              {tabs.map(([k, label, m]) => {
+                const on = tab === k && (!m || methodTab === m);
+                return (
+                  <button key={m ? `${k}-${m}` : k} className={on ? 'tab active' : 'tab'} onClick={() => (m ? openMethod(m) : setTab(k))} aria-current={on ? 'page' : undefined}>
+                    <svg className="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      {ICON[k]}
+                    </svg>
+                    {label}
+                    {m && <i className={`tl-mode nav-mode ${modes[m].live ? 'live' : modes[m].paper ? 'paper' : 'off'}`}>{strategyModeKo(modes[m]).replace(' 매매', '')}</i>}
+                  </button>
+                );
+              })}
             </div>
           ))}
         </nav>
@@ -145,6 +165,7 @@ export function App() {
             {tab === 'control' && <ControlView />}
             {tab === 'jobs' && <JobsView />}
             {tab === 'collector' && <CollectorView />}
+            {tab === 'method' && <MethodView />}
             {tab === 'pipeline' && <PipelineView />}
             {tab === 'board' && <BoardView />}
             {tab === 'timeline' && <TimelineView />}

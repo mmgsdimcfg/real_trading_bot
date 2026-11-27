@@ -441,6 +441,7 @@ function HostPanel() {
 export function ControlView() {
   const control = useStore((s) => s.control);
   const openResults = useStore((s) => s.openResults);
+  const openMethod = useStore((s) => s.openMethod);
   const connected = useStore((s) => s.status.conn === 'connected');
   const isLocal = useStore((s) => s.status.mode === 'local');
   const historyRev = useStore((s) => s.historyRev);
@@ -1074,6 +1075,9 @@ export function ControlView() {
                   <button type="button" className="chip link" title="규칙 매매 세부 설정 창 열기 (매수 / 매도 조건 · 기준값 · 조건별 켜기 / 끄기)" onClick={() => window.dispatchEvent(new Event('rule-settings'))}>
                     세부 설정 →
                   </button>
+                  <button type="button" className="chip link" title="규칙 매매의 감시 · 기록 종목, 종목별 지금 상태, 오늘 결과를 한 화면에서 봅니다" onClick={() => openMethod('rule')}>
+                    대상 종목 · 현황 →
+                  </button>
                   <button type="button" className="chip link" title="매매 결과 탭에서 규칙 매매의 실제 매매 내역만 봅니다" onClick={() => openResults('rule', 'live')}>
                     매매 결과 →
                   </button>
@@ -1217,6 +1221,9 @@ export function ControlView() {
                   >
                     세부 설정 →
                   </button>
+                  <button type="button" className="chip link" title="Edge AI 매매의 감시 · 기록 종목, 종목별 지금 상태, 오늘 결과를 한 화면에서 봅니다" onClick={() => openMethod('edge')}>
+                    대상 종목 · 현황 →
+                  </button>
                   <button type="button" className="chip link" title="가상 매매 탭의 Edge AI 장부 (주문 없는 가상 매수 / 매도)" onClick={() => openResults('edge', 'paper')}>
                     가상 결과 →
                   </button>
@@ -1328,6 +1335,9 @@ export function ControlView() {
                     onClick={() => window.dispatchEvent(new CustomEvent('strategy-settings', { detail: 'vwap' }))}
                   >
                     세부 설정 →
+                  </button>
+                  <button type="button" className="chip link" title="VWAP 매매의 감시 · 기록 종목, 종목별 지금 상태, 오늘 결과를 한 화면에서 봅니다" onClick={() => openMethod('vwap')}>
+                    대상 종목 · 현황 →
                   </button>
                   <button type="button" className="chip link" title="가상 매매 탭의 VWAP 장부 (주문 없는 가상 매수 / 매도)" onClick={() => openResults('vwap', 'paper')}>
                     가상 결과 →

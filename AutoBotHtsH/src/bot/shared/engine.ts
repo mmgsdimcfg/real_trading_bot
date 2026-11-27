@@ -26,6 +26,7 @@
  *   events, so a busy symbol keeps its morning on the 매수 평가 chart (068270 showed nothing before 11:00)
  */
 
+import { sideSummaries } from './methodBoard';
 import { buyStrategyOf, sellStrategyOf } from './strategy';
 import { STRATEGY_TAGS, parseStrategyNote, parseStrategyRest, type SideStrategy, type StrategyEvent, type StrategyNote } from './strategyEvents';
 import type {
@@ -553,7 +554,8 @@ export class DayEngine {
     const traded = new Set(trades.map((t) => t.code));
     const now = this.lastLineTs || 0;
     for (const [code, s] of this.syms) {
-      const sum = { ...s.summary, realizedKrw: realized.get(code) || 0 };
+      const sum: SymbolSummary = { ...s.summary, realizedKrw: realized.get(code) || 0 };
+      if (s.side.length) sum.side = sideSummaries(s.side); // [2026-11-27] per-method state for the method board
       const p = pos.get(code);
       sum.position = p && p.qty > 0 ? { ...p } : undefined;
       sum.held = sum.position
