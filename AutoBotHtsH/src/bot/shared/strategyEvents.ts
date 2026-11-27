@@ -18,6 +18,7 @@ export type StrategyEventKind =
   | 'nobuy' // signal conditions passed up to a condition that refused the buy
   | 'hold' // holding check: price / P&L against the exits
   | 'exit' // exit decided (sell order follows)
+  | 'hand_sell' // [2026-11-27] the bot's record of the strategy's shares sold by hand (price, cost, result; not in its realized result)
   | 'gone' // [2026-11-27] the bot's ledger says its quantity of the symbol went to 0 ("[BOT LEDGER] ... bot=N->0": sold by hand, or a sale the strategy's own lines did not report)
   | 'paper_buy'
   | 'paper_sell'
@@ -39,6 +40,8 @@ export interface StrategyEvent {
   avg?: number;
   qty?: number;
   pnlPct?: number;
+  /** result in KRW as the bot printed it (hand_sell: net of costs) */
+  pnlKrw?: number;
   /** exits printed on a hold line */
   tpPct?: number;
   slPct?: number;
@@ -76,7 +79,7 @@ const price = (s: string | undefined): number | undefined => {
 const seg = (rest: string, i: number): string => (rest.split('|')[i] || '').trim();
 
 /** a symbol line of a strategy tag -> the event fields (without id / ts / code / raw) */
-export function parseStrategyRest(mode: StrategyRunMode, rest: string): Pick<StrategyEvent, 'kind' | 'text' | 'reason' | 'price' | 'avg' | 'qty' | 'pnlPct' | 'tpPct' | 'slPct'> {
+export function parseStrategyRest(mode: StrategyRunMode, rest: string): Pick<StrategyEvent, 'kind' | 'text' | 'reason' | 'price' | 'avg' | 'qty' | 'pnlPct' | 'pnlKrw' | 'tpPct' | 'slPct'> {
   const text = rest.trim();
   const head = seg(text, 0);
   if (mode === 'paper') {
@@ -99,9 +102,21 @@ export function parseStrategyRest(mode: StrategyRunMode, rest: string): Pick<Str
     const d = /qty=(\d+)\s+원가=([\d,]+)\s+현재가=([\d,]+)\S*\s+손익=([+-]?[\d.]+)%/.exec(text);
     return { kind: 'exit', text, reason: m[1], qty: d ? +d[1] : undefined, avg: price(d?.[2]), price: price(d?.[3]), pnlPct: pct(d?.[4]) };
   }
+  const hs = parseHandSale(text);
+  if (hs) return { kind: 'hand_sell', text, qty: hs.qty, price: hs.price, avg: hs.cost, pnlKrw: hs.pnlKrw, pnlPct: hs.pnlPct };
   m = /^(buy|sell) 체결 (\d+)주 반영/.exec(head);
   if (m) return { kind: 'fill', text, reason: m[1], qty: +m[2], avg: price(/원가 ([\d,]+)/.exec(text)?.[1]) };
   return { kind: 'note', text };
+}
+
+/** [2026-11-27] "직접 매도 5주 기록 | 매도가=87,300 원가=87,900 손익=-4,012원(-0.91%) | strategy=vwap order=... | ..." (r003
+ *  _log_side_hand_sale) -> its values; N/A fields are undefined. null = not that line */
+export function parseHandSale(text: string): { qty: number; price?: number; cost?: number; pnlKrw?: number; pnlPct?: number; strategy?: SideStrategy } | null {
+  const m = /^직접 매도 (\d+)주 기록\s*\|/.exec(text.trim());
+  if (!m) return null;
+  const p = /손익=([+-][\d,]+)원\(([+-]?[\d.]+)%\)/.exec(text);
+  const st = /\bstrategy=(edge|vwap)\b/.exec(text)?.[1] as SideStrategy | undefined;
+  return { qty: +m[1], price: price(/매도가=([\d,]+)/.exec(text)?.[1]), cost: price(/원가=([\d,]+)/.exec(text)?.[1]), pnlKrw: p ? price(p[1].replace('+', '')) : undefined, pnlPct: pct(p?.[2]), strategy: st };
 }
 
 /** a strategy line without a symbol */

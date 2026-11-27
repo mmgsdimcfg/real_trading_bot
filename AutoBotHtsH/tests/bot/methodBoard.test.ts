@@ -114,5 +114,9 @@ describe('methodRows', () => {
     expect(part.holdQty).toBe(5); // as the bot last printed it
     const all = methodRows('vwap', { symbols: held, trades: [trade({ strategy: 'vwap', qty: 5 }), trade({ strategy: 'vwap', side: 'SELL', qty: 5 })] })[0];
     expect(all.holdQty).toBeUndefined();
+    // a holding check written AFTER the sale: the bot still holds (shares carried over from an earlier day)
+    const later = [sym({ side: sideSummaries([ev({ ts: 9000, kind: 'hold', qty: 5, avg: 100 })]) })];
+    const kept = methodRows('vwap', { symbols: later, trades: [trade({ strategy: 'vwap', qty: 2, ts: 1000 }), trade({ strategy: 'vwap', side: 'SELL', qty: 2, ts: 2000 })] })[0];
+    expect(kept.holdQty).toBe(5);
   });
 });

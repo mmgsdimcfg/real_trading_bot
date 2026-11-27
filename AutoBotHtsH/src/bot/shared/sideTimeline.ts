@@ -159,6 +159,9 @@ export function sideTimeline(strategy: SideStrategy, events: StrategyEvent[], ev
         // [2026-11-27] a decision is not a sale (the 15:20 close order of 237690 did not fill): the holding ends with a sale
         // the bot recorded or with its ledger going to 0
         break;
+      case 'hand_sell':
+        push(e.ts, e.code, 'sell', 'exit', 'info', e.mode, 'HAND_SELL', `직접 매도 ${e.qty ?? ''}주 (봇 기록)${e.price ? ` · 매도가 ${n0(e.price)}` : ''}${e.avg ? ` · 원가 ${n0(e.avg)}` : ''}${e.pnlKrw === undefined ? '' : ` · 손익 ${e.pnlKrw > 0 ? '+' : ''}${n0(e.pnlKrw)}원`}${e.pnlPct === undefined ? '' : ` (${sp(e.pnlPct)})`} · 전략 실현 손익 · 한도에는 넣지 않음`, e.raw, '청산');
+        break;
       case 'gone':
         push(e.ts, e.code, 'sell', 'exit', 'info', e.mode, 'BOT_LEDGER', `봇 보유 종료 · 봇 장부에서 봇 몫 ${e.qty ?? ''}주 -> 0 (직접 매도 등) · ${e.text}`, e.raw, '청산');
         holding = undefined;

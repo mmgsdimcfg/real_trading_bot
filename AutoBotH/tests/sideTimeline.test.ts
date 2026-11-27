@@ -253,3 +253,29 @@ describe("the bot's ledger going to 0", () => {
   });
 });
 
+describe("the bot's record of a method's shares sold by hand", () => {
+  const L = '[VWAP LIVE   ] 237690_에스티팜   | 직접 매도 5주 기록 | 매도가=87,300 원가=87,900 손익=-4,012원(-0.91%) | strategy=vwap order=20261127:18507100 | 전략 실현 손익·한도에는 넣지 않음';
+  it('is a sell of that method in the trade list, with the gross result from the price and the cost of the line', () => {
+    const e = engine();
+    e.feedBuySellLines([`${D} 18:25:27 [INFO] ${L}`]);
+    const sells = e.getTrades().filter((t) => t.side === 'SELL' && t.code === '237690');
+    expect(sells).toHaveLength(1);
+    expect(sells[0]).toMatchObject({ strategy: 'vwap', hand: true, qty: 5, price: 87300, buyPrice: 87900, pnlKrw: -3000 });
+    expect(sells[0].pnlPct).toBeCloseTo(-0.6826, 3);
+    const sum = strategySummary(e.getTrades());
+    expect(sum.vwap).toMatchObject({ buys: 1, sells: 1, pnlKrw: -3000 });
+    expect(sum.rule.sells).toBe(0);
+  });
+  it('an unknown price is not a result row; the main-log line is an event of the timeline', () => {
+    const e = engine();
+    e.feedBuySellLines([`${D} 18:25:27 [INFO] [EDGE LIVE   ] 237690_에스티팜   | 직접 매도 2주 기록 | 매도가=N/A 원가=N/A 손익=N/A | strategy=vwap order= | 전략 실현 손익·한도에는 넣지 않음`]);
+    expect(e.getTrades().find((x) => x.hand)).toBeUndefined(); // no price: not a result row
+    e.feedBuySellLines([`${D} 18:25:28 [INFO] [EDGE LIVE   ] 237690_에스티팜   | 직접 매도 2주 기록 | 매도가=88,000 원가=87,900 손익=+10원(+0.01%) | strategy=vwap order= | x`]);
+    expect(e.getTrades().find((x) => x.hand)).toMatchObject({ strategy: 'vwap', qty: 2, pnlKrw: 200 }); // the strategy= field, not the tag
+    e.feedMainLines([`${D} 18:25:27,100 [INFO]   ${L}`]);
+    const ev = (e.timeline('237690').strategy || []).find((x) => x.kind === 'hand_sell');
+    expect(ev).toMatchObject({ strategy: 'vwap', qty: 5, price: 87300, avg: 87900, pnlKrw: -4012, pnlPct: -0.91 });
+    expect(sideTimeline('vwap', e.timeline('237690').strategy || [], []).events.some((x) => x.reason === 'HAND_SELL')).toBe(true);
+  });
+});
+

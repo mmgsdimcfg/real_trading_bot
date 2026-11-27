@@ -82,6 +82,9 @@ export interface MethodRow {
   holdQty?: number;
   holdAvg?: number;
   holdPnlPct?: number;
+  /** time of the holding check the holding comes from, and of the method's last real sale */
+  holdTs?: number;
+  lastSellTs?: number;
   /** an exit was decided after the last holding check and no sale is recorded since (time of the decision) */
   holdExitAt?: number;
   /** open paper position (entry price) */
@@ -122,11 +125,12 @@ const EVENT_KO: Record<string, string> = {
   nobuy: '신호는 났지만 사지 않음',
   exit: '청산 결정',
   gone: '봇 보유 종료 (봇 장부: 봇 몫 0)',
+  hand_sell: '직접 매도 기록',
   paper_buy: '가상 매수',
   paper_sell: '가상 매도',
   note: '',
 };
-const EVENT_KIND: Record<string, MethodRowKind> = { gone: 'info', signal: 'pass', order: 'pass', fill: 'info', nobuy: 'fail', exit: 'info', paper_buy: 'pass', paper_sell: 'info', note: 'info' };
+const EVENT_KIND: Record<string, MethodRowKind> = { hand_sell: 'info', gone: 'info', signal: 'pass', order: 'pass', fill: 'info', nobuy: 'fail', exit: 'info', paper_buy: 'pass', paper_sell: 'info', note: 'info' };
 
 const blank = (code: string, name: string): MethodRow => ({
   code,
@@ -163,6 +167,7 @@ function addTrades(method: TradeStrategy, trades: Trade[], get: (code: string, n
     } else {
       r.sells++;
       r.sellQty += q;
+      if (r.lastSellTs === undefined || t.ts > r.lastSellTs) r.lastSellTs = t.ts;
       if (Number.isFinite(t.pnlKrw)) r.realizedKrw += t.pnlKrw as number;
     }
   }
@@ -248,13 +253,14 @@ export function methodRows(method: TradeStrategy, input: MethodBoardInput): Meth
         r.holdQty = sum.holding.qty;
         r.holdAvg = sum.holding.avg;
         r.holdPnlPct = sum.holding.pnlPct;
+        r.holdTs = sum.holding.ts;
         r.holdExitAt = sum.exitAt;
       }
       const e = sum.last;
       // at the same time the log line wins over a trace row: it is the more specific record (signal / order / refusal)
       if (e && (r.stateTs === undefined || e.ts >= r.stateTs)) {
         const ko = EVENT_KO[e.kind] ?? '';
-        r.state = [ko, e.kind === 'note' || e.kind === 'gone' || !ko ? e.text : e.reason || ''].filter(Boolean).join(' · ');
+        r.state = [ko, e.kind === 'note' || e.kind === 'gone' || e.kind === 'hand_sell' || !ko ? e.text : e.reason || ''].filter(Boolean).join(' · ');
         r.stateKind = EVENT_KIND[e.kind] || 'info';
         r.stateSrc = 'log';
         r.stateMode = e.mode;
@@ -277,7 +283,8 @@ export function methodRows(method: TradeStrategy, input: MethodBoardInput): Meth
     addTrades(side, input.trades, get);
     // a recorded sale of everything bought ends the holding the log lines left open
     for (const r of rows.values()) {
-      if (r.holdQty && r.sellQty > 0 && r.sellQty >= r.buyQty) {
+      // ... unless the bot printed a holding check after that sale (shares carried over from an earlier day) [Codex review]
+      if (r.holdQty && r.sellQty > 0 && r.sellQty >= r.buyQty && (r.holdTs === undefined || r.lastSellTs === undefined || r.lastSellTs >= r.holdTs)) {
         r.holdQty = r.holdAvg = r.holdPnlPct = r.holdExitAt = undefined;
       }
     }

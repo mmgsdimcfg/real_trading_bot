@@ -856,6 +856,7 @@ function tradeLabel(t: Trade): string {
   if (t.paper) return `가상 ${t.side === 'BUY' ? '매수' : '매도'}${price}${t.side === 'SELL' && Number.isFinite(t.pnlPct) ? ` (${(t.pnlPct as number) >= 0 ? '+' : ''}${(t.pnlPct as number).toFixed(2)}%)` : ''}`;
   if (t.side === 'BUY') return `매수${price}${t.approx ? ' (주문가)' : ''}`;
   const pct = Number.isFinite(t.pnlPct) ? ` (${(t.pnlPct as number) >= 0 ? '+' : ''}${(t.pnlPct as number).toFixed(2)}%)` : '';
+  if (t.hand) return `직접 매도${price}${pct}`; // [2026-11-27] the method's shares sold by hand (the bot's record)
   return `매도${price}${pct} ${t.reason.slice(0, 18)}`.trim();
 }
 

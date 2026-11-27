@@ -111,6 +111,10 @@ export interface Trade {
   orderNo?: string;
   /** [2026-11-27] a paper (virtual) trade drawn as a marker on a method tab of the timeline - never a real fill */
   paper?: boolean;
+  /** [2026-11-27] shares the method bought that were sold BY HAND - from the bot's record line ("직접 매도 N주 기록": the sale's
+   *  price and the method's cost). Listed with the method's results; the bot itself does not count it in the method's realized
+   *  result or limits */
+  hand?: boolean;
 }
 
 /** 'removed' [2026-11-13]: watched by an earlier r003 run of the day but not in the watchlist of the latest run (r004 was edited) */

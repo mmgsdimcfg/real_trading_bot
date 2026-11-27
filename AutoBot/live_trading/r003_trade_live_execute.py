@@ -4298,18 +4298,19 @@ class TradingAPI:
             return False
         before = json.dumps(state, sort_keys=True, default=str)
         early: list = []
+        _hand_notes: list = []                  # [2026-11-27] side-strategy shares sold by hand in this listing (record only)
         if (state.get("day_anchor") or {}).get("date") != today:   # [Codex 12th] the ledger before today's fills
             # [Codex 13th] fills of earlier days first (yesterday's late ones) - the anchor is the ledger after them
             old_rows = [r for r in rows if str(r.get("ord_dt", "")).strip() < today]
             if old_rows:
-                early = r023.apply_fill_rows(state, old_rows, now, (V2_COMMISSION_PCT, V2_SELL_TAX_PCT))
+                early = r023.apply_fill_rows(state, old_rows, now, (V2_COMMISSION_PCT, V2_SELL_TAX_PCT), notes=_hand_notes)
                 # [Codex 15th] that day's bound once more with its final fills, before today's anchor replaces it
                 prev_day = str((state.get("day_anchor") or {}).get("date") or "")
                 for code, old, new in (r023.clamp_to_day_bound(state, rows, prev_day) if prev_day else []):
                     log(f"  [BOT LEDGER  ] {_sym_label(code)} | {prev_day} 체결 순서를 알 수 없어 봇 몫 {old}->{new}주 (차이는 직접 몫으로)")
             r023.set_day_anchor(state, today, {str(c).zfill(6) for c, p in (self.positions or {}).items()
                                                if int((p or {}).get("quantity", 0) or 0) > 0})
-        changes = early + r023.apply_fill_rows(state, rows, now, (V2_COMMISSION_PCT, V2_SELL_TAX_PCT))
+        changes = early + r023.apply_fill_rows(state, rows, now, (V2_COMMISSION_PCT, V2_SELL_TAX_PCT), notes=_hand_notes)
         self._fill_rows = rows                  # [Codex 14th] this round's listing, for the anchor of a manual part set now
         self._listed_today = r023.day_fill_totals(rows, today)   # [Codex 15th] compared with the account's counts of today
         for code, old, new in r023.clamp_to_day_bound(state, rows, today):
@@ -4337,6 +4338,9 @@ class TradingAPI:
                     f"{r023.fill_bot_quantity(state, code)}")
         if self._fills_dirty or json.dumps(state, sort_keys=True, default=str) != before:
             self._save_fills(now)
+        # [Codex review] after the ledger is stored: a stop between the two loses the record, it is never written twice
+        for _n in _hand_notes:
+            _log_side_hand_sale(_n)
         return True
 
     def _unlisted_sell_qty(self, code: str) -> int:
@@ -6929,6 +6933,30 @@ def _edge_live_config_ok() -> tuple[bool, str]:
            float(EDGE_LIVE_DAILY_LOSS_KRW)) <= 0:
         return False, "EDGE_LIVE_* 한도 값이 0 이하"
     return True, ""
+
+
+def _log_side_hand_sale(note: dict) -> None:
+    """[2026-11-27] record only (user 2026-11-27): shares a side strategy (Edge AI / VWAP) bought were sold BY HAND - the sale's
+    price and result against the strategy's own cost, written to the main log and the trade log so the apps can list it with that
+    strategy's results. The strategy's realized result / daily loss limit / stop list are NOT changed by it (r023.hand_sale_notes
+    reads only). Never raises."""
+    try:
+        code = str(note.get("code", "")).zfill(6)
+        qty, price, cost, pnl, pct = int(note.get("qty", 0)), float(note.get("price") or 0.0), float(note.get("cost") or 0.0), note.get("pnl"), note.get("pnl_pct")
+        if qty <= 0:
+            return
+        strategy = str(note.get("strategy") or "edge")
+        msg = (f"{_side_spec(strategy).tag} {_sym_label(code)} | 직접 매도 {qty}주 기록 | "
+               f"매도가={f'{price:,.0f}' if price > 0 else 'N/A'} 원가={f'{cost:,.0f}' if cost > 0 else 'N/A'} "
+               f"손익={f'{pnl:+,.0f}원({pct:+.2f}%)' if pnl is not None and pct is not None else 'N/A'} | "
+               f"strategy={strategy} order={','.join(str(k) for k in (note.get('keys') or []))} | 전략 실현 손익·한도에는 넣지 않음")
+        log(msg)                                     # main log: a line of the strategy (timeline)
+        log_trade(msg.strip(), mirror_main_log=False)   # trade log: listed with the strategy's results by the apps
+    except Exception as exc:
+        try:
+            log(f"  [BOT FILLS   ] 직접 매도 기록 오류: {type(exc).__name__}: {exc}")
+        except Exception:
+            pass
 
 
 def _side_spec(strategy):

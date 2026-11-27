@@ -28,7 +28,7 @@
 
 import { sideSummaries } from './methodBoard';
 import { buyStrategyOf, sellStrategyOf } from './strategy';
-import { STRATEGY_TAGS, parseStrategyNote, parseStrategyRest, type SideStrategy, type StrategyEvent, type StrategyNote } from './strategyEvents';
+import { STRATEGY_TAGS, parseStrategyNote, parseStrategyRest, type SideStrategy, type StrategyEvent, type StrategyNote, parseHandSale } from './strategyEvents';
 import type {
   ConditionsDoc,
   EvalEvent,
@@ -60,6 +60,8 @@ const STRATEGY_EVENT_CAP = 4000;
 const STRATEGY_NOTE_CAP = 200;
 /** a fill block belongs to a side order when its printed order time is within this of the order's SUBMIT line */
 const SIDE_BLOCK_MATCH_MS = 15000;
+/** reason text of a trade built from the bot's hand-sale record */
+export const HAND_SELL_REASON = '직접 매도 (전략 보유분 · 봇 기록)';
 
 /** a side-strategy buy order seen in the buy_sell log ([BUY SUBMIT] ... reason=VWAP_LIVE ..., then [BUY PENDING] filled=a/b) */
 interface SideOrder {
@@ -414,6 +416,35 @@ export class DayEngine {
     if (!p) return;
     // [2026-11-27] a side-strategy buy order: r003 (before 2026-11-27) could close it without writing the fill block, so the
     // order itself is remembered by its number - see allTrades()
+    // [2026-11-27] the bot's record of a side strategy's shares sold by hand: a sell of that method in the trade list (hand).
+    // Price and cost are the line's; the gross result is their difference x quantity, like every other sell of the list
+    const hl = /^\[(VWAP LIVE|EDGE LIVE)\s*\]\s+(\d{6})_(\S*)\s*\|(.*)$/.exec(p.body);
+    if (hl) {
+      const hs = parseHandSale(hl[4]);
+      // [Codex review] only a record with its price and cost is a result row (one without them would count as a sell with no
+      // result); the line itself is still on the timeline (main log)
+      if (hs && hs.qty > 0 && hs.price !== undefined && hs.cost !== undefined) {
+        const strategy = hs.strategy || STRATEGY_TAGS[hl[1]].strategy;
+        const known = true;
+        this.trades.push({
+          code: hl[2],
+          name: hl[3].replace(/~+$/, ''),
+          side: 'SELL',
+          ts: p.ts,
+          price: hs.price ?? NaN,
+          qty: hs.qty,
+          reason: HAND_SELL_REASON,
+          buyPrice: hs.cost,
+          pnlKrw: known ? ((hs.price as number) - (hs.cost as number)) * hs.qty : undefined,
+          pnlPct: known && (hs.cost as number) > 0 ? (((hs.price as number) - (hs.cost as number)) / (hs.cost as number)) * 100 : undefined,
+          raw,
+          strategy,
+          hand: true,
+        });
+        this.mergedTrades = null;
+      }
+      return;
+    }
     const so = /^\[BUY (SUBMIT|PENDING)\s*\]\s+(\d{6})_(\S*)\s*\|(.*)$/.exec(p.body);
     if (so) {
       const kv = parseKv(so[4]);

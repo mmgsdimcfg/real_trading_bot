@@ -442,13 +442,17 @@ def _row_int(row: dict, key: str) -> int:
 
 
 def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None,
-                    costs: tuple[float, float] = (0.0, 0.0), partial: bool = False) -> list[tuple[str, str, int, str]]:
+                    costs: tuple[float, float] = (0.0, 0.0), partial: bool = False,
+                    notes: list | None = None) -> list[tuple[str, str, int, str]]:
     """Apply the fills of a COMPLETE daily order/fill listing (KIS inquire_daily_ccld output1 rows) to the bot's quantities.
     Only rows of registered bot orders count; a modified order (orgn_odno = a registered order) is registered as its child.
     A row whose symbol / side does not match the registry is not applied (reported with delta 0 and a ':mismatch' key).
-    Returns (code, side, delta, key)."""
+    Returns (code, side, delta, key).
+    notes ([2026-11-27], optional): a list that receives one record per symbol whose side-strategy shares were sold BY HAND in
+    this listing (hand_sale_notes) - a record only, the ledger is computed exactly as without it."""
     now_s = (now or datetime.now()).isoformat(timespec="seconds")
     reg = state["registry"]
+    hand_sold: dict[str, list] = {}                 # [2026-11-27] code -> [(bot shares a hand sale took, its price, key)]
     by_key: dict[str, dict] = {}
     for r in rows or []:
         by_key[fill_key(r.get("ord_dt", ""), r.get("odno", ""))] = r
@@ -547,6 +551,10 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None,
                 left = delta - take_m
                 take_b = min(row["bot_qty"], left)
                 row["bot_qty"] -= take_b
+                if take_b > 0 and notes is not None:
+                    # exact = this listing shows the whole order at once (its average IS the price of these shares); a later
+                    # part of a partly filled hand order only has the order's cumulative average [Codex review]
+                    hand_sold.setdefault(code, []).append((take_b, _row_price(by_key.get(key)), key, delta == tot))
             if who == "bot":
                 _edge_fill(state, reg.get(key), by_key.get(key), code, "sell", take_b, now_s, costs, key, delta, tot)
             unpaid = delta - take_b - take_m
@@ -575,6 +583,11 @@ def apply_fill_rows(state: dict, rows: list[dict], now: datetime | None = None,
     for code in [c for c, q in debt.items() if q <= 0]:
         debt.pop(code, None)
     _edge_reprice(state, by_key)
+    if notes is not None and hand_sold:
+        try:                                        # a record only: never in the way of the ledger
+            notes.extend(hand_sale_notes(state, hand_sold, costs))
+        except Exception:
+            pass
     edge_cap(state)
     return out
 
@@ -740,6 +753,54 @@ def apply_order_status(state: dict, ord_dt: str, odno: str, code: str, side: str
          "cncl_yn": "Y" if cancelled else "", "rjct_qty": "0", "cncl_cfrm_qty": "0", "avg_prvs": str(float(avg_price or 0.0)),
          "tot_ccld_amt": str(float(amount or 0.0))}
     return apply_fill_rows(state, [r], now, costs, partial=True)
+
+
+def hand_sale_notes(state: dict, hand_sold: dict[str, list], costs: tuple[float, float] = (0.0, 0.0)) -> list[dict]:
+    """[2026-11-27] READ ONLY (user: the result of side-strategy shares sold by hand should be visible; record only). Called right
+    before edge_cap: the shares edge_cap is about to take out of a side book because hand sales of this listing took them from the
+    bot part - {code, strategy, qty, price, cost, pnl, pnl_pct, keys}. price = quantity-weighted average of those hand sales'
+    listing prices; cost = the oldest lots first, as edge_cap takes them. price / cost 0 and pnl None when one of them is not
+    known. Nothing in `state` changes: the strategy's realized result and its limits stay as they are.
+    [Codex review] the price is given only when it is certain: every hand sale of the symbol in this listing shows its whole order
+    (not a later part of a partly filled one), and either they took exactly the strategy's shares or they all have one price -
+    when hand sales at different prices took more bot shares than the strategy lost (rule-bought shares went too) nobody knows
+    which sale took the strategy's. Not seen here: what clamp_to_day_bound / the account comparison take off later (no sale row)."""
+    out: list[dict] = []
+    commission, sell_tax = costs
+    for code, sales in hand_sold.items():
+        for side in SIDE:
+            b = (state.get(side) or {}).get(code)
+            if not isinstance(b, dict):
+                continue
+            over = int(b.get("qty", 0)) - fill_bot_quantity(state, code)
+            taken_by_hand = sum(int(s[0]) for s in sales)
+            n = min(over, taken_by_hand)
+            if n <= 0:
+                continue
+            applied = state.get("applied") or {}
+            left, cost, known = n, 0.0, True
+            for key, lot in (b.get("lots") or {}).items():
+                if left <= 0:
+                    break
+                q = min(int(lot.get("qty", 0)), left)
+                if q <= 0:
+                    continue
+                left -= q
+                cost += q * float(lot.get("avg", 0.0))
+                known = known and float(lot.get("avg", 0.0)) > 0 and int(lot.get("avg_at", -1)) == int(applied.get(key, 0) or 0)
+            prices = {round(float(s[1]), 4) for s in sales}
+            priced = (all(float(s[1]) > 0 and bool(s[3]) for s in sales)
+                      and (taken_by_hand == n or len(prices) == 1))
+            price = (sum(int(s[0]) * float(s[1]) for s in sales) / taken_by_hand) if priced and taken_by_hand > 0 else 0.0
+            sold = n - left
+            pnl = pnl_pct = None
+            if sold > 0 and price > 0 and known and cost > 0:
+                pnl = sold * price - cost - (price * sold * (commission + sell_tax) + cost * commission) / 100.0
+                pnl_pct = pnl / cost * 100.0
+            out.append({"code": code, "strategy": side, "qty": sold, "price": price if price > 0 else 0.0,
+                        "cost": (cost / sold) if sold > 0 and known else 0.0, "pnl": pnl, "pnl_pct": pnl_pct,
+                        "keys": [s[2] for s in sales]})
+    return out
 
 
 def edge_cap(state: dict) -> None:

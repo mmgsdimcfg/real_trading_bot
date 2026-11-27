@@ -933,3 +933,89 @@ class EdgeLiveTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandSaleRecordTest(unittest.TestCase):
+    """[2026-11-27] side-strategy shares sold by hand: a record of the sale (price, cost, result) - the ledger itself is exactly
+    what it is without the record"""
+
+    def test_a_hand_sale_of_the_strategys_shares_is_recorded_and_the_ledger_is_unchanged_by_it(self):
+        import copy
+        import json
+        st = edge_state("237690", 5, 87_900, manual=1)           # 5 by the strategy + 1 by hand (2026-11-27)
+        ref = copy.deepcopy(st)
+        hand = [row("77", "237690", "sell", 6, 6, 87_300)]       # an order the bot did not place: all 6 sold by hand
+        notes: list = []
+        r023.apply_fill_rows(st, hand, NOW, COSTS, notes=notes)
+        r023.apply_fill_rows(ref, hand, NOW, COSTS)
+        self.assertEqual(json.dumps(st, sort_keys=True, default=str), json.dumps(ref, sort_keys=True, default=str))
+        self.assertEqual(r023.edge_quantity(st, "237690"), 0)
+        self.assertEqual(float(r023.edge_day(st, DAY)["realized"]), 0.0)    # not booked: the limits are not touched
+        self.assertEqual(len(notes), 1)
+        n = notes[0]
+        self.assertEqual((n["code"], n["strategy"], n["qty"]), ("237690", r023.EDGE, 5))
+        self.assertAlmostEqual(n["price"], 87_300)
+        self.assertAlmostEqual(n["cost"], 87_900)
+        commission, tax = COSTS
+        want = 5 * 87_300 - 5 * 87_900 - (87_300 * 5 * (commission + tax) + 5 * 87_900 * commission) / 100.0
+        self.assertAlmostEqual(n["pnl"], want)
+        self.assertLess(n["pnl_pct"], 0)
+
+    def test_a_hand_sale_that_only_takes_the_hand_bought_share_records_nothing(self):
+        st = edge_state("237690", 5, 87_900, manual=1)
+        notes: list = []
+        r023.apply_fill_rows(st, [row("78", "237690", "sell", 1, 1, 87_300)], NOW, COSTS, notes=notes)
+        self.assertEqual(notes, [])
+        self.assertEqual(r023.edge_quantity(st, "237690"), 5)
+
+    def test_a_part_is_recorded_with_the_oldest_lot_and_an_unknown_price_gives_no_result(self):
+        st = edge_state("237690", 5, 87_900)
+        notes: list = []
+        r023.apply_fill_rows(st, [row("79", "237690", "sell", 2, 2, 0)], NOW, COSTS, notes=notes)   # no price in the listing
+        self.assertEqual(r023.edge_quantity(st, "237690"), 3)
+        self.assertEqual(notes[0]["qty"], 2)
+        self.assertIsNone(notes[0]["pnl"])
+
+    def test_the_price_is_given_only_when_it_is_certain(self):
+        # rule-bought 5 + strategy 5, two hand sales of 5 at different prices: the strategy lost 5, but which sale took them?
+        st = edge_state("237690", 5, 87_900)
+        r023.register_order(st, DAY, "2", "237690", "buy", 5)
+        r023.apply_fill_rows(st, [row("1", "237690", "buy", 5, 5, 87_900), row("2", "237690", "buy", 5, 5, 88_000)], NOW, COSTS)
+        notes: list = []
+        r023.apply_fill_rows(st, [row("1", "237690", "buy", 5, 5, 87_900), row("2", "237690", "buy", 5, 5, 88_000),
+                                  row("81", "237690", "sell", 5, 5, 100), row("82", "237690", "sell", 5, 5, 200)], NOW, COSTS, notes=notes)
+        self.assertEqual(notes[0]["qty"], 5)
+        self.assertEqual(notes[0]["price"], 0.0)
+        self.assertIsNone(notes[0]["pnl"])
+        # a later part of a partly filled hand order: only the order's cumulative average is known
+        st2 = edge_state("237690", 5, 87_900)
+        n1, n2 = [], []
+        r023.apply_fill_rows(st2, [row("83", "237690", "sell", 5, 2, 100)], NOW, COSTS, notes=n1)
+        r023.apply_fill_rows(st2, [row("83", "237690", "sell", 5, 5, 160)], NOW, COSTS, notes=n2)
+        self.assertEqual((n1[0]["qty"], n1[0]["price"]), (2, 100.0))
+        self.assertEqual((n2[0]["qty"], n2[0]["price"]), (3, 0.0))
+        # the same listing read again records nothing more
+        n3: list = []
+        r023.apply_fill_rows(st2, [row("83", "237690", "sell", 5, 5, 160)], NOW, COSTS, notes=n3)
+        self.assertEqual(n3, [])
+
+    def test_a_bot_sell_of_the_strategy_is_not_a_hand_sale(self):
+        st = edge_state("237690", 5, 87_900)
+        r023.register_order(st, DAY, "90", "237690", "sell", 5, strategy=r023.EDGE)
+        notes: list = []
+        r023.apply_fill_rows(st, [row("90", "237690", "sell", 5, 5, 88_000)], NOW, COSTS, notes=notes)
+        self.assertEqual(notes, [])
+        self.assertNotEqual(float(r023.edge_day(st, DAY)["realized"]), 0.0)   # the bot's own sale is booked as before
+
+    def test_the_log_line(self):
+        if r003 is None:
+            self.skipTest("r003 not importable")
+        lines, trades = [], []
+        with mock.patch.object(r003, "log", lines.append), mock.patch.object(r003, "log_trade", lambda m, mirror_main_log=True: trades.append(m)):
+            r003._log_side_hand_sale({"code": "237690", "strategy": r023.VWAP, "qty": 5, "price": 87_300.0, "cost": 87_900.0, "pnl": -4_012.0, "pnl_pct": -0.91, "keys": ["20261127:18507100"]})
+            r003._log_side_hand_sale({"code": "237690", "strategy": r023.EDGE, "qty": 2, "price": 0.0, "cost": 0.0, "pnl": None, "pnl_pct": None, "keys": []})
+            r003._log_side_hand_sale({"qty": "x"})                # garbage never raises
+        self.assertIn("[VWAP LIVE   ]", lines[0])
+        self.assertIn("직접 매도 5주 기록 | 매도가=87,300 원가=87,900 손익=-4,012원(-0.91%)", lines[0])
+        self.assertTrue(trades[0].startswith("[VWAP LIVE   ] 237690"))
+        self.assertIn("손익=N/A", lines[1])
