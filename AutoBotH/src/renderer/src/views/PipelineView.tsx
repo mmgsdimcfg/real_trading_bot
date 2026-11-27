@@ -16,6 +16,10 @@
  *   blockCheck) - what failed, the measured value against the limit, and the r001 keys of that limit. Those rows of the settings
  *   table turn red (the threshold) / amber (related keys) with the comparison under the key and move to the top; a key chip scrolls
  *   to its row. Keys that are not in this node's list show their current value in the block list
+ * - [2026-11-27] type=feat - The node-header toggle is the WHOLE-condition switch (적용 / 미적용, server BUY_CONDITION_OFF through
+ *   useCondApply - confirm, saved at once, applied after an r003 restart), like the rule settings list: 필수 for a condition that
+ *   cannot be switched off, 기록만, 재시작 대기, and the ENABLE_* option switches as a read-only "옵션 n/m" tag (edited in the side
+ *   panel). Live day only - a past day ran with settings that are not known here
  */
 
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
@@ -24,9 +28,10 @@ import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node
 import dagre from '@dagrejs/dagre';
 import { useStore } from '../store';
 import { SymbolPicker } from '../components/SymbolPicker';
-import { condIndex, editItemsFor, fmtInt, fmtKrw, nodeEnableKey, PSEUDO_LABEL, sortedConds, STAGE_LABEL } from '../lib';
+import { condIndex, editItemsFor, fmtInt, fmtKrw, isEnableItem, PSEUDO_LABEL, sortedConds, STAGE_LABEL } from '../lib';
 import { EditorActions, focusValueRow, useValueEditing, ValuesEditor } from '../components/ValuesEditor';
-import { savedValue } from '../../../shared/control';
+import { COND_APPLY_KO, condApplyInfo, savedValue, type CondApply } from '../../../shared/control';
+import { useCondApply } from '../components/useCondApply';
 import { INFO_ONLY_BUY, SILENT_BUY, STEP_TO_COND, TRIGGER_COND, TRIGGER_SUBS, TRIGGER_SUB_LABEL, condKeyOf, keyRemapOf, remapKey } from '../../../shared/mapping';
 import type { Condition, EvalEvent, Side, Snapshot, SymbolSummary } from '../../../shared/types';
 import { fmtKstTime } from '../../../shared/time';
@@ -49,10 +54,20 @@ interface CondData extends Record<string, unknown> {
   focus?: boolean;
   width: number;
   sub?: boolean;
-  /** first ENABLE_* constant of the condition (header toggle) */
-  enableKey?: string;
-  enableOn?: boolean;
-  enableDirty?: boolean;
+  /** ENABLE_* option switches inside the condition: on / total (read-only tag; edited in the side panel) */
+  optOn?: number;
+  optTotal?: number;
+  optDirty?: boolean;
+  optTip?: string;
+  /** [2026-11-27] whole-condition state from the server (stored settings); undefined = not shown (sell side, past day, old server) */
+  applyStored?: CondApply;
+  /** the header toggle may switch the whole condition (server says switchable, live answer) */
+  applySwitch?: boolean;
+  /** switched off as a whole (BUY_CONDITION_OFF) - what the toggle flips */
+  applyOffByList?: boolean;
+  applyLocked?: boolean;
+  applyRestart?: boolean;
+  applyTip?: string;
   /** an override is saved but the running bot has not picked it up */
   pendingMark?: boolean;
   /** an override is active for one of the values */
@@ -63,14 +78,21 @@ interface CondData extends Record<string, unknown> {
 }
 
 /** node-header toggle -> PipelineView (keeps the memoized node free of callbacks in data) */
-const ToggleCtx = createContext<{ toggle: (node: string, key: string) => void; disabled: boolean }>({ toggle: () => undefined, disabled: true });
+const ToggleCtx = createContext<{ toggle: (node: string) => void; disabled: boolean }>({ toggle: () => undefined, disabled: true });
 
 interface NodeExt {
   notApplied?: 'off' | 'record';
   notAppliedWhy?: string;
-  enableKey?: string;
-  enableOn?: boolean;
-  enableDirty?: boolean;
+  optOn?: number;
+  optTotal?: number;
+  optDirty?: boolean;
+  optTip?: string;
+  applyStored?: CondApply;
+  applySwitch?: boolean;
+  applyOffByList?: boolean;
+  applyLocked?: boolean;
+  applyRestart?: boolean;
+  applyTip?: string;
   pendingMark?: boolean;
   ovr?: boolean;
 }
@@ -102,25 +124,37 @@ const CondNode = memo(function CondNode({ id, data }: NodeProps<Node<CondData>>)
             ◆
           </i>
         )}
-        {data.notApplied && (
+        {data.applyRestart && <i className="pend-dot" title={data.applyTip}>재시작 대기</i>}
+        {/* the running bot differs from the stored state shown by the toggle, or no stored state is known */}
+        {data.notApplied && data.notApplied !== data.applyStored && (
           <span className={`napply ${data.notApplied}`} title={data.notAppliedWhy}>
             {data.notApplied === 'off' ? '미적용' : '기록만'}
           </span>
         )}
         {data.state !== 'none' && <span className="cnode-icon">{ICON[data.state]}</span>}
-        {data.enableKey && (
-          <button
-            className={`ntoggle nodrag ${data.enableOn ? 'on' : 'off'} ${data.enableDirty ? 'dirty' : ''}`}
-            disabled={tg.disabled}
-            title={`옵션 스위치 ${data.enableKey} = ${data.enableOn ? 'true' : 'false'}${data.enableDirty ? ' (저장 전)' : ''} - 조건 안의 옵션입니다 (조건 전체를 끄는 스위치가 아님). 누르면 바꾸고 오른쪽 패널에서 저장`}
-            onClick={(e) => {
-              e.stopPropagation();
-              tg.toggle(id, data.enableKey!);
-            }}
-          >
-            옵션 {data.enableOn ? 'ON' : 'OFF'}
-          </button>
+        {(data.optTotal || 0) > 0 && (
+          <span className={`nopt ${data.optOn === data.optTotal ? 'on' : 'off'} ${data.optDirty ? 'dirty' : ''}`} title={data.optTip}>
+            옵션 {data.optOn}/{data.optTotal}
+          </span>
         )}
+        {data.applyStored &&
+          (data.applySwitch ? (
+            <button
+              className={`ntoggle nodrag apply-${data.applyStored}`}
+              disabled={tg.disabled}
+              title={data.applyTip}
+              onClick={(e) => {
+                e.stopPropagation();
+                tg.toggle(id);
+              }}
+            >
+              {COND_APPLY_KO[data.applyStored]}
+            </button>
+          ) : (
+            <span className={`napply ${data.applyLocked && data.applyStored === 'on' ? 'lock' : data.applyStored}`} title={data.applyTip}>
+              {data.applyLocked && data.applyStored === 'on' ? '필수' : COND_APPLY_KO[data.applyStored]}
+            </span>
+          ))}
       </div>
       {(data.badge || data.note) && (
         <div className="cnode-badge">
@@ -442,7 +476,6 @@ export function PipelineView() {
     for (const c of conds) {
       const k = condKeyOf(c.no);
       const meta = Object.values(c.values_meta || {});
-      const en = nodeEnableKey(c);
       const e: NodeExt = { pendingMark: meta.some((v) => v.pending), ovr: meta.some((v) => v.has_override) };
       // [2026-11-27] what the bot does with the condition. [Codex round 3] Only on the live day (a past day ran with the
       // settings of that day, which are not known here): the running bot's own state when it reports one, else the stored
@@ -457,26 +490,55 @@ export function PipelineView() {
           (!run && (c.off_by || []).length ? ` (${(c.off_by || []).join(', ')})` : '') +
           ' - 제어 탭 > 규칙 매매 > 세부 설정';
       }
-      if (en) {
-        const saved = savedValue(en) === true;
-        const on = k === condKey && en.key in ed.drafts ? ed.drafts[en.key] === true : saved;
-        Object.assign(e, { enableKey: en.key, enableOn: on, enableDirty: on !== saved });
+      // the ENABLE_* option switches inside the condition (what they would be after 저장 for the node being edited)
+      const sw = editItemsFor(c)
+        .filter((i) => isEnableItem(i))
+        .map((it) => {
+          const saved = savedValue(it) === true;
+          const on = k === condKey && it.key in ed.drafts ? ed.drafts[it.key] === true : saved;
+          return { key: it.key, on, dirty: on !== saved };
+        });
+      if (sw.length) {
+        e.optOn = sw.filter((x) => x.on).length;
+        e.optTotal = sw.length;
+        e.optDirty = sw.some((x) => x.dirty);
+        e.optTip = [`이 조건 안의 옵션 스위치 ${sw.length}개 중 ${e.optOn}개 켜짐 (조건 자체를 끄는 표시가 아닙니다) - 노드를 눌러 오른쪽 패널에서 바꿉니다`, ...sw.map((x) => `${x.key} = ${x.on ? 'ON' : 'OFF'}${x.dirty ? ' (저장 전)' : ''}`)].join('\n');
+      }
+      // [2026-11-27] the whole-condition switch, as in the rule settings list (stored settings; live day only)
+      const a = side === 'buy' && isLive ? condApplyInfo(c) : null;
+      if (a && a.stored !== null) {
+        e.applyStored = a.stored;
+        e.applySwitch = a.editable;
+        e.applyOffByList = a.offByList;
+        e.applyLocked = a.locked;
+        e.applyRestart = a.restartPending;
+        e.applyTip = [
+          `조건 전체: ${COND_APPLY_KO[a.stored]} - ${a.stored === 'on' ? '통과하지 못하면 매수하지 않습니다' : a.stored === 'record' ? '평가 · 기록만 하고 매수를 막지 않습니다' : '매수를 막지 않습니다'}`,
+          a.offByList ? '조건 전체가 꺼져 있음 (적용 해제 목록 BUY_CONDITION_OFF)' : '',
+          a.offBySettings.length ? `${a.offByList ? '그 밖에' : '조건은 켜져 있지만'} 설정값 때문에 ${a.stored === 'record' ? '기록만' : '막지 않음'}: ${a.offBySettings.join(', ')}` : '',
+          a.locked ? `필수 - 끌 수 없음${a.lockedReason ? `: ${a.lockedReason}` : ''}` : '',
+          `실행 중인 봇: ${a.running === null ? '확인할 수 없음 (봇이 꺼져 있거나 이전 버전)' : COND_APPLY_KO[a.running]}${a.restartPending ? ' -> 저장된 설정은 r003 재시작 후 적용' : ''}`,
+          a.editable ? `누르면 조건 전체를 ${a.offByList ? '다시 사용' : '적용 해제'}합니다 (확인 후 바로 저장, r003 재시작 후 적용)` : !a.locked ? '서버의 실시간 조건 목록일 때만 바꿀 수 있습니다' : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
       }
       m.set(k, e);
     }
     return m;
   }, [conds, condKey, ed.drafts, isLive, side]);
 
+  // [2026-11-27] the header toggle switches the WHOLE condition (server BUY_CONDITION_OFF) - same request as the rule settings
+  // window: confirmed, saved at once (not a panel draft), applied after an r003 restart
+  const condApply = useCondApply();
   const toggleCtx = {
-    disabled: !canEdit,
-    toggle: (node: string, key: string) => {
+    disabled: !canEdit || condApply.busy,
+    toggle: (node: string) => {
       const target = conds.find((c) => condKeyOf(c.no) === node);
-      const it = editItemsFor(target).find((i) => i.key === key);
-      if (!it) return;
-      const isCurrent = node === condKey;
-      if (!isCurrent && !changeFocus(node)) return;
-      const cur = isCurrent && key in ed.drafts ? ed.drafts[key] === true : savedValue(it) === true;
-      ed.setDraft(key, !cur);
+      if (!target || side !== 'buy' || !isLive) return;
+      const a = condApplyInfo(target);
+      if (!a.editable) return;
+      void condApply.setCondApply(target, a.offByList);
     },
   };
 
@@ -524,6 +586,7 @@ export function PipelineView() {
             {side === 'buy' && sym.lastEval ? ` · 마지막 평가 ${fmtKstTime(sym.lastEval.ts)}` : ''}
           </span>
         )}
+        {condApply.msg && <span className="small apply-msg">{condApply.msg}</span>}
         <span className="legend">
           {sym ? (
             side === 'buy' ? (

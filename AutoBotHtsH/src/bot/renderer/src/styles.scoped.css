@@ -269,6 +269,14 @@
 .bot-root .cnode .napply.off { color: var(--st-fail, #d05050); }
 .bot-root .cnode .napply.record { color: var(--st-hold); }
 .bot-root .cnode.not-applied { opacity: 0.6; }
+.bot-root .cnode .napply.on { color: var(--st-pass, #2e9e5b); }
+.bot-root .cnode .napply.lock { color: var(--text-3); border-color: var(--border); }
+.bot-root .cnode .nopt { font-size: var(--fs); color: var(--text-3); white-space: nowrap; align-self: center; }
+.bot-root .cnode .nopt.dirty { box-shadow: 0 0 0 2px var(--st-hold); border-radius: 3px; }
+.bot-root .ntoggle.apply-on { border-color: var(--st-pass); color: var(--st-pass); }
+.bot-root .ntoggle.apply-off { border-color: var(--st-fail, #d05050); color: var(--st-fail, #d05050); }
+.bot-root .ntoggle.apply-record { border-color: var(--st-hold); color: var(--st-hold); }
+.bot-root .pipeline .toolbar .apply-msg { color: var(--text-2, inherit); max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bot-root .view.rule-set-view { padding: 10px 14px; display: flex; flex-direction: column; }
 /* [2026-11-27] Edge AI / VWAP trade settings (StrategySettingsPanel): sections of value rows, each with a line of what it does */
 .bot-root .modal.strat-set-modal { width: min(860px, 94vw); }

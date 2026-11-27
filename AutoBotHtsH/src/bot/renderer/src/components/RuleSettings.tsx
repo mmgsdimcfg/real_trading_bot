@@ -25,7 +25,8 @@ import { useStore } from '../store';
 import { editItemsFor, isEnableItem, sortedConds, STAGE_LABEL, unionEditItems } from '../lib';
 import { EditorActions, ValuesEditor, useValueEditing } from './ValuesEditor';
 import type { Condition } from '../../../shared/types';
-import { BUY_CONDITION_SWITCH_KEY, buyConditionSwitch, COND_APPLY_KO, condApplyInfo, type SchemaDoc } from '../../../shared/control';
+import { COND_APPLY_KO, condApplyInfo, type SchemaDoc } from '../../../shared/control';
+import { useCondApply } from './useCondApply';
 import { STRATEGY_KO, STRATEGY_SECTIONS, strategyKeys, type StrategyKind } from '../../../shared/paper';
 import { peek, put } from '../dataCache';
 import type { EditItem } from './ValuesEditor';
@@ -45,38 +46,8 @@ export function RuleSettingsPanel() {
   const allItems = useMemo(() => unionEditItems([...buy, ...sell]), [buy, sell]);
   const ed = useValueEditing(allItems);
   const cur = conds.find((c) => condId(side, c) === sel[side]) || conds[0];
-  const bumpHistory = useStore((s) => s.bumpHistory);
-  const [applyBusy, setApplyBusy] = useState(false);
-  const [applyMsg, setApplyMsg] = useState('');
-  // [2026-11-27] switch a whole buy condition on / off (server r001 BUY_CONDITION_OFF; the server refuses a required one)
-  const setCondApply = async (c: Condition, apply: boolean) => {
-    const text = apply
-      ? `${String(c.no).padStart(2, '0')} ${c.title}\n\n이 조건을 다시 사용합니다 (적용 해제 목록에서 뺌).\n조건 안의 설정값이 꺼져 있으면 켜도 아무것도 막지 않을 수 있습니다 - 저장 후 "적용 여부" 표시를 확인하세요.`
-      : `${String(c.no).padStart(2, '0')} ${c.title}\n\n이 조건을 적용하지 않습니다 - 규칙 매매가 이 조건 때문에 매수를 막는 일이 없어집니다 (실제 매수가 늘 수 있습니다).` +
-        (c.prep ? '\n뒤 조건이 쓰는 값은 계속 계산하고 차단만 하지 않습니다.' : '');
-    if (!window.confirm(`${text}\n\nr003 재시작 후 적용됩니다. 바꿀까요?`)) return;
-    setApplyBusy(true);
-    setApplyMsg('저장 중…');
-    try {
-      // [Codex round 3] the server switches this ONE number inside its write lock, from the list stored at that moment
-      const r = await window.api.ctlSet(buyConditionSwitch(c.no, apply));
-      const rej = r.data?.rejected?.[BUY_CONDITION_SWITCH_KEY];
-      if (!r.ok || rej) setApplyMsg(`바꾸지 못했습니다: ${rej || r.error || '알 수 없는 오류'}`);
-      else {
-        bumpHistory();
-        const fresh = await window.api.refreshConditions();
-        // [Codex round 4] a re-read that fell back to the list without the server's live state (no apply_running) is not a
-        // confirmed result: say so instead of "saved and shown"
-        setApplyMsg(
-          fresh.ok && fresh.live === true
-            ? '저장했습니다 - r003 재시작 후 적용됩니다.'
-            : `저장했지만 서버에서 목록을 다시 읽지 못했습니다${fresh.error ? ` (${fresh.error})` : ''} - 아래 표시는 최신이 아닐 수 있습니다. 창을 다시 열어 확인하세요.`,
-        );
-      }
-    } finally {
-      setApplyBusy(false);
-    }
-  };
+  // [2026-11-27] switch a whole buy condition on / off (server r001 BUY_CONDITION_OFF) - shared with the pipeline node toggle
+  const { busy: applyBusy, msg: applyMsg, setCondApply } = useCondApply();
   const items = useMemo(() => editItemsFor(cur), [cur]);
   const editable = allItems.some((i) => i.editable);
 

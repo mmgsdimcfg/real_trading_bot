@@ -268,6 +268,14 @@ code, .mono { font-family: Consolas, 'D2Coding', monospace; }
 .cnode .napply.off { color: var(--st-fail, #d05050); }
 .cnode .napply.record { color: var(--st-hold); }
 .cnode.not-applied { opacity: 0.6; }
+.cnode .napply.on { color: var(--st-pass, #2e9e5b); }
+.cnode .napply.lock { color: var(--text-3); border-color: var(--border); }
+.cnode .nopt { font-size: 10px; color: var(--text-3); white-space: nowrap; align-self: center; }
+.cnode .nopt.dirty { box-shadow: 0 0 0 2px var(--st-hold); border-radius: 3px; }
+.ntoggle.apply-on { border-color: var(--st-pass); color: var(--st-pass); }
+.ntoggle.apply-off { border-color: var(--st-fail, #d05050); color: var(--st-fail, #d05050); }
+.ntoggle.apply-record { border-color: var(--st-hold); color: var(--st-hold); }
+.pipeline .toolbar .apply-msg { color: var(--text-2, inherit); max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .view.rule-set-view { padding: 10px 14px; display: flex; flex-direction: column; }
 /* [2026-11-27] Edge AI / VWAP trade settings (StrategySettingsPanel): sections of value rows, each with a line of what it does */
 .modal.strat-set-modal { width: min(860px, 94vw); }
