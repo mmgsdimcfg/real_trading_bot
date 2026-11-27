@@ -200,12 +200,29 @@ export function MethodView() {
     setTab('timeline');
   };
 
+  // [2026-11-28] a method's paper and real cards: one of the two runs (user 2026-11-28).
+  //   paper ON  = the method on, in paper: switches real orders off when they are on, else switches the method on
+  //   paper OFF = the method off
+  //   real ON   = real orders on (the method is switched on first when it is off - it stops there if that was not stored)
+  //   real OFF  = back to paper (the method stays on; the paper card switches it off)
   const setUnit = (u: UnitInfo, on: boolean) => {
     if (u.key === 'rule') return void sw.setServerKind('rules', on);
-    if (u.key === 'edge_paper') return void sw.setServerKind('paper', on);
-    if (u.key === 'vwap_paper') return void sw.setVwap(on);
-    if (u.key === 'edge_live') return void sw.setEdgeLive(on);
-    return void sw.setVwapLive(on);
+    const edgeM = u.method === 'edge';
+    const methodOn = edgeM ? sw.edgeOn : sw.vwapOn;
+    const liveOn = edgeM ? sw.edgeLiveOn : sw.vwapLiveOn;
+    const setMethod = (v: boolean) => (edgeM ? sw.setServerKind('paper', v) : sw.setVwap(v));
+    const setLive = (v: boolean) => (edgeM ? sw.setEdgeLive(v) : sw.setVwapLive(v));
+    void (async () => {
+      if (u.mode === 'paper') {
+        if (!on) return void (await setMethod(false));
+        if (!methodOn) return void (await setMethod(true));
+        if (liveOn) await setLive(false);
+        return;
+      }
+      if (!on) return void (await setLive(false));
+      if (!methodOn && !(await setMethod(true))) return;
+      await setLive(true);
+    })();
   };
 
   // recent records: the last thing the bot wrote per symbol and method + the real fills
@@ -274,7 +291,7 @@ export function MethodView() {
         <p className="muted small method-line">연결되어 있지 않아 스위치를 바꿀 수 없습니다.</p>
       ) : (
         <p className="muted small method-line">
-          스위치는 저장되는 설정입니다 (확인 창 뒤 저장, r003 재시작 후 적용 - 재시작은 제어 탭). 카드를 누르면 그 방식의 상세로 이동합니다. 가상 카드의 스위치 = 그 방식 사용, 실전 카드의 스위치 = 실제 주문.
+          스위치는 저장되는 설정입니다 (확인 창 뒤 저장, r003 재시작 후 적용 - 재시작은 제어 탭). 카드를 누르면 그 방식의 상세로 이동합니다. 한 방식의 가상 · 실전은 둘 중 하나만 켜집니다 (실전을 켜면 가상은 꺼지고, 실전을 끄면 가상으로 돌아갑니다. 방식을 완전히 끄려면 가상 카드를 끕니다).
         </p>
       )}
 
@@ -341,8 +358,8 @@ function UnitCard(props: {
     u.key === 'rule'
       ? '규칙 매매 신규 매수 (저장되는 설정, r003 재시작 후 적용)'
       : u.mode === 'paper'
-        ? `${UNIT_KO[u.key]} 사용 (방식 사용 스위치 - 켜면 가상 매매로 시작, r003 재시작 후 적용)`
-        : `${UNIT_KO[u.key]} 실제 주문 (확인 창 2회, r003 재시작 후 적용)`;
+        ? `${UNIT_KO[u.key]} 가상 매매 (켜면 실전은 꺼집니다 · 끄면 이 방식 전체가 꺼집니다 · r003 재시작 후 적용)`
+        : `${UNIT_KO[u.key]} 실제 주문 (켜면 가상은 꺼집니다 · 끄면 가상 매매로 돌아갑니다 · 확인 창 2회, r003 재시작 후 적용)`;
   return (
     <div className={`unit-card m-${u.method} ${u.mode} ${props.selected ? 'sel' : ''}`} onClick={props.onSelect} title="누르면 이 방식의 상세 (매매를 켜거나 끄지 않습니다)">
       <div className="uc-head">

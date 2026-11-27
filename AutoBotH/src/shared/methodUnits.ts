@@ -4,8 +4,10 @@
  *   Edge AI 가상 · 실전 / VWAP 가상 · 실전) with what is STORED and what the RUNNING bot does kept apart, and the per-method
  *   target symbols (server RULE_ / EDGE_ / VWAP_TARGET_CODES). Everything here is read from the control state (r016) - no state
  *   is guessed: a bot that is not running or did not report gives 'botoff' / 'unknown', never "실행 중".
- *   Real and paper of one method are exclusive in the bot (real orders on -> its paper runner only closes), so the paper unit's
- *   switch is the method's own switch ("방식 사용") and the real unit's switch is its live-orders switch.
+ *   Real and paper of one method are exclusive in the bot (real orders on -> its paper runner only closes).
+ * - [2026-11-28] type=fix - user 2026-11-28: of a method's paper and real cards exactly one is ON (or none). The paper card's
+ *   switch used to be "the method is in use" and stayed ON beside the real card - it read as both running. Now paper ON = the
+ *   method on with real orders off, real ON = the method on with real orders on (what the bot does: one of the two).
  */
 
 import type { ControlState } from './control';
@@ -27,8 +29,8 @@ export interface UnitInfo {
   key: UnitKey;
   method: TradeStrategy;
   mode: 'live' | 'paper';
-  /** what the unit's switch shows (stored): rule = rule buys, paper = the method itself, live = its real orders. null = the
-   *  server does not know the key / not read yet */
+  /** what the unit's switch shows (stored): rule = rule buys, paper = the method on with real orders off, live = the method on
+   *  with real orders on - of a method's two cards at most one is on. null = the server does not know the key / not read yet */
   switchOn: boolean | null;
   /** the switch cannot be used here, and why ('' = usable) */
   locked: string;
@@ -95,16 +97,18 @@ export function unitInfos(c: Modes, botRunning: boolean | null, hints: UnitHints
       switchOn = methodOn.rule;
       if (!c.ruleBuy) locked = '서버가 이 설정을 모릅니다';
       else if (!normal) locked = edgeOnly ? 'Edge AI 단독 모드' : '서버 매매 방식이 normal 이 아님';
-    } else if (mode === 'paper') {
-      switchOn = methodOn[method];
-      if (switchOn === null) locked = '서버가 이 설정을 모릅니다';
-      else if (method === 'edge' && !normal) locked = edgeOnly ? 'Edge AI 단독 모드 · 실전' : '서버 매매 방식이 normal 이 아님';
     } else {
       const live = method === 'edge' ? c.edgeLive : c.vwapLive;
-      switchOn = live ? live.effective === 'true' && methodOn[method] === true : null;
-      if (!live) locked = '서버가 이 설정을 모릅니다';
-      else if (method === 'edge' && edgeOnly) locked = '단독 모드 · 실전';
-      else if (methodOn[method] !== true) locked = '방식 꺼짐';
+      const liveOn = !!live && live.effective === 'true' && methodOn[method] === true;
+      if (mode === 'paper') {
+        switchOn = methodOn[method] === null ? null : methodOn[method] === true && !liveOn;
+        if (switchOn === null) locked = '서버가 이 설정을 모릅니다';
+        else if (method === 'edge' && !normal) locked = edgeOnly ? 'Edge AI 단독 모드 · 실전' : '서버 매매 방식이 normal 이 아님';
+      } else {
+        switchOn = live && methodOn[method] !== null ? liveOn : null;
+        if (!live || methodOn[method] === null) locked = '서버가 이 설정을 모릅니다';
+        else if (method === 'edge' && !normal) locked = edgeOnly ? '단독 모드 · 실전' : '서버 매매 방식이 normal 이 아님';
+      }
     }
     let state: UnitState;
     if (botRunning === null) state = 'unknown';

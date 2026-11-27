@@ -14,7 +14,7 @@ describe('unitInfos', () => {
     expect(u.rule).toMatchObject({ switchOn: false, state: 'stop', entryRunning: false });
     expect(u.edge_paper).toMatchObject({ switchOn: true, state: 'run', entryRunning: true });
     expect(u.edge_live).toMatchObject({ switchOn: false, state: 'stop', locked: '' });
-    expect(u.vwap_paper).toMatchObject({ switchOn: true, state: 'closing', entryRunning: false }); // the method is on, real orders first
+    expect(u.vwap_paper).toMatchObject({ switchOn: false, state: 'closing', entryRunning: false }); // real orders run: the paper card is off
     expect(u.vwap_live).toMatchObject({ switchOn: true, state: 'run', entryRunning: true });
     expect(runningUnits(Object.values(u))).toBe(2);
   });
@@ -40,7 +40,7 @@ describe('unitInfos', () => {
 
   it('locks: real orders need the method on; Edge AI alone locks the rule and the Edge switches; an unknown key locks', () => {
     const methodOff = by(unitInfos({ ...today, vwapMode: m('off'), vwapLive: m('false') }, true));
-    expect(methodOff.vwap_live.locked).toBe('방식 꺼짐');
+    expect(methodOff.vwap_live).toMatchObject({ switchOn: false, locked: '' }); // can be switched on (the method goes on first)
     expect(methodOff.vwap_paper).toMatchObject({ switchOn: false, locked: '', state: 'stop' });
     const edgeOnly = by(unitInfos({ ...today, strategy: m('edge') }, true));
     expect(edgeOnly.rule.locked).toBe('Edge AI 단독 모드');
@@ -49,6 +49,22 @@ describe('unitInfos', () => {
     const old = by(unitInfos({ strategy: m('normal'), paper: m('paper') }, true)); // a server without the newer keys
     expect(old.vwap_paper).toMatchObject({ switchOn: null, locked: '서버가 이 설정을 모릅니다' });
     expect(old.vwap_live.switchOn).toBeNull();
+  });
+});
+
+describe('of a method\'s paper and real cards at most one is on', () => {
+  it('follows the stored settings: paper, real, or neither', () => {
+    const pair = (c: Parameters<typeof unitInfos>[0], k: 'vwap' | 'edge') => {
+      const u = by(unitInfos(c, true));
+      return [u[`${k}_paper`].switchOn, u[`${k}_live`].switchOn];
+    };
+    expect(pair(today, 'vwap')).toEqual([false, true]); // VWAP real orders
+    expect(pair(today, 'edge')).toEqual([true, false]); // Edge AI paper
+    expect(pair({ ...today, vwapLive: m('false') }, 'vwap')).toEqual([true, false]);
+    expect(pair({ ...today, vwapMode: m('off'), vwapLive: m('false') }, 'vwap')).toEqual([false, false]);
+    // real orders stored on while the method itself is off: nothing runs, nothing is shown on
+    expect(pair({ ...today, vwapMode: m('off'), vwapLive: m('true') }, 'vwap')).toEqual([false, false]);
+    expect(pair({ ...today, edgeLive: m('true') }, 'edge')).toEqual([false, true]);
   });
 });
 
@@ -63,7 +79,7 @@ describe('what the bot itself said overrides the settings', () => {
   it('Edge AI real orders with the Edge AI trade itself off in the running bot are not running', () => {
     const u = by(unitInfos({ ...today, paper: m('off'), edgeLive: m('true') }, true));
     expect(u.edge_live.entryRunning).toBe(false);
-    expect(u.edge_live.locked).toBe('방식 꺼짐');
+    expect(u.edge_live).toMatchObject({ switchOn: false, locked: '' });
   });
 });
 
