@@ -84,6 +84,9 @@ describe('methodRows', () => {
     const past = methodRows('edge', { symbols, trades: [], paperTrades: [{ code: '000060', name: 'P', group: 'collector', session: 'regular', entryTs: 1, entry: 5, exitTs: 2, exit: 5, netPct: 0 }] as never });
     expect(past.find((r) => r.code === '000060')).toMatchObject({ collector: true, extra: true });
     expect(k?.paperNetPct).toBeCloseTo(1.5);
+    // the method places real orders: the paper runner's stage is not its state (positions / groups still are)
+    const live = methodRows('edge', { symbols, trades: [], paperStateOff: true, paperStatus: [{ code: '000050', name: 'K', group: 'collector', bars: 10, stage: 'no_trigger', at: 7000, position: { entry: 52, tp: 1, sl: 1, ts: 1 } }] });
+    expect(live.find((r) => r.code === '000050')).toMatchObject({ collector: true, stateSrc: '', state: '기록 없음', paperEntry: 52 });
   });
 
   it('rule: the last evaluation with the condition title, holdings from rule buys only', () => {

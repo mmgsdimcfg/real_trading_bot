@@ -133,9 +133,10 @@ export function MethodView() {
         evalLast: side ? evals?.last : undefined,
         evalCount: side ? evals?.count : undefined,
         paperStatus: side ? pst?.symbols : undefined,
+        paperStateOff: !!status.live && mode.live === true,
         paperTrades: side ? paperTrades : undefined,
       }),
-    [method, snap, conditions, side, evals, pst, paperTrades],
+    [method, snap, conditions, side, evals, pst, paperTrades, status.live, mode.live],
   );
   const totals = useMemo(() => methodTotals(rows), [rows]);
   const shown = useMemo(() => filterMethodRows(rows, filter), [rows, filter]);
@@ -166,7 +167,9 @@ export function MethodView() {
   const modeCls = mode.live ? 'live' : mode.paper ? 'paper' : 'off';
   const traceNote =
     side && status.live && replayX === null && (mode.live || mode.paper) && evals && evals.total === 0
-      ? '오늘 봉별 판정 기록이 없습니다 (2026-11-27 이후 버전의 r003 이 판정한 1분봉부터 쌓입니다). 지금은 봇 로그 · 가상 러너 상태만 표시합니다.'
+      ? mode.live
+        ? '오늘 실제 매매의 봉별 판정 기록이 없습니다 (2026-11-27 이후 버전의 r003 이 장중에 판정한 1분봉부터 쌓입니다). 그때까지 종목별 상태는 봇 로그에 남은 것만 표시되고, 나머지는 "기록 없음"입니다.'
+        : '오늘 봉별 판정 기록이 없습니다 (2026-11-27 이후 버전의 r003 이 판정한 1분봉부터 쌓입니다). 지금은 봇 로그 · 가상 러너 상태만 표시합니다.'
       : '';
 
   const th = (i: number, label: string, cls = '', title?: string) => (

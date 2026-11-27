@@ -114,6 +114,9 @@ export interface MethodBoardInput {
   evalLast?: Record<string, StrategyEvalRowX>;
   evalCount?: Record<string, number>;
   paperStatus?: PaperStatusSymbol[];
+  /** [2026-11-27] the method places REAL orders now: its paper runner only closes what it had open, so the stage it writes is
+   *  not the method's state (user 2026-11-27: "실제 매매인데 왜 가상 러너 상태인가") - positions / groups are still read */
+  paperStateOff?: boolean;
   paperTrades?: PaperTrade[];
 }
 
@@ -232,7 +235,7 @@ export function methodRows(method: TradeStrategy, input: MethodBoardInput): Meth
         r.extra = false;
       }
       if (p.position) r.paperEntry = p.position.entry;
-      if (p.stage && p.at !== undefined && (r.stateTs === undefined || p.at > r.stateTs)) {
+      if (!input.paperStateOff && p.stage && p.at !== undefined && (r.stateTs === undefined || p.at > r.stateTs)) {
         const key = stageRowOf(side, { stage: p.stage });
         r.state = `${PAPER_STAGE_KO[p.stage] || STAGE_KO[p.stage] || p.stage}${p.prob !== undefined ? ` · 확률 ${p.prob.toFixed(3)}` : ''}${p.bar ? ` · ${p.bar} 봉` : ''}`;
         r.stateKind = p.position ? 'hold' : stageResult(key);
