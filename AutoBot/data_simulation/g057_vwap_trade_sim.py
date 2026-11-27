@@ -254,6 +254,21 @@ def fill_and_exit(sym: dict, cand: dict, tp: float, sl: float, horizon: float) -
         seg = price[i_fill:j]
         return float((seg.min() / entry - 1.0) * 100.0) if len(seg) else None
     mae1, mae5 = _mae(1), _mae(5)
+    i_end = int(np.searchsorted(recv, np.datetime64(pd.Timestamp(t_fill).normalize() + pd.Timedelta(hours=FORCE_EXIT.hour, minutes=FORCE_EXIT.minute)), side="left"))
+    seg_p = price[i_fill + 1:i_end]
+    seg_b = bid[i_fill + 1:i_end]
+    sell = np.where((seg_b == seg_b) & (seg_b > 0), np.minimum(seg_b, seg_p), seg_p)   # what a sale would get: the bid
+    seg_t = recv[i_fill + 1:i_end]
+    cost = COMMISSION_PCT * 2 + SELL_TAX_PCT
+    def _first(mask) -> float | None:
+        ix = np.nonzero(mask)[0]
+        return float((seg_t[ix[0]] - t_fill) / np.timedelta64(1, "m")) if len(ix) else None
+    # net x % needs the sale price at entry * (1 + (x + buy fee) %) / (1 - (sell fee + tax) %)
+    def _need(x: float) -> float:
+        return entry * (1.0 + (x + COMMISSION_PCT) / 100.0) / (1.0 - (COMMISSION_PCT + SELL_TAX_PCT) / 100.0)
+    t_net05, t_net10 = _first(sell >= _need(0.5)), _first(sell >= _need(1.0))
+    t_stop = _first(seg_p <= entry * (1.0 - sl / 100.0))
+    t_half = _first(seg_p <= entry * (1.0 - sl / 200.0))
     day0 = pd.Timestamp(t_fill).normalize()
     force = np.datetime64(day0 + pd.Timedelta(hours=FORCE_EXIT.hour, minutes=FORCE_EXIT.minute))
     t = t_fill + np.timedelta64(int(POLL_S * 1000), "ms")
@@ -282,7 +297,8 @@ def fill_and_exit(sym: dict, cand: dict, tp: float, sl: float, horizon: float) -
     exit_px = min(b, last)
     t_exit = min(max(t, t_fill), force)
     return {"entry": entry, "exit": exit_px, "t_in": pd.Timestamp(t_fill), "t_out": pd.Timestamp(t_exit), "reason": reason,
-            "net_pct": net_pct(entry, exit_px), "held_min": float((t_exit - t_fill) / np.timedelta64(1, "m")), "mae1": mae1, "mae5": mae5}
+            "net_pct": net_pct(entry, exit_px), "held_min": float((t_exit - t_fill) / np.timedelta64(1, "m")), "mae1": mae1, "mae5": mae5,
+            "t_net05": t_net05, "t_net10": t_net10, "t_stop": t_stop, "t_halfstop": t_half}
 
 
 # ---- the day's book ---------------------------------------------------------------------------------------------------------------
