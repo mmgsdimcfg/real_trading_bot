@@ -24,6 +24,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-28] type=feat owner=claude
+    summary: 단순 프로파일 s1 추가(사용자 요청, G002_FILTER_PROFILE=s1 일 때만 - 기본 v0 는 그대로). 적격 8 + 순위 2 = 조건 10개
+      (v0: 탈락 사유 27 + 경고 37 + 점수 항목 17 + 보충 규칙). 상세와 근거는 FILTER_PROFILES 아래 주석, apply_simple_profile.
+    impact: scanner (환경변수를 설정할 때만 동작 변경)
+    compatibility: backward-compatible (기본 v0)
 - [2026-11-28] type=fix owner=claude
     summary: Codex 검토(선정 결과는 그대로인 수정). (1) 선정 0개인 재실행은 같은 날짜의 이전 선별 파일을
       _D_picks.txt.stale 로 옮긴다 - 옛 목록이 그 날짜의 선별 결과로 남아 단독 반영(r016 watchlist apply)에 쓰이지 않게.
@@ -1636,7 +1641,89 @@ PATTERN_OVERRIDABLE_TREND_FAILS = (
 #   v2: v1 + 소프트 플래그 그룹 감점(_grouped_soft_penalty: 그룹마다 1회, 메타데이터/따로 감점하는 항목은 0) +
 #       점수 바닥선 SCORE_CUTOFF_V2(감점이 줄어 점수가 평균 +1.0 오르므로, V0 96거래일 재현에서 15점 이상 종목 수
 #       213,755건과 같아지는 값 17.0으로 한 번만 재보정 - 17점 이상 213,100건).
-FILTER_PROFILES = ("v0", "v1", "v2")
+FILTER_PROFILES = ("v0", "v1", "v2", "s1")
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# [2026-11-28] s1 = 단순 프로파일(사용자 요청: 조건을 단순 명료하게, 불필요한 조건 제거). 기본값은 v0 그대로 - s1 은
+# G002_FILTER_PROFILE=s1 일 때만 동작한다. v0 의 탈락 사유 27종 + 경고 37종 + 점수 항목 17개 + 보충 규칙을 아래 10개로 줄인다.
+#   적격(8): 대상일 일봉 지표 있음 / 우선주·스팩 제외 / 파생형 ETF 제외 / 관리·정지 제외 / 가격 하한·상한(기존 설정) /
+#            20일 평균 거래대금 S1_MIN_AMOUNT 이상 / 종가 > MA20 / 과열 아님(MA20 대비 S1_MAX_VS_MA20 이내, RSI14 <= S1_MAX_RSI)
+#   순위(2): 당일 거래량 / 20일 평균(높을수록) 과 1틱 비율(낮을수록)의 적격 종목 내 순위 백분율 평균. 상위 S1_MAX_PICKS 개.
+#   없음   : 패턴 등급(A/B), 보충, 경고 감점, 점수 바닥선, 반복 선정 감점, 업종 상한, 장중 ATR 하한, 시장상대 유동성.
+# 근거(runtime/research/10_selection, 96거래일, 다음 날 09:05 매수 기준): 조건별로 걸린 종목과 통과 종목의 다음 날 결과 차이가
+# 대부분 +-0.15%p 이내이고 기간마다 부호가 바뀜. 남긴 조건은 방향이 일정했던 것(MA20 위, 1틱 비율, 거래량 증가)과 구조적 제외.
+# ---------------------------------------------------------------------------------------------------------------------------
+S1_MIN_AMOUNT = 5_000_000_000   # 20일 평균 거래대금 하한(원)
+S1_MAX_VS_MA20 = 0.15           # 종가가 MA20 대비 +15% 초과면 과열
+S1_MAX_RSI = 70.0               # RSI(14) 상한
+S1_MAX_PICKS = 20               # 하루 선정 상한
+S1_KEEP_FAILS = ("price_floor", "price_ceiling", "preferred_or_spac_excluded", "derivative_etf_excluded",
+                 "admin_issue_or_halt_excluded", "pattern_unknown")
+
+
+def _s1_tick_ratio(price) -> float | None:
+    """1틱 / 가격 (KRX 호가 단위, 2023-01 개편). 호가 한 칸의 비용 - 낮을수록 좋다."""
+    if price is None or price <= 0:
+        return None
+    for lim, t in ((2000, 1), (5000, 5), (20000, 10), (50000, 50), (200000, 100), (500000, 500)):
+        if price < lim:
+            return t / price
+    return 1000 / price
+
+
+def _pct_rank(values: list[float]) -> list[float]:
+    """각 값의 순위 백분율(0~1, 클수록 높음, 같은 값은 평균 순위)."""
+    n = len(values)
+    if n <= 1:
+        return [1.0] * n
+    order = sorted(range(n), key=lambda i: values[i])
+    out = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and values[order[j + 1]] == values[order[i]]:
+            j += 1
+        r = ((i + j) / 2 + 1) / n
+        for k in range(i, j + 1):
+            out[order[k]] = r
+        i = j + 1
+    return out
+
+
+def apply_simple_profile(candidates: list[dict]) -> None:
+    """[2026-11-28] s1: 각 후보의 fail_reasons / score / eligible 을 단순 규칙으로 다시 쓴다(위 설명). 경고(soft_flags)는
+    표시용으로 남기되 점수에 쓰지 않는다. 등급 우선(pattern_tier_rank)은 0 으로 둔다."""
+    ok_rows = []
+    for row in candidates:
+        fails = [r for r in row.get("fail_reasons", []) if r in S1_KEEP_FAILS]
+        vol_ratio = (row.get("ind") or {}).get("vol_ratio")
+        tick = _s1_tick_ratio(row.get("price"))
+        gap = row.get("close_ma20_ratio")
+        rsi14 = row.get("rsi14")
+        if not fails and (vol_ratio is None or tick is None or gap is None or row.get("amount_ma20") is None):
+            fails.append("pattern_unknown")
+        if not fails:
+            if row["amount_ma20"] < S1_MIN_AMOUNT:
+                fails.append("s1_low_turnover")
+            if gap <= 0:
+                fails.append("s1_below_ma20")
+            elif gap > S1_MAX_VS_MA20 or (rsi14 is not None and rsi14 > S1_MAX_RSI):
+                fails.append("s1_overheated")
+        row["fail_reasons"] = fails
+        row["pattern_tier_rank"] = 0
+        row["score"] = 0.0
+        row["score_breakdown"] = {"score": 0.0, "gains": [], "penalties": []}
+        row["eligible"] = not fails and row.get("skip_reason") is None
+        if row["eligible"]:
+            row["s1_vol_ratio"], row["s1_tick_ratio"] = float(vol_ratio), float(tick)
+            ok_rows.append(row)
+    r_vol = _pct_rank([row["s1_vol_ratio"] for row in ok_rows])
+    r_cost = _pct_rank([-row["s1_tick_ratio"] for row in ok_rows])
+    for row, a, b in zip(ok_rows, r_vol, r_cost):
+        row["score"] = round(50.0 * a + 50.0 * b, 2)
+        row["score_breakdown"] = {"score": row["score"], "penalties": [], "gains": [
+            {"key": "s1_volume_ratio", "value": round(50.0 * a, 2), "max": 50.0},
+            {"key": "s1_low_tick_cost", "value": round(50.0 * b, 2), "max": 50.0}]}
 
 
 def _filter_profile() -> str:
@@ -3795,6 +3882,11 @@ def scan(
         # [2026-10-20] skip 종목(데이터 부족 등 조기 반환)은 fail_reasons가 비어 있어도 적격이 아니다(방어 가드).
         row["eligible"] = not row["fail_reasons"] and row.get("skip_reason") is None
 
+    simple_profile = _filter_profile() == "s1"
+    if simple_profile:
+        # [2026-11-28] s1: 위에서 매긴 사유 / 점수를 단순 규칙으로 바꾼다. 보충과 업종 상한은 쓰지 않는다.
+        apply_simple_profile(candidates)
+
     eligible_rows = [row for row in candidates if row["eligible"]]
     eligible_rows.sort(
         key=_selection_rank_key,
@@ -3804,7 +3896,10 @@ def scan(
     selected_rows = eligible_rows
     selection_mode = "strict_eligible"
 
-    if config.max_picks is not None:
+    if simple_profile:
+        selected_rows = eligible_rows[: min(S1_MAX_PICKS, config.max_picks or S1_MAX_PICKS)]
+        selection_mode = "simple_s1"
+    elif config.max_picks is not None:
         # [2026-08-29] pick_diversified_top_pool -> pick_with_tie_randomization으로 교체.
         # 기존 방식은 상위 max_picks*pool_mult(=150) 풀 전체(적격 수가 그보다 적으면 사실상
         # 적격 전원)를 대상으로 "점수 기반 boost x 유동성/거래량/ATR 가중치"로 가중 랜덤 추첨을
@@ -3829,7 +3924,7 @@ def scan(
     # filter and still get rescued back into the picks via this path. Liquidity-
     # only reasons stay relaxable (that was the original intent); trend/candle
     # pattern failures are not.
-    if config.max_picks is not None and len(selected_rows) < config.max_picks:
+    if not simple_profile and config.max_picks is not None and len(selected_rows) < config.max_picks:
         selected_codes = {row["code"] for row in selected_rows}
 
         _fallback_relaxable = _fallback_relaxable_row
@@ -3904,7 +3999,8 @@ def scan(
 
     # [2026-08-29] 업종 쏠림 완화 - basic_info 스냅샷(g001)이 없으면 모든 종목의 sector가
     # None이라 sector_members가 비고, 함수는 아무 것도 바꾸지 않고 그대로 반환한다(무해).
-    selected_rows = apply_sector_diversification_cap(selected_rows, eligible_rows, config.max_picks)
+    if not simple_profile:
+        selected_rows = apply_sector_diversification_cap(selected_rows, eligible_rows, config.max_picks)
 
     # Final output order: always keep selected rows sorted by score desc.
     selected_rows.sort(

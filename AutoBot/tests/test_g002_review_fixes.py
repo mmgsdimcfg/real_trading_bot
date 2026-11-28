@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "live_trading"))
 
 import g002_data_scan_trade_candidates as g002  # noqa: E402
 import g005_watchlist_bridge as g005  # noqa: E402
+import g008_selection_reason_report as g008  # noqa: E402
 import g043_selection_replay as g043  # noqa: E402
 
 
@@ -113,6 +114,78 @@ class TestReplayNextTradingDay(unittest.TestCase):
             self.assertIsNone(g043.next_folder("20261127"))     # 11/30 was not collected
         with mock.patch.object(g043, "_FOLDERS", ["20261127", "20261130"]):
             self.assertEqual(g043.next_folder("20261127"), "20261130")
+
+
+def _cand(code, price=10000, amount=10e9, gap=0.05, rsi=55.0, vol_ratio=1.0, fails=(), skip=None):
+    return {"code": code, "name": code, "price": price, "amount_ma20": amount, "close_ma20_ratio": gap, "rsi14": rsi,
+            "ind": {"vol_ratio": vol_ratio}, "fail_reasons": list(fails), "soft_flags": [], "skip_reason": skip, "pattern_tier_rank": 2}
+
+
+class TestSimpleProfileS1(unittest.TestCase):
+    def test_pct_rank(self):
+        self.assertEqual(g002._pct_rank([3.0, 1.0, 2.0]), [1.0, 1 / 3, 2 / 3])
+        self.assertEqual(g002._pct_rank([5.0, 5.0]), [0.75, 0.75])
+        self.assertEqual(g002._pct_rank([]), [])
+
+    def test_tick_ratio_bands(self):
+        self.assertAlmostEqual(g002._s1_tick_ratio(1999), 1 / 1999)
+        self.assertAlmostEqual(g002._s1_tick_ratio(2000), 5 / 2000)
+        self.assertAlmostEqual(g002._s1_tick_ratio(50000), 100 / 50000)
+        self.assertIsNone(g002._s1_tick_ratio(None))
+
+    def test_gates(self):
+        rows = [
+            _cand("ok"),
+            _cand("thin", amount=4.9e9),
+            _cand("below", gap=-0.01),
+            _cand("hot_gap", gap=0.16),
+            _cand("hot_rsi", rsi=71.0),
+            # reasons that only the v0 selection has are dropped
+            _cand("old_only", fails=("down_trend", "pattern_overheated", "low_score", "liquidity_below_market_dual")),
+            _cand("spac", fails=("preferred_or_spac_excluded", "down_trend")),
+            _cand("nodata", vol_ratio=None),
+            _cand("skipped", skip="no_data"),
+        ]
+        g002.apply_simple_profile(rows)
+        by = {r["code"]: r for r in rows}
+        self.assertTrue(by["ok"]["eligible"])
+        self.assertTrue(by["old_only"]["eligible"])
+        self.assertEqual(by["thin"]["fail_reasons"], ["s1_low_turnover"])
+        self.assertEqual(by["below"]["fail_reasons"], ["s1_below_ma20"])
+        self.assertEqual(by["hot_gap"]["fail_reasons"], ["s1_overheated"])
+        self.assertEqual(by["hot_rsi"]["fail_reasons"], ["s1_overheated"])
+        self.assertEqual(by["spac"]["fail_reasons"], ["preferred_or_spac_excluded"])
+        self.assertEqual(by["nodata"]["fail_reasons"], ["pattern_unknown"])
+        self.assertFalse(by["skipped"]["eligible"])
+        self.assertTrue(all(r["pattern_tier_rank"] == 0 for r in rows))
+
+    def test_rank_is_volume_ratio_and_low_tick_cost(self):
+        rows = [
+            _cand("busy_cheap_tick", price=19990, vol_ratio=3.0),   # tick 10 / 19,990 = 0.05 %
+            _cand("busy_wide_tick", price=2000, vol_ratio=3.0),     # tick 5 / 2,000 = 0.25 %
+            _cand("quiet_cheap_tick", price=19990, vol_ratio=0.5),
+            _cand("quiet_wide_tick", price=2000, vol_ratio=0.5),
+        ]
+        g002.apply_simple_profile(rows)
+        order = [r["code"] for r in sorted(rows, key=g002._selection_rank_key, reverse=True)]
+        self.assertEqual(order[0], "busy_cheap_tick")
+        self.assertEqual(order[-1], "quiet_wide_tick")
+        top = rows[0]
+        self.assertEqual({g["key"] for g in top["score_breakdown"]["gains"]}, {"s1_volume_ratio", "s1_low_tick_cost"})
+        self.assertAlmostEqual(top["score"], sum(g["value"] for g in top["score_breakdown"]["gains"]))
+
+    def test_the_default_profile_is_still_v0(self):
+        import os
+        self.assertIn("s1", g002.FILTER_PROFILES)
+        with mock.patch.dict(os.environ, {"G002_FILTER_PROFILE": "s1"}):
+            self.assertEqual(g002._filter_profile(), "s1")
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("G002_FILTER_PROFILE", None)
+            self.assertEqual(g002._filter_profile(), "v0")
+
+    def test_reason_texts_exist(self):
+        for k in ("s1_low_turnover", "s1_below_ma20", "s1_overheated"):
+            self.assertIn(k, g008.FAIL_REASON_DESC)
 
 
 if __name__ == "__main__":

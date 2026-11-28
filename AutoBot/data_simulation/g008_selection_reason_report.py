@@ -105,6 +105,10 @@ FAIL_REASON_DESC = {
     "derivative_etf_excluded": ("인버스/레버리지/선물 ETF", "Inverse / leveraged / futures ETF"),
     "admin_issue_or_halt_excluded": ("관리종목 또는 거래정지", "Administrative issue or trading halt"),
     "low_score": ("점수 15점 미만", "Score below 15"),
+    # [2026-11-28] g002 단순 프로파일 s1
+    "s1_low_turnover": ("20일 평균 거래대금 50억원 미만", "20-day average turnover below 5bn KRW"),
+    "s1_below_ma20": ("종가가 20일선 이하", "Close at or below MA20"),
+    "s1_overheated": ("과열: 20일선 대비 +15% 초과 또는 RSI(14) 70 초과", "Overheated: more than +15% above MA20 or RSI(14) above 70"),
 }
 
 # 주의 플래그(감점만, 탈락 아님) 뜻풀이: (국문, 영문)
