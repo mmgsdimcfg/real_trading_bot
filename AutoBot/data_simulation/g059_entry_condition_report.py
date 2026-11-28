@@ -14,6 +14,11 @@ count and the periods, not the best cell.
 usage: g059_entry_condition_report.py <g058 out dir> [bars]      (bars = a table built with --mode bars)
 
 Update log:
+- [2026-11-28] type=fix owner=claude
+    summary: Codex 3차 검토 - 시가가 익절선 이상으로 열린 봉은 익절 우선, 매도 1틱은 매도가의 호가 단위, 진입 봉 없는 행 제외,
+      Edge 확률 통과율은 점수 있는 봉 기준, E_scored 는 제외 비교에서 뺌, 반등 CSV 대조 문구 정정.
+    impact: sim (읽기 전용)
+    compatibility: g058 표에 entry_ok 열 필요
 - [2026-11-28] type=feat owner=claude
     summary: 신규 - g058 조건표 집계 - 조건 하나씩 제외 / 추가 / 단독, 익절 x 손절 1~15% 격자, 기간별 비교.
     impact: sim (읽기 전용: 주문 / 봇 상태 / runtime 쓰기 없음. 결과는 --out 폴더에만 쓴다)
@@ -33,12 +38,18 @@ reb["t"] = pd.to_datetime(reb["t"]); reb["code"] = reb["code"].str.zfill(6)
 df = rows.merge(reb.rename(columns={"plunge": "A_plunge", "rsi": "A_rsi", "macd": "A_macd", "dmi": "A_dmi", "ma": "A_ma", "angle": "A_angle"}),
                 on=["day", "code", "t"], how="left")
 n_reb = int(df["hit"].notna().sum())
-print(f"rebound rows matched {n_reb}/{len(rows)}")
-if reb.duplicated(["day", "code", "t"]).any() or len(df) != len(rows) or n_reb != len(rows):
+n_extra = int((~reb.set_index(["day", "code", "t"]).index.isin(rows.set_index(["day", "code", "t"]).index)).sum())
+print(f"table rows matched in the rebound csv {n_reb}/{len(rows)} (csv rows that are no table row: {n_extra})")
+if rows.duplicated(["day", "code", "t"]).any() or reb.duplicated(["day", "code", "t"]).any() or len(df) != len(rows) or n_reb != len(rows):
     raise SystemExit("rebound csv does not match the table row for row (run AutoBotHtsH/scripts/rebound-conds.ts on this folder)")
 n_noeod = int(df["eod"].isna().sum())
 df = df[df["eod"].notna()]
 print(f"rows without a 15:20 close left out: {n_noeod}")
+if "entry_ok" not in df.columns:
+    raise SystemExit("table built before 2026-11-28 round 3 (no entry_ok column): run g058 again")
+# round 4 - 1: such a row is no entry. Bars mode: it is no candidate at all (its fill price would be a later bar's open).
+# Tick mode: the signal itself was real, so it still holds the 30-minute spacing - only its result is not counted.
+print(f"rows whose entry bar is missing (never counted as an entry): {int((~df.entry_ok).sum())}")
 for k in ("A_plunge", "A_rsi", "A_macd", "A_dmi", "A_ma", "A_angle", "hit", "required", "edge"):
     df[k] = df[k].fillna(0).astype(int).astype(bool)
 df["A_score"] = df["score"].fillna(0) >= 3
@@ -81,25 +92,52 @@ def entries(mask: np.ndarray) -> np.ndarray:
     out = []; last = {}
     idx = np.flatnonzero(mask)
     d, c, t = df["day"].values, df["code"].values, df["t"].values
+    ok = df["entry_ok"].to_numpy(bool)
     for i in idx:
+        if BARS and not ok[i]:
+            continue
         k = (d[i], c[i])
         if k in last and (t[i] - last[k]) < np.timedelta64(GAP_MIN, "m"):
             continue
         last[k] = t[i]; out.append(i)
-    return np.array(out, dtype=int)
+    return np.array([i for i in out if ok[i]], dtype=int)
+
+
+def _tick(p):
+    return np.select([p < 2_000, p < 5_000, p < 20_000, p < 50_000, p < 200_000, p < 500_000], [1, 5, 10, 50, 100, 500], 1_000)
+
+
+def up_grid(p):
+    """the first quotable price at or over p (round 4 - 2: a level is seldom on the tick grid)"""
+    p = np.asarray(p, float); t = _tick(p)
+    return np.ceil(p / t - 1e-9) * t
+
+
+def dn_grid(p):
+    """the first quotable price at or under p"""
+    p = np.asarray(p, float); t = _tick(p)
+    return np.floor(p / t + 1e-9) * t
+
+
+def down1(p):
+    """one KRX tick under the price p (the tick of the band the sale is in - round 3 - 4: it was the entry price's tick)"""
+    p = np.asarray(p, float)
+    return p - np.select([p <= 2_000, p <= 5_000, p <= 20_000, p <= 50_000, p <= 200_000, p <= 500_000], [1, 5, 10, 50, 100, 500], 1_000)
 
 
 def net(ix: np.ndarray, u: int, s: int) -> np.ndarray:
-    """net % of each entry under take-profit u % / stop s % (0 = none), sold at 15:20 otherwise. A bar that holds both = the stop."""
+    """net % of each entry under take-profit u % / stop s % (0 = none), sold at 15:20 otherwise. A bar that holds both = the stop,
+    unless it opens at or over the target (then the target came first - round 3 - 2)."""
     e = ENT[ix]; n = len(ix)
     ti = TP_I[ix, u - 1] if u else np.full(n, 9999); si = SL_I[ix, s - 1] if s else np.full(n, 9999)
-    px = EOD[ix] - TK[ix]
-    hit_s = (si < 9999) & (si <= ti)
+    px = down1(EOD[ix])
+    open_tp = (ti < 9999) & (ti == si) & (TP_O[ix, u - 1] >= e * (1 + u / 100) - 1e-6) if u else np.zeros(n, dtype=bool)
+    hit_s = (si < 9999) & (si <= ti) & ~open_tp
     hit_t = (ti < 9999) & ~hit_s
     if s:
-        px = np.where(hit_s, np.minimum(SL_O[ix, s - 1], e * (1 - s / 100)) - TK[ix], px)
+        px = np.where(hit_s, down1(np.minimum(SL_O[ix, s - 1], dn_grid(e * (1 - s / 100)))), px)
     if u:
-        px = np.where(hit_t, np.maximum(TP_O[ix, u - 1], e * (1 + u / 100)), px)
+        px = np.where(hit_t, np.maximum(TP_O[ix, u - 1], up_grid(e * (1 + u / 100))), px)
     g = px / e - 1
     return (g - (2 * C + TAX) / 100 - g * (C + TAX) / 100) * 100
 
@@ -142,14 +180,20 @@ def AND(cols) -> np.ndarray:
 
 
 def loo(title: str, cols: list[str]) -> None:
-    print(f"\n=== {title} ({len(cols)}개 조건) ===")
+    print(f"\n=== {title} ({len([c for c in cols if c != 'E_scored'])}개 조건) ===")
     line("전체 조건 적용", AND(cols))
     for c in cols:
+        if c == "E_scored":      # the sample the model has a number for, not a rule that can be left out
+            continue
         line(f"제외: {NAME[c]}", AND([x for x in cols if x != c]))
 
 
 print("\n--- 조건별 통과율(봉 기준, %) ---")
 for c in RULE + VWAP + VTICK + EDGE + ALERT:
+    if c == "E_prob":        # among the scored bars (the unscored ones are not fails)
+        sc_ = df["E_scored"].to_numpy(bool)
+        print(f"  {NAME[c] + ' (점수 있는 봉 중)':50s} {(df.loc[sc_, c].mean() * 100 if sc_.any() else float('nan')):5.1f}")
+        continue
     print(f"  {NAME[c]:50s} {df[c].mean()*100:5.1f}")
 
 print("\n=== 매매 방식별 현재 조건 그대로 ===")

@@ -28,7 +28,15 @@ usage: g058_entry_condition_table.py <out dir> [--mode tick|bars] [--from YYYYMM
        then: (AutoBotHtsH) npx vite-node scripts/rebound-conds.ts <out dir>
        then: g059_entry_condition_report.py <out dir> [bars]   /   g060_gap_atr_study.py <out dir> [bars]
 
+Settings: the conditions use the r001 values of the process. The reported runs were made with AUTO_TRADING_LIVE_OVERRIDES=off (the
+r001 defaults); without it the PC's runtime/config/live_overrides.json is applied and the samples differ (e.g. the 1-minute ATR floor).
+entry_ok = the 1-minute bar the entry falls into exists; the reports leave the other rows out (their path after the fill is unknown).
+
 Update log:
+- [2026-11-28] type=fix owner=claude
+    summary: Codex 3차 검토 - entry_ok 열 추가 (진입 봉이 빠진 행 표시). 설정 조건(AUTO_TRADING_LIVE_OVERRIDES) 문서화.
+    impact: sim (읽기 전용)
+    compatibility: 이전에 만든 표는 g059 / g060 에서 다시 만들라고 중단됨
 - [2026-11-28] type=feat owner=claude
     summary: 신규 - 매매 3종 + 반등 알림의 진입 조건을 봉마다 통과/실패로 기록하는 조건표 생성기 (틱 / 봉 모드), 익절 손절 1~15% 결과 배열 포함.
     impact: sim (읽기 전용: 주문 / 봇 상태 / runtime 쓰기 없음. 결과는 --out 폴더에만 쓴다)
@@ -253,14 +261,14 @@ def symbol_rows(a) -> tuple[list[dict], dict | None]:
             ll[0] = min(fill, float(tick_px[m].min())) if m.any() else fill
         tp_i, sl_i, tp_o, sl_o = [], [], [], []
         for u in LEVELS:
-            w = np.flatnonzero(hh >= entry * (1 + u / 100))
+            w = np.flatnonzero(hh >= entry * (1 + u / 100) - 1e-6)
             tp_i.append(int(w[0]) if len(w) else 9999)
             tp_o.append(float(oo[w[0]]) if len(w) else float("nan"))
-            w = np.flatnonzero(ll <= entry * (1 - u / 100))
+            w = np.flatnonzero(ll <= entry * (1 - u / 100) + 1e-6)
             sl_i.append(int(w[0]) if len(w) else 9999)
             sl_o.append(float(oo[w[0]]) if len(w) else float("nan"))
         rows.append({
-            "day": day, "code": code, "name": name, "t": T, "price": price, "entry": entry, "tick": tick_sz, "fill": fill, "eod": (float(c[-1]) if sidx[-1].time() >= LAST_BAR else float("nan")), "n_after": len(hh),
+            "day": day, "code": code, "name": name, "t": T, "price": price, "entry": entry, "tick": tick_sz, "fill": fill, "entry_ok": bool(sidx[j] == T + pd.Timedelta(minutes=1)), "eod": (float(c[-1]) if sidx[-1].time() >= LAST_BAR else float("nan")), "n_after": len(hh),
             "R_1m": r_1m, "R_tick": r_tick, "R_guard": bool(guard_ok), "R_mid": bool(r_mid), "R_drop": bool(drop_ok), "R_chase": bool(chase_ok),
             "R_regime": r_regime, "R_atr1": bool(r_atr1), "R_atr3": bool(r_atr3), "R_liq": r_liq, "R_antichase": bool(ac_ok) and bool(r_rise), "R_spread": bool(r_spread),
             "V_hist": bool(v_hist), "V_above": bool(v_above), "V_trend": bool(v_trend), "V_gap": bool(v_gap), "V_tick": v_tick, "V_tchase": bool(v_tchase), "V_cap": bool(v_cap), "V_drop": bool(v_drop),

@@ -7,6 +7,10 @@ positive in one period only is not a finding. Result 2026-11-28: the base is -0.
 usage: g060_gap_atr_study.py <g058 out dir> [bars]
 
 Update log:
+- [2026-11-28] type=fix owner=claude
+    summary: Codex 3차 검토 - g059 와 같은 청산 규칙 / 호가 단위 / 진입 봉 필터, 하루 한도는 시각 -> 종목코드 순, 거래없음은 건수 기준.
+    impact: sim (읽기 전용)
+    compatibility: g058 표에 entry_ok 열 필요
 - [2026-11-28] type=feat owner=claude
     summary: 신규 - 시가 갭 + 1분 ATR 진입의 청산 / 금액 / 구간별 / 조건 추가 / 갭 하한별 분석.
     impact: sim (읽기 전용: 주문 / 봇 상태 / runtime 쓰기 없음. 결과는 --out 폴더에만 쓴다)
@@ -28,12 +32,16 @@ rows = pd.concat([pd.read_pickle(f) for f in sorted(glob.glob(os.path.join(D, "r
 reb = pd.concat([pd.read_csv(f, dtype={"day": str, "code": str}) for f in sorted(glob.glob(os.path.join(D, "rebound_*.csv")))], ignore_index=True)
 reb["t"] = pd.to_datetime(reb["t"]); reb["code"] = reb["code"].str.zfill(6)
 df = rows.merge(reb[["day", "code", "t", "plunge", "score", "hit"]], on=["day", "code", "t"], how="left")
-if reb.duplicated(["day", "code", "t"]).any() or len(df) != len(rows) or int(df["hit"].notna().sum()) != len(rows):
+if rows.duplicated(["day", "code", "t"]).any() or reb.duplicated(["day", "code", "t"]).any() or len(df) != len(rows) or int(df["hit"].notna().sum()) != len(rows):
     raise SystemExit("rebound csv does not match the table row for row (run AutoBotHtsH/scripts/rebound-conds.ts on this folder)")
 if not BARS:
     df = df[df.tick_cov]
 print("rows without a 15:20 close left out:", int(df["eod"].isna().sum()))
 df = df[df["eod"].notna()]
+if "entry_ok" not in df.columns:
+    raise SystemExit("table built before 2026-11-28 round 3 (no entry_ok column): run g058 again")
+# as g059: no entry is counted on such a row; in tick mode it still holds the 30-minute spacing
+print("rows whose entry bar is missing (never counted as an entry):", int((~df.entry_ok).sum()))
 df = df.sort_values(["day", "code", "t"]).reset_index(drop=True)
 df["E_prob"] = df["E_scored"] & (df["E_p"] >= df["E_thr"])
 df["A_plunge"] = df["plunge"].fillna(0).astype(bool)
@@ -47,21 +55,48 @@ ENT = df["entry"].to_numpy(float); EOD = df["eod"].to_numpy(float); TK = df["tic
 def entries(mask, gap_min=GAP_MIN, once=False):
     out = []; last = {}
     d, c, t = df["day"].values, df["code"].values, df["t"].values
+    ok = df["entry_ok"].to_numpy(bool)
     for i in np.flatnonzero(mask):
+        if BARS and not ok[i]:
+            continue
         k = (d[i], c[i])
         if k in last and (once or (t[i] - last[k]) < np.timedelta64(gap_min, "m")):
             continue
         last[k] = t[i]; out.append(i)
-    return np.array(out, dtype=int)
+    return np.array([i for i in out if ok[i]], dtype=int)
+
+
+def _tick(p):
+    return np.select([p < 2_000, p < 5_000, p < 20_000, p < 50_000, p < 200_000, p < 500_000], [1, 5, 10, 50, 100, 500], 1_000)
+
+
+def up_grid(p):
+    """the first quotable price at or over p (round 4 - 2: a level is seldom on the tick grid)"""
+    p = np.asarray(p, float); t = _tick(p)
+    return np.ceil(p / t - 1e-9) * t
+
+
+def dn_grid(p):
+    """the first quotable price at or under p"""
+    p = np.asarray(p, float); t = _tick(p)
+    return np.floor(p / t + 1e-9) * t
+
+
+def down1(p):
+    """one KRX tick under the price p (the tick of the band the sale is in - round 3 - 4: it was the entry price's tick)"""
+    p = np.asarray(p, float)
+    return p - np.select([p <= 2_000, p <= 5_000, p <= 20_000, p <= 50_000, p <= 200_000, p <= 500_000], [1, 5, 10, 50, 100, 500], 1_000)
 
 
 def net(ix, u, s):
+    """as g059.net: a bar holding both = the stop unless it opens at or over the target; sold one tick (of the sale's band) lower"""
     e = ENT[ix]; n = len(ix)
     ti = TP_I[ix, u - 1] if u else np.full(n, 9999); si = SL_I[ix, s - 1] if s else np.full(n, 9999)
-    px = EOD[ix] - TK[ix]
-    hs = (si < 9999) & (si <= ti); ht = (ti < 9999) & ~hs
-    if s: px = np.where(hs, np.minimum(SL_O[ix, s - 1], e * (1 - s / 100)) - TK[ix], px)
-    if u: px = np.where(ht, np.maximum(TP_O[ix, u - 1], e * (1 + u / 100)), px)
+    px = down1(EOD[ix])
+    open_tp = (ti < 9999) & (ti == si) & (TP_O[ix, u - 1] >= e * (1 + u / 100) - 1e-6) if u else np.zeros(n, dtype=bool)
+    hs = (si < 9999) & (si <= ti) & ~open_tp; ht = (ti < 9999) & ~hs
+    if s: px = np.where(hs, down1(np.minimum(SL_O[ix, s - 1], dn_grid(e * (1 - s / 100)))), px)
+    if u: px = np.where(ht, np.maximum(TP_O[ix, u - 1], up_grid(e * (1 + u / 100))), px)
     g = px / e - 1
     return (g - (2 * C + TAX) / 100 - g * (C + TAX) / 100) * 100
 
@@ -96,12 +131,14 @@ for q in (None, 0, 1, 2):
 
 print("\n=== 3. 금액 추산 (1회 50만원, 종가까지 보유) ===")
 r = net(B, 0, 0); k = r * KRW / 100
-bd = pd.DataFrame({"day": df["day"].values[B], "t": df["t"].values[B], "krw": k, "per": df["per"].values[B]})
+bd = pd.DataFrame({"day": df["day"].values[B], "t": df["t"].values[B], "code": df["code"].values[B], "krw": k, "per": df["per"].values[B]})
+print("  (금액 = 건당 50만원을 모두 투입했다고 본 추산. 하루 한도는 시각 순, 같은 시각이면 종목코드 순으로 채움 - 실제 봇의 선택 순서와 다를 수 있음)")
 alld = sorted(df["day"].unique())
 for cap in (None, 10, 5, 3):
-    x = bd if cap is None else bd.sort_values("t").groupby("day").head(cap)
+    x = bd if cap is None else bd.sort_values(["t", "code"]).groupby("day").head(cap)
     dsum = x.groupby("day")["krw"].sum().reindex(alld, fill_value=0.0)
-    print(f"  하루 최대 {cap or '무제한':>4} 건: 거래 {len(x):4d}건 | 합계 {x.krw.sum():+11,.0f}원 | 거래일({len(alld)}일) 평균 {dsum.mean():+9,.0f}원/일 | 최악일 {dsum.min():+9,.0f} 최고일 {dsum.max():+9,.0f} | 수익일 {(dsum>0).sum()} 손실일 {(dsum<0).sum()} 거래없음 {(dsum==0).sum()}"
+    dcnt = x.groupby("day").size().reindex(alld, fill_value=0)
+    print(f"  하루 최대 {cap or '무제한':>4} 건: 거래 {len(x):4d}건 | 합계 {x.krw.sum():+11,.0f}원 | 거래일({len(alld)}일) 평균 {dsum.mean():+9,.0f}원/일 | 최악일 {dsum.min():+9,.0f} 최고일 {dsum.max():+9,.0f} | 수익일 {(dsum>0).sum()} 손실일 {(dsum<0).sum()} 거래없음 {(dcnt==0).sum()}"
           f" | 하루 최대 투입 {x.groupby('day').size().max()*KRW:,.0f}원")
     if cap in (None, 5):
         mm = x.groupby(x["day"].str[:6])["krw"].agg(["size", "sum"])
