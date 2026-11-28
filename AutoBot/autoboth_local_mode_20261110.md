@@ -69,7 +69,7 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 
 - 작업(`live_trading/r021_jobs.py`): `collect`(g001 --date D), `history`(g025 --append D), `scan`(g002 --date D --no-export-watchlist ->
   `apply`), `apply`(r016 watchlist apply --date D: 그 날짜의 `_D_picks.txt` 를 r004 로 - 백업/이력/다음 거래일 헤더), `edge_ai`(g013 --live,
-  g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> hi52 -> gh52 -> hi52acct -> vwaplog -> scan -> picklog -> apply [-> edge_ai]). [2026-11-11] 단계 선택:
+  g014, g024 --edge-ai), `universe`(g010), `postclose`(collect -> history -> hi52 -> gh52 -> hi52acct -> vwaplog -> scan -> picklog -> s1log -> apply [-> edge_ai]). [2026-11-11] 단계 선택:
   `--no-collect`(수집+이력 생략, 그 날짜에 10초봉 파일이 있어야 함), `--no-scan`(선별 생략, 선별 파일이 있어야 함), `--no-apply`(r004 반영
   생략; `--keep-watchlist` 는 옛 이름). 앞 단계 산출물이 없으면 start 가 `{ok:false, error}` 로 거부. 앱의 장 마감 파이프라인 카드는
   ① 수집 ② 선별 ③ r004 반영 체크로 이 스위치를 만든다(1+2+3 / 2+3 / 3). apply 는 선별 파일이 없거나 이 실행의 scan 보다 오래되면
@@ -461,6 +461,9 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - r021 `postclose` 의 새 단계 `vwaplog` = `data_simulation/g055_vwap_reclaim_log.py --date D` (hi52acct 다음, scan 앞, 실패해도 작업은
   계속, collect 스위치를 따름). 주문 없음, KIS 호출 없음, r003/r004 불변. steps 에 `"vwaplog"` 추가 - 앱 단계 라벨 "VWAP 재돌파 기록(g055)".
   산출물 `<runtime>/data/vwap_reclaim/{events.csv, days.csv, report.md}`. 규칙은 g055 머리말에 고정(RULE_VERSION 1, 2026-11-27 부터가 검증 구간).
+- [2026-11-28] r021 `postclose` 의 새 단계 `s1log` = `data_simulation/g061_s1_shadow_log.py --date D` (picklog 다음, apply 앞, 실패해도
+  작업은 계속, scan 스위치를 따름). g002 단순 프로파일 s1 이 그날 골랐을 종목을 기록만 한다 - 선별 파일 / r004 / 주문 불변, KIS 호출 없음.
+  steps 에 `"s1log"` 추가 - 앱 단계 라벨 "s1 병행 기록(g061)". 산출물 `<runtime>/data/pick_shadow_s1/picks_D.json` (이미 있는 날짜는 다시 쓰지 않음).
 
 ## Edge AI 모델 분리: 규칙 매매 필터 모델 / Edge AI 매매 모델 (2026-11-27)
 - 모델 파일이 둘이다(사용자 결정: 규칙 매매 필터는 지금처럼 유지).

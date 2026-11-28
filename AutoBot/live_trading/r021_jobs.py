@@ -24,12 +24,14 @@ CPU 를 많이 쓰는 일이다.
              -> apply                                         r016 watchlist apply --date D: 선별 파일을 r004 에 반영(백업/이력)
   edge_ai    g013 --live, g014, g024 --edge-ai                Edge AI 데이터셋/학습/점검 (g015_edge_ai_daily.sh 와 같음)
   universe   g010                                             수집 대상 종목 목록(g004) 갱신
-  postclose  collect -> history -> hi52 -> gh52 -> hi52acct -> scan -> picklog -> apply [-> edge_ai] 장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지
+  postclose  collect -> history -> hi52 -> gh52 -> hi52acct -> vwaplog -> scan -> picklog -> s1log -> apply [-> edge_ai] 장 마감 후 한 번에. collect 가 실패하면 뒤 단계는 하지
              않는다 (오래된 데이터로 감시목록을 만들지 않게). history / hi52 실패는 건너뛰고 계속. hi52 는 collect 와 함께 켜지고
              꺼진다 (--no-collect 면 생략 - 이력이 갱신되지 않은 날짜를 live 로 기록하지 않게).
              [2026-11-21] gh52 = g048 --date D --evaluate, hi52acct = g049 --date D: hi52 와 같은 규칙(collect 스위치, 실패해도 계속).
              [2026-11-19] picklog = g047 --date D --evaluate (선정 종목 전진 기록, 주문 없음): scan 과 함께 켜지고 꺼지며
              실패해도 계속.
+             [2026-11-28] s1log = g061 --date D (단순 프로파일 s1 의 선정을 따로 기록, 선별 파일 / r004 / 주문 불변):
+             picklog 와 같은 규칙(scan 스위치, 실패해도 계속).
 
   [2026-11-11] 단계 선택 (postclose / scan): --no-collect (수집+이력 생략), --no-scan (선별 생략), --no-apply (r004 반영 생략).
     1+2+3 = 기본, 2+3 = --no-collect (그 날짜 폴더에 수집 데이터가 있어야 함), 3 = --no-collect --no-scan (선별 파일이 있어야 함).
@@ -49,6 +51,12 @@ CPU 를 많이 쓰는 일이다.
 파일: <runtime>/data/jobs/<NAME>.json (상태), <NAME>.stop (정지 요청), <runtime>/log/jobs/<YYYYMMDD>/<NAME>_<HHMMSS>.log
 
 Update log:
+- [2026-11-28] type=feat owner=claude
+    summary: postclose 에 s1log 단계 추가 (picklog 다음, apply 앞) - g061_s1_shadow_log.py --date D: g002 단순 프로파일 s1 이
+      그날 골랐을 종목을 <runtime>/data/pick_shadow_s1/picks_D.json 에 기록 (사용자 요청 2026-11-28: s1 을 바로 전환하지 않고
+      병행 기록 후 새 기간으로 재비교). 필수 아님, scan 스위치를 따름.
+    impact: 작업 목록/상태 JSON 의 steps 에 "s1log" 추가 (앱 단계 라벨 "s1 병행 기록(g061)"). 선별 파일/r004/주문 영향 없음
+    compatibility: backward-compatible (새 단계 이름 - AutoBotH / AutoBotHtsH 단계 라벨과 계약 문서 autoboth_local_mode_20261110.md 갱신)
 - [2026-11-21] type=feat owner=claude
     summary: postclose 에 hi52acct 단계 추가 (gh52 다음, scan 앞) - g049_hi52_paper_account.py --date D: HI52 스윙 규칙의 모의계좌와
       무작위 비교 계좌를 그날까지 처리하고 다음 시가 주문 목록을 동결(14_swing_rules 결론, Codex 권고). 필수 아님, collect 스위치.
@@ -205,6 +213,9 @@ STEPS: dict[str, Step] = {
     # --restart-collector: a running g011 that misses new codes is restarted (it subscribes r004 only at its start)
     # [2026-11-19] g002 pick forward log (gate, tick %, 1/5/10/20-day results vs the universe; no orders); a failure never stops
     "picklog": Step("picklog", lambda a, rc: _py("g047_pick_forward_log.py", "--date", a.date, "--evaluate"), required=False),
+    # [2026-11-28] s1 shadow log: what the simple profile s1 would have picked on D (g002.scan in that process only - no picks
+    # file, no r004, no orders); a failure never stops the pipeline
+    "s1log": Step("s1log", lambda a, rc: _py("g061_s1_shadow_log.py", "--date", a.date), required=False),
     "apply": Step("apply", lambda a, rc: [str(HERE / "r016_control.py"), "--by", a.by, "watchlist", "apply", "--date", a.date,
                                           "--restart-collector"]),
     "edge_dataset": Step("edge_dataset", lambda a, rc: _py("g013_edge_ai_dataset.py", "--workers", _workers(a, 2), "--live"),
@@ -229,10 +240,10 @@ JOBS: dict[str, dict] = {
     "edge_ai": {"title": "Edge AI 재학습 (g013/g014/g024)", "steps": ["edge_dataset", "edge_train", "edge_check", "trade_dataset", "trade_train"]},
     "universe": {"title": "유니버스 갱신 (g010)", "steps": ["universe"]},
     "postclose": {"title": "장 마감 파이프라인 (데이터 수집(g001) -> 종목 선별(g002) -> 감시목록 반영(r004))",
-                  "steps": ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "apply"]},
+                  "steps": ["collect", "history", "hi52", "gh52", "hi52acct", "vwaplog", "scan", "picklog", "s1log", "apply"]},
 }
 
-STEP_SWITCH = {"collect": "collect", "history": "collect", "hi52": "collect", "gh52": "collect", "hi52acct": "collect", "vwaplog": "collect", "scan": "scan", "picklog": "scan", "apply": "apply"}  # step -> JobArgs flag
+STEP_SWITCH = {"collect": "collect", "history": "collect", "hi52": "collect", "gh52": "collect", "hi52acct": "collect", "vwaplog": "collect", "scan": "scan", "picklog": "scan", "s1log": "scan", "apply": "apply"}  # step -> JobArgs flag
 
 
 def job_steps(name: str, args: JobArgs) -> list[Step]:
