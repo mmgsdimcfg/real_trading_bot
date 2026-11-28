@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "[2026-11-28] type=feat - v2.3.58_004: 실행 / 재시작 직후 봇이 바로 종료하면 '마지막 동작'에 이유를 표시 (휴장일, 역할 standby, 다른 r003 실행 중, KIS 인증 실패, 감시목록 없음) / 봇이 꺼져 있는 동안 봇 상태 카드에 '마지막 실행 종료' 줄 표시",
     "[2026-11-28] type=fix - v2.3.58_003: 장 마감 파이프라인 단계 이름을 '선정 병행 기록(g061)' 으로 변경 (감시 종목 선정 기본값이 s1 이 되어, 따로 기록하는 쪽은 이전 방식 v0)",
     "[2026-11-28] type=feat - v2.3.58_002: 장 마감 파이프라인 단계 표시에 's1 병행 기록(g061)' 추가 (g002 단순 프로파일 s1 의 선정을 따로 기록, 감시목록 / 주문 영향 없음)",
     "[2026-11-28] type=feat - v2.3.58_001: VWAP 매매 세부 설정에 시가 갭 하한(VWAP_TRADE_MIN_OPEN_GAP_PCT)과 틱 조건 사용(VWAP_TRADE_TICK_TRIGGER) 추가, 단계 표시에 '시가 갭' 추가",
@@ -224,7 +225,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotH/"
     },
-    "buildNumber": "003",
+    "buildNumber": "004",
     "appId": "kr.xgraph.autoboth",
     "productName": "AutoBotH",
     "copyright": "Copyright © 2026 xgraph",

@@ -1,5 +1,7 @@
 /*
  * Update log
+ * - [2026-11-28] type=feat - 봇 상태 card: "마지막 실행 종료" line while the bot is stopped and r016 status.last_exit is set (why the
+ *   last start ended before trading - closed day, standby, another r003, KIS login, empty watchlist; lastExitText)
  * - [2026-11-05] type=feat - Control tab (guide 2.1): r003 service state (running/PID/start time/restarts/mode/profile), risk
  *   profile + dry-run choice, 실행/정지/재시작 with the guide's enable rules (start = not running and no external r003), a spinner
  *   while the main process waits for the unit to settle, the external-r003 warning, pending-restart items (overrides with
@@ -69,6 +71,7 @@ import {
   botSummary,
   fmtValue,
   historyText,
+  lastExitText,
   pctHint,
   pendingCount,
   RISK_PROFILES,
@@ -839,10 +842,15 @@ export function ControlView() {
             {noteRight}
           </span>
         </div>
-        {(msg || (control.lastAction && !busy) || control.error || st?.external_r003?.length || (st && !st.running && st.override_count > 0)) && (
+        {(msg || (control.lastAction && !busy) || control.error || st?.external_r003?.length || (st && !st.running && (st.override_count > 0 || st.last_exit))) && (
           <div className="card-body notes">
             {msg && <p className="err-text">{msg}</p>}
             {control.lastAction && !busy && <p className={control.lastAction.ok ? 'muted small' : 'err-text small'}>마지막 동작: {control.lastAction.message}</p>}
+            {st && !st.running && st.last_exit && !busy && (
+              <div className="callout">
+                <b>마지막 실행 종료</b> ({isoShow(st.last_exit.at)}) - {lastExitText(st.last_exit)}
+              </div>
+            )}
             {control.error && <p className="err-text small">상태 조회 오류: {control.error}</p>}
             {!!st?.external_r003?.length && (
               <div className="callout danger">

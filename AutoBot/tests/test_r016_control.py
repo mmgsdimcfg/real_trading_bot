@@ -290,6 +290,21 @@ class ServiceTests(Base):
         with self.assertRaises(ValueError):
             r016.write_env_file(self.paths, {"R003_EXTRA_ARGS": "--x; rm -rf /"})
 
+    def test_status_reports_why_the_last_start_ended(self):
+        """[2026-11-28] status.last_exit = live_runtime/r003_last_exit.json (null without the file / when it is not valid)"""
+        rc, out = self.run_cli("status")
+        self.assertIsNone(out["last_exit"])
+        f = self.paths.running_snapshot.parent / "r003_last_exit.json"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"at": "2026-11-28T22:26:16", "pid": 7, "reason": "market_closed", "code": 0,
+                                 "detail": "2026-11-28 | CLOSED | source=weekday | reason=weekend"}), encoding="utf-8")
+        rc, out = self.run_cli("status")
+        self.assertEqual(out["last_exit"], {"at": "2026-11-28T22:26:16", "reason": "market_closed", "code": 0, "pid": 7,
+                                            "detail": "2026-11-28 | CLOSED | source=weekday | reason=weekend"})
+        f.write_text("{broken", encoding="utf-8")
+        rc, out = self.run_cli("status")
+        self.assertIsNone(out["last_exit"])
+
     def test_status_pending_from_snapshot(self):
         self.sysctl.active, self.sysctl.pid = True, 999
         self.write_snapshot(overrides_applied={"MAX_OPEN_POSITIONS": 1, "ENABLE_SPREAD_GATE": False})

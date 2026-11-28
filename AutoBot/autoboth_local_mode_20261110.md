@@ -514,6 +514,10 @@ r003을 돌리고 AutoBotH가 로컬 파일을 직접 읽는다. 노트북을 �
 - r016 `set` 거부 사유(`rejected`): 실제 주문이 켜진 채 `VWAP_TRADE_MODE` 를 끄거나 `AUTO_SELL_MODE` / `TRADING_STRATEGY_MODE` 를 바꾸면
   `... switch VWAP_TRADE_LIVE_ORDERS off first` (같은 `set` 에 `VWAP_TRADE_LIVE_ORDERS=false` 를 함께 보내면 통과 - 앱이 그렇게 보낸다).
 - r016 `status` 에 `vwap_live`(= `edge_live` 와 같은 형식: held / open_buys / today{entries, realized, sl_codes, unpriced_sells}).
+- [2026-11-28] r016 `status` 에 `last_exit` 추가: r003 이 매매 루프에 들어가기 전에 끝난 이유 `{at, reason, detail, code, pid}` 또는 null.
+  `reason` = `market_closed`(휴장일) / `standby`(역할 standby) / `already_running`(다른 r003 이 잠금 보유) / `auth_failed`(KIS 인증 실패) /
+  `no_watchlist`(감시목록에 종목 없음). r003 이 `live_runtime/r003_last_exit.json` 에 쓰고, 다음 실행이 매매 루프에 들어가면 지운다.
+  앱: [실행] / [재시작] 뒤 봇이 바로 끝났으면 "마지막 동작"에 이유를 붉게 보여주고, 봇이 꺼져 있는 동안 봇 상태 카드에 "마지막 실행 종료" 줄을 둔다.
 - 주문 / 장부: Edge AI 실제 매매와 같은 경로(r003 보조 전략). 체결 장부 `bot_fill_ledger.json` 에 `"vwap"`(종목별 수량·원가) 와
   `"vwap_day"`(그날 매수 횟수·실현 손익·손절 종목) 키가 추가된다. 주문 기록의 `strategy` 는 `"vwap"`. 매수는 정규장 KRX 매도1호가 지정가 1건,
   매도 사유 `VWAP_TP_x.xxPCT` / `VWAP_SL_x.xxPCT` / `VWAP_TIME_nMIN` / `VWAP_CLOSE_1520`. 한 종목은 한 전략만 보유한다(규칙 / Edge / VWAP).

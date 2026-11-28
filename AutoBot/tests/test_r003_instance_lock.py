@@ -36,6 +36,52 @@ class InstanceLockTests(unittest.TestCase):
                 other.close()
 
 
+class LastExitTests(unittest.TestCase):
+    """[2026-11-28] r003_last_exit.json: why a start ended before the trading loop"""
+
+    def test_written_then_cleared(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "sub" / "r003_last_exit.json"
+            with mock.patch.object(r003, "R003_LAST_EXIT_PATH", f), mock.patch.object(r003, "LIVE_RUNTIME_DIR", f.parent):
+                r003._write_last_exit("market_closed", "2026-11-28 | CLOSED | source=weekday | reason=weekend")
+                data = json.loads(f.read_text(encoding="utf-8"))
+                self.assertEqual((data["reason"], data["code"], data["pid"]), ("market_closed", 0, os.getpid()))
+                self.assertIn("weekend", data["detail"])
+                r003._clear_last_exit()
+                self.assertFalse(f.exists())
+                r003._clear_last_exit()   # no file: no error
+
+    def test_a_closed_day_start_records_the_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "r003_last_exit.json"
+            with mock.patch.object(r003, "R003_LAST_EXIT_PATH", f), mock.patch.object(r003, "LIVE_RUNTIME_DIR", Path(td)), \
+mock.patch.object(r003, "_acquire_instance_lock", return_value=True), \
+mock.patch.object(r003, "_host_role_refusal", return_value=None), \
+mock.patch.object(r003, "_clear_stale_stop_request"), mock.patch.object(r003.atexit, "register"), \
+mock.patch.object(r003, "_ensure_log_date_for"), mock.patch.object(r003, "log"), \
+mock.patch.object(r003.ka, "auth"), \
+mock.patch.object(r003, "get_market_day_status",
+                                   return_value=(False, "MARKET DAY CHECK | 2026-11-28 | CLOSED | source=weekday | reason=weekend")), \
+contextlib.redirect_stdout(io.StringIO()):
+                r003.run()
+            data = json.loads(f.read_text(encoding="utf-8"))
+            self.assertEqual(data["reason"], "market_closed")
+            self.assertEqual(data["detail"], "2026-11-28 | CLOSED | source=weekday | reason=weekend")
+
+    def test_a_standby_host_records_the_refusal(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "r003_last_exit.json"
+            with mock.patch.object(r003, "R003_LAST_EXIT_PATH", f), mock.patch.object(r003, "LIVE_RUNTIME_DIR", Path(td)), \
+mock.patch.object(r003, "_acquire_instance_lock", return_value=True), \
+mock.patch.object(r003, "_host_role_refusal", return_value="host role is standby"), \
+mock.patch.object(r003, "_ensure_log_date_for"), mock.patch.object(r003, "log"), \
+contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                r003.run()
+            self.assertEqual(cm.exception.code, 3)
+            data = json.loads(f.read_text(encoding="utf-8"))
+            self.assertEqual((data["reason"], data["code"]), ("standby", 3))
+
+
 class SnapshotTests(unittest.TestCase):
     def test_snapshot_written_and_removed_only_by_owner(self):
         with tempfile.TemporaryDirectory() as td:

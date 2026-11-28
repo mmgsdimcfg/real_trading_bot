@@ -49,6 +49,11 @@ AUTOBOT_SERVICE_BACKEND=systemd|process 로 강제할 수 있다. Windows 에는
 종료 코드: 0 성공, 2 검증 실패/거부, 3 systemctl 실패/실행 거부.
 
 Update log:
+- [2026-11-28] type=feat owner=claude
+    summary: 사용자 요청 - status.last_exit: r003 이 매매를 시작하기 전에 끝난 이유(live_runtime/r003_last_exit.json: at / reason /
+      detail / code / pid; 없으면 null). 휴장일에 [실행]하면 r003 이 바로 끝나는데 앱이 이유를 보여줄 수 없었다.
+    impact: control CLI (status 응답에 필드 추가). 계약: autoboth_local_mode_20261110.md
+    compatibility: backward-compatible
 - [2026-11-20] type=feat owner=claude
     summary: 사용자 요청(운용 시간 설정) - collector_nxt_hours(): r001 ENABLE_NXT_SESSION 이 꺼져 있으면(정규장만) NXT 수집 창 없음 ->
       collector start 시간창이 KRX 정규장(시작 15분 전 ~ 마감)으로 줄어든다. g011 도 같은 조건으로 NXT 를 구독하지 않는다.
@@ -628,6 +633,20 @@ def read_running_snapshot(paths: ControlPaths) -> dict | None:
     if not _pid_is_r003(int(data["pid"]), paths):
         return None
     return data
+
+
+def read_last_exit(paths: ControlPaths) -> dict | None:
+    """[2026-11-28] r003_last_exit.json - why the last r003 start ended before the trading loop (r003 removes it once a start
+    reaches the loop). None: no such file / unreadable."""
+    try:
+        data = _json_loads((paths.running_snapshot.parent / "r003_last_exit.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("reason"), str) or not isinstance(data.get("at"), str):
+        return None
+    return {"at": data["at"], "reason": data["reason"], "detail": str(data.get("detail") or ""),
+            "code": data.get("code") if isinstance(data.get("code"), int) else None,
+            "pid": data.get("pid") if isinstance(data.get("pid"), int) else None}
 
 
 def desired_overrides(paths: ControlPaths) -> tuple[dict, dict]:
@@ -1317,6 +1336,7 @@ def status(paths: ControlPaths, runner: Runner = _run) -> dict:
         # [2026-11-25] Edge AI live orders: what the edge strategy holds / did today (null: no fill ledger yet)
         "edge_live": edge_live_summary(paths),
         "vwap_live": edge_live_summary(paths, "vwap"),   # [2026-11-27] VWAP trade live orders, the same shape
+        "last_exit": read_last_exit(paths),   # [2026-11-28] why the last start ended before trading (null: none)
     }
 
 

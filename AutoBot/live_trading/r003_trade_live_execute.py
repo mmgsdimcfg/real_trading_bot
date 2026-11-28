@@ -20,6 +20,12 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-28] type=feat owner=claude
+    summary: 사용자 요청 - 매매를 시작하기 전에 끝난 이유를 live_runtime/r003_last_exit.json 에 남김(_write_last_exit: market_closed /
+      standby / already_running / auth_failed / no_watchlist). 휴장일에 앱에서 [실행]하면 2초 만에 끝나는데 앱은 "start 완료"만
+      보여줬다. r016 status 가 last_exit 로 전달하고, 매매 루프에 들어가면(실행 스냅샷 기록 시) 파일을 지운다. 판정·주문 불변.
+    impact: live (기록 파일만)
+    compatibility: backward-compatible
 - [2026-11-26] type=feat owner=claude
     summary: 사용자 요청 - Edge AI 실주문(_edge_live_try_buy)이 사지 않은 이유를 로그에 남김(`[EDGE LIVE] <종목> | 매수 안 함 | ...`).
       1분 트리거가 없는 봉은 종전처럼 기록하지 않고, 트리거가 뜬 봉의 탈락(확률 미달 / 확률 없음 / 오류 / 수량·호가 조건)은 봉마다,
@@ -7585,6 +7591,8 @@ def _shutdown_save_live_state(api: TradingAPI | None) -> None:
 # [2026-11-05] single-instance lock + running snapshot (read by live_trading/r016_control.py / AutoBotH).
 R003_INSTANCE_LOCK_PATH = LIVE_RUNTIME_DIR / ".r003.lock"
 R003_RUNNING_SNAPSHOT_PATH = LIVE_RUNTIME_DIR / "r003_running.json"
+# [2026-11-28] why the last start ended before the trading loop (r016 status.last_exit -> the app); removed once the loop is reached
+R003_LAST_EXIT_PATH = LIVE_RUNTIME_DIR / "r003_last_exit.json"
 _R003_LOCK_FH = None
 # [2026-11-10] graceful stop request (r016 stop / r020 supervisor on Windows, where SIGTERM cannot run handlers): the main loop
 # checks this file every turn, saves live_state and ends like Ctrl+C. A leftover file is removed at start.
@@ -7706,6 +7714,25 @@ def _write_running_snapshot(*, dry_run: bool, env_dv: str, watch_file: Path, cod
         log(f"  [R003 SNAP   ] WARN running snapshot not written: {exc}")
 
 
+def _write_last_exit(reason: str, detail: str = "", code: int = 0) -> None:
+    """[2026-11-28] r003_last_exit.json: this start ended before trading (reason: market_closed / standby / already_running /
+    auth_failed / no_watchlist). Bookkeeping only - a failure to write is ignored."""
+    try:
+        LIVE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {"at": datetime.now().isoformat(timespec="seconds"), "pid": os.getpid(), "reason": reason,
+                   "detail": str(detail)[:300], "code": int(code)}
+        tmp = R003_LAST_EXIT_PATH.with_suffix(f".json.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, R003_LAST_EXIT_PATH)
+    except Exception:
+        pass
+
+
+def _clear_last_exit() -> None:
+    with contextlib.suppress(Exception):
+        R003_LAST_EXIT_PATH.unlink()
+
+
 def _remove_running_snapshot() -> None:
     try:
         data = json.loads(R003_RUNNING_SNAPSHOT_PATH.read_text(encoding="utf-8"))
@@ -7724,11 +7751,13 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
         with contextlib.suppress(Exception):
             held = R003_INSTANCE_LOCK_PATH.read_text(encoding="utf-8").strip()
         print(f"[R003 STOP   ] another r003 already holds {R003_INSTANCE_LOCK_PATH} ({held}) - refusing to start a second instance", flush=True)
+        _write_last_exit("already_running", held, 3)
         sys.exit(3)
     refusal = _host_role_refusal()
     if refusal:
         print(f"[R003 STOP   ] {refusal} - refusing to start (r016 role set primary, or R003_IGNORE_ROLE=1)", flush=True)
         log(f"R003 STOP | {refusal}")
+        _write_last_exit("standby", refusal, 3)
         sys.exit(3)
     _clear_stale_stop_request()
     atexit.register(_remove_running_snapshot)
@@ -7759,6 +7788,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     except Exception as exc:
         print(f"[AUTH ERROR  ] {exc}", flush=True)
         log(f"R003 AUTH ERROR | {exc}")
+        _write_last_exit("auth_failed", str(exc))
         return
 
     is_open_day, market_day_log = get_market_day_status(now)
@@ -7767,6 +7797,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
 
     if not is_open_day:
         print("[R003 STOP   ] market closed day", flush=True)
+        _write_last_exit("market_closed", market_day_log.replace("MARKET DAY CHECK | ", "", 1))
         return
 
     watch_file = _resolve_watchlist_file(target_date, watchlist_source=watchlist_source or "auto")
@@ -7781,6 +7812,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     if not watch_map:
         print("[R003 WL     ] No codes loaded", flush=True)
         log("No codes loaded")
+        _write_last_exit("no_watchlist", str(watch_file))
         return
 
     print(f"[R003 WL     ] loaded {len(watch_map)} codes", flush=True)
@@ -7846,6 +7878,7 @@ def run(target_date: str | None = None, env_dv: str | None = None, dry_run: bool
     api = TradingAPI(env_dv=effective_env, dry_run=effective_dry, live_state=live_state)
     _install_shutdown_handlers(api)
     _write_running_snapshot(dry_run=effective_dry, env_dv=effective_env, watch_file=watch_file, code_count=len(watch_map))
+    _clear_last_exit()   # this start reached the trading loop
     api.live_state["traded_today"] = traded_today
     signal_buy_bar: dict[str, object] = {}
     signal_sell_bar: dict[str, object] = {}

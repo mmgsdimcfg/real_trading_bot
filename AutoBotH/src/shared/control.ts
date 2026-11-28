@@ -118,6 +118,48 @@ export interface R016Status {
   pending_restart: boolean;
   latest_main_log?: string | null;
   watchlist_codes?: number;
+  /** [2026-11-28] why the last r003 start ended before the trading loop (null / missing: none, or an older server) */
+  last_exit?: LastExit | null;
+}
+
+export interface LastExit {
+  /** host time, ISO seconds */
+  at: string;
+  /** market_closed | standby | already_running | auth_failed | no_watchlist */
+  reason: string;
+  detail: string;
+  code?: number | null;
+  pid?: number | null;
+}
+
+/** [2026-11-28] one Korean sentence for status.last_exit (the user pressed [실행] and r003 ended at once) */
+export function lastExitText(e: LastExit): string {
+  const d = (e.detail || '').trim();
+  switch (e.reason) {
+    case 'market_closed': {
+      const day = /^\d{4}-\d{2}-\d{2}/.exec(d)?.[0];
+      const why = /reason=weekend/.test(d) ? '주말' : /holiday/i.test(d) ? '공휴일' : '';
+      return `${day ? `${day}은(는) ` : '오늘은 '}휴장일${why ? `(${why})` : ''}이라 r003이 시작 직후 스스로 종료했습니다. 개장일에 다시 실행하세요.`;
+    }
+    case 'standby':
+      return '이 호스트의 역할이 standby 라서 r003이 시작을 거부했습니다.';
+    case 'already_running':
+      return `다른 r003이 이미 실행 중이라 시작을 거부했습니다${d ? ` (${d})` : ''}.`;
+    case 'auth_failed':
+      return `KIS 인증에 실패해 r003이 종료했습니다${d ? `: ${d}` : ''}.`;
+    case 'no_watchlist':
+      return '감시목록에 종목이 없어 r003이 종료했습니다. 감시목록을 채운 뒤 다시 실행하세요.';
+    default:
+      return `r003이 매매를 시작하기 전에 종료했습니다 (${e.reason}${d ? `: ${d}` : ''}).`;
+  }
+}
+
+/** [2026-11-28] the last_exit of `after` when it was written after `before` was read and r003 is not running (else null) */
+export function exitAfterStart(before: R016Status | null | undefined, after: R016Status | null | undefined): LastExit | null {
+  const e = after?.last_exit;
+  if (!e || !after || after.running) return null;
+  if (before?.generated_at && e.at < before.generated_at.slice(0, 19)) return null;
+  return e;
 }
 
 export type ValueType = 'bool' | 'int' | 'float' | 'str' | 'list' | 'dict' | 'null';

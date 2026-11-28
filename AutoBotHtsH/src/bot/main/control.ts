@@ -1,5 +1,9 @@
 /*
  * Update log
+ * - [2026-11-28] type=feat - A start that ends at once says why (user 2026-11-28: [실행] on a Saturday showed "start 완료 - 현재
+ *   active" while r003 had already ended on the closed day): after start / restart the status is read once more 5 s later, and
+ *   when r003 is not running and r016 status.last_exit is newer than the status read before the start, "마지막 동작" is the
+ *   reason in red (shared lastExitText / exitAfterStart)
  * - [2026-11-23] type=feat - refreshNxt asks for ENABLE_NXT_SESSION and ENABLE_NXT_TRADING in one `get` (a server without the
  *   second key answers rc 2 with the first one - parsed all the same)
  * - [2026-11-05] type=feat - r003 remote control (guide 20261105). R016Client: every server change goes through
@@ -83,6 +87,8 @@ import {
   type CollectorPrune,
   type TickExtra,
   validTickCode,
+  exitAfterStart,
+  lastExitText,
 } from '../shared/control';
 
 export type ExecFn = (cmd: string, timeoutMs: number, stdin?: string) => Promise<{ out: string; err: string; code: number | null }>;
@@ -351,6 +357,9 @@ export function createControl(deps: ControlDeps) {
   }
 
   /** After a service verb: status every 2 s until the unit settles (stop: up to 100 s, start/restart: 40 s). */
+  /** [2026-11-28] after a start the status is read once more this much later (r003 ends within ~2 s when it will not trade) */
+  const START_CONFIRM_MS = 5000;
+
   async function settle(verb: ServiceVerb): Promise<R016Status | null> {
     const limit = Date.now() + (verb === 'stop' ? 100000 : 40000);
     let s = await refreshStatus();
@@ -436,14 +445,22 @@ export function createControl(deps: ControlDeps) {
       } catch (e) {
         unknown = errMsg(e);
       }
-      const after = await settle(verb);
+      let after = await settle(verb);
+      // [2026-11-28] r003 ends by itself within seconds on a closed day / empty watchlist / failed login: the unit is still
+      // "active" right after systemctl start, so look once more before saying it runs
+      if (verb !== 'stop' && !unknown && r?.ok && after?.service?.active_state === 'active' && deps.isConnected()) {
+        await sleep(START_CONFIRM_MS);
+        if (deps.isConnected()) after = (await refreshStatus()) || after;
+      }
       void refreshPaper(); // a (re)start applies a stored mode change: running / pending change with it
       const st = after?.service?.active_state || '?';
+      const ended = verb !== 'stop' ? exitAfterStart(cur, after) : null;
       let res: OpResult<ServiceResult>;
       if (unknown) res = { ok: false, error: `결과를 받지 못했습니다 (${unknown}). 상태를 다시 읽었습니다: ${st}` };
       else if (!r!.ok) res = { ok: false, error: r!.error, data: r!.data };
       else res = { ok: true, data: r!.data };
-      push({ lastAction: { verb, ok: res.ok, message: res.ok ? `${verb} 완료 - 현재 ${st}` : res.error || '실패', at: Date.now() } });
+      const message = !res.ok ? res.error || '실패' : ended ? `${verb} 했지만 봇이 바로 종료했습니다 - ${lastExitText(ended)}` : `${verb} 완료 - 현재 ${st}`;
+      push({ lastAction: { verb, ok: res.ok && !ended, message, at: Date.now() } });
       return res;
     } finally {
       push({ busy: null });
