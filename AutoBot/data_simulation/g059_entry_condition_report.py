@@ -33,9 +33,9 @@ reb["t"] = pd.to_datetime(reb["t"]); reb["code"] = reb["code"].str.zfill(6)
 df = rows.merge(reb.rename(columns={"plunge": "A_plunge", "rsi": "A_rsi", "macd": "A_macd", "dmi": "A_dmi", "ma": "A_ma", "angle": "A_angle"}),
                 on=["day", "code", "t"], how="left")
 n_reb = int(df["hit"].notna().sum())
-print(f"rebound rows matched {n_reb}/{len(df)}")
-if n_reb < 0.99 * len(df):
-    raise SystemExit("rebound csv does not match the table (run AutoBotHtsH/scripts/rebound-conds.ts on this folder)")
+print(f"rebound rows matched {n_reb}/{len(rows)}")
+if reb.duplicated(["day", "code", "t"]).any() or len(df) != len(rows) or n_reb != len(rows):
+    raise SystemExit("rebound csv does not match the table row for row (run AutoBotHtsH/scripts/rebound-conds.ts on this folder)")
 n_noeod = int(df["eod"].isna().sum())
 df = df[df["eod"].notna()]
 print(f"rows without a 15:20 close left out: {n_noeod}")
@@ -46,7 +46,7 @@ df["A_noedge"] = ~df["edge"]
 df["A_any"] = df["hit"]                                   # classic or one of the three extra setups
 df["A_classic"] = df["hit"] & df["setup"].isna()
 df["V_tick"] = df["V_tick"] & df["V_tchase"]
-df["E_prob"] = df["E_p"] >= df["E_thr"]
+df["E_prob"] = df["E_scored"] & (df["E_p"] >= df["E_thr"])
 print("rows", len(df), "days", df.day.nunique(), "symbol-days", df.groupby(["day", "code"]).ngroups, "| with tick coverage", int(df.tick_cov.sum()))
 BARS = len(sys.argv) > 2 and sys.argv[2] == "bars"
 if not BARS:
@@ -59,7 +59,7 @@ VWAP = ["V_hist", "V_above", "V_trend", "V_gap", "V_cap", "V_drop"]          # t
 VTICK = [] if BARS else ["V_tick"]
 if BARS:
     RULE = [c for c in RULE if c not in ("R_tick", "R_chase", "R_spread")]
-EDGE = ["E_mid", "E_trig", "E_prob"]
+EDGE = ["E_mid", "E_trig", "E_scored", "E_prob"]   # E_scored: the sample the model has a number for (not a rule of the trade)
 ALERT = ["A_plunge", "A_rsi", "A_macd", "A_dmi", "A_ma", "A_angle", "A_score", "A_noedge"]
 NAME = {"R_1m": "규칙: 1분 MA5>MA20(15분 이내) 또는 MA5 반등", "R_tick": "규칙: 60/120틱 골든크로스(4분 이내)", "R_guard": "규칙: 1분 캔들/BB 이격 추격 가드",
         "R_mid": "규칙: 현재가 > 1분 BB 중심선", "R_drop": "규칙: 확정 종가 대비 -0.4% 이내", "R_chase": "규칙: 틱 크로스 대비 +0.5% 이내",
@@ -67,7 +67,7 @@ NAME = {"R_1m": "규칙: 1분 MA5>MA20(15분 이내) 또는 MA5 반등", "R_tick
         "R_antichase": "규칙: 당일 과열 차단(시가+8%/VWAP+3%/전일+23%)", "R_spread": "규칙: 호가 스프레드 2틱 이하",
         "V_hist": "VWAP: 당일 1분봉 21개 이상", "V_above": "VWAP: 종가·현재가 > VWAP", "V_trend": "VWAP: MA5 또는 20이평 상승", "V_gap": "VWAP: 시가 갭 1% 이상", "V_cap": "VWAP: VWAP 대비 +2% 이내",
         "V_drop": "VWAP: 확정 종가 대비 -0.4% 이내", "V_tick": "VWAP: 60틱 MA5/15 크로스(60초 이내, 옵션)",
-        "E_mid": "Edge: 종가 > 1분 BB 중심선", "E_trig": "Edge: 1분 하이브리드 트리거", "E_prob": "Edge: 모델 확률 >= 기준",
+        "E_mid": "Edge: 종가 > 1분 BB 중심선", "E_trig": "Edge: 1분 하이브리드 트리거", "E_scored": "Edge: (표본) 모델 점수가 있는 봉", "E_prob": "Edge: 모델 확률 >= 기준",
         "A_plunge": "알림 A: 급락 선행", "A_rsi": "알림 B: RSI 상향 돌파", "A_macd": "알림 C: MACD 상향 돌파", "A_dmi": "알림 D: DI+ 상향 돌파",
         "A_ma": "알림 E: MA5/MA20 골든크로스", "A_angle": "알림 F: MA5 각도", "A_score": "알림: 가점 3점 이상", "A_noedge": "알림: 장 시작/마감 15분 제외"}
 

@@ -28,12 +28,14 @@ rows = pd.concat([pd.read_pickle(f) for f in sorted(glob.glob(os.path.join(D, "r
 reb = pd.concat([pd.read_csv(f, dtype={"day": str, "code": str}) for f in sorted(glob.glob(os.path.join(D, "rebound_*.csv")))], ignore_index=True)
 reb["t"] = pd.to_datetime(reb["t"]); reb["code"] = reb["code"].str.zfill(6)
 df = rows.merge(reb[["day", "code", "t", "plunge", "score", "hit"]], on=["day", "code", "t"], how="left")
+if reb.duplicated(["day", "code", "t"]).any() or len(df) != len(rows) or int(df["hit"].notna().sum()) != len(rows):
+    raise SystemExit("rebound csv does not match the table row for row (run AutoBotHtsH/scripts/rebound-conds.ts on this folder)")
 if not BARS:
     df = df[df.tick_cov]
 print("rows without a 15:20 close left out:", int(df["eod"].isna().sum()))
 df = df[df["eod"].notna()]
 df = df.sort_values(["day", "code", "t"]).reset_index(drop=True)
-df["E_prob"] = df["E_p"] >= df["E_thr"]
+df["E_prob"] = df["E_scored"] & (df["E_p"] >= df["E_thr"])
 df["A_plunge"] = df["plunge"].fillna(0).astype(bool)
 PERN = ["7-8월", "9월-10/29", "10/30-11월"]
 df["per"] = np.where(df["day"] < "20260901", 0, np.where(df["day"] < "20261030", 1, 2))
@@ -168,18 +170,18 @@ F["nth_entry"] = seq.values.astype(float)
 F["r"] = r; F["per"] = df["per"].values[B]
 
 print("\n=== 4. 기준 진입을 구간으로 나눠 본 종가 보유 평균 % (건수) - 기간별 일관성 ===")
-LBL = {"open_gap": "시가 갭 %", "atr_pct": "1분 ATR %", "minute": "진입 시각", "vwap_gap": "VWAP 대비 %", "from_open": "시가 대비 %", "range_pos": "당일 범위 내 위치 %(0=저가,100=고가)",
+LBL = {"open_gap": "시가 갭 %", "atr_pct": "1분 ATR %(당일 14봉 단순 평균 - 진입 판정의 ATR 과 다름)", "minute": "진입 시각", "vwap_gap": "VWAP 대비 %", "from_open": "시가 대비 %", "range_pos": "당일 범위 내 위치 %(0=저가,100=고가)",
        "from_high": "당일 고가 대비 %", "ret5": "직전 5분 수익률 %", "ret15": "직전 15분 수익률 %", "vol_burst": "직전 3분 거래량 / 당일 평균", "vol_vs_prev": "누적 거래량 / 전일 전체",
        "turnover_eok": "당일 누적 거래대금(억원)", "kospi_from_open": "KODEX200 시가 대비 %", "price": "주가(원)", "tick_pct": "호가단위/주가 %", "nth_entry": "그 종목 당일 몇 번째 진입", "E_p": "Edge AI 확률"}
 CUTS = {"open_gap": [1, 2, 3, 5, 100], "minute": [545, 570, 600, 660, 780, 900], "vwap_gap": [-100, -1, 0, 1, 2, 100], "from_open": [-100, -2, 0, 2, 5, 100],
-        "range_pos": [0, 25, 50, 75, 90, 100.01], "nth_entry": [0.5, 1.5, 2.5, 100], "kospi_from_open": [-100, -1, -0.3, 0.3, 1, 100], "price": [0, 5000, 20000, 50000, 200000, 1e9],
+        "range_pos": [-1e9, 25, 50, 75, 90, 1e9], "nth_entry": [0.5, 1.5, 2.5, 100], "kospi_from_open": [-100, -1, -0.3, 0.3, 1, 100], "price": [0, 5000, 20000, 50000, 200000, 1e9],
         "tick_pct": [0, 0.1, 0.2, 0.3, 1]}
 for col in LBL:
     if col not in F or F[col].notna().sum() < 30: continue
     x = F[F[col].notna()]
-    cuts = CUTS.get(col) or sorted(set(np.round(np.quantile(x[col], [0, .25, .5, .75, 1]), 3)))
+    cuts = list(CUTS.get(col) or sorted(set(np.quantile(x[col], [0, .25, .5, .75, 1]))))
     if len(cuts) < 3: continue
-    cuts[-1] = cuts[-1] + 1e-9
+    cuts[0] = min(cuts[0], float(x[col].min())) - 1e-9; cuts[-1] = max(cuts[-1], float(x[col].max())) + 1e-9
     g = pd.cut(x[col], cuts, include_lowest=True)
     print(f"-- {LBL[col]}")
     for b_, y in x.groupby(g, observed=True):

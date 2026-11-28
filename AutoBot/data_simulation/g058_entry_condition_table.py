@@ -132,7 +132,6 @@ def symbol_rows(a) -> tuple[list[dict], dict | None]:
     if not BARS and (ticks is None or len(ticks) < 200):
         return [], None
     recv = ticks["recv"].values if ticks is not None else np.array([], dtype="datetime64[ns]")
-    tick_t = ticks["t"].values if ticks is not None else recv
     tick_px = ticks["price"].to_numpy(float) if ticks is not None else np.array([])
     f1 = with_ind(today, prev, int(G("PRIOR_DAY_WARMUP_MINUTES", 180) or 180))
     t3 = r3(today)
@@ -247,9 +246,9 @@ def symbol_rows(a) -> tuple[list[dict], dict | None]:
         # ---- outcome: bought at the price + 1 tick right after the bar, the following 1-minute bars to 15:20 ----
         entry = fill + tick_sz
         hh, ll, oo = h[j:].copy(), l[j:].copy(), o[j:].copy()
-        oo[0] = fill
         if k >= 0 and sidx[j] == T + pd.Timedelta(minutes=1):   # (Codex 1) the entry bar counts from the fill on, not from its first second
-            m = (recv > np.datetime64(now)) & (tick_t < np.datetime64(sidx[j]))
+            oo[0] = fill
+            m = (recv > np.datetime64(now)) & (recv < np.datetime64(sidx[j]))   # receive clock on both ends, like the decision
             hh[0] = max(fill, float(tick_px[m].max())) if m.any() else fill
             ll[0] = min(fill, float(tick_px[m].min())) if m.any() else fill
         tp_i, sl_i, tp_o, sl_o = [], [], [], []
@@ -261,13 +260,14 @@ def symbol_rows(a) -> tuple[list[dict], dict | None]:
             sl_i.append(int(w[0]) if len(w) else 9999)
             sl_o.append(float(oo[w[0]]) if len(w) else float("nan"))
         rows.append({
-            "day": day, "code": code, "name": name, "t": T, "price": price, "entry": entry, "tick": tick_sz, "fill": fill, "eod": (float(c[-1]) if sidx[-1].time() >= dt_time(15, 15) else float("nan")), "n_after": len(hh),
+            "day": day, "code": code, "name": name, "t": T, "price": price, "entry": entry, "tick": tick_sz, "fill": fill, "eod": (float(c[-1]) if sidx[-1].time() >= LAST_BAR else float("nan")), "n_after": len(hh),
             "R_1m": r_1m, "R_tick": r_tick, "R_guard": bool(guard_ok), "R_mid": bool(r_mid), "R_drop": bool(drop_ok), "R_chase": bool(chase_ok),
             "R_regime": r_regime, "R_atr1": bool(r_atr1), "R_atr3": bool(r_atr3), "R_liq": r_liq, "R_antichase": bool(ac_ok) and bool(r_rise), "R_spread": bool(r_spread),
             "V_hist": bool(v_hist), "V_above": bool(v_above), "V_trend": bool(v_trend), "V_gap": bool(v_gap), "V_tick": v_tick, "V_tchase": bool(v_tchase), "V_cap": bool(v_cap), "V_drop": bool(v_drop),
             "V_live_now": bool(v_live),
-            "E_mid": e_mid, "E_trig": bool(e_trig), "E_scored": pr is not None, "E_p": (pr[0] if pr else float("nan")), "E_thr": (pr[1] if pr else float("nan")),
-            "tick_cov": bool(k >= 0 and (np.datetime64(now) - recv[0]) >= np.timedelta64(30, "m")), "open_gap": open_gap, "vwap_gap": (price / vw - 1) * 100 if vw == vw and vw > 0 else float("nan"), "spread_ticks": spread_ticks,
+            "E_mid": e_mid, "E_trig": bool(e_trig), "E_scored": bool(pr is not None and np.isfinite(pr[0]) and np.isfinite(pr[1])), "E_p": (pr[0] if pr else float("nan")), "E_thr": (pr[1] if pr else float("nan")),
+            "tick_cov": bool(k >= 0 and (np.datetime64(now) - recv[0]) >= np.timedelta64(30, "m")
+                             and (np.datetime64(now) - recv[k]) <= np.timedelta64(int(float(G("TICK_TRIGGER_FEED_STALE_SECONDS", 120)) * 1000), "ms")), "open_gap": open_gap, "vwap_gap": (price / vw - 1) * 100 if vw == vw and vw > 0 else float("nan"), "spread_ticks": spread_ticks,
             "tp_i": tp_i, "sl_i": sl_i, "tp_o": tp_o, "sl_o": sl_o,
         })
     # bars for the rebound detector (bar start, epoch ms; the file's clock is KST)
