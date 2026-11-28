@@ -168,6 +168,12 @@ interface Props {
   invNote?: string;
   /** heights (px) of the panes under the price pane by key ('volume' or an indicator key); a pane without one gets the default */
   paneHeights?: Record<string, number>;
+  /** [2026-11-28] bars shown before the user zooms: this many wheel steps out of the default (each x 1.15) */
+  defaultZoomSteps?: number;
+  /** [2026-11-28] bars shown before the user zooms (a zoom carried over from another chart); wins over defaultZoomSteps */
+  viewCount?: number;
+  /** the bar count after a wheel zoom; 0 = back to the default (double click) */
+  onViewCount?: (count: number) => void;
   /** a handle was dragged (or double clicked = that key removed): the new heights */
   onPaneHeights?: (h: Record<string, number>) => void;
   /** the x of a pane was clicked ('volume' or an indicator key) */
@@ -384,7 +390,8 @@ export function PriceChart(props: Props) {
 
   // viewport: follow the newest bar unless the user zoomed/panned away from it
   const vp = useMemo(() => {
-    const count = Math.min(bars.length, Math.max(MIN_BARS, view?.count ?? defaultCount));
+    const base = props.viewCount && props.viewCount > 0 ? props.viewCount : Math.round(defaultCount * Math.pow(1.15, props.defaultZoomSteps || 0));
+    const count = Math.min(bars.length, Math.max(MIN_BARS, view?.count ?? base));
     let end = view ? Math.min(bars.length, Math.max(Math.min(count, bars.length), view.end)) : bars.length;
     // [2026-11-23] focusT: the bar at that time sits at about 3/4 of the plot until the user zooms / pans
     if (!view && props.focusT !== undefined) {
@@ -393,7 +400,7 @@ export function PriceChart(props: Props) {
       end = Math.min(bars.length, Math.max(count, fi + 1 + Math.floor(count / 4)));
     }
     return { start: Math.max(0, end - count), end, count };
-  }, [view, bars, defaultCount, props.focusT]);
+  }, [view, bars, defaultCount, props.focusT, props.viewCount, props.defaultZoomSteps]);
 
   const model = useMemo(() => {
     if (!bars.length || width <= 0) return null;
@@ -746,6 +753,7 @@ export function PriceChart(props: Props) {
       const anchor = vp.start + frac * vp.count;
       const end = Math.round(Math.min(bars.length, Math.max(count, anchor + (1 - frac) * count)));
       setView(end >= bars.length && !view ? { end: bars.length, count } : { end, count });
+      props.onViewCount?.(count);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -834,7 +842,7 @@ export function PriceChart(props: Props) {
   return (
     <div className={`price-chart ${interactive ? 'interactive' : ''}`} ref={ref} style={{ height }}>
       {model && !model.empty && width > 0 && (
-        <svg width={width} height={height} onMouseMove={onMove} onMouseDown={onDown} onClick={onClick} className={tool !== 'none' ? 'drawing' : undefined} onMouseLeave={() => (setHov(null), setHoverY(null))} onDoubleClick={() => interactive && setView(null)}>
+        <svg width={width} height={height} onMouseMove={onMove} onMouseDown={onDown} onClick={onClick} className={tool !== 'none' ? 'drawing' : undefined} onMouseLeave={() => (setHov(null), setHoverY(null))} onDoubleClick={() => interactive && (setView(null), props.onViewCount?.(0))}>
           <defs>
             <clipPath id={`pc-clip-${L}-${R}`}>
               <rect x={L} y={0} width={W} height={height} />

@@ -179,7 +179,7 @@ input, select { background: var(--surface); border: 1px solid var(--border); bor
 .rb-tabs button { padding: 4px 16px; }
 .rb-ok { color: var(--st-pass); }
 .rb-hist { display: grid; grid-template-columns: 340px 1fr; min-height: 420px; height: calc(100vh - 260px); max-height: 640px; }
-.rb-hist-list { border-right: 1px solid var(--border); overflow: auto; }
+.rb-hist-list { border-right: 1px solid var(--border); overflow: auto; outline: none; }
 .rb-hist-bar { display: flex; align-items: center; gap: 6px; padding: 8px 10px 6px 14px; position: sticky; top: 0; background: var(--surface); }
 .rb-hist-bar .muted { flex: 1; }
 .rb-hist-empty { padding: 10px 14px; }

@@ -83,6 +83,10 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
     return () => ro.disconnect();
   }, []);
   const chartH = Math.max(200, h);
+  // [2026-11-28] what the user changed on this chart stays when another alert is picked (user): the zoom (bar count) and the
+  // pane heights. Kept for this window only - the chart window's own settings are not written
+  const [zoom, setZoom] = useState(0);
+  const [paneH, setPaneH] = useState<Record<string, number> | undefined>(undefined);
   // [2026-11-28] always drawn here (user), whatever the chart window shows: the VWAP line (the alert's "VWAP 대비" figures) and
   // the indicators of the required conditions - B RSI, C MACD, D DI+ (ADX/DMI), E / F MA5 · MA20
   const shown = useMemo(() => {
@@ -117,7 +121,11 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
             n={1}
             indicators={shown}
             volume={o.vol !== false}
-            paneHeights={o.paneH}
+            paneHeights={paneH ?? o.paneH}
+            onPaneHeights={setPaneH}
+            defaultZoomSteps={5}
+            viewCount={zoom || undefined}
+            onViewCount={setZoom}
             trades={[]}
             alerts={bell}
             onAlertClick={(id) => void window.hts.reboundHistoryPopup(id)}
@@ -157,10 +165,22 @@ export function HistoryTab() {
     if (!it.read) void window.hts.reboundHistoryRead([it.id]).then(load);
   };
   const unread = items.filter((x) => !x.read).length;
+  // [2026-11-28] up / down keys move through the list (user); the row is scrolled into view
+  const listRef = useRef<HTMLDivElement>(null);
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    if (!items.length) return;
+    e.preventDefault();
+    const i = items.findIndex((x) => x.id === sel);
+    const j = i < 0 ? 0 : Math.min(items.length - 1, Math.max(0, i + (e.key === 'ArrowDown' ? 1 : -1)));
+    if (j === i) return;
+    pick(items[j]);
+    listRef.current?.querySelector(`[data-id="${items[j].id}"]`)?.scrollIntoView({ block: 'nearest' });
+  };
 
   return (
     <div className="rb-hist">
-      <div className="rb-hist-list">
+      <div className="rb-hist-list" ref={listRef} tabIndex={0} onKeyDown={onKey}>
         <div className="rb-hist-bar">
           <span className="muted">
             {items.length}건{unread ? ` · 미확인 ${unread}건` : ''}
@@ -174,7 +194,7 @@ export function HistoryTab() {
         </div>
         {!items.length && <p className="muted small rb-hist-empty">아직 알림이 없습니다. 감지되어 팝업이 뜬 알림이 여기에 쌓입니다 (최대 500건).</p>}
         {items.map((it) => (
-          <div key={it.id} className={`rb-hist-row ${it.id === sel ? 'on' : ''} ${it.read ? '' : 'unread'}`} onClick={() => pick(it)}>
+          <div key={it.id} data-id={it.id} className={`rb-hist-row ${it.id === sel ? 'on' : ''} ${it.read ? '' : 'unread'}`} onClick={() => pick(it)}>
             <i title={it.read ? '확인함' : '미확인'} />
             <span className="rb-hist-when">{when(it.at)}</span>
             <b>{it.name}</b>

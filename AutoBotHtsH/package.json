@@ -1,5 +1,6 @@
 {
   "_updateLog": [
+    "v1.1.21_001 (2026-11-28): 바닥 반등 초입 감시 창 - 차트 기본 표시 범위를 휠 5단계만큼 넓힘, 알림을 바꿔도 조정한 확대 / 창 높이 유지, 알림 목록 상/하 키 이동",
     "v1.1.20_005 (2026-11-28): 바닥 반등 초입 감시 창 차트 - 창 기본 비율 변경(가격 창 약 45%, 거래량·지표 창이 나머지를 나눠 씀, 창당 100px 상한 해제)",
     "v1.1.20_004 (2026-11-28): 바닥 반등 초입 감시 창 차트 - 알림 요약 상자를 종 근처의 빈 곳(위 또는 아래)에 그려 봉·지표선을 가리지 않게 함",
     "v1.1.20_003 (2026-11-28): 알림 종 옆 요약 상자가 다크 테마에서 흰 바탕에 밝은 글자로 보이지 않던 문제 수정 (테마 색 사용)",
@@ -138,7 +139,7 @@
     "[2026-11-20] type=feat - v1.0.0_001: AutoBotHtsH 첫 버전 - HtsH(v0.1.5_002) 화면(MDI 창: 차트/현재가/종목정보/관심종목/순위/지수/뉴스, KIS 조회 전용)에 AutoBotH(v2.3.32_003) 기능을 창 종류로 추가: 봇 제어/데이터 작업/수집기/파이프라인/종목 보드/타임라인/봇 차트/보유 현황/매매 결과/가상 매매/봇 설정·연결 (툴바 봇 메뉴). 이름이 겹치는 기능은 봇 쪽에 봇 접두(봇 차트, 봇 설정·연결). 별도 앱(kr.xgraph.autobothtsh, %APPDATA%/autobothtsh) - 첫 실행 때 AutoBotH 연결 설정(비밀번호 제외)과 HtsH 관심종목을 가져옴. 로컬 모드 스케줄러(틱 수집기/장 마감 작업/감시목록 복사)는 AutoBotH 와 공유 잠금으로 한 앱에서만 실행"
   ],
   "name": "autobothtsh",
-  "version": "1.1.20",
+  "version": "1.1.21",
   "description": "HtsH(KIS 조회 전용 HTS) + AutoBotH(r003 파이프라인 뷰어·원격 제어) 통합 앱",
   "author": "xgraph <xgraph.kr@gmail.com>",
   "license": "UNLICENSED",
@@ -192,7 +193,7 @@
       "provider": "generic",
       "url": "https://update.iccid.dev/AutoBotHtsH/"
     },
-    "buildNumber": "005",
+    "buildNumber": "001",
     "appId": "kr.xgraph.autobothtsh",
     "productName": "AutoBotHtsH",
     "copyright": "Copyright © 2026 xgraph",
