@@ -1,4 +1,6 @@
 // Update log
+// - [2026-11-28] type=fix (Codex review): placeNoteBox searches the whole width of the pane and counts line segments passing through
+//   the box (not only sample points inside it)
 // - [2026-11-24] type=feat (user 2026-11-24): LabelLine.value - the line's latest value shown after the name, counted in the tag width
 // - [2026-11-24] type=feat (Name tags on the price-pane indicator lines (MA5 / VWAP / 볼린저 중 / 전환 / 기준 ...) (user 2026-11-24): each tag
 //   is put on its own line where it covers nothing - no candle, no other line, no legend, no tag placed before it. Candidates run
@@ -110,29 +112,59 @@ export function placeLineLabels(lines: LabelLine[], candles: Box[], blocked: Box
 
 /**
  * [2026-11-28] Where a note box of w x h goes near an anchor (the alert bell): the place inside `area` that covers the least of the
- * candles, the line points and the blocked boxes - an empty part of the pane above or below the anchor (user). Among equally
+ * candles, the lines and the blocked boxes - an empty part of the pane above or below the anchor (user). Among equally
  * free places the one nearest to the anchor wins. Returns the box's top-left corner.
+ * (Codex review 2026-11-28: every x of the pane is a candidate, not only five around the bell; a line counts where one of its
+ * segments passes through the box, not only where a sample point lies inside.) `lines`: polylines sorted by x.
  */
-export function placeNoteBox(anchor: { x: number; y: number }, w: number, h: number, candles: Box[], linePts: [number, number][], blocked: Box[], area: Box): { x: number; y: number } {
+export function placeNoteBox(anchor: { x: number; y: number }, w: number, h: number, candles: Box[], lines: [number, number][][], blocked: Box[], area: Box): { x: number; y: number } {
   const x0 = area.x + 2;
   const x1 = Math.max(x0, area.x + area.w - w - 2);
   const y0 = area.y + 2;
   const y1 = Math.max(y0, area.y + area.h - h - 2);
   const clampX = (x: number) => Math.min(x1, Math.max(x0, x));
-  const xs = [...new Set([anchor.x + 12, anchor.x - 12 - w, anchor.x - w / 2, anchor.x - w / 4, anchor.x - (3 * w) / 4].map((x) => Math.round(clampX(x))))];
+  const cand = [anchor.x + 12, anchor.x - 12 - w, anchor.x - w / 2, anchor.x - w / 4, anchor.x - (3 * w) / 4];
+  for (let x = x0; x <= x1; x += Math.max(12, w / 4)) cand.push(x);
+  cand.push(x1);
+  const xs = [...new Set(cand.map((x) => Math.round(clampX(x))))];
   const PAD = 3;
   let best = { x: xs[0], y: y0 };
   let bestCost = Infinity;
   for (const x of xs) {
     const inX = candles.filter((c) => c.x + c.w > x - PAD && c.x < x + w + PAD);
-    const ptsX = linePts.filter(([px]) => px >= x - PAD && px <= x + w + PAD);
+    const bl = x - PAD;
+    const br = x + w + PAD;
+    // the part of each line over this x range, with one neighbour on both sides (a segment may enter from outside)
+    const segs = lines
+      .map((pts) => {
+        const a = Math.max(0, lowerBound(pts, bl) - 1);
+        let b = a;
+        while (b < pts.length && pts[b][0] <= br) b++;
+        return pts.slice(a, Math.min(pts.length, b + 1));
+      })
+      .filter((pts) => pts.length > 0);
     for (let y = y0; y <= y1; y += 4) {
       let cover = 0;
       for (const c of inX) {
         const v = Math.min(c.y + c.h, y + h + PAD) - Math.max(c.y, y - PAD);
         if (v > 0) cover += v * Math.max(1, c.w);
       }
-      for (const [, py] of ptsX) if (py >= y - PAD && py <= y + h + PAD) cover += 30;
+      const bt = y - PAD;
+      const bb = y + h + PAD;
+      for (const pts of segs) {
+        for (let k = 0; k < pts.length; k++) {
+          const [px, py] = pts[k];
+          const inside = px >= bl && px <= br && py >= bt && py <= bb;
+          if (inside) {
+            cover += 30;
+            continue;
+          }
+          const n = pts[k + 1];
+          if (!n || (n[0] >= bl && n[0] <= br && n[1] >= bt && n[1] <= bb)) continue;
+          // both ends outside: the segment still passes through when it is over the box's x range and reaches from above to below
+          if (n[0] >= bl && px <= br && Math.min(py, n[1]) <= bb && Math.max(py, n[1]) >= bt && segHitsBox(px, py, n[0], n[1], bl, bt, br, bb)) cover += 30;
+        }
+      }
       for (const b of blocked) {
         const ox = Math.min(b.x + b.w, x + w) - Math.max(b.x, x);
         const oy = Math.min(b.y + b.h, y + h) - Math.max(b.y, y);
@@ -149,4 +181,25 @@ export function placeNoteBox(anchor: { x: number; y: number }, w: number, h: num
     }
   }
   return best;
+}
+
+/** does the segment (x1,y1)-(x2,y2) touch the box l,t,r,b (Liang-Barsky clip) */
+function segHitsBox(x1: number, y1: number, x2: number, y2: number, l: number, t: number, r: number, b: number): boolean {
+  let u0 = 0;
+  let u1 = 1;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const clip = (pp: number, q: number): boolean => {
+    if (pp === 0) return q >= 0;
+    const u = q / pp;
+    if (pp < 0) {
+      if (u > u1) return false;
+      if (u > u0) u0 = u;
+    } else {
+      if (u < u0) return false;
+      if (u < u1) u1 = u;
+    }
+    return true;
+  };
+  return clip(-dx, x1 - l) && clip(dx, r - x1) && clip(-dy, y1 - t) && clip(dy, b - y1);
 }

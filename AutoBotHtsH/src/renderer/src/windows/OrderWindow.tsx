@@ -1,4 +1,9 @@
 // Update log
+// - [2026-11-28] type=fix (Codex review, v1.1.21_003): nothing of another symbol / account stays in the form - the asked price (order
+//   book click) is used once, for its own symbol (opts.pcode), while fresh; the first quote does not replace a price the user set or
+//   a revise price; the buyable amount is kept with what it was asked for (mode / env / session / symbol / type / price) and only
+//   the newest inquiry counts; balance / open orders / quantity are cleared on a mode, server or account change; while another
+//   symbol's order is revised the shown book / quote are not used for its price, and the price returns to this symbol's afterwards)
 // - [2026-11-26] type=feat (잔고: "제세금 포함" checkbox, the same switch as the bot's 보유 현황 / 매매 결과 (store feesIncluded, user
 //   2026-11-26) - 평가손익 / 수익률 of the rows, the total and the form's 평가손익 minus the estimated commission x 2 + sell tax (bot/shared/fees))
 // - [2026-11-26] type=feat (Symbol box in the header, the same as every other symbol window (user 2026-11-26))
@@ -32,6 +37,9 @@ const toNum = (s: string) => (s === '' ? 0 : Number(s));
 const hms = (s: string) => (s.length >= 6 ? `${s.slice(0, 2)}:${s.slice(2, 4)}:${s.slice(4, 6)}` : s);
 const PCTS = [10, 25, 50, 100];
 
+/** window id -> the asked-price request (opts.at) already used; outside the component because a minimized window is unmounted */
+const askedDone = new Map<string, number>();
+
 export function OrderWindow({ win }: { win: Win }) {
   const code = win.code;
   const sym = useSymbol(code);
@@ -58,7 +66,9 @@ export function OrderWindow({ win }: { win: Win }) {
   const [qty, setQty] = useState('');
   const [st, setSt] = useState<OrderState | null>(null);
   const [bal, setBal] = useState<Balance | null>(null);
-  const [buyable, setBuyable] = useState<Buyable | null>(null);
+  // [2026-11-28] (Codex review) the buyable amount is kept with what it was asked for (symbol / type / price): a late answer for
+  // the previous symbol is not used for the next one (the % buttons filled the quantity from it)
+  const [buyableRes, setBuyableRes] = useState<{ key: string; data: Buyable | null } | null>(null);
   const [open, setOpen] = useState<OpenOrder[]>([]);
   const [fills, setFills] = useState<Fill[] | null>(null);
   const [loadErr, setLoadErr] = useState('');
@@ -72,10 +82,25 @@ export function OrderWindow({ win }: { win: Win }) {
   const ready = !!st?.ready;
   const priceNum = toNum(price);
   const qtyNum = toNum(qty);
+  const [sess, setSess] = useState(0);
+  useEffect(() => setSess((n) => n + 1), [st]);
+  const buyKey = `${mode}|${env}|${sess}|${code}|${type}|${type === 'market' ? 0 : priceNum}`;
+  const buyGen = useRef(0);
+  const buyKeyNow = useRef(buyKey);
+  buyKeyNow.current = buyKey;
+  const buyable = buyableRes && buyableRes.key === buyKey ? buyableRes.data : null;
 
+  const acctGen = useRef(0);
   // ---- the session: can this window order at all ----
   useEffect(() => {
     let alive = true;
+    setSt(null); // the state of the previous mode / server is not used while the new one is asked
+    acctGen.current++;
+    setBal(null);
+    setOpen([]);
+    setFills(null);
+    setEdit(null);
+    setQty(''); // a quantity filled from the previous account's amounts
     void window.hts.orderState().then((s) => alive && setSt(s));
     return () => {
       alive = false;
@@ -88,31 +113,52 @@ export function OrderWindow({ win }: { win: Win }) {
     setQty('');
     setEdit(null);
     setMsg(null);
-    setBuyable(null);
+    setBuyableRes(null);
     priced.current = '';
     setPrice('');
   }, [code]);
   const askedAt = Number(win.opts.at) || 0;
+  const askedKeep = useRef(0);
   useEffect(() => {
     const p = Number(win.opts.price);
-    if (askedAt && p > 0) {
+    // once per request, and only a request of the last seconds: one kept in a saved layout, or met again after the window
+    // showed another symbol in between, is not a price the user is asking for now (Codex review 2026-11-28)
+    if (!askedAt || askedDone.get(win.id) === askedAt) return;
+    askedDone.set(win.id, askedAt);
+    if (Date.now() - askedAt > 10_000) return;
+    // the asked price belongs to the symbol it was asked for (pcode); another symbol shown in this window later does not get it
+    if (p > 0 && win.opts.pcode === code) {
+      askedKeep.current = Date.now(); // this price stays when the revise it ends was another symbol's
       setPrice(String(p));
       setType('limit');
       setEdit(null);
       priced.current = code;
     }
   }, [askedAt, code]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a revise of another symbol's order has ended: its price is not this symbol's price - back to the current price
+  const prevEdit = useRef<OpenOrder | null>(null);
   useEffect(() => {
-    if (priced.current !== code && live?.price) {
+    const was = prevEdit.current;
+    prevEdit.current = edit;
+    const keep = Date.now() - askedKeep.current < 1000; // an asked price was set in this very update
+    if (was && !edit && was.code !== code && !keep) {
+      priced.current = '';
+      setPrice('');
+    }
+  }, [edit]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!edit && priced.current !== code && live?.price) {
       priced.current = code;
       setPrice(String(live.price));
     }
-  }, [code, live?.price]);
+  }, [code, live?.price, edit]);
 
   // ---- account data: balance / open orders polled while the window is shown, the buyable amount on every price change ----
   const loadAccount = useCallback(async () => {
     // today's fills only while their tab is shown (one more account call)
+    const gen = acctGen.current;
     const [b, o, f] = await Promise.all([window.hts.orderBalance(), window.hts.orderOpen(), tab === 'fills' ? window.hts.orderFills() : null]);
+    if (gen !== acctGen.current) return; // asked for the previous mode / server
     if (b.ok) setBal(b.data);
     if (o.ok) setOpen(o.data);
     if (f?.ok) setFills(f.data);
@@ -125,15 +171,19 @@ export function OrderWindow({ win }: { win: Win }) {
     return () => window.clearInterval(id);
   }, [ready, win.min, loadAccount, st?.account]);
   const loadBuyable = useCallback(async () => {
+    if (buyKey !== buyKeyNow.current) return;
+    const gen = ++buyGen.current;
     const r = await window.hts.orderBuyable(code, type, type === 'market' ? 0 : priceNum);
-    setBuyable(r.ok ? r.data : null);
-  }, [code, type, priceNum]);
+    if (gen === buyGen.current) setBuyableRes({ key: buyKey, data: r.ok ? r.data : null });
+  }, [code, type, priceNum, buyKey]);
   useEffect(() => {
     if (!ready || side !== 'buy' || (type === 'limit' && !(priceNum > 0))) return;
     const id = window.setTimeout(() => void loadBuyable(), 400);
     return () => window.clearTimeout(id);
   }, [ready, side, type, priceNum, loadBuyable]);
 
+  const loadBuyableNow = useRef(loadBuyable);
+  loadBuyableNow.current = loadBuyable;
   const holding = useMemo(() => bal?.holdings.find((h) => h.code === code) || null, [bal, code]);
   // [2026-11-26] "제세금 포함": KIS's 평가손익 minus the estimated costs of selling the holding now (shared with the bot's 보유 현황)
   const net = useBotStore((s) => s.feesIncluded);
@@ -155,6 +205,9 @@ export function OrderWindow({ win }: { win: Win }) {
     : orderProblem({ code, side, type, qty: qtyNum, price: priceNum }, { upper: live?.upper, lower: live?.lower });
   const over = !edit && qtyNum > 0 && ready && (side === 'buy' ? buyable !== null : bal !== null) && qtyNum > maxQty;
 
+  /** the order being revised belongs to another symbol than the one shown: the shown book / quote are not its prices */
+  const otherEdit = !!edit && edit.code !== code;
+  const stepBase = otherEdit ? 0 : live?.price || 0;
   const setSide = (s: OrderSide) => {
     setOpts(win.id, { side: s });
     setEdit(null);
@@ -162,8 +215,9 @@ export function OrderWindow({ win }: { win: Win }) {
   };
   const after = async (ok: boolean, text: string) => {
     setMsg({ ok, text });
+    setBuyableRes(null); // the amount from before the order is not used any more
     await loadAccount();
-    if (side === 'buy') await loadBuyable();
+    if (side === 'buy') await loadBuyableNow.current();
   };
   const submit = async () => {
     if (busy || !ready || problem) return;
@@ -198,6 +252,7 @@ export function OrderWindow({ win }: { win: Win }) {
   const startEdit = (o: OpenOrder) => {
     setEdit(o);
     setType('limit');
+    priced.current = code; // the first quote of the symbol no longer fills the price
     setPrice(String(o.price));
     setMsg(null);
   };
@@ -205,6 +260,13 @@ export function OrderWindow({ win }: { win: Win }) {
     const r = await window.hts.orderSetAccount(text);
     if (r.ok) {
       setSt(r.data);
+      // another account: what was read for the previous one goes (the next poll reads the new one)
+      acctGen.current++;
+      setBal(null);
+      setOpen([]);
+      setFills(null);
+      setEdit(null);
+      setQty('');
       setAcctText('');
       setAcctOpen(false);
       setMsg(null);
@@ -234,7 +296,7 @@ export function OrderWindow({ win }: { win: Win }) {
       <div className="ord-main">
         <div className="ord-book">
           {book ? (
-            <OrderBookView ob={book} price={live?.price} prevClose={live?.prevClose} onPick={(p) => (setPrice(String(p)), setType('limit'))} />
+            <OrderBookView ob={book} price={live?.price} prevClose={live?.prevClose} onPick={(p) => !otherEdit && ((priced.current = code), setPrice(String(p)), setType('limit'))} />
           ) : (
             <div className="empty small">{ob.error || '호가 불러오는 중…'}</div>
           )}
@@ -298,7 +360,7 @@ export function OrderWindow({ win }: { win: Win }) {
             </span>
             <span>가격</span>
             <span className="ord-step">
-              <button disabled={type === 'market'} onClick={() => setPrice(String(stepPrice(priceNum || live?.price || 0, -1)))} title="한 호가 아래">
+              <button disabled={type === 'market' || !(priceNum || stepBase)} onClick={() => ((priced.current = code), setPrice(String(stepPrice(priceNum || stepBase, -1))))} title="한 호가 아래">
                 −
               </button>
               <input
@@ -307,10 +369,10 @@ export function OrderWindow({ win }: { win: Win }) {
                 disabled={type === 'market'}
                 value={type === 'market' ? '' : price === '' ? '' : Number(price).toLocaleString('ko-KR')}
                 placeholder={type === 'market' ? '시장가' : '가격'}
-                onChange={(e) => setPrice(digits(e.target.value))}
+                onChange={(e) => ((priced.current = code), setPrice(digits(e.target.value)))}
                 onKeyDown={(e) => e.key === 'Enter' && void submit()}
               />
-              <button disabled={type === 'market'} onClick={() => setPrice(String(stepPrice(priceNum || live?.price || 0, 1)))} title="한 호가 위">
+              <button disabled={type === 'market' || !(priceNum || stepBase)} onClick={() => ((priced.current = code), setPrice(String(stepPrice(priceNum || stepBase, 1))))} title="한 호가 위">
                 +
               </button>
               <u>원</u>

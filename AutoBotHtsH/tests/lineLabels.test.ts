@@ -51,9 +51,23 @@ describe('placeNoteBox', () => {
   });
   it('keeps off a line and a blocked box, and stays inside the pane', () => {
     const line: [number, number][] = Array.from({ length: 120 }, (_, k) => [k * 5, 250]);
-    const p = placeNoteBox({ x: 590, y: 30 }, 200, 60, band(10, 100), line, [{ x: 0, y: 110, w: 600, h: 40 }], pane);
+    const p = placeNoteBox({ x: 590, y: 30 }, 200, 60, band(10, 100), [line], [{ x: 0, y: 110, w: 600, h: 40 }], pane);
     expect(p.x + 200).toBeLessThanOrEqual(600);
     expect(p.y).toBeGreaterThanOrEqual(150);
     expect(p.y + 60).toBeLessThan(250 - 3);
+  });
+  it('sees a line that crosses the box between two sample points', () => {
+    // a steep line with points far apart: no point lies inside a box at x 250..450, the segment does
+    const steep: [number, number][] = [[200, 0], [500, 300]];
+    const p = placeNoteBox({ x: 350, y: 150 }, 100, 40, [], [steep], [], pane);
+    const mid = (x: number) => x - 200; // the line's y at x
+    const over = mid(p.x - 3) <= p.y + 40 + 3 && mid(p.x + 100 + 3) >= p.y - 3;
+    expect(over).toBe(false);
+  });
+  it('uses free room away from the bell when every place around it is covered', () => {
+    // candles fill x 150..450 over the whole height; the left part of the pane is empty
+    const wall: Box[] = Array.from({ length: 60 }, (_, k) => ({ x: 150 + k * 5, y: 0, w: 3, h: 300 }));
+    const p = placeNoteBox({ x: 300, y: 150 }, 100, 40, wall, [], [], pane);
+    expect(p.x + 100 <= 150 || p.x >= 448).toBe(true);
   });
 });

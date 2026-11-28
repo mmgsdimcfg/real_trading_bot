@@ -484,7 +484,7 @@ export function ChartWindow({ win }: { win: Win }) {
             ◀ 이전 틱
           </button>
         )}
-        <button className="mini" onClick={() => setChartKey((k) => k + 1)} title="확대·이동 초기화 (차트 더블클릭)">
+        <button className="mini" onClick={() => (setChartKey((k) => k + 1), setZoom((z) => ({ ...z, [`${kind}/${n}`]: 0 })))} title="확대·이동 초기화 (차트 더블클릭)">
           ⟲
         </button>
         <span className="muted small">

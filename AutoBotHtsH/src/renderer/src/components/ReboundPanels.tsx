@@ -114,7 +114,7 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
         {!loading && !res.err && !day.length && <div className="empty">그날 분봉을 받지 못했습니다 (지난 날짜 분봉은 최근 20거래일, 실전 서버에서만).</div>}
         {day.length > 0 && (
           <PriceChart
-            key={key}
+            key={`${key}|${item.id}`}
             bars={day}
             warm={warm}
             kind="min"

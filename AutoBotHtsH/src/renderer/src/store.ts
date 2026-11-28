@@ -351,7 +351,7 @@ export const useStore = create<State>()((set, get) => {
     },
     openOrder: (code, side, price) => {
       const id = get().open('order', { code });
-      get().setOpts(id, { side, price: price || 0, at: Date.now() });
+      get().setOpts(id, { side, price: price || 0, at: Date.now(), pcode: code });
       return id;
     },
     openBot: (tab) => {

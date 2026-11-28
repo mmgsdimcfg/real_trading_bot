@@ -753,7 +753,8 @@ export function PriceChart(props: Props) {
       const anchor = vp.start + frac * vp.count;
       const end = Math.round(Math.min(bars.length, Math.max(count, anchor + (1 - frac) * count)));
       setView(end >= bars.length && !view ? { end: bars.length, count } : { end, count });
-      props.onViewCount?.(count);
+      // a wheel step that cannot change anything (all bars of a short symbol are shown already) does not replace the remembered zoom
+      if (count !== vp.count) props.onViewCount?.(count);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -828,16 +829,22 @@ export function PriceChart(props: Props) {
   }, [props.lineLabels, model, showLegend, legendRowsN, infoY, L, W, priceH]); // eslint-disable-line react-hooks/exhaustive-deps
   // [2026-11-28] what the alert note box keeps off: the candles, the overlay lines, the legend block
   const noteAvoid = useMemo(() => {
-    const out = { candles: [] as Box[], pts: [] as [number, number][], blocked: [] as Box[] };
+    const out = { candles: [] as Box[], lines: [] as [number, number][][], blocked: [] as Box[] };
     if (!props.alerts?.length || !model || model.empty) return out;
     out.candles = model.slots.map((sl) => {
       const top = model.sy(sl.b.h);
       return { x: sl.x - Math.max(1.5, sl.w / 2), y: top, w: Math.max(3, sl.w), h: Math.max(2, model.sy(sl.b.l) - top) };
     });
-    out.pts = model.labelLines.flatMap((ln) => ln.pts);
+    out.lines = model.labelLines.map((ln) => ln.pts);
+    // the envelope's centre line is drawn without a name tag - it is a chart line all the same
+    const mid = S.env?.mid;
+    if (mid) out.lines.push(model.slots.filter((sl) => Number.isFinite(mid[sl.i])).map((sl) => [sl.x, model.sy(mid[sl.i])] as [number, number]));
     if (showLegend) out.blocked.push({ x: L, y: TOP, w: Math.min(W, 480), h: 16 + infoY + legendRowsN * 14 });
     return out;
-  }, [props.alerts, model, showLegend, legendRowsN, infoY, L, W]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [props.alerts, model, S, showLegend, legendRowsN, infoY, L, W]); // eslint-disable-line react-hooks/exhaustive-deps
+  // the place found for each note box, kept until the chart (noteAvoid) or the box changes - a crosshair move renders the chart
+  // again and the search costs tens of ms on a full chart (Codex review 2026-11-28)
+  const notePos = useRef(new Map<string | number, { av: unknown; sig: string; x: number; y: number }>());
 
   return (
     <div className={`price-chart ${interactive ? 'interactive' : ''}`} ref={ref} style={{ height }}>
@@ -1017,7 +1024,17 @@ export function PriceChart(props: Props) {
             const bw = Math.min(W - 8, Math.max(0, ...note.map(wide)) + 14);
             const bh = note.length * lineH + 8;
             // [2026-11-28] in the empty part of the pane above or below the bell, off the candles and the lines (user)
-            const { x: bx, y: by } = note.length ? placeNoteBox({ x, y }, bw, bh, noteAvoid.candles, noteAvoid.pts, noteAvoid.blocked, { x: L, y: TOP, w: W, h: priceH }) : { x, y };
+            let pos = { x, y };
+            if (note.length) {
+              const sig = [x, y, bw, bh, L, TOP, W, priceH].join();
+              const hit = notePos.current.get(a.id);
+              if (hit && hit.av === noteAvoid && hit.sig === sig) pos = hit;
+              else {
+                pos = placeNoteBox({ x, y }, bw, bh, noteAvoid.candles, noteAvoid.lines, noteAvoid.blocked, { x: L, y: TOP, w: W, h: priceH });
+                notePos.current.set(a.id, { av: noteAvoid, sig, ...pos });
+              }
+            }
+            const { x: bx, y: by } = pos;
             return (
               <g key={a.id}>
                 {note.length > 0 && (
