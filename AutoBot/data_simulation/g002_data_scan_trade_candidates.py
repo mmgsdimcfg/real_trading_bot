@@ -25,6 +25,11 @@ Update log format (append only):
 
 Update log:
 - [2026-11-28] type=feat owner=claude
+    summary: s1 에서 ETF / ETN 을 모두 제외 (사용자 요청) - s1_fund_excluded. 판별은 r011_edge_ai.is_fund_product(운용사 브랜드 첫 단어 /
+      ETN / 레버리지 / 인버스 / 선물) - Edge AI, g058 과 같은 기준. 이전에는 파생형 ETF 만 제외해 KODEX 증권 같은 일반 ETF 가 선정됐다.
+    impact: scanner (s1 프로파일만. v0 / v1 / v2 는 변화 없음)
+    compatibility: s1 선정 결과가 달라짐 (ETF 자리에 다음 순위 종목)
+- [2026-11-28] type=feat owner=claude
     summary: 선정 기본 프로파일을 v0 -> s1 로 변경 (사용자 결정 2026-11-28). DEFAULT_FILTER_PROFILE. 환경변수 G002_FILTER_PROFILE=v0 이면 이전 선정.
     impact: scanner - 다음 선별부터 감시목록이 s1 규칙(적격 8 + 순위 2, 매일 최대 20개)으로 만들어진다. 주문 로직(r003) 불변
     compatibility: 선정 결과가 달라짐 (v0 와 겹치는 종목 약 15%). 선별 파일 / r004 형식은 동일
@@ -1650,6 +1655,7 @@ FILTER_PROFILES = ("v0", "v1", "v2", "s1")
 # ---------------------------------------------------------------------------------------------------------------------------
 # [2026-11-28] s1 = 단순 프로파일(사용자 요청: 조건을 단순 명료하게, 불필요한 조건 제거). 기본값은 v0 그대로 - s1 은
 # G002_FILTER_PROFILE=s1 일 때만 동작한다. v0 의 탈락 사유 27종 + 경고 37종 + 점수 항목 17개 + 보충 규칙을 아래 10개로 줄인다.
+#   [2026-11-28 저녁] ETF / ETN 은 파생형뿐 아니라 모두 제외한다(s1_fund_excluded, 사용자 요청) - 아래 "파생형 ETF 제외"가 넓어진 것.
 #   적격(8): 대상일 일봉 지표 있음 / 우선주·스팩 제외 / 파생형 ETF 제외 / 관리·정지 제외 / 가격 하한·상한(기존 설정) /
 #            20일 평균 거래대금 S1_MIN_AMOUNT 이상 / 종가 > MA20 / 과열 아님(MA20 대비 S1_MAX_VS_MA20 이내, RSI14 <= S1_MAX_RSI)
 #   순위(2): 당일 거래량 / 20일 평균(높을수록) 과 1틱 비율(낮을수록)의 적격 종목 내 순위 백분율 평균. 상위 S1_MAX_PICKS 개.
@@ -1694,12 +1700,20 @@ def _pct_rank(values: list[float]) -> list[float]:
     return out
 
 
+def _s1_is_fund(name) -> bool:
+    """[2026-11-28] ETF / ETN 이름인가 - r011_edge_ai.is_fund_product (Edge AI / g058 과 같은 기준)."""
+    from r011_edge_ai import is_fund_product
+    return is_fund_product(name)
+
+
 def apply_simple_profile(candidates: list[dict]) -> None:
     """[2026-11-28] s1: 각 후보의 fail_reasons / score / eligible 을 단순 규칙으로 다시 쓴다(위 설명). 경고(soft_flags)는
     표시용으로 남기되 점수에 쓰지 않는다. 등급 우선(pattern_tier_rank)은 0 으로 둔다."""
     ok_rows = []
     for row in candidates:
         fails = [r for r in row.get("fail_reasons", []) if r in S1_KEEP_FAILS]
+        if "derivative_etf_excluded" not in fails and _s1_is_fund(row.get("name")):
+            fails.append("s1_fund_excluded")
         vol_ratio = (row.get("ind") or {}).get("vol_ratio")
         tick = _s1_tick_ratio(row.get("price"))
         gap = row.get("close_ma20_ratio")

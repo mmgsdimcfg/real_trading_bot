@@ -186,8 +186,22 @@ class TestSimpleProfileS1(unittest.TestCase):
         with mock.patch.dict(os.environ, {"G002_FILTER_PROFILE": "v0"}):
             self.assertEqual(g002._filter_profile(), "v0")
 
+    def test_every_etf_and_etn_is_excluded(self):
+        """[2026-11-28] s1 leaves out every fund product, not only the derivative ones; a share whose name starts like a brand stays."""
+        rows = [{"code": c, "name": n, "fail_reasons": list(f), "skip_reason": None, "price": 10000.0, "amount_ma20": 9e9,
+                 "close_ma20_ratio": 0.03, "rsi14": 55.0, "ind": {"vol_ratio": 1.5}}
+                for c, n, f in (("etf", "KODEX 증권", ()), ("etn", "신한 WTI원유 ETN", ()), ("lev", "KODEX 레버리지", ("derivative_etf_excluded",)),
+                                ("share", "HK이노엔", ()), ("share2", "삼성전자", ()))]
+        g002.apply_simple_profile(rows)
+        by = {r["code"]: r for r in rows}
+        self.assertEqual(by["etf"]["fail_reasons"], ["s1_fund_excluded"])
+        self.assertEqual(by["etn"]["fail_reasons"], ["s1_fund_excluded"])
+        self.assertEqual(by["lev"]["fail_reasons"], ["derivative_etf_excluded"])
+        self.assertTrue(by["share"]["eligible"] and by["share2"]["eligible"])
+        self.assertFalse(by["etf"]["eligible"] or by["etn"]["eligible"] or by["lev"]["eligible"])
+
     def test_reason_texts_exist(self):
-        for k in ("s1_low_turnover", "s1_below_ma20", "s1_overheated"):
+        for k in ("s1_low_turnover", "s1_below_ma20", "s1_overheated", "s1_fund_excluded"):
             self.assertIn(k, g008.FAIL_REASON_DESC)
 
 

@@ -108,6 +108,7 @@ FAIL_REASON_DESC = {
     # [2026-11-28] g002 단순 프로파일 s1
     "s1_low_turnover": ("20일 평균 거래대금 50억원 미만", "20-day average turnover below 5bn KRW"),
     "s1_below_ma20": ("종가가 20일선 이하", "Close at or below MA20"),
+    "s1_fund_excluded": ("ETF / ETN 제외", "ETF / ETN excluded"),
     "s1_overheated": ("과열: 20일선 대비 +15% 초과 또는 RSI(14) 70 초과", "Overheated: more than +15% above MA20 or RSI(14) above 70"),
 }
 
