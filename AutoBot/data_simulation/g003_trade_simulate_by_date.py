@@ -16,6 +16,11 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-28] type=fix owner=claude
+    summary: resolve_picks_file - r004 가 없을 때 쓰는 선별 파일을 '시뮬레이션 날짜 이전의 마지막 선별'로 변경
+      (이전: 그 날짜 폴더의 _D_picks.txt = 그날 장 마감 뒤 만든 목록, 미래 정보).
+    impact: sim (r004 가 있으면 변화 없음)
+    compatibility: backward-compatible
 - [2026-11-18] type=feat owner=claude
     summary: r006/r005 parity - ATR 손절선 하한(r001 ATR_STOP_MIN_LOSS_PCT), triple 1분 크로스 나이를 정규장 전 크로스면 09:00 부터
       (r001 TRIPLE_1MIN_AGE_FROM_REGULAR_OPEN, r002 clamp_cross_age_to_regular_open).
@@ -881,11 +886,15 @@ def load_picks(picks_file: Path) -> dict[str, str] | None:
 
 
 def resolve_picks_file(data_dir: Path, date_str: str) -> Path:
-    # Preferred naming: _YYYYMMDD_picks.txt (date-scoped watchlist)
-    for name in (f"_{date_str}_picks.txt", f"{date_str}_picks.txt"):
-        dated_picks = data_dir / name
-        if dated_picks.exists():
-            return dated_picks
+    # [2026-11-28] the picks of the scan BEFORE date_str (the scan of date_str itself is made after that day's close - using it
+    # to simulate that day is look-ahead). Was: _<date>_picks.txt of the simulated day's own folder.
+    try:
+        from g005_watchlist_bridge import prior_scan_picks_path
+        prior = prior_scan_picks_path(data_dir.parent, date_str)
+        if prior is not None:
+            return prior
+    except Exception:
+        pass
     return data_dir / PICKS_FILENAME
 
 

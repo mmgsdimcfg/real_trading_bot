@@ -22,6 +22,12 @@ Run:
   python g043_selection_replay.py --report rows_v0.jsonl.gz rows_v0__no_down_trend.jsonl.gz   # side-by-side summary
 
 Update log:
+- [2026-11-28] type=fix owner=claude
+    summary: 다음 거래일을 봇의 거래일 달력(r021.is_trading_day)으로 잡는다. 이전에는 종목 이력의 다음 행 / 다음 데이터 폴더라
+      거래정지 / 수집 누락일이 있으면 그 다음 날 결과가 '다음 날'로 들어갔다(이제 결측으로 빠진다).
+      --full-rows: 후보의 모든 단순 필드를 rows 파일에 남긴다(규칙 연구용).
+    impact: research tooling
+    compatibility: backward-compatible (기본 출력 형식 동일, 결측 처리만 달라짐)
 - [2026-11-19] type=feat owner=claude
     summary: 신규 - 선정 필터 구조 개선 U1(재현 하네스). g002 미변경, 연구용 출력만.
     impact: research tooling (runtime/research/10_selection)
@@ -249,6 +255,15 @@ def scan_date(d: str) -> list[dict]:
     out = []
     for row in res["all_rows"]:
         r = {"date": d, **{k: row.get(k) for k in KEEP}}
+        if os.environ.get("G043_FULL_ROWS") == "1":   # [2026-11-28] --full-rows: every plain field of the candidate (rule studies)
+            for k, v in row.items():
+                if k not in r and (v is None or isinstance(v, (bool, int, float, str))):
+                    r[k] = v
+            for k, v in (row.get("ind") or {}).items():
+                if v is None or isinstance(v, (bool, int, float, str)):
+                    r[f"ind_{k}"] = v
+            r["score_gains"] = {g["key"]: g["value"] for g in (row.get("score_breakdown") or {}).get("gains", [])}
+            r["score_penalties"] = {g["key"]: g["value"] for g in (row.get("score_breakdown") or {}).get("penalties", [])}
         r["picked"] = bool(r["picked"])
         r["fallback"] = "fallback_selected" in (row.get("soft_flags") or [])
         out.append(r)
@@ -299,18 +314,41 @@ def _history(code: str) -> dict | None:
     return h
 
 
+_TDAY: dict[tuple[str, int], str | None] = {}
+
+
+def trading_day_after(d: str, k: int = 1) -> str | None:
+    """[2026-11-28] the k-th trading day after d by the bot's calendar (r021.is_trading_day). Was: the symbol's own next row /
+    the next data folder - a halted or uncollected day made the day after it count as 'the next day'."""
+    key = (d, k)
+    if key not in _TDAY:
+        from datetime import timedelta
+        from r021_jobs import is_trading_day
+        cur, left = datetime.strptime(d, "%Y%m%d"), k
+        for _ in range(40):
+            cur += timedelta(days=1)
+            if is_trading_day(cur.strftime("%Y%m%d")):
+                left -= 1
+                if left == 0:
+                    break
+        _TDAY[key] = cur.strftime("%Y%m%d") if left == 0 else None
+    return _TDAY[key]
+
+
 def labels(code: str, d: str) -> dict:
+    """forward results of a pick of date d; a label whose trading day has no row for the symbol (halt, no data) is left out"""
     h = _history(code)
     if not h or d not in h["idx"]:
         return {}
-    i = h["idx"][d]
-    c0 = h["close"][i]
+    c0 = h["close"][h["idx"][d]]
     out = {}
-    if i + 1 < len(h["dates"]):
-        out["d1_oc"] = h["close"][i + 1] / h["open"][i + 1] - 1.0
     for k in (1, 3, 5):
-        if i + k < len(h["dates"]):
-            out[f"d{k}"] = h["close"][i + k] / c0 - 1.0
+        j = h["idx"].get(trading_day_after(d, k) or "")
+        if j is None:
+            continue
+        if k == 1:
+            out["d1_oc"] = h["close"][j] / h["open"][j] - 1.0
+        out[f"d{k}"] = h["close"][j] / c0 - 1.0
     return out
 
 
@@ -422,8 +460,9 @@ def next_folder(d: str) -> str | None:
     if _FOLDERS is None:
         root = g002.RUNTIME_DATA_DIR
         _FOLDERS = sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 8)
-    later = [x for x in _FOLDERS if x > d]
-    return later[0] if later else None
+    # [2026-11-28] the next TRADING day, and only when its folder was collected (was: the next folder, whatever day it was)
+    nd = trading_day_after(d, 1)
+    return nd if nd in _FOLDERS else None
 
 
 def minute_bars(code: str, d: str):
@@ -546,6 +585,7 @@ def main() -> None:
     ap.add_argument("--suffix", default="", help="extra tag in the output file names (e.g. a test run)")
     ap.add_argument("--cache", action="store_true", help="read per-date pickles in research/10_selection/cache (built on first use)")
     ap.add_argument("--build-cache", action="store_true", help="only build the per-date cache for --start..--end")
+    ap.add_argument("--full-rows", action="store_true", help="keep every plain candidate field in the rows file (larger; for rule studies)")
     ap.add_argument("--report", nargs="*", help="summarize existing rows_*.jsonl.gz files (names in research/10_selection)")
     args = ap.parse_args()
     if args.report:
@@ -562,6 +602,8 @@ def main() -> None:
             for msg in pool.map(build_cache_date, dates):
                 print(f"  {msg} ({time.time() - t0:.0f}s)", flush=True)
         return
+    if args.full_rows:
+        os.environ["G043_FULL_ROWS"] = "1"
     os.environ["G002_FILTER_PROFILE"] = args.variant  # inherited by the worker processes (g002 reads it per call)
     out = run_scan(args)
     text = summarize(out)

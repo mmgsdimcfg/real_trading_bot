@@ -24,6 +24,13 @@ Update log format (append only):
     compatibility: <backward-compatible|breaking>
 
 Update log:
+- [2026-11-28] type=fix owner=claude
+    summary: Codex 검토(선정 결과는 그대로인 수정). (1) 선정 0개인 재실행은 같은 날짜의 이전 선별 파일을
+      _D_picks.txt.stale 로 옮긴다 - 옛 목록이 그 날짜의 선별 결과로 남아 단독 반영(r016 watchlist apply)에 쓰이지 않게.
+      (2) _load_daily_csv: 대상일 이후 행은 버리고, 마지막 행이 대상일이 아니면(정지 / 수집 누락) 일봉 이력 없음으로 본다
+      (최근 40일 표본 15,150개 파일에서 해당 사례 0건 - 방어 코드).
+    impact: scanner (정상 데이터에서는 선정 결과 동일)
+    compatibility: backward-compatible
 - [2026-11-19] type=feat owner=claude
     summary: 선정 필터 구조 개선 U3/U4 - 필터 프로파일(G002_FILTER_PROFILE, 기본 v0 = 이전과 동일). v1 = 레거시 추세 하드필터
       5개를 모든 종목에서 경고(<reason>_soft, -0.7)로, big_bearish_candle을 weak_close(_weak_close)로 통합. v2 = v1 + 소프트
@@ -1043,6 +1050,11 @@ def calc_adx(daily_df, period=10):
     return adx, plus_di, minus_di
 
 
+def _opt(name: str) -> bool:
+    """[2026-11-28] 비교 실험용 스위치(환경변수 G002_<name>=1, 기본 꺼짐 = 이전과 동일). 호출 때마다 읽는다(g043 워커)."""
+    return os.environ.get(f"G002_{name}", "") == "1"
+
+
 def calc_rsi(daily_df, period=10):
     """일봉 기준 RSI(Wilder's smoothing). ADX와 동일한 이유(2026-07-22 changelog: 로컬
     데이터가 종목당 약 20봉이라 표준 period=14는 2*period 이중평활 요건상 NaN이 되기 쉬움)로
@@ -1058,6 +1070,9 @@ def calc_rsi(daily_df, period=10):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     rsi = rsi.where(avg_loss != 0, 100.0)  # avg_loss==0(구간 내내 상승)이면 RSI=100
+    if _opt("FIX_INDICATORS"):
+        # 종가가 내내 같으면(거래정지 등) 상승/하락 평균이 모두 0 - 과열(100)이 아니라 판정 불가
+        rsi = rsi.where(~((avg_loss == 0) & (avg_gain == 0)), np.nan)
     return rsi
 
 
@@ -1271,6 +1286,13 @@ def _load_daily_csv(code: str, data_root: Path, target_date_str) -> "pd.DataFram
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         if df.empty:
             return None
+        # [2026-11-28] 대상일까지만 쓴다(그 뒤에 다시 쓰인 행이 있어도 미래 값은 보지 않는다). 마지막 행이 대상일이
+        # 아니면 그 종목의 대상일 일봉이 없는 것(거래정지 / 수집 누락)이라 이전 날짜 지표로 평가하지 않는다.
+        target_ts = pd.to_datetime(str(target_date_str), format="%Y%m%d", errors="coerce")
+        if pd.notna(target_ts):
+            df = df[df["date"] <= target_ts].reset_index(drop=True)
+            if df.empty or df["date"].iloc[-1] != target_ts:
+                return None
         # g001 이전 버전 파일(지표 열 없음)은 같은 공식으로 계산해 채운다.
         if {"open", "high", "low", "volume"}.issubset(df.columns) and not set(DAILY_INDICATOR_COLUMNS).issubset(df.columns):
             df = _compute_daily_indicators(df)
@@ -1509,12 +1531,15 @@ def _daily_indicator_snapshot(df) -> dict | None:
     return snap
 
 
-def _cross_age(above: "pd.Series", max_age: int = 10) -> int | None:
+def _cross_age(above: "pd.Series", max_age: int = 10, valid: "pd.Series | None" = None) -> int | None:
     """Days since `above` last turned False->True within the last max_age bars (0 = today), else None."""
     vals = above.fillna(False).to_numpy()[-(max_age + 2):]
+    ok = valid.fillna(False).to_numpy()[-(max_age + 2):] if (valid is not None and _opt("FIX_INDICATORS")) else None
     for age in range(len(vals) - 1):
         i = len(vals) - 1 - age
         if vals[i] and not vals[i - 1]:
+            if ok is not None and not ok[i - 1]:
+                return None  # 전날 값이 없음: 지표의 첫 유효일이지 교차가 아니다
             return age
     return None
 
@@ -1565,10 +1590,10 @@ def _base_breakout_features(df) -> dict:
     feat["vol_ratio"] = safe_float(vol.iloc[-1] / vol_ma) if vol_ma else None
     obv = df["OBV"]
     feat["obv_rising"] = bool(len(obv) >= 6 and obv.iloc[-1] > df["OBV_MA"].iloc[-1] and obv.iloc[-1] > obv.iloc[-6])
-    feat["macd_x_age"] = _cross_age(df["MACD"] > df["MACD_SIGNAL"])
-    feat["stoch_x_age"] = _cross_age(df["STOCH_K"] > df["STOCH_D"])
-    feat["di_x_age"] = _cross_age(df["DI_PLUS"] > df["DI_MINUS"])
-    feat["rsi50_x_age"] = _cross_age(df["RSI"] > 50.0)
+    feat["macd_x_age"] = _cross_age(df["MACD"] > df["MACD_SIGNAL"], valid=df["MACD"].notna() & df["MACD_SIGNAL"].notna())
+    feat["stoch_x_age"] = _cross_age(df["STOCH_K"] > df["STOCH_D"], valid=df["STOCH_K"].notna() & df["STOCH_D"].notna())
+    feat["di_x_age"] = _cross_age(df["DI_PLUS"] > df["DI_MINUS"], valid=df["DI_PLUS"].notna() & df["DI_MINUS"].notna())
+    feat["rsi50_x_age"] = _cross_age(df["RSI"] > 50.0, valid=df["RSI"].notna())
     return feat
 
 
@@ -2766,6 +2791,8 @@ def apply_sector_diversification_cap(selected_rows, eligible_rows, max_picks, ca
         return selected_rows
 
     cap = max(1, math.ceil(max_picks * cap_ratio))
+    if _opt("SECTOR_CAP_ACTUAL"):  # 상한을 실제 선정 수 기준으로 (max_picks 50 이면 15 라 8개 선정에서는 걸리지 않는다)
+        cap = max(1, math.ceil(len(selected_rows) * cap_ratio))
     selected = list(selected_rows)
     selected_codes = {row["code"] for row in selected}
     # eligible_rows는 이미 점수 내림차순 정렬돼 있으므로, 여기서 순서대로 뽑으면 자연히
@@ -3080,6 +3107,25 @@ def render_report(data_root, target_date, config, scan_result, comparison_rows):
             lines.append("| {date} | {eligible} | {selected} |".format(**row))
 
     return "\n".join(lines) + "\n"
+
+
+def _retire_stale_picks(picks_file: Path) -> Path | None:
+    """[2026-11-28] 이번 실행의 선정이 0개일 때: 같은 이름의 이전 선별 파일을 <이름>.stale 로 옮긴다(삭제하지 않음).
+    남겨 두면 리포트는 0개인데 선별 파일은 옛 목록이라, 그 날짜의 단독 반영이 옛 목록을 r004 에 넣을 수 있다.
+    옮긴 경로를 돌려준다(파일이 없었으면 None)."""
+    try:
+        if not picks_file.is_file():
+            return None
+        dest = picks_file.with_name(picks_file.name + ".stale")
+        os.replace(picks_file, dest)
+        try:
+            print(f"선정 0개 - 이전 선별 파일을 옮겼습니다: {dest}")
+        except UnicodeEncodeError:  # a console that cannot print Korean
+            print(f"no picks - the earlier picks file was moved to {dest}")
+        return dest
+    except OSError as exc:
+        print(f"[WARN] 이전 선별 파일을 옮기지 못했습니다({picks_file}): {exc}")
+        return None
 
 
 def load_symbols():
@@ -4073,6 +4119,8 @@ if __name__ == "__main__":
         picks_file = out_dir / picks_filename
         picks_file.write_text("\n".join(picks), encoding="utf-8")
         print(f"추천 종목 리스트를 저장했습니다: {picks_file}")
+    else:
+        _retire_stale_picks(out_dir / picks_filename)
 
     try:
         from r001_define_config import FEATURE_SCAN_EXPORT_TO_R004
