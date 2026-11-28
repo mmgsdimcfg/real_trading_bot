@@ -25,6 +25,7 @@ Limits: 1-minute bars come from the g001 10-second file (raw_bar == 1 rows); the
 also sees the forming one); the index ETF regime fails open when the ETF has no file that day.
 
 usage: g058_entry_condition_table.py <out dir> [--mode tick|bars] [--from YYYYMMDD] [--to YYYYMMDD] [--workers 4]
+       [--watch-json FILE]   bars mode: {trading day: [codes]} instead of the picks files - the same entry rules on another watchlist
        then: (AutoBotHtsH) npx vite-node scripts/rebound-conds.ts <out dir>
        then: g059_entry_condition_report.py <out dir> [bars]   /   g060_gap_atr_study.py <out dir> [bars]
 
@@ -33,6 +34,10 @@ r001 defaults); without it the PC's runtime/config/live_overrides.json is applie
 entry_ok = the 1-minute bar the entry falls into exists; the reports leave the other rows out (their path after the fill is unknown).
 
 Update log:
+- [2026-11-28] type=feat owner=claude
+    summary: --watch-json (봉 모드) - 선별 파일 대신 주어진 감시 목록으로 조건표 생성 (감시 목록끼리 같은 진입 규칙으로 비교).
+    impact: sim (읽기 전용)
+    compatibility: backward-compatible
 - [2026-11-28] type=fix owner=claude
     summary: Codex 3차 검토 - entry_ok 열 추가 (진입 봉이 빠진 행 표시). 설정 조건(AUTO_TRADING_LIVE_OVERRIDES) 문서화.
     impact: sim (읽기 전용)
@@ -332,7 +337,11 @@ def main() -> int:
     ap.add_argument("--to", dest="d1", default="20261130")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--mode", choices=["tick", "bars"], default=os.environ.get("EA_MODE", "tick"))
+    ap.add_argument("--watch-json", default="", help="bars mode: {trading day: [codes]} to use instead of the picks files (compare watchlists)")
     a = ap.parse_args()
+    watch = json.loads(Path(a.watch_json).read_text(encoding="utf-8")) if a.watch_json else None
+    if watch is not None and a.mode != "bars":
+        raise SystemExit("--watch-json needs --mode bars")
     global BARS
     BARS = a.mode == "bars"
     os.environ["EA_MODE"] = a.mode          # the worker processes read it on import
@@ -346,7 +355,11 @@ def main() -> int:
         if not (a.d0 <= day <= a.d1) or (not BARS and not (TICKS / day).is_dir()):
             continue
         names = g057.name_map(DATA, day)
-        if BARS:
+        if watch is not None:   # [2026-11-28] a given watchlist of that trading day (a day without one is left out)
+            if day not in watch:
+                continue
+            syms = [(c, names[c]) for c in watch[day] if c in names and not r011.is_fund_product(names[c])]
+        elif BARS:
             syms = [(c, names[c]) for c, _n in g057.watchlist_of(DATA, day, all_days) if c in names and not r011.is_fund_product(names[c])]
         else:
             watched, _src = g057.watched_on(TICKS, DATA, day, all_days)
