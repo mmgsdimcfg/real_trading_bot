@@ -92,7 +92,9 @@ function HistChart({ item }: { item: ReboundHistoryItem }) {
   }, [ind.join()]); // eslint-disable-line react-hooks/exhaustive-deps
   const nOsc = shown.filter((k) => OSCILLATORS.includes(k)).length + (o.vol === false ? 0 : 1);
   // more panes than the chart window may show (the required indicators): each one a little lower so the price pane keeps its room
-  const oscH = Math.max(44, Math.min(100, Math.floor((chartH * 0.5) / Math.max(1, nOsc)) - 8));
+  // [2026-11-28] default split (user): the price pane about 45 % of the height, the volume and indicator panes share the rest
+  // (about 12 % each with four of them); it was capped at 100 px, which left a tall window almost all price pane
+  const oscH = Math.max(44, Math.min(180, Math.floor((chartH * 0.48) / Math.max(1, nOsc)) - 8));
   const bell = useMemo(
     () => [{ t, id: item.id, title: `${kindLabel(item.res)} 알림 · 봉 ${hhmm(t)}${item.res.setup ? '' : ` · 가점 ${item.res.score}점`}`, note: bellNote(item) }],
     [t, item],
