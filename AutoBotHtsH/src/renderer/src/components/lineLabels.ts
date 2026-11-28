@@ -107,3 +107,46 @@ export function placeLineLabels(lines: LabelLine[], candles: Box[], blocked: Box
   }
   return placed;
 }
+
+/**
+ * [2026-11-28] Where a note box of w x h goes near an anchor (the alert bell): the place inside `area` that covers the least of the
+ * candles, the line points and the blocked boxes - an empty part of the pane above or below the anchor (user). Among equally
+ * free places the one nearest to the anchor wins. Returns the box's top-left corner.
+ */
+export function placeNoteBox(anchor: { x: number; y: number }, w: number, h: number, candles: Box[], linePts: [number, number][], blocked: Box[], area: Box): { x: number; y: number } {
+  const x0 = area.x + 2;
+  const x1 = Math.max(x0, area.x + area.w - w - 2);
+  const y0 = area.y + 2;
+  const y1 = Math.max(y0, area.y + area.h - h - 2);
+  const clampX = (x: number) => Math.min(x1, Math.max(x0, x));
+  const xs = [...new Set([anchor.x + 12, anchor.x - 12 - w, anchor.x - w / 2, anchor.x - w / 4, anchor.x - (3 * w) / 4].map((x) => Math.round(clampX(x))))];
+  const PAD = 3;
+  let best = { x: xs[0], y: y0 };
+  let bestCost = Infinity;
+  for (const x of xs) {
+    const inX = candles.filter((c) => c.x + c.w > x - PAD && c.x < x + w + PAD);
+    const ptsX = linePts.filter(([px]) => px >= x - PAD && px <= x + w + PAD);
+    for (let y = y0; y <= y1; y += 4) {
+      let cover = 0;
+      for (const c of inX) {
+        const v = Math.min(c.y + c.h, y + h + PAD) - Math.max(c.y, y - PAD);
+        if (v > 0) cover += v * Math.max(1, c.w);
+      }
+      for (const [, py] of ptsX) if (py >= y - PAD && py <= y + h + PAD) cover += 30;
+      for (const b of blocked) {
+        const ox = Math.min(b.x + b.w, x + w) - Math.max(b.x, x);
+        const oy = Math.min(b.y + b.h, y + h) - Math.max(b.y, y);
+        if (ox > 0 && oy > 0) cover += ox * oy;
+      }
+      // the bell itself stays visible
+      if (anchor.x > x - 8 && anchor.x < x + w + 8 && anchor.y > y - 4 && anchor.y - 16 < y + h) cover += 2000;
+      const dist = Math.abs(y + h / 2 - anchor.y) + Math.abs(x + w / 2 - anchor.x) * 0.5;
+      const cost = cover * 1000 + dist;
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = { x, y };
+      }
+    }
+  }
+  return best;
+}

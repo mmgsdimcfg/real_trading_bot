@@ -56,7 +56,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { samePeriod, type Bar, type ChartKind } from '../../../shared/price';
-import { placeLineLabels, type Box, type LabelLine } from './lineLabels';
+import { placeLineLabels, placeNoteBox, type Box, type LabelLine } from './lineLabels';
 import { HTS_PARAMS, computeIndicators, investorCum, INV_MONTHS_LABEL, type InvestorDayRow, type InvMonths, MA_PERIODS, OSCILLATORS, signalLine, signals as signalsOf, type IndicatorKey, type IndicatorParams, type IndicatorSet, type Series } from '../../../shared/indicators';
 import type { Trade } from '../../../shared/types';
 import { fmtKstDateTime, fmtKstTime } from '../../../shared/time';
@@ -818,6 +818,18 @@ export function PriceChart(props: Props) {
     if (showLegend) blocked.push({ x: L, y: TOP, w: Math.min(W, 480), h: 16 + infoY + legendRowsN * 14 });
     return placeLineLabels(model.labelLines, candles, blocked, { x: L, y: TOP, w: W, h: priceH });
   }, [props.lineLabels, model, showLegend, legendRowsN, infoY, L, W, priceH]); // eslint-disable-line react-hooks/exhaustive-deps
+  // [2026-11-28] what the alert note box keeps off: the candles, the overlay lines, the legend block
+  const noteAvoid = useMemo(() => {
+    const out = { candles: [] as Box[], pts: [] as [number, number][], blocked: [] as Box[] };
+    if (!props.alerts?.length || !model || model.empty) return out;
+    out.candles = model.slots.map((sl) => {
+      const top = model.sy(sl.b.h);
+      return { x: sl.x - Math.max(1.5, sl.w / 2), y: top, w: Math.max(3, sl.w), h: Math.max(2, model.sy(sl.b.l) - top) };
+    });
+    out.pts = model.labelLines.flatMap((ln) => ln.pts);
+    if (showLegend) out.blocked.push({ x: L, y: TOP, w: Math.min(W, 480), h: 16 + infoY + legendRowsN * 14 });
+    return out;
+  }, [props.alerts, model, showLegend, legendRowsN, infoY, L, W]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className={`price-chart ${interactive ? 'interactive' : ''}`} ref={ref} style={{ height }}>
@@ -989,15 +1001,15 @@ export function PriceChart(props: Props) {
               }
             }
             const y = Math.max(16, (bar ? model.sy(bar.h) : model.sy(model.hi)) - 8);
-            // [2026-11-28] the alert's reasons in a box beside the bell (user): right of it, left when it would leave the pane;
+            // [2026-11-28] the alert's reasons in a box near the bell (user);
             // it takes no mouse events (the chart under it stays usable)
             const note = (a.note || []).filter(Boolean);
             const lineH = 14;
             const wide = (s: string) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 11.5 : 6.4), 0);
             const bw = Math.min(W - 8, Math.max(0, ...note.map(wide)) + 14);
             const bh = note.length * lineH + 8;
-            const bx = x + 12 + bw <= L + W ? x + 12 : Math.max(L + 2, x - 12 - bw);
-            const by = Math.max(4, y - 14 - bh);
+            // [2026-11-28] in the empty part of the pane above or below the bell, off the candles and the lines (user)
+            const { x: bx, y: by } = note.length ? placeNoteBox({ x, y }, bw, bh, noteAvoid.candles, noteAvoid.pts, noteAvoid.blocked, { x: L, y: TOP, w: W, h: priceH }) : { x, y };
             return (
               <g key={a.id}>
                 {note.length > 0 && (

@@ -35,3 +35,25 @@ describe('placeLineLabels value', () => {
     expect(b.w).toBeGreaterThan(a.w);
   });
 });
+
+import { placeNoteBox } from '../src/renderer/src/components/lineLabels';
+
+describe('placeNoteBox', () => {
+  const pane: Box = { x: 0, y: 0, w: 600, h: 300 };
+  const band = (y: number, h: number): Box[] => Array.from({ length: 120 }, (_, k) => ({ x: k * 5, y, w: 3, h }));
+  it('goes under the candles when they fill the top of the pane', () => {
+    const p = placeNoteBox({ x: 300, y: 30 }, 200, 60, band(10, 100), [], [], pane);
+    expect(p.y).toBeGreaterThanOrEqual(110);
+  });
+  it('goes above the candles when they fill the bottom of the pane', () => {
+    const p = placeNoteBox({ x: 300, y: 180 }, 200, 60, band(190, 100), [], [], pane);
+    expect(p.y + 60).toBeLessThanOrEqual(190);
+  });
+  it('keeps off a line and a blocked box, and stays inside the pane', () => {
+    const line: [number, number][] = Array.from({ length: 120 }, (_, k) => [k * 5, 250]);
+    const p = placeNoteBox({ x: 590, y: 30 }, 200, 60, band(10, 100), line, [{ x: 0, y: 110, w: 600, h: 40 }], pane);
+    expect(p.x + 200).toBeLessThanOrEqual(600);
+    expect(p.y).toBeGreaterThanOrEqual(150);
+    expect(p.y + 60).toBeLessThan(250 - 3);
+  });
+});
