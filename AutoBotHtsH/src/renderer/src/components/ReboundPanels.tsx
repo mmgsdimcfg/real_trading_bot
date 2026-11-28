@@ -11,7 +11,7 @@
 // - [2026-11-24] type=feat (HistoryTab detail: "추세 구조" - the lower highs check of the alert (고점 낮아짐 / 아님 / 판정 불가))
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from '../store';
+import { SYMBOL_WINS, useStore } from '../store';
 import { PriceChart } from './PriceChart';
 import { normalizeParams, OSCILLATORS, type IndicatorKey, type IndicatorParams } from '../../../shared/indicators';
 import type { Bar } from '../../../shared/price';
@@ -162,6 +162,10 @@ export function HistoryTab() {
   const cur = items.find((x) => x.id === sel) || null;
   const pick = (it: ReboundHistoryItem) => {
     setSel(it.id);
+    // [2026-11-28] the picked alert's symbol goes to every open symbol window - chart, current price ... (user)
+    // only windows that are open follow: picking a row never opens a new window (the "차트" button does that)
+    const st = useStore.getState();
+    if (st.wins.some((w) => SYMBOL_WINS.includes(w.type) && w.code !== it.code)) st.setCodeAll(it.code);
     if (!it.read) void window.hts.reboundHistoryRead([it.id]).then(load);
   };
   const unread = items.filter((x) => !x.read).length;

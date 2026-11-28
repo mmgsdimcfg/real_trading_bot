@@ -207,6 +207,8 @@ export function ChartWindow({ win }: { win: Win }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [chartKey, setChartKey] = useState(0);
+  // [2026-11-28] the wheel zoom stays when the symbol changes (user): bar count per bar kind / size, for this window while it is open
+  const [zoom, setZoom] = useState<Record<string, number>>({});
   const [panel, setPanel] = useState<'' | 'ind' | 'params'>('');
   const [tool, setTool] = useState<'none' | 'hline' | 'tline'>('none');
   const panelRef = useOutsideClose<HTMLSpanElement>(panel !== '', () => setPanel(''));
@@ -514,6 +516,8 @@ export function ChartWindow({ win }: { win: Win }) {
             volume={o.vol !== false}
             paneHeights={o.paneH}
             onPaneHeights={(m) => setOpts(win.id, { paneH: m })}
+            viewCount={zoom[`${kind}/${n}`] || undefined}
+            onViewCount={(c) => setZoom((z) => ({ ...z, [`${kind}/${n}`]: c }))}
             onRemovePane={(k) => (k === 'volume' ? setOpts(win.id, { vol: false }) : setOpts(win.id, { ind: ind.filter((x) => x !== k) }))}
             trades={[]}
             refClose={refQuote.data?.prevClose}
