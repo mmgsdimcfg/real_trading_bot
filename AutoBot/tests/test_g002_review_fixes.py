@@ -174,13 +174,16 @@ class TestSimpleProfileS1(unittest.TestCase):
         self.assertEqual({g["key"] for g in top["score_breakdown"]["gains"]}, {"s1_volume_ratio", "s1_low_tick_cost"})
         self.assertAlmostEqual(top["score"], sum(g["value"] for g in top["score_breakdown"]["gains"]))
 
-    def test_the_default_profile_is_still_v0(self):
+    def test_the_default_profile_is_s1_and_v0_is_selectable(self):
+        """[2026-11-28] the live default became s1 (user decision); G002_FILTER_PROFILE=v0 is the earlier selection."""
         import os
         self.assertIn("s1", g002.FILTER_PROFILES)
         with mock.patch.dict(os.environ, {"G002_FILTER_PROFILE": "s1"}):
             self.assertEqual(g002._filter_profile(), "s1")
         with mock.patch.dict(os.environ, {}):
             os.environ.pop("G002_FILTER_PROFILE", None)
+            self.assertEqual(g002._filter_profile(), "s1")
+        with mock.patch.dict(os.environ, {"G002_FILTER_PROFILE": "v0"}):
             self.assertEqual(g002._filter_profile(), "v0")
 
     def test_reason_texts_exist(self):

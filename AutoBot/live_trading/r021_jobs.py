@@ -55,7 +55,7 @@ Update log:
     summary: postclose 에 s1log 단계 추가 (picklog 다음, apply 앞) - g061_s1_shadow_log.py --date D: g002 단순 프로파일 s1 이
       그날 골랐을 종목을 <runtime>/data/pick_shadow_s1/picks_D.json 에 기록 (사용자 요청 2026-11-28: s1 을 바로 전환하지 않고
       병행 기록 후 새 기간으로 재비교). 필수 아님, scan 스위치를 따름.
-    impact: 작업 목록/상태 JSON 의 steps 에 "s1log" 추가 (앱 단계 라벨 "s1 병행 기록(g061)"). 선별 파일/r004/주문 영향 없음
+    impact: 작업 목록/상태 JSON 의 steps 에 "s1log" 추가 (앱 단계 라벨 "선정 병행 기록(g061)" - g002 기본값이 s1 이 된 뒤로는 v0 를 따로 기록). 선별 파일/r004/주문 영향 없음
     compatibility: backward-compatible (새 단계 이름 - AutoBotH / AutoBotHtsH 단계 라벨과 계약 문서 autoboth_local_mode_20261110.md 갱신)
 - [2026-11-21] type=feat owner=claude
     summary: postclose 에 hi52acct 단계 추가 (gh52 다음, scan 앞) - g049_hi52_paper_account.py --date D: HI52 스윙 규칙의 모의계좌와

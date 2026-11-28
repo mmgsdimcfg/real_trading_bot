@@ -25,6 +25,10 @@ Update log format (append only):
 
 Update log:
 - [2026-11-28] type=feat owner=claude
+    summary: 선정 기본 프로파일을 v0 -> s1 로 변경 (사용자 결정 2026-11-28). DEFAULT_FILTER_PROFILE. 환경변수 G002_FILTER_PROFILE=v0 이면 이전 선정.
+    impact: scanner - 다음 선별부터 감시목록이 s1 규칙(적격 8 + 순위 2, 매일 최대 20개)으로 만들어진다. 주문 로직(r003) 불변
+    compatibility: 선정 결과가 달라짐 (v0 와 겹치는 종목 약 15%). 선별 파일 / r004 형식은 동일
+- [2026-11-28] type=feat owner=claude
     summary: 단순 프로파일 s1 추가(사용자 요청, G002_FILTER_PROFILE=s1 일 때만 - 기본 v0 는 그대로). 적격 8 + 순위 2 = 조건 10개
       (v0: 탈락 사유 27 + 경고 37 + 점수 항목 17 + 보충 규칙). 상세와 근거는 FILTER_PROFILES 아래 주석, apply_simple_profile.
     impact: scanner (환경변수를 설정할 때만 동작 변경)
@@ -1726,8 +1730,12 @@ def apply_simple_profile(candidates: list[dict]) -> None:
             {"key": "s1_low_tick_cost", "value": round(50.0 * b, 2), "max": 50.0}]}
 
 
+# [2026-11-28] 실거래 선정 기본값 = s1 (사용자 결정: "s1 적용해서 사용하자"). 이전 기본값은 v0 - G002_FILTER_PROFILE=v0 로 되돌릴 수 있다.
+DEFAULT_FILTER_PROFILE = "s1"
+
+
 def _filter_profile() -> str:
-    p = (os.environ.get("G002_FILTER_PROFILE") or "v0").strip().lower()
+    p = (os.environ.get("G002_FILTER_PROFILE") or DEFAULT_FILTER_PROFILE).strip().lower()
     if p not in FILTER_PROFILES:
         raise ValueError(f"G002_FILTER_PROFILE={p!r}: one of {FILTER_PROFILES}")
     return p

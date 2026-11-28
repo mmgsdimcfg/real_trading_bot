@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""g061_s1_shadow_log.py - 단순 프로파일 s1 의 선정을 매일 따로 기록한다 (병행 기록, 주문 / 감시목록 영향 없음).
+"""g061_s1_shadow_log.py - 실거래에 쓰지 않는 쪽 프로파일(s1 / v0)의 선정을 매일 따로 기록한다 (병행 기록, 주문 / 감시목록 영향 없음).
+
+[2026-11-28 저녁] 실거래 기본값이 s1 이 되었다: 이제 선별 파일 = s1, 이 스크립트가 따로 돌리는 쪽 = v0 (아래 설명의 반대).
+기록 형식은 같다 - picks 는 언제나 s1 목록, v0_picks 는 언제나 v0 목록이고 live_profile 이 어느 쪽이 실거래였는지 말한다.
+한계: v0 의 반복 선정 감점은 이전 날짜의 선별 파일을 읽으므로, 실거래가 s1 인 동안의 v0 기록은 "v0 를 계속 썼을 때"와 조금 다를 수 있다.
 
 Why: 2026-11-28 재현(6/30 ~ 11/27)에서 s1 목록이 현재 선정(v0)보다 조금 나았지만 s1 은 그 기간 자료에서 고른 규칙이다.
 실거래 선정을 바꾸기 전에 새 기간에서 같은 비교를 다시 하려면, 그날그날 s1 이 무엇을 골랐는지가 남아 있어야 한다
@@ -19,6 +23,10 @@ Run:
 Exit codes: 0 기록함 / 이미 있음 / 묶음 완료, 2 그 날짜의 자료가 없거나 스캔 실패.
 
 Update log:
+- [2026-11-28] type=feat owner=claude
+    summary: 실거래 기본 프로파일이 s1 이 됨 - 실거래가 s1 이면 v0 를 따로 돌려 기록 (live_profile / shadow_profile 필드 추가).
+    impact: research tooling. 기록 형식 호환 (picks = s1, v0_picks = v0 그대로)
+    compatibility: backward-compatible
 - [2026-11-28] type=feat owner=claude
     summary: 신규 - s1 병행 기록 (사용자 요청: s1 을 바로 전환하지 않고 매일 따로 기록해 새 기간으로 다시 비교).
     impact: research tooling (runtime/data/pick_shadow_s1). 주문 / r004 / 선별 파일 불변
@@ -42,7 +50,6 @@ sys.path.insert(0, str(HERE.parent / "live_trading"))
 import g002_data_scan_trade_candidates as g002  # noqa: E402
 import g005_watchlist_bridge as g005  # noqa: E402
 
-PROFILE = "s1"
 OUT_DIR = g002.RUNTIME_DATA_DIR / "pick_shadow_s1"
 
 
@@ -50,7 +57,7 @@ def shadow_path(d: str) -> Path:
     return OUT_DIR / f"picks_{d}.json"
 
 
-def v0_picks(d: str) -> list[dict] | None:
+def file_picks(d: str) -> list[dict] | None:
     """the picks file g002 wrote for d ("code,name" lines); None when there is none"""
     p = g002.RUNTIME_DATA_DIR / d / f"_{d}_picks.txt"
     if not p.is_file():
@@ -65,13 +72,18 @@ def v0_picks(d: str) -> list[dict] | None:
     return out
 
 
-def scan_s1(d: str) -> dict:
-    """g002.scan of date d under the s1 profile, in this process only (the environment variable is put back)."""
+def shadow_profile() -> str:
+    """the profile that is NOT live: v0 while the live selection is s1, s1 otherwise"""
+    return "v0" if g002._filter_profile() == "s1" else "s1"
+
+
+def scan_profile(d: str, profile: str) -> dict:
+    """g002.scan of date d under the given profile, in this process only (the environment variable is put back)."""
     root = g002.RUNTIME_DATA_DIR
     base = g002.filter_stock_list_by_existing_data(g002.load_symbols(), root, verbose=False)
     sl = g002.filter_stock_list_by_min_bars(base, root, target_date_str=d, min_bars=g002.MIN_REQUIRED_BARS, verbose=False)
     before = os.environ.get("G002_FILTER_PROFILE")
-    os.environ["G002_FILTER_PROFILE"] = PROFILE   # g002 reads it per call; worker processes inherit it
+    os.environ["G002_FILTER_PROFILE"] = profile   # g002 reads it per call; worker processes inherit it
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             res = g002.scan(root, datetime.strptime(d, "%Y%m%d"), config=g002.DEFAULT_CONFIG, return_details=True,
@@ -97,22 +109,26 @@ def log_date(d: str, force: bool = False) -> int:
     if not (g002.RUNTIME_DATA_DIR / d).is_dir():
         print(f"[g061] {d}: no data folder")
         return 2
+    live, shadow = g002._filter_profile(), shadow_profile()
     try:
-        res = scan_s1(d)
+        res = scan_profile(d, shadow)
     except (Exception, SystemExit) as e:  # g002 exits when the date has no data
         print(f"[g061] {d}: scan failed - {e!r}")
         return 2
-    rec = {"date": d, "for_trading_day": g005.next_trading_day(d), "profile": PROFILE,
-           "logged_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "eligible": res["eligible"], "picks": res["picks"],
-           "v0_picks": v0_picks(d)}
+    from_file = file_picks(d)   # the live selection of d (the picks file g002 wrote)
+    s1, v0 = (from_file, res["picks"]) if live == "s1" else (res["picks"], from_file)
+    if live == "s1":
+        s1 = None if s1 is None else [{"rank": i, **p} for i, p in enumerate(s1, start=1)]
+        v0 = [{"code": p["code"], "name": p["name"]} for p in v0]
+    rec = {"date": d, "for_trading_day": g005.next_trading_day(d), "profile": "s1", "live_profile": live, "shadow_profile": shadow,
+           "logged_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "eligible": res["eligible"], "picks": s1, "v0_picks": v0}
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(out)
-    v0 = rec["v0_picks"]
-    both = len({p["code"] for p in rec["picks"]} & {p["code"] for p in v0}) if v0 is not None else 0
-    print(f"[g061] {d} -> {rec['for_trading_day']}: s1 {len(rec['picks'])} picks (eligible {rec['eligible']}), "
-          f"v0 {'-' if v0 is None else len(v0)}, in both {both} | {out}")
+    both = len({p["code"] for p in s1} & {p["code"] for p in v0}) if s1 is not None and v0 is not None else 0
+    print(f"[g061] {d} -> {rec['for_trading_day']}: live {live}, s1 {'-' if s1 is None else len(s1)}, "
+          f"v0 {'-' if v0 is None else len(v0)}, in both {both} (shadow {shadow}: eligible {rec['eligible']}) | {out}")
     return 0
 
 
@@ -124,7 +140,8 @@ def write_watch_json(path: Path) -> int:
         day = rec.get("for_trading_day")
         if not day:
             continue
-        s1[day] = [p["code"] for p in rec["picks"]]
+        if rec.get("picks") is not None:
+            s1[day] = [p["code"] for p in rec["picks"]]
         if rec.get("v0_picks") is not None:
             v0[day] = [p["code"] for p in rec["v0_picks"]]
     path.write_text(json.dumps(s1), encoding="utf-8")

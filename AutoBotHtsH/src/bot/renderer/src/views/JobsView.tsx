@@ -50,7 +50,8 @@
  * - [2026-11-27] type=feat - New pipeline step vwaplog (r021: g055 "plunge, VWAP reclaimed and held" forward log, no orders) after
  *   hi52acct: label 'VWAP 재돌파 기록(g055)'; the ① tooltip and the postclose hint mention it
  * - [2026-11-28] type=feat - New pipeline step s1log (r021: g061 shadow log of the g002 simple profile s1 after picklog, no
- *   picks file / r004 / order change): label 's1 병행 기록(g061)'
+ *   picks file / r004 / order change): label '선정 병행 기록(g061)' (the profile that is not live: v0 since s1 became the
+ *   g002 default on 2026-11-28)
  * - [2026-11-22] type=feat - "선별 결과 메일" texts say the picks also go to KakaoTalk (g002 sends code + name through g007 when the
  *   host has ~/.kakao; checkbox label / tooltip, plan line, last-run line, automation line). The log box follows its last line
  *   while a job writes (not while the user has scrolled up to read)
@@ -105,7 +106,7 @@ const DESC: Record<string, string> = {
   scan: '수집된 데이터로 종목 선별(g002) 후 감시목록 반영(r004)',
 };
 
-const STEP_LABEL: Record<string, string> = { collect: '데이터 수집(g001)', history: '일봉 이력(g025)', hi52: 'HI52 기록(g042)', gh52: '52주 고점 기록(g048)', hi52acct: 'HI52 모의계좌(g049)', vwaplog: 'VWAP 재돌파 기록(g055)', scan: '종목 선별(g002)', picklog: '선정 성과 기록(g047)', s1log: 's1 병행 기록(g061)', apply: '감시목록 반영(r004)', edge_dataset: 'Edge AI 데이터셋(g013)', edge_train: 'Edge AI 학습(g014)', edge_check: 'Edge AI 점검(g024)', trade_dataset: 'Edge AI 매매 모델 데이터셋(g013)', trade_train: 'Edge AI 매매 모델 학습(g014)', universe: '유니버스(g010)' };
+const STEP_LABEL: Record<string, string> = { collect: '데이터 수집(g001)', history: '일봉 이력(g025)', hi52: 'HI52 기록(g042)', gh52: '52주 고점 기록(g048)', hi52acct: 'HI52 모의계좌(g049)', vwaplog: 'VWAP 재돌파 기록(g055)', scan: '종목 선별(g002)', picklog: '선정 성과 기록(g047)', s1log: '선정 병행 기록(g061)', apply: '감시목록 반영(r004)', edge_dataset: 'Edge AI 데이터셋(g013)', edge_train: 'Edge AI 학습(g014)', edge_check: 'Edge AI 점검(g024)', trade_dataset: 'Edge AI 매매 모델 데이터셋(g013)', trade_train: 'Edge AI 매매 모델 학습(g014)', universe: '유니버스(g010)' };
 
 /** state as a dot + text (.st), colored by kind */
 function stateClass(st: string | undefined) {

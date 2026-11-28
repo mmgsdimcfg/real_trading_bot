@@ -22,7 +22,8 @@ class S1ShadowLogTest(unittest.TestCase):
         (self.root / "20261127" / "_20261127_picks.txt").write_text("# header\n005930,삼성전자\n000660,SK하이닉스\n", encoding="utf-8")
         ps = [mock.patch.object(g061.g002, "RUNTIME_DATA_DIR", self.root),
               mock.patch.object(g061, "OUT_DIR", self.root / "pick_shadow_s1"),
-              mock.patch.object(g061, "scan_s1", side_effect=lambda d: {"eligible": 3, "picks": [
+              mock.patch.object(g061.g002, "_filter_profile", return_value="v0"),
+              mock.patch.object(g061, "scan_profile", side_effect=lambda d, prof: {"eligible": 3, "picks": [
                   {"rank": 1, "code": "000660", "name": "SK하이닉스", "score": 90.0, "price": 1, "amount_ma20": 1, "vol_ratio": 2.0, "tick_ratio": 0.001},
                   {"rank": 2, "code": "035420", "name": "NAVER", "score": 80.0, "price": 1, "amount_ma20": 1, "vol_ratio": 1.5, "tick_ratio": 0.002}]})]
         for p in ps:
@@ -39,7 +40,7 @@ class S1ShadowLogTest(unittest.TestCase):
     def test_a_logged_date_is_not_rewritten_without_force(self):
         g061.log_date("20261127")
         first = g061.shadow_path("20261127").read_text(encoding="utf-8")
-        g061.scan_s1.side_effect = lambda d: {"eligible": 0, "picks": []}
+        g061.scan_profile.side_effect = lambda d, prof: {"eligible": 0, "picks": []}
         self.assertEqual(g061.log_date("20261127"), 0)
         self.assertEqual(g061.shadow_path("20261127").read_text(encoding="utf-8"), first)
         self.assertEqual(g061.log_date("20261127", force=True), 0)
@@ -47,9 +48,19 @@ class S1ShadowLogTest(unittest.TestCase):
 
     def test_missing_folder_and_failed_scan_return_2_without_a_file(self):
         self.assertEqual(g061.log_date("20261126"), 2)
-        g061.scan_s1.side_effect = SystemExit("no data")
+        g061.scan_profile.side_effect = SystemExit("no data")
         self.assertEqual(g061.log_date("20261127"), 2)
         self.assertFalse(g061.shadow_path("20261127").exists())
+
+    def test_live_s1_takes_s1_from_the_picks_file_and_scans_v0(self):
+        """[2026-11-28] live = s1: picks (s1) = the picks file, v0_picks = the scan under v0"""
+        g061.g002._filter_profile.return_value = "s1"
+        self.assertEqual(g061.log_date("20261127"), 0)
+        self.assertEqual(g061.scan_profile.call_args[0], ("20261127", "v0"))
+        rec = json.loads(g061.shadow_path("20261127").read_text(encoding="utf-8"))
+        self.assertEqual((rec["live_profile"], rec["shadow_profile"]), ("s1", "v0"))
+        self.assertEqual([(p["rank"], p["code"]) for p in rec["picks"]], [(1, "005930"), (2, "000660")])
+        self.assertEqual(rec["v0_picks"], [{"code": "000660", "name": "SK하이닉스"}, {"code": "035420", "name": "NAVER"}])
 
     def test_no_v0_picks_file_is_recorded_as_null(self):
         (self.root / "20261127" / "_20261127_picks.txt").unlink()
